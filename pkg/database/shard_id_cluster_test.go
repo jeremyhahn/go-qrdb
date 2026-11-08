@@ -19,6 +19,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -155,8 +156,8 @@ func TestShardIDs_FailedClaimCreatesNothing(t *testing.T) {
 	if !errors.As(err, &claimErr) || !errors.Is(err, storeDown) {
 		t.Fatalf("create with a failing claimer = %v, want *ShardIDClaimError wrapping the store error", err)
 	}
-	if claimErr.Error() == "" {
-		t.Fatal("empty error text")
+	if !strings.Contains(claimErr.Error(), "shard ID") {
+		t.Fatalf("ShardIDClaimError text %q does not name the shard ID claim", claimErr.Error())
 	}
 	if _, err := m.Get("refused"); err == nil {
 		t.Fatal("a refused create left a catalog entry")

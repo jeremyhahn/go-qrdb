@@ -182,7 +182,7 @@ func parseOps(opsStr string) ([]service.Op, error) {
 	for i, o := range opsJSON {
 		opType, ok := mcpOpTypeMap[o.Type]
 		if !ok {
-			opType = service.OpPut
+			return nil, &UnknownOpTypeError{Type: o.Type}
 		}
 		ops[i] = service.Op{
 			Type:     opType,

@@ -1188,13 +1188,12 @@ func TestParseOps_EmptyArray(t *testing.T) {
 }
 
 func TestParseOps_UnknownType(t *testing.T) {
-	ops, err := parseOps(`[{"type":"unknown","key":"k1"}]`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Unknown type defaults to OpPut.
-	if ops[0].Type != service.OpPut {
-		t.Errorf("expected default OpPut for unknown type, got %d", ops[0].Type)
+	// An unknown type refuses: defaulting it to a put would overwrite the key
+	// of an op the caller meant as a read.
+	ops, err := parseOps(`[{"type":"Get","key":"k1"}]`)
+	var ute *UnknownOpTypeError
+	if !errors.As(err, &ute) || ute.Type != "Get" || ops != nil {
+		t.Fatalf("parseOps = (%v, %v), want *UnknownOpTypeError for %q", ops, err, "Get")
 	}
 }
 

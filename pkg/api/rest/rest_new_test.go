@@ -1111,11 +1111,13 @@ func TestJsonToOps_AllTypes(t *testing.T) {
 		{Type: "get", Key: "k2"},
 		{Type: "delete", Key: "k3"},
 		{Type: "range", Key: "k4", RangeEnd: "k9"},
-		{Type: "unknown", Key: "k5"},
 	}
-	result := jsonToOps(ops)
-	if len(result) != 5 {
-		t.Fatalf("len = %d, want 5", len(result))
+	result, err := jsonToOps(ops)
+	if err != nil {
+		t.Fatalf("jsonToOps: %v", err)
+	}
+	if len(result) != 4 {
+		t.Fatalf("len = %d, want 4", len(result))
 	}
 	if result[0].Type != service.OpPut {
 		t.Fatalf("ops[0].Type = %d, want OpPut", result[0].Type)
@@ -1129,12 +1131,21 @@ func TestJsonToOps_AllTypes(t *testing.T) {
 	if result[2].Type != service.OpDelete {
 		t.Fatalf("ops[2].Type = %d, want OpDelete", result[2].Type)
 	}
-	if result[3].Type != service.OpRange {
-		t.Fatalf("ops[3].Type = %d, want OpRange", result[3].Type)
+	if result[3].Type != service.OpRange || string(result[3].RangeEnd) != "k9" {
+		t.Fatalf("ops[3] = %+v, want OpRange to k9", result[3])
 	}
-	// unknown defaults to OpPut
-	if result[4].Type != service.OpPut {
-		t.Fatalf("ops[4].Type = %d, want OpPut (default)", result[4].Type)
+}
+
+// An unknown op type refuses the whole list rather than becoming a put that
+// would overwrite its key.
+func TestJsonToOps_UnknownTypeRefusesTheList(t *testing.T) {
+	result, err := jsonToOps([]opJSON{{Type: "put", Key: "k1"}, {Type: "Get", Key: "k5"}})
+	var unknown *UnknownOpTypeError
+	if !errors.As(err, &unknown) || unknown.Type != "Get" {
+		t.Fatalf("err = %v, want *UnknownOpTypeError for \"Get\"", err)
+	}
+	if result != nil {
+		t.Fatalf("result = %+v, want nil", result)
 	}
 }
 
@@ -1185,13 +1196,30 @@ func TestParseOpType_AllValues(t *testing.T) {
 		{"get", service.OpGet},
 		{"delete", service.OpDelete},
 		{"range", service.OpRange},
-		{"unknown", service.OpPut},
 	}
 	for _, tt := range tests {
-		got := parseOpType(tt.input)
-		if got != tt.want {
-			t.Fatalf("parseOpType(%q) = %d, want %d", tt.input, got, tt.want)
+		got, err := parseOpType(tt.input)
+		if err != nil || got != tt.want {
+			t.Fatalf("parseOpType(%q) = (%d, %v), want %d", tt.input, got, err, tt.want)
 		}
+	}
+	for _, input := range []string{"unknown", "", "PUT"} {
+		if _, err := parseOpType(input); err == nil {
+			t.Fatalf("parseOpType(%q) accepted an unknown type", input)
+		}
+	}
+}
+
+func TestUnknownOpTypeError_IsABadRequest(t *testing.T) {
+	_, err := jsonToOps([]opJSON{{Type: "upsert", Key: "k"}})
+	if err == nil {
+		t.Fatal("jsonToOps accepted an unknown op type")
+	}
+	if got := mapHTTPError(err); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(%v) = %d, want %d", err, got, http.StatusBadRequest)
+	}
+	if got := mapHTTPError(&UnknownOpTypeError{}); got != http.StatusBadRequest {
+		t.Fatalf("mapHTTPError(empty UnknownOpTypeError) = %d, want %d", got, http.StatusBadRequest)
 	}
 }
 

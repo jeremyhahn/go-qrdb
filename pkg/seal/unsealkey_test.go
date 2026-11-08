@@ -14,18 +14,29 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/fips140"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"testing"
 )
 
-const (
-	// fixtureUnsealKeyHex and fixtureRootKeyHex are test vectors, never real
-	// key material.
-	fixtureUnsealKeyHex = "2b7e151628aed2a6abf7158809cf4f3c2b7e151628aed2a6abf7158809cf4f3c"
-	fixtureRootKeyHex   = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+// fixtureUnsealKeyHex and fixtureRootKeyHex are AES-256 keys drawn fresh for
+// each test run, so no key material lives in the source. Every test that
+// uses them is a round trip or a tamper check, never a known-answer vector.
+var (
+	fixtureUnsealKeyHex = freshKeyHex()
+	fixtureRootKeyHex   = freshKeyHex()
+)
 
+// freshKeyHex returns 32 bytes from crypto/rand, hex-encoded.
+func freshKeyHex() string {
+	k := make([]byte, 32)
+	_, _ = rand.Read(k) // crypto/rand.Read never returns an error; it crashes the program instead
+	return hex.EncodeToString(k)
+}
+
+const (
 	// fixtureRootKeyPath feeds the AAD.
 	fixtureRootKeyPath = "core/seal/root-key"
 

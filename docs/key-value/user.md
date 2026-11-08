@@ -114,6 +114,13 @@ they report is the same number for the same key:
 | a put that returns what it wrote | `qrdb kv put <key> <value> --revision` | `MVCC().PutWithLease(ctx, key, value, 0)` |
 | a read with its metadata | `qrdb kv get <key> --revision` | `MVCC().GetRevision(ctx, key)` |
 | a batch of get operations | `qrdb batch execute --file ops.json` | `Batch().ExecuteBatch(ctx, ops)` with `get` ops |
+| a get inside a transaction branch | `qrdb tx execute --file tx.json` | `Transaction().ExecuteTransaction(ctx, req)` with `get` ops |
+
+A get in a transaction branch is answered inside the transaction, after its
+compares and any write staged before it in the same branch, so it reports what
+the transaction itself leaves. It needs the `mvcc` state machine and the
+cluster feature `transaction-reads`; see
+[../transactions/api.md](../transactions/api.md).
 
 A plain `kv put` and `kv get` return no version. With `raft.sm_type: mvcc`
 every call also reports the key's create and modification revisions. A daemon

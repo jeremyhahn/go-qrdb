@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"testing"
 	"time"
@@ -339,7 +340,7 @@ func TestList_PropagatesAnUndecodableStoredCertificate(t *testing.T) {
 
 func TestParseCertificates_SkipsNonCertificatePEMBlocks(t *testing.T) {
 	root := newRoot(t, "r")
-	bundle := append([]byte("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n"), EncodePEM(root.cert)...)
+	bundle := append(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: make([]byte, 3)}), EncodePEM(root.cert)...)
 	certs, err := ParseCertificates(bundle)
 	if err != nil || len(certs) != 1 {
 		t.Fatalf("ParseCertificates with a leading non-certificate block = %v, %v; want the certificate alone", certs, err)

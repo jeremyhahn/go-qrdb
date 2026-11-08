@@ -98,7 +98,7 @@ cat > "${WORK}/agent-git.sh" <<'WRAPPER'
 #
 # It derives its identity from the repo name it is HANDED, exactly as the real
 # wrapper does. That is what makes "the release commit is authored by
-# agent-go-qrdb" a real assertion about the argument the recipe passed, rather
+# the repo's own agent" a real assertion about the argument the recipe passed, rather
 # than a restatement of how the fixture was configured.
 set -eu
 

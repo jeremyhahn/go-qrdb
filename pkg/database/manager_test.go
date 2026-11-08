@@ -657,6 +657,25 @@ func TestManager_Close_Idempotent(t *testing.T) {
 	}
 }
 
+// TestManager_Close_ClosesSealedDatabases pins that Manager.Close releases a
+// sealed database's backend, not only the open ones.
+func TestManager_Close_ClosesSealedDatabases(t *testing.T) {
+	mgr := newTestManager(t)
+
+	db, err := mgr.Create(validMemoryConfig("sealed-close-db"))
+	if err != nil {
+		t.Fatalf("Create(): %v", err)
+	}
+	db.SetStatus(StatusSealed)
+
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close() returned unexpected error for sealed database: %v", err)
+	}
+	if db.Status() != StatusClosed {
+		t.Errorf("Status() after Manager.Close() = %q, want %q", db.Status(), StatusClosed)
+	}
+}
+
 func TestManager_Create_RecordsInTheCatalog(t *testing.T) {
 	dataDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

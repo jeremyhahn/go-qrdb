@@ -59,11 +59,19 @@ Keys and values are JSON strings, sent as their bytes.
 compare reads the field of the same name (`version`, `create_revision`,
 `mod_revision` or `value`).
 `result`: `equal` · `greater` · `less` · `not_equal`.
-op `type`: `put` · `delete`. `get` and `range` parse but are refused in a
-transaction or batch branch (`UnsupportedTransactionOpError`: REST 400,
-gRPC/Unix/QUIC/MCP `INVALID_ARGUMENT`); read the keys after the transaction
-commits. An unrecognised string is not refused: `target` falls back to
-`version`, `result` to `equal`, and `type` to `put`.
+op `type`: `put` · `delete` · `get` · `range`. A `get` reads `key`; a `range`
+reads `[key, range_end)`. A `get` that carries a `range_end` is refused whole
+as an invalid argument (`TransactionGetRangeEndError`) and nothing is read. A read in a transaction branch is answered inside
+the transaction, after the compares and the writes staged before it in the
+same branch, and needs an MVCC state machine (`--state-machine mvcc`) and the
+cluster feature `transaction-reads`; before that feature is active the
+transaction is refused whole (`feature.NotActiveError`: REST 503,
+gRPC/Unix/QUIC/MCP `UNAVAILABLE`), and nothing is applied. An unrecognised
+`target` falls back to `version` and `result` to `equal`; an unrecognised op
+`type`, in a transaction or a batch, is refused before anything is proposed
+rather than read as a write: REST 400 (`UnknownOpTypeError`), gRPC/Unix/QUIC
+`INVALID_ARGUMENT` for an unknown `OpType` enum value
+(`UnsupportedTransactionOpError`), MCP a tool error (`UnknownOpTypeError`).
 
 Response — `TransactionResponse`:
 
@@ -71,9 +79,18 @@ Response — `TransactionResponse`:
 {
   "succeeded": true,
   "revision": 4711,
-  "responses": [ { "kvs": [], "count": 0, "succeeded": true } ]
+  "responses": [
+    { "kvs": [], "count": 0, "succeeded": true },
+    { "kvs": [ { "key": "k1", "value": "v1", "create_revision": 4702,
+                 "mod_revision": 4711, "version": 3, "lease": 0 } ],
+      "count": 1, "succeeded": true }
+  ]
 }
 ```
+
+`responses` holds one entry per op of the branch that ran, in order. A write's
+entry carries no `kvs`; a read's carries the keys it found, with their MVCC
+metadata, and `count`. An absent key answers `count: 0`.
 
 `POST /batch` — `{"ops": [Op, ...]}`, response
 `{"revision": 4712, "responses": [OpResponse, ...]}`. `revision` is the single
@@ -123,6 +140,7 @@ Response is empty on success (`204`).
 | A session's byte, chunk-count, or per-tenant concurrency quota is exceeded | 429 | `RESOURCE_EXHAUSTED` |
 | A `--transactional` import commit fails (`ImportTransactionAbortedError`) | 409 | `ABORTED` |
 | An import proposal or an expanded archive exceeds its bound (`ImportProposalTooLargeError`, `ImportArchiveExpandedTooLargeError`) | 413 | `RESOURCE_EXHAUSTED` |
+| A transaction branch's reads answer more than 4 MiB (`TxnReadResultTooLargeError`) | 413 | `RESOURCE_EXHAUSTED` |
 | An import session's stored state is corrupt (`ImportSessionCorruptError`) | 500 | `INTERNAL` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Barrier sealed | 503 | `UNAVAILABLE` |
@@ -147,11 +165,32 @@ chunk count are bounded by `import_session.max_session_bytes` /
 `max_chunks_per_session` (see [engineering.md](engineering.md)), and a
 tenant's concurrent sessions by `import_session.max_sessions_per_tenant`.
 
+A transaction's reply is bounded too. The whole encoded reply of the
+chosen branch may not exceed 4 MiB (`service.MaxReplyBytes`), the largest
+reply one node relays to another: a transaction forwarded from a node that
+holds no replica comes back through the gRPC forwarder, whose receive limit
+is the same 4 MiB. The reply is charged its framing -- 13 bytes, plus 19 for
+every op of the branch, reads and writes alike -- and, for every entry a get
+or range answers, 62 bytes plus the entry's key and value. These are the
+largest the protobuf `TransactionResponse` fields can encode to, so the
+charge is never less than the encoded reply. The bound is fixed, not
+configurable: every replica applies the transaction and must decide it the
+same way. It is checked before any write of the branch is applied, and each
+read is charged its entries plus every earlier put of the branch that falls
+in its range -- an upper bound, so a branch that overwrites a key it reads
+can be refused slightly short of 4 MiB. A range stops scanning at the entry
+that crosses the bound. A branch over it is refused whole with
+`TxnReadResultTooLargeError`, which names the limit and the reply bytes
+charged when it was crossed: none of its writes is applied, the revision
+does not move, and the group keeps applying the entries after it. Read
+fewer or smaller keys, or use fewer ops, per transaction, or page a large
+range outside one.
+
 ## Pagination
 
 No capability on this page returns an unbounded result set: a
-transaction's responses are bounded by the ops submitted, and an import's
-errors are bounded by its rows. No pagination applies.
+transaction's reply is bounded at 4 MiB (see "Payload limits"), and an
+import's errors are bounded by its rows. No pagination applies.
 
 ## Versioning
 

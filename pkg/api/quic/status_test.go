@@ -374,6 +374,7 @@ var conditions = []conditionRow{
 	{"import row count over the bound", &service.ImportTooManyRowsError{Max: 10}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"import archive expands too far", &service.ImportArchiveExpandedTooLargeError{Max: 10}, wire.StatusResourceExhausted, codes.ResourceExhausted},
 	{"import proposal too large", &service.ImportProposalTooLargeError{Max: 10}, wire.StatusResourceExhausted, codes.ResourceExhausted},
+	{"transaction reads too large", &service.TxnReadResultTooLargeError{Limit: 10, Read: 11}, wire.StatusResourceExhausted, codes.ResourceExhausted},
 	{"replica count below the floor", &service.ReplicaFloorError{Database: "d", Requested: 0}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"database is not dedicated raft", &service.NotDedicatedRaftDatabaseError{Database: "d"}, wire.StatusInvalidArgument, codes.InvalidArgument},
 	{"transaction op unsupported", &service.UnsupportedTransactionOpError{}, wire.StatusInvalidArgument, codes.InvalidArgument},

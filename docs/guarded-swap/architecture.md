@@ -37,23 +37,20 @@ the next decision.
 ### Why the read is not part of the transaction
 
 The obvious optimisation — `failureOps: [Get(key)]`, so a refused guard reports
-what beat it in the same round trip — is not available. **Transaction branches
-carry writes only.** `pkg/service`'s `opTypeMap` maps `OpPut` and `OpDelete`,
-and `encodeServiceOp` fails closed on anything else with
-`UnsupportedTransactionOpError` before the command reaches Raft. A transaction
-containing a read is rejected in full: no compare is evaluated and nothing is
-applied.
-
-That is a deliberate property of the transaction plane, not an oversight —
-defaulting an unmapped op type to a write would let a caller's read request
-overwrite the target key with an empty value. Reads therefore go through
-`GetRevision`, the supported linearizable read, which returns the value and its
-`ModRevision` together and so costs nothing the guard needs.
+what beat it in the same round trip — is not taken. A transaction branch can
+read (see [transactions](../transactions/architecture.md)), but only on an MVCC
+state machine and only once the cluster feature `transaction-reads` is active;
+before then the whole transaction is refused. GuardedSwap runs over every
+state machine and must work on a cluster that has not activated the feature,
+so its reads go through `GetRevision`, the linearizable read every backend
+supports, which returns the value and its `ModRevision` together and so costs
+nothing the guard needs.
 
 `sdk/go/guardedswap_service_test.go` exercises the loop against the real
-`TransactionService` and `MVCCKVService`, and pins the refusal directly: an
-in-memory fake that implemented reads production refuses would pass a loop that
-production rejects.
+`TransactionService` and `MVCCKVService`, and shows that the service answers a
+read in either branch on MVCC; the transaction-plane fakes in
+`sdk/go/guardedswap_plane_test.go` refuse reads, so a GuardedSwap that began
+reading through a transaction would fail there.
 
 ## Decisions
 

@@ -337,7 +337,7 @@ CMD ["sleep", "infinity"]
 #
 # THE TOKEN STAYS BUILD-TIME. The obvious alternative -- point those four at
 # `toolchain` and let them `go mod download` at run time -- needs
-# GITEA_GO_TOKEN in each service's runtime `environment:`, where `docker
+# MODULE_FORGE_TOKEN in each service's runtime `environment:`, where `docker
 # inspect` and /proc/<pid>/environ can read it for the life of the container.
 # #326 had just finished removing the token from a mode-600 file; widening its
 # runtime exposure from two services to four is the same defect in the other

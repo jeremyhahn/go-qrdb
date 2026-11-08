@@ -26,14 +26,15 @@ import (
 // errPlaneReadOp is what both fakes return for a read operation in a
 // transaction branch.
 //
-// The real service refuses those: pkg/service's opTypeMap carries OpPut and
-// OpDelete only, and encodeServiceOp fails closed on anything else before the
-// command reaches Raft. An earlier revision of GuardedSwap read through the
-// transaction plane and passed every test here, because these fakes had
-// helpfully IMPLEMENTED the reads production rejects — a fake more permissive
-// than the thing it stands in for tests a store that does not exist. They now
-// refuse the same operations for the same reason, and
-// guardedswap_service_test.go pins the behaviour against the real service.
+// GuardedSwap must not read through the transaction plane. An earlier
+// revision did, when the real service refused every read in a branch, and
+// passed every test here because these fakes had helpfully IMPLEMENTED the
+// reads production rejected — a fake more permissive than the thing it stands
+// in for tests a store that does not exist. The service now answers reads in
+// a branch only on the MVCC engine and only once the transaction-reads feature
+// is active, so GuardedSwap still reads outside the transaction, and these
+// fakes refuse a read so a regression that reintroduces one fails here.
+// guardedswap_service_test.go pins what the real service does.
 var errPlaneReadOp = fmt.Errorf("fake plane: transaction branches carry writes only")
 
 // fakeTxnPlane is an in-memory transaction plane that evaluates compares the

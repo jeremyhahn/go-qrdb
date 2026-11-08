@@ -84,10 +84,6 @@ var leanStandaloneForbidden = []leanRule{
 // gate, and so does a listed edge the fixture no longer has -- delete it in the
 // change that removes it, so the table only shrinks.
 var leanStandaloneEdges = map[string]bool{
-	// The API-module registry types the chi router and the MCP server.
-	"pkg/apimodule -> github.com/go-chi/chi/v5":           true,
-	"pkg/apimodule -> github.com/mark3labs/mcp-go/server": true,
-
 	// Sealed-window contract types.
 	"pkg/auth -> pkg/api/sealedwindow": true,
 
@@ -108,8 +104,6 @@ var leanStandaloneEdges = map[string]bool{
 	// Cluster feature gates and membership.
 	"pkg/clusterenroll -> pkg/cluster/featuregate": true,
 	"pkg/clusterseal -> pkg/cluster/featuregate":   true,
-	"pkg/joinadvertise -> pkg/cluster":             true,
-	"pkg/joinadvertise -> pkg/cluster/featuregate": true,
 	"pkg/replicaforward -> pkg/cluster":            true,
 
 	// The per-database barrier WAL is quicraft logdb on pebble, opened through
@@ -143,10 +137,6 @@ var leanStandaloneEdges = map[string]bool{
 	// Vector and time-series engines.
 	"pkg/statemachine -> pkg/timeseries":  true,
 	"pkg/statemachine -> pkg/vector/hnsw": true,
-
-	// The object-store backend, compiled by server/lifecycle.
-	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/common":  true,
-	"pkg/storage/objstore -> github.com/jeremyhahn/go-objstore/pkg/factory": true,
 
 	// The pebble storage backend, compiled by every node.
 	"pkg/storage/pebble -> github.com/cockroachdb/pebble/v2":         true,
@@ -233,17 +223,31 @@ func isLeanStandaloneForbidden(path string, forbidden []leanRule) bool {
 }
 
 // forbiddenEdges returns every edge from a package that is not forbidden to
-// one that is. An edge between two forbidden packages is not reported: it
-// disappears with the edge that reaches the first of them.
-func forbiddenEdges(pkgs []listedPackage, forbidden []leanRule) map[string]bool {
-	edges := map[string]bool{}
+// one that is, counting only the packages root reaches without passing
+// through a forbidden one. An edge between two forbidden packages is not
+// reported, nor is an edge from a package that only forbidden packages
+// import: each disappears with the edge that reaches the first forbidden
+// package on its path.
+func forbiddenEdges(pkgs []listedPackage, root string, forbidden []leanRule) map[string]bool {
+	byPath := make(map[string]listedPackage, len(pkgs))
 	for _, p := range pkgs {
-		if p.Standard || isLeanStandaloneForbidden(p.ImportPath, forbidden) {
+		byPath[p.ImportPath] = p
+	}
+	edges := map[string]bool{}
+	seen := map[string]bool{root: true}
+	for queue := []string{root}; len(queue) > 0; queue = queue[1:] {
+		p, ok := byPath[queue[0]]
+		if !ok || p.Standard {
 			continue
 		}
 		for _, imp := range p.Imports {
 			if isLeanStandaloneForbidden(imp, forbidden) {
 				edges[trimLocalModule(p.ImportPath)+" -> "+trimLocalModule(imp)] = true
+				continue
+			}
+			if !seen[imp] {
+				seen[imp] = true
+				queue = append(queue, imp)
 			}
 		}
 	}
@@ -305,17 +309,20 @@ func TestLeanStandaloneEdgeDetection(t *testing.T) {
 	forbidden := []leanRule{{path: localModule + "/pkg/api", self: true, subpackages: true}, {path: "example.com/heavy", self: true, subpackages: true}}
 	graph := []listedPackage{
 		{ImportPath: "fmt", Standard: true, Imports: []string{"example.com/heavy"}},
-		{ImportPath: localModule + "/sdk/go", Imports: []string{localModule + "/pkg/api/rest", localModule + "/pkg/apimodule"}},
+		{ImportPath: localModule + "/sdk/go", Imports: []string{"fmt", localModule + "/pkg/api/rest", localModule + "/pkg/apimodule", "example.com/third"}},
 		{ImportPath: localModule + "/pkg/apimodule", Imports: []string{"example.com/heavy/sub", "example.com/heavyweight"}},
-		{ImportPath: localModule + "/pkg/api/rest", Imports: []string{"example.com/heavy"}},
+		{ImportPath: localModule + "/pkg/api/rest", Imports: []string{"example.com/heavy", "example.com/behindrest"}},
 		{ImportPath: "example.com/third", Imports: []string{localModule + "/pkg/api"}},
+		// Only a forbidden package imports it, so its edge goes with that one.
+		{ImportPath: "example.com/behindrest", Imports: []string{"example.com/heavy"}},
+		{ImportPath: "example.com/unreached", Imports: []string{"example.com/heavy"}},
 	}
 	want := []string{
 		"example.com/third -> pkg/api",
 		"pkg/apimodule -> example.com/heavy/sub",
 		"sdk/go -> pkg/api/rest",
 	}
-	got := sortedKeys(forbiddenEdges(graph, forbidden))
+	got := sortedKeys(forbiddenEdges(graph, localModule+"/sdk/go", forbidden))
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
 	}
@@ -367,12 +374,13 @@ func TestLeanStandaloneForbiddenRaftEngine(t *testing.T) {
 		}
 	}
 	graph := []listedPackage{
+		{ImportPath: leanStandaloneFixture, Imports: []string{localModule + "/pkg/seal", localModule + "/pkg/backend"}},
 		{ImportPath: localModule + "/pkg/seal", Imports: []string{qr + "/seal", qr + "/crypto/shamir"}},
 		{ImportPath: localModule + "/pkg/backend", Imports: []string{qr, qr + "/sm"}},
 		{ImportPath: qr, Imports: []string{qr + "/internal/engine", qr + "/seal"}},
 	}
 	want := []string{"pkg/backend -> " + qr}
-	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneFixture, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
 	}
 }
@@ -393,6 +401,7 @@ func TestLeanStandaloneForbiddenAPISubpackages(t *testing.T) {
 		}
 	}
 	graph := []listedPackage{
+		{ImportPath: leanStandaloneFixture, Imports: []string{localModule + "/pkg/mvcc", localModule + "/sdk/go/transport/embedded"}},
 		{ImportPath: localModule + "/pkg/mvcc", Imports: []string{api}},
 		{ImportPath: localModule + "/sdk/go/transport/embedded", Imports: []string{api, api + "/dbwire"}},
 		{ImportPath: api, Imports: []string{api + "/errclass"}},
@@ -401,7 +410,7 @@ func TestLeanStandaloneForbiddenAPISubpackages(t *testing.T) {
 		"pkg/api -> pkg/api/errclass",
 		"sdk/go/transport/embedded -> pkg/api/dbwire",
 	}
-	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := sortedKeys(forbiddenEdges(graph, leanStandaloneFixture, leanStandaloneForbidden)); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("forbiddenEdges:\ngot  %q\nwant %q", got, want)
 	}
 }
@@ -424,7 +433,7 @@ func TestLeanStandaloneImportGraph(t *testing.T) {
 		}
 	}
 
-	got := forbiddenEdges(pkgs, leanStandaloneForbidden)
+	got := forbiddenEdges(pkgs, leanStandaloneFixture, leanStandaloneForbidden)
 	var unexpected, stale []string
 	for _, e := range sortedKeys(got) {
 		if !leanStandaloneEdges[e] {

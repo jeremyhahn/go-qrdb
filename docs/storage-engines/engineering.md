@@ -246,7 +246,7 @@ every failed-open path: go-objstore backends take what they need during
 configuration and retain no handle. Before reading any file, `objstore.New`
 refuses a reference the provider would ignore with an
 `objstore.CredentialIgnoredError` naming the provider, the credential and the
-file: at the pinned go-objstore v0.7.0-alpha, `s3` reads the key and the
+file: at the pinned go-objstore v0.9.0-alpha, `s3` reads the key and the
 secret, `azure` reads only the secret (as the account key), and `gcs` (Google
 application default credentials), `local` and `memory` read none. Accepting
 such a reference would open the store under the provider's ambient identity

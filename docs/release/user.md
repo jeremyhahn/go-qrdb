@@ -72,8 +72,8 @@ is available; nothing is installed on the host.
 | `make docker-build` | builds the `toolchain` and `integration` stages, with the versions in `scripts/tool-pins.sh` |
 | `make -s toolchain-image` | prints the toolchain image's tag |
 | `make docker-run CMD='make test'` | runs one command in the toolchain image, this checkout bind-mounted, as your uid, with no network |
-| `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them. It builds the image first; given a digest `IT_IMAGE` (`...@sha256:<hex>`, as CI passes) it builds nothing and requires that image already pulled |
-| `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and its hold on the image (`IT_HOLD`, empty off CI), and keeps the image, which later runs of the same tree reuse |
+| `make integration-test IT_FEATURE=<feature>` | runs one feature's integration suites in the hardened integration container; without `IT_FEATURE`, all of them. It builds the image first; with `IT_PREBUILT=1` (as CI passes, after loading `docker-build`'s artifact) or a digest `IT_IMAGE` (`...@sha256:<hex>`) it builds nothing and requires that image already on the daemon |
+| `make docker-down-it` | removes an integration run's stack (`IT_PROJECT`) and keeps the image, which later runs of the same tree reuse |
 | `make -s it-image` | prints the integration image's content-addressed name, `qrdb-ci-it:<hash>` (`IT_IMAGE`) |
 | `make deps-check` | fails when a direct requirement is behind a latest release at least seven days old with no reason in its `go.mod`; a younger release is reported, not failed |
 
@@ -129,7 +129,7 @@ the next PATCH version rather than trying to retarget the tag:
 | Job | Typical cause |
 |---|---|
 | `validate` | the tag, VERSION or CHANGELOG drifted from what `release-alpha` checked locally (should not happen if it ran to completion), or a lockstep tag never arrived in ten attempts, three seconds apart |
-| `gate` | the tagged tree fails a build/lint/test check that passed on `main` moments earlier — investigate the runner and the checkout before assuming the code regressed |
+| `gate`, `gate-sweeps`, `gate-tags`, `coverage`, `coverage-merge` | the tagged tree fails a build/lint/test check that passed on `main` moments earlier — investigate the runner and the checkout before assuming the code regressed; a `coverage` leg's failure names its leg, and `coverage-merge` fails on the repo-wide total or a package below its baseline |
 | `publish` | a release artifact failed to build (nothing is published), or the forge's releases API rejected the request (for example, a release for this tag already exists) |
 
 ## Release artifacts

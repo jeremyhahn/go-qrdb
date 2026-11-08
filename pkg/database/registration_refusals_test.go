@@ -133,7 +133,7 @@ func TestDatabaseErrors_MessagesAndUnwrap(t *testing.T) {
 		t.Fatalf("RaftWALMarkerError = %q", marker.Error())
 	}
 	known := &RaftWALFormatError{Dir: "/wal", Found: WALFormat("plaintext"), Want: WALFormat("barrier")}
-	if msg := known.Error(); !strings.Contains(msg, "written as plaintext") || !strings.Contains(msg, "writes barrier") {
+	if msg := known.Error(); !strings.Contains(msg, "written as plaintext") || !strings.Contains(msg, "writes barrier") || !strings.Contains(msg, "/wal") || !strings.Contains(msg, "empty WAL directory") {
 		t.Fatalf("RaftWALFormatError = %q", msg)
 	}
 	unmarked := &RaftWALFormatError{Dir: "/wal", Want: WALFormat("barrier")}

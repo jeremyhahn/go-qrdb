@@ -135,10 +135,11 @@ type OpType = lock.OpType
 
 // Op type constants — alias the canonical pkg/lock values.
 var (
-	OpPut    = lock.OpPut
-	OpGet    = lock.OpGet
-	OpDelete = lock.OpDelete
-	OpRange  = lock.OpRange
+	OpPut     = lock.OpPut
+	OpGet     = lock.OpGet
+	OpDelete  = lock.OpDelete
+	OpRange   = lock.OpRange
+	OpUnknown = lock.OpUnknown
 )
 
 // Op is a single operation within a transaction or batch.
@@ -166,13 +167,18 @@ type RangeOptions = lock.RangeOptions
 // The canonical definition lives in pkg/lock.
 type RangeOption = lock.RangeOption
 
+// RangeResultTooLargeError reports a range that crossed its
+// WithMaxResultBytes bound.
+type RangeResultTooLargeError = lock.ResultTooLargeError
+
 // Range option constructors — delegate to pkg/lock.
 var (
-	WithLimit         = lock.WithLimit
-	WithRevision      = lock.WithRevision
-	WithCountOnly     = lock.WithCountOnly
-	WithKeysOnly      = lock.WithKeysOnly
-	ApplyRangeOptions = lock.ApplyRangeOptions
+	WithLimit          = lock.WithLimit
+	WithRevision       = lock.WithRevision
+	WithCountOnly      = lock.WithCountOnly
+	WithKeysOnly       = lock.WithKeysOnly
+	WithMaxResultBytes = lock.WithMaxResultBytes
+	ApplyRangeOptions  = lock.ApplyRangeOptions
 )
 
 // SortOrder specifies the sort direction for range results.

@@ -407,6 +407,32 @@ func TestBatchService_Execute_ProposeError(t *testing.T) {
 	}
 }
 
+// An op type no service maps refuses the whole batch before anything is
+// proposed, rather than being dropped while the other ops apply.
+func TestBatchService_Execute_UnknownOpTypeRefusesTheBatch(t *testing.T) {
+	for _, opType := range []OpType{OpUnknown, OpType(0xEE)} {
+		proposed := false
+		host := &mockHost{
+			syncProposeFn: func(_ context.Context, _ uint64, _ []byte) (sm.Result, error) {
+				proposed = true
+				return sm.Result{}, nil
+			},
+		}
+		svc := NewBatchService(host, 1)
+		_, err := svc.Execute(context.Background(), []Op{
+			{Type: OpPut, Key: []byte("k"), Value: []byte("v")},
+			{Type: opType, Key: []byte("k2"), Value: []byte("v2")},
+		})
+		var unsupported *UnsupportedTransactionOpError
+		if !errors.As(err, &unsupported) || unsupported.OpType != opType {
+			t.Fatalf("type %d: err = %v, want *UnsupportedTransactionOpError", opType, err)
+		}
+		if proposed {
+			t.Fatalf("type %d: the batch was proposed", opType)
+		}
+	}
+}
+
 func TestBatchService_Execute_OpWithLeaseID(t *testing.T) {
 	host := &mockHost{
 		syncProposeFn: func(_ context.Context, _ uint64, cmd []byte) (sm.Result, error) {

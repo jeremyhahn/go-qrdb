@@ -81,9 +81,9 @@ services:
       GOTOOLCHAIN: local
       GOFLAGS: -mod=readonly
       GOPROXY: "off"
-      # The cluster suites' raft timing is tuned for eight Ps, whatever the
-      # runner host has (#682).
-      GOMAXPROCS: "8"
+      # Empty is Go's default, the container's CPU limit; the Makefile's
+      # IT_GOMAXPROCS pins a count (#682 tuned the cluster suites on 8).
+      GOMAXPROCS: ${QRDB_IT_GOMAXPROCS:-}
       HOME: /tmp
 
   toolchain:

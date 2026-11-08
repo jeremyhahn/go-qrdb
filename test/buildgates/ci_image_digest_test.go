@@ -14,36 +14,40 @@
 
 package buildgates
 
-// ci.yml takes the CI images by one of two paths, chosen by the workflow env
-// CI_PUBLISH, which is true on a push to main alone (claude-agents#329):
+// ci.yml builds the CI images once, in docker-build, and hands them to every
+// job that runs a stage in them as workflow artifacts (scripts/ci-image.sh,
+// DS-7377). A GitHub-hosted runner is an ephemeral VM exclusive to one job,
+// so nothing one job builds is on another's daemon:
 //
-//   - publish: docker-build pushes the images to the forge's registry and
-//     outputs their digest references, toolchain_ref and it_ref; every other
-//     job that runs a stage in an image pulls exactly that digest with
-//     scripts/ci-registry.sh (DS-3516);
-//   - local, on every other event: nothing logs in or pushes; each job takes
-//     the image from its own runner's daemon by content-hash tag, building it
-//     when missing, with scripts/ci-registry.sh local (ci-standard.md §9).
+//   - docker-build saves each image (`scripts/ci-image.sh save`), records its
+//     image ID as an output, and uploads the tar as the artifact
+//     toolchain-image or it-image;
+//   - every consumer downloads the artifact and loads it with
+//     `scripts/ci-image.sh load`, which refuses an image whose ID is not the
+//     one docker-build recorded;
+//   - on a push to main alone (CI_PUBLISH), docker-build also pushes both
+//     images to GHCR by digest with the run's GITHUB_TOKEN. Consumers still
+//     take the artifact, so a fork's pull request, whose token cannot write
+//     a package, runs the same path as main.
 //
 // Each property below is one edit from going false without anything else
 // noticing:
 //
-//   - a step that logs in, pushes or pulls, or holds the registry token, on a
-//     path other than a push to main: a pull request's run would publish or
-//     hold a write-scoped credential;
+//   - a step that logs in, pushes or pulls, or holds the registry token,
+//     anywhere but docker-build's publish step: a pull request's run would
+//     hold a write-scoped credential, or a consumer would run an image other
+//     than the one this commit built;
 //   - CI_PUBLISH widened past a push to main;
-//   - a consumer that checks the daemon for an image and rebuilds it inline
-//     (`docker image inspect || make docker-build-toolchain`, the form the
-//     registry replaced): on main it passes on the image it built, not the
-//     one docker-build pushed and the other jobs ran;
-//   - a consumer that reads an output other than a digest reference, runs an
-//     image it never pulled on main, or has no local path off main;
-//   - a job that runs a stage in an image (scripts/in-toolchain-image.sh,
-//     `make integration-test`) without being a consumer at all;
-//   - a consumer placed on docker-build's runner, which the registry exists
-//     to make unnecessary;
-//   - docker-build handing on a ref it never validated, or losing the
-//     packages permission its push needs.
+//   - a consumer that probes the daemon and rebuilds the image inline
+//     (`docker image inspect || make docker-build-toolchain`): the
+//     integration image upgrades its Alpine packages at build time, so a
+//     rebuild of the same commit can differ from the one the other jobs ran;
+//   - a consumer that runs a stage before it loads the image, loads a
+//     different artifact than it downloaded, checks the image against the
+//     other family's ID, reads a registry reference, or runs the integration
+//     stage without IT_PREBUILT=1 (which would let make build the image);
+//   - docker-build losing the save, the upload, or an output a consumer
+//     loads by.
 //
 // Every assertion is inside a loop over jobs, so a discovery floor on the
 // consumers keeps a parse that finds none from passing.
@@ -66,86 +70,79 @@ const (
 	// to main, pushes them.
 	digestProducer = "docker-build"
 
-	// digestRefPattern is the shape docker-build validates every output
-	// against before a consumer starts.
-	digestRefPattern = `^[^@ ]+@sha256:[0-9a-f]{64}$`
-
 	// digestConsumerFloor is a discovery floor, a count beneath the jobs
 	// digestConsumersWant names: a parse that finds too little fails on it
 	// before any name is compared.
 	digestConsumerFloor = 6
 
-	// ciPublishExpr is the one value CI_PUBLISH may have: a push to main.
-	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
-
-	// ciPublishIf and ciLocalIf are the two paths' step conditions; a step
-	// may AND further terms onto either (ciPublishTerm, ciLocalTerm).
+	// ciPublishIf is the publish step's condition; a step may AND further
+	// terms onto ciPublishTerm.
 	ciPublishIf   = "${{ env.CI_PUBLISH == 'true' }}"
-	ciLocalIf     = "${{ env.CI_PUBLISH != 'true' }}"
 	ciPublishTerm = "env.CI_PUBLISH == 'true'"
-	ciLocalTerm   = "env.CI_PUBLISH != 'true'"
 
-	// producerRunsOn is the one runs-on the producer may have (ruling 169):
-	// on the forge, a push to main (ciPublishExpr's condition, restated
-	// because runs-on cannot read env) runs on the release runner, the one
-	// runner holding the registry credential, and every other event on
-	// bigdisk; github.com keeps ubuntu-latest.
-	producerRunsOn = "${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || " +
-		"(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}"
+	// registryTokenExpr is the one credential the publish step may hold: the
+	// run's own token, which writes the repository owner's packages.
+	registryTokenExpr = "${{ secrets.GITHUB_TOKEN }}"
 )
 
-// releaseLabel matches a runs-on that can place a job on the release
-// runner: the bare label, or the label quoted in an expression.
-// digestConsumersWant names every ci.yml job that runs a docker-build image,
-// v1.27.0's lint-gates and five unit-suite jobs among them (ruling 211).
-// Discovery must find each one, and each must take its image both ways, so a
-// job the parse stops seeing, or one that loses either path, fails the gate.
+// digestConsumersWant names every ci.yml job that runs a docker-build image.
+// Discovery must find each one, and each must load its image from the
+// artifact, so a job the parse stops seeing fails the gate.
 var digestConsumersWant = []string{
-	"coverage", "coverage-fts", "fips", "image", "integration-features", "lint",
-	"lint-gates", "soak", "test-clusterproof", "test-sdk", "test-tags",
+	"coverage", "coverage-fts", "coverage-merge", "fips", "image", "integration-features",
+	"lint", "lint-gates", "soak", "test-clusterproof", "test-sdk", "test-tags",
 }
 
-var releaseLabel = regexp.MustCompile(`(^|')release('|$)`)
+// imageFamily is one image docker-build hands on: the artifact it travels
+// in, the outputs a consumer loads it by, the registry reference only the
+// publish path sets, and the stages that run in it.
+type imageFamily struct {
+	artifact string
+	image    string
+	id       string
+	ref      string
+	stage    *regexp.Regexp
+}
 
-// runnerCredential lists the names the release runner's env file exports, its
-// credential contract (ruling 173, claude-agents#329), which the forge push in
-// scripts/ci-registry.sh reads: an env entry under any of them, in the
-// workflow, a job or a step, would mask the runner's.
-var runnerCredential = []string{"RELEASE_REGISTRY", "RELEASE_REGISTRY_USER", "RELEASE_REGISTRY_TOKEN"}
-
-// digestOutputs maps the outputs a consumer may read, the digest
-// references, to the image family scripts/ci-registry.sh local builds for
-// each.
-var digestOutputs = map[string]string{"toolchain_ref": "toolchain", "it_ref": "it"}
+var imageFamilies = map[string]imageFamily{
+	"toolchain": {
+		artifact: "toolchain-image", image: "toolchain_image", id: "toolchain_id", ref: "toolchain_ref",
+		stage: regexp.MustCompile(`scripts/in-toolchain-image\.sh`),
+	},
+	"it": {
+		artifact: "it-image", image: "it_image", id: "it_id", ref: "it_ref",
+		stage: regexp.MustCompile(`make integration-test(-features)?\s`),
+	},
+}
 
 var (
 	producerOutputRef = regexp.MustCompile(`needs\.docker-build\.outputs\.([A-Za-z0-9_-]+)`)
-	registryPull      = regexp.MustCompile(`scripts/ci-registry\.sh pull "\$([A-Za-z_][A-Za-z0-9_]*)"`)
-	registryLocal     = regexp.MustCompile(`scripts/ci-registry\.sh local (toolchain|it) "\$[A-Za-z_][A-Za-z0-9_]*"`)
+	imageSave         = regexp.MustCompile(`scripts/ci-image\.sh save "\$[A-Za-z_][A-Za-z0-9_]*" "\$RUNNER_TEMP/([a-z-]+)"`)
+	imageLoad         = regexp.MustCompile(`scripts/ci-image\.sh load "\$RUNNER_TEMP/([a-z-]+)" "\$([A-Za-z_][A-Za-z0-9_]*)" "\$([A-Za-z_][A-Za-z0-9_]*)"`)
+	imagePush         = regexp.MustCompile(`scripts/ci-image\.sh push\s`)
 	imageRebuild      = regexp.MustCompile(`docker image inspect|docker (buildx )?build|make (-s )?docker-build|docker-build-(toolchain|it)`)
-	// registryAccess is every way a step reaches the registry with a
-	// credential: the script's push and pull, which log in, and the docker
-	// CLI's own login, push and pull.
-	registryAccess = regexp.MustCompile(`scripts/ci-registry\.sh (push|pull)\s|docker (login|push|pull)\s|docker/login-action`)
+	// registryAccess is every way a step reaches a registry with a
+	// credential: the script's push, which logs in, and the docker CLI's own
+	// login, push and pull.
+	registryAccess = regexp.MustCompile(`scripts/ci-image\.sh push\s|docker (login|push|pull)\s|docker/login-action`)
 )
 
-// imageStages maps each image family to the stages that run in it.
-var imageStages = map[string]*regexp.Regexp{
-	"toolchain": regexp.MustCompile(`scripts/in-toolchain-image\.sh`),
-	"it":        regexp.MustCompile(`make integration-test(-features)?\s`),
-}
+const (
+	uploadArtifactAction   = "actions/upload-artifact@"
+	downloadArtifactAction = "actions/download-artifact@"
+)
 
 type digestStep struct {
 	Name string            `yaml:"name"`
 	If   string            `yaml:"if"`
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
+	With map[string]string `yaml:"with"`
 	Env  map[string]string `yaml:"env"`
 }
 
 type digestJob struct {
 	If          string            `yaml:"if"`
-	RunsOn      string            `yaml:"runs-on"`
 	Needs       []string          `yaml:"needs"`
 	Permissions map[string]string `yaml:"permissions"`
 	Outputs     map[string]string `yaml:"outputs"`
@@ -165,12 +162,6 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	if err := yaml.Unmarshal(body, &wf); err != nil {
 		return []string{"ci.yml is not a workflow this gate can read: " + err.Error()}, nil
 	}
-	return workflowDigestProblems(wf, floor)
-}
-
-// workflowDigestProblems is digestProblems over an already parsed workflow,
-// so a case can mutate one job's steps and run the same checks.
-func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers []string) {
 	if v := strings.TrimSpace(wf.Env["CI_PUBLISH"]); v != ciPublishExpr {
 		problems = append(problems, "ci.yml's CI_PUBLISH is "+strconv.Quote(v)+"; want "+strconv.Quote(ciPublishExpr)+
 			": only a push to main logs in to the registry or pushes to it")
@@ -178,26 +169,20 @@ func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers [
 	if holdsRegistryToken(wf.Env) {
 		problems = append(problems, "ci.yml's workflow env holds the registry token: every step of every event would have it")
 	}
-	problems = append(problems, runnerCredentialProblems(wf)...)
 	producer, ok := wf.Jobs[digestProducer]
 	if !ok {
 		return append(problems, "ci.yml has no "+digestProducer+" job: nothing builds the CI images"), nil
 	}
 	problems = append(problems, producerProblems(producer)...)
 
-	names := make([]string, 0, len(wf.Jobs))
-	for name := range wf.Jobs {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
+	for _, name := range slices.Sorted(maps.Keys(wf.Jobs)) {
 		job := wf.Jobs[name]
-		problems = append(problems, publishOnlyProblems(name, job)...)
+		problems = append(problems, registryProblems(name, job)...)
 		if name == digestProducer {
 			continue
 		}
-		if releaseLabel.MatchString(strings.TrimSpace(job.RunsOn)) {
-			problems = append(problems, name+" runs on the release runner: only "+digestProducer+" does, and on a push to main alone")
+		if job.Permissions["packages"] == "write" {
+			problems = append(problems, name+" sets permissions packages: write: only "+digestProducer+" pushes a package")
 		}
 		read := map[string]bool{}
 		for _, v := range job.Env {
@@ -209,8 +194,8 @@ func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers [
 			for _, v := range s.Env {
 				markOutputs(read, v)
 			}
-			for family, re := range imageStages {
-				if _, seen := stage[family]; !seen && re.MatchString(s.Run) {
+			for family, f := range imageFamilies {
+				if _, seen := stage[family]; !seen && f.stage.MatchString(s.Run) {
 					stage[family] = i
 				}
 			}
@@ -231,147 +216,166 @@ func workflowDigestProblems(wf digestWorkflow, floor int) (problems, consumers [
 func producerProblems(job digestJob) []string {
 	var problems []string
 	if job.Permissions["packages"] != "write" {
-		problems = append(problems, digestProducer+" does not set permissions packages: write: its push would be refused")
+		problems = append(problems, digestProducer+" does not set permissions packages: write: its push to GHCR would be refused")
 	}
-	for out := range digestOutputs {
-		if !strings.Contains(job.Outputs[out], "steps.") {
-			problems = append(problems, digestProducer+" has no "+out+" output from a step: a consumer would pull nothing")
-		}
-	}
-	if v := strings.TrimSpace(job.RunsOn); v != producerRunsOn {
-		problems = append(problems, digestProducer+" runs on "+strconv.Quote(v)+"; want "+strconv.Quote(producerRunsOn)+
-			": a push to main publishes from the release runner alone, and no other event runs there")
-	}
-	var pushed, validated bool
+	saved, uploaded := map[string]bool{}, map[string]bool{}
+	var pushed bool
 	for _, s := range job.Steps {
-		if strings.Contains(s.Run, "scripts/ci-registry.sh push ") {
-			pushed = true
+		for _, m := range imageSave.FindAllStringSubmatch(s.Run, -1) {
+			saved[m[1]] = true
 		}
-		if strings.Contains(s.Run, digestRefPattern) {
-			validated = true
-			if !condHasTerm(s.If, ciPublishTerm) {
-				problems = append(problems, digestProducer+"'s step "+strconv.Quote(s.Name)+" validates the outputs under if: "+
-					strconv.Quote(s.If)+"; want "+ciPublishIf+": off main there is no digest to validate")
+		if strings.HasPrefix(s.Uses, uploadArtifactAction) {
+			name := s.With["name"]
+			if s.With["if-no-files-found"] != "error" {
+				problems = append(problems, digestProducer+"'s upload "+strconv.Quote(name)+
+					" does not set if-no-files-found: error: a missing tar would upload nothing and pass")
+			}
+			if !strings.HasSuffix(s.With["path"], "/"+name+"/image.tar") {
+				problems = append(problems, digestProducer+"'s upload "+strconv.Quote(name)+" uploads "+
+					strconv.Quote(s.With["path"])+"; want the tar scripts/ci-image.sh save wrote, <dir>/"+name+"/image.tar")
+			}
+			uploaded[name] = true
+		}
+		if imagePush.MatchString(s.Run) {
+			pushed = true
+			if v := strings.TrimSpace(s.Env["CI_REGISTRY_TOKEN"]); v != registryTokenExpr {
+				problems = append(problems, digestProducer+"'s step "+strconv.Quote(s.Name)+" pushes with CI_REGISTRY_TOKEN "+
+					strconv.Quote(v)+"; want "+registryTokenExpr+": the run's own token, never a stored credential")
 			}
 		}
 	}
 	if !pushed {
-		problems = append(problems, digestProducer+" does not push with scripts/ci-registry.sh")
+		problems = append(problems, digestProducer+" does not push with scripts/ci-image.sh push: main publishes no image")
 	}
-	if !validated {
-		problems = append(problems, digestProducer+" does not validate its outputs against "+strconv.Quote(digestRefPattern))
-	}
-	return problems
-}
-
-// runnerCredentialProblems holds ruling 173: no env entry in ci.yml, at the
-// workflow, a job or a step, sets a name of the release runner's credential
-// contract, because it would mask the value the runner's env file exports.
-func runnerCredentialProblems(wf digestWorkflow) []string {
-	var problems []string
-	check := func(where string, env map[string]string) {
-		for _, name := range runnerCredential {
-			if _, ok := env[name]; ok {
-				problems = append(problems, where+" sets "+name+": it masks the release runner's credential (ruling 173)")
+	for _, family := range slices.Sorted(maps.Keys(imageFamilies)) {
+		f := imageFamilies[family]
+		for _, out := range []string{f.image, f.id, f.ref} {
+			if !strings.Contains(job.Outputs[out], "steps.") {
+				problems = append(problems, digestProducer+" has no "+out+" output from a step: a consumer would load by nothing")
 			}
 		}
-	}
-	check("ci.yml's workflow env", wf.Env)
-	names := make([]string, 0, len(wf.Jobs))
-	for name := range wf.Jobs {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		job := wf.Jobs[name]
-		check(name+"'s job env", job.Env)
-		for _, s := range job.Steps {
-			check(name+"'s step "+strconv.Quote(s.Name), s.Env)
+		if !saved[f.artifact] {
+			problems = append(problems, digestProducer+" does not save the "+family+" image with "+
+				"`scripts/ci-image.sh save \"$IMAGE\" \"$RUNNER_TEMP/"+f.artifact+"\"`")
+		}
+		if !uploaded[f.artifact] {
+			problems = append(problems, digestProducer+" does not upload the artifact "+strconv.Quote(f.artifact)+
+				": no consumer could load the "+family+" image")
 		}
 	}
 	return problems
 }
 
-// publishOnlyProblems names every step of job that logs in, pushes or
-// pulls, or holds the registry token, without the publish condition: the
-// assertion that no pull_request path touches the registry.
-func publishOnlyProblems(name string, job digestJob) []string {
+// registryProblems names every step of job that logs in, pushes or pulls, or
+// holds the registry token, anywhere but docker-build under the publish
+// condition: no consumer reaches a registry, and no event but a push to main
+// does at all.
+func registryProblems(name string, job digestJob) []string {
 	var problems []string
 	if holdsRegistryToken(job.Env) {
-		problems = append(problems, name+"'s job env holds the registry token: its local path would have it too")
+		problems = append(problems, name+"'s job env holds the registry token: every step of every event would have it")
 	}
 	for _, s := range job.Steps {
 		if !registryAccess.MatchString(s.Run) && !registryAccess.MatchString(s.Uses) && !holdsRegistryToken(s.Env) {
 			continue
 		}
-		if !condHasTerm(s.If, ciPublishTerm) {
+		switch {
+		case name != digestProducer:
+			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" reaches a registry: a consumer takes "+
+				digestProducer+"'s artifact, never a registry image, so every event runs the image this commit built")
+		case !condHasTerm(s.If, ciPublishTerm):
 			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" reaches the registry under if: "+
-				strconv.Quote(s.If)+"; want "+ciPublishIf+": a pull request never logs in, pushes or pulls")
+				strconv.Quote(s.If)+"; want "+ciPublishIf+": a pull request never logs in or pushes")
 		}
 	}
 	return problems
 }
 
+// familyOf returns the image family whose output out is, and whether out is
+// the family's image, its ID or its registry reference.
+func familyOf(out string) (family, kind string, ok bool) {
+	for name, f := range imageFamilies {
+		switch out {
+		case f.image:
+			return name, "image", true
+		case f.id:
+			return name, "id", true
+		case f.ref:
+			return name, "ref", true
+		}
+	}
+	return "", "", false
+}
+
+// isImageArtifact reports whether name is the artifact of an image family.
+func isImageArtifact(name string) bool {
+	for _, f := range imageFamilies {
+		if f.artifact == name {
+			return true
+		}
+	}
+	return false
+}
+
+// boundOutput returns the docker-build output the variable v is bound to in
+// the step's env, or else the job's, and "" when it is bound to anything
+// else.
+func boundOutput(job digestJob, s digestStep, v string) string {
+	val, ok := s.Env[v]
+	if !ok {
+		val = job.Env[v]
+	}
+	m := producerOutputRef.FindStringSubmatch(val)
+	if m == nil || strings.TrimSpace(val) != "${{ needs.docker-build.outputs."+m[1]+" }}" {
+		return ""
+	}
+	return m[1]
+}
+
 func consumerProblems(name string, job digestJob, read map[string]bool, stage map[string]int) []string {
 	var problems []string
-	if strings.Contains(job.RunsOn, digestProducer) {
-		problems = append(problems, name+"'s runs-on "+strconv.Quote(job.RunsOn)+" follows "+digestProducer+
-			": a consumer takes its image on any runner and has no host affinity")
-	}
-	if len(read) > 0 {
-		if !slices.Contains(job.Needs, digestProducer) {
-			problems = append(problems, name+" reads "+digestProducer+"'s outputs but does not need it: they would be empty")
-		}
-		if p := job.Permissions["packages"]; p != "read" && p != "write" {
-			problems = append(problems, name+" does not set permissions packages: read: its pull would be refused")
-		}
+	if !slices.Contains(job.Needs, digestProducer) {
+		problems = append(problems, name+" runs or reads "+digestProducer+"'s images but does not need it: "+
+			"its outputs would be empty and its artifacts not yet uploaded")
 	}
 	families := map[string]bool{}
-	for out := range read {
-		family, ok := digestOutputs[out]
-		if !ok {
+	for _, out := range slices.Sorted(maps.Keys(read)) {
+		family, kind, ok := familyOf(out)
+		switch {
+		case !ok:
 			problems = append(problems, name+" reads "+digestProducer+".outputs."+out+
-				"; want only the digest references toolchain_ref, it_ref")
-			continue
+				"; want only the image tags and IDs it loads by")
+		case kind == "ref":
+			problems = append(problems, name+" reads "+digestProducer+".outputs."+out+
+				": a registry reference exists on main alone; a consumer loads the artifact on every event")
+		default:
+			families[family] = true
 		}
-		families[family] = true
 	}
 	for family := range stage {
 		families[family] = true
 	}
-	pulled, local := map[string]int{}, map[string]int{}
+	downloaded, loaded := map[string]int{}, map[string]int{}
 	for i, s := range job.Steps {
 		if imageRebuild.MatchString(s.Run) {
 			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" builds or probes for an image (\""+
-				firstLine(s.Run)+"\"): a consumer pulls docker-build's digest on main and builds through "+
-				"scripts/ci-registry.sh local off it, never inline")
+				firstLine(s.Run)+"\"): a consumer loads the image "+digestProducer+" built, never its own")
 		}
-		for _, m := range registryPull.FindAllStringSubmatch(s.Run, -1) {
-			v, ok := s.Env[m[1]]
-			if !ok {
-				v = job.Env[m[1]]
+		if art := s.With["name"]; strings.HasPrefix(s.Uses, downloadArtifactAction) && isImageArtifact(art) {
+			if want := "${{ runner.temp }}/" + art; strings.TrimSpace(s.With["path"]) != want {
+				problems = append(problems, name+" downloads "+strconv.Quote(art)+" to "+strconv.Quote(s.With["path"])+
+					"; want "+strconv.Quote(want)+", the directory its load reads")
 			}
-			out := producerOutputRef.FindStringSubmatch(v)
-			if out == nil || strings.TrimSpace(v) != "${{ needs.docker-build.outputs."+out[1]+" }}" {
-				problems = append(problems, name+" pulls $"+m[1]+", which is "+strconv.Quote(v)+
-					"; want it bound to a "+digestProducer+" digest output")
-				continue
-			}
-			if family, ok := digestOutputs[out[1]]; ok {
-				if _, seen := pulled[family]; !seen {
-					pulled[family] = i
-				}
+			if _, seen := downloaded[art]; !seen {
+				downloaded[art] = i
 			}
 		}
-		for _, m := range registryLocal.FindAllStringSubmatch(s.Run, -1) {
-			if !condHasTerm(s.If, ciLocalTerm) {
-				problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" builds locally under if: "+
-					strconv.Quote(s.If)+"; want "+ciLocalIf+": on main a consumer runs the digest docker-build pushed")
-				continue
-			}
-			if _, seen := local[m[1]]; !seen {
-				local[m[1]] = i
-			}
+		for _, m := range imageLoad.FindAllStringSubmatch(s.Run, -1) {
+			problems = append(problems, loadProblems(name, job, s, i, m, downloaded, loaded)...)
+		}
+		if imageFamilies["it"].stage.MatchString(s.Run) && !strings.Contains(s.Run, "IT_PREBUILT=1") {
+			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" runs the integration stage without "+
+				"IT_PREBUILT=1: make would build the image rather than run the one it loaded")
 		}
 	}
 	for _, family := range slices.Sorted(maps.Keys(families)) {
@@ -379,22 +383,41 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 		if !staged {
 			at = len(job.Steps)
 		}
-		if i, ok := local[family]; !ok || i > at {
-			problems = append(problems, name+" has no `scripts/ci-registry.sh local "+family+"` step under "+ciLocalIf+
-				" before its first "+family+" stage: off main it would run an image it never took")
+		if i, ok := loaded[family]; !ok || i > at {
+			problems = append(problems, name+" has no `scripts/ci-image.sh load` of the "+family+" image before its first "+
+				family+" stage: it would run an image it never took from "+digestProducer)
 		}
-		i, ok := pulled[family]
-		switch {
-		case !ok && tierCondition(job.If) == withoutDraftSkip(nightlyIf):
-			// A nightly job (nightlyIf, draft guard and schedule guard
-			// aside) never runs on a push to main: the local path is its
-			// only one.
-		case !ok:
-			problems = append(problems, name+" runs the "+family+" image but never pulls it with scripts/ci-registry.sh pull: "+
-				"on main it would run an image docker-build did not push")
-		case i > at:
-			problems = append(problems, name+" runs a "+family+" stage before it pulls the image the stage runs in")
-		}
+	}
+	return problems
+}
+
+// loadProblems checks one `scripts/ci-image.sh load <dir> "$IMAGE" "$ID"`
+// match m at step i: both variables bound to one family's outputs, the
+// directory that family's artifact, downloaded in an earlier step.
+func loadProblems(name string, job digestJob, s digestStep, i int, m []string,
+	downloaded, loaded map[string]int) []string {
+	where := name + "'s step " + strconv.Quote(s.Name)
+	imageOut, idOut := boundOutput(job, s, m[2]), boundOutput(job, s, m[3])
+	family, kind, ok := familyOf(imageOut)
+	if !ok || kind != "image" {
+		return []string{where + " loads $" + m[2] + ", which is not bound to a " + digestProducer + " image output"}
+	}
+	f := imageFamilies[family]
+	var problems []string
+	if idOut != f.id {
+		problems = append(problems, where+" checks the "+family+" image against $"+m[3]+" ("+strconv.Quote(idOut)+
+			"); want "+digestProducer+".outputs."+f.id+": the load would not prove which image it ran")
+	}
+	if m[1] != f.artifact {
+		problems = append(problems, where+" loads the "+family+" image from $RUNNER_TEMP/"+m[1]+
+			"; want $RUNNER_TEMP/"+f.artifact+", where its artifact downloads")
+	}
+	if d, ok := downloaded[f.artifact]; !ok || d > i {
+		problems = append(problems, where+" loads the "+family+" image before any download of the artifact "+
+			strconv.Quote(f.artifact))
+	}
+	if _, seen := loaded[family]; !seen && len(problems) == 0 {
+		loaded[family] = i
 	}
 	return problems
 }
@@ -452,67 +475,31 @@ func readCIWorkflowBytes(t *testing.T) []byte {
 	return b
 }
 
-func TestCIImageDigest_EveryConsumerPullsByDigest(t *testing.T) {
+func TestCIImageDigest_EveryConsumerLoadsTheArtifact(t *testing.T) {
 	problems, consumers := digestProblems(readCIWorkflowBytes(t), digestConsumerFloor)
 	for _, p := range problems {
 		t.Error(p)
 	}
 	for _, name := range digestConsumersWant {
 		if !slices.Contains(consumers, name) {
-			t.Errorf("%s is not a consumer of %s's images: the gate no longer checks how it takes its image", name, digestProducer)
+			t.Errorf("%s is not a consumer of %s's images: the parse stopped seeing it, or it no longer loads one",
+				name, digestProducer)
 		}
 	}
-	t.Logf("consumers of %s's images: %s", digestProducer, strings.Join(consumers, ", "))
-}
-
-// TestCIImageDigest_EveryNamedConsumerNeedsBothPaths drops each named
-// consumer's digest pull, then its local build, from the parsed ci.yml and
-// requires the gate to report that job. A nightly job has no pull to drop:
-// the local path is its only one.
-func TestCIImageDigest_EveryNamedConsumerNeedsBothPaths(t *testing.T) {
-	paths := map[string]*regexp.Regexp{"pull": registryPull, "local": registryLocal}
-	for _, name := range digestConsumersWant {
-		for _, path := range slices.Sorted(maps.Keys(paths)) {
-			t.Run(name+"/"+path, func(t *testing.T) {
-				var wf digestWorkflow
-				if err := yaml.Unmarshal(readCIWorkflowBytes(t), &wf); err != nil {
-					t.Fatalf("ci.yml does not parse: %v", err)
-				}
-				job, ok := wf.Jobs[name]
-				if !ok {
-					t.Fatalf("ci.yml has no %s job", name)
-				}
-				kept := slices.DeleteFunc(slices.Clone(job.Steps), func(s digestStep) bool {
-					return paths[path].MatchString(s.Run)
-				})
-				if len(kept) == len(job.Steps) {
-					if path == "pull" && tierCondition(job.If) == withoutDraftSkip(nightlyIf) {
-						return
-					}
-					t.Fatalf("%s has no %s step to drop", name, path)
-				}
-				job.Steps = kept
-				wf.Jobs[name] = job
-				problems, _ := workflowDigestProblems(wf, digestConsumerFloor)
-				if !slices.ContainsFunc(problems, func(p string) bool { return strings.HasPrefix(p, name+" ") }) {
-					t.Fatalf("%s without its %s step passed the gate: %v", name, path, problems)
-				}
-			})
-		}
-	}
+	t.Logf("consumers: %v", consumers)
 }
 
 // TestCIImageDigest_RevertedConsumerFails reverts one consumer of the real
-// ci.yml, in memory, to the probe-and-rebuild form this gate replaced, and
-// requires the gate to name it.
+// ci.yml, in memory, to the probe-and-rebuild form a self-hosted runner
+// allowed, and requires the gate to name it.
 func TestCIImageDigest_RevertedConsumerFails(t *testing.T) {
 	body := string(readCIWorkflowBytes(t))
-	const pull = `scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"`
-	const revert = `docker image inspect "$TOOLCHAIN_REF" >/dev/null 2>&1 || make docker-build-toolchain TOOLCHAIN_IMAGE="$TOOLCHAIN_REF"`
-	if !strings.Contains(body, pull) {
-		t.Fatalf("ci.yml has no %q to revert: the case tests nothing", pull)
+	const load = `scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"`
+	const revert = `docker image inspect "$IMAGE" >/dev/null 2>&1 || make docker-build-toolchain TOOLCHAIN_IMAGE="$IMAGE"`
+	if !strings.Contains(body, load) {
+		t.Fatalf("ci.yml has no %q to revert: the case tests nothing", load)
 	}
-	problems, _ := digestProblems([]byte(strings.Replace(body, pull, revert, 1)), digestConsumerFloor)
+	problems, _ := digestProblems([]byte(strings.Replace(body, load, revert, 1)), digestConsumerFloor)
 	if len(problems) == 0 {
 		t.Fatal("a consumer reverted to `docker image inspect || make docker-build-toolchain` passed the gate")
 	}
@@ -523,69 +510,94 @@ const digestFixture = `env:
   CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 jobs:
   docker-build:
-    runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk' }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     outputs:
+      toolchain_image: ${{ steps.build.outputs.toolchain_image }}
+      toolchain_id: ${{ steps.save.outputs.toolchain_id }}
+      it_image: ${{ steps.build.outputs.it_image }}
+      it_id: ${{ steps.save.outputs.it_id }}
       toolchain_ref: ${{ steps.push.outputs.toolchain_ref }}
       it_ref: ${{ steps.push.outputs.it_ref }}
     steps:
       - name: Build the images
-        run: make docker-build-toolchain
+        id: build
+        run: make docker-build
+      - name: Save
+        id: save
+        run: |
+          id=$(scripts/ci-image.sh save "$TOOLCHAIN_IMAGE" "$RUNNER_TEMP/toolchain-image")
+          id=$(scripts/ci-image.sh save "$IT_IMAGE" "$RUNNER_TEMP/it-image")
+      - name: Upload the toolchain image
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image/image.tar
+          retention-days: 1
+          if-no-files-found: error
+      - name: Upload the integration image
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image/image.tar
+          if-no-files-found: error
       - name: Push
         id: push
         if: ${{ env.CI_PUBLISH == 'true' }}
         env:
-          RUN_REGISTRY_TOKEN: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || '' }}
-        run: scripts/ci-registry.sh push "$TOOLCHAIN_IMAGE" qrdb-ci-toolchain "$TRUST"
-      - name: Validate
-        if: ${{ env.CI_PUBLISH == 'true' }}
-        run: re='^[^@ ]+@sha256:[0-9a-f]{64}$'
-  lint:
-    runs-on: bigdisk
-    needs: [changes, docker-build]
-    permissions:
-      contents: read
-      packages: read
-    steps:
-      - name: Pull the toolchain image
-        if: ${{ env.CI_PUBLISH == 'true' }}
-        env:
-          TOOLCHAIN_REF: ${{ needs.docker-build.outputs.toolchain_ref }}
+          CI_REGISTRY_USER: ${{ github.actor }}
           CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"
-      - name: Build or reuse the toolchain image
-        if: ${{ env.CI_PUBLISH != 'true' }}
-        run: image=$(scripts/ci-registry.sh local toolchain "$TOOLCHAIN_HOLD")
+        run: toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
+  lint:
+    runs-on: ubuntu-latest
+    needs: [changes, docker-build]
+    steps:
+      - name: Download the toolchain image
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+      - name: Load the toolchain image
+        env:
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
       - name: make lint
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make lint
   legs:
-    runs-on: bigdisk
+    runs-on: ubuntu-latest
     needs: [docker-build]
-    permissions:
-      packages: read
     steps:
-      - name: Pull the integration image
-        if: ${{ env.CI_PUBLISH == 'true' }}
+      - name: Download the integration image
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Load the integration image
         env:
-          IT_REF: ${{ needs.docker-build.outputs.it_ref }}
-          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci-registry.sh pull "$IT_REF" "$IT_HOLD"
-      - name: Build or reuse the integration image
-        if: ${{ env.CI_PUBLISH != 'true' }}
-        run: image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
       - name: Integration tests
-        run: make integration-test IT_FEATURE=audit
+        run: make integration-test IT_FEATURE=audit IT_PREBUILT=1
   soak:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    runs-on: bigdisk
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    env:
+      IMAGE: ${{ needs.docker-build.outputs.it_image }}
+      ID: ${{ needs.docker-build.outputs.it_id }}
     steps:
-      - name: Build or reuse the integration image
-        if: ${{ env.CI_PUBLISH != 'true' }}
-        run: image=$(scripts/ci-registry.sh local it "$IT_HOLD")
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Load
+        run: scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
       - name: Soak
-        run: make integration-test IT_FEATURE=clustering
+        run: make integration-test IT_FEATURE=clustering IT_PREBUILT=1
   typescript:
     runs-on: ubuntu-latest
     steps:
@@ -607,76 +619,78 @@ func TestCIImageDigest_FixtureIsValid(t *testing.T) {
 
 func TestCIImageDigest_CanFail(t *testing.T) {
 	const (
-		toolchainPullHead = "      - name: Pull the toolchain image\n        if: ${{ env.CI_PUBLISH == 'true' }}\n"
-		toolchainLocal    = "        if: ${{ env.CI_PUBLISH != 'true' }}\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"
-		token             = "CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}"
+		lintLoad = `run: scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"`
+		legsTest = "        run: make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"
 	)
 	for _, tc := range []struct{ name, old, new string }{
-		{name: "the probe-and-rebuild form", old: `run: scripts/ci-registry.sh pull "$TOOLCHAIN_REF" "$TOOLCHAIN_HOLD"`,
-			new: `run: docker image inspect "$TOOLCHAIN_REF" || make docker-build-toolchain`},
-		{name: "a rebuild beside the pull", old: "        run: make integration-test IT_FEATURE=audit\n",
-			new: "        run: make docker-build-it && make integration-test IT_FEATURE=audit\n"},
-		{name: "a buildx build", old: "        run: make integration-test IT_FEATURE=audit\n",
-			new: "        run: docker buildx build . && make integration-test IT_FEATURE=audit\n"},
-		{name: "a tag output", old: "outputs.it_ref }}\n          CI_REGISTRY", new: "outputs.it_image }}\n          CI_REGISTRY"},
-		{name: "an output read but not pulled", old: "        run: scripts/ci-registry.sh pull \"$IT_REF\" \"$IT_HOLD\"\n", new: "        run: echo \"$IT_REF\"\n"},
-		{name: "a pull of an unbound variable", old: `pull "$IT_REF" "$IT_HOLD"`, new: `pull "$OTHER" "$IT_HOLD"`},
-		{name: "a stage with no image output", old: "      - run: make test-typescript\n", new: "      - run: scripts/in-toolchain-image.sh qrdb-toolchain:latest make test\n"},
-		{name: "a stage before the pull and the local build", old: "      - name: Pull the toolchain image\n",
-			new: "      - name: make lint\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make lint\n      - name: Pull the toolchain image\n"},
+		{name: "the probe-and-rebuild form", old: lintLoad,
+			new: `run: docker image inspect "$IMAGE" || make docker-build-toolchain`},
+		{name: "a rebuild beside the load", old: legsTest,
+			new: "        run: make docker-build-it && make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"},
+		{name: "a buildx build", old: legsTest,
+			new: "        run: docker buildx build . && make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"},
+		{name: "a consumer pulls from the registry", old: legsTest,
+			new: "        if: ${{ env.CI_PUBLISH == 'true' }}\n        run: docker pull \"$IMAGE\" && make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"},
+		{name: "a consumer logs in", old: "      - name: make lint\n",
+			new: "      - name: Login\n        uses: docker/login-action@v3\n      - name: make lint\n"},
+		{name: "a consumer holds the token", old: "      - name: make lint\n",
+			new: "      - name: make lint\n        env:\n          GH: ${{ secrets.GITHUB_TOKEN }}\n"},
+		{name: "a consumer job env holds the token", old: "  lint:\n    runs-on: ubuntu-latest\n",
+			new: "  lint:\n    runs-on: ubuntu-latest\n    env:\n      CI_REGISTRY_TOKEN: x\n"},
+		{name: "a consumer reads a registry reference", old: "IMAGE: ${{ needs.docker-build.outputs.it_image }}\n          ID",
+			new: "IMAGE: ${{ needs.docker-build.outputs.it_ref }}\n          ID"},
+		{name: "a consumer reads an unknown output", old: "      - name: make lint\n",
+			new: "      - name: make lint\n        env:\n          R: ${{ needs.docker-build.outputs.runner }}\n"},
+		{name: "a load of an unbound variable", old: `"$RUNNER_TEMP/it-image" "$IMAGE" "$ID"`,
+			new: `"$RUNNER_TEMP/it-image" "$OTHER" "$ID"`},
+		{name: "the other family's ID", old: "          ID: ${{ needs.docker-build.outputs.toolchain_id }}",
+			new: "          ID: ${{ needs.docker-build.outputs.it_id }}"},
+		{name: "the other family's directory", old: lintLoad,
+			new: `run: scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"`},
+		{name: "a download to another directory", old: "          path: ${{ runner.temp }}/toolchain-image\n",
+			new: "          path: ${{ runner.temp }}/elsewhere\n"},
+		{name: "the wrong artifact downloaded", old: "          name: toolchain-image\n          path: ${{ runner.temp }}/toolchain-image\n",
+			new: "          name: it-image\n          path: ${{ runner.temp }}/it-image\n"},
+		{name: "a stage with no load", old: "      - run: make test-typescript\n",
+			new: "      - run: scripts/in-toolchain-image.sh qrdb-toolchain:latest make test\n"},
+		{name: "a stage before the load", old: "      - name: Download the toolchain image\n",
+			new: "      - name: make vet\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make vet\n      - name: Download the toolchain image\n"},
+		{name: "a load before the download", old: "    steps:\n      - uses: actions/download-artifact",
+			new: "    steps:\n      - name: Early\n        run: scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n      - uses: actions/download-artifact"},
+		{name: "the integration stage without IT_PREBUILT", old: legsTest,
+			new: "        run: make integration-test IT_FEATURE=audit\n"},
 		{name: "docker-build not needed", old: "needs: [changes, docker-build]", new: "needs: [changes]"},
-		{name: "host affinity", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: ${{ needs.docker-build.outputs.runner }}"},
-		{name: "no packages read", old: "    permissions:\n      packages: read\n", new: ""},
+		{name: "a consumer writes packages", old: "  lint:\n    runs-on: ubuntu-latest\n",
+			new: "  lint:\n    runs-on: ubuntu-latest\n    permissions:\n      packages: write\n"},
 		{name: "no packages write", old: "packages: write", new: "packages: read"},
-		{name: "no push", old: `scripts/ci-registry.sh push "$TOOLCHAIN_IMAGE"`, new: `scripts/ci-registry.sh tag "$TOOLCHAIN_IMAGE"`},
-		{name: "no validation", old: `re='^[^@ ]+@sha256:[0-9a-f]{64}$'`, new: `echo done`},
-		{name: "an output not from a step", old: "it_ref: ${{ steps.push.outputs.it_ref }}", new: "it_ref: qrdb-ci-it:latest"},
+		{name: "no save", old: `id=$(scripts/ci-image.sh save "$IT_IMAGE" "$RUNNER_TEMP/it-image")`, new: `echo saved`},
+		{name: "an upload that tolerates no file", old: "          path: ${{ runner.temp }}/it-image/image.tar\n          if-no-files-found: error\n",
+			new: "          path: ${{ runner.temp }}/it-image/image.tar\n"},
+		{name: "an upload of the wrong path", old: "path: ${{ runner.temp }}/it-image/image.tar",
+			new: "path: ${{ runner.temp }}/it-image"},
+		{name: "no upload", old: "          name: it-image\n          path: ${{ runner.temp }}/it-image/image.tar\n",
+			new: "          name: integration\n          path: ${{ runner.temp }}/integration/image.tar\n"},
+		{name: "an unconditional push", old: "        if: ${{ env.CI_PUBLISH == 'true' }}\n        env:\n          CI_REGISTRY_USER",
+			new: "        env:\n          CI_REGISTRY_USER"},
+		{name: "a push under a widened condition", old: "        if: ${{ env.CI_PUBLISH == 'true' }}\n        env:\n          CI_REGISTRY_USER",
+			new: "        if: ${{ env.CI_PUBLISH == 'true' || github.event_name == 'pull_request' }}\n        env:\n          CI_REGISTRY_USER"},
+		{name: "a stored credential", old: "CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}", new: "CI_REGISTRY_TOKEN: ${{ secrets.GHCR_PAT }}"},
+		{name: "no push", old: `scripts/ci-image.sh push "$TOOLCHAIN_IMAGE"`, new: `scripts/ci-image.sh tag "$TOOLCHAIN_IMAGE"`},
+		{name: "an output not from a step", old: "it_id: ${{ steps.save.outputs.it_id }}", new: "it_id: latest"},
+		{name: "no ref output", old: "      it_ref: ${{ steps.push.outputs.it_ref }}\n", new: ""},
 		{name: "no producer", old: "  docker-build:\n", new: "  docker-build-old:\n"},
-		{name: "a publish off the release runner", old: "'refs/heads/main') && 'release' || 'bigdisk' }}", new: "'refs/heads/main') && 'bigdisk' || 'bigdisk' }}"},
-		{name: "a publish on bigdisk", old: "  docker-build:\n    runs-on: ${{", new: "  docker-build:\n    runs-on: bigdisk\n    x: ${{"},
-		{name: "the release runner on every event", old: "(github.event_name == 'push' && github.ref == 'refs/heads/main') && 'release' || 'bigdisk'", new: "'release'"},
-		{name: "the release runner on a pull request", old: "(github.event_name == 'push' && github.ref", new: "(github.event_name == 'pull_request' && github.ref"},
-		{name: "the release runner on github.com", old: "&& 'ubuntu-latest' ||", new: "&& 'release' ||"},
-		{name: "the push step masks the runner's registry", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY: ${{ github.server_url }}\n          RUN_REGISTRY_TOKEN:"},
-		{name: "the push step masks the runner's user", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_USER: ${{ github.actor }}\n          RUN_REGISTRY_TOKEN:"},
-		{name: "the push step masks the runner's token", old: "          RUN_REGISTRY_TOKEN:", new: "          RELEASE_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n          RUN_REGISTRY_TOKEN:"},
-		{name: "a consumer step sets the runner's token", old: toolchainLocal,
-			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          RELEASE_REGISTRY_TOKEN: x\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
-		{name: "a job env sets the runner's registry", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      RELEASE_REGISTRY: forge.example\n"},
-		{name: "the workflow env sets the runner's user", old: "env:\n  CI_PUBLISH", new: "env:\n  RELEASE_REGISTRY_USER: x\n  CI_PUBLISH"},
-		{name: "a non-consumer on the release runner", old: "  typescript:\n    runs-on: ubuntu-latest", new: "  typescript:\n    runs-on: release"},
-		{name: "a consumer on the release runner", old: "  lint:\n    runs-on: bigdisk", new: "  lint:\n    runs-on: release"},
-		{name: "a consumer on the release runner by expression", old: "  legs:\n    runs-on: bigdisk", new: "  legs:\n    runs-on: ${{ github.ref == 'refs/heads/main' && 'release' || 'bigdisk' }}"},
-		{name: "CI_PUBLISH widened to every branch", old: "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", new: "${{ github.ref == 'refs/heads/main' }}"},
-		{name: "CI_PUBLISH widened to pull requests", old: "github.event_name == 'push' && ", new: "github.event_name != 'schedule' && "},
-		{name: "no CI_PUBLISH", old: "env:\n  CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}\n", new: ""},
-		{name: "a push on every event", old: "        id: push\n        if: ${{ env.CI_PUBLISH == 'true' }}\n", new: "        id: push\n"},
-		{name: "a push on a pull request", old: "if: ${{ env.CI_PUBLISH == 'true' }}", new: "if: ${{ env.CI_PUBLISH == 'true' || github.event_name == 'pull_request' }}"},
-		{name: "validation off main", old: "      - name: Validate\n        if: ${{ env.CI_PUBLISH == 'true' }}\n", new: "      - name: Validate\n"},
-		{name: "a pull on every event", old: toolchainPullHead, new: "      - name: Pull the toolchain image\n"},
-		{name: "a pull under a negated condition", old: toolchainPullHead, new: "      - name: Pull the toolchain image\n        if: ${{ !(env.CI_PUBLISH == 'true') }}\n"},
-		{name: "a pull under the local condition", old: toolchainPullHead, new: "      - name: Pull the toolchain image\n        if: ${{ env.CI_PUBLISH != 'true' }}\n"},
-		{name: "the token in the local step", old: toolchainLocal,
-			new: "        if: ${{ env.CI_PUBLISH != 'true' }}\n        env:\n          " + token + "\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
-		{name: "the token at job level", old: "  legs:\n    runs-on: bigdisk\n", new: "  legs:\n    runs-on: bigdisk\n    env:\n      " + token + "\n"},
-		{name: "the token in the workflow env", old: "env:\n  CI_PUBLISH", new: "env:\n  " + token + "\n  CI_PUBLISH"},
-		{name: "a docker login off main", old: "      - run: make test-typescript\n", new: "      - run: docker login -u x \"$REGISTRY\"\n"},
-		{name: "no local build", old: "      - name: Build or reuse the toolchain image\n" + toolchainLocal, new: ""},
-		{name: "a local build on main", old: toolchainLocal, new: "        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
-		{name: "a local build of the other family", old: `local toolchain "$TOOLCHAIN_HOLD"`, new: `local it "$TOOLCHAIN_HOLD"`},
-		{name: "a local build after the stage", old: toolchainLocal + "      - name: make lint\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make lint\n",
-			new: "        run: echo\n      - name: make lint\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make lint\n      - if: ${{ env.CI_PUBLISH != 'true' }}\n        run: image=$(scripts/ci-registry.sh local toolchain \"$TOOLCHAIN_HOLD\")\n"},
-		{name: "a soak that runs on main", old: "  soak:\n    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}\n", new: "  soak:\n"},
-		{name: "a soak with no local build", old: "        run: image=$(scripts/ci-registry.sh local it \"$IT_HOLD\")\n      - name: Soak\n", new: "      - name: Soak\n"},
+		{name: "CI_PUBLISH on a pull request", old: "  CI_PUBLISH: ${{ github.event_name == 'push'", new: "  CI_PUBLISH: ${{ github.event_name == 'pull_request'"},
+		{name: "the workflow env holds the token", old: "env:\n  CI_PUBLISH:", new: "env:\n  GH: ${{ secrets.GITHUB_TOKEN }}\n  CI_PUBLISH:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := strings.Replace(digestFixture, tc.old, tc.new, 1)
-			if body == digestFixture {
-				t.Fatal("the mutation did not apply: the case tests the valid fixture")
+			if !strings.Contains(digestFixture, tc.old) {
+				t.Fatalf("the fixture has no %q: the case tests nothing", tc.old)
 			}
-			if problems, _ := digestProblems([]byte(body), 3); len(problems) == 0 {
-				t.Fatal("expected at least one problem, got none")
+			problems, _ := digestProblems([]byte(strings.Replace(digestFixture, tc.old, tc.new, 1)), 3)
+			if len(problems) == 0 {
+				t.Fatalf("%s passed the gate", tc.name)
 			}
+			t.Logf("%s: %s", tc.name, strings.Join(problems, "; "))
 		})
 	}
 }

@@ -121,6 +121,18 @@ func (e *ReadBodyError) Unwrap() error {
 	return e.Err
 }
 
+// UnknownOpTypeError is returned when a transaction or batch op names a type
+// that is not put, get, delete or range. It is refused rather than read as a
+// put, which would overwrite the key.
+type UnknownOpTypeError struct {
+	Type string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownOpTypeError) Error() string {
+	return "rest: unknown op type " + strconv.Quote(e.Type) + "; want put, get, delete or range"
+}
+
 // LeaderForwardError is returned when proxying a write request to the
 // leader's REST server fails. The underlying error describes the network
 // or protocol failure.

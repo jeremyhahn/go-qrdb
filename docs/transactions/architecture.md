@@ -230,10 +230,19 @@ fenced on a claim would fence on nothing.
 
 - Transactions and batches are scoped to a single (tenant, database) pair, like
   every other data-plane operation.
-- A branch only writes: `OpGet` and `OpRange` are refused before anything is
-  proposed (`UnsupportedTransactionOpError`), so a transaction returns no
-  key data and the internal-key read guard has nothing to filter. An unmapped
-  op type fails closed rather than defaulting to a write.
+- A branch may read: `OpGet` and `OpRange` encode as `OpMVCCRange` and are
+  answered inside the transaction, at the revision its compares were decided
+  at, seeing the writes staged earlier in the same branch. The engine drops
+  reserved internal keys and vector-index keys from every answer, as a plain
+  read does. Reads are MVCC-only — the `pkg/statemachine` and Pebble-backed
+  state machines refuse the op at apply — and are gated by the cluster feature
+  `transaction-reads`: until every member supports it the service refuses a
+  transaction carrying a read (`feature.NotActiveError`) before anything is
+  proposed, so a member that would refuse the op never sees it. A batch's
+  reads are unchanged: the batch service answers them itself, outside the
+  batch's one proposal. An unmapped op type fails closed rather than defaulting to a
+  write, on every transport including MCP, whose `parseOps` refuses an unknown
+  `type` (`UnknownOpTypeError`).
 - **Every import call — `ImportBegin`/`ImportAppend`/`ImportCommit`/
   `ImportAbort`, like every other RPC — is bounded by the universal
   pre-auth message cap** (`transport.max_message_bytes`, default 4 MiB),

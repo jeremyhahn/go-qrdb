@@ -471,6 +471,7 @@ var importRules = []rule{
 	as(&service.ImportTooManyEntriesError{}, InvalidArgument),
 	as(&service.ImportTooManyRowsError{}, InvalidArgument),
 	as(&service.ImportProposalTooLargeError{}, TooLarge),
+	as(&service.TxnReadResultTooLargeError{}, TooLarge),
 
 	// Chunked import session conditions (batch_import_session.go).
 	as(&service.ImportSessionNotFoundError{}, NotFound),

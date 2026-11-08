@@ -30,12 +30,12 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // Compile-time interface assertions.
@@ -229,7 +229,10 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 		// In-process connection.
 		client, err = mcpclient.NewInProcessClient(t.mcpServer)
 	} else {
-		// Network connection via Streamable HTTP.
+		// Network connection via Streamable HTTP, on qrdb's own client
+		// transport: mcp-go's carries GO-2026-6911 (an unvalidated
+		// Location header) with no fixed release. This one leaves every
+		// redirect to the http.Client's policy and the round trippers below.
 		tlsCfg, tlsErr := t.buildTLSConfig()
 		if tlsErr != nil {
 			return nil, &transport.ConnectionError{
@@ -252,8 +255,7 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 			rt = capture
 		}
 		refusals = newInitializeRefusalCapture(rt)
-		client, err = mcpclient.NewStreamableHttpClient(address,
-			mcptransport.WithHTTPBasicClient(&http.Client{Transport: refusals}))
+		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: refusals}))
 	}
 	if err != nil {
 		return nil, &transport.ConnectionError{

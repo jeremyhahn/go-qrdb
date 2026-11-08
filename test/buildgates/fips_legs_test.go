@@ -10,8 +10,9 @@
 //   - a leg runs no package, or a package outside both suites;
 //   - ci.yml's matrix is not FIPS_LEGS, lets one leg's failure cancel the
 //     others, or its test step does not run the matrix's leg;
-//   - a leg has no time limit of its own, one over the 45-minute ceiling, or
-//     a go test per-package budget not 5 minutes inside it.
+//   - a leg has no time limit of its own, one over the hosted runner's
+//     ceiling (jobMinutesCeiling), or a go test per-package budget not 5
+//     minutes inside it.
 //
 // Discovery floors on the leg and package counts keep an empty parse from
 // passing: every other assertion is inside a loop, and an empty loop reports
@@ -36,14 +37,14 @@ const (
 	fipsLegTarget  = "make test-fips-leg FIPS_LEG="
 	fipsLegKey     = "leg"
 	fipsLegEnv     = "${{ matrix.leg }}"
-	fipsLegFix     = "put it in one FIPS_LEG_<leg> list in the Makefile, or let the remainder leg run it"
+	fipsLegFix     = "put it in one UNIT_LEG_<leg> list in the Makefile, or let the remainder leg run it"
 	fipsMinutesKey = "minutes"
 	fipsMinutesEnv = "${{ matrix.minutes }}"
 	// fipsBudget is the step's go test per-package budget: the leg's limit
 	// less 5 minutes, so a runaway package is named before the leg is killed.
 	fipsBudget = "GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m"
-	// fipsLegCeiling is the most minutes any leg may run (ruling 221(5)).
-	fipsLegCeiling = 45
+	// fipsLegCeiling is the most minutes any leg may run: a hosted job's.
+	fipsLegCeiling = jobMinutesCeiling
 
 	// Floors, well under today's counts (12 legs, 191 root and 53 SDK
 	// packages), so a broken listing fails rather than checks nothing.
@@ -185,7 +186,7 @@ func fipsPartitionProblems(legs []string, legPkgs map[string][]string, split map
 	for _, l := range legs {
 		if len(legPkgs[l]) == 0 {
 			problems = append(problems, "FIPS leg "+strconv.Quote(l)+" runs no package; fix: delete it "+
-				"from FIPS_LEGS or correct its FIPS_LEG_"+l+" patterns")
+				"from UNIT_LEGS or correct its UNIT_LEG_"+l+" patterns")
 		}
 		for _, p := range legPkgs[l] {
 			if prev, dup := legOf[p]; dup {
@@ -193,14 +194,14 @@ func fipsPartitionProblems(legs []string, legPkgs map[string][]string, split map
 				// fipsSplitProblems checks each of its tests is in one.
 				if !split[prev] || !split[l] {
 					problems = append(problems, p+" runs in FIPS leg "+prev+" and again in leg "+l+
-						"; fix: delete it from one leg's FIPS_LEG_<leg> patterns, or split it by test name in both")
+						"; fix: delete it from one leg's UNIT_LEG_<leg> patterns, or split it by test name in both")
 				}
 				continue
 			}
 			legOf[p] = l
 			if !slices.Contains(suite, p) {
 				problems = append(problems, "FIPS leg "+l+" runs "+p+", which neither `make test` nor "+
-					"`make test-sdk` runs; fix: delete it from FIPS_LEG_"+l)
+					"`make test-sdk` runs; fix: delete it from UNIT_LEG_"+l)
 			}
 		}
 	}
@@ -315,7 +316,7 @@ func TestFIPSLegs_PartitionTheSuites(t *testing.T) {
 	legPkgs := make(map[string][]string, len(legs))
 	split := make(map[string]bool, len(legs))
 	for _, l := range legs {
-		legPkgs[l] = strings.Fields(makeOutput(t, root, "print-fips-leg-packages", "FIPS_LEG="+l))
+		legPkgs[l] = strings.Fields(makeOutput(t, root, "print-unit-leg-packages", "UNIT_LEG="+l))
 		split[l] = fipsLegFilter(t, root, l).split()
 	}
 	for _, p := range fipsPartitionProblems(legs, legPkgs, split, append(rootPkgs, sdkPkgs...)) {
@@ -398,7 +399,7 @@ func TestFIPSLegs_JobProblems(t *testing.T) {
 		{"extra key", "minutes: 30", "minutes: 30\n            os: x", `has key "os"`},
 		{"no leg", "- leg: rest", "- os: rest", "entry with no leg"},
 		{"computed matrix", "include:\n          - leg: a\n            minutes: 45\n          - leg: rest\n            minutes: 30", "include: ${{ fromJSON(needs.x.outputs.legs) }}", "is not a literal list"},
-		{"over ceiling", "minutes: 45", "minutes: 46", `"a" has minutes "46"`},
+		{"over ceiling", "minutes: 45", "minutes: 351", `"a" has minutes "351"`},
 		{"under budget margin", "minutes: 30", "minutes: 5", `"rest" has minutes "5"`},
 		{"no minutes", "\n            minutes: 30", "", `"rest" has minutes ""`},
 		{"fixed limit", "timeout-minutes: ${{ matrix.minutes }}", "timeout-minutes: 45", "timeout-minutes is \"45\""},

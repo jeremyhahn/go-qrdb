@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestWritePEMFiles_Success(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "certs")
 	files := map[string][]byte{
 		"cert.pem": []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"),
-		"key.pem":  []byte("-----BEGIN EC PRIVATE KEY-----\ntest\n-----END EC PRIVATE KEY-----\n"),
+		"key.pem":  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: []byte("test")}),
 	}
 	if err := writePEMFiles(dir, files); err != nil {
 		t.Fatalf("writePEMFiles: %v", err)

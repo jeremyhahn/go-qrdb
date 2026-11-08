@@ -35,11 +35,13 @@ import (
 // An earlier revision of GuardedSwap read through the transaction plane, by
 // putting an OpGet in a transaction's success and failure branches, and every
 // fake-plane test passed: the fake implemented those reads. The real service
-// does not and never did — pkg/service's opTypeMap carries OpPut and OpDelete
-// only, and encodeServiceOp fails closed on anything else with
-// UnsupportedTransactionOpError before the command reaches Raft. GuardedSwap
+// did not then — pkg/service's opTypeMap carried OpPut and OpDelete only, and
+// encodeServiceOp failed closed on anything else with
+// UnsupportedTransactionOpError before the command reached Raft. GuardedSwap
 // would therefore have failed on its very first read against every real
-// transport while passing its whole unit suite (go-qrdb#44).
+// transport while passing its whole unit suite (go-qrdb#44). The service now
+// answers reads in a branch, behind the transaction-reads feature gate on the
+// MVCC engine alone, so the fake's reads are still not the real plane's.
 //
 // The lesson generalises past this bug: a helper built on a plane it only ever
 // meets through a double needs at least one test against the plane itself.
@@ -73,7 +75,7 @@ func seed(t *testing.T, tr *embedded.Transport, key string, value []byte) {
 // A guarded swap of an EXISTING record lands against the real services.
 //
 // This is the test the transaction-plane read would have failed outright: the
-// initial read alone returned UnsupportedTransactionOpError, before any
+// initial read alone then returned UnsupportedTransactionOpError, before any
 // compare was evaluated.
 func TestGuardedSwap_AgainstRealServices_SwapsAnExistingRecord(t *testing.T) {
 	tr := newRealPlane(t)
@@ -192,30 +194,30 @@ func TestGuardedSwap_AgainstRealServices_ConcurrentIncrementsLoseNothing(t *test
 // This is the constraint that shapes GuardedSwap, pinned directly so that a
 // future change putting reads back into a branch fails HERE, naming the
 // reason, rather than in a distant integration test that merely stops working.
-func TestRealTransactionService_RefusesAReadInABranch(t *testing.T) {
+func TestRealTransactionService_AnswersAReadInEitherBranch(t *testing.T) {
 	tr := newRealPlane(t)
 	seed(t, tr, "k", []byte("v"))
 
-	for _, branch := range []string{"success", "failure"} {
+	for branch, compareValue := range map[string]string{"success": "v", "failure": "other"} {
 		t.Run(branch, func(t *testing.T) {
-			req := &transport.TransactionRequest{
+			op := transport.Op{Type: transport.OpGet, Key: []byte("k")}
+			resp, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
 				Compares: []transport.Compare{{
 					Key:    []byte("k"),
 					Target: transport.CompareValue,
 					Result: transport.CompareEqual,
-					Value:  []byte("v"),
+					Value:  []byte(compareValue),
 				}},
+				SuccessOps: []transport.Op{op},
+				FailureOps: []transport.Op{op},
+			})
+			if err != nil {
+				t.Fatalf("a transaction read in the %s branch: %v", branch, err)
 			}
-			op := transport.Op{Type: transport.OpGet, Key: []byte("k")}
-			if branch == "success" {
-				req.SuccessOps = []transport.Op{op}
-			} else {
-				req.FailureOps = []transport.Op{op}
-			}
-
-			if _, err := tr.ExecuteTransaction(context.Background(), req); err == nil {
-				t.Fatalf("a transaction read in the %s branch was ACCEPTED; "+
-					"GuardedSwap's design depends on it being refused", branch)
+			if resp.Succeeded != (branch == "success") || len(resp.Responses) != 1 ||
+				len(resp.Responses[0].Kvs) != 1 || string(resp.Responses[0].Kvs[0].Value) != "v" ||
+				resp.Responses[0].Kvs[0].Version != 1 {
+				t.Fatalf("%s branch = %+v, want one read of k=v at version 1", branch, resp)
 			}
 		})
 	}

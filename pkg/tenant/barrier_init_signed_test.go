@@ -196,6 +196,30 @@ func TestTenantBarrierInitSigned_ExpiredReference(t *testing.T) {
 	}
 }
 
+// TestWithSignedInitTTL verifies tenant.signed_init_ttl shortens a
+// reference's lifetime and that a value outside (0, SignedInitTTL] leaves
+// the five-minute default.
+func TestWithSignedInitTTL(t *testing.T) {
+	for _, tc := range []struct {
+		ttl, want time.Duration
+	}{
+		{time.Second, time.Second},
+		{SignedInitTTL, SignedInitTTL},
+		{0, SignedInitTTL},
+		{-time.Second, SignedInitTTL},
+		{SignedInitTTL + time.Second, SignedInitTTL},
+	} {
+		svc, _ := newClaimService(t, &bookDouble{}, "acme")
+		WithSignedInitTTL(tc.ttl)(svc)
+		now := time.Unix(1_800_000_000, 0)
+		svc.signedInits.now = func() time.Time { return now }
+		begun := beginNone(t, svc, "acme", "")
+		if !begun.ExpiresAt.Equal(now.Add(tc.want)) {
+			t.Fatalf("ttl %v: ExpiresAt = %v, want %v", tc.ttl, begun.ExpiresAt, now.Add(tc.want))
+		}
+	}
+}
+
 func TestTenantBarrierInitSigned_RequiredFields(t *testing.T) {
 	svc, _ := newClaimService(t, &bookDouble{}, "acme")
 	ctx := context.Background()

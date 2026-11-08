@@ -61,11 +61,15 @@ and the conformance matrix run only in the SDK's legs.
 ### The legs
 
 One run of both suites took 69.9 minutes, the longest job of the full tier, and
-set the time to a green main and to every tag. The legs run side by side, each
-aimed under 30 minutes and under its own limit, at most 45 minutes (ruling
-221(5)), with go test's per-package budget 5 minutes inside the limit.
+set the time to a green main and to every tag. The legs are the Makefile's
+`UNIT_LEGS`, the same twelve the `coverage` job's legs run, and run side by
+side on GitHub-hosted runners, each under its own 120-minute limit, with go
+test's per-package budget 5 minutes inside the limit. On the self-hosted
+fleet the legs took 7 to 14.3 minutes (run 76127); DS-7377 plans every job on
+a 4-vCPU hosted runner at four times its fleet time, about 57 minutes for the
+slowest leg, and the limit leaves twice that.
 `make -s print-fips-legs` prints them, and
-`make -s print-fips-leg-packages FIPS_LEG=<leg>` prints a leg's packages.
+`make -s print-unit-leg-packages UNIT_LEG=<leg>` prints a leg's packages.
 
 The split is from measured wall times, run 68401 (the first seven-leg run), not
 from package counts. A leg takes about its slowest package plus 3 to 4 minutes
@@ -73,20 +77,20 @@ of build and setup, so a package that runs long sits in a leg alone. A pattern
 without `/...` names one package, which is how `seal` holds `pkg/seal` while
 its subpackages run in `api-keys`:
 
-| Leg | Module | Packages | Slowest package (run 68401) | Expected | Limit |
+| Leg | Module | Packages | Slowest package (run 68401) | Expected (fleet) | Limit |
 |---|---|---|---|---|---|
-| `tenant-lifecycle` | root | `pkg/tenant`'s `TenantService`, `CreateTenant`, `StoreResolver`, `DeleteTenant` and `UndoCreate` tests | 200 tests, 13.8 min locally | ~23.5 min | 30 min |
-| `tenant` | root | the rest of `pkg/tenant` | 528 tests, 13.6 min locally | ~23 min | 30 min |
-| `seal-barrier` | root | `pkg/seal`'s `Barrier`, `StorageBarrier`, `ChangePassword`, `SealStore` and `TenantBarrier` tests | 260 tests, 9.4 min locally | ~18 min | 30 min |
-| `seal` | root | the rest of `pkg/seal` | 436 tests, 9.1 min locally | ~18 min | 30 min |
-| `server-raft` | root | `pkg/server`'s `Raft` and `ReattachRaft` tests | 11.3 min locally | ~16.5 min | 25 min |
-| `server` | root | the rest of `pkg/server` | 11.6 min locally | ~17 min | 25 min |
-| `auth` | root | `pkg/server/lifecycle`, `pkg/auth`, `cmd` | `pkg/server/lifecycle` 10.9 min | ~15 min | 25 min |
-| `service` | root | `pkg/service`, `pkg/database`, `pkg/statemachine`, `pkg/engine`, `pkg/dao`, `pkg/store` | `pkg/service` 11.6 min | ~16 min | 25 min |
-| `api-keys` | root | `pkg/api`; `pkg/seal`'s subpackages, `pkg/ceremony`, `pkg/credentials`, `pkg/firstboot`, `pkg/pin`, `pkg/clusterseal`, `pkg/barrierinit`, `pkg/authfactors`, `pkg/keywrap`, `pkg/dek`, `pkg/sql` | `pkg/credentials` 3.4 min | ~10 min | 20 min |
-| `rest` | root | `test-clusterproof`, then every package of `make test` no root leg above names | `test/buildgates` 6.1 min | 18.2 min (measured) | 30 min |
-| `sdk-transport` | `sdk/go` | `transport` | `transport/embedded/internal/scopegen` 13.3 min | 18.3 min (measured) | 30 min |
-| `sdk` | `sdk/go` | every package of `make test-sdk` `sdk-transport` does not name | `sdk/go/node` 12.4 min | 17.4 min (measured) | 30 min |
+| `tenant-lifecycle` | root | `pkg/tenant`'s `TenantService`, `CreateTenant`, `StoreResolver`, `DeleteTenant` and `UndoCreate` tests | 200 tests, 13.8 min locally | ~23.5 min | 120 min |
+| `tenant` | root | the rest of `pkg/tenant` | 528 tests, 13.6 min locally | ~23 min | 120 min |
+| `seal-barrier` | root | `pkg/seal`'s `Barrier`, `StorageBarrier`, `ChangePassword`, `SealStore` and `TenantBarrier` tests | 260 tests, 9.4 min locally | ~18 min | 120 min |
+| `seal` | root | the rest of `pkg/seal` | 436 tests, 9.1 min locally | ~18 min | 120 min |
+| `server-raft` | root | `pkg/server`'s `Raft` and `ReattachRaft` tests | 11.3 min locally | ~16.5 min | 120 min |
+| `server` | root | the rest of `pkg/server` | 11.6 min locally | ~17 min | 120 min |
+| `auth` | root | `pkg/server/lifecycle`, `pkg/auth`, `cmd` | `pkg/server/lifecycle` 10.9 min | ~15 min | 120 min |
+| `service` | root | `pkg/service`, `pkg/database`, `pkg/statemachine`, `pkg/engine`, `pkg/dao`, `pkg/store` | `pkg/service` 11.6 min | ~16 min | 120 min |
+| `api-keys` | root | `pkg/api`; `pkg/seal`'s subpackages, `pkg/ceremony`, `pkg/credentials`, `pkg/firstboot`, `pkg/pin`, `pkg/clusterseal`, `pkg/barrierinit`, `pkg/authfactors`, `pkg/keywrap`, `pkg/dek`, `pkg/sql` | `pkg/credentials` 3.4 min | ~10 min | 120 min |
+| `rest` | root | `test-clusterproof`, then every package of `make test` no root leg above names | `test/buildgates` 6.1 min | 18.2 min (measured) | 120 min |
+| `sdk-transport` | `sdk/go` | `transport` | `transport/embedded/internal/scopegen` 13.3 min | 18.3 min (measured) | 120 min |
+| `sdk` | `sdk/go` | every package of `make test-sdk` `sdk-transport` does not name | `sdk/go/node` 12.4 min | 17.4 min (measured) | 120 min |
 
 **A package too slow for a leg alone is split by test name.** `pkg/tenant`
 (38.6 minutes in run 68401) and `pkg/seal` (32.9 minutes) are each one package
@@ -100,7 +104,7 @@ The one outlier, a race test that changed a password on the production KDF
 one after another, so splitting them by name over two legs halves the time.
 
 A split package's first leg selects tests with `go test -run`
-(`FIPS_RUN_<leg>` in the Makefile) and its second runs everything else with
+(`UNIT_RUN_<leg>` in the Makefile) and its second runs everything else with
 `-skip` built from the first's pattern, so a new test runs in the second leg
 until a pattern names it. `make -s print-fips-leg-filter FIPS_LEG=<leg>` prints
 a leg's patterns. A split leg's expected time is its tests' local time, scaled
@@ -110,11 +114,11 @@ carry their run 68401 times.
 The two remainder legs mean a new package always runs, in `rest` or `sdk`,
 until a leg names it. Each leg's "Package results and slowest tests" step
 prints every package's time, so a leg nearing its limit shows which package to
-move; the fix is to move a pattern between `FIPS_LEG_<leg>` lists in the
+move; the fix is to move a pattern between `UNIT_LEG_<leg>` lists in the
 Makefile, and its limit in ci.yml's matrix, never to drop one.
 `test/buildgates/fips_legs_test.go` fails when a package of either suite is in
 no leg or in two, when a leg is empty, when ci.yml's matrix is not
-`FIPS_LEGS`, and when a leg has no limit of its own, one over 45 minutes, or a
+`FIPS_LEGS`, and when a leg has no limit of its own, one over 350 minutes, or a
 per-package budget other than its limit less 5 minutes. A package may be in
 two legs only when both select by name, and
 `test/buildgates/fips_split_test.go` then fails when a top-level test of the

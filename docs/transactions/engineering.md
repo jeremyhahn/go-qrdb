@@ -148,10 +148,31 @@ type BatchResponse struct {
 }
 ```
 
-`encodeServiceOp` maps only `OpPut` and `OpDelete` to protocol opcodes. `OpGet`,
-`OpRange` and any unmapped value in a transaction branch or batch fail closed
-with `UnsupportedTransactionOpError` before anything is proposed, rather than
-defaulting to a write that would corrupt the key.
+`encodeServiceOp` maps `OpPut` and `OpDelete` to their write opcodes and
+`OpGet` and `OpRange` to `OpMVCCRange` (a get carries no range end, value or
+lease). Any unmapped value fails closed with `UnsupportedTransactionOpError`
+before anything is proposed, rather than defaulting to a write that would
+corrupt the key.
+
+A transaction carrying a read is refused with `feature.NotActiveError` until
+the cluster feature `transaction-reads` (`featuregate.TransactionReads`) is
+active, so no member that predates it applies an op it would refuse. The MVCC
+engine answers each read with `mvcc.Store.RangeInBatchAt`, inside the
+transaction's apply, so a read sees the writes staged before it in the same
+branch; reserved and vector-index keys are filtered as on a plain read, and a
+branch that only reads does not advance the revision. The other state machines
+refuse `OpMVCCRange` at apply: reads in a transaction are MVCC-only.
+
+The result travels in `sm.Result.Data` as
+`protocol.EncodeTransactionResult(succeeded, reads)`: the one-byte succeeded
+flag alone when the executed branch read nothing — the shape every transaction
+had before reads — and otherwise the flag followed by one answer per executed
+op, a write's answer empty. `buildTransactionResponse` decodes it into
+`TransactionResponse.Responses`, one `OpResponse` per op with `Kvs` (full MVCC
+metadata: create and mod revision, version, lease) and `Count`; a malformed
+result is a `TransactionResultError`, and one whose answer count is not the
+executed branch's op count wraps a `TransactionResultShapeError`. Every transport already
+carries `Kvs` and `Count` through unchanged.
 
 `BatchResponse.Revision` is the single MVCC revision every op in the batch
 committed at — the state machine's `sm.Result.Value` for the batch's one

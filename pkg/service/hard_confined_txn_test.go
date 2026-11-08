@@ -158,6 +158,39 @@ func TestHardConfinedTransaction_RefusesARangeOpOverlappingTheConfinedNamespace(
 	}
 }
 
+// TestHardConfinedTransaction_RefusesARangedGetBeforeTheGuard sends a get of
+// a confined key whose range end ("!") sorts below it: as an interval it
+// overlaps no confined namespace, but a get reads exactly its key. Both entry
+// points must refuse it as a ranged get, ahead of the guard and the servicer.
+func TestHardConfinedTransaction_RefusesARangedGetBeforeTheGuard(t *testing.T) {
+	ctx := context.Background()
+	fake := &fakeTxn{}
+	txn := NewHardConfinedTransaction(fake)
+	ops := []Op{{Type: OpGet, Key: []byte(InternalKeyPrefixSystem + "cluster_ca/material"), RangeEnd: []byte("!")}}
+
+	calls := map[string]func() error{
+		"Execute": func() error {
+			_, err := txn.Execute(ctx, nil, ops, nil)
+			return err
+		},
+		"ExecuteWithMode": func() error {
+			_, err := txn.ExecuteWithMode(ctx, nil, nil, ops, writemode.WALDurable)
+			return err
+		},
+	}
+	for name, call := range calls {
+		var rangedGet *TransactionGetRangeEndError
+		var encodeErr *EncodeRequestError
+		err := call()
+		if !errors.As(err, &encodeErr) || !errors.As(err, &rangedGet) {
+			t.Fatalf("%s = %v (%T), want a TransactionGetRangeEndError inside an EncodeRequestError", name, err, err)
+		}
+		if fake.called {
+			t.Fatalf("%s reached the underlying servicer despite the refusal", name)
+		}
+	}
+}
+
 func TestHardConfinedTransaction_OrdinaryTransactionsPassThrough(t *testing.T) {
 	ctx := context.Background()
 	fake := &fakeTxn{}

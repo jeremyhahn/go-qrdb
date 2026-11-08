@@ -83,6 +83,10 @@ func (e *KeyTooLargeError) ErrorClass() errclass.Class { return errclass.TooLarg
 // caller's input is wrong, so it is a 400 wherever it is rendered.
 func (e *InvalidParameterError) ErrorClass() errclass.Class { return errclass.InvalidArgument }
 
+// ErrorClass reports an op type no op is named by: the caller's input is
+// wrong, so it is a 400.
+func (e *UnknownOpTypeError) ErrorClass() errclass.Class { return errclass.InvalidArgument }
+
 // ServiceErrorStatus reports the HTTP status this transport answers for err.
 //
 // It is the one mapping every REST handler uses, and it is exported so the

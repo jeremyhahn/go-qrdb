@@ -276,6 +276,36 @@ databases: []
 	}
 }
 
+// TestConfig_BackwardCompat_ExplicitEmptyDatabases_DefaultBackendPebble: with
+// "databases: []" and an empty storage.backend, the synthesised database
+// falls back to "pebble". Only an explicit empty list reaches the fallback;
+// an omitted databases section keeps DefaultConfig's own entry.
+func TestConfig_BackwardCompat_ExplicitEmptyDatabases_DefaultBackendPebble(t *testing.T) {
+	path := writeTemp(t, `
+server:
+  admin_port: 8080
+  host: localhost
+raft:
+  data_dir: /tmp/raft
+  shard_id: 1
+  replica_id: 1
+  raft_address: localhost:63001
+storage:
+  backend: ""
+databases: []
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Databases) != 1 {
+		t.Fatalf("Databases: got %d entries, want 1", len(cfg.Databases))
+	}
+	if cfg.Databases[0].Backend != "pebble" {
+		t.Errorf("Databases[0].Backend: got %q, want %q (fallback)", cfg.Databases[0].Backend, "pebble")
+	}
+}
+
 func TestConfig_BackwardCompat_NoDatabases_DefaultBackendPebble(t *testing.T) {
 	// When storage.backend is empty, the fallback is "pebble".
 	yamlContent := `
