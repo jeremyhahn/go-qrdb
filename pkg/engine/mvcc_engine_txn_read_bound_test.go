@@ -21,11 +21,14 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // txnBoundValueSize is the value size the bound tests read: with a one-byte
-// key, sixteen reads of it answer exactly txnReadResultMaxBytes.
-const txnBoundValueSize = txnReadResultMaxBytes/16 - 1
+// key, a branch of one put and sixteen gets of it charges exactly
+// service.MaxReplyBytes of reply.
+const txnBoundValueSize = (service.MaxReplyBytes-service.TxnReplyHeaderBytes-17*service.TxnReplyOpBytes)/16 -
+	service.TxnReplyKVBytes - 1
 
 // txnPutOp is a put op of a transaction branch.
 func txnPutOp(key string, value []byte) []byte {
@@ -54,16 +57,16 @@ func updateTxn(t *testing.T, eng *MVCCEngine, index uint64, successOps [][]byte)
 }
 
 // assertTxnReadRefused fails the test unless r is the refusal of a
-// transaction whose reads crossed txnReadResultMaxBytes, and returns the
-// bytes read when it was crossed.
+// transaction whose reply crossed service.MaxReplyBytes, and returns the
+// reply bytes charged when it was crossed.
 func assertTxnReadRefused(t *testing.T, r sm.Result) int64 {
 	t.Helper()
 	limit, read, refused := protocol.DecodeTxnReadRefusal(r.Data)
 	if !refused {
-		t.Fatalf("result of %d bytes (%q...) is not a transaction-read refusal", len(r.Data), r.Data[:min(len(r.Data), 16)])
+		t.Fatalf("result of %d bytes (%q...) is not a transaction-reply refusal", len(r.Data), r.Data[:min(len(r.Data), 16)])
 	}
-	if limit != txnReadResultMaxBytes || read <= limit {
-		t.Fatalf("refusal limit=%d read=%d, want limit %d crossed", limit, read, txnReadResultMaxBytes)
+	if limit != service.MaxReplyBytes || read <= limit {
+		t.Fatalf("refusal limit=%d read=%d, want limit %d crossed", limit, read, service.MaxReplyBytes)
 	}
 	return read
 }
@@ -127,9 +130,10 @@ func TestMVCCEngine_TransactionRead_JustUnderTheBoundSucceeds(t *testing.T) {
 
 	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize-1), 0)})
 
-	_, succeeded, reads := applyTxn(t, eng, 2, nil, txnGets("k", 16), nil)
-	if !succeeded || len(reads) != 16 {
-		t.Fatalf("succeeded=%v with %d reads, want 16 answered reads", succeeded, len(reads))
+	ops := append([][]byte{txnPutOp("other", []byte("o"))}, txnGets("k", 16)...)
+	_, succeeded, reads := applyTxn(t, eng, 2, nil, ops, nil)
+	if !succeeded || len(reads) != 17 {
+		t.Fatalf("succeeded=%v with %d reads, want 17 answered ops", succeeded, len(reads))
 	}
 }
 
@@ -138,15 +142,30 @@ func TestMVCCEngine_TransactionRead_OneByteOverTheBoundIsRefused(t *testing.T) {
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	// Sixteen reads answer exactly the bound; the seventeenth's one-byte
-	// key crosses it.
+	// One put and sixteen gets of a bound-sized value charge exactly the
+	// bound; the last get's value is one byte longer.
 	applyMVCCEntries(t, eng, []sm.Entry{
 		mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize), 0),
-		mvccPutEntry(2, []byte("e"), nil, 0),
+		mvccPutEntry(2, []byte("j"), make([]byte, txnBoundValueSize+1), 0),
 	})
-	ops := append(txnGets("k", 16), txnGetOp("e"), txnPutOp("other", []byte("o")))
-	if read := assertTxnReadRefused(t, updateTxn(t, eng, 3, ops)); read != txnReadResultMaxBytes+1 {
-		t.Fatalf("refused at %d bytes, want %d", read, txnReadResultMaxBytes+1)
+	ops := append(txnGets("k", 15), txnGetOp("j"), txnPutOp("other", []byte("o")))
+	if read := assertTxnReadRefused(t, updateTxn(t, eng, 3, ops)); read != service.MaxReplyBytes+1 {
+		t.Fatalf("refused at %d bytes, want %d", read, service.MaxReplyBytes+1)
+	}
+	assertNotWritten(t, eng, "other")
+}
+
+func TestMVCCEngine_TransactionRead_EveryOpIsChargedItsResponse(t *testing.T) {
+	eng, stg := newMVCCEngine(t)
+	defer func() { _ = stg.Close() }()
+	defer func() { _ = eng.Close(context.Background()) }()
+
+	// The reads answer less than the bound, but one more op's response
+	// carries the whole reply past it.
+	applyMVCCEntries(t, eng, []sm.Entry{mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize), 0)})
+	ops := append([][]byte{txnPutOp("other", []byte("o")), txnPutOp("other2", []byte("o"))}, txnGets("k", 16)...)
+	if read := assertTxnReadRefused(t, updateTxn(t, eng, 2, ops)); read != service.MaxReplyBytes+service.TxnReplyOpBytes {
+		t.Fatalf("refused at %d bytes, want %d", read, service.MaxReplyBytes+service.TxnReplyOpBytes)
 	}
 	assertNotWritten(t, eng, "other")
 }
@@ -158,7 +177,7 @@ func TestMVCCEngine_TransactionRead_ABranchPutIsChargedToTheReadsAfterIt(t *test
 
 	// Nothing is stored before the branch: only the put makes the reads
 	// large, so the bound must count what the branch writes.
-	ops := append([][]byte{txnPutOp("k", make([]byte, txnBoundValueSize))}, txnGets("k", 17)...)
+	ops := append([][]byte{txnPutOp("k", make([]byte, txnBoundValueSize+1))}, txnGets("k", 16)...)
 	assertTxnReadRefused(t, updateTxn(t, eng, 1, ops))
 	assertNotWritten(t, eng, "k")
 }
@@ -177,8 +196,8 @@ func TestMVCCEngine_TransactionRead_ARangeStopsAtTheBound(t *testing.T) {
 
 	rangeOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCRange, []byte("a"), nil, []byte("z"), 0))
 	read := assertTxnReadRefused(t, updateTxn(t, eng, 21, [][]byte{txnPutOp("other", []byte("o")), rangeOp}))
-	if read > txnReadResultMaxBytes+1+txnBoundValueSize {
-		t.Fatalf("range collected %d bytes before refusing, want it stopped at the key that crossed %d", read, txnReadResultMaxBytes)
+	if limit := int64(service.MaxReplyBytes + service.TxnReplyKVBytes + 1 + txnBoundValueSize); read > limit {
+		t.Fatalf("range charged %d bytes before refusing, want it stopped at the key that crossed %d", read, service.MaxReplyBytes)
 	}
 	assertNotWritten(t, eng, "other")
 }
@@ -188,18 +207,23 @@ func TestMVCCEngine_TransactionRead_ARangeWithNoBudgetLeftStopsAtItsFirstKey(t *
 	defer func() { _ = stg.Close() }()
 	defer func() { _ = eng.Close(context.Background()) }()
 
-	// Sixteen gets of k spend the whole bound; the range after them must
+	// The gets spend the whole bound (j's value is one op's response
+	// shorter, for the range's own response); the range after them must
 	// stop at its first key rather than scan all twenty.
-	entries := []sm.Entry{mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize), 0)}
+	entries := []sm.Entry{
+		mvccPutEntry(1, []byte("k"), make([]byte, txnBoundValueSize), 0),
+		mvccPutEntry(2, []byte("j"), make([]byte, txnBoundValueSize-service.TxnReplyOpBytes), 0),
+	}
 	for i := range 20 {
-		entries = append(entries, mvccPutEntry(uint64(i+2), []byte{'A' + byte(i)}, []byte("v"), 0))
+		entries = append(entries, mvccPutEntry(uint64(i+3), []byte{'A' + byte(i)}, []byte("v"), 0))
 	}
 	applyMVCCEntries(t, eng, entries)
 
 	rangeOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCRange, []byte("A"), nil, []byte("Z"), 0))
-	ops := append(txnGets("k", 16), rangeOp, txnPutOp("other", []byte("o")))
-	if read := assertTxnReadRefused(t, updateTxn(t, eng, 22, ops)); read != txnReadResultMaxBytes+2 {
-		t.Fatalf("refused at %d bytes, want %d: the range read past its first key", read, txnReadResultMaxBytes+2)
+	ops := append(txnGets("k", 15), txnGetOp("j"), rangeOp, txnPutOp("other", []byte("o")))
+	want := int64(service.MaxReplyBytes + service.TxnReplyKVBytes + 2)
+	if read := assertTxnReadRefused(t, updateTxn(t, eng, 23, ops)); read != want {
+		t.Fatalf("refused at %d bytes, want %d: the range read past its first key", read, want)
 	}
 	assertNotWritten(t, eng, "other")
 }
