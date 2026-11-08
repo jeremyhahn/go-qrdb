@@ -327,6 +327,22 @@ func TestCeremonyInitToPB(t *testing.T) {
 	}
 }
 
+// The system SO's fields cross both ways (go-qrdb#1128).
+func TestCeremonyInit_SystemSO(t *testing.T) {
+	out, err := CeremonyInitToPB(&transport.CeremonyInitializeRequest{
+		SOUsername: "secofficer", SOCSRPEM: "csr", SOCertPEM: "cert", SOChainPEM: "chain",
+	})
+	if err != nil {
+		t.Fatalf("CeremonyInitToPB: %v", err)
+	}
+	if out.GetSoUsername() != "secofficer" || out.GetSoCsrPem() != "csr" || out.GetSoCertPem() != "cert" || out.GetSoChainPem() != "chain" {
+		t.Errorf("CeremonyInitToPB SO = %+v", out)
+	}
+	if resp := CeremonyInitFromPB(&pb.CeremonyInitializeResponse{SoCertPem: "so-cert"}); resp.SOCertPEM != "so-cert" {
+		t.Errorf("CeremonyInitFromPB SOCertPEM = %q", resp.SOCertPEM)
+	}
+}
+
 // TestCeremonyInitFromPB covers the decode side: a full result with
 // holders, and the empty (zero-holder) shape.
 func TestCeremonyInitFromPB(t *testing.T) {

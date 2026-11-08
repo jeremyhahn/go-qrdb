@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -79,6 +80,24 @@ func TestCeremonyServiceWithAdminRebind_DelegatesBeforeInitialize(t *testing.T) 
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.AdminCertPEM)
+}
+
+// The system SO options reach the ceremony and its certificate comes back
+// (go-qrdb#1128).
+func TestCeremonyInitialize_SystemSO(t *testing.T) {
+	inner, ca := newTestCeremonyService(t)
+	_, soCSR, err := certtest.NewCSR("ignored")
+	require.NoError(t, err)
+	result, err := inner.CeremonyInitialize(context.Background(), ca, &CeremonyInitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+		SOUsername: "secofficer", SOCSRPEM: string(soCSR),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(result.SOCertPEM), "BEGIN CERTIFICATE")
+	core, ok := CeremonyServiceCore(inner)
+	require.True(t, ok)
+	require.NotNil(t, core.LastIssuedSystemSO())
+	assert.Equal(t, "secofficer", core.LastIssuedSystemSO().Username)
 }
 
 // TestCeremonyServiceWithAdminRebind_RefusesWhenAlreadyBound covers the
