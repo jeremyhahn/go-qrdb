@@ -2,7 +2,7 @@ github.com/golang/protobuf v1.5.4 h1:i7eJL8qZTpSEXOPTxNKhASYpMn+8e5Q6AdndVa1dWek
 github.com/golang/protobuf v1.5.4/go.mod h1:lnTiLA8Wa4RWRcIUkrtSVa5nRhsEGBg48fD6rSs7xps=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
-github.com/jeremyhahn/go-qrdb v0.7.0-alpha h1:zQZ6cgT+aia8OBmu9PVI53QR+KoTqdSma9uw7nSnUkk=
+github.com/jeremyhahn/go-qrdb v0.7.0-alpha h1:gj6yCYeCkt0V9iAMMly5KgtjTbIvrk/KsanwGrWd/mI=
 github.com/jeremyhahn/go-qrdb v0.7.0-alpha/go.mod h1:40Ls6CNv5MTekjn0nlHw09L7MVtNxM5n1T4ZgmtAGuM=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha h1:pjWXawUh5PS+17KPXVhU3S0PrSJgCI1DjysfvgqcG/M=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha/go.mod h1:JOINVvuUEvqImRaMOQBC8VhY08LLZnwweIEGx5GUeBI=
