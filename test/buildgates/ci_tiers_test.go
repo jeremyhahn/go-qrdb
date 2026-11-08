@@ -47,7 +47,7 @@ package buildgates
 //     cancel-in-progress, Company Agent m701);
 //   - any other pull_request workflow without the ref-keyed concurrency group
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
-//     v1.22.1), or any workflow but ci.yml and automerge.yml regaining a
+//     v1.22.1), or any workflow but ci.yml regaining a
 //     `schedule:` (ruling 135: ci.yml's in-template trigger is the one
 //     scheduler, restored under Company Agent ruling 216(1); the owner ruling
 //     of 2026-10-11 and m433 forbid host cron and timers).
@@ -147,11 +147,9 @@ const (
 // ci-template v1.27.0's nightly cron, the one scheduler under ruling 135,
 // restored under Company Agent ruling 216(1) (Software DS-3913); the owner
 // ruling of 2026-10-11 and m433 forbid host cron and timers, not this
-// trigger. automerge.yml is under owner hold
-// and out of #674's scope.
+// trigger.
 var scheduleAllowed = map[string]bool{
-	ciWorkflowName:  true,
-	"automerge.yml": true,
+	ciWorkflowName: true,
 }
 
 // prTierJobs, codeTierJobs, fullTierJobs, nightlyTierJobs and fullTierJob pin
@@ -165,8 +163,8 @@ var scheduleAllowed = map[string]bool{
 // and test-sdk, ruling 211) and test-typescript build and test nothing a
 // docs-only pull request changes (DS-3160).
 var (
-	prTierJobs      = []string{changesJob, scheduleGuardJob, "lint", "lint-gates", "arch-gates"}
-	codeTierJobs    = []string{"test-typescript", "image", "coverage", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
+	prTierJobs      = []string{changesJob, "lint", "lint-gates", "arch-gates"}
+	codeTierJobs    = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
 )
@@ -240,6 +238,22 @@ type ciWorkflow struct {
 	} `yaml:"jobs"`
 	On  yaml.Node         `yaml:"on"`
 	Env map[string]string `yaml:"env"`
+}
+
+// tierCondition is a job's `if:` as the tier checks read it: without the
+// draft skip, which is not a tier.
+func tierCondition(cond string) string {
+	return withoutDraftSkip(cond)
+}
+
+// readCIBody reads ci.yml.
+func readCIBody(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", ciWorkflowName))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	return string(b)
 }
 
 func parseWorkflow(t *testing.T, body string) ciWorkflow {
@@ -970,9 +984,6 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	}
 	if p := workflowTriggerProblems("x.yml", parse(good)); len(p) != 0 {
 		t.Fatalf("the valid fixture must have no problems, got %v", p)
-	}
-	if p := workflowTriggerProblems("automerge.yml", parse("on:\n  schedule:\n    - cron: '0 3 * * *'\n")); len(p) != 0 {
-		t.Fatalf("automerge.yml is exempt from the schedule rule, got %v", p)
 	}
 	const ciGood = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + mainKeyedGroup + "\n  cancel-in-progress: " + cancelLiteral + "\n"
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {

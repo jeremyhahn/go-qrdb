@@ -27,7 +27,13 @@ s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
 case $1 in
   create) printf '%s' "${*: -1}" > "$s/stage-cmd" ;;
-  cp) cat > /dev/null ;;
+  cp)
+    # A copy out of the stage (<name>:/src/<path> <dest>) writes <dest>,
+    # unless STUB_NO_PRODUCT says the stage left nothing there.
+    case $2 in
+      *:/src/*) if [ -n "${STUB_NO_PRODUCT:-}" ]; then exit 1; fi; echo product > "$3" ;;
+      *) cat > /dev/null ;;
+    esac ;;
   start) ;;
   run)
     case " $* " in
@@ -293,6 +299,93 @@ scratch_refused() {
 }
 scratch_refused unset -u TMPDIR
 scratch_refused missing TMPDIR="$D/no-such-dir"
+
+# 22. CI_CACHE_DIR bind-mounts its gobuild and golangci directories, creates
+# them, mounts no module cache, and gives the cache to the run's uid with a
+# CHOWN-only helper after the stage's create; a bridge stage then takes the
+# copy of the baked module cache.
+reset
+rm -rf "$D/cache"
+run CI_CACHE=on CI_CACHE_DIR="$D/cache" IN_IMAGE_NETWORK=bridge
+create=$(grep -n '^create ' "$D/state/calls" | cut -d: -f1)
+chown=$(grep -n '^run --rm --network none --cap-drop ALL --cap-add CHOWN ' "$D/state/calls" | cut -d: -f1)
+if [ "$rc" = 0 ] && [ -d "$D/cache/gobuild" ] && [ -d "$D/cache/golangci" ] &&
+  called "^create .*-v $D/cache/gobuild:/cache/gobuild .*-v $D/cache/golangci:/cache/golangci " &&
+  ! called 'cache-gomod' && ! called '/cache/gomod' &&
+  [ -n "$chown" ] && [ "$create" -lt "$chown" ] &&
+  called "-v $D/cache/gobuild:/c/gobuild -v $D/cache/golangci:/c/golangci img find /c -mindepth 1 ! -user 10001 -exec chown -h 10001:10001 {} +$" &&
+  grep -q 'cp -a /gomodcache/. /home/dev/gomodcache/ && ' "$D/state/stage-cmd"; then
+  ok "CI_CACHE_DIR bind-mounts the cache, chowned after the create, with no module cache"
+else bad "CI_CACHE_DIR bind-mounts the cache, chowned after the create, with no module cache (rc=$rc)"; cat "$D/state/calls"; fi
+
+# 23. Without CI_CACHE_DIR the caches are the named volumes, one set per
+# prefix with no trust class, and a bridge stage writes the gomod volume.
+reset
+run CI_CACHE=on IN_IMAGE_NETWORK=bridge
+if [ "$rc" = 0 ] && called '^create .*-v p-cache-gobuild:/cache/gobuild .*-v p-cache-golangci:/cache/golangci .*-v p-cache-gomod:/cache/gomod ' &&
+  called '^create .*--env GOMODCACHE=/cache/gomod ' && ! grep -q 'cp -a /gomodcache' "$D/state/stage-cmd" &&
+  called '-v p-cache-gomod:/c/gomod img find /c '; then
+  ok "the named-volume cache keeps the gomod volume for a bridge stage"
+else bad "the named-volume cache keeps the gomod volume for a bridge stage (rc=$rc)"; cat "$D/state/calls"; fi
+
+# 24. A relative CI_CACHE_DIR is refused before anything runs.
+reset
+run CI_CACHE=on CI_CACHE_DIR=cache
+if [ "$rc" = 2 ] && grep -q 'CI_CACHE_DIR must be an absolute path: cache' "$D/out" && [ ! -s "$D/state/calls" ]; then
+  ok "a relative CI_CACHE_DIR is refused"
+else bad "a relative CI_CACHE_DIR is refused (rc=$rc)"; cat "$D/out"; fi
+
+# 25. No --cgroup-parent unless CI_CGROUP_PARENT names one: a hosted runner VM
+# has no CI slice.
+reset
+run
+if ! grep -q -- '--cgroup-parent' "$D/state/calls"; then
+  ok "no --cgroup-parent by default"
+else bad "no --cgroup-parent by default"; cat "$D/state/calls"; fi
+reset
+run CI_CGROUP_PARENT=ci.slice
+if called '^create .*--cgroup-parent ci.slice '; then
+  ok "CI_CGROUP_PARENT names the cgroup parent"
+else bad "CI_CGROUP_PARENT names the cgroup parent"; cat "$D/state/calls"; fi
+
+# 26. --memory and --memory-swap are one size, the swap-free bound, whatever
+# the host offers: a cgroup limit, or MemTotal less 2 GiB, or 8g.
+reset
+run
+mem=$(grep -m1 '^create ' "$D/state/calls" | grep -o -- '--memory [0-9]*[mg]\{0,1\} ' | cut -d' ' -f2)
+if [ -n "$mem" ] && called "^create .*--memory $mem --memory-swap $mem "; then
+  ok "the stage's memory bound is derived and swap-free ($mem)"
+else bad "the stage's memory bound is derived and swap-free"; cat "$D/state/calls"; fi
+
+# 27. IN_IMAGE_COPY_OUT copies the named product out of the stage after it
+# exits, whatever its status, and the stage's status is still the script's.
+reset
+rm -rf "$D/src/coverage"
+run IN_IMAGE_COPY_OUT=coverage/leg-x.out STUB_EXIT=3
+if [ "$rc" = 3 ] && [ "$(cat "$D/src/coverage/leg-x.out" 2>/dev/null)" = product ] &&
+  called '^cp p-tc-[0-9]*-[0-9]*:/src/coverage/leg-x.out '; then
+  ok "IN_IMAGE_COPY_OUT copies the product out after a failing stage"
+else bad "IN_IMAGE_COPY_OUT copies the product out after a failing stage (rc=$rc)"; cat "$D/out" "$D/state/calls"; fi
+rm -rf "$D/src/coverage"
+
+# 28. A stage that left no product says so, and keeps its own status.
+reset
+run IN_IMAGE_COPY_OUT=coverage/leg-x.out STUB_NO_PRODUCT=1
+if [ "$rc" = 0 ] && grep -q 'the stage left no coverage/leg-x.out' "$D/out" && [ ! -e "$D/src/coverage/leg-x.out" ]; then
+  ok "a missing product is reported"
+else bad "a missing product is reported (rc=$rc)"; cat "$D/out"; fi
+rm -rf "$D/src/coverage"
+
+# 29. A copy-out path that is absolute or leaves the checkout is refused
+# before anything runs.
+for bad_path in /etc/passwd ../x coverage/../../x ./x a//b; do
+  reset
+  run IN_IMAGE_COPY_OUT="$bad_path"
+  if [ "$rc" = 2 ] && grep -q "IN_IMAGE_COPY_OUT must be a relative path inside the checkout: $bad_path" "$D/out" &&
+    [ ! -s "$D/state/calls" ]; then
+    ok "IN_IMAGE_COPY_OUT refuses $bad_path"
+  else bad "IN_IMAGE_COPY_OUT refuses $bad_path (rc=$rc)"; cat "$D/out"; fi
+done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

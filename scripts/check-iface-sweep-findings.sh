@@ -23,11 +23,12 @@
 # ifacesweep prints the source file of every interface method it finds, and
 # the first version of it printed token.Position.Filename VERBATIM. That is
 # absolute — go/packages resolves it against the checkout, so the committed
-# TSV read e.g. /home/dev/sources/.wt/go-qrdb-271-iface-sweep/cmd/qrdbd/
-# cluster_migrate.go on 996 of 996 rows. Caught in review, not by a check:
-# the publication-bound scanner's scope is docs/*/, so an absolute host path
-# under test/tools/ was invisible to it (go-qrdb, filed separately). Two
-# things were wrong with that output, and this script is against both:
+# TSV read e.g. <repo-root>/cmd/qrdbd/cluster_migrate.go, <repo-root> being
+# the absolute path of the reviewer's worktree, on 996 of 996 rows. Caught in
+# review, not by a check: the publication-bound scanner's scope is docs/*/, so
+# an absolute host path under test/tools/ was invisible to it (go-qrdb, filed
+# separately). Two things were wrong with that output, and this script is
+# against both:
 #
 #   1. It baked the reviewer's own workstation layout and worktree name into
 #      version control — the same class of leak check-publication-bound.sh

@@ -194,9 +194,20 @@ type signedInit struct {
 // reference cannot both succeed.
 type signedInitBook struct {
 	// now is the clock; nil is time.Now.
-	now     func() time.Time
+	now func() time.Time
+	// ttl is how long an issued reference stays redeemable; zero is
+	// SignedInitTTL.
+	ttl     time.Duration
 	entries sync.Map // string(reference) -> *signedInit
 	count   atomic.Int64
+}
+
+// lifetime is the book's reference lifetime.
+func (b *signedInitBook) lifetime() time.Duration {
+	if b.ttl > 0 {
+		return b.ttl
+	}
+	return SignedInitTTL
 }
 
 func (b *signedInitBook) clock() time.Time {
@@ -318,7 +329,7 @@ func (s *TenantService) TenantBarrierInitBegin(ctx context.Context, req *TenantB
 		shares:    req.Shares,
 		prepared:  prepared,
 		statement: statement,
-		expiresAt: now.Add(SignedInitTTL),
+		expiresAt: now.Add(s.signedInits.lifetime()),
 	}
 	ref, err := s.signedInits.issue(e)
 	if err != nil {

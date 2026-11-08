@@ -70,6 +70,22 @@ const releaseAlphaMention = "make release-alpha"
 // a release.
 var tagWrite = regexp.MustCompile(`(^|[;&|\s])git\s+(-C\s+\S+\s+)?(tag(\s|$)|push\b[^;&|\n]*(--tags\b|refs/tags/))`)
 
+// releaseGateJobs are release.yml's gate jobs.
+var releaseGateJobs = []string{"gate", "gate-sweeps", "gate-tags", "coverage", "coverage-merge"}
+
+// releasePublishNeeds are the jobs publish must need. coverage's legs are
+// reached through coverage-merge, which needs them and fails when one did.
+var releasePublishNeeds = []string{"validate", "gate", "gate-sweeps", "gate-tags", "coverage-merge"}
+
+// releaseGateCommands is the ci.yml command each gate job must run.
+var releaseGateCommands = map[string][]string{
+	"gate":           {"make fmt", "make vet", "make lint", "go build ./...", "make build-server"},
+	"gate-sweeps":    {"make vet-tags", "make secure-analyzer"},
+	"gate-tags":      {"make test-tags"},
+	"coverage":       {"make coverage-leg"},
+	"coverage-merge": {"make coverage-merge"},
+}
+
 // releaseWorkflowDefects returns every way src fails to be the validation-only
 // path the 2026-10-06 ruling describes. An empty result is what the workflow
 // is supposed to be.
@@ -134,13 +150,19 @@ func releaseWorkflowDefects(src []byte) []string {
 		}
 	}
 
-	if gate, ok := wf.Jobs["gate"]; !ok {
-		defects = append(defects, "no `gate` job")
-	} else {
-		all := concatRuns(gate.Steps)
-		for _, want := range []string{"make fmt", "make vet", "make vet-tags", "make secure-analyzer", "make lint", "go build ./...", "make build-server", "make coverage", "make test-tags"} {
+	// The release gate is ci.yml's checks, split over jobs that each fit a
+	// hosted runner's time limit (DS-7377): every command must run in the
+	// job named for it, and publish must need every one of those jobs.
+	for _, job := range releaseGateJobs {
+		j, ok := wf.Jobs[job]
+		if !ok {
+			defects = append(defects, "no `"+job+"` job")
+			continue
+		}
+		all := concatRuns(j.Steps)
+		for _, want := range releaseGateCommands[job] {
 			if !strings.Contains(all, want) {
-				defects = append(defects, "gate must run `"+want+"`, the matching ci.yml command")
+				defects = append(defects, job+" must run `"+want+"`, the matching ci.yml command")
 			}
 		}
 	}
@@ -151,13 +173,14 @@ func releaseWorkflowDefects(src []byte) []string {
 		if publish.Permissions["contents"] != "write" {
 			defects = append(defects, "publish must set permissions: contents: write to create the release")
 		}
-		var needsValidate, needsGate bool
+		needed := map[string]bool{}
 		for _, n := range publish.Needs {
-			needsValidate = needsValidate || n == "validate"
-			needsGate = needsGate || n == "gate"
+			needed[n] = true
 		}
-		if !needsValidate || !needsGate {
-			defects = append(defects, "publish must need both validate and gate; it must not publish notes for a tag that failed either")
+		for _, want := range releasePublishNeeds {
+			if !needed[want] {
+				defects = append(defects, "publish must need validate and every gate job, "+want+" included; it must not publish notes for a tag that failed one")
+			}
 		}
 		all := concatRuns(publish.Steps)
 		if !strings.Contains(all, "github.api_url") {
@@ -298,9 +321,14 @@ func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 			"VERSION",
 		},
 		"gate drops a command": {
-			"run: make coverage",
+			"run: make coverage-merge",
 			"run: echo skip",
-			"coverage",
+			"coverage-merge must run",
+		},
+		"gate-sweeps drops the tag sweep": {
+			"run: make vet-tags",
+			"run: echo skip",
+			"make vet-tags",
 		},
 		"publish loses its write permission": {
 			"    permissions:\n      contents: write",
@@ -308,9 +336,14 @@ func TestTheReleaseGateSeesEachWayTheWorkflowCanDrift(t *testing.T) {
 			"contents: write",
 		},
 		"publish stops needing gate": {
-			"needs: [validate, gate]",
-			"needs: [validate]",
-			"must need",
+			"needs: [validate, gate, gate-sweeps, gate-tags, coverage-merge]",
+			"needs: [validate, gate-sweeps, gate-tags, coverage-merge]",
+			"gate included",
+		},
+		"publish stops needing the coverage merge": {
+			"needs: [validate, gate, gate-sweeps, gate-tags, coverage-merge]",
+			"needs: [validate, gate, gate-sweeps, gate-tags]",
+			"coverage-merge included",
 		},
 		"publish hardcodes github.com": {
 			"\"${{ github.api_url }}/repos/${{ github.repository }}/releases\"",
@@ -398,8 +431,7 @@ func TestNoWorkflowCreatesTags(t *testing.T) {
 	for _, v := range violations {
 		t.Error(v)
 	}
-	// Discovery floor: ci, nightly, release-lockstep, automerge and release
-	// itself. An empty directory walk would pass this test vacuously.
+	// Discovery floor: ci, nightly, release-lockstep and release itself. An empty directory walk would pass this test vacuously.
 	if seen < 4 {
 		t.Fatalf("scanned %d workflow files; expected at least 4", seen)
 	}
@@ -409,7 +441,7 @@ func TestNoWorkflowCreatesTags(t *testing.T) {
 // above needs: a fixture workflow that genuinely tags and pushes tags by
 // hand must still be flagged, proving tagWrite can go red at all rather than
 // having been narrowed into never firing. It also plants a plain branch
-// push shaped exactly like automerge.yml's merge-train landing step, to
+// push shaped exactly like a merge-train landing step, to
 // prove the narrowing did not go blind in the other direction.
 func TestTagWriteDetectionCatchesARealTagPush(t *testing.T) {
 	root := t.TempDir()
