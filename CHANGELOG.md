@@ -33,6 +33,22 @@ are not reconstructed here — their history is in the git log.
   a change, the record is written first; the node whose conditional write
   wins then emits one `posture-change` audit event (`previous`, `posture`,
   `fips_forced`). A record that cannot be read or written refuses the start.
+- **First boot enrols a system Security Officer** (#1128). `qrdb init
+  --so-username` with exactly one of `--so-csr` / `--so-cert` (with
+  `--so-chain`), and `CeremonyInitializeRequest`'s `so_username`,
+  `so_csr_pem`, `so_cert_pem` and `so_chain_pem` on REST, gRPC, QUIC, MCP, Unix
+  and embedded, name the system tenant's SO. Its PIN is `so_pin`. The ceremony
+  signs or adopts its certificate, returns it as `so_cert_pem`, and keeps the
+  PIN only as its `auth.HashSOPIN` hash. `qrdbd` and `sdk/go/node` record the
+  SO in the replicated store (`firstboot.PendingSystemSOKey`), and first boot
+  enrols it with the system `so` role alone, idempotently, through
+  `firstboot.Dependencies.SO` / `SOEnrolled` / `SOPINs`. **Strict separation
+  of duties refuses to boot without a system SO**, before any write, with
+  `*firstboot.SystemSORequiredError`; under it the system SO alone runs role
+  create and both role reconciles. The standard posture keeps the SO optional.
+  A malformed SO, or one that is the admin by username or key, is
+  `*ceremony.SystemSORejectedError`, classified `INVALID_ARGUMENT` / 400 on
+  every transport.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
@@ -165,6 +181,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
+  (#1128), shared by tenant create and the system SO:
+  `bootstrap.IncompleteTenantSOError` is now `firstboot.IncompleteSOError`,
+  and `bootstrap.ConflictingSOCredentialError` / `bootstrap.SOMatchesAdminError`
+  are now `firstboot.ConflictingSOCredentialError` /
+  `firstboot.SOMatchesAdminError`. Their errclass rows moved with them and
+  still classify `INVALID_ARGUMENT`.
 - **Compliance mode runs the SO-exclusive role operations only as a separate
   Security Officer** (#1128). Under strict separation of duties
   (`auth.separation_of_duties`, forced on by FIPS 140-3 mode) no account holds

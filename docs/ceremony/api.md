@@ -50,6 +50,7 @@ share-claim route of its own.
   "hostname": "db.example.com", "sans": ["db.example.com"],
   "admin_csr_pem": "…", "admin_cert_pem": "…", "admin_cert_pool_pem": "…",
   "admin_generate": false,
+  "so_username": "secofficer", "so_csr_pem": "…", "so_cert_pem": "…", "so_chain_pem": "…",
   "secret": "YmFycmllci1wYXNzcGhyYXNl"
 }
 ```
@@ -100,12 +101,28 @@ Exactly one must be set; a request selecting none is refused
 (`*ceremony.NoAdminCredentialSelectedError`, 400), and more than one is
 refused too (`*ceremony.ConflictingAdminCredentialInputsError`, 400).
 
+**`so_username` names the system tenant's Security Officer**, which first
+boot enrols with only the `so` role. It needs exactly one of `so_csr_pem`
+(signed by the ceremony CA under the system tenant) and `so_cert_pem` (a
+certificate the SO already holds, verified against `admin_cert_pool_pem`, or
+the ceremony's own CA bundle when that is empty, through `so_chain_pem`'s
+intermediates). The SO's PIN is `so_pin`. The ceremony keeps it only as its
+`auth.HashSOPIN` hash, and that hash is what reaches first boot. The SO is
+optional as a whole, but a server running strict separation of duties
+refuses to boot without one (`*firstboot.SystemSORequiredError`, see
+[../firstboot/architecture.md](../firstboot/architecture.md#the-system-security-officer)).
+A username without a certificate input (or the reverse), both inputs, the
+admin's username or key, no `so_pin`, a CSR that does not parse, or a
+certificate that does not verify is refused with
+`*ceremony.SystemSORejectedError` (400).
+
 Response — `CeremonyInitializeResponse`: `spki_pin`, `ca_cert_pem`,
 `tls_cert_pem`, `state`, `share_count`, `holders` — each initial holder's
 `username`, `role` and CA-issued `cert_pem` (**never a share**: each holder
 claims its own envelope) — and the bootstrap admin's credential result:
 `admin_cert_pem`, `admin_credential_source` (`"csr"`, `"byoc"` or
-`"generated"`), and `admin_key_pem`.
+`"generated"`), and `admin_key_pem`. `so_cert_pem` is the system SO's signed
+or adopted certificate, set when the request named an SO.
 
 ```json
 { "spki_pin": "…", "ca_cert_pem": "…", "state": "operational",
@@ -151,6 +168,7 @@ requires an authenticated, authorized caller rather than only the SO PIN.
 | SO PIN locked out after repeated wrong PINs | 429 with `Retry-After` | `RESOURCE_EXHAUSTED` |
 | No PIN backend | 412 | `FAILED_PRECONDITION` |
 | CSR-sign or generate admin path on a node with no CA key (a composer's gRPC registration without `sdk.WithRegisterCeremonyCA`) | 409 | `FAILED_PRECONDITION` — `*ceremony.AdminCredentialRequiresCAError`, refusal reason `ADMIN_CREDENTIAL_REQUIRES_CA` with metadata `path` (`csr-sign` or `generate`); the SDK rebuilds the typed error on every transport |
+| System SO given in part, with both inputs, matching the admin, without `so_pin`, or with a bad CSR or certificate | 400 | `INVALID_ARGUMENT` — `*ceremony.SystemSORejectedError` |
 | Ceremony already performed | 409 | `FAILED_PRECONDITION` — `ErrAlreadyInitialized` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 

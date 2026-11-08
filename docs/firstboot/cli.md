@@ -29,6 +29,10 @@ default role set in a single transactional ceremony**.
 | `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`/`--admin-generate`) |
 | `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` must chain to; only valid with `--admin-cert`, and required unless the certificate was issued by this deployment's own CA |
 | `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
+| `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. **Required when the server runs strict separation of duties** |
+| `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's (mutually exclusive with `--so-cert`) |
+| `--so-cert` | string | — | path to a PEM certificate the system SO already holds, naming the system tenant; verified against `--admin-cert-pool` or this deployment's own CA (mutually exclusive with `--so-csr`) |
+| `--so-chain` | string | — | path to PEM intermediates for `--so-cert`; only valid with `--so-cert` |
 
 Exactly one of `--admin-csr`, `--admin-cert` or `--admin-generate` is
 **required** -- there is no credential-less default.
@@ -49,6 +53,25 @@ the user PIN can never bring it up alone. (A tenant's own barrier has no
 equivalent dual-control pair; see
 [../barrier-seal/user.md](../barrier-seal/user.md#common-tasks).)
 
+**The system SO flags are all-or-nothing**: none at all, or `--so-username`
+with exactly one of `--so-csr` and `--so-cert`. `qrdb init` refuses a partial
+set before it calls the server. The SO must be a different principal from the
+admin, by username and by key; the ceremony refuses one that is not with
+`*ceremony.SystemSORejectedError` (400). The SO's PIN is `--so-pin`: the
+ceremony keeps it only as its hash, and first boot commits that hash as the
+SO's PIN record. On success `qrdb init` prints the SO's certificate as
+`SOCertPEM`.
+
+**Under strict separation of duties (`auth.separation_of_duties`, always on in
+FIPS 140-3 mode) the system SO is required.** Role create and the built-in
+role reconciles run only as a separate SO, and the system admin can never be
+given the `so` role. A deployment that booted without an SO could therefore
+never manage its roles. First boot refuses it, before any write, with
+`*firstboot.SystemSORequiredError`, and `qrdbd start` exits. The standard
+posture keeps the SO optional. Enrolment is idempotent across restarts: once
+the SO is enrolled its pending record is marked consumed, and a later strict
+boot counts it as present.
+
 ### Environment variables
 
 All Viper-bound, and equivalent to the flags:
@@ -63,6 +86,7 @@ All Viper-bound, and equivalent to the flags:
 | `QRDB_THRESHOLD` | `--threshold` |
 | `QRDB_HOSTNAME` | `--hostname` |
 | `QRDB_SANS` | `--sans` |
+| `QRDB_SO_USERNAME` | `--so-username` |
 
 ### Examples
 
@@ -82,6 +106,10 @@ qrdb init --barrier-strategy shamir --shares 5 --threshold 3 \
           --so-pin SOPIN --user-pin USERPIN --admin-csr admin.csr \
           --officers alice=alice.csr --officers bob=bob.csr \
           --officers carol=carol.csr
+
+# Strict separation of duties: name the system SO beside the admin
+qrdb init --so-pin SOPIN --user-pin USERPIN --barrier-strategy none \
+          --admin-csr admin.csr --so-username secofficer --so-csr so.csr
 
 # From the environment
 QRDB_SO_PIN=... QRDB_USER_PIN=... QRDB_PASSPHRASE=... \
