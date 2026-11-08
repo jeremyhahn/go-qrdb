@@ -455,6 +455,11 @@ func (s *BatchService) execute(ctx context.Context, ops []Op, proposeCmd func(cm
 				return nil, err
 			}
 			responses[i] = resp
+
+		case OpPut, OpDelete:
+
+		default:
+			return nil, &UnsupportedTransactionOpError{OpType: op.Type}
 		}
 	}
 

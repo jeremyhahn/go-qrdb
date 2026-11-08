@@ -22,13 +22,19 @@
 // only via the raw REST helper httpTx, never through the CLI binary, and
 // never multi-protocol. This file closes that gap and exercises the
 // compare-and-swap / put-if-not-exists / multi-compare permutations that
-// give transactions their value over plain kv put.
+// give transactions their value over plain kv put. On a three-node MVCC
+// cluster it drives get and range ops inside a transaction branch: every node
+// answers a read-only transaction with the key's MVCC metadata, a branch that
+// reads, writes and reads again sees its own write at the transaction's
+// revision, a failure branch reads the current value back after an
+// intervening write, and a range answers every key in it.
 package integration_test
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -88,9 +94,7 @@ func testTxExecuteOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 
 	// --- CAS success: compare value == "v1", success op replaces with
 	// "v2". FailureOps is empty -- it never executes since the compare
-	// holds, and (per the fail-closed rejection of reads in a transaction
-	// branch, see the dedicated block below) a Get is no longer accepted
-	// as a placeholder op in either branch, executed or not. ------------
+	// holds. Reads in a branch are TestTxRead_CLI_ClusterPerProtocol's. --
 	resp, out, err := txExecuteFile(t, node, proto, transport.TransactionRequest{
 		Compares: []transport.Compare{
 			{Key: []byte(keyA), Target: transport.CompareValue, Result: transport.CompareEqual, Value: []byte("v1")},
@@ -251,70 +255,6 @@ func testTxExecuteOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 		t.Fatalf("[%s] kv get %s after stdin tx execute = %q, err=%v, want %q", proto.name, keyStdin, out, err, "stdin-tx")
 	}
 
-	// --- fail-closed rejection of reads in a transaction branch: a
-	// transaction whose successOps or failureOps list contains an OpGet or
-	// OpRange must be rejected as a client error rather than silently
-	// coerced into a write. Compares are evaluated server-side against
-	// live state, so the client cannot know in advance which branch will
-	// actually execute -- both op lists are validated up front, whether or
-	// not the branch they belong to ends up selected. This was previously
-	// a data-corruption bug when the invalid op landed in the *executed*
-	// branch (pkg/service/transaction_service.go's encodeServiceOp
-	// defaulted unmapped op types, including OpGet/OpRange, to
-	// protocol.OpMVCCPut, so an executed Get overwrote the target key with
-	// an empty value). The fix rejects any non-Put/Delete branch op with a
-	// typed UnsupportedTransactionOpError before the command is ever
-	// encoded or proposed to Raft, mapped to a 400-class error on every
-	// transport. This is shared pkg/service logic (not transport wiring),
-	// so the rejection reproduces identically on all 5 transports.
-	// Contrast with `batch execute` (pkg/service/batch_service.go's
-	// Execute/ExecuteWithMode), which explicitly special-cases OpGet/
-	// OpRange via executeGet/executeRange as real linearizable reads
-	// BEFORE encoding the write ops (see batch_cli_test.go's mixed-batch
-	// Get assertion) -- transactions have no such per-op read-result
-	// channel on the wire, so a read in a branch is unsupported rather
-	// than executed.
-	keyOpGetRejected := prefix + "get-in-executed-ops-rejected"
-	out, err = runCLIProto(t, node, proto, "kv", "put", keyOpGetRejected, "untouched")
-	if err != nil {
-		t.Fatalf("[%s] seed kv put %s (OpGet-in-branch rejection): %v\noutput: %s", proto.name, keyOpGetRejected, err, out)
-	}
-	_, out, err = txExecuteFile(t, node, proto, transport.TransactionRequest{
-		// No compares: the transaction always "succeeds" and successOps
-		// -- containing a Get -- would be the executed branch, if it were
-		// ever proposed. It must instead be rejected up front.
-		SuccessOps: []transport.Op{
-			{Type: transport.OpGet, Key: []byte(keyOpGetRejected)},
-		},
-	})
-	if err == nil {
-		t.Fatalf("[%s] tx execute (OpGet in successOps): succeeded, want rejected (output: %s)", proto.name, out)
-	}
-	out, err = runCLIProto(t, node, proto, "kv", "get", keyOpGetRejected)
-	if err != nil || strings.TrimSpace(out) != "untouched" {
-		t.Fatalf("[%s] kv get %s after rejected OpGet-in-branch tx = %q, err=%v, want unchanged %q", proto.name, keyOpGetRejected, out, err, "untouched")
-	}
-
-	// Same rejection for OpRange in a branch (etcd-style range-as-Get with
-	// RangeEnd set).
-	keyOpRangeRejected := prefix + "range-in-executed-ops-rejected"
-	out, err = runCLIProto(t, node, proto, "kv", "put", keyOpRangeRejected, "untouched")
-	if err != nil {
-		t.Fatalf("[%s] seed kv put %s (OpRange-in-branch rejection): %v\noutput: %s", proto.name, keyOpRangeRejected, err, out)
-	}
-	_, out, err = txExecuteFile(t, node, proto, transport.TransactionRequest{
-		SuccessOps: []transport.Op{
-			{Type: transport.OpRange, Key: []byte(keyOpRangeRejected), RangeEnd: []byte(keyOpRangeRejected + "\xff")},
-		},
-	})
-	if err == nil {
-		t.Fatalf("[%s] tx execute (OpRange in successOps): succeeded, want rejected (output: %s)", proto.name, out)
-	}
-	out, err = runCLIProto(t, node, proto, "kv", "get", keyOpRangeRejected)
-	if err != nil || strings.TrimSpace(out) != "untouched" {
-		t.Fatalf("[%s] kv get %s after rejected OpRange-in-branch tx = %q, err=%v, want unchanged %q", proto.name, keyOpRangeRejected, out, err, "untouched")
-	}
-
 	// --- CLI-side validation: --file is required. -----------------------
 	out, err = runCLIProto(t, node, proto, "tx", "execute")
 	if err == nil {
@@ -333,4 +273,144 @@ func testTxExecuteOverProtocol(t *testing.T, node *multiProtoNode, proto multiPr
 	if err == nil {
 		t.Fatalf("[%s] tx execute with malformed JSON file succeeded, want error (output: %s)", proto.name, out)
 	}
+}
+
+// txReadActivation bounds the wait for the transaction-reads feature to
+// activate across the cluster after it boots.
+const txReadActivation = 90 * time.Second
+
+func TestTxRead_CLI_ClusterPerProtocol(t *testing.T) {
+	t.Parallel()
+	nodes, _ := startMultiProtocolCluster(t, 0)
+
+	for i, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			testTxReadOverProtocol(t, nodes, i, proto)
+		})
+	}
+}
+
+func testTxReadOverProtocol(t *testing.T, nodes [3]*multiProtoNode, writer int, proto multiProtocol) {
+	t.Helper()
+	w := nodes[writer%len(nodes)]
+	prefix := "txread/" + proto.name + "/"
+	key := prefix + "key"
+	get := transport.Op{Type: transport.OpGet, Key: []byte(key)}
+
+	for _, v := range []string{"v1", "v2"} {
+		if out, err := runCLIProto(t, w, proto, "kv", "put", key, v); err != nil {
+			t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, v, err, out)
+		}
+	}
+
+	// Every node answers a read-only transaction with the same key-value.
+	var seen *transport.MVCCKeyValue
+	for n, node := range nodes {
+		resp := txReadWhenActive(t, node, proto, transport.TransactionRequest{SuccessOps: []transport.Op{get}})
+		got := txReadOne(t, proto, resp, 0)
+		if string(got.Value) != "v2" || got.Version != 2 || got.CreateRevision == 0 || got.ModRevision <= got.CreateRevision {
+			t.Fatalf("[%s] node %d read = %+v, want v2 at version 2 with a later mod revision", proto.name, n, got)
+		}
+		if seen != nil && !sameMVCCKeyValue(got, seen) {
+			t.Fatalf("[%s] node %d read = %+v, node 0 read %+v", proto.name, n, got, seen)
+		}
+		seen = got
+	}
+
+	// Read, write and read again in one branch, guarded by the version read.
+	resp, out, err := txExecuteFile(t, w, proto, transport.TransactionRequest{
+		Compares: []transport.Compare{
+			{Key: []byte(key), Target: transport.CompareVersion, Result: transport.CompareEqual, Version: seen.Version},
+		},
+		SuccessOps: []transport.Op{get, {Type: transport.OpPut, Key: []byte(key), Value: []byte("v3")}, get},
+		FailureOps: []transport.Op{get},
+	})
+	if err != nil || !resp.Succeeded || len(resp.Responses) != 3 {
+		t.Fatalf("[%s] tx read-write-read: succeeded=%t responses=%d err=%v, want the success branch's 3 answers\noutput: %s",
+			proto.name, resp.Succeeded, len(resp.Responses), err, out)
+	}
+	if before := txReadOne(t, proto, resp, 0); !sameMVCCKeyValue(before, seen) {
+		t.Fatalf("[%s] read before the put = %+v, want %+v", proto.name, before, seen)
+	}
+	if len(resp.Responses[1].Kvs) != 0 {
+		t.Fatalf("[%s] the put's answer carries key-values: %+v", proto.name, resp.Responses[1])
+	}
+	after := txReadOne(t, proto, resp, 2)
+	if string(after.Value) != "v3" || after.Version != seen.Version+1 ||
+		after.ModRevision != resp.Revision || after.CreateRevision != seen.CreateRevision {
+		t.Fatalf("[%s] read after the put = %+v, want v3 at version %d, mod revision %d, create revision %d",
+			proto.name, after, seen.Version+1, resp.Revision, seen.CreateRevision)
+	}
+
+	// An intervening write sends the same compare to the failure branch,
+	// which reads the current value back.
+	if out, err := runCLIProto(t, w, proto, "kv", "put", key, "intervening"); err != nil {
+		t.Fatalf("[%s] intervening kv put: %v\noutput: %s", proto.name, err, out)
+	}
+	resp, out, err = txExecuteFile(t, w, proto, transport.TransactionRequest{
+		Compares: []transport.Compare{
+			{Key: []byte(key), Target: transport.CompareVersion, Result: transport.CompareEqual, Version: after.Version},
+		},
+		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte(key), Value: []byte("lost-update")}},
+		FailureOps: []transport.Op{get},
+	})
+	if err != nil || resp.Succeeded || len(resp.Responses) != 1 {
+		t.Fatalf("[%s] tx after an intervening write: succeeded=%t responses=%d err=%v, want the failure branch's answer\noutput: %s",
+			proto.name, resp.Succeeded, len(resp.Responses), err, out)
+	}
+	if cur := txReadOne(t, proto, resp, 0); string(cur.Value) != "intervening" || cur.Version != after.Version+1 {
+		t.Fatalf("[%s] failure-branch read = %+v, want intervening at version %d", proto.name, cur, after.Version+1)
+	}
+
+	// A range answers every key in it, in key order.
+	for _, k := range []string{"r/a", "r/b"} {
+		if out, err := runCLIProto(t, w, proto, "kv", "put", prefix+k, k); err != nil {
+			t.Fatalf("[%s] kv put %s: %v\noutput: %s", proto.name, k, err, out)
+		}
+	}
+	resp, out, err = txExecuteFile(t, w, proto, transport.TransactionRequest{
+		SuccessOps: []transport.Op{{Type: transport.OpRange, Key: []byte(prefix + "r/"), RangeEnd: []byte(prefix + "r0")}},
+	})
+	if err != nil || len(resp.Responses) != 1 || resp.Responses[0].Count != 2 || len(resp.Responses[0].Kvs) != 2 {
+		t.Fatalf("[%s] tx range: %+v err=%v, want one answer of 2 keys\noutput: %s", proto.name, resp, err, out)
+	}
+	if a, b := string(resp.Responses[0].Kvs[0].Key), string(resp.Responses[0].Kvs[1].Key); a != prefix+"r/a" || b != prefix+"r/b" {
+		t.Fatalf("[%s] tx range keys = %q, %q, want %q, %q", proto.name, a, b, prefix+"r/a", prefix+"r/b")
+	}
+}
+
+// txReadWhenActive executes a read-only transaction on node, retrying only
+// while the cluster has not yet activated the transaction-reads feature.
+func txReadWhenActive(t *testing.T, node *multiProtoNode, proto multiProtocol, req transport.TransactionRequest) transport.TransactionResponse {
+	t.Helper()
+	var (
+		resp transport.TransactionResponse
+		out  string
+		err  error
+	)
+	pollUntil(txReadActivation, 250*time.Millisecond, func() bool {
+		resp, out, err = txExecuteFile(t, node, proto, req)
+		return err == nil || !strings.Contains(out, "is not active yet")
+	})
+	if err != nil {
+		t.Fatalf("[%s] read-only tx: %v\noutput: %s", proto.name, err, out)
+	}
+	return resp
+}
+
+// txReadOne returns the single key-value answered by op i of resp.
+func txReadOne(t *testing.T, proto multiProtocol, resp transport.TransactionResponse, i int) *transport.MVCCKeyValue {
+	t.Helper()
+	if i >= len(resp.Responses) || resp.Responses[i].Count != 1 || len(resp.Responses[i].Kvs) != 1 {
+		t.Fatalf("[%s] answer %d of %+v, want one key-value", proto.name, i, resp)
+	}
+	return resp.Responses[i].Kvs[0]
+}
+
+// sameMVCCKeyValue reports whether a and b are the same key-value at the same
+// MVCC position.
+func sameMVCCKeyValue(a, b *transport.MVCCKeyValue) bool {
+	return string(a.Key) == string(b.Key) && string(a.Value) == string(b.Value) &&
+		a.CreateRevision == b.CreateRevision && a.ModRevision == b.ModRevision &&
+		a.Version == b.Version && a.LeaseID == b.LeaseID
 }

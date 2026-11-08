@@ -52,7 +52,7 @@ require (
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/viterin/vek v0.4.3
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	github.com/wailsapp/wails/v2 v2.17.0
+	github.com/wailsapp/wails/v2 v2.17.1
 	github.com/x448/float16 v0.8.4
 	go.etcd.io/etcd/api/v3 v3.7.3
 	go.etcd.io/etcd/client/v3 v3.7.3

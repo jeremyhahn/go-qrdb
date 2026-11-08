@@ -431,8 +431,7 @@ func TestNoWorkflowCreatesTags(t *testing.T) {
 	for _, v := range violations {
 		t.Error(v)
 	}
-	// Discovery floor: ci, nightly, release-lockstep, automerge and release
-	// itself. An empty directory walk would pass this test vacuously.
+	// Discovery floor: ci, nightly, release-lockstep and release itself. An empty directory walk would pass this test vacuously.
 	if seen < 4 {
 		t.Fatalf("scanned %d workflow files; expected at least 4", seen)
 	}
@@ -442,7 +441,7 @@ func TestNoWorkflowCreatesTags(t *testing.T) {
 // above needs: a fixture workflow that genuinely tags and pushes tags by
 // hand must still be flagged, proving tagWrite can go red at all rather than
 // having been narrowed into never firing. It also plants a plain branch
-// push shaped exactly like automerge.yml's merge-train landing step, to
+// push shaped exactly like a merge-train landing step, to
 // prove the narrowing did not go blind in the other direction.
 func TestTagWriteDetectionCatchesARealTagPush(t *testing.T) {
 	root := t.TempDir()

@@ -371,8 +371,7 @@ A scheduled run no longer yields to `main`: the template's
 push run on `main` was in flight, and on hosted runners, where every job has
 its own machine, there is no shared host to protect, so DS-7377 removed it.
 
-`automerge.yml` is the only other workflow with a
-`schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
+No other workflow has a `schedule:`. `nightly.yml` (trivy's full report and the signal job) runs only
 on `workflow_dispatch`, and is dispatched by hand each night.
 
 `lint`, `lint-gates`, `image` and the unit-suite jobs run every stage of the

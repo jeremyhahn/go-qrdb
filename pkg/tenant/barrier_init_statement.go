@@ -117,6 +117,17 @@ func WithBarrierInitBook(book BarrierInitBook) TenantServiceOption {
 	return func(s *TenantService) { s.initBook = book }
 }
 
+// WithSignedInitTTL sets how long a TenantBarrierInitBegin reference stays
+// redeemable (tenant.signed_init_ttl). A value outside (0, SignedInitTTL]
+// leaves the default SignedInitTTL.
+func WithSignedInitTTL(ttl time.Duration) TenantServiceOption {
+	return func(s *TenantService) {
+		if ttl > 0 && ttl <= SignedInitTTL {
+			s.signedInits.ttl = ttl
+		}
+	}
+}
+
 // WithInitStatement carries the barrier owner's signed init statement, as
 // barrierinit.InitStatement.Marshal encodes it, into one init. Empty is no
 // statement.
