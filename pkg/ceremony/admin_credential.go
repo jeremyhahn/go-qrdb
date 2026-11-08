@@ -376,6 +376,24 @@ func generateAdminCSR() (csrPEM, keyPEM []byte, err error) {
 // admin-profile checklist below has no counterpart there at all -- it is
 // specific to this path.
 func adoptAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain string) ([]byte, error) {
+	cert, err := verifyPresentedLoginCert(certPEM, nil, pool, trustDomain)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAdminCertProfile(cert); err != nil {
+		return nil, err
+	}
+	adopted := make([]byte, len(certPEM))
+	copy(adopted, certPEM)
+	return adopted, nil
+}
+
+// verifyPresentedLoginCert is the check every login certificate an operator
+// brings (the admin's, the system SO's) passes before it is adopted: it
+// parses, falls inside its validity window, chains to pool (through
+// chainPEM's intermediates, when given) and passes auth.TenantFromClientCert
+// pinned to trustDomain, which an empty trustDomain fails.
+func verifyPresentedLoginCert(certPEM, chainPEM []byte, pool *x509.CertPool, trustDomain string) (*x509.Certificate, error) {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		return nil, &AdminCredentialRejectedError{Cause: errors.New("no CERTIFICATE block in PEM input")}
@@ -390,26 +408,28 @@ func adoptAdminCert(certPEM []byte, pool *x509.CertPool, trustDomain string) ([]
 		return nil, &AdminCredentialRejectedError{Cause: errors.New("certificate is outside its validity window")}
 	}
 
+	var intermediates *x509.CertPool
+	if len(chainPEM) > 0 {
+		intermediates = x509.NewCertPool()
+		if !intermediates.AppendCertsFromPEM(chainPEM) {
+			return nil, &AdminCredentialRejectedError{Cause: errors.New("chain contains no usable certificates")}
+		}
+	}
 	if _, err := cert.Verify(x509.VerifyOptions{
-		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		Roots:         pool,
+		Intermediates: intermediates,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	}); err != nil {
 		return nil, &AdminCredentialRejectedError{Cause: err}
 	}
 
-	if err := validateAdminCertProfile(cert); err != nil {
-		return nil, err
-	}
 	if _, err := adminSignCSROptions(trustDomain).URIs(); err != nil {
 		return nil, &AdminCredentialRejectedError{Cause: err}
 	}
 	if _, err := auth.TenantFromClientCert(cert, trustDomain); err != nil {
 		return nil, &AdminCredentialRejectedError{Cause: err}
 	}
-
-	adopted := make([]byte, len(certPEM))
-	copy(adopted, certPEM)
-	return adopted, nil
+	return cert, nil
 }
 
 // validateAdminCertProfile enforces the BYOC admin checklist (go-qrdb#548

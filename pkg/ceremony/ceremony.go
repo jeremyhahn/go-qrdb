@@ -78,6 +78,10 @@ type CeremonyService struct {
 
 	// lastAdminSource records which path produced lastAdminCertPEM.
 	lastAdminSource AdminCredentialSource
+
+	// lastSystemSO is the system SO Initialize named, for the composer to
+	// hand to first boot as it does lastAdminCertPEM. Nil when none.
+	lastSystemSO *IssuedSystemSO
 }
 
 // Compile-time checks.
@@ -453,6 +457,9 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
+	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
+		return nil, err
+	}
 
 	// Every officer's CSR, key kind, encryption KEM/key and factor set is
 	// validated as a batch, PURELY, before any of them is enrolled
@@ -631,8 +638,20 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
 		return nil, err
 	}
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle, adminCertPEM)
+	if err != nil {
+		secure.Wipe(adminKeyPEM)
+		s.mu.Unlock()
+		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
+		return nil, err
+	}
 	s.lastAdminCertPEM = adminCertPEM
 	s.lastAdminSource = adminSource
+	s.lastSystemSO = systemSO
+	if systemSO != nil {
+		result.SOCertPEM = systemSO.CertPEM
+		s.logger.Info("ceremony: system SO credential issued", slog.String("username", systemSO.Username))
+	}
 	result.AdminCertPEM = adminCertPEM
 	result.AdminKeyPEM = adminKeyPEM
 	result.AdminCredentialSource = adminSource

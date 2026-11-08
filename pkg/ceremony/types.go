@@ -188,6 +188,25 @@ type InitializeOptions struct {
 	// there is no credential-less default admin-credential path.
 	AdminGenerate bool
 
+	// SOUsername names the system tenant's Security Officer, enrolled at
+	// first boot with the so role alone; a strict separation-of-duties
+	// deployment refuses to boot without one. Its login certificate is
+	// SOCSRPEM signed by the ceremony CA or SOCertPEM adopted, exactly one;
+	// its PIN is SOPin, kept only as the hash auth.HashSOPIN makes. Optional
+	// as a whole: no SOUsername and no SO certificate input names no SO.
+	SOUsername string
+
+	// SOCSRPEM is the system SO's CSR. Mutually exclusive with SOCertPEM.
+	SOCSRPEM []byte
+
+	// SOCertPEM is a certificate the system SO already holds, validated
+	// against AdminCertPoolPEM (or the ceremony's own CA bundle when that is
+	// empty), through SOChainPEM's intermediates when given.
+	SOCertPEM []byte
+
+	// SOChainPEM holds intermediates for SOCertPEM. Optional.
+	SOChainPEM []byte
+
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with, BORROWED for the duration of this
 	// call: Initialize reads it through WithBytes to build the barrier's
@@ -285,6 +304,10 @@ type InitResult struct {
 
 	// AdminCredentialSource records which path produced AdminCertPEM.
 	AdminCredentialSource AdminCredentialSource
+
+	// SOCertPEM is the system SO's login certificate, signed or adopted, when
+	// InitializeOptions named an SO. Public; it must reach the SO.
+	SOCertPEM []byte
 
 	// Holders is each enrolled holder's issued certificate, in Officers
 	// order. The certificates are public; each must reach its holder, who
