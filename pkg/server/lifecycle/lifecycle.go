@@ -763,6 +763,11 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// homeGroupRouters are the audit and log resolvers the node serves
+	// from; AttachTenantHomes attaches the tenant homes to each, so an
+	// isolated tenant's trail and logs apply in its home group.
+	homeGroupRouters []homeGroupRouter
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -825,6 +830,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, auditResolver)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
 		service.NewReplicatedLogger(auditResolver),
 		&nodeAuditEntitlementLookup{node: n},
@@ -1008,6 +1014,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// the database's. A build without the qrdb_vlog tag has no log service,
 	// which is not a boot failure.
 	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, logResolver)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err

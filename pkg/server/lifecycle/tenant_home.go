@@ -56,6 +56,12 @@ type TenantHomeServices interface {
 	HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error)
 }
 
+// homeGroupRouter is a resolver that routes isolated tenants to their home
+// group once one is attached: *service.SystemShardAuditResolver.
+type homeGroupRouter interface {
+	SetHomeGroupSource(source service.AuditHomeGroupSource)
+}
+
 // TenantHomeCatchingUpError is returned by HomeStore while this node's replica
 // of a tenant's home group is catching up. A node is not in the home group's
 // serving set until its replica has caught up: the request is refused here as
@@ -147,8 +153,14 @@ func AttachTenantHomes(n *Node, services TenantHomeServices, served ...tenant.St
 	if !ok {
 		return false
 	}
-	if !attachHomeSource(n, NewTenantHomes(services, provisioner), served) {
+	homes := NewTenantHomes(services, provisioner)
+	if !attachHomeSource(n, homes, served) {
 		return false
+	}
+	// An isolated tenant's audit trail and verifiable logs apply in its
+	// home group (architecture.md decision S9).
+	for _, r := range n.homeGroupRouters {
+		r.SetHomeGroupSource(homes)
 	}
 	// The home group's leader is the one node that completes a tenant's
 	// pending first admin.
