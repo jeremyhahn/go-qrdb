@@ -19,8 +19,9 @@ are not reconstructed here — their history is in the git log.
   sealed error (`*pebble.SealedError` wrapping `ErrBarrierSealed`), waits up
   to the new `seal.drain_timeout` (default `10s`, env
   `QRDB_SEAL_DRAIN_TIMEOUT`, which bounds every barrier: system, tenant and
-  database) for the ones in flight, Raft state-machine commits included,
-  then seals. A tenant whose drain runs out during a node seal is still
+  database, on `qrdbd` and SDK nodes alike) for the ones in flight, Raft
+  state-machine commits, whole snapshot recoveries and the encrypted vector
+  store's writes included, then seals. A tenant whose drain runs out during a node seal is still
   brought back by the node unseal. Work
   outlasting the bound no longer races the key wipe into a Pebble panic: the
   barrier still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError`

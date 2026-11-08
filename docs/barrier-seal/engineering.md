@@ -619,10 +619,19 @@ services and to the server, which wraps the node's sealed-window probe with
   `SealWatch.Done`, one atomic add and one atomic load). The Raft state
   machines' commits hold it too: every `PebbleStorage` that `pkg/store` wraps
   over a sealed store's db takes the store's watch (`NewFromDB(...,
-  WithSealWatch(w))`), and the Pebble state machine's own batch commits
-  (`Update`, snapshot recovery) take the lease around `Commit`, so a seal never
-  reports a store drained while a state-machine commit is in flight; a commit
-  that meets the closed gate is refused with the typed sealed error. `StorageBarrier.Seal`
+  WithSealWatch(w))`), and the Pebble state machine's own `Update` batch
+  commits take the lease around `Commit`, so a seal never reports a store
+  drained while a state-machine commit is in flight; a commit that meets the
+  closed gate is refused with the typed sealed error. Snapshot recovery, on
+  both state-machine families, takes one lease for the whole recovery, from
+  the delete of the old data through the commit of its replacement: a seal
+  either refuses it before anything is deleted or drains until it has
+  finished. The encrypted vector store opens through the same
+  `pkg/storage/pebble` `Open`, so it registers with the gate like the other
+  sealed stores, every write (durable writes, batch commits, ID persistence,
+  compaction) holds its lease, and `Close` leaves the gate. SDK nodes
+  (`sdk/go/node`) apply `seal.drain_timeout` to the system barrier exactly as
+  `qrdbd` does. `StorageBarrier.Seal`
   closes the barrier's quiesce gate, after which `Admit` refuses with the same
   `*SealedError` wrapping `ErrBarrierSealed`, waits up to `seal.drain_timeout`
   (`QRDB_SEAL_DRAIN_TIMEOUT`, default `10s`) for every store's leases to
