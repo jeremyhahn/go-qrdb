@@ -21,7 +21,6 @@ import (
 	"github.com/cockroachdb/pebble/v2/vfs"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/encfs"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
