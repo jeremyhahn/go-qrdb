@@ -165,6 +165,31 @@ are not reconstructed here — their history is in the git log.
   `SORoleRequiredError`, and an account left holding both from the standard
   posture with `SORoleConflictError`. In the standard posture an Admin may
   hold `so` and runs both operations as before.
+- **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
+  of ci.yml, release.yml, nightly.yml, automerge.yml and
+  release-lockstep.yml runs on `ubuntu-latest`; only code review keeps its
+  self-hosted host, and the `bigdisk`, `batch` and `ci-gate` labels are gone
+  from `.github/actionlint.yaml`. `docker-build` builds the toolchain and
+  integration images once per run and hands them to every other job as run
+  artifacts, loaded by `scripts/ci-image.sh`, which refuses an image whose ID
+  is not the one built, so a fork's pull request runs with no registry
+  credential; on a push to `main` alone it also pushes both to `ghcr.io` by
+  content hash with the run's own token. The Gitea registry and
+  `RELEASE_REGISTRY*`, the named cache volumes and their trim, the stale-stack
+  reaper, the image holds and `schedule-guard` are removed with their scripts
+  (`ci-registry.sh`, `ci-image-cache.sh`, `trim-ci-caches.sh`,
+  `reap-stale-ci-stacks.sh`); Go's caches ride `actions/cache`, saved on a
+  push to `main` alone, and each image job frees the runner's disk first.
+  Jobs are planned at four times their fleet time, every limit at most 350
+  minutes: `make coverage` stays one repo-wide gate, run as twelve
+  `coverage-leg` legs over `COVER_LEGS` and a `coverage-merge` job that
+  applies `COVER_MIN` and the baseline ratchet; `test-sdk` runs as two
+  `test-sdk-leg` legs; the FIPS legs are the same `UNIT_LEGS` at 120
+  minutes; release.yml's gate is split into `gate`, `gate-sweeps`,
+  `gate-tags` and the coverage legs and merge. `GOMAXPROCS` and go's `-p` are
+  derived from the stage container's CPU bound, never written. New gates:
+  `test/buildgates/ci_runners_test.go`, `coverage_legs_test.go` and
+  `scripts/ci-image_test.sh` (`make test-ci-image`).
 - **Dependencies**: mcp-go v1.4.0, in the root module and `sdk/go`, so
   `make deps-check` passes on `main` and every pull request.
 - **Dependencies**: google.golang.org/grpc v1.85.0, golang.org/x/net v0.62.0 and github.com/jeremyhahn/go-objstore v0.9.0-alpha wherever they are direct requirements (#1349); `make deps-check` passes again.
