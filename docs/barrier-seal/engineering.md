@@ -616,13 +616,24 @@ services and to the server, which wraps the node's sealed-window probe with
   (seal-quiesce). The check alone would leave a window between it and
   Pebble's next file creation, so every flush, durable write and compaction
   the watch admits holds its store's quiesce lease (`SealWatch.Admit` ...
-  `SealWatch.Done`, one atomic add and one atomic load). `StorageBarrier.Seal`
+  `SealWatch.Done`, one atomic add and one atomic load). The Raft state
+  machines' commits hold it too: every `PebbleStorage` that `pkg/store` wraps
+  over a sealed store's db takes the store's watch (`NewFromDB(...,
+  WithSealWatch(w))`), and the Pebble state machine's own batch commits
+  (`Update`, snapshot recovery) take the lease around `Commit`, so a seal never
+  reports a store drained while a state-machine commit is in flight; a commit
+  that meets the closed gate is refused with the typed sealed error. `StorageBarrier.Seal`
   closes the barrier's quiesce gate, after which `Admit` refuses with the same
   `*SealedError` wrapping `ErrBarrierSealed`, waits up to `seal.drain_timeout`
   (`QRDB_SEAL_DRAIN_TIMEOUT`, default `10s`) for every store's leases to
-  drain, then wipes the key. A drain that runs out still seals and returns a
+  drain, then wipes the key. Tenant and database barriers inherit the system
+  barrier's resolved `SealDrainTimeout` (`BarrierRegistry.tenantBarrierConfig`,
+  `DatabaseBarrierManager.barrierConfig`), so the one setting bounds every
+  barrier's drain. A drain that runs out still seals and returns a
   `*quiesce.DrainTimeoutError` naming the stores, logged and audited (phase
-  `drain`); unseal reopens the gate. Pebble's own background flushes and
+  `drain`); unseal reopens the gate. A system-managed tenant sealed by a node
+  seal whose drain ran out is still recorded as the node seal's, so the node
+  unseal brings it back. Pebble's own background flushes and
   compactions are not admitted, and a sealed barrier fails them as before.
   Pebble is used as released (see *Sealing quiesces the encrypted stores* in
   [architecture.md](architecture.md)).

@@ -307,7 +307,9 @@ qrdb database unseal secure --secret "$SECRET"
 **Sealing does not cut off a write halfway.** A seal first stops new writes,
 flushes and compactions on the encrypted stores, waits for the ones already
 running, and only then wipes the key. The wait is bounded by
-`seal.drain_timeout` (default `10s`, env `QRDB_SEAL_DRAIN_TIMEOUT`):
+`seal.drain_timeout` (default `10s`, env `QRDB_SEAL_DRAIN_TIMEOUT`), which
+applies to every barrier on the node: the system barrier and each tenant and
+database barrier:
 
 ```yaml
 seal:
