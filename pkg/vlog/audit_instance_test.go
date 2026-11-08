@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -98,19 +99,19 @@ func TestDescriptor_TreeStartJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(plain), "tree_start") {
-		t.Fatalf("a named log's descriptor carries tree_start: %s", plain)
+	if strings.Contains(string(plain), "tree_start") || strings.Contains(string(plain), `"audit"`) {
+		t.Fatalf("a named log's descriptor carries tree_start or audit: %s", plain)
 	}
 	raw, err := json.Marshal(AuditDescriptor(auditTenant, 7))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"origin":"acme/system/audit","hash":"sha256","allow_expire_bodies":true,"tree_start":7}`
+	want := `{"origin":"acme/system/audit","hash":"sha256","allow_expire_bodies":true,"tree_start":7,"audit":true}`
 	if string(raw) != want {
 		t.Fatalf("audit descriptor = %s, want %s", raw, want)
 	}
 	var back Descriptor
-	if err := json.Unmarshal(raw, &back); err != nil || back.TreeStart != 7 {
+	if err := json.Unmarshal(raw, &back); err != nil || back.TreeStart != 7 || !back.Audit {
 		t.Fatalf("round trip = %+v, %v", back, err)
 	}
 }
@@ -215,6 +216,91 @@ func TestAuditInstance_SwitchStartsTheTreeAtS0(t *testing.T) {
 	if head, _ := ReadHead(stg, auditID); head.Size != 38 {
 		t.Fatalf("size after restore and append = %d, want 38", head.Size)
 	}
+}
+
+// TestAuditInstance_LegacyLogUnderTheAuditName pins that a log created under
+// the audit name before the instance existed (an alpha Create allowed it) is
+// neither reinterpreted nor corrupted: its descriptor has no "audit" field,
+// so its entries read back from its own prefix, the instance cannot be
+// created over it (AuditNameTakenError, with the linear chain unchanged),
+// and OpAuditAppend and Prune extend and prune the linear chain alone.
+func TestAuditInstance_LegacyLogUnderTheAuditName(t *testing.T) {
+	stg := memory.NewStorage()
+	// The pre-instance layout: Create's descriptor and empty head, then two
+	// entries under the log's own prefix.
+	legacy := `{"origin":"acme/system/audit","hash":"sha256","allow_expire_bodies":true}`
+	if err := stg.Set(descriptorKey(auditID), []byte(legacy)); err != nil {
+		t.Fatal(err)
+	}
+	if err := stg.Set(logHeadKey(auditID), encodeLogHead(0, 0, nil)); err != nil {
+		t.Fatal(err)
+	}
+	own := [][]byte{[]byte("own-0"), []byte("own-1")}
+	for i, e := range own {
+		if err := stg.Set(entryKey(auditID, uint64(i)), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := appendLeaves(stg, auditID, logState{allowExpire: true}, own); err != nil {
+		t.Fatalf("appendLeaves: %v", err)
+	}
+	c := NewChain()
+	if err := c.Restore(stg); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	appendLinear(t, c, stg, 0, 2)
+	headBefore := c.heads[auditTenant]
+	linearBefore := tableSnapshot(t, stg, TablePrefix)
+	logsBefore := tableSnapshot(t, stg, LogTablePrefix)
+
+	readOwn := func() {
+		t.Helper()
+		got, err := Get(stg, auditID, 0, 10)
+		if err != nil || len(got) != 2 || string(got[0].Body) != "own-0" || string(got[1].Body) != "own-1" {
+			t.Fatalf("Get = %+v, %v; want the log's own two entries", got, err)
+		}
+	}
+	readOwn()
+
+	_, err := c.AppendAudit(stg, auditTenant, linked(2))
+	var taken *AuditNameTakenError
+	if !errors.As(err, &taken) || taken.ID != auditID {
+		t.Fatalf("AppendAudit over the legacy log = %v, want AuditNameTakenError", err)
+	}
+	if c.heads[auditTenant] != headBefore || !reflect.DeepEqual(tableSnapshot(t, stg, TablePrefix), linearBefore) {
+		t.Fatal("a refused instance append changed the linear chain")
+	}
+	if !reflect.DeepEqual(tableSnapshot(t, stg, LogTablePrefix), logsBefore) {
+		t.Fatal("a refused instance append changed the legacy log")
+	}
+
+	// OpAuditAppend and Prune keep the pre-instance behaviour: the linear
+	// chain moves, the legacy log does not.
+	appendLinear(t, c, stg, 2, 4)
+	if _, err := c.Prune(stg, auditTenant, 3); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if seq, lo, _ := c.Head(auditTenant); seq != 4 || lo != 3 {
+		t.Fatalf("linear head = seq %d lo %d, want 4 and 3", seq, lo)
+	}
+	if !reflect.DeepEqual(tableSnapshot(t, stg, LogTablePrefix), logsBefore) {
+		t.Fatal("OpAuditAppend or Prune changed the legacy log")
+	}
+	readOwn()
+}
+
+// tableSnapshot answers every key under prefix with its value.
+func tableSnapshot(t *testing.T, r storage.Reader, prefix string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	it := r.NewIterator(&storage.IteratorOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		out[string(it.Key())] = string(it.Value())
+	}
+	if err := it.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // verifyAuditProofs checks inclusion and consistency proofs of the audit

@@ -200,15 +200,19 @@ func Get(r storage.Reader, id LogID, from uint64, limit int) ([]Entry, error) {
 		return entries, nil
 	}
 	// A named log's entry i is under its own prefix at i; the audit
-	// instance's is the linear chain's event at TreeStart+i.
+	// instance's is the linear chain's event at TreeStart+i. A log under
+	// the audit name whose descriptor lacks Audit predates the instance and
+	// keeps its own entries.
 	prefix, base := entryPrefix(id), uint64(0)
 	if IsAuditLog(id) {
 		desc, err := readDescriptor(r.Get, id)
 		if err != nil {
 			return nil, err
 		}
-		start := EventRangeStart(id.TenantID, 0)
-		prefix, base = start[:len(start)-8], desc.TreeStart
+		if desc.Audit {
+			start := EventRangeStart(id.TenantID, 0)
+			prefix, base = start[:len(start)-8], desc.TreeStart
+		}
 	}
 	bodyKey := func(index uint64) []byte {
 		return binary.BigEndian.AppendUint64(bytes.Clone(prefix), base+index)

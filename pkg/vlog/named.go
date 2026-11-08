@@ -104,6 +104,13 @@ type Descriptor struct {
 	// is the audit event at sequence TreeStart+i. Zero, and absent, on
 	// every other log.
 	TreeStart uint64 `json:"tree_start,omitempty"`
+
+	// Audit marks the audit instance: only AuditDescriptor sets it. A log
+	// is the instance when IsAuditLog names it and its descriptor has
+	// Audit; a log created under the audit name before the instance
+	// existed has no Audit, keeps its own entries, and is never
+	// reinterpreted (docs/databases/architecture.md §7).
+	Audit bool `json:"audit,omitempty"`
 }
 
 // Key returns the log's key at version.
@@ -149,6 +156,9 @@ type logState struct {
 	// treeStart is the descriptor's TreeStart: the audit sequence of leaf 0
 	// on an audit instance, zero on every other log.
 	treeStart uint64
+	// audit is the descriptor's Audit: the log is its tenant's audit
+	// instance.
+	audit bool
 }
 
 // getFunc reads one record, answering nil, nil for an absent key as
@@ -210,7 +220,7 @@ func readLogState(get getFunc, id LogID) (logState, error) {
 	if err != nil {
 		return logState{}, err
 	}
-	return logState{size: size, lo: lo, hashes: hashes, allowExpire: desc.AllowExpireBodies, treeStart: desc.TreeStart}, nil
+	return logState{size: size, lo: lo, hashes: hashes, allowExpire: desc.AllowExpireBodies, treeStart: desc.TreeStart, audit: desc.Audit}, nil
 }
 
 // readLogHead reads and decodes id's head record, answering
@@ -580,7 +590,7 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	if !st.allowExpire {
 		return 0, &ExpireNotAllowedError{ID: id}
 	}
-	if IsAuditLog(id) {
+	if st.audit {
 		// The audit instance's bodies are its audit events, under the
 		// linear chain's keys: leaf i is the event at sequence
 		// treeStart+i, so expiring below leaf cutoff is pruning below
@@ -631,6 +641,7 @@ func AuditDescriptor(tenantID string, treeStart uint64) Descriptor {
 		Hash:              HashSHA256,
 		AllowExpireBodies: true,
 		TreeStart:         treeStart,
+		Audit:             true,
 	}
 }
 
@@ -659,11 +670,21 @@ func (c *Chain) AppendAudit(w Writer, tenantID string, encode Encoder) (seq uint
 // TreeStart+i, whichever opcode carried it. c.mu must be held.
 func (c *Chain) appendEvent(w Writer, tenantID string, encode Encoder, create bool) (uint64, error) {
 	id := AuditLogID(tenantID)
+	st, exists := c.logs[id]
+	if exists && !st.audit {
+		// A log created under the audit name before the instance existed
+		// is never reinterpreted: the instance cannot be created over it,
+		// and an OpAuditAppend event only extends the linear chain, as it
+		// did before the instance.
+		if create {
+			return 0, &AuditNameTakenError{ID: id}
+		}
+		exists = false
+	}
 	head, body, err := c.appendLinear(w, tenantID, encode)
 	if err != nil {
 		return 0, err
 	}
-	st, exists := c.logs[id]
 	if !exists && !create {
 		c.heads[tenantID] = head
 		return head.seq, nil
@@ -676,7 +697,7 @@ func (c *Chain) appendEvent(w Writer, tenantID string, encode Encoder, create bo
 		if err := w.Set(descriptorKey(id), descBody); err != nil {
 			return 0, &TableWriteError{Err: err}
 		}
-		st = logState{allowExpire: true, treeStart: head.seq}
+		st = logState{allowExpire: true, treeStart: head.seq, audit: true}
 	}
 	next, staged, err := appendLeaves(w, id, st, [][]byte{body})
 	if err != nil {

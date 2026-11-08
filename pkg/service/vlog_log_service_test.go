@@ -608,6 +608,26 @@ func TestLogService_Append_ReturnsTheFirstIndex(t *testing.T) {
 	}
 }
 
+// TestLogService_Append_RefusesTheAuditInstance pins that the public Append
+// never reaches the audit instance: a client's entry would be chained as a
+// genuine audit event, so the audit name is refused before anything is
+// proposed.
+func TestLogService_Append_RefusesTheAuditInstance(t *testing.T) {
+	host, cmds := recordingHost(sm.Result{Value: 1})
+	svc := newTestLogService(t, host, nil)
+	_, err := svc.Append(acmeCtx(), &AppendRequest{
+		LogRef:  LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog},
+		Entries: [][]byte{[]byte(`{"tenant_id":"acme","action":"forged"}`)},
+	})
+	var reserved *vlog.ReservedLogError
+	if !errors.As(err, &reserved) || reserved.ID != vlog.AuditLogID("acme") {
+		t.Fatalf("err = %v, want ReservedLogError for acme/system/audit", err)
+	}
+	if len(*cmds) != 0 {
+		t.Fatalf("a refused audit append proposed %d commands", len(*cmds))
+	}
+}
+
 func TestLogService_Append_Refusals(t *testing.T) {
 	ctx := acmeCtx()
 

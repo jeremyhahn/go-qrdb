@@ -88,18 +88,20 @@ func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error 
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
-	// Once the group enables featuregate.VerifiableLog, every event is an
-	// append to the tenant's audit instance, the log system/audit
+	// Once the group enables featuregate.VerifiableLogAudit, every event is
+	// an AuditAppend to the tenant's audit instance, the log system/audit
 	// (docs/databases/architecture.md §7); before, it is OpAuditAppend, and
-	// no replica writes a tree node for it. A host that gates nothing is a
-	// single-binary composition: it keeps OpAuditAppend.
+	// no replica writes a tree node for it. VerifiableLog alone is not
+	// enough: a binary that has it but predates the audit instance would
+	// refuse the append while its peers chain it. A host that gates nothing
+	// is a single-binary composition: it keeps OpAuditAppend.
 	var cmd []byte
-	if isGated && gated.FeatureEnabled(shardID, featuregate.VerifiableLog) {
+	if isGated && gated.FeatureEnabled(shardID, featuregate.VerifiableLogAudit) {
 		body, marshalErr := json.Marshal(ev)
 		if marshalErr != nil {
 			return &EncodeRequestError{Err: marshalErr}
 		}
-		cmd, err = protocol.EncodeVerifiableLogAppend(vlog.AuditLogID(target), [][]byte{body})
+		cmd, err = protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID(target), [][]byte{body})
 	} else {
 		cmd, err = protocol.EncodeAuditAppend(target, ev)
 	}

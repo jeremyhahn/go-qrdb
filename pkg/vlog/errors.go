@@ -129,6 +129,29 @@ func (e *ReservedLogError) Error() string {
 	return "vlog: log " + e.ID.String() + " is the audit instance; only audit events append to it"
 }
 
+// NotAuditLogError is returned when an audit-instance append names a log
+// other than its tenant's audit instance (AuditLogID).
+type NotAuditLogError struct {
+	ID LogID
+}
+
+func (e *NotAuditLogError) Error() string {
+	return "vlog: log " + e.ID.String() + " is not an audit instance"
+}
+
+// AuditNameTakenError is returned when the audit instance would be created
+// over a log that already holds the audit name but is not the instance: a
+// log created under that name before the instance existed. That log is left
+// as it was, and the tenant has no audit instance until it is deleted
+// (docs/databases/architecture.md §7).
+type AuditNameTakenError struct {
+	ID LogID
+}
+
+func (e *AuditNameTakenError) Error() string {
+	return "vlog: log " + e.ID.String() + " predates the audit instance; delete it to enable the tenant's audit instance"
+}
+
 // LogExistsError is returned when Create names a log that already exists.
 type LogExistsError struct {
 	ID LogID

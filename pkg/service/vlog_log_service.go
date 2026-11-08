@@ -314,6 +314,11 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 	if err != nil {
 		return nil, err
 	}
+	if vlog.IsAuditLog(id) {
+		// Only the replicated audit logger appends to the audit instance,
+		// with its own sub-type: a client's entry is never an audit event.
+		return nil, &vlog.ReservedLogError{ID: id}
+	}
 	first, err := s.propose(ctx, id, logFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogAppend(id, req.Entries)
 	})

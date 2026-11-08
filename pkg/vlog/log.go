@@ -277,7 +277,7 @@ func (c *Chain) pruneLocked(w Writer, tenantID string, cutoff uint64) (deleted i
 	}
 
 	id := AuditLogID(tenantID)
-	if st, exists := c.logs[id]; exists && upper > st.treeStart {
+	if st, exists := c.logs[id]; exists && st.audit && upper > st.treeStart {
 		lo := min(upper-st.treeStart, st.size)
 		if lo > st.lo {
 			if setErr := w.Set(logHeadKey(id), encodeLogHead(st.size, lo, st.hashes)); setErr != nil {
