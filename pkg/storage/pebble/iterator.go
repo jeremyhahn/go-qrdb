@@ -44,8 +44,9 @@ func buildIterOptions(opts *storage.IteratorOptions) *pebble.IterOptions {
 	if opts.UpperBound != nil {
 		iterOpts.UpperBound = opts.UpperBound
 	}
-	// OnlyKeys has no pebble counterpart: pebble has no keys-only mode, and
-	// IterKeyTypePointsOnly is the zero value of KeyTypes, already the default.
+	if opts.OnlyKeys {
+		iterOpts.KeyTypes = pebble.IterKeyTypePointsOnly
+	}
 	return iterOpts
 }
 
