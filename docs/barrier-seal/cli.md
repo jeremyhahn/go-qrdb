@@ -176,6 +176,11 @@ command exits non-zero with
 after <timeout>, stores still in flight: <dir>, ...`. That error never means
 the barrier is unsealed: `qrdb barrier status` shows it sealed.
 
+A client write that meets the seal is refused, never lost: while the seal
+pauses the node's shards it gets the retryable `Unavailable` refusal of a
+paused shard, and once the seal returns, the sealed refusal (`barrier
+sealed`). A write acknowledged before the refusal reads back after unseal.
+
 Prompts for confirmation on a TTY; pass `-y` from scripts.
 
 ```bash
