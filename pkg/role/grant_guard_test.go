@@ -242,6 +242,33 @@ func TestValidateGrantable_AFaultIsNotADenial(t *testing.T) {
 	}
 }
 
+// grantAuthorizer is an auth.GrantAuthorizer whose AuthorizeGrant answers
+// from its own holdings, apart from the Authorize the embedded
+// heldAuthorizer answers, as rbac's does for an SO and a crypto permission.
+type grantAuthorizer struct {
+	*heldAuthorizer
+	grantable *heldAuthorizer
+}
+
+func (g *grantAuthorizer) AuthorizeGrant(ctx context.Context, id *auth.Identity, resource, action string) error {
+	return g.grantable.Authorize(ctx, id, resource, action)
+}
+
+// TestValidateGrantable_UsesTheGrantCheckWhenProvided proves ValidateGrantable
+// asks an auth.GrantAuthorizer's AuthorizeGrant, not Authorize, and that a
+// refusal there is still a GrantExceedsHolderError.
+func TestValidateGrantable_UsesTheGrantCheckWhenProvided(t *testing.T) {
+	authz := &grantAuthorizer{heldAuthorizer: holding("acme"), grantable: holding("acme", permission.KeysSign)}
+	if err := ValidateGrantable(principal("acme"), authz, "acme", []permission.Permission{permission.KeysSign}); err != nil {
+		t.Fatalf("ValidateGrantable(grantable keys:sign) = %v, want nil", err)
+	}
+	if len(authz.asked) != 0 {
+		t.Fatalf("Authorize was asked %v, want only AuthorizeGrant", authz.asked)
+	}
+	err := ValidateGrantable(principal("acme"), authz, "acme", []permission.Permission{permission.KVGet})
+	wantExceeds(t, err, permission.KVGet)
+}
+
 func TestValidateGrantable_NothingToCheck(t *testing.T) {
 	authz := holding("acme")
 	for name, call := range map[string]func() error{

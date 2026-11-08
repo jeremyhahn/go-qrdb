@@ -111,9 +111,13 @@ func ValidateGrantable(ctx context.Context, authz auth.Authorizer, tenantID stri
 	if authz == nil || identity == nil || len(perms) == 0 {
 		return nil
 	}
+	check := authz.Authorize
+	if ga, ok := authz.(auth.GrantAuthorizer); ok {
+		check = ga.AuthorizeGrant
+	}
 	targetCtx := tenant.WithTenantID(ctx, tenantID)
 	for _, p := range permission.ExpandAll(perms) {
-		err := authz.Authorize(targetCtx, identity, permission.Resource(p), permission.Action(p))
+		err := check(targetCtx, identity, permission.Resource(p), permission.Action(p))
 		if err == nil {
 			continue
 		}

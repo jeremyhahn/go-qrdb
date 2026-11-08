@@ -191,6 +191,24 @@ func (d *Decorator) Reload(policies []*Policy) error {
 // a policy written against the authenticated value of that name — whether or
 // not the authenticator set it.
 func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, resource, action string) error {
+	return d.decide(ctx, identity, resource, action, d.inner.Authorize)
+}
+
+// AuthorizeGrant is Authorize for role.ValidateGrantable: the policies are
+// evaluated exactly as Authorize evaluates them, and a request no policy
+// decides falls through to the inner authorizer's AuthorizeGrant when it
+// has one (auth.GrantAuthorizer), else to its Authorize.
+func (d *Decorator) AuthorizeGrant(ctx context.Context, identity *auth.Identity, resource, action string) error {
+	inner := d.inner.Authorize
+	if ga, ok := d.inner.(auth.GrantAuthorizer); ok {
+		inner = ga.AuthorizeGrant
+	}
+	return d.decide(ctx, identity, resource, action, inner)
+}
+
+// decide evaluates the policies and defers a request none of them decides
+// to inner.
+func (d *Decorator) decide(ctx context.Context, identity *auth.Identity, resource, action string, inner func(context.Context, *auth.Identity, string, string) error) error {
 	target := tenant.FromContext(ctx)
 
 	subject := Subject{Authenticated: identity != nil}
@@ -240,7 +258,7 @@ func (d *Decorator) Authorize(ctx context.Context, identity *auth.Identity, reso
 			TenantID: target,
 		}
 	default:
-		return d.inner.Authorize(ctx, identity, resource, action)
+		return inner(ctx, identity, resource, action)
 	}
 }
 
