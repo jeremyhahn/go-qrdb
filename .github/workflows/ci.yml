@@ -61,8 +61,8 @@ on:
   workflow_dispatch:                    # re-fire a whole workflow
   # v1.23: main's full tier nightly as well as after every merge. Scheduled
   # runs are on the default branch. The one scheduler (ruling 135, ruling
-  # 216(1)); test/buildgates/ci_tiers_test.go allows a `schedule:` here and in
-  # automerge.yml alone.
+  # 216(1)); test/buildgates/ci_tiers_test.go allows a `schedule:` here
+  # alone.
   schedule:
     - cron: '0 4 * * *'
 

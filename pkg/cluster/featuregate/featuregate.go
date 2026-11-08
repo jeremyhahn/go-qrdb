@@ -136,6 +136,13 @@ const ImportStaging feature.Feature = "import-staging"
 // proposed only once every replica of the group can apply it.
 const RangeDelete feature.Feature = "range-delete"
 
+// TransactionReads is a read (protocol.OpMVCCRange) in a transaction branch,
+// answered in the transaction's apply result beside its succeeded flag. A
+// replica built before reads refuses the op while its peers answer it, so a
+// transaction holding one is proposed only once every replica of the group
+// can apply it.
+const TransactionReads feature.Feature = "transaction-reads"
+
 // AuditAppend is protocol.OpAuditAppend: a deterministic, apply-time-assigned
 // append (or retention prune) to a tenant's replicated audit hash chain. A
 // replica that does not implement it would apply nothing for an opcode it
@@ -237,7 +244,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {
