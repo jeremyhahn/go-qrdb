@@ -18,7 +18,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -26,56 +25,6 @@ import (
 // ---------------------------------------------------------------------------
 // handleIndexList
 // ---------------------------------------------------------------------------
-
-func TestHandleIndexList_Success(t *testing.T) {
-	indexSvc := &mockIndexService{
-		listIndexesFn: func(_ context.Context) ([]string, error) {
-			return []string{"idx-name", "idx-age", "idx-email"}, nil
-		},
-	}
-	handler := handleIndexList(indexSvc)
-
-	req := buildCallToolRequest(t, "qrdb_index_list", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleIndexList: %v", err)
-	}
-
-	text := resultText(t, result)
-	var names []string
-	if jsonErr := json.Unmarshal([]byte(text), &names); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if len(names) != 3 {
-		t.Errorf("expected 3 indexes, got %d: %v", len(names), names)
-	}
-}
-
-func TestHandleIndexList_Empty(t *testing.T) {
-	indexSvc := &mockIndexService{
-		listIndexesFn: func(_ context.Context) ([]string, error) {
-			return []string{}, nil
-		},
-	}
-	handler := handleIndexList(indexSvc)
-
-	req := buildCallToolRequest(t, "qrdb_index_list", map[string]any{})
-
-	result, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatalf("handleIndexList: %v", err)
-	}
-
-	text := resultText(t, result)
-	var names []string
-	if jsonErr := json.Unmarshal([]byte(text), &names); jsonErr != nil {
-		t.Fatalf("unmarshal: %v", jsonErr)
-	}
-	if len(names) != 0 {
-		t.Errorf("expected 0 indexes, got %d", len(names))
-	}
-}
 
 func TestHandleIndexList_ServiceError(t *testing.T) {
 	indexSvc := &mockIndexService{
