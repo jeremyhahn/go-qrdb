@@ -135,3 +135,124 @@ func TestHandleBatch_UnmarshalError(t *testing.T) {
 		t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
 	}
 }
+
+func TestHandleImport_NotConfigured(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"begin":  srv.handleImportBegin,
+		"append": srv.handleImportAppend,
+		"commit": srv.handleImportCommit,
+		"abort":  srv.handleImportAbort,
+	}
+	for name, h := range handlers {
+		t.Run(name, func(t *testing.T) {
+			_, err := h(context.Background(), nil)
+			var nc *ServiceNotConfiguredError
+			if !errors.As(err, &nc) || nc.Service != "batch" {
+				t.Fatalf("err = %v, want *ServiceNotConfiguredError{batch}", err)
+			}
+		})
+	}
+}
+
+func TestHandleImport_UnmarshalAndServiceErrors(t *testing.T) {
+	svcErr := &testError{msg: "import refused"}
+	batchSvc := &mockBatchService{
+		importBeginFn:  func(context.Context, service.ImportOptions) (string, error) { return "", svcErr },
+		importAppendFn: func(context.Context, string, uint64, []byte) error { return svcErr },
+		importCommitFn: func(context.Context, string) (*service.ImportResult, error) { return nil, svcErr },
+		importAbortFn:  func(context.Context, string) error { return svcErr },
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBatch(batchSvc))
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"begin":  srv.handleImportBegin,
+		"append": srv.handleImportAppend,
+		"commit": srv.handleImportCommit,
+		"abort":  srv.handleImportAbort,
+	}
+	for name, h := range handlers {
+		t.Run(name+"/unmarshal", func(t *testing.T) {
+			var ue *UnmarshalError
+			if _, err := h(context.Background(), badProto); !errors.As(err, &ue) {
+				t.Fatalf("err = %v, want *UnmarshalError", err)
+			}
+		})
+		t.Run(name+"/service", func(t *testing.T) {
+			if _, err := h(context.Background(), nil); !errors.Is(err, svcErr) {
+				t.Fatalf("err = %v, want the service error", err)
+			}
+		})
+	}
+}
+
+func TestHandleImport_Success(t *testing.T) {
+	var (
+		gotOpts   service.ImportOptions
+		gotSeq    uint64
+		gotChunk  []byte
+		gotCommit string
+		gotAbort  string
+	)
+	batchSvc := &mockBatchService{
+		importBeginFn: func(_ context.Context, opts service.ImportOptions) (string, error) {
+			gotOpts = opts
+			return "sess-1", nil
+		},
+		importAppendFn: func(_ context.Context, _ string, seq uint64, chunk []byte) error {
+			gotSeq, gotChunk = seq, chunk
+			return nil
+		},
+		importCommitFn: func(_ context.Context, id string) (*service.ImportResult, error) {
+			gotCommit = id
+			return &service.ImportResult{Total: 3, Succeeded: 2, Failed: 1,
+				Errors: []service.ImportError{{Row: 2, Key: "k2", Message: "bad row"}}}, nil
+		},
+		importAbortFn: func(_ context.Context, id string) error {
+			gotAbort = id
+			return nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithBatch(batchSvc))
+	ctx := context.Background()
+
+	out, err := srv.handleImportBegin(ctx, mustMarshal(t, &pb.ImportBeginRequest{
+		Format: "csv", Filename: "f.csv", KeyField: "id", SkipHeader: true, Transactional: true,
+	}))
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	var begin pb.ImportBeginResponse
+	if err := proto.Unmarshal(out, &begin); err != nil || begin.GetSessionId() != "sess-1" {
+		t.Fatalf("begin resp = %+v, err = %v", &begin, err)
+	}
+	if gotOpts.Format != "csv" || gotOpts.Filename != "f.csv" || gotOpts.KeyField != "id" || !gotOpts.SkipHeader || !gotOpts.Transactional {
+		t.Fatalf("opts = %+v", gotOpts)
+	}
+
+	if _, err := srv.handleImportAppend(ctx, mustMarshal(t, &pb.ImportAppendRequest{SessionId: "sess-1", Seq: 4, Chunk: []byte("a,b")})); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if gotSeq != 4 || string(gotChunk) != "a,b" {
+		t.Fatalf("append got seq=%d chunk=%q", gotSeq, gotChunk)
+	}
+
+	out, err = srv.handleImportCommit(ctx, mustMarshal(t, &pb.ImportCommitRequest{SessionId: "sess-1"}))
+	if err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var commit pb.ImportCommitResponse
+	if err := proto.Unmarshal(out, &commit); err != nil {
+		t.Fatalf("unmarshal commit: %v", err)
+	}
+	if gotCommit != "sess-1" || commit.GetTotal() != 3 || commit.GetSucceeded() != 2 || commit.GetFailed() != 1 ||
+		len(commit.GetErrors()) != 1 || commit.GetErrors()[0].GetRow() != 2 || commit.GetErrors()[0].GetKey() != "k2" {
+		t.Fatalf("commit resp = %+v", &commit)
+	}
+
+	if _, err := srv.handleImportAbort(ctx, mustMarshal(t, &pb.ImportAbortRequest{SessionId: "sess-2"})); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if gotAbort != "sess-2" {
+		t.Fatalf("abort got %q", gotAbort)
+	}
+}
