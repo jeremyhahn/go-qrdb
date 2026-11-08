@@ -116,7 +116,7 @@ holds, never with more scope or a longer lifetime than the policy names.
 | `policy delete <principal>` | — | delete the policy |
 
 ```bash
-qrdb ca delegate policy put --principal billing --scope kv:get,kv:put --ttl 1h
+qrdb ca delegate policy put --principal billing --scope certs:delegate,kv:get,kv:put --ttl 1h
 qrdb ca delegate policy list
 qrdb ca delegate policy delete billing
 ```
@@ -126,7 +126,9 @@ All three need `certs:delegate` and act in your own tenant; a caller in the
 Deleting a policy stops every further mint and renewal at once (a not-found
 error from then on); a certificate already minted works until it expires or
 you revoke its serial. Each put, delete and mint is recorded in your tenant's
-audit trail.
+audit trail. A renewal needs `certs:delegate` both in the policy's scope and in
+the grants of the principal's role. Deleting the tenant deletes its policies,
+and a tenant that no longer exists mints nothing.
 
 ## `qrdb ca csr`
 
