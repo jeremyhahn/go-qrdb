@@ -17,8 +17,15 @@
 package integration_test
 
 import (
+	"context"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
 
 // TestCADelegatePolicy_CLI_PerProtocol drives a tenant's standing delegation
@@ -35,9 +42,10 @@ import (
 // in its scope, the policy admits it, and the principal is granted it.
 func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
-	node, _, _ := startDelegationNode(t)
+	node, _, _, n := startDelegationNodeWith(t)
 	protocols := multiProtocols
 	waitForDelegationNode(t, node, protocols)
+	policies := delegationPolicyStore(t, n)
 
 	for _, proto := range protocols {
 		t.Run(proto.name, func(t *testing.T) {
@@ -54,6 +62,18 @@ func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 			}
 			if out, err := runQRDB(t, node.cli, admin, "ca", "delegate", "policy", "list"); err != nil || !strings.Contains(out, delegationPrincipal) {
 				t.Fatalf("[%s] ca delegate policy list does not show %s: %v\noutput: %s", proto.name, delegationPrincipal, err, out)
+			}
+
+			// The record itself is out of the transport's reach: a kv put
+			// naming it lands in the tenant's own database, never in the
+			// CA's keyspace, so it cannot widen the policy (#1187).
+			forged := "__sys:cert_delegation_policy/" + delegationTenantA + "/" + delegationPrincipal
+			if out, err := runQRDB(t, node.cli, admin, delegationKV("put", forged, `{"scope":["*"]}`)...); err != nil {
+				t.Logf("[%s] kv put naming the policy record refused: %s", proto.name, strings.TrimSpace(out))
+			}
+			stood, found, err := policies.DelegationPolicy(context.Background(), delegationTenantA, delegationPrincipal)
+			if err != nil || !found || !slices.Equal(stood.Scope, []string{"certs:delegate", "kv:get"}) {
+				t.Fatalf("[%s] the policy after a kv put naming its record: %+v, found %v, %v", proto.name, stood, found, err)
 			}
 
 			// The delegation renews itself within the policy, and the
@@ -85,4 +105,73 @@ func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol: a deleted
+// shared tenant's standing policies, which sit in the system's store rather
+// than a home store of its own, go with it, so a delegation it issued can no
+// longer renew itself, and no record is left for a later tenant of the same
+// name to inherit (#1187).
+func TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol(t *testing.T) {
+	t.Parallel()
+	protocols := multiProtocols
+	gone := make([]string, 0, len(protocols))
+	for _, proto := range protocols {
+		gone = append(gone, "dlg-gone-"+proto.name)
+	}
+	node, _, _, n := startDelegationNodeWith(t, gone...)
+	creds := make(map[string]delegationCredential, len(gone))
+	for _, id := range gone {
+		creds[id] = onboardDelegationTenantIn(t, n, id, tenant.IsolationPrefix)
+		grantDelegationDataRole(t, n, id)
+	}
+	waitForDelegationNode(t, node, protocols)
+	policies := delegationPolicyStore(t, n)
+
+	for i, proto := range protocols {
+		t.Run(proto.name, func(t *testing.T) {
+			id := gone[i]
+			admin := tenantCLIArgsForProto(node, proto, creds[id].certPath, creds[id].keyPath)
+			if out, err := runQRDB(t, node.cli, admin, "ca", "delegate", "policy", "put",
+				"--principal", delegationPrincipal, "--scope", "certs:delegate,kv:get", "--ttl", "15m"); err != nil {
+				t.Fatalf("[%s] ca delegate policy put: %v\noutput: %s", proto.name, err, out)
+			}
+			_, first := issueDelegationCLI(t, node.cli, admin, proto, delegationPrincipal, "15m", "certs:delegate", "kv:get")
+			delegated := tenantCLIArgsForProto(node, proto, first.certPath, first.keyPath)
+			issueDelegationCLI(t, node.cli, delegated, proto, delegationPrincipal, "10m", "kv:get")
+
+			if out, err := runQRDB(t, node.cli, admin, "tenant", "delete", id); err != nil {
+				t.Fatalf("[%s] tenant delete %s: %v\noutput: %s", proto.name, id, err, out)
+			}
+			if out, err := runQRDB(t, node.cli, delegated, "ca", "delegate", "--out", t.TempDir(),
+				"--principal", delegationPrincipal, "--scope", "kv:get"); err == nil {
+				t.Fatalf("[%s] a renewal for deleted tenant %s was admitted: %s", proto.name, id, out)
+			}
+			var left []string
+			if !pollUntil(time.Minute, 50*time.Millisecond, func() bool {
+				held, err := policies.ListDelegationPolicies(context.Background(), id)
+				if err != nil {
+					t.Fatalf("[%s] ListDelegationPolicies(%s): %v", proto.name, id, err)
+				}
+				left = left[:0]
+				for _, p := range held {
+					left = append(left, p.Principal)
+				}
+				return len(left) == 0
+			}) {
+				t.Fatalf("[%s] deleted tenant %s still holds policies for %v", proto.name, id, left)
+			}
+		})
+	}
+}
+
+// delegationPolicyStore is the node's CA, read directly: the record a
+// transport must not be able to reach.
+func delegationPolicyStore(t *testing.T, n *node.Node) cert.DelegationPolicyStore {
+	t.Helper()
+	policies, ok := n.Services().CertProv.(cert.DelegationPolicyStore)
+	if !ok {
+		t.Fatal("the node's CA keeps no delegation policies")
+	}
+	return policies
 }
