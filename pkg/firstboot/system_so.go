@@ -95,7 +95,11 @@ func commitSystemSOPIN(ctx context.Context, pins SOPINSetter, tenantID string, s
 	if so.PIN != nil && so.PIN.IsAlive() {
 		return CommitSOPIN(ctx, pins, tenantID, so.PIN)
 	}
-	return pins.(SOPINRecordSetter).CommitSOPINRecord(ctx, tenantID, so.PINRecord)
+	records, ok := pins.(SOPINRecordSetter)
+	if !ok {
+		return &MissingSOSeamError{Seam: "an SOPINs that commits a hashed PIN record (SOPINRecordSetter)"}
+	}
+	return records.CommitSOPINRecord(ctx, tenantID, so.PINRecord)
 }
 
 // CommitSOPIN commits pin as tenantID's SO PIN through pins. The PIN is
