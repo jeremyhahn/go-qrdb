@@ -412,7 +412,7 @@ func TestReplicaForwardMCP_ARedirectIsNeverFollowed(t *testing.T) {
 	caller := &auth.Identity{Subject: "alice", TenantID: "acme"}
 	req := mcpgo.CallToolRequest{}
 	req.Params.Name = "qrdb_put"
-	if res, sent, err := f.call(callCtx(t), peer, caller, req); err == nil || sent {
+	if res, sent, err := f.call(callCtx(t), peer, caller, req); !errors.Is(err, errForwardRedirect) || sent {
 		t.Fatalf("call followed a redirect: result %+v, sent %v, err %v", res, sent, err)
 	}
 	if _, _, ok := f.forwardToLeader(auth.WithIdentity(callCtx(t), caller), req, "raft-leader"); ok {
