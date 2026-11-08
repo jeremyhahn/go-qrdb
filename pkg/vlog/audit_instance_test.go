@@ -248,7 +248,7 @@ func verifyAuditProofs(t *testing.T, r storage.Reader, n uint64, ref *testonly.T
 func TestAuditInstance_PruneIsExpireBodies(t *testing.T) {
 	stg := memory.NewStorage()
 	c := NewChain()
-	appendLinear(t, c, stg, 0, 5) // seq 1..5
+	appendLinear(t, c, stg, 0, 5)    // seq 1..5
 	appendInstance(t, c, stg, 5, 15) // seq 6..15: leaves 0..9, S₀ = 6
 	before, err := ReadHead(stg, auditID)
 	if err != nil {

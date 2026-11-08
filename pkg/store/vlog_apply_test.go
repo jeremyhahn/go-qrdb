@@ -17,7 +17,9 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -248,6 +250,61 @@ func TestStoreAuditAppend_WritesNoMerkleNode(t *testing.T) {
 				t.Fatal("OpAuditAppend wrote no audit record")
 			}
 		})
+	}
+}
+
+// TestStoreAuditInstance_FamiliesAgree applies the same committed entries --
+// OpAuditAppend before the switch, OpVerifiableLog appends to the audit
+// instance after it, and a prune -- to both state-machine families, and
+// requires identical results and identical audit and log tables.
+func TestStoreAuditInstance_FamiliesAgree(t *testing.T) {
+	p := enc(t)
+	event := func(i int) []byte {
+		ev := fixedAuditEvent("acme")
+		ev.Action = fmt.Sprintf("action-%d", i)
+		b, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var entries [][]byte
+	for i := range 3 {
+		ev := fixedAuditEvent("acme")
+		ev.Action = fmt.Sprintf("action-%d", i)
+		entries = append(entries, p(protocol.EncodeAuditAppend("acme", ev)))
+	}
+	for i := 3; i < 8; i++ {
+		entries = append(entries, p(protocol.EncodeVerifiableLogAppend(vlog.AuditLogID("acme"), [][]byte{event(i)})))
+	}
+	entries = append(entries, p(protocol.EncodeAuditPrune("acme", 6)))
+
+	type state struct {
+		values      []uint64
+		audit, logs map[string]string
+	}
+	var states []state
+	for _, kind := range auditSMKinds {
+		n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+		var s state
+		for _, e := range entries {
+			res := n.apply(t, e)
+			requireNoRefusal(t, res)
+			s.values = append(s.values, res[0].Value)
+		}
+		s.audit, s.logs = table(t, n.reader(), vlog.TablePrefix), table(t, n.reader(), vlog.LogTablePrefix)
+		states = append(states, s)
+	}
+	if want := []uint64{1, 2, 3, 4, 5, 6, 7, 8, 5}; !reflect.DeepEqual(states[0].values, want) {
+		t.Fatalf("results = %v, want %v", states[0].values, want)
+	}
+	if len(states[0].logs) == 0 {
+		t.Fatal("the audit instance wrote no tree")
+	}
+	for i := 1; i < len(states); i++ {
+		if !reflect.DeepEqual(states[i], states[0]) {
+			t.Fatalf("%s's state differs from %s's", auditSMKinds[i].name, auditSMKinds[0].name)
+		}
 	}
 }
 

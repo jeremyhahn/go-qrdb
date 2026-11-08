@@ -24,8 +24,11 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // fixedShardResolver always answers one (Host, shardID) pair, for tests that
@@ -65,7 +68,7 @@ func TestReplicatedLogger_Emit_RefusedBeforeGateActive(t *testing.T) {
 // shard DOES get an OpAuditAppend proposal, encoding the event JSON.
 func TestReplicatedLogger_Emit_ProposesWhenGateActive(t *testing.T) {
 	inner, cmds := recordingHost(sm.Result{Value: 1})
-	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}
+	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{featuregate.AuditAppend: true}}
 	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
 
 	if err := logger.Emit(context.Background(), fixedAuditEvent("acme")); err != nil {
@@ -96,7 +99,7 @@ func TestReplicatedLogger_Emit_ProposesWhenGateActive(t *testing.T) {
 // produces a valid, non-refused command.
 func TestReplicatedLogger_Emit_SetsAZeroTimestamp(t *testing.T) {
 	inner, cmds := recordingHost(sm.Result{Value: 1})
-	host := &gatedHost{mockHost: inner, enabled: map[uint64]bool{1: true}}
+	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{featuregate.AuditAppend: true}}
 	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
 
 	ev := fixedAuditEvent("acme")
@@ -114,6 +117,79 @@ func TestReplicatedLogger_Emit_SetsAZeroTimestamp(t *testing.T) {
 	}
 	if decoded.Timestamp.IsZero() {
 		t.Fatal("proposed event still carries a zero Timestamp")
+	}
+}
+
+// perFeatureHost is a FeatureGatedHost that answers per feature, so a test can
+// hold AuditAppend on while VerifiableLog is off or on.
+type perFeatureHost struct {
+	*mockHost
+	on map[feature.Feature]bool
+}
+
+func (h *perFeatureHost) FeatureEnabled(_ uint64, f feature.Feature) bool { return h.on[f] }
+
+// TestReplicatedLogger_Emit_ProposesToTheAuditInstance proves the switch:
+// once VerifiableLog is on, Emit proposes OpVerifiableLog append to
+// tenant/system/audit carrying the marshaled event.
+func TestReplicatedLogger_Emit_ProposesToTheAuditInstance(t *testing.T) {
+	inner, cmds := recordingHost(sm.Result{Value: 1})
+	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
+		featuregate.AuditAppend:   true,
+		featuregate.VerifiableLog: true,
+	}}
+	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
+
+	ev := fixedAuditEvent("acme")
+	ev.Timestamp = time.Time{}
+	if err := logger.Emit(context.Background(), ev); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if len(*cmds) != 1 {
+		t.Fatalf("propose was called %d times, want 1", len(*cmds))
+	}
+	cmd := (*cmds)[0]
+	if cmd[0] != protocol.OpVerifiableLog {
+		t.Fatalf("op = %d, want OpVerifiableLog (%d)", cmd[0], protocol.OpVerifiableLog)
+	}
+	subtype, tenantID, body, err := protocol.DecodeVerifiableLogCommand(cmd[1:])
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if subtype != protocol.VerifiableLogSubtypeAppend || tenantID != "acme" {
+		t.Fatalf("subtype %d tenant %q, want append on acme", subtype, tenantID)
+	}
+	id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
+	if err != nil {
+		t.Fatalf("decode append: %v", err)
+	}
+	if id != vlog.AuditLogID("acme") || len(entries) != 1 {
+		t.Fatalf("append to %v with %d entries, want acme/system/audit with 1", id, len(entries))
+	}
+	var decoded audit.AuditEvent
+	if err := json.Unmarshal(entries[0], &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.TenantID != "acme" || decoded.Timestamp.IsZero() {
+		t.Fatalf("proposed event = %+v, want tenant acme with a timestamp", decoded)
+	}
+}
+
+func TestReplicatedLogger_Emit_InstanceRefusalIsTyped(t *testing.T) {
+	inner, _ := recordingHost(sm.Result{Value: 0, Data: protocol.EncodeLogRefusal(protocol.LogRefusalNotFound, 0, "malformed")})
+	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
+		featuregate.AuditAppend:   true,
+		featuregate.VerifiableLog: true,
+	}}
+	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
+
+	err := logger.Emit(context.Background(), fixedAuditEvent("acme"))
+	var refused *AuditInstanceRefusedError
+	if !errors.As(err, &refused) || refused.TenantID != "acme" || refused.Reason != "malformed" {
+		t.Fatalf("err = %v, want *AuditInstanceRefusedError for acme", err)
+	}
+	if refused.Error() == "" {
+		t.Fatal("empty error text")
 	}
 }
 
