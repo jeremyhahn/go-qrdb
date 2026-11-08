@@ -30,11 +30,18 @@
 #      `git fetch` on a different connection observes all of them, so the
 #      first fetch failing to see a sibling tag is not yet evidence of a
 #      skew.
-#   2. gate -- re-runs the build/lint/test signal from ci.yml's `lint`,
-#      `build` and `test` jobs against the exact tagged tree: `make fmt`,
-#      `make vet`, `make vet-tags`, `make secure-analyzer`, `make lint`,
-#      `go build ./...`, `make build-server`, `make coverage`,
-#      `make test-tags`. It does NOT re-run every ci.yml step: `release-alpha`
+#   2. the gate jobs -- re-run the build/lint/test signal from ci.yml's
+#      `lint`, `image`, `coverage` and `test-tags` jobs against the exact
+#      tagged tree: `make fmt`, `make vet`, `make lint`, `go build ./...` and
+#      `make build-server` in `gate`; `make vet-tags` and
+#      `make secure-analyzer` in `gate-sweeps`; `make test-tags` in
+#      `gate-tags`; and the repo-wide coverage gate as ci.yml measures it,
+#      `make coverage-leg` per COVER_LEGS leg in `coverage`, then
+#      `make coverage-merge` (COVER_RATCHET) in `coverage-merge`. They are
+#      separate jobs because a GitHub-hosted runner has 4 vCPUs and a 6-hour
+#      job limit (DS-7377): run in one job, the race suite alone outlasts it.
+#      Every job carries a timeout-minutes of at most 350
+#      (test/buildgates/ci_runners_test.go). They do NOT re-run every ci.yml step: `release-alpha`
 #      refuses to tag anything but the commit the remote's `main` holds, so
 #      the tagged tree is bit-for-bit what `ci-gate` already verified clean
 #      moments earlier, and re-running a guard's own self-test or a
@@ -45,7 +52,7 @@
 #      the re-run, is the FUNCTIONAL signal: a checkout that resolved the
 #      wrong object, a toolchain mismatch on this runner, a race the first
 #      run got lucky on.
-#   3. publish -- needs both of the above green, then builds the release
+#   3. publish -- needs validate and every gate job green, then builds the release
 #      binaries (`make release-artifacts`: qrdbd and the headless qrdb CLI
 #      for linux/amd64 and linux/arm64, each plain and FIPS, plus
 #      SHA256SUMS), lifts the matching `## [X.Y.Z]` section out of
@@ -90,6 +97,7 @@ jobs:
   validate:
     name: Validate the tag, VERSION and CHANGELOG
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       # Full history AND every tag: check-tag-lockstep.sh walks ancestry
       # between arbitrary past root tags and their lockstep counterparts
@@ -141,8 +149,9 @@ jobs:
           done
 
   gate:
-    name: Build, lint and test the tagged tree
+    name: Build and lint the tagged tree
     runs-on: ubuntu-latest
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -162,33 +171,110 @@ jobs:
       - name: go vet
         run: make vet
 
-      - name: go vet across every supported tag set
-        run: make vet-tags
-
-      - name: pkg/secure rules hold across every module and tag set
-        run: make secure-analyzer
-
       - name: golangci-lint
         run: make lint
 
-      # Same commands as ci.yml's `build` job.
+      # Same commands as ci.yml's `image` job.
       - name: Build all packages (default tags)
         run: go build ./...
 
       - name: Build qrdbd with the default feature set
         run: make build-server
 
-      # Same commands as ci.yml's `test` job.
-      - name: Unit tests (race) + coverage gate
-        run: make coverage
+  # The two whole-tree sweeps ci.yml runs on its nightly schedule. A job of
+  # their own: together they take over an hour on 8 cores, so they would
+  # take most of gate's limit on 4.
+  gate-sweeps:
+    name: Vet every tag set and run the secure analyzer
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: go vet across every supported tag set
+        run: make vet-tags
+
+      - name: pkg/secure rules hold across every module and tag set
+        run: make secure-analyzer
+
+  # Same command as ci.yml's `test-tags` job.
+  gate-tags:
+    name: Protocol-family build tags (runtime)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
 
       - name: Protocol-family build tags (runtime)
         run: make test-tags
 
+  # ci.yml's `coverage` legs: the race suite with coverage, one leg per name
+  # in the Makefile's COVER_LEGS (`make -s print-coverage-legs`), each
+  # uploading its profile. test/buildgates/coverage_legs_test.go fails when
+  # this matrix is not COVER_LEGS or a leg's go test budget is not 5 minutes
+  # inside its limit.
+  coverage:
+    name: Coverage leg ${{ matrix.leg }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [tenant-lifecycle, tenant, seal-barrier, seal, server-raft, server, auth, service, api-keys, rest, sdk-transport, sdk]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Unit tests (race) with coverage, one leg
+        env:
+          COVER_LEG: ${{ matrix.leg }}
+        run: make coverage-leg COVER_LEG="$COVER_LEG" GOTEST_TIMEOUT=175m
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-leg-${{ matrix.leg }}
+          path: coverage/leg-${{ matrix.leg }}.out
+          retention-days: 1
+          if-no-files-found: error
+
+  # The one repo-wide coverage gate over the legs' profiles (COVER_RATCHET).
+  coverage-merge:
+    name: Coverage gate
+    needs: [coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-leg-*
+          merge-multiple: true
+          path: coverage
+
+      - name: Coverage gate
+        run: make coverage-merge
+
   publish:
     name: Publish the release notes
-    needs: [validate, gate]
+    needs: [validate, gate, gate-sweeps, gate-tags, coverage-merge]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
