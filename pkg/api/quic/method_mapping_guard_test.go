@@ -313,6 +313,8 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"tenant.Get":                       permission.TenantsRead,
 	"tenant.List":                      permission.TenantsList,
 	"tenant.Update":                    permission.TenantsUpdate,
+	"cluster.IsolationPolicyGet":       permission.TenantsRead,
+	"cluster.IsolationPolicySet":       permission.TenantsUpdateCross,
 	"tenant.UpdateQuotas":              permission.TenantsSetQuotas,
 	"tenant.UpdateEntitlements":        permission.TenantsSetEntitlements,
 	"tenant.ListDeleted":               permission.TenantsListDeleted,
