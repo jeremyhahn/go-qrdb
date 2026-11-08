@@ -357,38 +357,95 @@ func testAuditVerifyOverProtocol(t *testing.T, node *multiProtoNode, proto multi
 	if !strings.Contains(tableOut, "Verified: true") {
 		t.Fatalf("[%s] audit verify (table): expected 'Verified: true', got: %s", proto.name, tableOut)
 	}
+}
 
-	// The audit trail is the log instance system/audit
-	// (docs/databases/architecture.md §7): its head and an inclusion proof
-	// of its newest leaf read through the log surface and verify, and the
-	// linear chain still verifies after them.
+// auditInstanceYAML entitles every tenant to the replicated audit trail, so
+// a tenant's events reach its audit log instance <tenant>/system/audit
+// (docs/databases/architecture.md §7).
+const auditInstanceYAML = `tenant:
+  default_entitlements:
+    allowed_isolation_modes:
+      - prefix
+    allow_replicated_audit: true
+`
+
+// TestAudit_CLI_AuditInstance_PerProtocol pins, over every CLI-selectable
+// transport, that a tenant's replicated audit trail is the log instance
+// <tenant>/system/audit: a caller holding the log permissions on its own
+// tenant reads the instance's head, its newest leaf (an audit event) and an
+// inclusion proof of that leaf which verifies against the head, and
+// `qrdb audit verify --replicated` still reports a continuous chain.
+func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNodeWithConfig(t, "", auditInstanceYAML)
+
+	// Onboarding the tenant files its tenant.onboard events, the instance's
+	// first leaves.
+	const tenantID = "auditlog-acme"
+	createTenant(t, node, multiProtocols[0], tenantID, "Audit Log Tenant", "prefix", false)
+	certPath, keyPath := provisionTenantSOIdentity(t, node, tenantID, "audit-log-reader",
+		[]string{"vlog:head", "vlog:get", "vlog:proof", "audit:verify_replicated", "admin:health"})
+
 	auditLog := []string{"--database", "system", "--log", "audit"}
-	head := vlogCLIJSON[vlogwire.Head](t, node, proto, append([]string{"head"}, auditLog...)...)
-	if head.Size < 1 || len(head.Root) != rfc6962.DefaultHasher.Size() {
-		t.Fatalf("[%s] vlog head on system/audit = size %d, root %x; want at least one leaf and a root", proto.name, head.Size, head.Root)
-	}
-	last := strconv.FormatUint(head.Size-1, 10)
-	size := strconv.FormatUint(head.Size, 10)
-	leaves := vlogCLIJSON[vlogwire.GetResult](t, node, proto, append([]string{"get", "--from", last, "--limit", "1"}, auditLog...)...)
-	if len(leaves.Entries) != 1 || leaves.Entries[0].Expired {
-		t.Fatalf("[%s] vlog get on system/audit = %+v, want the newest leaf's body", proto.name, leaves.Entries)
-	}
-	var leafEvent auditEventCLIJSON
-	if err := json.Unmarshal(leaves.Entries[0].Body, &leafEvent); err != nil {
-		t.Fatalf("[%s] the audit instance's leaf is not an audit event: %v", proto.name, err)
-	}
-	incl := vlogCLIJSON[vlogwire.InclusionProof](t, node, proto, append([]string{"prove-inclusion", "--index", last, "--size", size}, auditLog...)...)
-	if err := proof.VerifyInclusion(rfc6962.DefaultHasher, incl.Index, incl.Size,
-		rfc6962.DefaultHasher.HashLeaf(leaves.Entries[0].Body), incl.Hashes, head.Root); err != nil {
-		t.Fatalf("[%s] inclusion proof of system/audit leaf %s does not verify against the head: %v", proto.name, last, err)
-	}
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
+			vlogJSON := func(v any, args ...string) error {
+				out, err := runQRDB(t, node.cli, conn, append([]string{"--output", "json", "vlog"}, append(args, auditLog...)...)...)
+				if err != nil {
+					return fmt.Errorf("vlog %s: %w\noutput: %s", args[0], err, out)
+				}
+				if err := json.Unmarshal([]byte(out), v); err != nil {
+					return fmt.Errorf("decode vlog %s JSON: %w\noutput: %s", args[0], err, out)
+				}
+				return nil
+			}
 
-	out, err = runCLIProto(t, node, proto, "--output", "json", "audit", "verify")
-	if err != nil {
-		t.Fatalf("[%s] audit verify after the log reads: %v\noutput: %s", proto.name, err, out)
-	}
-	result = auditVerifyCLIJSON{}
-	if jerr := json.Unmarshal([]byte(out), &result); jerr != nil || !result.Verified {
-		t.Fatalf("[%s] audit verify after the log reads = %+v, %v; want a continuous chain", proto.name, result, jerr)
+			var head vlogwire.Head
+			var headErr error
+			if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
+				head = vlogwire.Head{}
+				headErr = vlogJSON(&head, "head")
+				return headErr == nil && head.Size >= 1
+			}) {
+				t.Fatalf("[%s] vlog head on %s/system/audit = size %d, %v; want the onboarding events", proto.name, tenantID, head.Size, headErr)
+			}
+			if len(head.Root) != rfc6962.DefaultHasher.Size() {
+				t.Fatalf("[%s] vlog head on %s/system/audit has root %x", proto.name, tenantID, head.Root)
+			}
+
+			last := strconv.FormatUint(head.Size-1, 10)
+			size := strconv.FormatUint(head.Size, 10)
+			var leaves vlogwire.GetResult
+			if err := vlogJSON(&leaves, "get", "--from", last, "--limit", "1"); err != nil {
+				t.Fatalf("[%s] %v", proto.name, err)
+			}
+			if len(leaves.Entries) != 1 || leaves.Entries[0].Expired {
+				t.Fatalf("[%s] vlog get on %s/system/audit = %+v, want the newest leaf's body", proto.name, tenantID, leaves.Entries)
+			}
+			var leafEvent auditEventCLIJSON
+			if err := json.Unmarshal(leaves.Entries[0].Body, &leafEvent); err != nil {
+				t.Fatalf("[%s] the audit instance's leaf is not an audit event: %v", proto.name, err)
+			}
+
+			var incl vlogwire.InclusionProof
+			if err := vlogJSON(&incl, "prove-inclusion", "--index", last, "--size", size); err != nil {
+				t.Fatalf("[%s] %v", proto.name, err)
+			}
+			if err := proof.VerifyInclusion(rfc6962.DefaultHasher, incl.Index, incl.Size,
+				rfc6962.DefaultHasher.HashLeaf(leaves.Entries[0].Body), incl.Hashes, head.Root); err != nil {
+				t.Fatalf("[%s] inclusion proof of %s/system/audit leaf %s does not verify against the head: %v", proto.name, tenantID, last, err)
+			}
+
+			out, err := runQRDB(t, node.cli, conn, "--output", "json", "audit", "verify", "--replicated")
+			if err != nil {
+				t.Fatalf("[%s] audit verify --replicated: %v\noutput: %s", proto.name, err, out)
+			}
+			var result auditVerifyCLIJSON
+			if jerr := json.Unmarshal([]byte(out), &result); jerr != nil || !result.Verified {
+				t.Fatalf("[%s] audit verify --replicated = %+v, %v; want a continuous chain\noutput: %s", proto.name, result, jerr, out)
+			}
+		})
 	}
 }
