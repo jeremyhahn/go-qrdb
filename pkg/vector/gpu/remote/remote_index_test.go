@@ -275,8 +275,8 @@ func TestBuildDialOptions_InvalidCAPEMContent(t *testing.T) {
 	tmp := t.TempDir()
 	caPath := tmp + "/ca.pem"
 	// Write a PEM block that is syntactically valid but not a CERTIFICATE.
-	caData := "-----BEGIN PRIVATE KEY-----\nYWJj\n-----END PRIVATE KEY-----\n"
-	if err := os.WriteFile(caPath, []byte(caData), 0o600); err != nil {
+	caData := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("abc")})
+	if err := os.WriteFile(caPath, caData, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := buildDialOptions(&Config{

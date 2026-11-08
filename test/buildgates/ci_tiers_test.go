@@ -165,8 +165,8 @@ var scheduleAllowed = map[string]bool{
 // and test-sdk, ruling 211) and test-typescript build and test nothing a
 // docs-only pull request changes (DS-3160).
 var (
-	prTierJobs      = []string{changesJob, scheduleGuardJob, "lint", "lint-gates", "arch-gates"}
-	codeTierJobs    = []string{"test-typescript", "image", "coverage", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
+	prTierJobs      = []string{changesJob, "lint", "lint-gates", "arch-gates"}
+	codeTierJobs    = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
 )
@@ -240,6 +240,22 @@ type ciWorkflow struct {
 	} `yaml:"jobs"`
 	On  yaml.Node         `yaml:"on"`
 	Env map[string]string `yaml:"env"`
+}
+
+// tierCondition is a job's `if:` as the tier checks read it: without the
+// draft skip, which is not a tier.
+func tierCondition(cond string) string {
+	return withoutDraftSkip(cond)
+}
+
+// readCIBody reads ci.yml.
+func readCIBody(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", ciWorkflowName))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	return string(b)
 }
 
 func parseWorkflow(t *testing.T, body string) ciWorkflow {
