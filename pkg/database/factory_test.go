@@ -576,7 +576,7 @@ func TestRemoteBackend_Close_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenStorage_Memory(t *testing.T) {
-	store, err := openStorage("mem-db", BackendMemory, "")
+	store, err := openStorage("mem-db", BackendMemory, "", nil)
 	if err != nil {
 		t.Fatalf("openStorage memory: unexpected error: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestOpenStorage_Memory(t *testing.T) {
 
 func TestOpenStorage_File(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage("file-db", BackendFile, dataDir)
+	store, err := openStorage("file-db", BackendFile, dataDir, nil)
 	if err != nil {
 		t.Fatalf("openStorage file: unexpected error: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestOpenStorage_File(t *testing.T) {
 
 func TestOpenStorage_Pebble(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage("pebble-db", BackendPebble, dataDir)
+	store, err := openStorage("pebble-db", BackendPebble, dataDir, nil)
 	if err != nil {
 		t.Fatalf("openStorage pebble: unexpected error: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestOpenStorage_Raft(t *testing.T) {
 	// shared system Host (IsolationRaft), wired at the server layer. The
 	// placeholder lets the Manager track the catalog record and shard ID
 	// uniformly.
-	store, err := openStorage("raft-db", BackendRaft, "")
+	store, err := openStorage("raft-db", BackendRaft, "", nil)
 	if err != nil {
 		t.Fatalf("openStorage raft: unexpected error: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestOpenStorage_Raft(t *testing.T) {
 }
 
 func TestOpenStorage_InvalidBackend(t *testing.T) {
-	_, err := openStorage("bad-db", BackendType("unknown"), "")
+	_, err := openStorage("bad-db", BackendType("unknown"), "", nil)
 	if err == nil {
 		t.Fatal("openStorage invalid: expected error, got nil")
 	}

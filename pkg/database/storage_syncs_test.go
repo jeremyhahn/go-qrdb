@@ -47,7 +47,7 @@ func TestOpenStorage_FileSyncsRecordUnderFile(t *testing.T) {
 	reg := syncwatchtest.FreshRegistry(t)
 	captureDefaultLog(t)
 
-	s, err := openStorage("orders", BackendFile, t.TempDir())
+	s, err := openStorage("orders", BackendFile, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("openStorage: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestOpenStorage_FileSyncsRecordUnderFile(t *testing.T) {
 func TestOpenStorage_PebbleRegistersPebbleSeries(t *testing.T) {
 	reg := syncwatchtest.FreshRegistry(t)
 
-	s, err := openStorage("orders", BackendPebble, t.TempDir())
+	s, err := openStorage("orders", BackendPebble, t.TempDir(), nil)
 	if err != nil {
 		t.Fatalf("openStorage: %v", err)
 	}

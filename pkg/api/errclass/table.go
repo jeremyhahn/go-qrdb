@@ -529,6 +529,8 @@ var databaseRules = []rule{
 	as(&database.InvalidNameError{}, InvalidArgument),
 	as(&database.ReservedNameError{}, InvalidArgument),
 	as(&database.InvalidBackendError{}, InvalidArgument),
+	as(&database.ObjstoreNotConfiguredError{}, FailedPrecondition),
+	as(&database.ObjstoreRaftModeError{}, FailedPrecondition),
 	// A per-database barrier requested where it would not wrap the store the
 	// database is served from. The caller cannot change a database's backend
 	// or data_dir, so this is the configuration refusing the feature, as

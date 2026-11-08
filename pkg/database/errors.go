@@ -646,6 +646,35 @@ func (e *KeyspaceReclaimError) Unwrap() error {
 
 // StorageCreateError is returned when the storage layer cannot be initialized
 // for a database with the specified backend.
+// ObjstoreNotConfiguredError is returned when a backend: objstore database is
+// opened by a factory the node gave no object-storage opener: the provider
+// configuration and its credential files belong to the node, not the
+// database.
+type ObjstoreNotConfiguredError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refused open.
+func (e *ObjstoreNotConfiguredError) Error() string {
+	return "database " + strconv.Quote(e.Name) + `: backend "objstore" needs the node's object-storage provider, and none is configured for this database manager`
+}
+
+// ObjstoreRaftModeReason is why a Raft node refuses objstore: it cannot be
+// the state machine's hot apply path.
+const ObjstoreRaftModeReason = "objstore is a snapshot/backup tier and cannot back the state machine hot apply path; use pebble, file, or memory"
+
+// ObjstoreRaftModeError is returned when a backend: objstore database is
+// requested on a Raft-mode node, whose databases are served by Raft state
+// machines.
+type ObjstoreRaftModeError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refused database.
+func (e *ObjstoreRaftModeError) Error() string {
+	return "database " + strconv.Quote(e.Name) + `: backend "objstore" is refused in raft mode: ` + ObjstoreRaftModeReason
+}
+
 type StorageCreateError struct {
 	Name    string
 	Backend string

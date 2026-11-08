@@ -38,16 +38,39 @@ type BackendFactory interface {
 
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
-type EmbeddedBackendFactory struct{}
+type EmbeddedBackendFactory struct {
+	objstoreOpener ObjstoreOpener
+}
+
+// ObjstoreOpener opens the objstore engine of the database name, whose own
+// directory is dataDir. The node supplies it, because only the node holds the
+// object-storage provider configuration and its credential files.
+type ObjstoreOpener func(name, dataDir string) (storage.Storage, error)
+
+// EmbeddedBackendOption configures an EmbeddedBackendFactory.
+type EmbeddedBackendOption func(*EmbeddedBackendFactory)
+
+// WithObjstoreOpener sets the opener a backend: objstore database is opened
+// through. Without one such a database is refused with
+// ObjstoreNotConfiguredError.
+func WithObjstoreOpener(open ObjstoreOpener) EmbeddedBackendOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objstoreOpener = open
+	}
+}
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
-func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
-	return &EmbeddedBackendFactory{}
+func NewEmbeddedBackendFactory(opts ...EmbeddedBackendOption) *EmbeddedBackendFactory {
+	f := &EmbeddedBackendFactory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
-	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
+	store, err := openStorage(cfg.Name, cfg.Backend, dataDir, f.objstoreOpener)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +147,7 @@ func (b *RemoteBackend) Close() error {
 }
 
 // openStorage creates a storage.Storage for the given backend type.
-func openStorage(name string, backend BackendType, dataDir string) (storage.Storage, error) {
+func openStorage(name string, backend BackendType, dataDir string, openObjstore ObjstoreOpener) (storage.Storage, error) {
 	switch backend {
 	case BackendMemory:
 		return memory.NewStorage(), nil
@@ -152,6 +175,15 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 		// other backend; that bookkeeping role is served by a lightweight
 		// in-memory placeholder. The placeholder is never used for the data plane.
 		return memory.NewStorage(), nil
+	case BackendObjstore:
+		if openObjstore == nil {
+			return nil, &ObjstoreNotConfiguredError{Name: name}
+		}
+		store, err := openObjstore(name, dataDir)
+		if err != nil {
+			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
+		}
+		return store, nil
 	default:
 		return nil, &InvalidBackendError{Backend: string(backend)}
 	}
