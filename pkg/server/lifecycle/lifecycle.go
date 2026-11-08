@@ -1923,7 +1923,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	// The tenants' standing delegation policies sit beside their
 	// certificates, in the CA that mints under them (#1186).
 	if policies, ok := n.CertProv.(cert.DelegationPolicyStore); ok {
-		enrollmentOpts = append(enrollmentOpts, service.WithDelegationPolicyStore(policies))
+		enrollmentOpts = append(enrollmentOpts, service.WithDelegationPolicyStore(policies), service.WithEnrollmentTenants(n.Tenant))
 	}
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors, enrollmentOpts...)
 	onboardingDeps := service.TenantOnboardingDeps{

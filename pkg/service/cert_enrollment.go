@@ -134,6 +134,7 @@ type CertEnrollmentService struct {
 	auditPolicy audit.FailurePolicy
 	clientTrust ClientTrustRefresher
 	policies    cert.DelegationPolicyStore
+	tenants     TenantGetter
 }
 
 // Compile-time interface check.

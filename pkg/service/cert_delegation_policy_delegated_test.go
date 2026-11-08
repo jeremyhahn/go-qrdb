@@ -18,7 +18,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -32,12 +31,23 @@ import (
 // tenants' standing delegation policies.
 func newPolicyService(t *testing.T, opts ...service.CertEnrollmentOption) *service.CertEnrollmentService {
 	t.Helper()
-	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), nil)
+	p := service.NewPolicyTestProvider(t)
 	store, ok := any(p).(cert.DelegationPolicyStore)
 	if !ok {
 		t.Fatalf("%T keeps no delegation policies", p)
 	}
-	return service.NewCertEnrollmentService(p, nil, nil, append([]service.CertEnrollmentOption{service.WithDelegationPolicyStore(store)}, opts...)...)
+	base := []service.CertEnrollmentOption{service.WithDelegationPolicyStore(store), service.WithEnrollmentTenants(acmeTenant{})}
+	return service.NewCertEnrollmentService(p, nil, nil, append(base, opts...)...)
+}
+
+// acmeTenant is a tenant registry holding only "acme".
+type acmeTenant struct{}
+
+func (acmeTenant) GetTenant(_ context.Context, id string) (*tenant.TenantInfo, error) {
+	if id != "acme" {
+		return nil, &service.TenantNotFoundError{TenantID: id}
+	}
+	return &tenant.TenantInfo{ID: id}, nil
 }
 
 // billingPolicy lets billing hold certs:delegate, kv:get and kv:put.

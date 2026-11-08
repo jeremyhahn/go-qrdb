@@ -36,6 +36,25 @@ func WithDelegationPolicyStore(store cert.DelegationPolicyStore) CertEnrollmentO
 	return func(s *CertEnrollmentService) { s.policies = store }
 }
 
+// WithEnrollmentTenants installs the tenant registry MintDelegation checks
+// a tenant is live in before it reads that tenant's policy: a deleted
+// tenant's policy must never mint, even if its record outlived the
+// deletion. Without one, every mint is refused as not configured.
+func WithEnrollmentTenants(tenants TenantGetter) CertEnrollmentOption {
+	return func(s *CertEnrollmentService) { s.tenants = tenants }
+}
+
+// tenantLive reports whether tenantID names a live tenant: the system
+// tenant always is, any other tenant only while the registry still
+// returns it. A read error is "no", so a mint fails closed.
+func (s *CertEnrollmentService) tenantLive(ctx context.Context, tenantID string) bool {
+	if tenantid.IsSystem(tenantID) {
+		return true
+	}
+	info, err := s.tenants.GetTenant(ctx, tenantID)
+	return err == nil && info != nil
+}
+
 // DelegationPolicyRequest writes TenantID's standing delegation policy for
 // Principal.
 type DelegationPolicyRequest struct {
@@ -187,12 +206,18 @@ func (s *CertEnrollmentService) MintDelegation(ctx context.Context, req *MintDel
 	if s.policies == nil {
 		return nil, &CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
 	}
+	if s.tenants == nil {
+		return nil, &CertEnrollmentNotConfiguredError{Capability: "tenant registry"}
+	}
 	if req == nil || len(req.CSRPEM) == 0 {
 		return nil, &CertEnrollmentFieldError{Field: "csr_pem"}
 	}
 	own, principal, err := mintCaller(ctx, req.TenantID)
 	if err != nil {
 		return nil, err
+	}
+	if !s.tenantLive(ctx, own) {
+		return nil, &TenantNotFoundError{TenantID: own}
 	}
 	policy, found, err := s.policies.DelegationPolicy(ctx, own, principal)
 	if err != nil {

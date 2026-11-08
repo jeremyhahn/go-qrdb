@@ -250,7 +250,17 @@ func TenantKeyPrefixes(tenantID string) []string {
 		CollectionWorkPrefix + ns,
 		tenantCertCAPrefix(tenantID),
 		tenantCertCAPubPrefix(tenantID),
+		tenantDelegationPolicyPrefix(tenantID),
 	}
+}
+
+// tenantDelegationPolicyPrefix is the tenant's standing delegation
+// policies: pkg/cert's unexported prefixDelegationPolicy
+// (`"__sys:cert_delegation_policy/"`, which delegationPolicyConfinedPrefix
+// duplicates) + the per-tenant `"/"`. Reclaiming it is what keeps a
+// deleted tenant's policy from authorizing issuance (go-qrdb#1187).
+func tenantDelegationPolicyPrefix(tenantID string) string {
+	return delegationPolicyConfinedPrefix + tenantID + "/"
 }
 
 // tenantCertCAPubPrefix duplicates pkg/cert's unexported prefixCertCAPub
