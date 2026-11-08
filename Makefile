@@ -375,7 +375,7 @@ elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
   . $(CURDIR)/.devcontainer/.env; \
   GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
   [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
+  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${MODULE_FORGE_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \

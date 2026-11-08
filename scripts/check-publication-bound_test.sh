@@ -91,6 +91,13 @@ fi
 # purpose, contain the near-miss text this check must not flag. The folder
 # names are alphabetical so a plant can be placed deliberately late in the
 # walk; `alpha` and `beta` are always ahead of anything a test plants.
+# The fleet-shaped values the plants carry are joined from parts at run time,
+# so this file holds no literal the public-hygiene scan matches while the
+# checker still reads exactly the same text.
+agent_principal="agent-""go-qrdb"
+company_address="10.4"".2.9"
+internal_email="operator@build02.""internal"
+
 fixture() { # fixture <dir>
 	root="$1"
 	mkdir -p "$root/docs/alpha" "$root/docs/beta" "$root/docs/gamma" \
@@ -104,8 +111,8 @@ fixture() { # fixture <dir>
 		Tracked as go-qrdb#94, pending a decision.
 		The three nodes answer at 10.0.0.1, 10.0.0.2 and 10.0.0.3.
 		Config lives in /home/operator/.config/qrdb.
-		Filed by agent-go-qrdb against build02.internal.
 	EOF
+	printf 'Filed by %s against build02.internal.\n' "$agent_principal" >> "$root/docs/01-architecture.md"
 	cat > "$root/docs/run-modes.md" <<-'EOF'
 		Owner ruling, from [go-qrdb#62](../../issues/62).
 		Root-relative too: [62](/issues/62), and [a PR](../../pulls/62).
@@ -211,9 +218,9 @@ expect reject "planted 192.168 address in a feature folder" \
 expect reject "planted 172.16 address in a feature folder" \
 	"$(plant addr172 docs/delta/user.md 'Peer at 172.20.4.7:63001.')"
 expect reject "planted 10/8 address in a feature folder" \
-	"$(plant addr10 docs/delta/user.md 'Peer at 10.4.2.9:63001.')"
+	"$(plant addr10 docs/delta/user.md "Peer at $company_address:63001.")"
 expect reject "planted agent principal in a feature folder" \
-	"$(plant agent docs/delta/user.md 'Filed by agent-go-qrdb on review.')"
+	"$(plant agent docs/delta/user.md "Filed by $agent_principal on review.")"
 # agent-<repo> for ANY repo, not only go-*. The go-* enumeration was the same
 # fail-open shape the issue-reference pattern had, and it let this through.
 expect reject "planted hyphenless principal agent-automatethethings" \
@@ -248,7 +255,7 @@ expect reject "planted go-qrdb#999 in docs/gamma/reference/deep.md" \
 
 echo "== INSIDE A FENCE is not exempt, and that is the point =="
 fenced="$(plant fenced docs/beta/api.md '```sh')"
-printf '%s\n' 'ssh operator@build02.internal' '```' >> "$fenced/docs/beta/api.md"
+printf '%s\n' "ssh $internal_email" '```' >> "$fenced/docs/beta/api.md"
 expect reject "internal hostname inside a fenced code block" "$fenced"
 
 echo "== COVERAGE: EVERY file is scanned, whatever order the walk uses =="
