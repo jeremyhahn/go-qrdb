@@ -3,7 +3,7 @@ module github.com/jeremyhahn/go-qrdb/test/performance/etcd-benchmark
 go 1.27.3
 
 require (
-	github.com/jeremyhahn/go-quicraft/test/performance v0.20.0
+	github.com/jeremyhahn/go-quicraft/test/performance v0.20.1
 	go.etcd.io/etcd/client/v3 v3.7.3
 	google.golang.org/grpc v1.85.0
 )

@@ -212,8 +212,9 @@ existed when a variable is unset, empty, or its cache does not answer:
 - `docker-compose.yml` passes `DEVCACHE_APT_PROXY` and `DEVCACHE_NPM_REGISTRY`
   as build args (so the Dockerfile can use them) and, with the rest of the
   `DEVCACHE_*` set, as plain `${VAR:-}` environment passthrough. `GOPROXY`
-  follows the devops.md §2a formula
-  (`${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct`) beside the
+  follows the devops.md §2a formula without its direct entry
+  (`${DEVCACHE_GOPROXY}|https://proxy.golang.org` with the mirror,
+  `https://proxy.golang.org` without it; dependency-resolution.md §7a) beside the
   `GOPRIVATE` line in `client-build` and `e2e`: `GOPRIVATE` already resolves
   every `github.com/jeremyhahn/*` module direct, so the cache can only ever
   accelerate the public modules it was allowed to touch.
