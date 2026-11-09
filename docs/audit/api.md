@@ -110,8 +110,10 @@ Every transport returns each event with its `tenant_id`, `client_ip`,
 
 ## The audit instance through the log surface
 
-Once `featuregate.VerifiableLog` is enabled for the group, the replicated
-chain is also the verifiable log `<tenant>/system/audit`
+Once `featuregate.VerifiableLogAudit` is enabled for the group, the
+replicated logger proposes each event with the trusted `AuditAppend`
+sub-type and the replicated chain is also the verifiable log
+`<tenant>/system/audit`
 ([architecture.md](architecture.md#cluster-wide-replicated-trail)), and the
 log surface ([../databases/api.md](../databases/api.md)) reads it like any
 log, confined to the caller's own tenant: database `system`, log `audit`.
@@ -123,7 +125,8 @@ log, confined to the caller's own tenant: database `system`, log `audit`.
 | Inclusion / consistency proof | `vlog:proof` | RFC 9162 proofs that verify against the head's root |
 
 The audit capabilities above keep their shape; the log surface adds reads
-only. `ExpireBodies` on the instance is refused with
+only. A generic `Append` (`qrdb vlog append`) to the instance and
+`ExpireBodies` on it are refused with
 `vlog.ReservedLogError`: its retention is the audit prune, which
 expires bodies below the cutoff and keeps the tree.
 

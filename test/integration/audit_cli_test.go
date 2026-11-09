@@ -384,7 +384,7 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 	const tenantID = "auditlog-acme"
 	createTenant(t, node, multiProtocols[0], tenantID, "Audit Log Tenant", "prefix", false)
 	certPath, keyPath := provisionTenantSOIdentity(t, node, tenantID, "audit-log-reader",
-		[]string{"vlog:head", "vlog:get", "vlog:proof", "audit:verify_replicated", "admin:health"})
+		[]string{"vlog:head", "vlog:get", "vlog:proof", "vlog:append", "audit:verify_replicated", "admin:health"})
 
 	auditLog := []string{"--database", "system", "--log", "audit"}
 	for _, proto := range multiProtocols {
@@ -438,7 +438,15 @@ func TestAudit_CLI_AuditInstance_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] inclusion proof of %s/system/audit leaf %s does not verify against the head: %v", proto.name, tenantID, last, err)
 			}
 
-			out, err := runQRDB(t, node.cli, conn, "--output", "json", "audit", "verify", "--replicated")
+			// Only audit events reach the instance: a caller holding
+			// vlog:append on its own system/audit has a forged entry refused
+			// before it is proposed, and the trail still verifies.
+			out, err := runQRDB(t, node.cli, conn, append([]string{"vlog", "append", "--entry", "forged"}, auditLog...)...)
+			if err == nil || !strings.Contains(out, "is the audit instance; only audit events append to it") {
+				t.Fatalf("[%s] vlog append to %s/system/audit = %v, want the reserved-log refusal\noutput: %s", proto.name, tenantID, err, out)
+			}
+
+			out, err = runQRDB(t, node.cli, conn, "--output", "json", "audit", "verify", "--replicated")
 			if err != nil {
 				t.Fatalf("[%s] audit verify --replicated: %v\noutput: %s", proto.name, err, out)
 			}
