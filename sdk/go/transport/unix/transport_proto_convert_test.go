@@ -12,144 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package unix coverage tests fill gaps in closed-state and helper coverage
-// that aren't already covered by the round-trip credential / barrier tests.
-// They exercise the same closed-check guard at the head of every transport
-// method plus the proto-to-transport converters that have no I/O.
+// Tests of the unix transport's pure proto <-> transport converters and
+// helpers (lease, lock, MVCC, transaction, time-series, vector, watch). The
+// round-trip tests drive these through a server but assert only a few
+// fields; the full field mapping, nil guards and typed errors are checked
+// here.
 
 package unix
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"testing"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/collectionconv"
 )
-
-// ===========================================================================
-// transport_tenant.go closed-paths
-// ===========================================================================
-
-func TestUnixTenant_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-	ctx := context.Background()
-
-	if _, err := tr.CreateTenant(ctx, &transport.CreateTenantRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CreateTenant: %v", err)
-	}
-	if _, err := tr.GetTenant(ctx, "t"); !errors.As(err, &ce) {
-		t.Errorf("GetTenant: %v", err)
-	}
-	if _, err := tr.ListTenants(ctx); !errors.As(err, &ce) {
-		t.Errorf("ListTenants: %v", err)
-	}
-	if err := tr.DeleteTenant(ctx, "t"); !errors.As(err, &ce) {
-		t.Errorf("DeleteTenant: %v", err)
-	}
-	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); !errors.As(err, &ce) {
-		t.Errorf("UpdateTenant: %v", err)
-	}
-	if _, err := tr.UpdateTenantQuotas(ctx, &transport.UpdateTenantQuotasRequest{}); !errors.As(err, &ce) {
-		t.Errorf("UpdateTenantQuotas: %v", err)
-	}
-}
-
-// ===========================================================================
-// transport_ceremony.go closed-paths
-// ===========================================================================
-
-// ===========================================================================
-// transport_collection.go closed-paths
-// ===========================================================================
-
-func TestUnixCollection_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-	ctx := context.Background()
-
-	if _, err := tr.CreateCollection(ctx, transport.CreateCollectionRequest{}); !errors.As(err, &ce) {
-		t.Errorf("CreateCollection: %v", err)
-	}
-	if _, err := tr.GetCollectionInfo(ctx, "db", "c"); !errors.As(err, &ce) {
-		t.Errorf("GetCollectionInfo: %v", err)
-	}
-	if _, err := tr.ListCollections(ctx, "db"); !errors.As(err, &ce) {
-		t.Errorf("ListCollections: %v", err)
-	}
-	if err := tr.DropCollection(ctx, "db", "c"); !errors.As(err, &ce) {
-		t.Errorf("DropCollection: %v", err)
-	}
-	if _, err := tr.InsertDocument(ctx, transport.InsertDocumentRequest{}); !errors.As(err, &ce) {
-		t.Errorf("InsertDocument: %v", err)
-	}
-	if _, err := tr.GetDocument(ctx, "db", "c", 1); !errors.As(err, &ce) {
-		t.Errorf("GetDocument: %v", err)
-	}
-	if err := tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}); !errors.As(err, &ce) {
-		t.Errorf("UpdateDocument: %v", err)
-	}
-	if err := tr.DeleteDocument(ctx, "db", "c", 1); !errors.As(err, &ce) {
-		t.Errorf("DeleteDocument: %v", err)
-	}
-	if _, err := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); !errors.As(err, &ce) {
-		t.Errorf("ListDocuments: %v", err)
-	}
-}
-
-// ===========================================================================
-// transport_barrier.go closed-paths (the subset not in transport_closed_test.go)
-// ===========================================================================
-
-// ===========================================================================
-// transport_watch.go closed-paths
-// ===========================================================================
-
-func TestUnixWatch_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-	ctx := context.Background()
-
-	if _, err := tr.Watch(ctx, "k", transport.WatchOptions{}); !errors.As(err, &ce) {
-		t.Errorf("Watch: %v", err)
-	}
-	if _, err := tr.WatchPrefix(ctx, "p", transport.WatchOptions{}); !errors.As(err, &ce) {
-		t.Errorf("WatchPrefix: %v", err)
-	}
-}
-
-// ===========================================================================
-// transport_collection.go protoToCollectionInfo
-// ===========================================================================
-
-func TestUnixProtoToCollectionInfo_Valid(t *testing.T) {
-	in := &pb.CollectionInfoResponse{
-		Name:          "users",
-		Database:      "main",
-		IdStrategy:    "auto",
-		FieldHash:     "_id",
-		Schema:        map[string]string{"field": "string"},
-		DocumentCount: 42,
-		CreatedAt:     "2026-01-01T00:00:00Z",
-	}
-	out := collectionconv.ToCollectionInfo(in)
-	if out == nil {
-		t.Fatal("ToCollectionInfo returned nil")
-	}
-	if out.Name != "users" || out.Database != "main" {
-		t.Errorf("identity mismatch: %+v", out)
-	}
-	if out.IDStrategy != "auto" || out.FieldHash != "_id" {
-		t.Errorf("strategy mismatch: %+v", out)
-	}
-	if out.DocumentCount != 42 {
-		t.Errorf("DocumentCount = %d, want 42", out.DocumentCount)
-	}
-}
 
 // ===========================================================================
 // transport_lease.go protoToLeaseInfo
@@ -438,25 +316,6 @@ func TestUnixProtoAggFuncToSDK_AllValues(t *testing.T) {
 // transport_vector.go conversion helpers
 // ===========================================================================
 
-func TestUnixFormatVectorID(t *testing.T) {
-	if got := formatVectorID(42); got != "42" {
-		t.Errorf("formatVectorID(42) = %q, want 42", got)
-	}
-	if got := formatVectorID(0); got != "0" {
-		t.Errorf("formatVectorID(0) = %q, want 0", got)
-	}
-}
-
-func TestUnixParseVectorID_Valid(t *testing.T) {
-	id, err := parseVectorID("42")
-	if err != nil {
-		t.Fatalf("parseVectorID: %v", err)
-	}
-	if id != 42 {
-		t.Errorf("id = %d, want 42", id)
-	}
-}
-
 func TestUnixParseVectorID_Empty(t *testing.T) {
 	id, err := parseVectorID("")
 	if err != nil {
@@ -481,8 +340,8 @@ func TestUnixParseVectorID_Invalid(t *testing.T) {
 func TestUnixVectorIDParseError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("boom")
 	e := &vectorIDParseError{ID: "bad", Err: inner}
-	if e.Error() == "" {
-		t.Error("expected non-empty error message")
+	if got, want := e.Error(), "unix transport: failed to parse vector ID bad: boom"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 	if !errors.Is(e, inner) {
 		t.Errorf("Unwrap chain broken")
@@ -492,8 +351,8 @@ func TestUnixVectorIDParseError_ErrorAndUnwrap(t *testing.T) {
 func TestUnixMetadataMarshalError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("boom")
 	e := &metadataMarshalError{Err: inner}
-	if e.Error() == "" {
-		t.Error("expected non-empty error message")
+	if got, want := e.Error(), "unix transport: failed to marshal metadata: boom"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 	if !errors.Is(e, inner) {
 		t.Errorf("Unwrap chain broken")
@@ -503,8 +362,8 @@ func TestUnixMetadataMarshalError_ErrorAndUnwrap(t *testing.T) {
 func TestUnixMetadataUnmarshalError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("boom")
 	e := &metadataUnmarshalError{Err: inner}
-	if e.Error() == "" {
-		t.Error("expected non-empty error message")
+	if got, want := e.Error(), "unix transport: failed to unmarshal metadata: boom"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
 	}
 	if !errors.Is(e, inner) {
 		t.Errorf("Unwrap chain broken")
@@ -540,8 +399,11 @@ func TestUnixVectorDataToProto_Valid(t *testing.T) {
 	if len(out.GetVector()) != 3 {
 		t.Errorf("vector len mismatch: %v", out.GetVector())
 	}
-	if out.GetMetadataJson() == "" {
-		t.Error("expected non-empty MetadataJson")
+	if out.GetMetadataJson() != `{"city":"nyc"}` {
+		t.Errorf("MetadataJson = %q, want {\"city\":\"nyc\"}", out.GetMetadataJson())
+	}
+	if out.GetVersion() != 2 || out.GetCreatedAt() != 1_700_000_000 || out.GetUpdatedAt() != 1_700_000_100 {
+		t.Errorf("version/timestamps mismatch: %+v", out)
 	}
 }
 
@@ -602,8 +464,9 @@ func TestUnixProtoToVectorData_InvalidID(t *testing.T) {
 func TestUnixProtoToVectorData_InvalidMetadata(t *testing.T) {
 	in := &pb.VectorDataProto{Id: "1", MetadataJson: "not-json"}
 	_, err := protoToVectorData(in)
-	if err == nil {
-		t.Fatal("expected error for invalid metadata JSON")
+	var me *metadataUnmarshalError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *metadataUnmarshalError, got %T: %v", err, err)
 	}
 }
 
@@ -623,8 +486,10 @@ func TestUnixProtoToNamespaceInfo_IndexConfigAndMetadata(t *testing.T) {
 }
 
 func TestUnixProtoToNamespaceInfo_InvalidMetadata(t *testing.T) {
-	if _, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{Namespace: "ns", MetadataJson: "not-json"}); err == nil {
-		t.Fatal("expected error")
+	_, err := protoToNamespaceInfo(&pb.VectorNamespaceInfo{Namespace: "ns", MetadataJson: "not-json"})
+	var me *metadataUnmarshalError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *metadataUnmarshalError, got %T: %v", err, err)
 	}
 }
 
@@ -651,16 +516,18 @@ func TestUnixProtoToSearchResults_Valid(t *testing.T) {
 func TestUnixProtoToSearchResults_InvalidID(t *testing.T) {
 	in := []*pb.VectorSearchResultProto{{Id: "not-a-number"}}
 	_, err := protoToSearchResults(in)
-	if err == nil {
-		t.Fatal("expected error")
+	var ve *vectorIDParseError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *vectorIDParseError, got %T: %v", err, err)
 	}
 }
 
 func TestUnixProtoToSearchResults_InvalidMetadata(t *testing.T) {
 	in := []*pb.VectorSearchResultProto{{Id: "1", MetadataJson: "not-json"}}
 	_, err := protoToSearchResults(in)
-	if err == nil {
-		t.Fatal("expected error")
+	var me *metadataUnmarshalError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *metadataUnmarshalError, got %T: %v", err, err)
 	}
 }
 
@@ -671,67 +538,6 @@ func TestUnixMarshalStringMetadataJSON_Empty(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("expected empty string, got %q", got)
-	}
-}
-
-func TestUnixMarshalStringMetadataJSON_Valid(t *testing.T) {
-	got, err := marshalStringMetadataJSON(map[string]string{"k": "v"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != `{"k":"v"}` {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestUnixMarshalInterfaceMetadataJSON_Empty(t *testing.T) {
-	got, err := marshalInterfaceMetadataJSON(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "" {
-		t.Errorf("expected empty, got %q", got)
-	}
-}
-
-func TestUnixMarshalInterfaceMetadataJSON_Valid(t *testing.T) {
-	got, err := marshalInterfaceMetadataJSON(map[string]interface{}{"k": "v"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got == "" {
-		t.Error("expected non-empty JSON")
-	}
-}
-
-func TestUnixUnmarshalInterfaceMetadataJSON_Empty(t *testing.T) {
-	got, err := unmarshalInterfaceMetadataJSON("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil map, got %+v", got)
-	}
-}
-
-func TestUnixUnmarshalInterfaceMetadataJSON_Valid(t *testing.T) {
-	got, err := unmarshalInterfaceMetadataJSON(`{"k":"v"}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got["k"] != "v" {
-		t.Errorf("got %+v, want k=v", got)
-	}
-}
-
-func TestUnixUnmarshalInterfaceMetadataJSON_Invalid(t *testing.T) {
-	_, err := unmarshalInterfaceMetadataJSON("not-json")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	var me *metadataUnmarshalError
-	if !errors.As(err, &me) {
-		t.Errorf("expected *metadataUnmarshalError, got %T", err)
 	}
 }
 
