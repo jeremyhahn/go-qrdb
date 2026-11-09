@@ -28,6 +28,40 @@ func (m *sessionManager) NumSessions() int {
 	return len(m.sessions)
 }
 
+func (m *sessionManager) NumBufferedStreams() int {
+	m.mx.Lock()
+	defer m.mx.Unlock()
+	return m.numBuffered
+}
+
+// openUniStreams opens n unidirectional streams from server to client, each
+// carrying one byte and a FIN, and returns the client's ends.
+func openUniStreams(t *testing.T, server, client *quic.Conn, n int) []*quic.ReceiveStream {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	strs := make([]*quic.ReceiveStream, 0, n)
+	for range n {
+		str, err := server.OpenUniStreamSync(ctx)
+		require.NoError(t, err)
+		_, err = str.Write([]byte{0})
+		require.NoError(t, err)
+		require.NoError(t, str.Close())
+		clientStr, err := client.AcceptUniStream(ctx)
+		require.NoError(t, err)
+		strs = append(strs, clientStr)
+	}
+	return strs
+}
+
+func requireBufferedStreamRejected(t *testing.T, str *quic.ReceiveStream) {
+	t.Helper()
+
+	_, err := str.Read([]byte{0})
+	require.ErrorIs(t, err, &quic.StreamError{StreamID: str.StreamID(), ErrorCode: WTBufferedStreamRejectedErrorCode})
+}
+
 func newSimnetLink(t *testing.T, rtt time.Duration) (client, server *simnet.SimConn, close func(t *testing.T)) {
 	t.Helper()
 
@@ -210,10 +244,10 @@ func TestSessionManagerStreamReordering(t *testing.T) {
 		sessMgr.AddUniStream(clientUniStr1, sessionID, 0)
 		sessMgr.AddUniStream(clientUniStr2, sessionID, 0)
 		require.Equal(t, 1, sessMgr.NumSessions())
-		time.Sleep(timeout - time.Second)
-		// adding another stream resets the timer
+		time.Sleep(timeout / 3)
+		// adding another stream does not move the deadline set by the first one
 		sessMgr.AddStream(clientStr2, sessionID, 0)
-		time.Sleep(timeout - time.Second)
+		time.Sleep(timeout / 3)
 		require.Equal(t, 1, sessMgr.NumSessions())
 
 		// now add the session
@@ -251,6 +285,97 @@ func TestSessionManagerStreamReordering(t *testing.T) {
 		data, err = io.ReadAll(sessUniStr3)
 		require.NoError(t, err)
 		require.Equal(t, []byte("amet"), data)
+	})
+}
+
+func TestSessionManagerBufferedStreamCaps(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientPacketConn, serverPacketConn, closeFn := newSimnetLink(t, 10*time.Millisecond)
+		defer closeFn(t)
+		clientConn, serverConn := newConnPair(t, clientPacketConn, serverPacketConn)
+		t.Cleanup(func() {
+			clientConn.CloseWithError(0, "")
+			serverConn.CloseWithError(0, "")
+		})
+
+		sessMgr := newSessionManager(time.Hour)
+
+		// One session buffers at most maxBufferedStreamsPerSession streams.
+		strs := openUniStreams(t, serverConn, clientConn, maxBufferedStreamsPerSession+1)
+		for _, str := range strs {
+			sessMgr.AddUniStream(str, 4, 0)
+		}
+		require.Equal(t, maxBufferedStreamsPerSession, sessMgr.NumBufferedStreams())
+		requireBufferedStreamRejected(t, strs[maxBufferedStreamsPerSession])
+
+		// All sessions on the connection buffer at most maxBufferedStreamsPerConn.
+		var id sessionID = 8
+		for sessMgr.NumBufferedStreams() < maxBufferedStreamsPerConn {
+			for _, str := range openUniStreams(t, serverConn, clientConn, maxBufferedStreamsPerSession) {
+				sessMgr.AddUniStream(str, id, 0)
+			}
+			id += 4
+		}
+		require.Equal(t, maxBufferedStreamsPerConn, sessMgr.NumBufferedStreams())
+		numSessions := sessMgr.NumSessions()
+
+		str := openUniStreams(t, serverConn, clientConn, 1)[0]
+		sessMgr.AddUniStream(str, id, 0)
+		requireBufferedStreamRejected(t, str)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		serverBidi, err := serverConn.OpenStreamSync(ctx)
+		require.NoError(t, err)
+		_, err = serverBidi.Write([]byte{0})
+		require.NoError(t, err)
+		bidi, err := clientConn.AcceptStream(ctx)
+		require.NoError(t, err)
+		sessMgr.AddStream(bidi, id, 0)
+		_, err = bidi.Read([]byte{0})
+		require.ErrorIs(t, err, &quic.StreamError{StreamID: bidi.StreamID(), ErrorCode: WTBufferedStreamRejectedErrorCode})
+		_, err = serverBidi.Read([]byte{0})
+		require.ErrorIs(t, err, &quic.StreamError{Remote: true, StreamID: serverBidi.StreamID(), ErrorCode: WTBufferedStreamRejectedErrorCode})
+
+		// Rejected streams create no session and buffer nothing.
+		require.Equal(t, numSessions, sessMgr.NumSessions())
+		require.Equal(t, maxBufferedStreamsPerConn, sessMgr.NumBufferedStreams())
+
+		sessMgr.Close()
+		require.Zero(t, sessMgr.NumBufferedStreams())
+	})
+}
+
+func TestSessionManagerBufferingDeadlineNotExtended(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientPacketConn, serverPacketConn, closeFn := newSimnetLink(t, 10*time.Millisecond)
+		defer closeFn(t)
+		clientConn, serverConn := newConnPair(t, clientPacketConn, serverPacketConn)
+		t.Cleanup(func() {
+			clientConn.CloseWithError(0, "")
+			serverConn.CloseWithError(0, "")
+		})
+
+		const timeout = 3 * time.Second
+		strs := openUniStreams(t, serverConn, clientConn, 2)
+		sessMgr := newSessionManager(timeout)
+
+		sessMgr.AddUniStream(strs[0], 4, 0)
+		time.Sleep(timeout - time.Second)
+		// A later stream for the same session does not move the deadline.
+		sessMgr.AddUniStream(strs[1], 4, 0)
+		require.Equal(t, 2, sessMgr.NumBufferedStreams())
+
+		time.Sleep(time.Second - time.Millisecond)
+		synctest.Wait()
+		require.Equal(t, 1, sessMgr.NumSessions())
+
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		require.Zero(t, sessMgr.NumSessions())
+		require.Zero(t, sessMgr.NumBufferedStreams())
+		requireBufferedStreamRejected(t, strs[0])
+		requireBufferedStreamRejected(t, strs[1])
 	})
 }
 

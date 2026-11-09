@@ -10,13 +10,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
+	"github.com/quic-go/quic-go/testutils/simnet"
 	"github.com/quic-go/webtransport-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -473,6 +478,149 @@ func TestWebTransport_ConnectWithoutSettingsRejectedAtTheDeadline(t *testing.T) 
 	if n := h.calls.Load(); n != 0 {
 		t.Fatalf("handler ran %d times, want 0", n)
 	}
+}
+
+// stopSendingTrace is a client-side qlog trace that records the error code of
+// every STOP_SENDING frame the server sends, by stream.
+type stopSendingTrace struct {
+	mu    sync.Mutex
+	codes map[quic.StreamID]quic.StreamErrorCode
+}
+
+func (s *stopSendingTrace) AddProducer() qlogwriter.Recorder { return s }
+func (s *stopSendingTrace) Close() error                     { return nil }
+
+func (s *stopSendingTrace) RecordEvent(ev qlogwriter.Event) {
+	p, ok := ev.(qlog.PacketReceived)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, f := range p.Frames {
+		switch frame := f.Frame.(type) {
+		case *qlog.StopSendingFrame:
+			s.codes[frame.StreamID] = frame.ErrorCode
+		case qlog.StopSendingFrame:
+			s.codes[frame.StreamID] = frame.ErrorCode
+		}
+	}
+}
+
+// rejected returns the number of streams the server stopped, failing on any
+// code other than WT_BUFFERED_STREAM_REJECTED.
+func (s *stopSendingTrace) rejected(t *testing.T) int {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, code := range s.codes {
+		if code != webtransport.WTBufferedStreamRejectedErrorCode {
+			t.Fatalf("stream %d stopped with %#x, want WT_BUFFERED_STREAM_REJECTED", id, code)
+		}
+	}
+	return len(s.codes)
+}
+
+// TestWebTransport_PreSessionStreamFloodIsBounded floods WebTransport uni
+// streams (header and FIN) for a session that was never requested: the
+// server buffers at most a fixed number per session, rejects the rest with
+// WT_BUFFERED_STREAM_REJECTED (draft-ietf-webtrans-http3-16 section 4.6), and
+// drops the buffered ones at the deadline the first stream set.
+func TestWebTransport_PreSessionStreamFloodIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// maxBufferedStreamsPerSession in third_party/webtransport-go.
+		const perSessionCap = 16
+		const excess = 8
+		const settle = 10 * time.Millisecond
+
+		n := &simnet.Simnet{Router: &simnet.PerfectRouter{}}
+		link := simnet.NodeBiDiLinkSettings{Latency: time.Millisecond}
+		clientPC := n.NewEndpoint(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9001}, link)
+		serverPC := n.NewEndpoint(&net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9002}, link)
+		if err := n.Start(); err != nil {
+			t.Fatalf("simnet: %v", err)
+		}
+		defer func() {
+			_ = clientPC.Close()
+			_ = serverPC.Close()
+			_ = n.Close()
+		}()
+
+		tlsCfg, pool := generateTestTLSConfig(t)
+		ln, err := quic.ListenEarly(serverPC, http3.ConfigureTLSConfig(tlsCfg), http3QUICConfig(true))
+		if err != nil {
+			t.Fatalf("ListenEarly: %v", err)
+		}
+		wt := newWebTransportServer(&http3.Server{Handler: http.NotFoundHandler(), QUICConfig: http3QUICConfig(true)})
+		go func() { _ = wt.serveListener(ln) }()
+		defer func() {
+			_ = wt.wt.Close()
+			_ = ln.Close()
+		}()
+
+		trace := &stopSendingTrace{codes: map[quic.StreamID]quic.StreamErrorCode{}}
+		// The fake clock runs past the handshake deadline, so no timeout here.
+		ctx := t.Context()
+		conn, err := quic.Dial(ctx, clientPC, serverPC.LocalAddr(), wtClientTLS(pool), &quic.Config{
+			EnableDatagrams:                  true,
+			EnableStreamResetPartialDelivery: true,
+			Tracer: func(context.Context, bool, quic.ConnectionID) qlogwriter.Trace {
+				return trace
+			},
+		})
+		if err != nil {
+			t.Fatalf("Dial: %v", err)
+		}
+		defer func() { _ = conn.CloseWithError(0, "") }()
+
+		// WT_STREAM (0x54) for session 4, a client bidi stream never opened,
+		// and one payload byte: a stream read up to its FIN is complete and
+		// gets no STOP_SENDING, so the unread byte makes rejection visible.
+		data := append(quicvarint.Append(quicvarint.Append(nil, 0x54), 4), 0)
+		flood := func(count int) {
+			t.Helper()
+			for range count {
+				str, err := conn.OpenUniStreamSync(ctx)
+				if err != nil {
+					t.Fatalf("OpenUniStreamSync: %v", err)
+				}
+				if _, err := str.Write(data); err != nil {
+					t.Fatalf("write: %v", err)
+				}
+				if err := str.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			}
+			time.Sleep(settle)
+			synctest.Wait()
+		}
+
+		start := time.Now()
+		flood(1)
+		time.Sleep(webTransportHandshakeTimeout / 2)
+		flood(perSessionCap - 1)
+		if got := trace.rejected(t); got != 0 {
+			t.Fatalf("%d streams rejected below the cap, want 0", got)
+		}
+
+		flood(excess)
+		if got := trace.rejected(t); got != excess {
+			t.Fatalf("%d streams rejected past the cap, want %d", got, excess)
+		}
+
+		// The buffered streams expire at the deadline the first one set; the
+		// later ones do not extend it.
+		time.Sleep(time.Until(start.Add(webTransportHandshakeTimeout - settle)))
+		synctest.Wait()
+		if got := trace.rejected(t); got != excess {
+			t.Fatalf("%d streams rejected before the deadline, want %d", got, excess)
+		}
+		time.Sleep(2 * settle)
+		synctest.Wait()
+		if got := trace.rejected(t); got != perSessionCap+excess {
+			t.Fatalf("%d streams rejected after the deadline, want %d", got, perSessionCap+excess)
+		}
+	})
 }
 
 // TestNewWebTransportServer_ChainsConnContext pins that the connection is
