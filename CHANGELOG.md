@@ -13,6 +13,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`objstore.WithObjectPrefix` namespaces an engine's objects on a shared
+  provider** (#1424). The prefix must be relative, end in `/`, have no empty,
+  `.` or `..` segment and no backslash, and leave room for every name the
+  engine writes (`objstore.ObjectPrefixError` otherwise); keys are named
+  within the provider limit less the prefix, so every object name fits.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as
