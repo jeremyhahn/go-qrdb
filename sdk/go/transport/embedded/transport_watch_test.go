@@ -32,7 +32,7 @@ import (
 // Watch lifecycle against the REAL hub
 //
 // These tests deliberately do NOT use mockWatchService/stubWatcher
-// (transport_coverage_test.go). That double hands back a watcher whose event
+// (mock_services_test.go). That double hands back a watcher whose event
 // channel is already closed and whose Err() is always nil, so it can neither
 // park a sender nor carry a terminal reason — it would report both go-qrdb#406
 // and go-qrdb#405 as absent. The subject here is what the forwarding goroutine
@@ -597,5 +597,29 @@ func TestEmbeddedWatch_NonWatchOpenErrorKeepsItsTranslation(t *testing.T) {
 				t.Fatalf("%s open error = %T (%v), want *transport.CapabilityUnsupportedError", name, err, err)
 			}
 		})
+	}
+}
+
+// Both openers answer a transport built without a watch service with the
+// typed wiring-defect error, never a nil dereference.
+func TestEmbeddedWatch_NilServiceIsTyped(t *testing.T) {
+	tr := newExtTransport(t)
+	for name, open := range watchOpeners {
+		var ne *NilServiceError
+		if _, err := open(tr, context.Background(), "k", transport.WatchOptions{}); !errors.As(err, &ne) {
+			t.Errorf("%s: err = %T (%v), want *NilServiceError", name, err, err)
+		}
+	}
+}
+
+// Both openers on a closed transport are refused with *transport.ClosedError
+// before a watcher is opened.
+func TestEmbeddedWatch_ClosedIsRefused(t *testing.T) {
+	tr := closedExtTransport(t, WithWatchService(&mockWatchService{}))
+	for name, open := range watchOpeners {
+		var ce *transport.ClosedError
+		if _, err := open(tr, context.Background(), "k", transport.WatchOptions{}); !errors.As(err, &ce) {
+			t.Errorf("%s: err = %T (%v), want *transport.ClosedError", name, err, err)
+		}
 	}
 }

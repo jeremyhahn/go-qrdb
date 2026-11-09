@@ -13,18 +13,14 @@
 // limitations under the License.
 
 // ctxWithFakeTLS lives here, in a file with NO build constraint, because a
-// helper's constraint must be a superset of every caller's (go-qrdb#178) and
-// its callers span two different constraints:
+// helper's constraint must be a superset of every caller's (go-qrdb#178).
+// Its caller today is tools_barrier_test.go, under codec_json && raft &&
+// qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd.
 //
-//	tools_barrier_test.go, tools_tenant_barrier_test.go,
-//	tools_ceremony_credentials_test.go   codec_json && raft && qrdb_ts &&
-//	                                     qrdb_vector && qrdb_mysql &&
-//	                                     qrdb_pgsql && qrdb_etcd
-//	tools_coverage_extra_test.go         codec_json && raft
-//
-// It previously sat in tools_barrier_test.go, whose seven-tag constraint is
-// not a superset of the two-tag one, so pkg/api/mcp did not typecheck under
-// "codec_json,raft" at all (go-qrdb#263).
+// It previously sat in that file while tools_coverage_extra_test.go, under
+// codec_json && raft alone, also called it, so pkg/api/mcp did not typecheck
+// under "codec_json,raft" at all (go-qrdb#263). Unconstrained, it stays
+// correct for a caller added under any tag set.
 //
 // Nothing here needs a build tag: the helper is standard library plus
 // auth.WithTLSState, and auth is a production package with no tag gate. Its

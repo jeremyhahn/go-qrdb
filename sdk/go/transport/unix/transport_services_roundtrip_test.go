@@ -21,6 +21,7 @@ package unix
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
@@ -445,6 +446,60 @@ func TestUnixRT_UpdateDocument(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpdateDocument: %v", err)
+	}
+}
+
+func TestUnixRT_InsertDocument_ServiceError(t *testing.T) {
+	svc := &mockCollectionSvc{
+		insertFn: func(_ context.Context, _ *service.InsertDocumentRequest) (*service.InsertDocumentResponse, error) {
+			return nil, errors.New("insert failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCollectionService(svc))
+	defer cleanup()
+
+	_, err := tr.InsertDocument(context.Background(), transport.InsertDocumentRequest{
+		Database:   "main",
+		Collection: "users",
+		Document:   map[string]interface{}{"name": "alice"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_GetDocument_ServiceError(t *testing.T) {
+	svc := &mockCollectionSvc{
+		getDocFn: func(_ context.Context, _ *service.GetDocumentRequest) (*service.GetDocumentResponse, error) {
+			return nil, errors.New("document not found")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCollectionService(svc))
+	defer cleanup()
+
+	_, err := tr.GetDocument(context.Background(), "main", "users", 5)
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_UpdateDocument_ServiceError(t *testing.T) {
+	svc := &mockCollectionSvc{
+		updateFn: func(_ context.Context, _ *service.UpdateDocumentRequest) (*service.UpdateDocumentResponse, error) {
+			return nil, errors.New("update failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithCollectionService(svc))
+	defer cleanup()
+
+	err := tr.UpdateDocument(context.Background(), transport.UpdateDocumentRequest{
+		Database:   "main",
+		Collection: "users",
+		ID:         5,
+		Document:   map[string]interface{}{"name": "alice"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
 	}
 }
 
