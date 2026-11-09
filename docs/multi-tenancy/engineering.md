@@ -1999,7 +1999,11 @@ Measured against the contract above:
   A mixed-capability cluster never splits a chain: a home write while the
   gate is off is refused with `AuditHomeNotActiveError` (unavailable). The
   route is picked before proposing; apply is unchanged. Platform events about
-  the tenant stay on the system tenant's trail. A standalone node attaches no
+  the tenant stay on the system tenant's trail and carry no tenant identity:
+  onboarding names no admin username there (the tenant's own trail records
+  it), a status change names its caller only if it is a platform principal,
+  and a tenant barrier's holder conflict drops the holder's username and
+  certificate thumbprint. A standalone node attaches no
   home group: there every tenant's chain is still in the system shard, and a
   `volume` or `raft` tenant's chain is refused with
   `DedicatedTenantAuditNotSupportedError`.

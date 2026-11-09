@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
@@ -315,17 +314,31 @@ func (s *TenantOnboardingService) sopins() bootstrap.SOPINSetter {
 
 // onboardEvent renders a tenant-onboarding event naming req.ID -- the
 // AFFECTED tenant being created -- as its resource. Onboarding is a platform
-// event: it goes to the system tenant's trail, see statusChangeEvent.
+// event: it goes to the system tenant's trail, see statusChangeEvent. The
+// platform trail holds no tenant username, so the admin's username is not on
+// it: onboardTenantEvent records it on the tenant's own trail.
 func onboardEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEvent {
-	var actor string
-	if id := auth.IdentityFromContext(ctx); id != nil {
-		actor = id.Subject
-	}
 	return audit.AuditEvent{
-		Actor:    actor,
+		Actor:    platformActor(ctx),
 		TenantID: tenantid.System,
 		Resource: tenantResource(req.ID),
 		Action:   ActionTenantOnboard,
+		Attributes: map[string]any{
+			"isolation_type": string(req.IsolationType),
+		},
+	}
+}
+
+// onboardTenantEvent renders the tenant's own record of its onboarding,
+// naming its admin account, filed on the new tenant's trail once the tenant
+// exists.
+func onboardTenantEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEvent {
+	return audit.AuditEvent{
+		Actor:    platformActor(ctx),
+		TenantID: tenantid.Normalize(req.ID),
+		Resource: tenantResource(req.ID),
+		Action:   ActionTenantOnboard,
+		Outcome:  audit.OutcomeSuccess,
 		Attributes: map[string]any{
 			"admin_username": req.AdminUsername,
 			"isolation_type": string(req.IsolationType),
@@ -382,6 +395,9 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tenantOnboardingSettleTimeout)
 		defer cancel()
 		audit.EmitBestEffort(actx, s.audit, tenantOnboardingAuditComponent, ev)
+		if err == nil {
+			audit.EmitBestEffort(actx, s.audit, tenantOnboardingAuditComponent, onboardTenantEvent(ctx, req))
+		}
 	}
 
 	keyB := &bootstrap.KeyBSigner{Certs: s.certs}

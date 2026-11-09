@@ -362,9 +362,12 @@ system administrator's calls on the tenant are unaffected.
 
 Every status change is audited as `tenant.status_change`, a platform event
 on the system tenant's trail naming the affected tenant as its resource
-(`tenant:<id>`) and carrying the caller and the `from` and `to` status. A
-`permitted` record is written before the change is stored and a `success` or
-`failure` record once it is. Under the default `fail-closed`
+(`tenant:<id>`) and carrying the `from` and `to` status. The platform trail
+holds no tenant username, so it names the caller only when the caller is a
+platform (system-tenant) principal; a change made by one of the tenant's own
+principals also files its outcome, naming that principal, on the tenant's own
+trail. A `permitted` record is written before the change is stored and a
+`success` or `failure` record once it is. Under the default `fail-closed`
 `auth.audit_failure_policy` a change whose record cannot be written is
 refused and nothing is stored. An update that leaves the status as it was
 records nothing.
