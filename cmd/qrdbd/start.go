@@ -4870,8 +4870,12 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	if err != nil {
 		return err
 	}
+	// Under strict separation of duties a bound admin is not enough: a
+	// cluster first booted in standard mode, with no SO, and restarted
+	// strict must reach Phase 3, which refuses it until an SO is enrolled.
+	soSatisfied := pendingSO == nil && (!strictSoD || firstboot.SystemSOConsumed(ctx, pendingAdminCertStore))
 	if ok {
-		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" && pendingSO == nil {
+		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" && soSatisfied {
 			slog.Debug("first-boot: admin user exists, is already the System user, and holds a live certificate binding, skipping")
 			return nil
 		}

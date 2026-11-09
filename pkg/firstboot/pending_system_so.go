@@ -43,6 +43,7 @@ type pendingSystemSO struct {
 	Username  string `json:"username"`
 	CertPEM   []byte `json:"cert_pem"`
 	ChainPEM  []byte `json:"chain_pem,omitempty"`
+	PoolPEM   []byte `json:"pool_pem,omitempty"`
 	PINRecord string `json:"pin_record"`
 }
 
@@ -72,7 +73,7 @@ func WriteIssuedSystemSOIfAny(ctx context.Context, core *ceremony.CeremonyServic
 		return nil
 	}
 	record, err := json.Marshal(pendingSystemSO{
-		Username: so.Username, CertPEM: so.CertPEM, ChainPEM: so.ChainPEM, PINRecord: so.PINRecord,
+		Username: so.Username, CertPEM: so.CertPEM, ChainPEM: so.ChainPEM, PoolPEM: so.PoolPEM, PINRecord: so.PINRecord,
 	})
 	if err != nil {
 		return &PendingAdminCertStoreError{Op: "encode system SO", Cause: err}
@@ -105,7 +106,7 @@ func PendingSystemSO(ctx context.Context, store PendingAdminCertStore) (*SOConfi
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return nil, &PendingAdminCertStoreError{Op: "decode system SO", Cause: err}
 	}
-	return &SOConfig{Username: rec.Username, CertPEM: rec.CertPEM, ChainPEM: rec.ChainPEM, PINRecord: rec.PINRecord}, nil
+	return &SOConfig{Username: rec.Username, CertPEM: rec.CertPEM, ChainPEM: rec.ChainPEM, PoolPEM: rec.PoolPEM, PINRecord: rec.PINRecord}, nil
 }
 
 // SystemSOConsumed reports whether the pending system SO record is

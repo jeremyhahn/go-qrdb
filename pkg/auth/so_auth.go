@@ -310,6 +310,23 @@ func (a *SOAuthenticator) SOPINCommitted(ctx context.Context, tenantID string) (
 	return existing != nil, nil
 }
 
+// SOPINRecordMatches reports whether tenantID's committed SO PIN record is
+// record, comparing them in constant time. It changes nothing: first boot
+// uses it to prove a PIN an earlier enrolment committed is this one's.
+func (a *SOAuthenticator) SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	if existing == nil {
+		return false, nil
+	}
+	return subtle.ConstantTimeCompare(existing, []byte(record)) == 1, nil
+}
+
 // validPINRecord reports whether record has the shape hashPINImpl writes:
 // a known KDF tag, then a hex salt and a hex hash of 32 bytes each.
 func validPINRecord(record string) bool {

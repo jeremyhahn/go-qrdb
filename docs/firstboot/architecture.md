@@ -330,6 +330,25 @@ boot reads the consumed marker (`firstboot.SystemSOConsumed`) as
 `node.FirstBoot` takes `SO` and `SOEnrolled` from its caller's
 `firstboot.Dependencies` verbatim.
 
+An adopted SO certificate keeps the trust pool that validated it: the
+ceremony records the anchors it verified `SOCertPEM` against
+(`AdminCertPoolPEM`, or the ceremony CA's bundle when that is empty) as the
+record's `PoolPEM`, and first boot verifies the certificate against those
+anchors alone, not its own admin pool, so an SO certificate from an external
+issuer survives the handoff and no other issuer gains trust. A signed SO
+certificate carries no pool. `qrdbd`'s restart fast path for a bound admin
+is taken under strict separation of duties only once the SO is enrolled
+(the record consumed): a cluster first booted in standard mode with no SO
+and restarted strict reaches the full first boot, which refuses it with
+`*firstboot.SystemSORequiredError`. An enrolment retry that finds the SO's
+PIN already committed succeeds only when that PIN proves to be its own:
+the live PIN verifies (`SOPINVerifier`, `auth.SOAuthenticator.VerifySOPIN`)
+or the committed record is its record (`SOPINRecordMatcher`,
+`auth.SOAuthenticator.SOPINRecordMatches`, a constant-time compare).
+Anything else, including an SOPINs that can prove neither
+(`*firstboot.MissingSOSeamError`), fails the enrolment, so the pending record
+is not consumed.
+
 ## Startup sequence
 
 1. Configuration loading

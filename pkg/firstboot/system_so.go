@@ -49,6 +49,12 @@ type SOConfig struct {
 	// ChainPEM holds intermediates for CertPEM's chain. Optional.
 	ChainPEM []byte
 
+	// PoolPEM is the trust anchors the ceremony verified CertPEM against,
+	// carried by its hand-off. When set, CertPEM is verified against these
+	// alone, in place of Dependencies.AdminCertPool: the SO's trust is
+	// exactly what the ceremony validated.
+	PoolPEM []byte
+
 	// PIN is the SO's second factor, sealed by the caller with
 	// secure.NewSecret and committed through an SOPINSetter.
 	PIN *secure.Secret
@@ -111,6 +117,45 @@ func CommitSOPIN(ctx context.Context, pins SOPINSetter, tenantID string, pin *se
 	return pin.WithBytes(ctx, func(b []byte) error {
 		return pins.SetSOPIN(ctx, tenantID, b)
 	})
+}
+
+// SOPINVerifier verifies a presented PIN against a tenant's committed SO
+// PIN. auth.SOAuthenticator implements it.
+type SOPINVerifier interface {
+	VerifySOPIN(ctx context.Context, tenantID string, pin []byte) error
+}
+
+// SOPINRecordMatcher reports whether a tenant's committed SO PIN record is
+// record. auth.SOAuthenticator implements it.
+type SOPINRecordMatcher interface {
+	SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error)
+}
+
+// committedSOPINIsOurs returns nil only when tenantID's committed SO PIN is
+// so's: its live PIN verifies, or its PIN record is the one committed. An
+// SOPINs that can prove neither refuses with MissingSOSeamError.
+func committedSOPINIsOurs(ctx context.Context, pins SOPINSetter, tenantID string, so *SOConfig) error {
+	if so.PIN != nil && so.PIN.IsAlive() {
+		verifier, ok := pins.(SOPINVerifier)
+		if !ok {
+			return &MissingSOSeamError{Seam: "an SOPINs that verifies a committed PIN (SOPINVerifier)"}
+		}
+		return so.PIN.WithBytes(ctx, func(b []byte) error {
+			return verifier.VerifySOPIN(ctx, tenantID, b)
+		})
+	}
+	matcher, ok := pins.(SOPINRecordMatcher)
+	if !ok {
+		return &MissingSOSeamError{Seam: "an SOPINs that compares a committed PIN record (SOPINRecordMatcher)"}
+	}
+	matches, err := matcher.SOPINRecordMatches(ctx, tenantID, so.PINRecord)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return auth.ErrSOPINInvalid
+	}
+	return nil
 }
 
 // systemSOInputs lists what a strict deployment must give for its system
@@ -248,8 +293,14 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
 		// An SO an earlier run created may have committed its PIN before
 		// that run stopped; a PIN already set on a brand-new SO is not ours.
+		// On a retry the committed PIN is ours only once it proves to be:
+		// an earlier run may have failed on someone else's.
 		if !created && errors.Is(err, auth.ErrSOPINAlreadySet) {
-			return nil
+			ownErr := committedSOPINIsOurs(ctx, deps.SOPINs, tenantID, so)
+			if ownErr == nil {
+				return nil
+			}
+			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: errors.Join(err, ownErr)}
 		}
 		return &SystemSOEnrollmentError{Op: "PIN commit", Cause: err}
 	}
@@ -261,7 +312,14 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 func issueSOCert(ctx context.Context, deps Dependencies, tenantID string) ([]byte, error) {
 	so := deps.SO
 	if len(so.CertPEM) > 0 {
-		return adoptPresentedCert(so.CertPEM, so.ChainPEM, deps.AdminCertPool, deps.TrustDomain, tenantID)
+		pool := deps.AdminCertPool
+		if len(so.PoolPEM) > 0 {
+			pool = x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(so.PoolPEM) {
+				return nil, &AdminCertRejectedError{Cause: errors.New("the SO's trust pool contains no usable certificates")}
+			}
+		}
+		return adoptPresentedCert(so.CertPEM, so.ChainPEM, pool, deps.TrustDomain, tenantID)
 	}
 	return deps.Signer.SignAdminCSR(ctx, tenantID, so.Username, so.CSRPEM)
 }

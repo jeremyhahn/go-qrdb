@@ -54,7 +54,10 @@ are not reconstructed here — their history is in the git log.
   before it reports success, so a node that crashes before the replicated
   record is written recovers it on restart (`*ceremony.SystemSOPersistError`
   on failure). A store fault reading the pending record fails the boot and
-  refuses consumption; only not-found means no SO.
+  refuses consumption; only not-found means no SO. An adopted SO certificate
+  keeps the trust pool that validated it through the handoff, a strict restart
+  of a bound admin with no enrolled SO is refused, and an enrolment retry
+  that finds a different committed SO PIN still fails.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as

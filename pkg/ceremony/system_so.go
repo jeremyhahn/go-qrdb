@@ -41,7 +41,11 @@ type IssuedSystemSO struct {
 	CertPEM  []byte `json:"cert_pem"`
 	// ChainPEM is SOChainPEM for an adopted certificate, which first boot
 	// verifies again; empty for a signed one.
-	ChainPEM  []byte `json:"chain_pem,omitempty"`
+	ChainPEM []byte `json:"chain_pem,omitempty"`
+	// PoolPEM is the trust anchors the ceremony verified an adopted
+	// certificate against, which first boot verifies it against again;
+	// empty for a signed one.
+	PoolPEM   []byte `json:"pool_pem,omitempty"`
 	PINRecord string `json:"pin_record"`
 }
 
@@ -54,6 +58,7 @@ func (s *IssuedSystemSO) clone() *IssuedSystemSO {
 		Username:  s.Username,
 		CertPEM:   bytes.Clone(s.CertPEM),
 		ChainPEM:  bytes.Clone(s.ChainPEM),
+		PoolPEM:   bytes.Clone(s.PoolPEM),
 		PINRecord: s.PINRecord,
 	}
 }
@@ -151,10 +156,7 @@ func suppliedAdminKey(opts *InitializeOptions) []byte {
 // AdminCertPoolPEM (or the ceremony CA bundle) through SOChainPEM, under
 // the system tenant.
 func adoptSystemSOCert(opts *InitializeOptions, caBundlePEM []byte, trustDomain string) (*x509.Certificate, error) {
-	poolPEM := opts.AdminCertPoolPEM
-	if len(poolPEM) == 0 {
-		poolPEM = caBundlePEM
-	}
+	poolPEM := systemSOPoolPEM(opts, caBundlePEM)
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(poolPEM) {
 		return nil, &SystemSORejectedError{Cause: errors.New("trust pool contains no usable certificates")}
@@ -191,13 +193,14 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 	if !systemSORequested(opts) {
 		return nil, nil
 	}
-	var certPEM, chainPEM []byte
+	var certPEM, chainPEM, poolPEM []byte
 	if len(opts.SOCertPEM) > 0 {
 		if _, err := adoptSystemSOCert(opts, caBundlePEM, trustDomain); err != nil {
 			return nil, err
 		}
 		certPEM = bytes.Clone(opts.SOCertPEM)
 		chainPEM = bytes.Clone(opts.SOChainPEM)
+		poolPEM = bytes.Clone(systemSOPoolPEM(opts, caBundlePEM))
 	} else {
 		signed, err := signAdminLoginCSR(ctx, ca, adminLoginSignCSROptions(tenantid.System, opts.SOUsername, trustDomain), opts.SOCSRPEM)
 		if err != nil {
@@ -211,7 +214,17 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 	if err != nil {
 		return nil, &SystemSORejectedError{Cause: err}
 	}
-	return &IssuedSystemSO{Username: opts.SOUsername, CertPEM: certPEM, ChainPEM: chainPEM, PINRecord: record}, nil
+	return &IssuedSystemSO{Username: opts.SOUsername, CertPEM: certPEM, ChainPEM: chainPEM, PoolPEM: poolPEM, PINRecord: record}, nil
+}
+
+// systemSOPoolPEM returns the trust anchors an adopted SO certificate is
+// verified against: AdminCertPoolPEM, or the ceremony CA's bundle when it
+// is empty.
+func systemSOPoolPEM(opts *InitializeOptions, caBundlePEM []byte) []byte {
+	if len(opts.AdminCertPoolPEM) > 0 {
+		return opts.AdminCertPoolPEM
+	}
+	return caBundlePEM
 }
 
 func parsePEMCert(certPEM []byte) *x509.Certificate {
