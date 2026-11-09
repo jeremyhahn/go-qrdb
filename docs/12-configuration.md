@@ -490,6 +490,7 @@ Configures the underlying storage backend.
 - `objstore.settings` and `volume_pools[].options` keys pass to the provider exactly as written (go-objstore's `forcePathStyle` stays camelCase); two keys in one map that differ only in case are refused.
 - `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
 - An `objstore` store opens only with a format-3 `qrdb-objstore-format` marker (`3\nname-limit=<n>\n`) or empty, when the marker is written; the recorded naming limit must fit beneath the database's object prefix (`objstore.NameLimitError` otherwise), and a version-2 or malformed marker is refused (`objstore.FormatVersionMismatchError`). Dropping a database removes only its own objects.
+- A `local` objstore namespace has one owner: a second open while it is open, in any process, is refused (`objstore.NamespaceOwnedError`), and a reopen through another split of `path` and object prefix that reaches the same directory is refused (`objstore.NamespaceSplitError`). The owner locks live in the sibling `<path>.owner` tree, beside `<path>.journal`.
 
 **`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
 

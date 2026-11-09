@@ -28,6 +28,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,10 +38,41 @@ import (
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
 )
 
 // Compile-time interface check.
 var _ storage.Storage = (*Engine)(nil)
+
+// privateProviders lists the providers whose every open creates a store no
+// other engine reaches, so a namespace on one has one owner by construction.
+var privateProviders = map[string]struct{}{"memory": {}}
+
+const (
+	// ownerLockName names the owner lock file of a namespace on a provider
+	// in walkedRoots (see Engine.ownerPath).
+	ownerLockName = "qrdb-objstore-owner"
+
+	// ownerTreeSuffix is appended to a walked provider's root to name the
+	// sibling tree that holds its namespaces' owner locks. Like the journal
+	// tree, no listing visits it, and it holds nothing but the locks.
+	ownerTreeSuffix = ".owner"
+
+	// ownerDirMode is the permission of an owner-tree directory New creates
+	// to hold an owner lock: it sits beside private data.
+	ownerDirMode = 0o700
+)
+
+// ownerRoot names the sibling tree that holds the owner locks of a store
+// rooted at root, which openStores has already resolved to its physical
+// directory, made absolute and cleaned as journalRoot does.
+func ownerRoot(root string) (string, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs) + ownerTreeSuffix, nil
+}
 
 // Engine is a key-value storage engine backed by a go-objstore Storage.
 type Engine struct {
@@ -50,6 +84,23 @@ type Engine struct {
 	journal  objcommon.Storage
 	provider string
 	closed   atomic.Bool
+
+	// exclusive is set when no other engine can write this namespace while
+	// this one is open, so Exclusive keeps storage.Exclusive's promise: the
+	// namespace is private to the open (privateProviders), or this engine
+	// holds its owner lock. Any other provider offers no conditional create
+	// through go-objstore, so Exclusive refuses there.
+	exclusive bool
+
+	// ownerPath names the owner lock of a namespace on a provider in
+	// walkedRoots: a file in the journal tree, under the object prefix, that
+	// the engine holds an operating-system lock on (owner) from New until
+	// Close or Destroy. A second engine on the namespace, in this process or
+	// another, is refused with NamespaceOwnedError. The kernel drops the lock
+	// with the process, so a crash leaves no stale owner. Empty for any other
+	// provider. owner changes only under journalMu and writeMu.
+	ownerPath string
+	owner     *filelock.File
 
 	// nameLimit is the longest object name the engine may write beneath
 	// its object prefix, as the store's format marker records it: a new
@@ -75,8 +126,8 @@ type Engine struct {
 	// CompareAndSwap, a batch commit and the resolution of a pending commit
 	// hold it exclusive, so journalPending changes only under it.
 	// Lock order is journalMu, then writeMu. The provider offers no
-	// conditional put through this interface, so atomicity does not extend
-	// to a second process writing the same bucket.
+	// conditional put through this interface, so atomicity extends to other
+	// engines only where none can write the namespace meanwhile (exclusive).
 	writeMu sync.RWMutex
 
 	// beforeEnterWrite, when set, runs as a write enters enterWrite, after
@@ -149,7 +200,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
-	store, journal, err := openStores(provider, resolved.creator, settings, store, creds)
+	store, journal, dataDir, err := openStores(provider, resolved.creator, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
@@ -172,13 +223,28 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		}
 	}
 	e := &Engine{store: store, journal: journal, provider: provider}
+	if dataDir != "" {
+		ownerDir, err := ownerRoot(dataDir)
+		if err != nil {
+			return nil, err
+		}
+		e.ownerPath = filepath.Join(ownerDir, filepath.FromSlash(o.prefix), ownerLockName)
+		if err := e.takeOwnership(); err != nil {
+			return nil, err
+		}
+		e.exclusive = true
+	} else if _, private := privateProviders[provider]; private {
+		e.exclusive = true
+	}
 	if err := e.ensureFormatMarker(objcommon.MaxKeyLength - len(o.prefix)); err != nil {
+		_ = e.releaseOwnership()
 		return nil, err
 	}
 	// An interrupted batch commit from a previous process is completed here;
 	// a corrupt journal fails the open rather than silently serving a
 	// half-applied batch.
 	if err := e.recoverJournal(); err != nil {
+		_ = e.releaseOwnership()
 		return nil, err
 	}
 	return e, nil
@@ -198,7 +264,11 @@ func notFound(err error) bool {
 // sets e.nameLimit from the marker. maxLimit is the longest name the
 // engine's object prefix leaves room for: a new store records it, and a
 // marker recording more is refused with NameLimitError, since names written
-// to that limit no longer fit beneath this prefix. Objects under a nested
+// to that limit no longer fit beneath this prefix. For a provider in
+// walkedRoots, whose journal sits in a tree named after the root, a marker
+// recording any other limit than maxLimit is refused with
+// NamespaceSplitError: the records were created under another split of root
+// and prefix, whose journal this open would not find. Objects under a nested
 // engine's namespace (see outsideNestedNamespaces) do not make a store
 // non-empty.
 func (e *Engine) ensureFormatMarker(maxLimit int) error {
@@ -215,6 +285,9 @@ func (e *Engine) ensureFormatMarker(maxLimit int) error {
 		limit, ok := parseFormatMarker(string(found))
 		if !ok {
 			return &FormatVersionMismatchError{Found: string(found), Want: formatVersion}
+		}
+		if _, walked := walkedRoots[e.provider]; walked && limit != maxLimit {
+			return &NamespaceSplitError{Provider: e.provider, Persisted: limit, Limit: maxLimit}
 		}
 		if limit > maxLimit {
 			return &NameLimitError{Persisted: limit, Max: maxLimit}
@@ -328,13 +401,32 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	return true, nil
 }
 
-var _ storage.Exclusive = (*Engine)(nil)
+var (
+	_ storage.Exclusive = (*Engine)(nil)
+	_ storage.Guarded   = (*Engine)(nil)
+)
 
-// Exclusive runs fn under the engine's exclusive write lock, after resolving
-// a pending journal, so a read-check-write in fn compares against the state
-// the last commit left, never a half-applied one, and no other write lands
-// between its read and its write. See storage.Exclusive.
+// Exclusive runs fn as Guarded does, and is storage.Exclusive: no write in
+// this process or another lands between fn's read and its write. The engine's
+// mutexes exclude every writer only because no other engine writes the
+// namespace while this one is open (see Engine.exclusive); on a provider that
+// cannot ensure that, Exclusive returns storage.ExclusiveUnsupportedError
+// without running fn, and a caller falls back to Guarded.
 func (e *Engine) Exclusive(fn func(storage.ReadWriter) error) error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if !e.exclusive {
+		return &storage.ExclusiveUnsupportedError{Backend: "objstore provider " + strconv.Quote(e.provider)}
+	}
+	return e.Guarded(fn)
+}
+
+// Guarded runs fn under the engine's exclusive write lock, after resolving
+// a pending journal, so a read-check-write in fn compares against the state
+// the last commit left, never a half-applied one, and no other write through
+// this engine lands between its read and its write. See storage.Guarded.
+func (e *Engine) Guarded(fn func(storage.ReadWriter) error) error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -567,11 +659,50 @@ func (e *Engine) Snapshot() (storage.Snapshot, error) {
 	return newSnapshot(e)
 }
 
-// Close marks the engine as closed. The underlying go-objstore Storage exposes
-// no Close, so there is nothing further to release.
+// Close marks the engine as closed and, once no write is in flight, releases
+// the namespace's owner lock, if it holds one, so another engine may open the
+// namespace. The underlying go-objstore Storage exposes no Close.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	return e.releaseOwnership()
+}
+
+// takeOwnership takes the namespace's owner lock at ownerPath without
+// waiting, refusing with NamespaceOwnedError while another engine holds it.
+func (e *Engine) takeOwnership() error {
+	if err := os.MkdirAll(filepath.Dir(e.ownerPath), ownerDirMode); err != nil {
+		return err
+	}
+	lock, err := filelock.Open(e.ownerPath)
+	if err != nil {
+		return err
+	}
+	locked, err := lock.TryLock()
+	if err != nil || !locked {
+		_ = lock.Close()
+		if err != nil {
+			return err
+		}
+		return &NamespaceOwnedError{Provider: e.provider}
+	}
+	e.owner = lock
 	return nil
+}
+
+// releaseOwnership releases the owner lock if the engine holds it. The lock
+// file stays: removing it while another opener waits to lock it would let a
+// third create a fresh file and own the namespace alongside it.
+func (e *Engine) releaseOwnership() error {
+	if e.owner == nil {
+		return nil
+	}
+	err := e.owner.Close()
+	e.owner = nil
+	return err
 }
 
 // Destroy deletes every object the engine owns beneath its object prefix,
@@ -587,12 +718,21 @@ func (e *Engine) Close() error {
 // fails part way leaves no batch for a reopen to replay, and the format
 // marker goes last, so a namespace it left part deleted still opens; an
 // object it cannot delete fails it, and a later Destroy deletes what remains.
+// A closed engine on a namespace with an owner lock takes the lock back first,
+// and is refused with NamespaceOwnedError, deleting nothing, while another
+// engine has the namespace open; Destroy releases the lock when it returns.
 func (e *Engine) Destroy() error {
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 	e.closed.Store(true)
+	if e.ownerPath != "" && e.owner == nil {
+		if err := e.takeOwnership(); err != nil {
+			return err
+		}
+	}
+	defer func() { _ = e.releaseOwnership() }()
 	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
 		return err
 	}
