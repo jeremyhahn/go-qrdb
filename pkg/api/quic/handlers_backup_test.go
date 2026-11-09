@@ -332,38 +332,67 @@ func TestHandleBackupRestore_Success(t *testing.T) {
 }
 
 func TestHandleBackupVerify_Success(t *testing.T) {
-	var gotID string
-	svc := &mockBackupServiceQuic{
-		verifyFn: func(_ context.Context, id string) (*service.VerifyResult, error) {
-			gotID = id
-			return &service.VerifyResult{
+	tests := []struct {
+		name   string
+		result *service.VerifyResult
+		want   *pb.BackupVerifyResponse
+	}{
+		{
+			name: "verified",
+			result: &service.VerifyResult{
+				Valid:            true,
+				ChecksumMatch:    true,
+				ExpectedChecksum: "abc123",
+				ActualChecksum:   "abc123",
+			},
+			want: &pb.BackupVerifyResponse{
+				Valid:            true,
+				ChecksumMatch:    true,
+				ExpectedChecksum: "abc123",
+				ActualChecksum:   "abc123",
+			},
+		},
+		{
+			name: "checksum mismatch",
+			result: &service.VerifyResult{
 				Valid:            false,
 				ChecksumMatch:    false,
 				ExpectedChecksum: "abc123",
 				ActualChecksum:   "def456",
 				Errors:           []string{"checksum mismatch"},
-			}, nil
+			},
+			want: &pb.BackupVerifyResponse{
+				ExpectedChecksum: "abc123",
+				ActualChecksum:   "def456",
+				Errors:           []string{"checksum mismatch"},
+			},
 		},
 	}
-	srv := NewServer(nil, nil, "localhost:0", WithBackupService(svc))
-	payload, _ := proto.Marshal(&pb.BackupVerifyRequest{Id: "backup-001"})
-	resp, err := srv.handleBackupVerify(context.Background(), payload)
-	if err != nil {
-		t.Fatalf("handleBackupVerify: %v", err)
-	}
-	if gotID != "backup-001" {
-		t.Fatalf("service got id %q, want backup-001", gotID)
-	}
-	var out pb.BackupVerifyResponse
-	if err := proto.Unmarshal(resp, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	want := &pb.BackupVerifyResponse{
-		ExpectedChecksum: "abc123",
-		ActualChecksum:   "def456",
-		Errors:           []string{"checksum mismatch"},
-	}
-	if !proto.Equal(&out, want) {
-		t.Fatalf("response = %v, want %v", &out, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotID string
+			svc := &mockBackupServiceQuic{
+				verifyFn: func(_ context.Context, id string) (*service.VerifyResult, error) {
+					gotID = id
+					return tt.result, nil
+				},
+			}
+			srv := NewServer(nil, nil, "localhost:0", WithBackupService(svc))
+			payload, _ := proto.Marshal(&pb.BackupVerifyRequest{Id: "backup-001"})
+			resp, err := srv.handleBackupVerify(context.Background(), payload)
+			if err != nil {
+				t.Fatalf("handleBackupVerify: %v", err)
+			}
+			if gotID != "backup-001" {
+				t.Fatalf("service got id %q, want backup-001", gotID)
+			}
+			var out pb.BackupVerifyResponse
+			if err := proto.Unmarshal(resp, &out); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if !proto.Equal(&out, tt.want) {
+				t.Fatalf("response = %v, want %v", &out, tt.want)
+			}
+		})
 	}
 }
