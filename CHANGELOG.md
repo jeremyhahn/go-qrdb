@@ -42,6 +42,9 @@ are not reconstructed here — their history is in the git log.
   whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
   feature `transaction-reads` is active on every member. A branch that only
   reads does not advance the revision.
+  The encrypted file backend holds the same lease across its open-time
+  journal recovery and every write and journaled batch commit, and refuses
+  both on a closed gate with `*file.SealedError` (`quiesce.ErrSealing`).
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

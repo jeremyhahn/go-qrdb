@@ -634,7 +634,12 @@ services and to the server, which wraps the node's sealed-window probe with
   refuses on a closed gate. `CreateNamespace` writes the namespace metadata
   and its ID sequence in one leased batch commit, and installs the ID
   allocator and the cached namespace only once it commits, so a seal never
-  leaves half a namespace. SDK nodes
+  leaves half a namespace. The encrypted file backend (`pkg/storage/file`)
+  registers with its barrier's gate in `file.New`, holds the lease across
+  open-time journal recovery and around every write and journaled batch
+  commit (journal published, batch applied, journal cleared), and refuses
+  the open and every write on a closed gate with `*file.SealedError`
+  wrapping `quiesce.ErrSealing`, before touching the disk. SDK nodes
   (`sdk/go/node`) apply `seal.drain_timeout` to the system barrier exactly as
   `qrdbd` does. `StorageBarrier.Seal`
   closes the barrier's quiesce gate, after which `Admit` refuses with the same
@@ -1363,7 +1368,7 @@ key.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Barrier sealed | `ErrBarrierSealed` on every data-path read and write | **yes** |
-| Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns | **yes** |
+| Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns; on the encrypted file backend, an open or write is refused with `*file.SealedError` wrapping `quiesce.ErrSealing` | **yes** |
 | In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error | **yes** |
 | Several strategies registered, none named | `ErrNoStrategySpecified` | **yes** |
 | Unknown strategy name | registry lookup error | **yes** |

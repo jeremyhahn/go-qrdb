@@ -379,7 +379,13 @@ while Pebble recovers and creates its files, so a seal drains an open in
 progress, and an open on a closed gate is refused with the typed sealed error. Every operation the watch admits holds the lease for its whole
 duration (`SealWatch.Admit` ... `SealWatch.Done`): `SealWatch.Flush`, which the
 Raft state machines in `pkg/store` call from `Sync`, and every write and
-batch commit and `Compact` of a `pkg/storage/pebble.PebbleStorage`. A lease is an atomic
+batch commit and `Compact` of a `pkg/storage/pebble.PebbleStorage`. The
+encrypted file backend (`pkg/storage/file`) registers the same way when
+`file.New` opens it over an encrypting filesystem: the open holds the lease
+across its journal recovery, and every write and journaled batch commit
+holds it from before its journal is published until the batch is applied.
+On a closed gate the open and every write are refused with
+`*file.SealedError` (`quiesce.ErrSealing`) and write nothing. A lease is an atomic
 counter; taking it is one atomic add and one atomic load, so the write path
 takes no lock. Acquire increments, then reads the gate; the seal closes the
 gate, then reads the counters, so either the operation sees the gate closed
