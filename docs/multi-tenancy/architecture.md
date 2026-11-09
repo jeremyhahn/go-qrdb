@@ -156,6 +156,17 @@ answers success. A completion that gives up leaves the record for the hook's
 next trigger. The success or failure audit record is written before the
 response, on its own bound rather than the request's.
 
+A successful create files two records. The platform trail gets one that names
+the tenant but no tenant user. The record naming the first admin
+(`admin_username`) belongs on the tenant's own trail, which in cluster mode
+lives in the tenant's home group and refuses writes while the barrier is
+sealed. That record is therefore kept first, as a pending audit record
+(`__sys:pending-audit` in the tenant's identity namespace, next to the
+pending-admin record). It is appended at once if the trail accepts it.
+Otherwise the barrier-ready hook appends it on the home-group leader at the
+barrier's first init or unseal. The pending record is deleted only after the
+append succeeds, so the tenant's trail gets the record exactly once.
+
 ### The tenant ID is a trust domain
 
 A tenant's principals are `spiffe://<tenant>/<kind>/<name>`: the tenant ID is

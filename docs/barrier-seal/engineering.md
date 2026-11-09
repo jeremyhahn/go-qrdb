@@ -1375,6 +1375,11 @@ key.
   default), so its replicated writes are not cut short by the request's. A
   request that must not wait for the tenant's home group -- a Shamir barrier
   init -- makes one attempt instead (`CompletePendingTenantAdminOnce`).
+  Before that, the same hook first appends the tenant's kept onboarding audit
+  record (`TenantOnboardingService.EmitPendingOnboardAudit`). It does this only
+  on the home-group leader, and it deletes the kept record only after the
+  append succeeds. A refused append is logged and never fails the barrier
+  operation.
 - A tenant barrier's trust-on-first-init window admits the pending first
   admin's certificate while its record exists. The record is consumed when the
   admin's account is created, which a passphrase fan-out reaches before every

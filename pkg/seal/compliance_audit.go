@@ -125,7 +125,7 @@ func (l *complianceAuditLogger) Log(ctx context.Context, ev *AuditEvent) error {
 	}
 	attrs := map[string]any{"barrier": l.barrier}
 	for k, v := range ev.Details {
-		if barrierAuditAttributes[k] && !(l.anonymous && holderIdentityAttributes[k]) {
+		if barrierAuditAttributes[k] && (!l.anonymous || !holderIdentityAttributes[k]) {
 			attrs[k] = v
 		}
 	}

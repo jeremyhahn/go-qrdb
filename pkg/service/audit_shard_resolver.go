@@ -263,7 +263,11 @@ func (r *SystemShardAuditResolver) barrierRoute(ctx context.Context, homes *audi
 // derives one; a write records the derived route, first writer wins.
 func (r *SystemShardAuditResolver) auditRoute(ctx context.Context, homes *auditHomeGroupSource, tenantID string, write bool) (string, error) {
 	if cached, ok := homes.recorded.Load(tenantID); ok {
-		return cached.(string), nil
+		if route, ok := cached.(string); ok {
+			return route, nil
+		}
+		// Not a route: drop it and read the recorded one.
+		homes.recorded.Delete(tenantID)
 	}
 	key := AuditRouteKey(tenantID)
 	recorded, err := homes.routes.Get(ctx, key)
