@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -857,6 +858,41 @@ func TestBuildNodeSealSubsystem_StrategyNone(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	require.NoError(t, sub.close())
+}
+
+// TestBuildNodeSealSubsystem_AppliesSealDrainTimeout proves an SDK node
+// honours seal.drain_timeout as the daemon does: the system barrier carries
+// it, and a tenant barrier the registry builds inherits it.
+func TestBuildNodeSealSubsystem_AppliesSealDrainTimeout(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = string(seal.StrategyNone)
+	cfg.Seal.RootKeyPath = "root-key"
+	cfg.Seal.DrainTimeout = "250ms"
+
+	sub, err := buildNodeSealSubsystem(context.Background(), cfg, t.TempDir(), slog.Default(), nil, server.CryptoOptions{})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, sub.close()) }()
+	assert.Equal(t, 250*time.Millisecond, sub.barrier.Config().SealDrainTimeout)
+
+	tb, err := sub.barrierRegistry.RegisterTenantDefault("t1")
+	require.NoError(t, err)
+	assert.Equal(t, 250*time.Millisecond, tb.Barrier().Config().SealDrainTimeout)
+}
+
+// TestBuildNodeSealSubsystem_InvalidSealDrainTimeout verifies that an
+// unparseable seal.drain_timeout fails the build rather than falling back.
+func TestBuildNodeSealSubsystem_InvalidSealDrainTimeout(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	cfg.Seal.Enabled = true
+	cfg.Seal.Strategy = string(seal.StrategyNone)
+	cfg.Seal.RootKeyPath = "root-key"
+	cfg.Seal.DrainTimeout = "soon"
+
+	_, err := buildNodeSealSubsystem(context.Background(), cfg, t.TempDir(), slog.Default(), nil, server.CryptoOptions{})
+	var create *StorageCreateError
+	require.ErrorAs(t, err, &create)
+	assert.Equal(t, "seal-barrier", create.Backend)
 }
 
 // TestBuildNodeSealSubsystem_InvalidShamirConfig verifies that an invalid

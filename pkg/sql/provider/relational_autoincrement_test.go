@@ -508,3 +508,43 @@ func TestRelationalTable_Truncate_MySQLDialect_IgnoresSessionRestartFlag(t *test
 	require.NoError(t, err)
 	assert.Equal(t, uint64(1), next, "the MySQL wire must always reset AUTO_INCREMENT on TRUNCATE")
 }
+
+func TestAutoIncrementUint64(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want uint64
+		ok   bool
+	}{
+		{"uint64", uint64(5), 5, true},
+		{"uint32", uint32(5), 5, true},
+		{"uint16", uint16(5), 5, true},
+		{"uint8", uint8(5), 5, true},
+		{"uint", uint(5), 5, true},
+		{"int64", int64(5), 5, true},
+		{"int64 negative", int64(-1), 0, false},
+		{"int32", int32(5), 5, true},
+		{"int32 negative", int32(-1), 0, false},
+		{"int16", int16(5), 5, true},
+		{"int16 negative", int16(-1), 0, false},
+		{"int8", int8(5), 5, true},
+		{"int8 negative", int8(-1), 0, false},
+		{"int", int(5), 5, true},
+		{"int negative", -1, 0, false},
+		{"float64", float64(5), 5, true},
+		{"float64 negative", float64(-1), 0, false},
+		{"float32", float32(5), 5, true},
+		{"float32 negative", float32(-1), 0, false},
+		{"string unsupported", "5", 0, false},
+		{"nil unsupported", nil, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := autoIncrementUint64(c.in)
+			assert.Equal(t, c.ok, ok)
+			if ok {
+				assert.Equal(t, c.want, got)
+			}
+		})
+	}
+}

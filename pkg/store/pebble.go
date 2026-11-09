@@ -335,13 +335,44 @@ func (s *PebbleStateMachine) SetTimeSeries(ts *timeseries.Storage) {
 // exactly the self-committing behaviour this state machine's time-series
 // support has always had.
 func (s *PebbleStateMachine) tsAutoCommit(fn func(storage.Batch) error) error {
-	batch := pebbleStorage.NewFromDB(s.db, true, pebbleSyncs(s.dir)).Batch()
+	batch := pebbleStorage.NewFromDB(s.db, true, pebbleSyncs(s.dir), pebbleStorage.WithSealWatch(s.seals)).Batch()
 	defer func() { _ = batch.Close() }()
 	if err := fn(batch); err != nil {
 		return err
 	}
 	return batch.Commit()
 }
+
+// leased runs commit inside w's quiesce lease, so a seal drains it before
+// the key leaves memory. A refused Admit is the typed sealed error, as a
+// PebbleStorage write returns it; a nil watch runs commit unleased.
+func leased(w *pebbleStorage.SealWatch, commit func() error) error {
+	release, err := admit(w)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return commit()
+}
+
+// admit takes w's quiesce lease and returns its release; a nil watch admits
+// unconditionally. A caller that holds the lease across several writes, as
+// snapshot recovery does from its delete through its replacement commit,
+// writes directly inside it rather than through leased, which would admit
+// again.
+func admit(w *pebbleStorage.SealWatch) (func(), error) {
+	if w == nil {
+		return func() {}, nil
+	}
+	if err := w.Admit(); err != nil {
+		return nil, err
+	}
+	return w.Done, nil
+}
+
+// recoverClearedHook, when set by a test, runs after snapshot recovery has
+// cleared the old data and before it commits the replacement.
+var recoverClearedHook func()
 
 // tsRefusalResult is the application result of a time-series write that
 // tsAutoCommit refused: a metric-cap refusal carries its typed encoding, any
@@ -396,8 +427,9 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// Create time-series storage if enabled. Uses the same PebbleDB
 	// instance so that TS data shares the same durability guarantees.
 	if s.enableTimeSeries && s.ts == nil {
-		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir)))
+		ts, tsErr := timeseries.New(pebbleStorage.NewFromDB(db, true, pebbleSyncs(initialDir), pebbleStorage.WithSealWatch(seals)))
 		if tsErr != nil {
+			seals.Close()
 			_ = db.Close()
 			s.db = nil
 			return 0, &OpenError{Dir: initialDir, Err: tsErr}
@@ -407,6 +439,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -417,6 +450,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// log, so the lessor's state has to come back from the lease table this
 	// database already holds.
 	if err := s.restoreLessor(); err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -427,6 +461,7 @@ func (s *PebbleStateMachine) Open(_ context.Context, initialDir string, _ <-chan
 	// lessor's state, and for the same reason: a disk state machine resumes
 	// from lastApplied rather than replaying the log.
 	if err := s.restoreAuditChain(); err != nil {
+		s.seals.Close()
 		_ = s.db.Close()
 		s.db = nil
 		s.ts = nil
@@ -442,7 +477,7 @@ func (s *PebbleStateMachine) restoreLessor() error {
 	if s.lessor == nil {
 		return nil
 	}
-	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true))
+	return s.lessor.Restore(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)))
 }
 
 // restoreAuditChain rebuilds the attached replicated audit Chain, if any,
@@ -452,7 +487,7 @@ func (s *PebbleStateMachine) restoreAuditChain() error {
 	if s.auditChain == nil {
 		return nil
 	}
-	return s.auditChain.Restore(pebbleStorage.NewFromDB(s.db, true))
+	return s.auditChain.Restore(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)))
 }
 
 // readLastApplied reads the persisted last applied index from the metadata key.
@@ -563,7 +598,7 @@ func (s *PebbleStateMachine) Update(_ context.Context, entries []sm.Entry, resul
 		}
 	}
 
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := leased(s.seals, func() error { return batch.Commit(pebble.Sync) }); err != nil {
 		return &WriteError{Err: err}
 	}
 
@@ -672,19 +707,19 @@ func (s *PebbleStateMachine) Lookup(_ context.Context, query interface{}) (inter
 		if s.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return s.auditChain.Query(pebbleStorage.NewFromDB(s.db, true), q.TenantID, q.Filter)
+		return s.auditChain.Query(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q.TenantID, q.Filter)
 
 	case audit.VerifyRequest:
 		if s.auditChain == nil {
 			return nil, &InvalidQueryError{Reason: "audit chain not configured"}
 		}
-		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true), q.TenantID)
+		return s.auditChain.Verify(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q.TenantID)
 
 	case vlog.Request:
 		if s.logs == nil {
 			return nil, &InvalidQueryError{Reason: "log registry not configured"}
 		}
-		return vlog.ReadSnapshot(pebbleStorage.NewFromDB(s.db, true), q)
+		return vlog.ReadSnapshot(pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), q)
 
 	case index.IndexQueryRequest:
 		idx, ok := s.indexes[q.IndexName]
@@ -1056,9 +1091,21 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		return &NotOpenError{}
 	}
 
+	// One quiesce lease spans the whole recovery, from the delete of the
+	// old data through the commit of its replacement: a seal either refuses
+	// recovery before anything is deleted or drains until it has finished.
+	release, err := admit(s.seals)
+	if err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+	defer release()
+
 	// Clear all existing data.
 	if err := s.clearAll(); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
+	}
+	if recoverClearedHook != nil {
+		recoverClearedHook()
 	}
 
 	var count uint32
@@ -1099,6 +1146,8 @@ func (s *PebbleStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader,
 		}
 	}
 
+	// The recovery's lease is already held; admitting again here could be
+	// refused by a seal that closed the gate after the delete.
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
@@ -1157,6 +1206,7 @@ func (s *PebbleStateMachine) Close(_ context.Context) error {
 		return nil
 	}
 
+	s.seals.Close()
 	err := s.db.Close()
 	s.db = nil
 	return err
@@ -2125,7 +2175,7 @@ func (s *PebbleStateMachine) pebbleHandleAuditAppend(_ *PebbleStateMachine, batc
 // beneath what this update has staged. Classification -- refusal versus halt
 // -- is statemachine.ApplyVerifiableLog's, shared with the MVCC engine.
 func (s *PebbleStateMachine) pebbleHandleVerifiableLog(_ *PebbleStateMachine, batch *pebble.Batch, payload []byte) (sm.Result, []pebbleNotification, error) {
-	res, err := statemachine.ApplyVerifiableLog(s.logs, pebbleStorage.NewFromDB(s.db, true), pebbleAuditWriter{batch: batch}, payload)
+	res, err := statemachine.ApplyVerifiableLog(s.logs, pebbleStorage.NewFromDB(s.db, true, pebbleStorage.WithSealWatch(s.seals)), pebbleAuditWriter{batch: batch}, payload)
 	return res, nil, err
 }
 
