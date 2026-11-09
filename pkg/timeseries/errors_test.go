@@ -82,6 +82,14 @@ func TestInvalidMetricError_Error_HasPrefix(t *testing.T) {
 	}
 }
 
+func TestNilRetentionPolicyError_Error_HasPrefix(t *testing.T) {
+	e := &NilRetentionPolicyError{}
+	got := e.Error()
+	if !strings.HasPrefix(got, "timeseries:") {
+		t.Errorf("Error: expected 'timeseries:' prefix, got %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // InvalidTimestampError
 // ---------------------------------------------------------------------------
@@ -286,5 +294,51 @@ func TestOpenDirError_Unwrap_MatchesAs(t *testing.T) {
 	}
 	if target.Dir != "/data" {
 		t.Errorf("As: Dir = %q, want %q", target.Dir, "/data")
+	}
+}
+
+func TestValidationError_Error_ContainsOpAndMessage(t *testing.T) {
+	e := &ValidationError{Op: "QueryRequest.Validate", Message: "percentile must be between 0 and 100"}
+	got := e.Error()
+	if !strings.Contains(got, "QueryRequest.Validate") {
+		t.Errorf("Error: expected op in message, got %q", got)
+	}
+	if !strings.Contains(got, "percentile must be between 0 and 100") {
+		t.Errorf("Error: expected message in output, got %q", got)
+	}
+	if !strings.HasPrefix(got, "timeseries:") {
+		t.Errorf("Error: expected 'timeseries:' prefix, got %q", got)
+	}
+}
+
+func TestInvalidAggFuncError_Error_ContainsFuncID(t *testing.T) {
+	e := &InvalidAggFuncError{Func: AggFunc(99)}
+	got := e.Error()
+	if !strings.Contains(got, "99") {
+		t.Errorf("Error: expected func id '99' in message, got %q", got)
+	}
+	if !strings.Contains(got, "invalid aggregation function") {
+		t.Errorf("Error: expected 'invalid aggregation function', got %q", got)
+	}
+}
+
+func TestInvalidBatchPointError_Error_ContainsIndex(t *testing.T) {
+	inner := &InvalidMetricError{}
+	e := &InvalidBatchPointError{Index: 3, Err: inner}
+	got := e.Error()
+	if !strings.Contains(got, "3") {
+		t.Errorf("Error: expected index '3' in message, got %q", got)
+	}
+	if !strings.Contains(got, "invalid data point at index") {
+		t.Errorf("Error: expected 'invalid data point at index', got %q", got)
+	}
+}
+
+func TestInvalidBatchPointError_Unwrap_ReturnsInnerError(t *testing.T) {
+	inner := &InvalidTimestampError{}
+	e := &InvalidBatchPointError{Index: 0, Err: inner}
+	var ite *InvalidTimestampError
+	if !errors.As(e, &ite) {
+		t.Error("Unwrap: errors.As failed for inner InvalidTimestampError")
 	}
 }

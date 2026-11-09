@@ -109,6 +109,15 @@ func TestSystemBarrierStrategy_Unavailable(t *testing.T) {
 	}
 }
 
+// TestSystemBarrierStrategy_Close verifies the no-op Close returns nil even with
+// a nil backing barrier (the strategy holds no resources of its own).
+func TestSystemBarrierStrategy_Close(t *testing.T) {
+	t.Parallel()
+	if err := NewSystemBarrierStrategy(nil).Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // TestSystemBarrierStrategy_AutoUnsealTenantBarrier proves the end-to-end
 // system-managed mode: a tenant barrier is initialized credential-free, stores
 // data, is sealed, and is then re-opened and unsealed credential-free (the

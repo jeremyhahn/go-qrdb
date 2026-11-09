@@ -125,6 +125,13 @@ func TestHandleAuthFactorEnroll_MissingFields(t *testing.T) {
 	if !errors.As(err, &ue) {
 		t.Fatalf("expected *UnmarshalError, got %T", err)
 	}
+	var mf *missingFieldTypeError
+	if !errors.As(err, &mf) {
+		t.Fatalf("expected wrapped *missingFieldTypeError, got %v", err)
+	}
+	if want := "quic: failed to unmarshal request: factor_name and subject are required"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
 }
 
 func TestHandleAuthFactorEnroll_Success(t *testing.T) {

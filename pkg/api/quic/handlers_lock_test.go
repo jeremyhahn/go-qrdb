@@ -258,6 +258,15 @@ func TestHandleLockTryLock_ServiceError(t *testing.T) {
 	}
 }
 
+func TestHandleLockTryLock_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithLock(&mockLockSvc{}))
+	_, err := srv.handleLockTryLock(context.Background(), []byte{0xff})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // handleLockRelease
 // ---------------------------------------------------------------------------
@@ -474,6 +483,15 @@ func TestHandleLockList_ServiceError(t *testing.T) {
 	_, err := srv.handleLockList(context.Background(), payload)
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestHandleLockList_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithLock(&mockLockSvc{}))
+	_, err := srv.handleLockList(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnmarshalError, got %T", err)
 	}
 }
 
