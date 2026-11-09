@@ -292,6 +292,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- CI installs Trivy from its official image pinned by digest; the GitHub
+  release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
   `build/docker/devcontainer` tools stage fetched the Trivy release archive
   with a single `curl`, so one transient 504 from GitHub's release-asset

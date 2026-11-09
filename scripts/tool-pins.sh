@@ -26,8 +26,8 @@ GOSEC_VERSION=v2.29.0
 XTOOLS_VERSION=v0.52.0
 GOVULNCHECK_VERSION=v1.8.0
 
-# trivy: a release archive, checked against these digests (upstream's
-# trivy_<version>_checksums.txt) before it is unpacked.
+# trivy: the binary is copied out of upstream's official image. Its multi-arch
+# index digest is the integrity pin (it replaced the release-archive sha256s),
+# and the build checks the binary reports TRIVY_VERSION.
 TRIVY_VERSION=v0.75.0
-TRIVY_SHA256_LINUX_AMD64=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
-TRIVY_SHA256_LINUX_ARM64=a1ee9f6ffb7d112b64ff726a2a0717c21175c1114361391f4a132956751a13b3
+TRIVY_IMAGE=ghcr.io/aquasecurity/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
