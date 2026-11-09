@@ -660,6 +660,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
+  and `test/performance/qrdb`, with the indirect requirement in
+  `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
+  reported it behind its latest release, inside the 7-day adoption window.
 - `golang.org/x/sync` v0.24.0 → v0.25.0 in the root module, with the indirect
   requirement in `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`
   following it; `deps-check` reported it behind its latest release.
