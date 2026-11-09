@@ -454,7 +454,7 @@ func TestKVTenantService_ClusterIsolationPolicy_NoAtomicCapability(t *testing.T)
 		t.Fatalf("ClusterIsolationPolicy: %v", err)
 	}
 	if got != ClusterIsolationPolicyOperatorAccess {
-		t.Fatalf("got %q, want operator-access (no capability, nothing could have tightened it)", got)
+		t.Fatalf("got %q, want operator-access (no record stored)", got)
 	}
 
 	err = wrapped.SetClusterIsolationPolicy(context.Background(), ClusterIsolationPolicyStrict)
