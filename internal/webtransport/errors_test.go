@@ -11,8 +11,9 @@ import (
 )
 
 func TestErrorCodeRoundTrip(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 2)) // #nosec G404 -- test data: arbitrary error codes, not secrets
 	for range int(1e4) {
-		n := StreamErrorCode(rand.Int64())
+		n := StreamErrorCode(rng.Int64())
 		httpCode := webtransportCodeToHTTPCode(n)
 		errorCode, err := httpCodeToWebtransportCode(httpCode)
 		require.NoError(t, err)
@@ -39,8 +40,9 @@ func TestErrorCodeConversionErrors(t *testing.T) {
 
 	t.Run("greased value", func(t *testing.T) {
 		var counter int
+		rng := rand.New(rand.NewPCG(3, 4)) // #nosec G404 -- test data: arbitrary error codes, not secrets
 		for range int(1e4) {
-			c := firstErrorCode + uint64(rand.Uint32())
+			c := firstErrorCode + uint64(rng.Uint32())
 			if (c-0x21)%0x1f != 0 {
 				continue
 			}

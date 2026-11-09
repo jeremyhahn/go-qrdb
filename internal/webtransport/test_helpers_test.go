@@ -5,8 +5,9 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/internal/webtransport/internal/testdata"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport/internal/testdata"
 )
 
 var (

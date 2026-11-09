@@ -94,7 +94,9 @@ func (d *Transport) NewClientConn(qconn *quic.Conn) (*ClientConn, error) {
 					return
 				}
 				if !isValidSessionID(id) {
-					qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
+					// The connection is torn down for the peer's error; this
+					// goroutine has no caller to report a close error to.
+					_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
 					return
 				}
 				c.sessMgr.AddStream(str, sessionID(id), r.BytesRead)
@@ -130,7 +132,9 @@ func (d *Transport) NewClientConn(qconn *quic.Conn) (*ClientConn, error) {
 					return
 				}
 				if !isValidSessionID(id) {
-					qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
+					// The connection is torn down for the peer's error; this
+					// goroutine has no caller to report a close error to.
+					_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
 					return
 				}
 				c.sessMgr.AddUniStream(str, sessionID(id), r.BytesRead)

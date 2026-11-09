@@ -97,7 +97,8 @@ func (d *Transport) Dial(ctx context.Context, urlStr string, reqHdr http.Header)
 
 	clientConn, err := d.NewClientConn(qconn)
 	if err != nil {
-		qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+		// The dial already failed; a close error would add nothing to err.
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 		return nil, nil, err
 	}
 	rsp, sess, err := clientConn.dial(ctx, u, reqHdr)
@@ -108,11 +109,13 @@ func (d *Transport) Dial(ctx context.Context, urlStr string, reqHdr http.Header)
 			code = WTRequirementsNotMetErrorCode
 			msg = reqErr.Message
 		}
-		qconn.CloseWithError(code, msg)
+		// The dial already failed; a close error would add nothing to err.
+		_ = qconn.CloseWithError(code, msg)
 		return rsp, nil, err
 	}
 	context.AfterFunc(sess.Context(), func() {
-		qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
+		// The session is gone and no caller is left to receive a close error.
+		_ = qconn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeNoError), "")
 	})
 	return rsp, sess, nil
 }

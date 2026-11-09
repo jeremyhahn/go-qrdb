@@ -2,9 +2,10 @@ package webtransport
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"slices"
 	"sync"
 
@@ -36,7 +37,7 @@ type outgoingStreamsMap[T outgoingStream] struct {
 
 	mx         sync.Mutex
 	closeErr   error
-	streamCtxs map[int]context.CancelFunc
+	streamCtxs map[uint64]context.CancelFunc
 
 	openQueue   []chan struct{}
 	numStreams  uint64 // total number of streams opened for this session
@@ -56,7 +57,7 @@ func newOutgoingStreamsMap[T outgoingStream](
 		openStream:     openStream,
 		openStreamSync: openStreamSync,
 		queueBlocked:   queueBlocked,
-		streamCtxs:     make(map[int]context.CancelFunc),
+		streamCtxs:     make(map[uint64]context.CancelFunc),
 		maxStreams:     maxStreams,
 		m:              make(map[quic.StreamID]T),
 	}
@@ -183,11 +184,16 @@ func (s *outgoingStreamsMap[T]) OpenStream() (T, error) {
 	return str, nil
 }
 
-func (s *outgoingStreamsMap[T]) addStreamCtxCancel(cancel context.CancelFunc) (id int) {
-rand:
-	id = rand.Int()
-	if _, ok := s.streamCtxs[id]; ok {
-		goto rand
+func (s *outgoingStreamsMap[T]) addStreamCtxCancel(cancel context.CancelFunc) (id uint64) {
+	var b [8]byte
+	for {
+		// crypto/rand.Read never returns an error; it crashes the program
+		// if the system's random source fails.
+		_, _ = rand.Read(b[:])
+		id = binary.BigEndian.Uint64(b[:])
+		if _, ok := s.streamCtxs[id]; !ok {
+			break
+		}
 	}
 	s.streamCtxs[id] = cancel
 	return id

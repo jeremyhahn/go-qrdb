@@ -161,8 +161,9 @@ func (s *Server) serve(conn net.PacketConn) error {
 		}
 
 		if s.isClosed() {
-			// Do not accept a new connection during shutdown
-			qconn.CloseWithError(0, "")
+			// Do not accept a new connection during shutdown. The
+			// connection is refused either way, so a close error is moot.
+			_ = qconn.CloseWithError(0, "")
 			continue
 		}
 
@@ -195,7 +196,8 @@ func (s *Server) ServeQUICConn(conn *quic.Conn) error {
 	if s.closed {
 		// Shutting down, do not accept new connections
 		s.connsMx.Unlock()
-		conn.CloseWithError(0, "")
+		// ErrServerClosed is the result; a close error would not change it.
+		_ = conn.CloseWithError(0, "")
 		return http.ErrServerClosed
 	}
 
@@ -223,7 +225,8 @@ func (s *Server) ServeQUICConn(conn *quic.Conn) error {
 	go func() {
 		select {
 		case <-s.ctx.Done():
-			conn.CloseWithError(0, "")
+			// The server is shutting down; nothing waits on this close.
+			_ = conn.CloseWithError(0, "")
 		case <-conn.Context().Done():
 			// connection already closed
 		}
@@ -262,7 +265,9 @@ func (s *Server) ServeQUICConn(conn *quic.Conn) error {
 					return
 				}
 				if !isValidSessionID(id) {
-					conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
+					// The connection is torn down for the peer's error; this
+					// goroutine has no caller to report a close error to.
+					_ = conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
 					return
 				}
 				sessMgr.AddStream(str, sessionID(id), r.BytesRead)
@@ -300,7 +305,9 @@ func (s *Server) ServeQUICConn(conn *quic.Conn) error {
 					return
 				}
 				if !isValidSessionID(id) {
-					conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
+					// The connection is torn down for the peer's error; this
+					// goroutine has no caller to report a close error to.
+					_ = conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeIDError), "")
 					return
 				}
 				sessMgr.AddUniStream(str, sessionID(id), r.BytesRead)
@@ -364,7 +371,9 @@ func (s *Server) Close() error {
 	s.closed = true
 	if s.conns != nil {
 		for conn, mgr := range s.conns {
-			conn.CloseWithError(0, "")
+			// Close reports the HTTP/3 server's error; one connection's
+			// close error must not stop the others from closing.
+			_ = conn.CloseWithError(0, "")
 			mgr.Close()
 		}
 		s.conns = nil
@@ -400,12 +409,18 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	if id == nil {
 		return nil, errors.New("webtransport: missing QUIC connection")
 	}
-	conn := id.(*quic.Conn)
+	conn, ok := id.(*quic.Conn)
+	if !ok {
+		return nil, errors.New("webtransport: missing QUIC connection")
+	}
 
 	selectedProtocol := s.selectProtocol(r.Header[http.CanonicalHeaderKey(wtAvailableProtocolsHeader)])
 
 	// Wait for SETTINGS
-	settingser := w.(http3.Settingser)
+	settingser, ok := w.(http3.Settingser)
+	if !ok {
+		return nil, errors.New("webtransport: response writer does not expose HTTP/3 settings")
+	}
 	timer := time.NewTimer(s.timeout())
 	defer timer.Stop()
 	select {
@@ -441,9 +456,11 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	// Multiple sessions on one HTTP/3 connection require WebTransport flow control.
 	if !fc.Enabled && sessMgr.hasSession() {
 		// Without WriteHeader, HTTPStream sends no response header.
-		if str, err := w.(http3.HTTPStreamer).HTTPStream(); err == nil {
-			str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-			str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+		if streamer, ok := w.(http3.HTTPStreamer); ok {
+			if str, err := streamer.HTTPStream(); err == nil {
+				str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+				str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+			}
 		}
 		return nil, errMultipleSessionsWithoutFlowControl
 	}

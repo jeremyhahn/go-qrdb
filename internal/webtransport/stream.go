@@ -138,8 +138,8 @@ func maybeConvertStreamError(err error) error {
 }
 
 func isTimeoutError(err error) bool {
-	nerr, ok := err.(net.Error)
-	if !ok {
+	var nerr net.Error
+	if !errors.As(err, &nerr) {
 		return false
 	}
 	return nerr.Timeout()

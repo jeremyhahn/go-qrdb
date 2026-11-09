@@ -514,7 +514,9 @@ func (s *Session) closeWithError(closeErr error, closeCapsule *closeSessionCapsu
 		s.pendingCloseCapsule = closeCapsule
 		s.capsuleQueueMx.Unlock()
 
-		s.str.SetWriteDeadline(time.Now().Add(closeSessionTimeout))
+		// quic-go's SetWriteDeadline returns no error; the deadline only
+		// bounds the WT_CLOSE_SESSION write.
+		_ = s.str.SetWriteDeadline(time.Now().Add(closeSessionTimeout))
 		select {
 		case s.capsuleQueueUpdated <- struct{}{}:
 		default:

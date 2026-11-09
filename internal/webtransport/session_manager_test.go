@@ -123,8 +123,11 @@ func TestSessionManagerAddingStreams(t *testing.T) {
 	require.NoError(t, err)
 	go sc.HandleRequestStream(serverReqStr)
 
-	_, err = reqStr.ReadResponse()
+	rsp, err := reqStr.ReadResponse()
 	require.NoError(t, err)
+	// Closing the body cancels reading the stream the session uses, so it
+	// waits for the end of the test; Close on a response body never fails.
+	defer func() { _ = rsp.Body.Close() }()
 
 	const sessionID = 42
 
@@ -224,8 +227,11 @@ func TestSessionManagerStreamReordering(t *testing.T) {
 		require.NoError(t, err)
 		go sc.HandleRequestStream(serverReqStr)
 
-		_, err = reqStr.ReadResponse()
+		rsp, err := reqStr.ReadResponse()
 		require.NoError(t, err)
+		// Closing the body cancels reading the stream the session uses, so it
+		// waits for the end of the test; Close on a response body never fails.
+		defer func() { _ = rsp.Body.Close() }()
 
 		const sessionID = 42
 		const timeout = 3 * time.Second
@@ -468,19 +474,25 @@ func TestSessionManagerSessionClose(t *testing.T) {
 				return nil, err
 			}
 			go sc.HandleRequestStream(serverReqStr)
-			if _, err := reqStr.ReadResponse(); err != nil {
+			rsp, err := reqStr.ReadResponse()
+			if err != nil {
 				return nil, err
 			}
+			// Closing the body cancels reading the stream the session uses, so
+			// it waits for the end of the test; Close on a response body never
+			// fails.
+			t.Cleanup(func() { _ = rsp.Body.Close() })
 			return reqStr, nil
 		}
 
 		sessMgr := newSessionManager(time.Hour)
 
+		rng := rand.New(rand.NewPCG(1, 2)) // #nosec G404 -- test data: arbitrary session IDs, not secrets
 		reqStrs := make(map[sessionID]*http3.RequestStream)
 		for range maxRecentlyClosedSessions {
 			reqStr, err := openSession()
 			require.NoError(t, err)
-			sessID := sessionID(rand.Int64N(quicvarint.Max))
+			sessID := sessionID(rng.Int64N(quicvarint.Max))
 			reqStrs[sessID] = reqStr
 			sess := newSession(context.Background(), sessID, clientConn, reqStr, "", sessionFlowControl{})
 			sessMgr.AddSession(sessID, sess)
@@ -489,7 +501,7 @@ func TestSessionManagerSessionClose(t *testing.T) {
 		require.Equal(t, maxRecentlyClosedSessions, sessMgr.NumSessions())
 
 		// close a random session
-		sessID := slices.Collect(maps.Keys(reqStrs))[rand.Int64N(int64(len(reqStrs)))]
+		sessID := slices.Collect(maps.Keys(reqStrs))[rng.Int64N(int64(len(reqStrs)))]
 		reqStrs[sessID].CancelWrite(0)
 		reqStrs[sessID].CancelRead(0)
 		synctest.Wait()
