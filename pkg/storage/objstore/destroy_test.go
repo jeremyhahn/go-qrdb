@@ -24,9 +24,10 @@ import (
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
 // sortedProvider is a provider that is not walked, so one store holds both
