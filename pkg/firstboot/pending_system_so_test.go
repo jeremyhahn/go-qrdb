@@ -136,10 +136,86 @@ func TestClearPendingSystemSOIfEnrolled_KeepsTheRecordUntilTheSOIsEnrolled(t *te
 	keeps("an SO account without its PIN is not enrolled")
 
 	require.NoError(t, pins.CommitSOPINRecord(ctx, tenantid.System, so.PINRecord))
+	keeps("an SO account with its PIN but without its certificate binding is not enrolled")
+
+	bindPendingSO(t, users, so)
 	cleared, err = ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
 	require.NoError(t, err)
 	assert.True(t, cleared)
 	assert.True(t, SystemSOConsumed(ctx, store))
+}
+
+// bindPendingSO gives the pending SO's account a live binding to the
+// certificate its record carries, as a successful enrolment does.
+func bindPendingSO(t *testing.T, users *soUsers, so *SOConfig) {
+	t.Helper()
+	thumbprint, err := spkiThumbprintFromCertPEM(so.CertPEM)
+	require.NoError(t, err)
+	account := users.byName[so.Username]
+	require.NotNil(t, account)
+	account.CertBindings = append(account.CertBindings, user.CertBinding{Thumbprint: thumbprint, NotAfter: time.Now().Add(time.Hour)})
+}
+
+// TestClearPendingSystemSOIfEnrolled_KeepsTheRecordAfterAForeignPIN
+// covers a follower's cleanup after an enrolment that created and bound
+// the SO's account but failed because a different PIN was already
+// committed: some PIN exists, but not this record's, so the record stays
+// pending and the cleanup reports why.
+func TestClearPendingSystemSOIfEnrolled_KeepsTheRecordAfterAForeignPIN(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	require.NoError(t, err)
+
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	bindPendingSO(t, users, so)
+	require.NoError(t, pins.SetSOPIN(ctx, tenantid.System, []byte("someone-else's-pin")))
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
+	var unverified *SystemSOUnverifiedError
+	require.ErrorAs(t, err, &unverified)
+	assert.False(t, cleared)
+	assert.False(t, SystemSOConsumed(ctx, store), "a foreign PIN must not consume the record")
+	pending, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	assert.NotNil(t, pending, "the pending credential is kept for the enrolment to retry")
+}
+
+// TestClearPendingSystemSOIfEnrolled_KeepsTheRecordForAnotherCertificate:
+// the record's PIN is committed, but the SO's account is bound to some
+// other certificate, so the record's own certificate never worked.
+func TestClearPendingSystemSOIfEnrolled_KeepsTheRecordForAnotherCertificate(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	require.NoError(t, err)
+
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	account, err := users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	users.byName[so.Username].CertBindings = []user.CertBinding{{Thumbprint: "sha256:another-certificate", NotAfter: time.Now().Add(time.Hour)}}
+	require.NotZero(t, account.ID)
+	require.NoError(t, pins.CommitSOPINRecord(ctx, tenantid.System, so.PINRecord))
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
+	var unverified *SystemSOUnverifiedError
+	require.ErrorAs(t, err, &unverified)
+	assert.False(t, cleared)
+	assert.False(t, SystemSOConsumed(ctx, store))
 }
 
 // The first ceremony's SO wins; another node's later write is not an error

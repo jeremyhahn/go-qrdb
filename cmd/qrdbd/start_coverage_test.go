@@ -311,6 +311,7 @@ func TestApplyConfigToFlags_EmptyTLSFieldsNotOverridden(t *testing.T) {
 // mockUserServicer satisfies user.UserServicer for bootstrap testing.
 type mockUserServicer struct {
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
@@ -350,7 +351,10 @@ func (m *mockUserServicer) DeleteUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
-func (m *mockUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+func (m *mockUserServicer) ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	if m.listUsersFn != nil {
+		return m.listUsersFn(ctx, req)
+	}
 	return nil, nil
 }
 
@@ -855,6 +859,56 @@ func TestRunFirstBoot_StrictRestartRequiresAnEnrolledSO(t *testing.T) {
 	lookups = 0
 	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil))
 	require.Equal(t, 1, lookups)
+}
+
+// committedSOPINs is an SO PIN store that already holds a committed PIN,
+// as a cluster enrolled before the pending-SO marker existed does.
+type committedSOPINs struct{ committed bool }
+
+func (p *committedSOPINs) SetSOPIN(context.Context, string, []byte) error {
+	return auth.ErrSOPINAlreadySet
+}
+
+func (p *committedSOPINs) SOPINCommitted(context.Context, string) (bool, error) {
+	return p.committed, nil
+}
+
+func (p *committedSOPINs) SOPINRecordMatches(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+// A cluster whose SO was enrolled before the consumed marker existed has
+// a separate SO account, a live binding and a committed PIN, but no
+// marker. A strict start recognises that enrolment, writes the marker and
+// takes the fast path; without the committed PIN it is still refused.
+func TestRunFirstBoot_StrictStartRecognisesAPreMarkerSO(t *testing.T) {
+	certPEM, _ := selfSignedAdminCertPEM(t)
+	live := []user.CertBinding{{Thumbprint: "sha256:admin", NotAfter: time.Now().Add(365 * 24 * time.Hour)}}
+	admin := &user.User{ID: 9001, Username: "admin", TenantID: tenantid.System, System: true, Lifecycle: user.LifecycleActive, CertBindings: live}
+	officer := &user.User{
+		ID: 9002, Username: "officer", TenantID: tenantid.System, Lifecycle: user.LifecycleActive,
+		RoleIDs:      []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)},
+		CertBindings: []user.CertBinding{{Thumbprint: "sha256:officer", NotAfter: time.Now().Add(365 * 24 * time.Hour)}},
+	}
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(context.Context, string, string) (*user.User, error) { return admin, nil },
+		listUsersFn: func(context.Context, *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+			return &user.ListUsersResponse{Users: []*user.User{admin, officer}, Total: 2}, nil
+		},
+	}
+	node := &mockRaftNode{}
+	pendingStore := newMockKVStore(make(map[string][]byte))
+	ctx := context.Background()
+
+	pins := &committedSOPINs{}
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, pins)
+	var required *firstboot.SystemSORequiredError
+	require.ErrorAs(t, err, &required, "an SO account with no committed PIN is not an enrolled SO")
+	require.False(t, firstboot.SystemSOConsumed(ctx, pendingStore))
+
+	pins.committed = true
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, pins))
+	require.True(t, firstboot.SystemSOConsumed(ctx, pendingStore), "the recognised enrolment writes the consumed marker")
 }
 
 // TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted
