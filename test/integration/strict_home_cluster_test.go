@@ -52,6 +52,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 )
 
@@ -74,6 +75,13 @@ const (
 )
 
 func TestTenant_StrictHome_AuthenticatesOnEveryNode(t *testing.T) {
+	// The strict floor comes from tenant.isolation_policy, which a node
+	// refuses at startup until strict-isolation is active, and this binary
+	// does not advertise it (featuregate.StrictIsolation). The test runs
+	// again once it does.
+	if !slices.Contains(featuregate.Supported(), featuregate.StrictIsolation) {
+		t.Skipf("%s is not supported by this binary; a strict tenant.isolation_policy is refused at startup", featuregate.StrictIsolation)
+	}
 	bin := buildBinary(t)
 	ca := generateTestCA(t)
 

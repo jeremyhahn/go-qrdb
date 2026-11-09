@@ -74,6 +74,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -1120,4 +1121,64 @@ func compactionRevision(t *testing.T, node *multiProtoNode, proto multiProtocol,
 		t.Fatalf("[%s] kv revision on %s: decode %q: %v", proto.name, db, out, err)
 	}
 	return resp.Revision
+}
+
+// TestTenantIsolation_IsolationPolicyVerbs_RefusedUntilActive_PerProtocol
+// proves every isolation-policy verb is refused, with the strict-isolation
+// not-active refusal, on every protocol until the feature is active, and that
+// a refusal changes nothing: the tenant record reads back identically and the
+// floor is still unreadable through the gated verb.
+func TestTenantIsolation_IsolationPolicyVerbs_RefusedUntilActive_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testIsolationPolicyVerbsRefusedOverProtocol(t, node, proto)
+		})
+	}
+}
+
+func testIsolationPolicyVerbsRefusedOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	tenantID := fmt.Sprintf("isopol-%s-%d", proto.name, time.Now().UnixNano())
+	createTenant(t, node, proto, tenantID, "Isolation Policy Tenant", "prefix", false)
+	sys := node.cliArgsFor(proto)
+
+	before, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] tenant get before: %v\noutput: %s", proto.name, err, before)
+	}
+
+	refusals := [][]string{
+		{"cluster-isolation-policy", "get"},
+		{"cluster-isolation-policy", "set", "strict"},
+		{"tenant", "update", tenantID, "--isolation-policy", "strict"},
+	}
+	for _, args := range refusals {
+		out, err := runQRDB(t, node.cli, sys, args...)
+		if err == nil {
+			t.Fatalf("[%s] qrdb %s succeeded before %s is active\noutput: %s",
+				proto.name, strings.Join(args, " "), featuregate.StrictIsolation, out)
+		}
+		if !strings.Contains(out, strconv.Quote(string(featuregate.StrictIsolation))) || !strings.Contains(out, "is not active") {
+			t.Fatalf("[%s] qrdb %s: want the %s not-active refusal\noutput: %s",
+				proto.name, strings.Join(args, " "), featuregate.StrictIsolation, out)
+		}
+	}
+
+	after, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] tenant get after: %v\noutput: %s", proto.name, err, after)
+	}
+	if after != before {
+		t.Fatalf("[%s] a refused isolation-policy verb changed the tenant\nbefore:\n%s\nafter:\n%s", proto.name, before, after)
+	}
+	// The floor is still behind the gate: the read is refused exactly as
+	// before, so no refused set reached it.
+	if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "get"); err == nil || !strings.Contains(out, "is not active") {
+		t.Fatalf("[%s] floor read after the refusals = %v\noutput: %s", proto.name, err, out)
+	}
 }
