@@ -149,6 +149,13 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	}
 	if o.prefix != "" {
 		store, journal = withPrefix(store, o.prefix), withPrefix(journal, o.prefix)
+		// openStores looked for a legacy in-tree journal at the store's
+		// root; one inside this database's namespace is refused as well.
+		if _, walked := walkedRoots[provider]; walked {
+			if err := refuseInTreeJournal(provider, store); err != nil {
+				return nil, err
+			}
+		}
 	}
 	e := &Engine{store: store, journal: journal, provider: provider, nameLimit: objcommon.MaxKeyLength - len(o.prefix)}
 	if err := e.ensureFormatMarker(); err != nil {
@@ -489,5 +496,43 @@ func (e *Engine) Snapshot() (storage.Snapshot, error) {
 // no Close, so there is nothing further to release.
 func (e *Engine) Close() error {
 	e.closed.Store(true)
+	return nil
+}
+
+// Destroy deletes every object the engine holds beneath its object prefix,
+// commit journal, records and format marker alike, and closes the engine.
+// Close leaves the objects in the bucket, where an engine reopened on the
+// same prefix would serve them again; Destroy is how a dropped database's
+// objects are reclaimed. It works on a closed engine too, so a drop retried
+// after its close still reclaims. The journal goes first, so a Destroy that
+// fails part way leaves no batch for a reopen to replay; an object it cannot
+// delete fails it, and a later Destroy deletes what remains.
+func (e *Engine) Destroy() error {
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	e.closed.Store(true)
+	if e.journal != e.store {
+		if err := deleteAllObjects(e.journal); err != nil {
+			return err
+		}
+	} else if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
+		return err
+	}
+	return deleteAllObjects(e.store)
+}
+
+// deleteAllObjects deletes every object store lists.
+func deleteAllObjects(store objcommon.Storage) error {
+	names, err := store.List("")
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if err := store.Delete(name); err != nil && !notFound(err) {
+			return err
+		}
+	}
 	return nil
 }
