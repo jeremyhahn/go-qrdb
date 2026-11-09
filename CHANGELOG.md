@@ -64,7 +64,13 @@ are not reconstructed here — their history is in the git log.
   or `custodian`) is a custody identity, not a login certificate, and is
   refused with `*ceremony.SystemSOHolderCertError`. `--admin-cert-pool` is
   accepted with `--so-cert` alone, so a CSR or generated admin can present
-  an SO certificate chained to it.
+  an SO certificate chained to it. An adopted SO certificate without the
+  client-auth profile (digital signature key usage, client authentication
+  EKU) is refused with `*ceremony.ClientAuthProfileError` before anything is
+  bound. First boot stores the adopted SO's pool as system tenant trust
+  anchors and refreshes runtime client trust before it binds the SO, so the
+  SO can authenticate over mTLS. An embedded upgrade recognises an SO that
+  is already enrolled, as the daemon does, instead of refusing strict boot.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as

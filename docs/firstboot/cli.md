@@ -31,7 +31,7 @@ default role set in a single transactional ceremony**.
 | `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
 | `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. **Required when the server runs strict separation of duties** |
 | `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's (mutually exclusive with `--so-cert`) |
-| `--so-cert` | string | — | path to a PEM certificate the system SO already holds, naming the system tenant; verified against `--admin-cert-pool` or this deployment's own CA (mutually exclusive with `--so-csr`) |
+| `--so-cert` | string | — | path to a PEM certificate the system SO already holds, naming the system tenant; verified against `--admin-cert-pool` or this deployment's own CA and refused without the client-auth profile (digital signature key usage, client authentication EKU); an `--admin-cert-pool` it chains to becomes system tenant trust anchors, loaded into runtime client trust before the SO is bound (mutually exclusive with `--so-csr`) |
 | `--so-chain` | string | — | path to PEM intermediates for `--so-cert`; only valid with `--so-cert` |
 
 Exactly one of `--admin-csr`, `--admin-cert` or `--admin-generate` is

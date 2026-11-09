@@ -154,7 +154,7 @@ func TestRunFirstBoot_WithBarriers_AdminAlreadyExists(t *testing.T) {
 		context.Background(), node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+		auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 
 	require.NoError(t, err)
 }
@@ -194,7 +194,7 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 		ctx, node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+		auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 
 	// We expect an error (waitForAdminReplication times out).
 	if err != nil {
@@ -289,7 +289,7 @@ func TestBootstrapUserRoleStores_FirstBootFails_NoLeader(t *testing.T) {
 	}
 
 	tx := newMockTransactionServicer(store)
-	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	_, err := bootstrapUserRoleStores(ctx, mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))

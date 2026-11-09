@@ -294,6 +294,16 @@ type Dependencies struct {
 	// SOPINs commits the system SO's PIN. Required when SO is set.
 	SOPINs SOPINSetter
 
+	// TrustAnchors persists the system tenant's client-trust anchors, and
+	// ClientTrust refreshes the node's runtime client trust from them. Both
+	// are required when SO presents a certificate with its own trust pool
+	// (SO.PoolPEM, carried from the ceremony's AdminCertPoolPEM): that
+	// pool's issuers are trusted nowhere else on the node, so first boot
+	// installs them as system trust anchors and refreshes client trust
+	// before it declares the SO enrolled, or the SO could never log in.
+	TrustAnchors TrustAnchorAdder
+	ClientTrust  ClientTrustRefresher
+
 	// SeparationOfDuties selects the RBAC posture for the bootstrap admin.
 	// When false (default, "standard") the admin is also granted the Owner
 	// role (full operational authority) so one identity can run the whole

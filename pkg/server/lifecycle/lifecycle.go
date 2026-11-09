@@ -1932,7 +1932,7 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		Logger:      log,
 		Audit:       infra.AuditLogger,
 		AuditPolicy: infra.AuditFailurePolicy,
-		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+		ClientTrust: service.ClientTrustRefresherFunc(n.RefreshClientTrust),
 
 		SeparationOfDuties: infra.SeparationOfDuties,
 	}

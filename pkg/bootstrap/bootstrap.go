@@ -183,6 +183,13 @@ type Dependencies struct {
 	// request has an SO.
 	SOPINs firstboot.SOPINSetter
 
+	// SOTrustAnchors and SOClientTrust install a system SO's own trust pool
+	// as system trust anchors and refresh client trust from them; see
+	// firstboot.Dependencies.TrustAnchors. Required by BootstrapSystem when
+	// SystemConfig.SO presents a certificate with a pool of its own.
+	SOTrustAnchors firstboot.TrustAnchorAdder
+	SOClientTrust  firstboot.ClientTrustRefresher
+
 	// SeparationOfDuties is the strict separation-of-duties posture, as
 	// wiring.ResolveStrictSeparation resolves it. Under it a tenant SO must
 	// differ from the first admin by username and by key; outside it the SO
@@ -419,6 +426,8 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		SO:                 cfg.SO,
 		SOEnrolled:         cfg.SOEnrolled,
 		SOPINs:             deps.SOPINs,
+		TrustAnchors:       deps.SOTrustAnchors,
+		ClientTrust:        deps.SOClientTrust,
 	})
 	if fbErr != nil {
 		return nil, &FirstBootError{Cause: fbErr}

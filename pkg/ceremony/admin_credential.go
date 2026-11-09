@@ -457,24 +457,27 @@ func validateAdminCertProfile(cert *x509.Certificate) error {
 			}
 		}
 	}
-	if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-		return &AdminCredentialRejectedError{
-			Cause: errors.New("certificate KeyUsage does not include digital signature"),
-		}
-	}
-	clientAuth := false
-	for _, eku := range cert.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
-			clientAuth = true
-			break
-		}
-	}
-	if !clientAuth {
-		return &AdminCredentialRejectedError{
-			Cause: errors.New("certificate ExtKeyUsage does not include client authentication"),
-		}
+	if err := checkClientAuthProfile(cert); err != nil {
+		return &AdminCredentialRejectedError{Cause: err}
 	}
 	return nil
+}
+
+// checkClientAuthProfile refuses a certificate a TLS client login cannot
+// use: one whose KeyUsage lacks digital signature or whose ExtKeyUsage
+// names neither client authentication nor any usage. Every login
+// certificate the ceremony accepts -- the bootstrap admin's and the system
+// SO's -- is held to it.
+func checkClientAuthProfile(cert *x509.Certificate) error {
+	if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return &ClientAuthProfileError{Reason: "certificate KeyUsage does not include digital signature"}
+	}
+	for _, eku := range cert.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth || eku == x509.ExtKeyUsageAny {
+			return nil
+		}
+	}
+	return &ClientAuthProfileError{Reason: "certificate ExtKeyUsage does not include client authentication"}
 }
 
 // LastIssuedAdminCertPEM returns the bootstrap admin certificate the most

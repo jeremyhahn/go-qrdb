@@ -28,6 +28,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -131,6 +132,27 @@ type SOPINRecordMatcher interface {
 	SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error)
 }
 
+// TrustAnchorAdder persists a tenant's client-trust anchors.
+// trustanchor.Registry satisfies it; adding an anchor already held is a
+// no-op, so a retried first boot adds the SO's pool again safely.
+type TrustAnchorAdder interface {
+	Add(ctx context.Context, tenantID string, bundlePEM []byte) ([]trustanchor.Anchor, error)
+}
+
+// ClientTrustRefresher rebuilds the node's runtime client trust from the
+// stored anchors and returns once the rebuild is published.
+// *clienttrust.Pool satisfies it.
+type ClientTrustRefresher interface {
+	Refresh(ctx context.Context) error
+}
+
+// ClientTrustRefreshFunc adapts a function, such as a lifecycle node's
+// RefreshClientTrust, to ClientTrustRefresher.
+type ClientTrustRefreshFunc func(ctx context.Context) error
+
+// Refresh calls f.
+func (f ClientTrustRefreshFunc) Refresh(ctx context.Context) error { return f(ctx) }
+
 // committedSOPINIsOurs returns nil only when tenantID's committed SO PIN is
 // so's: its live PIN verifies, or its PIN record is the one committed. An
 // SOPINs that can prove neither refuses with MissingSOSeamError.
@@ -191,6 +213,10 @@ func checkSystemSO(deps Dependencies) error {
 		return &MissingSOSeamError{Seam: "Dependencies.Signer to sign its CSR"}
 	case len(so.CertPEM) > 0 && deps.AdminCertPool == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.AdminCertPool to verify its certificate"}
+	case len(so.CertPEM) > 0 && len(so.PoolPEM) > 0 && deps.TrustAnchors == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.TrustAnchors to persist its trust pool"}
+	case len(so.CertPEM) > 0 && len(so.PoolPEM) > 0 && deps.ClientTrust == nil:
+		return &MissingSOSeamError{Seam: "Dependencies.ClientTrust to refresh client trust"}
 	}
 	soKey, err := spkiThumbprintOf(so.CSRPEM, so.CertPEM)
 	if err != nil {
@@ -279,6 +305,11 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 		if err != nil {
 			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 		}
+		// Before the binding: a retry repeats this branch until the SO is
+		// bound, so the anchors are installed whenever a binding is.
+		if err := installSOTrustAnchors(ctx, deps, tenantID); err != nil {
+			return err
+		}
 		if err := deps.Binder.BindAdminCert(ctx, tenantID, soUser.ID, thumbprint); err != nil {
 			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
 		}
@@ -322,6 +353,26 @@ func issueSOCert(ctx context.Context, deps Dependencies, tenantID string) ([]byt
 		return adoptPresentedCert(so.CertPEM, so.ChainPEM, pool, deps.TrustDomain, tenantID)
 	}
 	return deps.Signer.SignAdminCSR(ctx, tenantID, so.Username, so.CSRPEM)
+}
+
+// installSOTrustAnchors persists the trust pool a presented SO certificate
+// was verified against (SO.PoolPEM) as the tenant's client-trust anchors
+// and refreshes runtime client trust from them, so the SO's login verifies
+// at the node's TLS listener. An SO with no pool of its own was verified
+// against the pool the node already trusts, and installs nothing.
+func installSOTrustAnchors(ctx context.Context, deps Dependencies, tenantID string) error {
+	so := deps.SO
+	if len(so.CertPEM) == 0 || len(so.PoolPEM) == 0 {
+		return nil
+	}
+	if _, err := deps.TrustAnchors.Add(ctx, tenantID, so.PoolPEM); err != nil {
+		return &SystemSOEnrollmentError{Op: "trust anchors", Cause: err}
+	}
+	if err := deps.ClientTrust.Refresh(ctx); err != nil {
+		return &SystemSOEnrollmentError{Op: "trust refresh", Cause: err}
+	}
+	deps.Logger.Info("first-boot: system SO trust anchors installed", slog.String("tenant", tenantID))
+	return nil
 }
 
 // createSystemSO creates the system SO's account with the so role alone. A
