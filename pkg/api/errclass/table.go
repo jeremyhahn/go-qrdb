@@ -55,9 +55,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/rowlock"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -138,6 +140,12 @@ var dominantRules = []rule{
 	// re-sealed at runtime refuses every store read and write with it, and
 	// every service wrapper would otherwise report it as a server fault.
 	is(seal.ErrBarrierSealed, Unavailable),
+	// The storage packages cannot import pkg/seal, so they refuse with their
+	// own sentinels: a sealing barrier's closed quiesce gate (the file
+	// store's *SealedError and every leased store) and Pebble's sealed
+	// at-rest barrier. Both are the condition above, met one layer lower.
+	is(quiesce.ErrSealing, Unavailable),
+	is(pebblestore.ErrBarrierSealed, Unavailable),
 
 	// A tenant's location is a volume pool and slot resolved on each node.
 	// Dominant, because the tenant and database services wrap it in their

@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -98,6 +99,26 @@ func TestDatabaseBarrierManager_New_Fields(t *testing.T) {
 	}
 	if _, err := NewDatabaseBarrierManager(logger, nil); err == nil {
 		t.Error("a manager was built without a system barrier")
+	}
+}
+
+func TestDatabaseBarrierManager_BarrierConfigInheritsTheSystemDrainTimeout(t *testing.T) {
+	system, err := seal.NewStorageBarrier(testBarrierLogger(), seal.NewMemoryBackend(), seal.BarrierConfig{
+		RootKeyPath:      "system/root-key",
+		SealDrainTimeout: 250 * time.Millisecond,
+	}, testBarrierSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier (system): %v", err)
+	}
+	mgr, err := NewDatabaseBarrierManager(testBarrierLogger(), system)
+	if err != nil {
+		t.Fatalf("NewDatabaseBarrierManager: %v", err)
+	}
+	if got := mgr.barrierConfig("db1", "t1").SealDrainTimeout; got != 250*time.Millisecond {
+		t.Fatalf("database barrier drain timeout = %v; want the system's 250ms", got)
+	}
+	if got := newTestBarrierManager(t).barrierConfig("db1", "t1").SealDrainTimeout; got != 0 {
+		t.Fatalf("database barrier drain timeout = %v; want unset, resolving to %v", got, seal.DefaultSealDrainTimeout)
 	}
 }
 
