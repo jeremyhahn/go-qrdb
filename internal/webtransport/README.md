@@ -24,8 +24,11 @@ only when go-qrdb itself is the main module.
   at the peer's limit with a full capsule queue, a Read or Write left waiting
   for session shutdown after a local cancel, and CancelWrite or Close behind a
   Write blocked sending the stream header.
+- v0.13.0 keeps one accept notification however many streams arrive, so of
+  two concurrent `AcceptStream` callers one can stay blocked while a stream
+  waits in the queue.
 
-Return to the upstream module once a release fixes all four.
+Return to the upstream module once a release fixes all five.
 
 ## Patches
 
@@ -64,6 +67,11 @@ Return to the upstream module once a release fixes all four.
    header lock. A `CancelWrite` or `Close` during that send returns at once;
    Write finishes the header, then cancels or closes the stream and returns
    their error without sending its payload.
+7. **Every queued stream wakes an acceptor** (`streams_map_incoming.go`).
+   The accept queue's notification channel holds one signal. Taking a stream
+   off the queue while others remain re-arms it, so a second `AcceptStream`
+   or `AcceptUniStream` caller waiting at the same time is woken for the next
+   stream.
 
 ## Tests
 
@@ -75,7 +83,8 @@ deadline; its waits now fit inside one deadline.
 `TestSessionOpenStreamAtLimitWithFullCapsuleQueue` patch 4,
 `TestReceiveStreamCancelRead*DuringSessionGone` and
 `TestSendStreamCancelWrite*DuringSessionGone` patch 5, and
-`TestSendStreamStopWhileWriteSendsHeader` patch 6. go-qrdb's
+`TestSendStreamStopWhileWriteSendsHeader` patch 6, and
+`TestIncomingStreamsMapConcurrentAcceptors` patch 7. go-qrdb's
 `pkg/api/rest` `TestWebTransport_PreSessionStreamFloodIsBounded` floods a
 server over raw QUIC, and `TestWebTransport_SessionStreamLimitsConfigured`
 holds the REST server to configured session limits.

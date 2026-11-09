@@ -511,6 +511,10 @@ module (its README.md lists the patches):
 
 ```go
 type WebTransportSession = webtransport.Session
+type WebTransportSessionErrorCode = webtransport.SessionErrorCode
+type WebTransportStreamErrorCode = webtransport.StreamErrorCode
+type WebTransportSessionError = webtransport.SessionError
+type WebTransportStreamError = webtransport.StreamError
 type WebTransportHandler func(sess *WebTransportSession, caller *auth.Identity, tenantID string)
 
 func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption
@@ -519,8 +523,11 @@ func WithWebTransportHandler(path string, h WebTransportHandler) ServerOption
 `server.WithWebTransportHandler(path, h)` passes it through `pkg/server`, and
 the SDK re-exports the option and the types (`sdkserver.WithWebTransportHandler`,
 `sdkserver.WebTransportSession`, `sdkserver.WebTransportHandler`,
-`sdkserver.InvalidWebTransportHandlerError`). There is one handler, for one
-path.
+`sdkserver.InvalidWebTransportHandlerError`, and the error codes and errors
+`sdkserver.WebTransportSessionErrorCode`, `sdkserver.WebTransportStreamErrorCode`,
+`sdkserver.WebTransportSessionError`, `sdkserver.WebTransportStreamError`), so
+an embedder can close a session with a code held in a `uint32` variable and
+match a peer's error with `errors.As`. There is one handler, for one path.
 
 Invariants:
 

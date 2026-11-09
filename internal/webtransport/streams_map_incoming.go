@@ -53,6 +53,14 @@ func (q *acceptQueue[T]) next() (T, bool) {
 	}
 	str := q.queue[0]
 	q.queue = q.queue[1:]
+	// c holds one notification however many streams were added, so pass it on
+	// while streams remain: another acceptor may be waiting for one of them.
+	if len(q.queue) > 0 {
+		select {
+		case q.c <- struct{}{}:
+		default:
+		}
+	}
 	return str, true
 }
 

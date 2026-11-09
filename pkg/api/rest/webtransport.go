@@ -19,6 +19,24 @@ import (
 // draft-ietf-webtrans-http3-16 defines it, served by webtransport-go.
 type WebTransportSession = webtransport.Session
 
+// WebTransportSessionErrorCode is the application error code a
+// WebTransportSession is closed with (CloseWithError) and a
+// WebTransportSessionError carries.
+type WebTransportSessionErrorCode = webtransport.SessionErrorCode
+
+// WebTransportStreamErrorCode is the application error code a stream is
+// cancelled with (CancelRead, CancelWrite) and a WebTransportStreamError
+// carries.
+type WebTransportStreamErrorCode = webtransport.StreamErrorCode
+
+// WebTransportSessionError is the error a session's operations return once
+// the session is closed; Remote reports whether the peer closed it.
+type WebTransportSessionError = webtransport.SessionError
+
+// WebTransportStreamError is the error a stream's operations return once the
+// stream is cancelled; Remote reports whether the peer cancelled it.
+type WebTransportStreamError = webtransport.StreamError
+
 // WebTransportHandler serves one WebTransport session. It runs only after the
 // session's CONNECT has passed the REST authentication and tenant-binding
 // chain, and receives the caller that chain authenticated and the tenant it

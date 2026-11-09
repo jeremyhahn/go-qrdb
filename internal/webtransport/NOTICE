@@ -3,6 +3,7 @@ This package contains code from webtransport-go v0.13.0
 patches it to build against quic-go v0.65.0, to bound stream buffering before
 a session is established, to bound each established session's queue of
 streams waiting to be accepted, to open streams without holding the session
-close lock, to let a local stream cancel end a wait for session shutdown, and
-to let CancelWrite and Close return while a Write sends the stream header;
-README.md lists the patches.
+close lock, to let a local stream cancel end a wait for session shutdown, to
+let CancelWrite and Close return while a Write sends the stream header, and to
+wake every waiting acceptor while streams remain queued; README.md lists the
+patches.

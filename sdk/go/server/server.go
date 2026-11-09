@@ -230,6 +230,18 @@ type (
 	// WebTransportSession is a WebTransport session
 	// (draft-ietf-webtrans-http3-16) on the REST HTTP/3 listener.
 	WebTransportSession = restapi.WebTransportSession
+	// WebTransportSessionErrorCode is the application error code a session is
+	// closed with and a WebTransportSessionError carries.
+	WebTransportSessionErrorCode = restapi.WebTransportSessionErrorCode
+	// WebTransportStreamErrorCode is the application error code a stream is
+	// cancelled with and a WebTransportStreamError carries.
+	WebTransportStreamErrorCode = restapi.WebTransportStreamErrorCode
+	// WebTransportSessionError is the error a closed session's operations
+	// return.
+	WebTransportSessionError = restapi.WebTransportSessionError
+	// WebTransportStreamError is the error a cancelled stream's operations
+	// return.
+	WebTransportStreamError = restapi.WebTransportStreamError
 	// WebTransportHandler serves one WebTransport session, given the caller
 	// the REST authentication chain admitted and the tenant it bound.
 	WebTransportHandler = restapi.WebTransportHandler

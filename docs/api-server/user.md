@@ -94,6 +94,13 @@ n, err := node.NewStandaloneNode(ctx, cfg, []sdkserver.ServerOption{
 })
 ```
 
+`CloseWithError` takes a `sdkserver.WebTransportSessionErrorCode`, and
+`CancelRead`/`CancelWrite` a `sdkserver.WebTransportStreamErrorCode`; convert
+a `uint32` code with `sdkserver.WebTransportSessionErrorCode(code)`. Match the
+peer's application errors with `errors.As` against
+`*sdkserver.WebTransportSessionError` or `*sdkserver.WebTransportStreamError`;
+`ErrorCode` holds the code and `Remote` reports whether the peer sent it.
+
 A client opens `https://db.example.com:63002/wt` over HTTP/3. The session is
 authenticated exactly like a REST request, with your client certificate or
 token. A caller REST would refuse gets the same status (401 when
