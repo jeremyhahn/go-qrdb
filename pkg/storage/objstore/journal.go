@@ -280,8 +280,13 @@ func (e *Engine) recoverJournal() error {
 // journaled (see journalPending), so the caller's write is decided against,
 // and lands after, the whole batch. While the provider still cannot apply it
 // the journal stays pending and the caller's write is refused. The caller
-// holds journalMu; the replay takes writeMu exclusive.
+// holds journalMu; the replay takes writeMu exclusive. Destroy closes the
+// engine under journalMu, so a caller that waited for it is refused here
+// rather than writing into the namespace it reclaimed.
 func (e *Engine) resolvePendingJournal() error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
 	if !e.journalPending.Load() {
 		return nil
 	}
@@ -311,8 +316,18 @@ func (e *Engine) settlePendingJournal() error {
 // write is done: no write lands where the next write's replay would apply a
 // failed batch over it. On success the caller releases writeMu with RUnlock.
 func (e *Engine) enterWrite() error {
+	if e.beforeEnterWrite != nil {
+		e.beforeEnterWrite()
+	}
 	for {
 		e.writeMu.RLock()
+		// The caller's closed check ran before the lock: a Destroy that
+		// finished between the two must not see a write land in the
+		// namespace it reclaimed.
+		if e.closed.Load() {
+			e.writeMu.RUnlock()
+			return &storage.ClosedError{}
+		}
 		if !e.journalPending.Load() {
 			return nil
 		}

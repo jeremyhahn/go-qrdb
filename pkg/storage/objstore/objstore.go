@@ -77,6 +77,11 @@ type Engine struct {
 	// conditional put through this interface, so atomicity does not extend
 	// to a second process writing the same bucket.
 	writeMu sync.RWMutex
+
+	// beforeEnterWrite, when set, runs as a write enters enterWrite, after
+	// its caller's closed check and before writeMu. Tests use it to hold a
+	// write in that gap; it is nil in production.
+	beforeEnterWrite func()
 }
 
 // New constructs an objstore-backed engine for the given go-objstore provider.
@@ -148,7 +153,15 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		return nil, credentialOpenError(o.credentials, err)
 	}
 	if o.prefix != "" {
-		store, journal = withPrefix(store, o.prefix), withPrefix(journal, o.prefix)
+		// A store that is also the journal is wrapped once, so the two stay
+		// one store: Destroy tells them apart by identity.
+		shared := journal == store
+		store = withPrefix(store, o.prefix)
+		if shared {
+			journal = store
+		} else {
+			journal = withPrefix(journal, o.prefix)
+		}
 		// openStores looked for a legacy in-tree journal at the store's
 		// root; one inside this database's namespace is refused as well.
 		if _, walked := walkedRoots[provider]; walked {
@@ -505,8 +518,9 @@ func (e *Engine) Close() error {
 // same prefix would serve them again; Destroy is how a dropped database's
 // objects are reclaimed. It works on a closed engine too, so a drop retried
 // after its close still reclaims. The journal goes first, so a Destroy that
-// fails part way leaves no batch for a reopen to replay; an object it cannot
-// delete fails it, and a later Destroy deletes what remains.
+// fails part way leaves no batch for a reopen to replay, and the format
+// marker goes last, so a namespace it left part deleted still opens; an
+// object it cannot delete fails it, and a later Destroy deletes what remains.
 func (e *Engine) Destroy() error {
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
@@ -514,22 +528,31 @@ func (e *Engine) Destroy() error {
 	defer e.writeMu.Unlock()
 	e.closed.Store(true)
 	if e.journal != e.store {
-		if err := deleteAllObjects(e.journal); err != nil {
+		if err := deleteAllObjects(e.journal, ""); err != nil {
 			return err
 		}
 	} else if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
 		return err
 	}
-	return deleteAllObjects(e.store)
+	if err := deleteAllObjects(e.store, formatMarkerName); err != nil {
+		return err
+	}
+	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
+		return err
+	}
+	return nil
 }
 
-// deleteAllObjects deletes every object store lists.
-func deleteAllObjects(store objcommon.Storage) error {
+// deleteAllObjects deletes every object store lists but the one named keep.
+func deleteAllObjects(store objcommon.Storage, keep string) error {
 	names, err := store.List("")
 	if err != nil {
 		return err
 	}
 	for _, name := range names {
+		if name == keep {
+			continue
+		}
 		if err := store.Delete(name); err != nil && !notFound(err) {
 			return err
 		}
