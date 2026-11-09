@@ -66,9 +66,17 @@ func systemSORequested(opts *InitializeOptions) bool {
 // validateSystemSOInputs checks the system SO inputs before the ceremony
 // writes anything: a username with exactly one of SOCSRPEM and SOCertPEM,
 // a username that is not the admin's, a CA for the CSR path, a parseable
-// CSR or a presented certificate that verifies, and a PIN to hash.
-func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte) error {
+// CSR or a presented certificate that verifies, and a PIN to hash. Under
+// strict separation (the node's posture, not the caller's) options that name
+// no system SO are refused too.
+func validateSystemSOInputs(ca CeremonyCA, trustDomain string, strict bool, opts *InitializeOptions, caBundlePEM []byte) error {
 	if !systemSORequested(opts) {
+		// Under strict separation first boot refuses to run without a
+		// system SO, and an initialized node cannot gain one: refuse here,
+		// before anything is committed, so the operator can retry.
+		if strict {
+			return &SystemSORejectedError{Cause: errors.New("strict separation of duties requires a system SO: SOUsername with SOCSRPEM or SOCertPEM")}
+		}
 		return nil
 	}
 	switch {

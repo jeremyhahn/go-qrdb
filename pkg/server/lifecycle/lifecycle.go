@@ -1880,6 +1880,7 @@ func ceremonyService(infra Infra, log *slog.Logger) (*ceremony.CeremonyService, 
 	svc.SetClock(infra.Clock)
 	svc.SetAuditLogger(infra.AuditLogger)
 	svc.SetAuditFailurePolicy(infra.AuditFailurePolicy)
+	svc.SetSeparationOfDuties(infra.SeparationOfDuties)
 	return svc, nil
 }
 

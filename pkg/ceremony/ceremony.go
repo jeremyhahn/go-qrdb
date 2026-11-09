@@ -82,6 +82,11 @@ type CeremonyService struct {
 	// lastSystemSO is the system SO Initialize named, for the composer to
 	// hand to first boot as it does lastAdminCertPEM. Nil when none.
 	lastSystemSO *IssuedSystemSO
+
+	// strictSoD is the node's resolved strict separation-of-duties posture
+	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
+	// names no system SO, before any write.
+	strictSoD bool
 }
 
 // Compile-time checks.
@@ -318,6 +323,25 @@ func (s *CeremonyService) SetAuditFailurePolicy(p audit.FailurePolicy) {
 	s.deps.AuditPolicy = p
 }
 
+// SetSeparationOfDuties sets the node's strict separation-of-duties posture,
+// as wiring.ResolveStrictSeparation resolves it. Under it Initialize refuses,
+// with *SystemSORejectedError and before any write, a ceremony whose options
+// name no system SO: first boot could never enrol one, and the node would be
+// refused at every boot. The posture is the node's, never the caller's: no
+// InitializeOptions field can relax it.
+func (s *CeremonyService) SetSeparationOfDuties(strict bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.strictSoD = strict
+}
+
+// separationOfDuties reports the posture SetSeparationOfDuties set.
+func (s *CeremonyService) separationOfDuties() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.strictSoD
+}
+
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
 // (pin.NewLockoutBackend, idempotent: a backend the composer already
 // decorated keeps its one set of counters). Without one, every PIN-gated
@@ -457,7 +481,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
-	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
+	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, s.separationOfDuties(), opts, caBundle); err != nil {
 		return nil, err
 	}
 

@@ -188,6 +188,32 @@ func TestInitialize_SystemSO_Optional(t *testing.T) {
 	assert.Nil(t, svc.LastIssuedSystemSO())
 }
 
+// TestInitialize_SystemSO_RequiredWhenStrict proves a strict node refuses a
+// ceremony that names no system SO before anything is committed: the same
+// service then initializes once the SO inputs are given.
+func TestInitialize_SystemSO_RequiredWhenStrict(t *testing.T) {
+	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	svc.SetSeparationOfDuties(true)
+	ca := newMockCA(t)
+	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+
+	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminCSRPEM: adminCSR,
+	})
+	var rejected *SystemSORejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, err.Error(), "requires a system SO")
+	assert.Nil(t, svc.LastIssuedSystemSO())
+
+	soCSR, _ := generateCSRPEM(t, "ignored-too")
+	result, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminCSRPEM: adminCSR,
+		SOUsername: "secofficer", SOCSRPEM: soCSR,
+	})
+	require.NoError(t, err, "the refused ceremony must have committed nothing")
+	assert.NotEmpty(t, result.SOCertPEM)
+}
+
 // Every malformed system SO request is refused with a typed error before
 // the ceremony writes anything, so the same service initializes cleanly
 // afterwards.

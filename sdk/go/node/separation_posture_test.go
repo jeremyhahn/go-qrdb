@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -57,11 +58,34 @@ func postureEvents(t *testing.T, trail audit.AuditLogger) []audit.AuditEvent {
 func runPostureFirstBoot(t *testing.T, n *Node) {
 	t.Helper()
 	svcs := n.Services()
+	// SOEnrolled stands in for the ceremony's consumed system SO record: a
+	// strict node refuses a first boot with no SO at all, and this test is
+	// about the posture record, not the SO's enrolment.
 	if _, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
-		Logger: slog.New(slog.DiscardHandler),
+		Logger: slog.New(slog.DiscardHandler), SOEnrolled: true,
 	}); err != nil {
 		t.Fatalf("FirstBoot: %v", err)
+	}
+}
+
+// TestNode_FirstBoot_StrictNodeOverridesARelaxedCaller proves a strict node's
+// posture wins over a Dependencies literal that leaves SeparationOfDuties
+// false: first boot with no system SO is still refused, on both entry points.
+func TestNode_FirstBoot_StrictNodeOverridesARelaxedCaller(t *testing.T) {
+	n := newPostureNode(t, true, audit.NewRingBuffer(64))
+	svcs := n.Services()
+	deps := firstboot.Dependencies{
+		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
+		Logger: slog.New(slog.DiscardHandler),
+	}
+	var required *firstboot.SystemSORequiredError
+	if _, err := n.FirstBoot(context.Background(), deps); !errors.As(err, &required) {
+		t.Fatalf("FirstBoot on a strict node with no SO: err = %v, want *firstboot.SystemSORequiredError", err)
+	}
+	store := PendingAdminCertStore(svcs.KV)
+	if _, err := n.FirstBootWithCeremony(context.Background(), store, nil, 0, deps); !errors.As(err, &required) {
+		t.Fatalf("FirstBootWithCeremony on a strict node with no SO: err = %v, want *firstboot.SystemSORequiredError", err)
 	}
 }
 

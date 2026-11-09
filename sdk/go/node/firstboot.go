@@ -53,6 +53,8 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	if td := n.spiffeTrustDomain.Load(); td != nil {
 		deps.TrustDomain = *td
 	}
+	// The node's strict posture always wins: a caller can never relax it.
+	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
 	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), users)
 	if err != nil {
@@ -89,6 +91,8 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.PendingAdminCertStore, caBundlePEM []byte, timeout time.Duration, deps firstboot.Dependencies) (*firstboot.Result, error) {
 	policy := auth.MTLSBindingPolicy(n.bindingPolicy.Load())
 	users := n.UserService()
+	// The node's strict posture always wins: a caller can never relax it.
+	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
 
 	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, store, users, policy, timeout)
 	if err != nil {
