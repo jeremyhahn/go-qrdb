@@ -138,6 +138,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - Up: go-truststrap v0.7.0-alpha — the cluster-enrollment bootstrap; the P-256 handshake ([#118](../../issues/118)) — clustering, fips-140-3.
 - Up: go-codec v1.4.0 — the codecs — secondary-indexes, collections.
 - standards-watch: draft-ietf-hpke-pq pinned at -05 — pkg/keydelivery (provisional: reached through Go's crypto/hpke, whose implemented revision is unconfirmed; docs/reference/README.md)
-- standards-watch: draft-ietf-webtrans-http3 pinned at -16 — pkg/api/rest (through quic-go/webtransport-go v0.13.0; the legacy SETTINGS it sends are recorded as deviations in docs/reference/README.md)
+- standards-watch: draft-ietf-webtrans-http3 pinned at -16 — pkg/api/rest (through the patched webtransport-go v0.13.0 copy in internal/webtransport; the legacy SETTINGS it sends are recorded as deviations in docs/reference/README.md)
 - Down: go-xkms — embeds go-qrdb and adds its services through `ServiceModule`; supplies hardware `Factor` and `SealStrategy` implementations.
 - Down: go-quicbaas — exposes the database services via go-qrdb and composes go-xkms; delegates first boot through `sdk/go/node`.
