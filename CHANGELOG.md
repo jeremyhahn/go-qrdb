@@ -46,9 +46,15 @@ are not reconstructed here — their history is in the git log.
   of duties refuses to boot without a system SO**, before any write, with
   `*firstboot.SystemSORequiredError`; under it the system SO alone runs role
   create and both role reconciles. The standard posture keeps the SO optional.
-  A malformed SO, or one that is the admin by username or key, is
+  A malformed SO, a presented certificate whose subject CN is not the SO
+  username, or an SO that is the admin by username or key (compared from the
+  supplied CSRs or certificates before anything is provisioned), is
   `*ceremony.SystemSORejectedError`, classified `INVALID_ARGUMENT` / 400 on
-  every transport.
+  every transport. Initialize records the issued SO in the system barrier
+  before it reports success, so a node that crashes before the replicated
+  record is written recovers it on restart (`*ceremony.SystemSOPersistError`
+  on failure). A store fault reading the pending record fails the boot and
+  refuses consumption; only not-found means no SO.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
