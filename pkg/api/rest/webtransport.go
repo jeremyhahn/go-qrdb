@@ -9,8 +9,8 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
-	"github.com/quic-go/webtransport-go"
 
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 )
@@ -182,6 +182,28 @@ func rejectWebTransportRequest(w http.ResponseWriter) {
 // request's handler and stream for ever.
 const webTransportHandshakeTimeout = 5 * time.Second
 
+// webTransportSessionConfig is the session flow control the server advertises
+// (SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI/_UNI and SETTINGS_WT_INITIAL_MAX_DATA,
+// draft-ietf-webtrans-http3-16 section 5). A peer that negotiates it may open
+// no more streams than the handler has accepted plus the limit; with or
+// without it, at most the limit wait to be accepted per direction and further
+// streams are reset with WT_BUFFERED_STREAM_REJECTED.
+var webTransportSessionConfig = webtransport.Config{
+	MaxIncomingStreams:    webTransportMaxPendingStreams,
+	MaxIncomingUniStreams: webTransportMaxPendingStreams,
+	MaxIncomingData:       webTransportMaxSessionData,
+}
+
+const (
+	// webTransportMaxPendingStreams is the per-direction stream limit of a
+	// session, matching the HTTP/3 listener's default unidirectional stream
+	// limit.
+	webTransportMaxPendingStreams = 100
+	// webTransportMaxSessionData is the session's receive window across all
+	// its streams; it slides as the handler reads.
+	webTransportMaxSessionData = 16 << 20
+)
+
 // webTransportServer serves the HTTP/3 listener's connections through
 // webtransport-go, which has no ServeListener of its own.
 type webTransportServer struct {
@@ -201,7 +223,8 @@ func newWebTransportServer(h3 *http3.Server) *webTransportServer {
 		}
 		return context.WithValue(ctx, quicConnContextKey{}, c)
 	}
-	return &webTransportServer{wt: &webtransport.Server{H3: h3, ReorderingTimeout: webTransportHandshakeTimeout}}
+	cfg := webTransportSessionConfig
+	return &webTransportServer{wt: &webtransport.Server{H3: h3, ReorderingTimeout: webTransportHandshakeTimeout, Config: &cfg}}
 }
 
 // quicConnContextKey is the request context key of the request's QUIC

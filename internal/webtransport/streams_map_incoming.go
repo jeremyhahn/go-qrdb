@@ -2,6 +2,7 @@ package webtransport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -16,9 +17,8 @@ type acceptQueue[T any] struct {
 	c chan struct{}
 
 	mx sync.Mutex
-	// Contains all the streams waiting to be accepted.
-	// There's no explicit limit to the length of the queue, but it is implicitly
-	// limited by the stream flow control provided by QUIC.
+	// Contains all the streams waiting to be accepted, at most the map's
+	// maxPending of them.
 	queue []T
 }
 
@@ -26,8 +26,14 @@ func newAcceptQueue[T any]() *acceptQueue[T] {
 	return &acceptQueue[T]{c: make(chan struct{}, 1)}
 }
 
-func (q *acceptQueue[T]) add(str T) {
+// add enqueues str unless maxPending streams are already waiting, and
+// reports whether it did.
+func (q *acceptQueue[T]) add(str T, maxPending uint64) bool {
 	q.mx.Lock()
+	if uint64(len(q.queue)) >= maxPending {
+		q.mx.Unlock()
+		return false
+	}
 	q.queue = append(q.queue, str)
 	q.mx.Unlock()
 
@@ -35,6 +41,7 @@ func (q *acceptQueue[T]) add(str T) {
 	case q.c <- struct{}{}:
 	default:
 	}
+	return true
 }
 
 func (q *acceptQueue[T]) next() (T, bool) {
@@ -70,8 +77,16 @@ type incomingStreamsMap[T incomingStream] struct {
 	numStreams     uint64 // total number of streams opened by the peer
 	maxStreams     uint64 // stream limit, as advertised to the peer
 	maxOpenStreams uint64 // maximum number of concurrently open streams
+	maxPending     uint64 // maximum number of streams waiting to be accepted
 }
 
+// errPendingStreamsFull is returned by AddStream for a stream that arrives
+// while maxPending streams already wait to be accepted. The stream alone is
+// refused; the session stays up.
+var errPendingStreamsFull = errors.New("webtransport: too many streams waiting to be accepted")
+
+// newIncomingStreamsMap returns a map that lets maxOpenStreams streams wait to
+// be accepted; setPendingLimit lowers that bound.
 func newIncomingStreamsMap[T incomingStream](maxOpenStreams uint64, queueMaxStreams func(uint64)) *incomingStreamsMap[T] {
 	maxOpenStreams = min(maxOpenStreams, maxStreamsLimit)
 	if queueMaxStreams == nil {
@@ -86,10 +101,24 @@ func newIncomingStreamsMap[T incomingStream](maxOpenStreams uint64, queueMaxStre
 		queuedMaxStreams: maxOpenStreams,
 		maxStreams:       maxOpenStreams,
 		maxOpenStreams:   maxOpenStreams,
+		maxPending:       maxOpenStreams,
 		m:                make(map[quic.StreamID]T),
 	}
 }
 
+// setPendingLimit bounds the streams waiting to be accepted at n. It is
+// called before the session receives a stream.
+func (s *incomingStreamsMap[T]) setPendingLimit(n uint64) {
+	s.mx.Lock()
+	s.maxPending = n
+	s.mx.Unlock()
+}
+
+// AddStream registers a stream the peer opened and queues it for
+// AcceptStream. A stream past the advertised stream limit is a session error
+// (WT_FLOW_CONTROL_ERROR); a stream arriving while maxPending streams already
+// wait is refused with errPendingStreamsFull, and its stream credit returned,
+// so a peer cannot grow the queue of a session that does not accept.
 func (s *incomingStreamsMap[T]) AddStream(id quic.StreamID, str T) error {
 	s.mx.Lock()
 	if closeErr := context.Cause(s.ctx); closeErr != nil {
@@ -105,10 +134,15 @@ func (s *incomingStreamsMap[T]) AddStream(id quic.StreamID, str T) error {
 		}
 	}
 	s.numStreams++
+	// Queue under mx, so a stream is in m exactly when it was queued.
+	if !s.acceptQueue.add(str, s.maxPending) {
+		maxStreams, shouldQueue := s.extendMaxStreamsLocked()
+		s.mx.Unlock()
+		s.queueMaxStreamsUpdate(maxStreams, shouldQueue)
+		return errPendingStreamsFull
+	}
 	s.m[id] = str
 	s.mx.Unlock()
-
-	s.acceptQueue.add(str)
 	return nil
 }
 
@@ -119,9 +153,15 @@ func (s *incomingStreamsMap[T]) RemoveStream(id quic.StreamID) {
 		return
 	}
 	delete(s.m, id)
+	maxStreams, shouldQueue := s.extendMaxStreamsLocked()
+	s.mx.Unlock()
+	s.queueMaxStreamsUpdate(maxStreams, shouldQueue)
+}
 
-	var maxStreams uint64
-	var shouldQueue bool
+// extendMaxStreamsLocked raises the stream limit to keep maxOpenStreams
+// streams open, and reports whether the new limit must be sent to the peer.
+// s.mx must be held.
+func (s *incomingStreamsMap[T]) extendMaxStreamsLocked() (maxStreams uint64, shouldQueue bool) {
 	if uint64(len(s.m)) < s.maxOpenStreams && s.maxStreams < maxStreamsLimit {
 		maxStreams = min(s.numStreams+s.maxOpenStreams-uint64(len(s.m)), maxStreamsLimit)
 		if maxStreams > s.maxStreams {
@@ -129,16 +169,20 @@ func (s *incomingStreamsMap[T]) RemoveStream(id quic.StreamID) {
 			shouldQueue = true
 		}
 	}
-	s.mx.Unlock()
-	if shouldQueue {
-		s.maxStreamsMx.Lock()
-		if maxStreams > s.queuedMaxStreams {
-			s.queuedMaxStreams = maxStreams
-			// WT_MAX_STREAMS must not be queued out of order
-			s.queueMaxStreams(maxStreams)
-		}
-		s.maxStreamsMx.Unlock()
+	return maxStreams, shouldQueue
+}
+
+func (s *incomingStreamsMap[T]) queueMaxStreamsUpdate(maxStreams uint64, shouldQueue bool) {
+	if !shouldQueue {
+		return
 	}
+	s.maxStreamsMx.Lock()
+	if maxStreams > s.queuedMaxStreams {
+		s.queuedMaxStreams = maxStreams
+		// WT_MAX_STREAMS must not be queued out of order
+		s.queueMaxStreams(maxStreams)
+	}
+	s.maxStreamsMx.Unlock()
 }
 
 func (s *incomingStreamsMap[T]) AcceptStream(ctx context.Context) (T, error) {

@@ -48,7 +48,7 @@ has no copy in this directory, for the reason given under the table.
 | [spiffe-id.md](spiffe-id.md) | The SPIFFE Identity and Verifiable Identity Document (SPIFFE ID) | spiffe/spiffe commit `665a28f3253ecdce59f26f3ef29c0d6408b37c3d` | `pkg/auth/spiffe`, `pkg/cert`, `pkg/config` | https://github.com/spiffe/spiffe/blob/665a28f3253ecdce59f26f3ef29c0d6408b37c3d/standards/SPIFFE-ID.md |
 | [c2sp-signed-note.md](c2sp-signed-note.md) | Note (signed-note): cleartext signed messages | C2SP/C2SP commit `fea9004f73fbec8cf7a8b1936430e2487eb23b55` | `pkg/vlog` (the checkpoint's note format and signature line; key IDs for signature types 0x01 Ed25519 and 0x02 ECDSA) | https://github.com/C2SP/C2SP/blob/fea9004f73fbec8cf7a8b1936430e2487eb23b55/signed-note.md |
 | [c2sp-tlog-checkpoint.md](c2sp-tlog-checkpoint.md) | Transparency Log Checkpoints (tlog-checkpoint) | C2SP/C2SP commit `fea9004f73fbec8cf7a8b1936430e2487eb23b55` | `pkg/vlog` (the checkpoint's note text: origin, tree size and root hash; Ed25519 log signatures) | https://github.com/C2SP/C2SP/blob/fea9004f73fbec8cf7a8b1936430e2487eb23b55/tlog-checkpoint.md |
-| [draft-ietf-webtrans-http3-16.txt](draft-ietf-webtrans-http3-16.txt) | WebTransport over HTTP/3 | draft -16 (see the deviations below) | `pkg/api/rest` (sessions on the HTTP/3 listener, through `quic-go/webtransport-go` v0.13.0) | https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/16/ |
+| [draft-ietf-webtrans-http3-16.txt](draft-ietf-webtrans-http3-16.txt) | WebTransport over HTTP/3 | draft -16 (see the deviations below) | `pkg/api/rest` (sessions on the HTTP/3 listener, through `internal/webtransport`, patched `quic-go/webtransport-go` v0.13.0) | https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/16/ |
 | [grpc-http2-protocol.md](grpc-http2-protocol.md) | gRPC over HTTP2 | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-HTTP2.md |
 | [grpc-web-protocol.md](grpc-web-protocol.md) | gRPC Web | grpc/grpc commit `5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2` | `pkg/api/grpcweb` (gRPC-Web framing over the gRPC server's own handler, served by `pkg/api/rest`) | https://github.com/grpc/grpc/blob/5563edae1431e2955c38b1f1ba1ccf7f2c4cebd2/doc/PROTOCOL-WEB.md |
 | link only | MySQL Client/Server Protocol | as implemented by go-mysql-server | `pkg/sql/mysql` (via dolthub go-mysql-server and vitess) | https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html |
@@ -83,9 +83,11 @@ checked against the toolchain's source.
 ## The draft-ietf-webtrans-http3 pin and its deviations
 
 `pkg/api/rest` serves WebTransport sessions as draft -16 specifies, through
-`github.com/quic-go/webtransport-go` v0.13.0, and only when a handler is
-registered (`WithWebTransportHandler`). With a handler, the listener sends
-SETTINGS_WT_ENABLED (`0x2c7cf000`, section 9.2) and SETTINGS_H3_DATAGRAM, and
+`internal/webtransport` (a patched copy of `github.com/quic-go/webtransport-go`
+v0.13.0), and only when a handler is registered (`WithWebTransportHandler`).
+With a handler, the listener sends SETTINGS_WT_ENABLED (`0x2c7cf000`, section
+9.2), SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI/_UNI and
+SETTINGS_WT_INITIAL_MAX_DATA (section 5) and SETTINGS_H3_DATAGRAM, and
 its QUIC transport parameters enable datagrams and reliable stream resets
 (section 3). With no handler it sends none of these, and the path is an
 unknown route. In two places the library has no switch, and the behaviour

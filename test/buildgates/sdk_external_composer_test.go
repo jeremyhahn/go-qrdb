@@ -87,10 +87,7 @@ func fileReplaces(t *testing.T, dir string) []modReplace {
 
 // writeComposerModule turns dir into a module that requires sdk/go: it starts
 // from sdk/go's own go.mod and go.sum, so every module sdk/go's packages need
-// is already listed, and replaces sdk/go and go-qrdb with this tree. A
-// directory replace sdk/go names relative to itself (the in-repo
-// third_party/webtransport-go) is re-anchored at sdk/go, since the copy no
-// longer sits there.
+// is already listed, and replaces sdk/go and go-qrdb with this tree.
 func writeComposerModule(t *testing.T, root, dir string) {
 	t.Helper()
 	sdkDir := filepath.Join(root, "sdk", "go")
@@ -108,25 +105,12 @@ func writeComposerModule(t *testing.T, root, dir string) {
 			t.Fatal(err)
 		}
 	}
-	args := []string{"mod", "edit",
+	runGo(t, dir, "mod", "edit",
 		"-module=example.com/composer",
-		"-require=" + sdkModulePrefix + "@v0.0.0",
-	}
-	for _, r := range fileReplaces(t, dir) {
-		if filepath.IsAbs(r.New.Path) {
-			continue
-		}
-		old := r.Old.Path
-		if r.Old.Version != "" {
-			old += "@" + r.Old.Version
-		}
-		args = append(args, "-replace="+old+"="+filepath.Join(sdkDir, filepath.FromSlash(r.New.Path)))
-	}
-	args = append(args,
+		"-require="+sdkModulePrefix+"@v0.0.0",
 		"-replace="+sdkModulePrefix+"="+sdkDir,
 		"-replace="+localModule+"="+root,
 	)
-	runGo(t, dir, args...)
 }
 
 // runGo runs the go command in dir as a module of its own and returns its

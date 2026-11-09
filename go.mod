@@ -23,6 +23,7 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
+	github.com/dunglas/httpsfv v1.1.1 // held at upstream webtransport-go v0.13.0's requirement; internal/webtransport changes only what its NOTICE lists
 	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.5.0
@@ -45,7 +46,6 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.65.0
-	github.com/quic-go/webtransport-go v0.13.0 // patched in-repo copy, see third_party/webtransport-go/README.md
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
@@ -128,7 +128,6 @@ require (
 	github.com/dolthub/flatbuffers/v23 v23.3.3-dh.2 // indirect
 	github.com/dolthub/go-icu-regex v0.0.0-20260610153742-72563bc7ca83 // indirect
 	github.com/dolthub/jsonpath v0.0.2-0.20260807003725-336cd89c1c76 // indirect
-	github.com/dunglas/httpsfv v1.1.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -225,7 +224,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 )
 
-replace (
-	github.com/jeremyhahn/go-qrdb/sdk/go => ./sdk/go
-	github.com/quic-go/webtransport-go => ./third_party/webtransport-go
-)
+replace github.com/jeremyhahn/go-qrdb/sdk/go => ./sdk/go

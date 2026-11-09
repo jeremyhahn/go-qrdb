@@ -505,7 +505,9 @@ Invariants:
 
 `pkg/api/rest` serves WebTransport sessions (draft-ietf-webtrans-http3-16,
 `docs/reference/draft-ietf-webtrans-http3-16.txt`) on the HTTP/3 listener
-through `github.com/quic-go/webtransport-go` v0.13.0:
+through `internal/webtransport`, a patched copy of
+`github.com/quic-go/webtransport-go` v0.13.0 that is a package of the go-qrdb
+module (its README.md lists the patches):
 
 ```go
 type WebTransportSession = webtransport.Session
@@ -548,8 +550,18 @@ Invariants:
   later streams do not extend it. A connection buffers at most 16 streams per
   unknown session and 64 in total. Each stream past either cap is reset at
   once with WT_BUFFERED_STREAM_REJECTED (-16 section 4.6), and so is each
-  buffered stream at the timeout. The caps live in the in-repo copy of
-  webtransport-go, `third_party/webtransport-go` (see its README.md).
+  buffered stream at the timeout. The caps live in `internal/webtransport`.
+- **Bounded streams per established session.** The server advertises 100
+  bidirectional and 100 unidirectional streams and a 16 MiB data window per
+  session (SETTINGS_WT_INITIAL_MAX_STREAMS_BIDI/_UNI and
+  SETTINGS_WT_INITIAL_MAX_DATA, -16 section 5). A peer that negotiates flow
+  control and opens past the limit closes the session with
+  WT_FLOW_CONTROL_ERROR. With or without flow control, at most 100 streams of
+  each direction wait for the handler to accept them; each stream past that is
+  reset with WT_BUFFERED_STREAM_REJECTED and the session stays up. QUIC
+  stream credit is returned when a stream completes, not when the handler
+  accepts it, since quic-go's credit-release mode would apply
+  to every HTTP/3 request stream on the listener.
 - **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
   applies its default: a request carrying an `Origin` header must match the
   request's host. The REST authentication chain is the access control.

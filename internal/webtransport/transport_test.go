@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport"
 
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"

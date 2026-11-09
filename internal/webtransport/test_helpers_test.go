@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/quic-go/webtransport-go/internal/testdata"
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport/internal/testdata"
 	"github.com/stretchr/testify/require"
 )
 

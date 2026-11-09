@@ -40,6 +40,10 @@ type sessionFlowControl struct {
 	MaxOutgoingData       int64
 }
 
+// defaultMaxPendingStreams bounds the streams of one direction waiting to be
+// accepted when no incoming stream limit is configured for it.
+const defaultMaxPendingStreams = 100
+
 func streamLimit(limit int64) uint64 {
 	if limit <= 0 {
 		return 0
@@ -66,17 +70,25 @@ func (c Config) addSettings(settings map[uint64]uint64) {
 	}
 }
 
+// sessionFlowControl returns the session's flow control. When either side
+// does not enable it, the result is not Enabled but still carries the
+// configured incoming stream limits, which then bound only the streams
+// waiting to be accepted.
 func (c Config) sessionFlowControl(remote *http3.Settings) sessionFlowControl {
 	localEnabled := c.MaxIncomingStreams > 0 || c.MaxIncomingUniStreams > 0 || c.MaxIncomingData > 0
+	disabled := sessionFlowControl{
+		MaxIncomingStreams:    streamLimit(c.MaxIncomingStreams),
+		MaxIncomingUniStreams: streamLimit(c.MaxIncomingUniStreams),
+	}
 	if !localEnabled || remote == nil {
-		return sessionFlowControl{}
+		return disabled
 	}
 	peerSettings := remote.Other
 	peerEnabled := peerSettings[settingsWebTransportInitialMaxStreamsBidi] > 0 ||
 		peerSettings[settingsWebTransportInitialMaxStreamsUni] > 0 ||
 		peerSettings[settingsWebTransportInitialMaxData] > 0
 	if !peerEnabled {
-		return sessionFlowControl{}
+		return disabled
 	}
 	return sessionFlowControl{
 		Enabled:               true,

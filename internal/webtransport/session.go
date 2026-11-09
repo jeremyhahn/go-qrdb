@@ -1,6 +1,7 @@
 package webtransport
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -94,7 +95,14 @@ func newSession(
 			c.queueCapsule(maxDataCapsule{MaximumData: uint64(maxData)})
 		})
 		c.outgoingDataFC = newOutgoingDataFlowController(fc.MaxOutgoingData)
-	} else {
+	}
+	// Without flow control the peer may open any number of streams, but only
+	// the configured incoming limit (or defaultMaxPendingStreams) may wait to
+	// be accepted; streams past it are reset with WT_BUFFERED_STREAM_REJECTED.
+	pendingStreams, pendingUniStreams := fc.MaxIncomingStreams, fc.MaxIncomingUniStreams
+	if !fc.Enabled {
+		pendingStreams = cmp.Or(pendingStreams, defaultMaxPendingStreams)
+		pendingUniStreams = cmp.Or(pendingUniStreams, defaultMaxPendingStreams)
 		fc.MaxIncomingStreams = maxStreamsLimit
 		fc.MaxIncomingUniStreams = maxStreamsLimit
 		fc.MaxOutgoingStreams = maxStreamsLimit
@@ -103,9 +111,11 @@ func newSession(
 	c.incomingStreams = newIncomingStreamsMap[*Stream](fc.MaxIncomingStreams, func(limit uint64) {
 		c.queueCapsule(maxStreamsBidiCapsule{MaximumStreams: limit})
 	})
+	c.incomingStreams.setPendingLimit(pendingStreams)
 	c.incomingUniStreams = newIncomingStreamsMap[*ReceiveStream](fc.MaxIncomingUniStreams, func(limit uint64) {
 		c.queueCapsule(maxStreamsUniCapsule{MaximumStreams: limit})
 	})
+	c.incomingUniStreams.setPendingLimit(pendingUniStreams)
 	c.outgoingStreams = newOutgoingBidiStreamsMap(
 		conn,
 		sessionID,
@@ -276,7 +286,10 @@ func (s *Session) addIncomingStream(qstr *quic.Stream, streamHeaderLen uint64) {
 		func() { s.incomingStreams.RemoveStream(id) },
 		int64(streamHeaderLen),
 	)
-	if err := s.incomingStreams.AddStream(id, str); err != nil {
+	if err := s.incomingStreams.AddStream(id, str); errors.Is(err, errPendingStreamsFull) {
+		qstr.CancelRead(WTBufferedStreamRejectedErrorCode)
+		qstr.CancelWrite(WTBufferedStreamRejectedErrorCode)
+	} else if err != nil {
 		str.closeWithSession(err)
 		s.closeWithError(err, nil)
 	}
@@ -292,7 +305,9 @@ func (s *Session) addIncomingUniStream(qstr *quic.ReceiveStream, streamHeaderLen
 		s.incomingDataFC,
 		s.closeWithFlowControlError,
 	)
-	if err := s.incomingUniStreams.AddStream(id, str); err != nil {
+	if err := s.incomingUniStreams.AddStream(id, str); errors.Is(err, errPendingStreamsFull) {
+		qstr.CancelRead(WTBufferedStreamRejectedErrorCode)
+	} else if err != nil {
 		str.closeWithSession(err)
 		s.closeWithError(err, nil)
 	}

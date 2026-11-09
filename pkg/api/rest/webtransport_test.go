@@ -22,8 +22,8 @@ import (
 	"github.com/quic-go/quic-go/qlogwriter"
 	"github.com/quic-go/quic-go/quicvarint"
 	"github.com/quic-go/quic-go/testutils/simnet"
-	"github.com/quic-go/webtransport-go"
 
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -528,7 +528,7 @@ func (s *stopSendingTrace) rejected(t *testing.T) int {
 // drops the buffered ones at the deadline the first stream set.
 func TestWebTransport_PreSessionStreamFloodIsBounded(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// maxBufferedStreamsPerSession in third_party/webtransport-go.
+		// maxBufferedStreamsPerSession in internal/webtransport.
 		const perSessionCap = 16
 		const excess = 8
 		const settle = 10 * time.Millisecond

@@ -1,0 +1,5 @@
+This package contains code from webtransport-go v0.13.0
+(github.com/quic-go/webtransport-go), MIT licensed; see LICENSE. go-qrdb
+patches it to build against quic-go v0.65.0, to bound stream buffering before
+a session is established, and to bound each established session's queue of
+streams waiting to be accepted; README.md lists the patches.

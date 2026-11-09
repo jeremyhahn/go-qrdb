@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/webtransport-go"
-
+	"github.com/jeremyhahn/go-qrdb/internal/webtransport"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 )
