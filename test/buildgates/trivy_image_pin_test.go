@@ -31,7 +31,9 @@ import (
 
 // trivyReleaseFetch matches a fetch of a Trivy release asset or of the
 // upstream install script.
-var trivyReleaseFetch = regexp.MustCompile(`aquasecurity/trivy/releases/download|trivy/[^\s"']*/?contrib/install\.sh`)
+// The pattern is split so that a tree-wide grep for the fetch finds no hit
+// in this test.
+var trivyReleaseFetch = regexp.MustCompile(`aquasecurity/trivy/` + `releases/download|trivy/[^\s"']*/?` + `contrib/install\.sh`)
 
 func TestTrivyImage_PinnedByDigest(t *testing.T) {
 	root := repoRoot(t)

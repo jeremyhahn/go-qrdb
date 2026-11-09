@@ -2624,6 +2624,8 @@ lint-sweeps: $(LINT_SWEEPS)
 .PHONY: test-require-tool
 test-require-tool:
 	@./scripts/require-tool_test.sh
+	@./scripts/check-trivy-version_test.sh
+	@./scripts/check-trivy-version_test.sh --mutate
 
 # AGENTS.md: a feature folder is publication-bound -- it ships to GitHub when
 # the repo publishes -- so it must never carry an internal address, host name,

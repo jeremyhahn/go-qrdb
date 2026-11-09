@@ -279,17 +279,18 @@ COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 # binary whose output format it has not read. trivy comes from an image
 # and has no module path, so putting it through that script would mean
 # inventing an argument for a branch that would then do the wrong thing. Its
-# check stays inline, in the form #299 wrote it.
+# check is scripts/check-trivy-version.sh, an exact comparison with its own
+# regression suite, shared with build/docker/devcontainer/Dockerfile and
+# nightly.yml.
 COPY scripts/require-tool.sh /usr/local/bin/require-tool.sh
+COPY scripts/check-trivy-version.sh /usr/local/bin/check-trivy-version.sh
 RUN set -eu; \
     require-tool.sh golangci-lint "${GOLANGCI_LINT_VERSION}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint; \
     require-tool.sh gosec "${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec; \
     require-tool.sh govulncheck "${GOVULNCHECK_VERSION}" golang.org/x/vuln/cmd/govulncheck; \
     command -v trivy >/dev/null 2>&1 || { \
         echo "ERROR: trivy is not on PATH after the tool install" >&2; exit 1; }; \
-    trivy --version | grep -q "^Version: ${TRIVY_VERSION#v}$" || { \
-        echo "ERROR: trivy is not at the pinned ${TRIVY_VERSION}:" >&2; trivy --version >&2; exit 1; }; \
-    trivy --version
+    check-trivy-version.sh "$(command -v trivy)" "${TRIVY_VERSION}"
 
 WORKDIR /workspace/go-qrdb
 

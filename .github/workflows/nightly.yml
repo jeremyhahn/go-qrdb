@@ -134,10 +134,7 @@ jobs:
           id=$(docker create "${TRIVY_IMAGE}")
           docker cp "${id}:/usr/local/bin/trivy" /usr/local/bin/trivy
           docker rm "${id}"
-          trivy --version | grep -qx "Version: ${v#v}" || {
-            echo "trivy from ${TRIVY_IMAGE} is not ${v}" >&2
-            exit 1
-          }
+          ./scripts/check-trivy-version.sh /usr/local/bin/trivy "${v}"
 
       # ONE gate, through the Makefile (devops.md §4, #451).
       #

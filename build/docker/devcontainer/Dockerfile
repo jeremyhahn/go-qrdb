@@ -64,15 +64,13 @@ RUN set -eu; \
       cd /; rm -rf "$d" ); \
     go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 # trivy comes from its official image, pinned by digest (TRIVY_IMAGE). The
-# check fails the build when the digest and TRIVY_VERSION disagree.
+# check fails the build unless the binary reports exactly TRIVY_VERSION, so a
+# digest and version pair that disagree fails it.
 COPY --from=trivy /usr/local/bin/trivy /out/trivy
+COPY scripts/check-trivy-version.sh /tmp/check-trivy-version.sh
 RUN set -eu; \
     . /tmp/tool-pins.sh; \
-    v="$(/out/trivy --version)"; \
-    case "${v}" in \
-      *"Version: ${TRIVY_VERSION#v}"*) ;; \
-      *) echo "trivy reports '${v}', want ${TRIVY_VERSION}" >&2; exit 1 ;; \
-    esac
+    sh /tmp/check-trivy-version.sh /out/trivy "${TRIVY_VERSION}"
 
 # ---------------------------------------------------------------------------
 # github.com/jeremyhahn/* modules resolve from the forge through git, so this
