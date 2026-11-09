@@ -374,7 +374,7 @@ func TestInitialize_SystemSOUsernameSquatterRefused(t *testing.T) {
 
 func TestInitialize_SystemSOAdoptsPresentedCert(t *testing.T) {
 	h := newSOHarness(t, true)
-	certPEM, pool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certPEM, pool := issueNamedCertFromCA(t, h.deps.SO.Username, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	h.deps.SO.CSRPEM = nil
 	h.deps.SO.CertPEM = certPEM
 	h.deps.AdminCertPool = pool
@@ -385,6 +385,24 @@ func TestInitialize_SystemSOAdoptsPresentedCert(t *testing.T) {
 	want, _ := spkiThumbprintFromCertPEM(certPEM)
 	if result.SOCertThumbprint != want || len(h.signer.calls) != 0 {
 		t.Fatalf("bound %q (signer %v), want the presented certificate %q", result.SOCertThumbprint, h.signer.calls, want)
+	}
+}
+
+// A presented certificate authenticates as its subject CN, so one naming
+// anyone but the SO username is refused before any account exists.
+func TestInitialize_SystemSOPresentedCertMustNameTheSO(t *testing.T) {
+	h := newSOHarness(t, true)
+	certPEM, pool := issueNamedCertFromCA(t, "someone-else", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	h.deps.SO.CSRPEM = nil
+	h.deps.SO.CertPEM = certPEM
+	h.deps.AdminCertPool = pool
+	_, err := Initialize(context.Background(), h.deps)
+	var enrolErr *SystemSOEnrollmentError
+	if !errors.As(err, &enrolErr) || !strings.Contains(err.Error(), `subject CN "someone-else" is not the SO username "officer"`) {
+		t.Fatalf("Initialize: %v, want the CN refused", err)
+	}
+	if len(h.users.byName) != 0 {
+		t.Fatalf("an account was created: %v", h.users.byName)
 	}
 }
 

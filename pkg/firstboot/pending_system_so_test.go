@@ -16,16 +16,23 @@ package firstboot
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // soCeremonyCore runs a ceremony that names a system SO by CSR.
@@ -148,6 +155,119 @@ func TestClearPendingSystemSO_StoreFault(t *testing.T) {
 	var storeErr *PendingAdminCertStoreError
 	require.ErrorAs(t, err, &storeErr)
 	assert.Equal(t, "clear system SO", storeErr.Op)
+}
+
+// ceremonyCoreOver builds a ceremony core whose system barrier persists in
+// backend, unsealing it when an earlier core has initialised it: the same
+// node, started again.
+func ceremonyCoreOver(t *testing.T, backend *seal.MemoryBackend) *ceremony.CeremonyService {
+	t.Helper()
+	ctx := context.Background()
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("test-master-password"))
+	require.NoError(t, err)
+	barrier, err := seal.NewStorageBarrier(slog.New(slog.DiscardHandler), backend,
+		seal.BarrierConfig{RootKeyPath: "test/root-key"}, strategy)
+	require.NoError(t, err)
+	if initialized, err := barrier.Initialized(ctx); err == nil && initialized {
+		creds, err := seal.CredentialsFor(ctx, nil)
+		require.NoError(t, err)
+		defer seal.DestroyCredentials(creds)
+		require.NoError(t, barrier.Unseal(ctx, creds))
+	}
+	core, err := ceremony.NewCeremonyService(&ceremony.CeremonyConfig{DataDir: t.TempDir()}, barrier, slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+	core.SetTrustDomain("example.com")
+	return core
+}
+
+// A node that crashes after Initialize reported success, but before
+// startup copied the issued SO into the replicated store, still completes
+// strict first boot when it restarts: Initialize recorded the SO in the
+// system barrier before it returned.
+func TestWriteIssuedSystemSOIfAny_SurvivesACrashAfterInitialize(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	first := ceremonyCoreOver(t, backend)
+	ca, caPEM := ceremonytest.NewCA(t, "test-ca")
+	first.SetPINBackend(pintest.NewBackend(t))
+	_, err := first.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+		SOUsername: "secofficer", SOCSRPEM: testCSR(t),
+	})
+	require.NoError(t, err)
+	issued := first.LastIssuedSystemSO()
+	require.NotNil(t, issued)
+
+	// The crash: nothing reached the replicated store, and the restarted
+	// core's memory is empty.
+	restarted := ceremonyCoreOver(t, backend)
+	require.Nil(t, restarted.LastIssuedSystemSO())
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, restarted, store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	assert.Equal(t, issued.CertPEM, so.CertPEM)
+	assert.Equal(t, issued.PINRecord, so.PINRecord)
+
+	// First boot enrols the recovered SO, PIN and all.
+	h := newSOHarness(t, true)
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(caPEM))
+	h.deps.SO = so
+	h.deps.SOPINs = pins
+	h.deps.AdminCertPool = pool
+	_, err = Initialize(ctx, h.deps)
+	require.NoError(t, err)
+	require.NoError(t, pins.VerifySOPIN(ctx, tenantid.System, []byte("test-so-pin")))
+
+	// Once consumed, the next start forgets the barrier's copy.
+	require.NoError(t, ClearPendingSystemSO(ctx, store))
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, restarted, store, nil))
+	left, err := ceremonyCoreOver(t, backend).PendingSystemSO(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, left, "the consumed SO's record is gone from the barrier")
+}
+
+// failingGetStore answers every read of the pending system SO record with
+// a store fault, not absence.
+type failingGetStore struct {
+	*memPendingAdminCertStore
+}
+
+func (s *failingGetStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == PendingSystemSOKey {
+		return nil, errStoreFault
+	}
+	return s.memPendingAdminCertStore.Get(ctx, key)
+}
+
+// A store that cannot be read is never taken for one with no SO: startup
+// fails, consumption refuses, and the record stays intact.
+func TestPendingSystemSO_StoreReadFaultFailsTheBoot(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), mem, nil))
+	before, err := mem.Get(ctx, PendingSystemSOKey)
+	require.NoError(t, err)
+	store := &failingGetStore{memPendingAdminCertStore: mem}
+
+	so, err := PendingSystemSO(ctx, store)
+	assert.Nil(t, so)
+	var storeErr *PendingAdminCertStoreError
+	require.ErrorAs(t, err, &storeErr)
+	assert.Equal(t, "read system SO", storeErr.Op)
+	assert.ErrorIs(t, err, errStoreFault)
+
+	require.ErrorIs(t, ClearPendingSystemSO(ctx, store), errStoreFault)
+	require.ErrorIs(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil), errStoreFault)
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	after, err := mem.Get(ctx, PendingSystemSOKey)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the record is intact")
 }
 
 type failingPutStore struct{ *memPendingAdminCertStore }

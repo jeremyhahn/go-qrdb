@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
@@ -51,11 +52,20 @@ func WriteIssuedSystemSOIfAny(ctx context.Context, core *ceremony.CeremonyServic
 	if core == nil || store == nil {
 		return nil
 	}
-	so := core.LastIssuedSystemSO()
-	if so == nil {
-		return nil
+	so, err := core.PendingSystemSO(ctx)
+	if err != nil || so == nil {
+		return err
 	}
-	if recorded, err := store.Get(ctx, PendingSystemSOKey); err == nil && len(recorded) > 0 {
+	recorded, err := readPendingSystemSO(ctx, store)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(recorded, pendingAdminCertConsumedMarker) {
+		// First boot consumed it on an earlier start: the barrier's copy
+		// has served its purpose.
+		return core.ForgetPendingSystemSO(ctx)
+	}
+	if len(recorded) > 0 {
 		return nil
 	}
 	record, err := json.Marshal(pendingSystemSO{
@@ -81,8 +91,11 @@ func PendingSystemSO(ctx context.Context, store PendingAdminCertStore) (*SOConfi
 	if store == nil {
 		return nil, nil
 	}
-	raw, err := store.Get(ctx, PendingSystemSOKey)
-	if err != nil || len(raw) == 0 || bytes.Equal(raw, pendingAdminCertConsumedMarker) {
+	raw, err := readPendingSystemSO(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 || bytes.Equal(raw, pendingAdminCertConsumedMarker) {
 		return nil, nil
 	}
 	var rec pendingSystemSO
@@ -109,12 +122,31 @@ func ClearPendingSystemSO(ctx context.Context, store PendingAdminCertStore) erro
 	if store == nil {
 		return nil
 	}
-	raw, err := store.Get(ctx, PendingSystemSOKey)
-	if err != nil || len(raw) == 0 || bytes.Equal(raw, pendingAdminCertConsumedMarker) {
+	raw, err := readPendingSystemSO(ctx, store)
+	if err != nil {
+		return err
+	}
+	if len(raw) == 0 || bytes.Equal(raw, pendingAdminCertConsumedMarker) {
 		return nil
 	}
 	if err := store.Put(ctx, PendingSystemSOKey, pendingAdminCertConsumedMarker); err != nil {
 		return &PendingAdminCertStoreError{Op: "clear system SO", Cause: err}
 	}
 	return nil
+}
+
+// readPendingSystemSO reads the pending system SO record. Only not-found
+// means absent (nil, nil): any other store failure is returned, so a store
+// that cannot answer never reads as "no SO" and lets startup or
+// consumption proceed past a record it could not see.
+func readPendingSystemSO(ctx context.Context, store PendingAdminCertStore) ([]byte, error) {
+	raw, err := store.Get(ctx, PendingSystemSOKey)
+	if err == nil {
+		return raw, nil
+	}
+	var notFound interface{ KeyNotFound() string }
+	if errors.As(err, &notFound) {
+		return nil, nil
+	}
+	return nil, &PendingAdminCertStoreError{Op: "read system SO", Cause: err}
 }

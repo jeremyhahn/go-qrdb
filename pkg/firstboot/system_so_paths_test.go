@@ -156,7 +156,7 @@ func TestCommitSystemSOPIN_RecordNeedsARecordSeam(t *testing.T) {
 
 func TestInitialize_SystemSOAdoptsPresentedCertWithChain(t *testing.T) {
 	h := newSOHarness(t, true)
-	certPEM, pool := issueCertFromCA(t, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certPEM, pool := issueNamedCertFromCA(t, h.deps.SO.Username, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	h.deps.SO.CSRPEM = nil
 	h.deps.SO.CertPEM = certPEM
 	// No intermediate is needed here; the chain is read and must not stop

@@ -16,20 +16,30 @@ package ceremony
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"io"
 	"log/slog"
+	"math/big"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The ceremony signs the system SO's CSR under the system tenant with the
@@ -81,7 +91,7 @@ func TestInitialize_SystemSO_CSR(t *testing.T) {
 func TestInitialize_SystemSO_PresentedCert(t *testing.T) {
 	ca := newMockCA(t)
 	poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
-	presented := adminLeafNamingTenantPEM(t, ca, "system")
+	presented := systemLeafPEM(t, ca, "secofficer", newDeviceSigner(t).Public())
 	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
 
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
@@ -96,6 +106,73 @@ func TestInitialize_SystemSO_PresentedCert(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, presented, result.SOCertPEM)
 	assert.Equal(t, presented, svc.LastIssuedSystemSO().CertPEM)
+
+	// The adopted certificate logs in as the SO: MTLSAuthenticator names the
+	// subject by its CN.
+	block, _ := pem.Decode(presented)
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	state := &tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf, ca.cert}}}
+	id, err := auth.NewMTLSAuthenticatorWithTrustDomain(testTrustDomain).Authenticate(auth.WithTLSState(context.Background(), state))
+	require.NoError(t, err)
+	assert.Equal(t, "secofficer", id.Subject)
+	assert.Equal(t, tenantid.System, id.TenantID)
+}
+
+// systemLeafPEM issues, from ca, a system-tenant client certificate for cn
+// over pub.
+func systemLeafPEM(t *testing.T, ca *mockCA, cn string, pub crypto.PublicKey) []byte {
+	t.Helper()
+	u, err := spiffe.ID{TrustDomain: tenantid.System, Kind: spiffe.KindUser, Name: cn}.URI()
+	require.NoError(t, err)
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	require.NoError(t, err)
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: cn, OrganizationalUnit: []string{tenantid.System}},
+		URIs:         []*url.URL{u},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, pub, ca.key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+// TestInitialize_SystemSO_SharedKeyChangesNothing: an SO whose key is the
+// admin's, whether by CSR or certificate, is refused before the PINs, the
+// barrier or any certificate is committed.
+func TestInitialize_SystemSO_SharedKeyChangesNothing(t *testing.T) {
+	ca := newMockCA(t)
+	poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+	sharedCSR, shared := generateCSRPEM(t, "secofficer")
+	cases := map[string]InitializeOptions{
+		"SO CSR, admin CSR":  {AdminCSRPEM: sharedCSR, SOCSRPEM: sharedCSR},
+		"SO cert, admin CSR": {AdminCSRPEM: sharedCSR, SOCertPEM: systemLeafPEM(t, ca, "secofficer", shared.Public())},
+		"SO CSR, admin cert": {AdminCertPEM: systemLeafPEM(t, ca, adminUsername, shared.Public()), SOCSRPEM: sharedCSR},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			barrier := testBarrier(t)
+			svc := newTestCeremonyService(t, defaultConfig(), barrier)
+			pins := pintest.NewBackend(t)
+			svc.SetPINBackend(pins)
+			opts.SOPin, opts.UserPin, opts.SOUsername, opts.AdminCertPoolPEM = "test-so-pin", "test-user-pin", "secofficer", poolPEM
+			_, err := svc.Initialize(context.Background(), ca, &opts)
+			var rejected *SystemSORejectedError
+			require.ErrorAs(t, err, &rejected)
+			assert.Contains(t, err.Error(), "key is the bootstrap admin's")
+			assert.False(t, pins.IsInitialized(), "the PINs must stay uncommitted")
+			initialized, err := barrier.Initialized(context.Background())
+			require.NoError(t, err)
+			assert.False(t, initialized, "the barrier must stay uninitialised")
+			assert.Nil(t, svc.LastIssuedSystemSO())
+			last, _ := svc.LastIssuedAdminCertPEM()
+			assert.Nil(t, last)
+		})
+	}
 }
 
 // Naming no SO leaves the ceremony as it was: no SO certificate, no record.
@@ -139,6 +216,8 @@ func TestInitialize_SystemSO_Refusals(t *testing.T) {
 		"unparsable CSR":      {opts: InitializeOptions{SOUsername: "so", SOCSRPEM: []byte("not-a-csr")}},
 		"untrusted cert":      {opts: InitializeOptions{SOUsername: "so", SOCertPEM: untrusted}},
 		"tenant disagreement": {opts: InitializeOptions{SOUsername: "so", SOCertPEM: otherTenant}, reason: "disagree"},
+		"CN is not SOUsername": {opts: InitializeOptions{SOUsername: "so", SOCertPEM: systemLeafPEM(t, ca, "someone-else", newDeviceSigner(t).Public())},
+			reason: `subject CN "someone-else" is not SOUsername "so"`},
 		"admin's key": {opts: InitializeOptions{SOUsername: "so", SOCSRPEM: adminCSR},
 			reason: "key is the bootstrap admin's"},
 		"no CA for the CSR": {opts: InitializeOptions{SOUsername: "so", SOCSRPEM: soCSR,
@@ -187,9 +266,10 @@ func TestSystemSORejectedError_Unwrap(t *testing.T) {
 	assert.Equal(t, "ceremony: system SO rejected: cause", err.Error())
 }
 
-func TestSameCertKey_UnparsableNeverMatches(t *testing.T) {
-	assert.False(t, sameCertKey(nil, nil))
-	assert.False(t, sameCertKey([]byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"), nil))
+func TestSuppliedAdminKey_UnparsableIsNil(t *testing.T) {
+	assert.Nil(t, suppliedAdminKey(&InitializeOptions{}))
+	assert.Nil(t, suppliedAdminKey(&InitializeOptions{AdminCertPEM: []byte("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n")}))
+	assert.Nil(t, suppliedAdminKey(&InitializeOptions{AdminCSRPEM: []byte("not-a-csr")}))
 	var nilSO *IssuedSystemSO
 	assert.Nil(t, nilSO.clone())
 }

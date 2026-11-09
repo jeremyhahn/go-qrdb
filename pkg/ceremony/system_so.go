@@ -18,11 +18,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -34,12 +37,12 @@ import (
 // another node, commits the record through
 // auth.SOAuthenticator.CommitSOPINRecord.
 type IssuedSystemSO struct {
-	Username string
-	CertPEM  []byte
+	Username string `json:"username"`
+	CertPEM  []byte `json:"cert_pem"`
 	// ChainPEM is SOChainPEM for an adopted certificate, which first boot
 	// verifies again; empty for a signed one.
-	ChainPEM  []byte
-	PINRecord string
+	ChainPEM  []byte `json:"chain_pem,omitempty"`
+	PINRecord string `json:"pin_record"`
 }
 
 // clone returns a deep copy so callers never share the ceremony's buffers.
@@ -82,17 +85,51 @@ func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeO
 	case opts.SOPin == "":
 		return &SystemSORejectedError{Cause: errors.New("the system SO needs SOPin")}
 	}
+	var soKey []byte
 	if len(opts.SOCertPEM) > 0 {
-		_, err := adoptSystemSOCert(opts, caBundlePEM, trustDomain)
-		return err
+		cert, err := adoptSystemSOCert(opts, caBundlePEM, trustDomain)
+		if err != nil {
+			return err
+		}
+		soKey = cert.RawSubjectPublicKeyInfo
+	} else {
+		if ca == nil {
+			return &AdminCredentialRequiresCAError{Path: "so-csr-sign"}
+		}
+		csr, err := parseAndVerifyCSR(opts.SOCSRPEM)
+		if err != nil {
+			return &SystemSORejectedError{Cause: err}
+		}
+		if err := requireAdminSPIFFEIdentity(trustDomain); err != nil {
+			return err
+		}
+		soKey = csr.RawSubjectPublicKeyInfo
 	}
-	if ca == nil {
-		return &AdminCredentialRequiresCAError{Path: "so-csr-sign"}
+	// A generated admin key is fresh and cannot be the SO's; only a key the
+	// operator supplies for the admin can collide. Refused here, before
+	// the PINs, the barrier or any certificate is committed.
+	if adminKey := suppliedAdminKey(opts); adminKey != nil && bytes.Equal(adminKey, soKey) {
+		return &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
 	}
-	if _, err := parseAndVerifyCSR(opts.SOCSRPEM); err != nil {
-		return &SystemSORejectedError{Cause: err}
+	return nil
+}
+
+// suppliedAdminKey returns the SubjectPublicKeyInfo of the admin's
+// AdminCertPEM or AdminCSRPEM, or nil when the admin supplies neither (or
+// one that does not parse, which validateAdminCredentialInputs refuses).
+func suppliedAdminKey(opts *InitializeOptions) []byte {
+	if len(opts.AdminCertPEM) > 0 {
+		if cert := parsePEMCert(opts.AdminCertPEM); cert != nil {
+			return cert.RawSubjectPublicKeyInfo
+		}
+		return nil
 	}
-	return requireAdminSPIFFEIdentity(trustDomain)
+	if len(opts.AdminCSRPEM) > 0 {
+		if csr, err := parseAndVerifyCSR(opts.AdminCSRPEM); err == nil {
+			return csr.RawSubjectPublicKeyInfo
+		}
+	}
+	return nil
 }
 
 // adoptSystemSOCert verifies a presented system SO certificate against
@@ -124,14 +161,18 @@ func adoptSystemSOCert(opts *InitializeOptions, caBundlePEM []byte, trustDomain 
 	if tenant != tenantid.System {
 		return nil, &SystemSORejectedError{Cause: errors.New("the certificate names tenant " + tenant + ", not the system tenant")}
 	}
+	// MTLSAuthenticator logs a client in by its subject CN: an SO whose
+	// certificate names anyone else could never authenticate as the SO.
+	if cert.Subject.CommonName != opts.SOUsername {
+		return nil, &SystemSORejectedError{Cause: fmt.Errorf("the certificate's subject CN %q is not SOUsername %q", cert.Subject.CommonName, opts.SOUsername)}
+	}
 	return cert, nil
 }
 
 // issueSystemSO signs or adopts the system SO's certificate and hashes the
-// SO PIN. It returns nil, nil when opts name no system SO. The SO's key
-// must differ from the admin's: a shared key would let the admin's
-// certificate stand in for the SO's.
-func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM, adminCertPEM []byte) (*IssuedSystemSO, error) {
+// SO PIN. It returns nil, nil when opts name no system SO.
+// validateSystemSOInputs has already refused an SO key that is the admin's.
+func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte) (*IssuedSystemSO, error) {
 	if !systemSORequested(opts) {
 		return nil, nil
 	}
@@ -149,10 +190,6 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 		}
 		certPEM = signed
 	}
-	if sameCertKey(certPEM, adminCertPEM) {
-		return nil, &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
-	}
-
 	pin := []byte(opts.SOPin)
 	defer secure.Wipe(pin)
 	record, err := auth.HashSOPIN(pin)
@@ -160,13 +197,6 @@ func issueSystemSO(ctx context.Context, ca CeremonyCA, trustDomain string, opts 
 		return nil, &SystemSORejectedError{Cause: err}
 	}
 	return &IssuedSystemSO{Username: opts.SOUsername, CertPEM: certPEM, ChainPEM: chainPEM, PINRecord: record}, nil
-}
-
-// sameCertKey reports whether two PEM certificates carry the same public
-// key. An unparseable side never matches.
-func sameCertKey(aPEM, bPEM []byte) bool {
-	a, b := parsePEMCert(aPEM), parsePEMCert(bPEM)
-	return a != nil && b != nil && bytes.Equal(a.RawSubjectPublicKeyInfo, b.RawSubjectPublicKeyInfo)
 }
 
 func parsePEMCert(certPEM []byte) *x509.Certificate {
@@ -188,4 +218,64 @@ func (s *CeremonyService) LastIssuedSystemSO() *IssuedSystemSO {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastSystemSO.clone()
+}
+
+// pendingSystemSOKey is the system barrier key under which Initialize
+// records the system SO it issued, before it reports success.
+const pendingSystemSOKey = "ceremony/pending-system-so"
+
+// persistIssuedSystemSOLocked records so in the system barrier, which
+// Initialize has unsealed by now. The composer copies the SO into the
+// replicated store only once that store exists; a node that crashes before
+// then reads it back here on restart (PendingSystemSO), so strict first boot
+// is never stranded without its SO. The record carries the SO PIN only as
+// its hash, and the barrier encrypts it. Callers hold s.mu.
+func (s *CeremonyService) persistIssuedSystemSOLocked(ctx context.Context, so *IssuedSystemSO) error {
+	if so == nil {
+		return nil
+	}
+	blob, err := json.Marshal(so)
+	if err != nil {
+		return &SystemSOPersistError{Op: "encode", Cause: err}
+	}
+	if err := s.barrier.Put(ctx, pendingSystemSOKey, blob); err != nil {
+		return &SystemSOPersistError{Op: "write", Cause: err}
+	}
+	return nil
+}
+
+// PendingSystemSO returns the system SO this node's Initialize issued: the
+// one in memory, or, after a restart, the record Initialize left in the
+// system barrier. It returns nil, nil when there is none; any other read
+// failure is returned, never read as absence.
+func (s *CeremonyService) PendingSystemSO(ctx context.Context) (*IssuedSystemSO, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastSystemSO != nil {
+		return s.lastSystemSO.clone(), nil
+	}
+	blob, err := s.barrier.Get(ctx, pendingSystemSOKey)
+	if errors.Is(err, seal.ErrSecretNotFound) || (err == nil && len(blob) == 0) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, &SystemSOPersistError{Op: "read", Cause: err}
+	}
+	var so IssuedSystemSO
+	if err := json.Unmarshal(blob, &so); err != nil {
+		return nil, &SystemSOPersistError{Op: "decode", Cause: err}
+	}
+	return &so, nil
+}
+
+// ForgetPendingSystemSO removes the system barrier's record of the issued
+// system SO once first boot has consumed it, so its PIN hash outlives the
+// enrolment nowhere but the PIN store.
+func (s *CeremonyService) ForgetPendingSystemSO(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.barrier.Delete(ctx, pendingSystemSOKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+		return &SystemSOPersistError{Op: "remove", Cause: err}
+	}
+	return nil
 }

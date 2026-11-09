@@ -1941,6 +1941,12 @@ func TestInitialize_SpkiThumbprintError(t *testing.T) {
 // chains to something we trust" from "this certificate exists".
 func issueCertFromCA(t *testing.T, notBefore, notAfter time.Time) ([]byte, *x509.CertPool) {
 	t.Helper()
+	return issueNamedCertFromCA(t, adminUsername, notBefore, notAfter)
+}
+
+// issueNamedCertFromCA is issueCertFromCA for the user name.
+func issueNamedCertFromCA(t *testing.T, name string, notBefore, notAfter time.Time) ([]byte, *x509.CertPool) {
+	t.Helper()
 
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -1968,7 +1974,7 @@ func issueCertFromCA(t *testing.T, notBefore, notAfter time.Time) ([]byte, *x509
 	if err != nil {
 		t.Fatalf("leaf GenerateKey: %v", err)
 	}
-	subject, uris := presentedIdentity(t, tenantid.System, tenantid.System, presentedTrustDomain)
+	subject, uris := presentedIdentityOf(t, name, tenantid.System, tenantid.System, presentedTrustDomain)
 	leafTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(101),
 		Subject:      subject,

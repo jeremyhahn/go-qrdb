@@ -638,7 +638,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
 		return nil, err
 	}
-	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle, adminCertPEM)
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if err != nil {
 		secure.Wipe(adminKeyPEM)
 		s.mu.Unlock()
@@ -669,6 +669,13 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	if !isMofN {
+		// The barrier is unsealed by now: record the issued system SO in it
+		// before reporting success, so a crash before the composer copies
+		// it into the replicated store cannot strand strict first boot.
+		if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
 		s.becomeOperationalLocked(ctx)
 		s.mu.Unlock()
 		result.State = StateOperational
@@ -736,6 +743,12 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	s.mu.Lock()
+	// InitializeShamir left the barrier unsealed; record the issued system
+	// SO in it before reporting success, as the single-admin path does.
+	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	s.state = StateEnrolling
 	s.mu.Unlock()
 	result.ShareCount = params.ShareCount

@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -150,6 +151,9 @@ func checkSystemSO(deps Dependencies) error {
 	if err != nil {
 		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 	}
+	if err := checkSOCertNamesUsername(so); err != nil {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	}
 	// A generated admin key (Path A) is fresh and cannot be the SO's; only a
 	// key the operator supplies for the admin can collide.
 	if len(deps.AdminCSRPEM) == 0 && len(deps.AdminCertPEM) == 0 {
@@ -182,6 +186,27 @@ func spkiThumbprintOf(csrPEM, certPEM []byte) (string, error) {
 		return "", err
 	}
 	return user.ComputeSPKIThumbprint(&x509.Certificate{RawSubjectPublicKeyInfo: csr.RawSubjectPublicKeyInfo}), nil
+}
+
+// checkSOCertNamesUsername refuses an SO certificate whose subject CN is not
+// the SO's username: MTLSAuthenticator logs a client in by its CN, so such
+// an SO could never authenticate. A signed CSR is issued for the username.
+func checkSOCertNamesUsername(so *SOConfig) error {
+	if len(so.CertPEM) == 0 {
+		return nil
+	}
+	block, _ := pem.Decode(so.CertPEM)
+	if block == nil {
+		return errors.New("no CERTIFICATE block in PEM input")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+	if cert.Subject.CommonName != so.Username {
+		return fmt.Errorf("the certificate's subject CN %q is not the SO username %q", cert.Subject.CommonName, so.Username)
+	}
+	return nil
 }
 
 // enrollSystemSO enrols Dependencies.SO in tenantID, after the admin: the
