@@ -51,6 +51,7 @@ x-go-scanner-pins: &go-scanner-pins
 x-scanner-pins: &scanner-pins
   <<: *go-scanner-pins
   TRIVY_VERSION:
+  TRIVY_IMAGE:
 
 # Fleet dev-cache passthrough (devops.md §2a). Unset, empty or unreachable
 # means no proxy -- the behaviour without the cache -- so every entry below

@@ -56,6 +56,7 @@ fixture() {
 		GOSEC_VERSION=v2.29.0
 		GOVULNCHECK_VERSION=v1.8.0
 		TRIVY_VERSION=v0.75.0
+		TRIVY_IMAGE=example.test/trivy:0.75.0@sha256:0123
 	EOF
 
 	cat > "${DIR}/.github/workflows/ci.yml" <<-'EOF'
@@ -77,6 +78,7 @@ fixture() {
 		ARG GOSEC_VERSION=v2.29.0
 		ARG GOVULNCHECK_VERSION=v1.8.0
 		ARG TRIVY_VERSION=v0.75.0
+		ARG TRIVY_IMAGE=example.test/trivy:0.75.0@sha256:0123
 	EOF
 
 	cat > "${DIR}/.devcontainer/Dockerfile.gpu" <<-'EOF'
@@ -158,6 +160,11 @@ DIR=$(fixture trivy-drift)
 sed -i 's/ARG TRIVY_VERSION=v0.75.0/ARG TRIVY_VERSION=v0.60.0/' "${DIR}/.devcontainer/Dockerfile"
 assert "a trivy default off the pin file is rejected" 1 \
 	"TRIVY_VERSION is v0.60.0 in .devcontainer/Dockerfile but v0.75.0" "${DIR}"
+
+DIR=$(fixture trivy-image-drift)
+sed -i 's/^ARG TRIVY_IMAGE=.*/ARG TRIVY_IMAGE=example.test\/trivy:0.60.0@sha256:4567/' "${DIR}/.devcontainer/Dockerfile"
+assert "a trivy image default off the pin file is rejected" 1 \
+	"TRIVY_IMAGE is example.test/trivy:0.60.0@sha256:4567 in .devcontainer/Dockerfile" "${DIR}"
 
 # The authority is named in the diagnostic, because "these disagree" does not
 # tell the next person which one to change.
