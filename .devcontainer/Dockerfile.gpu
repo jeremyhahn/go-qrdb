@@ -222,6 +222,7 @@ WORKDIR /workspace/go-qrdb
 # the surrounding comment describes.
 COPY go.mod go.sum* ./
 COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
+COPY third_party/webtransport-go/go.mod third_party/webtransport-go/go.sum third_party/webtransport-go/
 RUN --mount=type=secret,id=gomodauth \
     set -eu; \
     mkdir -p /tmp/stubs/go-quicraft /tmp/stubs/go-truststrap; \

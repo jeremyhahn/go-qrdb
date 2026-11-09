@@ -376,6 +376,7 @@ WORKDIR /workspace/go-qrdb
 # so this stops at saying what happened.
 COPY go.mod go.sum* ./
 COPY sdk/go/go.mod sdk/go/go.sum* sdk/go/
+COPY third_party/webtransport-go/go.mod third_party/webtransport-go/go.sum third_party/webtransport-go/
 RUN --mount=type=secret,id=gomodauth \
     set -eu; \
     if [ -s /run/secrets/gomodauth ]; then \

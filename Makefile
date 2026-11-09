@@ -4089,7 +4089,8 @@ DEVCONTAINER_DIR     := build/docker/devcontainer
 DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-	test/performance/qrdb test/performance/tikv test/vanguardprobe
+	test/performance/qrdb test/performance/tikv test/vanguardprobe \
+	third_party/webtransport-go
 TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
