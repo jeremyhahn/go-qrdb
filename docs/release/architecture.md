@@ -185,7 +185,7 @@ skips the code tier, and the nightly tier carries the soak:
 
 | Tier | When | Jobs |
 |---|---|---|
-| PR | every run | `changes`, `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `arch-gates`, `ci-gate` |
+| PR | every run | `preflight` (the changed-file diff, then the architecture gates, one job since ci-template v1.34), `docker-build` (the devcontainer images), `lint` (`make lint`, then `make deps-check`, ci-template v1.28.0), `lint-gates` (`make lint-gates`), `ci-gate` |
 | Code | every run but a docs-only pull request | `image` (the build), the unit-suite jobs `coverage` (`make coverage-leg`, a matrix over `COVER_LEGS`) and `coverage-merge` (`make coverage-merge`, the repo-wide gate), `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk` (a matrix over `TEST_SDK_LEGS`), `test-typescript` |
 | Full | every event but a pull request (a push to `main`, `workflow_dispatch`), and a pull request labelled `ci:full` | the PR and code tiers, plus the linux/arm64 release cross-build (plain and FIPS), security and the trivy image scan in `image`, `integration-standalone`, `integration-features` (six shards of features) and `fips` (both unit suites under FIPS 140-3, as parallel legs) |
 | Nightly | `workflow_dispatch` | the full tier, plus `soak` |
@@ -202,7 +202,7 @@ stack each iteration, for 30 minutes and fails on the first red iteration.
 other than `success`, with three exceptions: a job tagged `full` that was
 skipped because the run did not select the full tier, a job tagged
 `nightly` that was skipped because the run was not a dispatch, and a job
-tagged `code` that was skipped because the `changes` job said the pull request
+tagged `code` that was skipped because the `preflight` job said the pull request
 is docs-only (its DOCS_ONLY is `true`). In a run that selected the tier a
 skipped job fails it, and an unreadable DOCS_ONLY fails the gate. The pull-request trigger has no
 `labeled` type, because a label-triggered run would cancel the PR's run in
@@ -223,7 +223,7 @@ sharded until none does. `test/buildgates/ci_runners_test.go` holds every
 The full-tier jobs wait on the image build, not on the checks:
 `integration-standalone` and `integration-features` each need `docker-build`,
 which builds the devcontainer images and hands them on as run artifacts, and
-`test-typescript` and `arch-gates`. They run beside `lint`, `lint-gates`,
+`test-typescript` and `preflight`. They run beside `lint`, `lint-gates`,
 `image` and the unit-suite jobs, which need `docker-build` too and run, side
 by side in those images, the lint stages and `make deps-check` (`lint`), the
 repository gates (`lint-gates`), the build and, in the full tier, the arm64
@@ -232,7 +232,7 @@ cross-build and the security stages (`image`), and the unit suites
 `test-sdk`'s legs), so the long legs wait for none of them. A full-tier run
 whose `lint`, `lint-gates`, `image` or unit-suite job fails still runs the
 legs, and `ci-gate`, which needs every job, fails on that result; a run whose
-`docker-build`, `test-typescript` or `arch-gates` fails reports the legs
+`docker-build`, `test-typescript` or `preflight` fails reports the legs
 `skipped`, which `ci-gate` fails as well.
 
 The stages are separate jobs, not the ci-template's one image job, because
@@ -319,8 +319,8 @@ its measured fleet time (5 for the small ones). `release.yml` runs both sweeps a
 `-race`; the unit suites keep it.
 
 A pull request whose every changed file is markdown or under `docs/`
-(`DOCS_ONLY_PATTERN`) is docs-only: the `changes` job says so, and the run is
-`changes`, `docker-build`, `lint`, `lint-gates`, `arch-gates` and `ci-gate`.
+(`DOCS_ONLY_PATTERN`) is docs-only: the `preflight` job says so, and the run is
+`preflight`, `docker-build`, `lint`, `lint-gates` and `ci-gate`.
 `docker-build` builds the toolchain image alone: no job of a
 docs-only run uses the integration image, so it builds none and outputs an
 empty `it_image`.
@@ -329,18 +329,18 @@ the module proxy and needs no build output (ci-template v1.28.0 made it a
 lint-class gate on the PR tier, ruling 219(3), so a module behind its
 dependency floor fails the pull request, not `main` after the merge), and
 `lint-gates` runs `make lint-gates`.
-`arch-gates` runs `make check-public-releasable`, which scans the whole
+`preflight` runs `make check-public-releasable`, which scans the whole
 tracked tree, docs included, and skips its two code-only steps (the
 go-objstore import check and the compose-target check). Those jobs still
 succeed, so `ci-gate` needs no exception for them. Every job of the code tier
 (`image`, with the build-tag assertion and the builds, the unit-suite jobs
 `coverage`, `coverage-merge`, `test-clusterproof`, `coverage-fts`, `test-tags` and `test-sdk`,
 and `test-typescript`) carries exactly
-`if: needs.changes.outputs.docs_only != 'true'`, needs `changes`, and is
+`if: needs.preflight.outputs.docs_only != 'true'`, needs `preflight`, and is
 skipped. The gates that read `docs/` --
 `check-publication-bound`, `check-integration-feature-coverage` and
 `check-no-alias-language` -- are in `make lint-gates`, so a docs-only pull
-request runs every one of them in the `lint-gates` job. `changes` decides nothing off a pull request
+request runs every one of them in the `lint-gates` job. `preflight` decides nothing off a pull request
 or under `ci:full`: those runs are never docs-only.
 
 The `ci:full` label goes on a pull request once, when it is green on the PR
@@ -388,8 +388,8 @@ and its memory less 2 GiB for the runner itself, with no swap
 (`scripts/in-toolchain-image.sh`); `GOMAXPROCS` and go's `-p` are derived
 from that bound, never written down.
 `test-typescript` (the TypeScript SDK and the desktop frontend) and
-`arch-gates` (the import-boundary, public-releasable and compose-target
-gates) run on the runner beside them.
+`preflight` (the docs-only diff, then the import-boundary, public-releasable
+and compose-target gates) run on the runner beside them.
 
 `image`'s two scans (`make security`'s trivy leg and
 `make trivy-image`), scan only with a vulnerability database younger than
