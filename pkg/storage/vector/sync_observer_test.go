@@ -103,10 +103,10 @@ func TestVectorSyncedWrites_EachSyncIsObserved(t *testing.T) {
 	writeEveryPath(t, s)
 
 	count, sum := syncwatchtest.HistogramSample(t, reg, syncFamily, "backend", syncwatch.BackendPebble)
-	if count != 8 {
-		t.Fatalf("sync count = %d, want 8 (namespace metadata, ID sequence, upsert, delete, batch upsert, batch delete, tombstone cleanup, namespace delete)", count)
+	if count != 7 {
+		t.Fatalf("sync count = %d, want 7 (namespace create, upsert, delete, batch upsert, batch delete, tombstone cleanup, namespace delete)", count)
 	}
-	if want := (8 * time.Millisecond).Seconds(); sum != want {
+	if want := (7 * time.Millisecond).Seconds(); sum != want {
 		t.Fatalf("sync sum = %v, want %v", sum, want)
 	}
 }
@@ -180,8 +180,8 @@ func TestVectorSlowSync_WarnsOnceWithBackendAndDir(t *testing.T) {
 	}
 
 	recs := log.Records()
-	if len(recs) != 2 {
-		t.Fatalf("got %d warnings, want 2 (one per sync of CreateNamespace)", len(recs))
+	if len(recs) != 1 {
+		t.Fatalf("got %d warnings, want 1 (CreateNamespace is one synced commit)", len(recs))
 	}
 	r := recs[0]
 	if r.Level != slog.LevelWarn || r.Attrs["took"] != 250*time.Millisecond ||

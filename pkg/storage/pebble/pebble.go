@@ -92,6 +92,17 @@ func WithSyncObserver(o *syncwatch.Observer) Option {
 	}
 }
 
+// WithSealWatch makes the store take w's quiesce lease around every durable
+// write, so a seal drains them. NewFromDB callers that wrap a sealed store's
+// db pass its watch here; a nil watch leaves writes unleased.
+func WithSealWatch(w *SealWatch) Option {
+	return func(s *PebbleStorage) {
+		if w != nil {
+			s.seals = w
+		}
+	}
+}
+
 func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
 	for _, opt := range opts {
 		opt(s)
@@ -105,12 +116,14 @@ func (s *PebbleStorage) apply(opts []Option) *PebbleStorage {
 //
 // A write refused by a sealed barrier fails with a *SealedError before it
 // reaches Pebble, which would panic were the barrier to refuse the WAL file a
-// full memtable rotates to.
+// full memtable rotates to. An admitted write holds the store's quiesce lease
+// until it returns, so a Seal waits for it before the key leaves memory.
 func (s *PebbleStorage) durably(synced bool, write func(*pebble.WriteOptions) error) error {
 	if s.seals != nil {
-		if err := s.seals.Check(); err != nil {
+		if err := s.seals.Admit(); err != nil {
 			return err
 		}
+		defer s.seals.Done()
 	}
 	if !synced {
 		return write(pebble.NoSync)
@@ -487,6 +500,7 @@ func (s *PebbleStorage) Close() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	s.seals.Close()
 	if err := s.db.Close(); err != nil {
 		return &storage.OpError{Op: "close", Err: err}
 	}
@@ -503,9 +517,10 @@ func (s *PebbleStorage) Compact(start, end []byte) error {
 	}
 	// A compaction flushes an overlapping memtable first, rotating the WAL.
 	if s.seals != nil {
-		if err := s.seals.Check(); err != nil {
+		if err := s.seals.Admit(); err != nil {
 			return &storage.OpError{Op: "compact", Err: err}
 		}
+		defer s.seals.Done()
 	}
 	if err := s.db.Compact(context.Background(), start, end, true); err != nil {
 		return &storage.OpError{Op: "compact", Err: err}

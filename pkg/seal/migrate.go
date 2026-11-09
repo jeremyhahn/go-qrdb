@@ -464,8 +464,9 @@ func isSecretNotFound(err error) bool {
 // the unseal credential.
 func (b *StorageBarrier) MintKeyedSibling(ctx context.Context, stagingSuffix string, strategy SealingStrategy, creds Credentials) (*StorageBarrier, error) {
 	cfg := BarrierConfig{
-		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
-		DeploymentID: b.config.DeploymentID,
+		RootKeyPath:      b.config.RootKeyPath + stagingSuffix,
+		DeploymentID:     b.config.DeploymentID,
+		SealDrainTimeout: b.config.SealDrainTimeout,
 		// The migration's barriers record on the same trail as b.
 		AuditLogger: b.config.AuditLogger,
 	}
@@ -536,8 +537,9 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 		return nil, nil, err
 	}
 	cfg := BarrierConfig{
-		RootKeyPath:  b.config.RootKeyPath + stagingSuffix,
-		DeploymentID: b.config.DeploymentID,
+		RootKeyPath:      b.config.RootKeyPath + stagingSuffix,
+		DeploymentID:     b.config.DeploymentID,
+		SealDrainTimeout: b.config.SealDrainTimeout,
 		// The migration's barriers record on the same trail as b.
 		AuditLogger: b.config.AuditLogger,
 	}
@@ -592,9 +594,10 @@ func (b *StorageBarrier) MintKeyedShamirSibling(ctx context.Context, stagingSuff
 // seal.ErrSealed).
 func (b *StorageBarrier) ReopenKeyed(ctx context.Context, strategy SealingStrategy, creds Credentials) (*StorageBarrier, error) {
 	cfg := BarrierConfig{
-		RootKeyPath:  b.config.RootKeyPath,
-		DeploymentID: b.config.DeploymentID,
-		AuditLogger:  b.config.AuditLogger,
+		RootKeyPath:      b.config.RootKeyPath,
+		DeploymentID:     b.config.DeploymentID,
+		SealDrainTimeout: b.config.SealDrainTimeout,
+		AuditLogger:      b.config.AuditLogger,
 	}
 	nb, err := NewStorageBarrier(b.logger, b.base, cfg, strategy)
 	if err != nil {
