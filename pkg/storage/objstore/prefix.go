@@ -16,7 +16,10 @@ package objstore
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -62,7 +65,8 @@ func validObjectPrefix(prefix string) error {
 	// Every segment must be a plain name: an empty, "." or ".." segment is
 	// one a path-joining provider resolves away on Get and Put but matches
 	// literally on List, so two spellings would share one namespace.
-	for _, segment := range strings.Split(strings.TrimSuffix(prefix, "/"), "/") {
+	segments := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+	for _, segment := range segments {
 		if segment == "" || segment == "." || segment == ".." {
 			return &ObjectPrefixError{Prefix: prefix}
 		}
@@ -70,7 +74,101 @@ func validObjectPrefix(prefix string) error {
 	if len(prefix) > maxObjectPrefixLen {
 		return &ObjectPrefixError{Prefix: prefix}
 	}
+	return refuseAncestorObjectName(prefix, segments)
+}
+
+// refuseAncestorObjectName refuses a prefix whose namespace directory would
+// take the name of an object a namespace above it owns. Any run of leading
+// segments may be such a namespace, so the rest of the prefix below each one
+// is checked: a segment naming a control file (format marker, journal or
+// owner lock), or a run starting at a "k" or "h" segment that spells a
+// canonical record name. Record names are judged at the widest naming limit,
+// which accepts every name a narrower one does.
+func refuseAncestorObjectName(prefix string, segments []string) error {
+	for i, segment := range segments {
+		switch segment {
+		case formatMarkerName, journalName, ownerLockName:
+			return &NamespaceCollisionError{Prefix: prefix, Name: strings.Join(segments[:i+1], "/")}
+		case strings.TrimSuffix(directPrefix, "/"), strings.TrimSuffix(hashedPrefix, "/"):
+			for j := i + 1; j < len(segments); j++ {
+				if isRecordName(strings.Join(segments[i:j+1], "/"), objcommon.MaxKeyLength) {
+					return &NamespaceCollisionError{Prefix: prefix, Name: strings.Join(segments[:j+1], "/")}
+				}
+			}
+		}
+	}
 	return nil
+}
+
+// NamespaceCollisionError reports an object prefix whose namespace directory
+// would sit where a namespace above it keeps an object: a record (Name ends
+// in a canonical "k/" or "h/" name) or a control file. Opening it would turn
+// that object's path into a directory, so the enclosing engine could no
+// longer read, write or replay it. It is refused before anything is created.
+type NamespaceCollisionError struct {
+	Prefix string
+	Name   string
+}
+
+// Error names the prefix and the enclosing namespace's object it would take.
+func (e *NamespaceCollisionError) Error() string {
+	return `objstore: object prefix "` + e.Prefix + `" would make a directory of "` + e.Name +
+		`", an object name of the namespace enclosing it`
+}
+
+// canonicalPrefix returns the one spelling, relative to a walked provider's
+// physical root, of the directory prefix names beneath it: every symlink
+// along the existing part of the path is resolved, and the part not yet
+// created is kept as written. Two prefixes that reach one directory, of
+// whatever length, therefore get one prefix, and with it one data namespace,
+// one journal and one owner lock. A prefix that resolves outside the root is
+// refused, since its journal and owner lock would have no place in the
+// root's sibling trees.
+func canonicalPrefix(provider, root, prefix string) (string, error) {
+	if prefix == "" {
+		return "", nil
+	}
+	segments := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+	n := len(segments)
+	var resolved string
+	for ; n >= 0; n-- {
+		path := filepath.Join(append([]string{root}, segments[:n]...)...)
+		var err error
+		if resolved, err = filepath.EvalSymlinks(path); err == nil {
+			break
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+	}
+	if n < 0 {
+		return "", &NamespaceOutsideRootError{Provider: provider, Prefix: prefix}
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", &NamespaceOutsideRootError{Provider: provider, Prefix: prefix}
+	}
+	canonical := segments[n:]
+	if rel != "." {
+		canonical = append(strings.Split(filepath.ToSlash(rel), "/"), canonical...)
+	}
+	if len(canonical) == 0 {
+		return "", nil
+	}
+	return strings.Join(canonical, "/") + "/", nil
+}
+
+// NamespaceOutsideRootError reports an object prefix of a walked provider
+// whose directory, once its symlinks are resolved, lies outside the
+// provider's root.
+type NamespaceOutsideRootError struct {
+	Provider string
+	Prefix   string
+}
+
+// Error names the provider and the prefix.
+func (e *NamespaceOutsideRootError) Error() string {
+	return "objstore: object prefix " + strconv.Quote(e.Prefix) + " of provider " + strconv.Quote(e.Provider) +
+		" resolves outside the provider's root"
 }
 
 // maxObjectPrefixLen is the longest prefix that leaves room for every name

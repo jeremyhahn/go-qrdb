@@ -335,6 +335,26 @@ always carry a non-hex letter in their first segment, so none is ever a
 canonical record name, and an engine at `ns/child/` or `ns/k/` keeps every
 object when the one at `ns/` is destroyed.
 
+**A namespace never takes an enclosing namespace's object name.** Any run of
+a prefix's leading segments may itself be a namespace, so a prefix is refused
+(`NamespaceCollisionError`, before anything is created) when the rest of it
+below such a run spells an object that namespace owns: a canonical record
+name starting at a `k` or `h` segment (`ns/k/61_/` would make a directory of
+the record for key `a` under `ns/`), or a segment naming the format marker,
+the journal or the owner lock. Record names are judged at the widest naming
+limit, which accepts every name a narrower one does. A namespace in an
+enclosing one's directories (`ns/k/`, `ns/k/61/`, `ns/child/`) is accepted,
+and the layout of every store is unchanged.
+
+**One identity per `local` namespace.** On `local` the prefix is resolved
+once at open, below the physical root: every symlink along the part of the
+path that exists is resolved and the rest kept as written. The data names,
+the journal and the owner lock all derive from that one canonical prefix, so
+two aliases of one directory (`aa/` and `bb/` both linking to `cc/`, of any
+length) are one namespace with one owner and one journal. A prefix that
+resolves outside the root is refused (`NamespaceOutsideRootError`), and a
+canonical prefix is validated like a written one.
+
 **One owner per namespace, and `Exclusive`.** `storage.Exclusive` promises
 that no other writer, in this process or another, interleaves with `fn`. An
 engine can keep that promise only where one engine owns the namespace, and

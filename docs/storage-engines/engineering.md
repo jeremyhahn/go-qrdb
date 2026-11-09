@@ -331,6 +331,9 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
 | Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
 | Objstore `local` namespace reopened through another root/prefix split of the same directory (its journal is looked for under the other root) | refused at open (`objstore.NamespaceSplitError`); reopen it as created | **yes** |
+| Objstore prefix whose namespace directory would take an enclosing namespace's record, format marker, journal or owner-lock name (`ns/k/61_/` beside `ns/`) | refused at open, before anything is created (`objstore.NamespaceCollisionError`) | **yes** |
+| Objstore `local` prefix that is a symlink alias of another namespace's directory | opened as that one namespace: data, journal and owner lock derive from the symlink-resolved prefix, so a second alias is refused while the first is open (`objstore.NamespaceOwnedError`) and either alias replays its journal | **yes** |
+| Objstore `local` prefix that resolves outside the provider root | refused at open (`objstore.NamespaceOutsideRootError`) | **yes** |
 | Objstore `local` namespace opened while another engine, in any process, has it open | refused at open (`objstore.NamespaceOwnedError`); a `Destroy` retried on a closed engine is refused the same way and deletes nothing | **yes** |
 | `Exclusive` on an objstore engine whose provider cannot exclude a second opener (all but `local` and `memory`) | refused before `fn` runs (`storage.ExclusiveUnsupportedError`); the standalone backend's guarded verbs fall back to `storage.Guarded` (in-process exclusion) | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
@@ -433,7 +436,11 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   (`filelock.File.TryLock`), so it keeps `Exclusive`, as `memory` does; on any
   other provider `Exclusive` returns `storage.ExclusiveUnsupportedError` and
   `Guarded` gives in-process exclusion. A `local` reopen under another
-  root/prefix split is refused (`NamespaceSplitError`). See
+  root/prefix split is refused (`NamespaceSplitError`). A `local` prefix is
+  resolved through its symlinks once at open (`canonicalPrefix`), and data,
+  journal and owner lock all use the result, so aliases are one namespace; a
+  prefix that would make a directory of an enclosing namespace's object is
+  refused by `validObjectPrefix` (`NamespaceCollisionError`). See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.

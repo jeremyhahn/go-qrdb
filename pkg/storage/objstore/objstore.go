@@ -204,6 +204,21 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
+	if dataDir != "" {
+		// One namespace has one identity: the data names, the journal and
+		// the owner lock all derive from the prefix with its symlinks
+		// resolved, so every alias of a directory is the same namespace.
+		canonical, err := canonicalPrefix(provider, dataDir, o.prefix)
+		if err != nil {
+			return nil, err
+		}
+		if canonical != o.prefix {
+			if err := validObjectPrefix(canonical); err != nil {
+				return nil, err
+			}
+			o.prefix = canonical
+		}
+	}
 	if o.prefix != "" {
 		// A store that is also the journal is wrapped once, so the two stay
 		// one store.

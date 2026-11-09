@@ -35,7 +35,12 @@ are not reconstructed here — their history is in the git log.
   is refused (`objstore.NamespaceSplitError`) rather than missing an
   interrupted batch, and a namespace has one owner: a second open, in any
   process, is refused (`objstore.NamespaceOwnedError`) under an OS lock in
-  the sibling `.owner` tree. `storage.Exclusive` is kept on `local` and
+  the sibling `.owner` tree. A `local` prefix is resolved through its
+  symlinks at open, so aliases of one directory share one owner and one
+  journal (one resolving outside the root is refused with
+  `objstore.NamespaceOutsideRootError`), and a prefix whose directory would
+  take an enclosing namespace's record or control-file name is refused with
+  `objstore.NamespaceCollisionError`. `storage.Exclusive` is kept on `local` and
   `memory` only; on every other provider, which go-objstore gives no
   conditional create to claim a namespace with, it is refused with
   `storage.ExclusiveUnsupportedError`, and guarded verbs fall back to the new
