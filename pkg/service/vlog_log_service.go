@@ -215,6 +215,13 @@ func (s *logService) CreateLog(ctx context.Context, req *CreateLogRequest) (*Cre
 	if err != nil {
 		return nil, err
 	}
+	if vlog.IsAuditLog(id) {
+		// The audit name belongs to the audit instance, which only an audit
+		// event creates: no client log is created there, so none is minted
+		// a key or proposed. The apply still accepts a create committed
+		// before this refusal (docs/databases/architecture.md §7).
+		return nil, &vlog.ReservedLogError{ID: id}
+	}
 	desc := vlog.Descriptor{
 		Origin:            req.Origin,
 		Hash:              vlog.HashSHA256,
@@ -317,7 +324,16 @@ func (s *logService) Append(ctx context.Context, req *AppendRequest) (*AppendRes
 	if vlog.IsAuditLog(id) {
 		// Only the replicated audit logger appends to the audit instance,
 		// with its own sub-type: a client's entry is never an audit event.
-		return nil, &vlog.ReservedLogError{ID: id}
+		// A plain log created under the audit name before the instance
+		// existed has no Audit in its descriptor and keeps its own entries;
+		// the apply refuses the instance again from committed state.
+		desc, err := logRead[*vlog.Descriptor](ctx, s.resolver, id.TenantID, vlog.DescriptorRequest{ID: id})
+		if err != nil {
+			return nil, err
+		}
+		if desc.Audit {
+			return nil, &vlog.ReservedLogError{ID: id}
+		}
 	}
 	first, err := s.propose(ctx, id, logFeatures, func() ([]byte, error) {
 		return protocol.EncodeVerifiableLogAppend(id, req.Entries)

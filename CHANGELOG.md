@@ -28,9 +28,10 @@ are not reconstructed here — their history is in the git log.
   their own trusted log op, append to it. Apply reserves the name only once
   the instance exists, so replicas of either version apply a committed log
   the same way, and an audit-instance append is an exclusive MVCC apply, so a
-  concurrent verify never sees a half-published head. A legacy log already
-  named `system/audit` is left as it was; that tenant's trail stays on the
-  linear chain and keeps running. Before the gates, the trail is written
+  concurrent verify never sees a half-published head. A public create of
+  `system/audit` is refused before a key is minted or a command proposed. A
+  legacy log already named `system/audit` is left as it was and stays
+  appendable; that tenant's trail stays on the linear chain and keeps running. Before the gates, the trail is written
   exactly as before.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:

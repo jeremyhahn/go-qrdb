@@ -1336,10 +1336,13 @@ the upgrade moves no data.
   (6), which nothing else proposes and which apply refuses on any log but an
   audit instance (`NotAuditLogError`). The generic `Append` sub-type always
   goes through `AppendEntries`, which refuses the audit instance with
-  `ReservedLogError`, and `LogService.Append` refuses the audit name before
-  proposing, so a public `qrdb vlog append` to `system/audit` fails with
-  `ReservedLogError` (`PERMISSION_DENIED`) on every transport and the trail is
-  never forged.
+  `ReservedLogError`, and `LogService.Append` refuses the audit instance (its
+  descriptor carries `Audit`) before proposing, so a public `qrdb vlog append`
+  to it fails with `ReservedLogError` (`PERMISSION_DENIED`) on every transport
+  and the trail is never forged. A legacy plain log under the audit name (its
+  descriptor has no `Audit`) stays appendable on every transport.
+  `LogService.CreateLog` refuses the audit name with `ReservedLogError` before
+  it mints a key or proposes, so no new client log is ever created there.
   The group keeps proposing `OpAuditAppend` until the separate
   `verifiable-log-audit` gate is on, so a group with members that predate the
   trusted sub-type never applies one they cannot decode.
@@ -1350,7 +1353,9 @@ the upgrade moves no data.
   commands apply exactly as they did before the instance, so a replica that
   predates it and an upgraded one reach the same state from the same log. The
   instance is created only by a trusted audit append, which is proposed only
-  once the gate is on, when every replica is upgraded.
+  once the gate is on, when every replica is upgraded. Apply keeps accepting
+  a historical `Create` of the audit name committed before the instance; only
+  the public create path refuses a new one.
 - **An audit-instance append is an exclusive apply.** It advances the tenant
   chain's in-memory head before its batch publishes, as `OpAuditAppend` does,
   so the MVCC family applies an `OpVerifiableLog` batch holding one (or a body
