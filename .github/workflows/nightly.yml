@@ -116,27 +116,28 @@ jobs:
       # setup step, so the gate below runs the Makefile's pinned version. NO
       # `if:`: the gate is one step, not one per host.
       #
-      # Retried: raw.githubusercontent.com intermittently answers with
-      # transient HTTP errors (curl exit 22), which failed the whole job on a
-      # fetch that succeeds seconds later. Backoff keeps one network blip from
-      # reading as a security-gate failure.
+      # The binary is copied out of the official image pinned by its
+      # multi-arch index digest (TRIVY_IMAGE in scripts/tool-pins.sh), the
+      # same pin the CI toolchain image uses. The GitHub release download and
+      # contrib/install.sh it replaced return 504 for every trivy asset.
       # PINNED to the Makefile's TRIVY_VERSION, matching ci.yml's blocking trivy
-      # job (#479). This used to fetch install.sh from trivy's `main` branch
-      # with no version argument, so it ran whatever trivy was newest that
-      # night: a moving ref in a repository that SHA-pins every action because
-      # refs move (#367), and a nightly verdict that could change with no change
-      # to this tree.
+      # job (#479): the version check below fails the step if the digest and
+      # the version disagree. This used to fetch install.sh from trivy's `main`
+      # branch with no version argument, so it ran whatever trivy was newest
+      # that night: a moving ref in a repository that SHA-pins every action
+      # because refs move (#367), and a nightly verdict that could change with
+      # no change to this tree.
       - name: Install Trivy CLI (pinned)
         run: |
+          . scripts/tool-pins.sh
           v=$(make -s print-trivy-version)
-          for i in 1 2 3 4 5; do
-            curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${v}/contrib/install.sh" \
-              | sh -s -- -b /usr/local/bin "${v}" && exit 0
-            echo "trivy install attempt $i failed; retrying in $((i*10))s"
-            sleep $((i*10))
-          done
-          echo "trivy ${v} install failed after 5 attempts" >&2
-          exit 1
+          id=$(docker create "${TRIVY_IMAGE}")
+          docker cp "${id}:/usr/local/bin/trivy" /usr/local/bin/trivy
+          docker rm "${id}"
+          trivy --version | grep -qx "Version: ${v#v}" || {
+            echo "trivy from ${TRIVY_IMAGE} is not ${v}" >&2
+            exit 1
+          }
 
       # ONE gate, through the Makefile (devops.md §4, #451).
       #
