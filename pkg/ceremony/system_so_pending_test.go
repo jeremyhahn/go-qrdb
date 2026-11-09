@@ -15,6 +15,7 @@
 package ceremony
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/x509"
@@ -31,7 +32,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
+	"github.com/jeremyhahn/go-qrdb/pkg/holderprofile"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // The system SO Initialize issues is recorded in the barrier, so a
@@ -257,9 +261,10 @@ func TestSystemSO_IssueAndPersistRefusals(t *testing.T) {
 	assert.ErrorIs(t, err, seal.ErrSealed)
 }
 
-// tenantLeafPEM is systemLeafPEM for any tenant; an empty tenant leaves
-// the certificate without a SPIFFE identity.
-func tenantLeafPEM(t *testing.T, ca *mockCA, tenant, cn string) []byte {
+// tenantLeafPEM is systemLeafPEM for any tenant, with extraOUs after the
+// tenant's; an empty tenant leaves the certificate without a SPIFFE
+// identity.
+func tenantLeafPEM(t *testing.T, ca *mockCA, tenant, cn string, extraOUs ...string) []byte {
 	t.Helper()
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
@@ -272,7 +277,7 @@ func tenantLeafPEM(t *testing.T, ca *mockCA, tenant, cn string) []byte {
 	if tenant != "" {
 		u, err := spiffe.ID{TrustDomain: tenant, Kind: spiffe.KindUser, Name: cn}.URI()
 		require.NoError(t, err)
-		tmpl.Subject.OrganizationalUnit = []string{tenant}
+		tmpl.Subject.OrganizationalUnit = append([]string{tenant}, extraOUs...)
 		tmpl.URIs = []*url.URL{u}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, newDeviceSigner(t).Public(), ca.key)
@@ -302,6 +307,51 @@ func TestSystemSO_AdoptRefusesANonSystemCertificate(t *testing.T) {
 	}
 }
 
+// A share-holder certificate is a custody identity, never a login: RBAC
+// refuses it every permission, so adopting one as the SO's login would
+// enrol an SO that can do nothing. Both holder profiles are refused before
+// anything is provisioned, and no SO record is left for first boot.
+func TestInitialize_SystemSO_HolderCertificateRefused(t *testing.T) {
+	for _, profile := range []string{holderprofile.SecurityOfficer, holderprofile.Custodian} {
+		t.Run(profile, func(t *testing.T) {
+			ctx := context.Background()
+			ca := newMockCA(t)
+			poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+			holderPEM := tenantLeafPEM(t, ca, tenantid.System, "secofficer", profile)
+
+			cert, err := adoptSystemSOCert(&InitializeOptions{
+				SOUsername:       "secofficer",
+				SOCertPEM:        holderPEM,
+				AdminCertPoolPEM: poolPEM,
+			}, nil, testTrustDomain)
+			var holder *SystemSOHolderCertError
+			require.ErrorAs(t, err, &holder)
+			assert.Equal(t, profile, holder.Profile)
+			var rejected *SystemSORejectedError
+			require.ErrorAs(t, err, &rejected)
+			assert.Nil(t, cert)
+
+			adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+			barrier := testBarrier(t)
+			svc := newTestCeremonyService(t, defaultConfig(), barrier)
+			_, err = svc.Initialize(ctx, ca, &InitializeOptions{
+				SOPin:            "test-so-pin",
+				UserPin:          "test-user-pin",
+				AdminCSRPEM:      adminCSR,
+				AdminCertPoolPEM: poolPEM,
+				SOUsername:       "secofficer",
+				SOCertPEM:        holderPEM,
+			})
+			require.ErrorAs(t, err, &holder)
+			assert.Equal(t, StateAwaitingInit, svc.State())
+			assert.Nil(t, svc.LastIssuedSystemSO())
+			initialized, err := barrier.Initialized(ctx)
+			require.NoError(t, err)
+			assert.False(t, initialized, "a refused SO certificate commits nothing")
+		})
+	}
+}
+
 // An SO named without a PIN is refused in preflight, and a certificate
 // that is not PEM parses to nothing.
 func TestSystemSO_PINlessSOAndNonPEMCertificate(t *testing.T) {
@@ -315,4 +365,74 @@ func TestSystemSO_PINlessSOAndNonPEMCertificate(t *testing.T) {
 	assert.Contains(t, err.Error(), "SOPin")
 
 	assert.Nil(t, parsePEMCert([]byte("not a certificate")))
+}
+
+// failSOSignCA faults signing one CSR, the SO's, and signs every other.
+type failSOSignCA struct {
+	CeremonyCA
+	soCSR []byte
+}
+
+func (c *failSOSignCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+	if bytes.Equal(csrPEM, c.soCSR) {
+		return nil, errors.New("simulated SO signing fault")
+	}
+	return c.CeremonyCA.SignCSR(ctx, csrPEM, opts)
+}
+
+// A single-admin ceremony whose SO signing faults must not leave the
+// system barrier initialized without the SO record: the node restarts into
+// the sealed window again, and a retry completes the ceremony with the SO
+// recorded for first boot.
+func TestInitialize_SystemSO_SigningFaultIsRetriableAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	pins := pintest.NewBackend(t)
+	start := func() (*CeremonyService, *seal.StorageBarrier) {
+		barrier, err := seal.NewStorageBarrier(testLogger(), backend, seal.BarrierConfig{RootKeyPath: "test/root-key"}, seal.NewNoneStrategy())
+		require.NoError(t, err)
+		svc, err := NewCeremonyService(defaultConfig(), barrier, testLogger())
+		require.NoError(t, err)
+		svc.SetPINBackend(pins)
+		svc.SetTrustDomain(testTrustDomain)
+		return svc, barrier
+	}
+	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+	soCSR, _ := generateCSRPEM(t, "ignored-too")
+	opts := func() *InitializeOptions {
+		return &InitializeOptions{
+			SOPin:       "test-so-pin",
+			UserPin:     "test-user-pin",
+			AdminCSRPEM: adminCSR,
+			SOUsername:  "secofficer",
+			SOCSRPEM:    soCSR,
+		}
+	}
+	ca := newMockCA(t)
+
+	svc, failed := start()
+	_, err := svc.Initialize(ctx, &failSOSignCA{CeremonyCA: ca, soCSR: soCSR}, opts())
+	require.ErrorContains(t, err, "simulated SO signing fault")
+	assert.Equal(t, StateAwaitingInit, svc.State(), "a failed SO issuance leaves the ceremony open")
+	// The composer serves the initialization listener, rather than auto-
+	// unsealing into first boot, only while the barrier is uninitialized.
+	assert.True(t, failed.IsSealed(), "the barrier is not unsealed for a ceremony that failed")
+	initialized, err := failed.Initialized(ctx)
+	require.NoError(t, err)
+	assert.False(t, initialized, "the barrier is not initialized for a ceremony that failed")
+
+	restarted, barrier := start()
+	initialized, err = barrier.Initialized(ctx)
+	require.NoError(t, err)
+	assert.False(t, initialized, "the restarted node finds no initialized barrier and serves the initialization window again")
+	assert.Equal(t, StateAwaitingInit, restarted.State())
+	result, err := restarted.Initialize(ctx, ca, opts())
+	require.NoError(t, err, "the retried ceremony completes")
+	assert.Equal(t, StateOperational, result.State)
+	assert.NotEmpty(t, result.SOCertPEM)
+	assert.False(t, barrier.IsSealed())
+	pending, err := restarted.PendingSystemSO(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pending, "first boot is handed the SO")
+	assert.Equal(t, "secofficer", pending.Username)
 }

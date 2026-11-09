@@ -223,7 +223,7 @@ func registerInitFlags(cmd *cobra.Command, f *initFlags) {
 	cmd.Flags().StringVar(&f.adminCert, "admin-cert", "",
 		"Path to a PEM-encoded certificate the admin already holds (bring-your-own-certificate path; nothing is issued). Mutually exclusive with --admin-csr. Requires --admin-cert-pool unless the certificate was issued by this deployment's own CA.")
 	cmd.Flags().StringVar(&f.adminCertPool, "admin-cert-pool", "",
-		"Path to a PEM-encoded trust anchor bundle --admin-cert must chain to. Only used with --admin-cert.")
+		"Path to a PEM-encoded trust anchor bundle --admin-cert and --so-cert must chain to. Only used with --admin-cert or --so-cert.")
 	cmd.Flags().BoolVar(&f.adminGenerate, "admin-generate", false,
 		"Generate the bootstrap admin's key pair and certificate in-process, returning the private key exactly once. Mutually exclusive with --admin-csr/--admin-cert. NOT suitable for production (dev/test/evaluation ONLY). Exactly one of --admin-csr, --admin-cert or --admin-generate is required.")
 	cmd.Flags().StringVar(&f.soUsername, "so-username", "",
@@ -323,8 +323,10 @@ func resolveAndValidateInitFlags(cmd *cobra.Command, f *initFlags, envPrefix str
 			Reason: "required: there is no credential-less default admin credential path; pass --admin-generate for the dev/test/evaluation ONLY path",
 		}
 	}
-	if f.adminCertPool != "" && f.adminCert == "" {
-		return &InvalidArgError{Arg: "--admin-cert-pool", Reason: "only valid with --admin-cert"}
+	// The pool is what a presented certificate is verified against: the
+	// admin's (--admin-cert), the SO's (--so-cert), or both.
+	if f.adminCertPool != "" && f.adminCert == "" && f.soCert == "" {
+		return &InvalidArgError{Arg: "--admin-cert-pool", Reason: "only valid with --admin-cert or --so-cert"}
 	}
 	if err := validateSOFlags(f); err != nil {
 		return err
@@ -467,13 +469,6 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 			return &FileReadError{Path: f.adminCert, Err: rerr}
 		}
 		req.AdminCertPEM = string(pem)
-		if f.adminCertPool != "" {
-			poolPEM, perr := os.ReadFile(f.adminCertPool)
-			if perr != nil {
-				return &FileReadError{Path: f.adminCertPool, Err: perr}
-			}
-			req.AdminCertPoolPEM = string(poolPEM)
-		}
 	case f.adminGenerate:
 		req.AdminGenerate = true
 		// This warning is operator-facing prose, not part of the command's
@@ -486,6 +481,15 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 			"the bootstrap admin's key pair and return the private key below, exactly once. This path is for "+
 			"dev/test/evaluation ONLY and does NOT meet FedRAMP, HIPAA or PCI DSS: use --admin-csr (a hardware- or "+
 			"software-generated key you keep) or --admin-cert (a certificate you already hold) for production.")
+	}
+	// Read whatever the admin is credentialed with: --so-cert is verified
+	// against the same pool, and may be the only certificate presented.
+	if f.adminCertPool != "" {
+		poolPEM, perr := os.ReadFile(f.adminCertPool)
+		if perr != nil {
+			return &FileReadError{Path: f.adminCertPool, Err: perr}
+		}
+		req.AdminCertPoolPEM = string(poolPEM)
 	}
 	if err := readSOFlags(f, req); err != nil {
 		return err

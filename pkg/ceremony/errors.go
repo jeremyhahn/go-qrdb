@@ -604,6 +604,20 @@ func (e *SystemSORejectedError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *SystemSORejectedError) Unwrap() error { return e.Cause }
 
+// SystemSOHolderCertError is the cause of a *SystemSORejectedError for a
+// presented SO certificate that carries a share-holder profile OU. A holder
+// certificate is a custody identity: it is never resolved to an account
+// and RBAC grants it nothing, so it cannot be the SO's login. Profile names
+// the OU found.
+type SystemSOHolderCertError struct {
+	Profile string
+}
+
+// Error implements the error interface.
+func (e *SystemSOHolderCertError) Error() string {
+	return "the certificate carries the " + e.Profile + " holder profile and is a custody identity, not a login certificate"
+}
+
 // SystemSOPersistError wraps a failure recording, reading or removing the
 // system SO Initialize issued in the system barrier (go-qrdb#1128). Op names
 // the step: "encode", "write", "read", "decode" or "remove".
