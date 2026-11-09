@@ -379,6 +379,58 @@ func TestSessionManagerBufferingDeadlineNotExtended(t *testing.T) {
 	})
 }
 
+// An established session whose application never accepts keeps at most
+// Config.MaxIncomingUniStreams streams pending, also when the peer sent no
+// flow-control SETTINGS: a peer that keeps opening a stream, writing the
+// header and FINning it gets every stream past the limit refused, and the
+// session stays up.
+func TestSessionPendingUniStreamsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientPacketConn, serverPacketConn, closeFn := newSimnetLink(t, 10*time.Millisecond)
+		defer closeFn(t)
+		clientConn, serverConn := newConnPair(t, clientPacketConn, serverPacketConn)
+		t.Cleanup(func() {
+			clientConn.CloseWithError(0, "")
+			serverConn.CloseWithError(0, "")
+		})
+
+		const limit = 8
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		connectStr, err := serverConn.OpenStreamSync(ctx)
+		require.NoError(t, err)
+		fc := Config{MaxIncomingUniStreams: limit}.sessionFlowControl(nil)
+		sess := newSession(context.Background(), 4, serverConn, quicHTTP3Stream{connectStr}, "", fc)
+		defer sess.CloseWithError(0, "")
+
+		header := quicvarint.Append(quicvarint.Append(nil, webTransportUniStreamType), 4)
+		for range limit + 4 {
+			str, err := clientConn.OpenUniStreamSync(ctx)
+			require.NoError(t, err)
+			_, err = str.Write(header)
+			require.NoError(t, err)
+			require.NoError(t, str.Close())
+
+			serverStr, err := serverConn.AcceptUniStream(ctx)
+			require.NoError(t, err)
+			_, err = io.ReadFull(serverStr, make([]byte, len(header)))
+			require.NoError(t, err)
+			sess.addIncomingUniStream(serverStr, uint64(len(header)))
+		}
+
+		streams := sess.incomingUniStreams
+		streams.acceptQueue.mx.Lock()
+		pending := len(streams.acceptQueue.queue)
+		streams.acceptQueue.mx.Unlock()
+		streams.mx.Lock()
+		tracked := len(streams.m)
+		streams.mx.Unlock()
+		require.Equal(t, limit, pending)
+		require.Equal(t, limit, tracked)
+		require.NoError(t, context.Cause(sess.Context()))
+	})
+}
+
 func TestSessionManagerSessionClose(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const rtt = 10 * time.Millisecond

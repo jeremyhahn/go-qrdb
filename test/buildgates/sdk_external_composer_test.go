@@ -185,19 +185,27 @@ func TestSDK_ExternalComposerReachesEverySeam(t *testing.T) {
 }
 
 // TestSDK_ComposerModuleResolvesEveryDirectoryReplace holds the composer
-// module to sdk/go's directory replaces: each must still name a module
-// directory once go.mod is copied out of sdk/go, or the gate fails reading it
-// before a test runs.
+// module to the replaces an embedder writes itself, sdk/go and go-qrdb at
+// this tree, so the gate builds what an embedder builds and does not inject
+// a replace sdk/go would carry (#1244).
 func TestSDK_ComposerModuleResolvesEveryDirectoryReplace(t *testing.T) {
+	root := repoRoot(t)
 	dir := t.TempDir()
-	writeComposerModule(t, repoRoot(t), dir)
+	writeComposerModule(t, root, dir)
 	replaces := fileReplaces(t, dir)
-	if len(replaces) < 2 {
-		t.Fatalf("the composer module has %d directory replaces, want at least sdk/go and go-qrdb", len(replaces))
+	// An embedder has only its own replaces: those of sdk/go and go-qrdb,
+	// pointing at this checkout. Anything else would build the composer
+	// against code an embedder does not get.
+	want := map[string]string{
+		sdkModulePrefix: filepath.Join(root, "sdk", "go"),
+		localModule:     root,
+	}
+	if len(replaces) != len(want) {
+		t.Errorf("the composer module has %d directory replaces, want only sdk/go and go-qrdb: %+v", len(replaces), replaces)
 	}
 	for _, r := range replaces {
-		if !filepath.IsAbs(r.New.Path) {
-			t.Errorf("replace %s => %s is relative to a go.mod that moved", r.Old.Path, r.New.Path)
+		if dst, ok := want[r.Old.Path]; !ok || r.New.Path != dst {
+			t.Errorf("replace %s => %s, want only %s => %s and %s => %s", r.Old.Path, r.New.Path, sdkModulePrefix, want[sdkModulePrefix], localModule, root)
 			continue
 		}
 		if _, err := os.Stat(filepath.Join(r.New.Path, "go.mod")); err != nil {

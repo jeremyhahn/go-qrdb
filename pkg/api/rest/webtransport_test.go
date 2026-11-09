@@ -623,6 +623,22 @@ func TestWebTransport_PreSessionStreamFloodIsBounded(t *testing.T) {
 	})
 }
 
+// TestWebTransport_SessionStreamLimitsConfigured holds the REST integration
+// to a WebTransport Config with incoming stream and data limits: they are
+// advertised as SETTINGS_WT_INITIAL_MAX_* (draft-ietf-webtrans-http3-16
+// section 5) and bound each session's streams waiting to be accepted, also
+// when the peer does not enable flow control.
+func TestWebTransport_SessionStreamLimitsConfigured(t *testing.T) {
+	wt := newWebTransportServer(&http3.Server{})
+	cfg := wt.wt.Config
+	if cfg == nil {
+		t.Fatal("webtransport.Server.Config is nil; sessions take streams without limit")
+	}
+	if cfg.MaxIncomingStreams <= 0 || cfg.MaxIncomingUniStreams <= 0 || cfg.MaxIncomingData <= 0 {
+		t.Fatalf("Config = %+v; want positive MaxIncomingStreams, MaxIncomingUniStreams and MaxIncomingData", *cfg)
+	}
+}
+
 // TestNewWebTransportServer_ChainsConnContext pins that the connection is
 // added on top of the ConnContext the server already had, which still runs.
 func TestNewWebTransportServer_ChainsConnContext(t *testing.T) {
