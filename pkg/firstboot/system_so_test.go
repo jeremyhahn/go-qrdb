@@ -31,7 +31,10 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -161,6 +164,19 @@ func (p *soPINs) SetSOPIN(_ context.Context, tenantID string, pin []byte) error 
 		return auth.ErrSOPINAlreadySet
 	}
 	p.pins[tenantID] = string(pin)
+	return nil
+}
+
+// VerifySOPIN answers as auth.SOAuthenticator does: nil only for the
+// committed PIN.
+func (p *soPINs) VerifySOPIN(_ context.Context, tenantID string, pin []byte) error {
+	committed, ok := p.pins[tenantID]
+	switch {
+	case !ok:
+		return auth.ErrSOPINNotSet
+	case committed != string(pin):
+		return auth.ErrSOPINInvalid
+	}
 	return nil
 }
 
@@ -413,6 +429,201 @@ func TestInitialize_SystemSOPINCommitFailureOnFreshSO(t *testing.T) {
 	var e *SystemSOEnrollmentError
 	if !errors.As(err, &e) || e.Op != "PIN commit" || !errors.Is(err, auth.ErrSOPINAlreadySet) {
 		t.Fatalf("Initialize = %v, want a PIN commit failure", err)
+	}
+	// The retry finds the SO the first attempt created: the PIN set on
+	// it is still someone else's, and the enrolment still fails, so the
+	// caller never consumes the pending record.
+	_, err = Initialize(context.Background(), h.deps)
+	if !errors.As(err, &e) || e.Op != "PIN commit" || !errors.Is(err, auth.ErrSOPINAlreadySet) {
+		t.Fatalf("retried Initialize = %v, want the PIN commit failure again", err)
+	}
+	if got := h.pins.pins[tenantid.System]; got != "someone else's" {
+		t.Fatalf("committed PIN = %q, want the conflicting PIN untouched", got)
+	}
+}
+
+func TestInitialize_SystemSOPINRetryWithItsOwnPINSucceeds(t *testing.T) {
+	h := newSOHarness(t, true)
+	if _, err := Initialize(context.Background(), h.deps); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// A retry whose PIN is already committed, by the earlier attempt,
+	// proves the PIN is its own and succeeds.
+	if _, err := Initialize(context.Background(), h.deps); err != nil {
+		t.Fatalf("retried Initialize = %v, want nil", err)
+	}
+}
+
+func TestEnrollSystemSO_PINAlreadySetNeedsAVerifier(t *testing.T) {
+	h := newSOHarness(t, true)
+	if _, err := Initialize(context.Background(), h.deps); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// An SOPINs that cannot verify the committed PIN proves nothing.
+	h.deps.SOPINs = setOnlyPINs{h.pins}
+	_, err := Initialize(context.Background(), h.deps)
+	var missing *MissingSOSeamError
+	if !errors.As(err, &missing) {
+		t.Fatalf("retried Initialize = %v, want MissingSOSeamError", err)
+	}
+}
+
+// setOnlyPINs commits a PIN and cannot verify one.
+type setOnlyPINs struct{ p *soPINs }
+
+func (s setOnlyPINs) SetSOPIN(ctx context.Context, tenantID string, pin []byte) error {
+	return s.p.SetSOPIN(ctx, tenantID, pin)
+}
+
+// recordPINs commits and compares hashed PIN records.
+type recordPINs struct{ records map[string]string }
+
+func (r *recordPINs) SetSOPIN(context.Context, string, []byte) error {
+	return errors.New("recordPINs commits records only")
+}
+
+func (r *recordPINs) CommitSOPINRecord(_ context.Context, tenantID, record string) error {
+	if _, ok := r.records[tenantID]; ok {
+		return auth.ErrSOPINAlreadySet
+	}
+	r.records[tenantID] = record
+	return nil
+}
+
+func (r *recordPINs) SOPINRecordMatches(_ context.Context, tenantID, record string) (bool, error) {
+	committed, ok := r.records[tenantID]
+	return ok && committed == record, nil
+}
+
+func TestInitialize_SystemSOPINRecordRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		committed string
+		wantErr   bool
+	}{
+		{name: "conflicting record", committed: "someone else's", wantErr: true},
+		{name: "own record", committed: "", wantErr: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newSOHarness(t, true)
+			pins := &recordPINs{records: map[string]string{}}
+			h.deps.SOPINs = pins
+			h.deps.SO = &SOConfig{Username: "officer", CSRPEM: testCSR(t), PINRecord: "officer's record"}
+			if tc.committed != "" {
+				pins.records[tenantid.System] = tc.committed
+				if _, err := Initialize(context.Background(), h.deps); err == nil {
+					t.Fatal("Initialize = nil, want a PIN commit failure")
+				}
+			} else if _, err := Initialize(context.Background(), h.deps); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			_, err := Initialize(context.Background(), h.deps)
+			var e *SystemSOEnrollmentError
+			switch {
+			case tc.wantErr && (!errors.As(err, &e) || e.Op != "PIN commit"):
+				t.Fatalf("retried Initialize = %v, want a PIN commit failure", err)
+			case !tc.wantErr && err != nil:
+				t.Fatalf("retried Initialize = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// externalSOCert issues name a system-tenant login certificate from a new
+// root of its own, returning the leaf and the root, both PEM.
+func externalSOCert(t *testing.T, name, rootCN string) (certPEM, rootPEM []byte) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caTmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(200),
+		Subject:               pkix.Name{CommonName: rootCN},
+		NotBefore:             time.Now().Add(-2 * time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject, uris := presentedIdentityOf(t, name, tenantid.System, tenantid.System, presentedTrustDomain)
+	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(201),
+		Subject:      subject,
+		URIs:         uris,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}, caCert, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+}
+
+// An SO certificate the ceremony adopted against AdminCertPoolPEM, from an
+// issuer other than the ceremony CA, is bound by first boot on the
+// handed-off record: the record carries the pool that validated it. A
+// certificate from an issuer in neither pool is still refused.
+func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.T) {
+	ctx := context.Background()
+	soCert, soRoot := externalSOCert(t, "secofficer", "SO Org Root")
+	core := testCeremonyCore(t)
+	ca, caBundle := ceremonytest.NewCA(t, "test-ca")
+	core.SetPINBackend(pintest.NewBackend(t))
+	_, err := core.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		AdminCSRPEM: testCSR(t), AdminCertPoolPEM: soRoot,
+		SOUsername: "secofficer", SOCertPEM: soCert,
+	})
+	if err != nil {
+		t.Fatalf("ceremony Initialize: %v", err)
+	}
+	store := newMemPendingAdminCertStore()
+	if err := WriteIssuedSystemSOIfAny(ctx, core, store, nil); err != nil {
+		t.Fatalf("WriteIssuedSystemSOIfAny: %v", err)
+	}
+	so, err := PendingSystemSO(ctx, store)
+	if err != nil || so == nil {
+		t.Fatalf("PendingSystemSO = %v, %v", so, err)
+	}
+
+	enrol := func(so *SOConfig) (*Result, error) {
+		h := newSOHarness(t, true)
+		h.deps.SO = so
+		h.deps.SOPINs = &recordPINs{records: map[string]string{}}
+		// First boot's own pool is the ceremony CA's alone.
+		h.deps.AdminCertPool = AdminCertPoolFromCABundle(caBundle)
+		h.deps.TrustDomain = presentedTrustDomain
+		return Initialize(ctx, h.deps)
+	}
+	result, err := enrol(so)
+	if err != nil {
+		t.Fatalf("first boot: %v", err)
+	}
+	if want, _ := spkiThumbprintFromCertPEM(soCert); result.SOCertThumbprint != want {
+		t.Fatalf("bound %q, want the adopted certificate %q", result.SOCertThumbprint, want)
+	}
+
+	stranger, _ := externalSOCert(t, "secofficer", "Stranger Root")
+	forged := *so
+	forged.CertPEM = stranger
+	forged.ChainPEM = nil
+	var e *SystemSOEnrollmentError
+	if _, err := enrol(&forged); !errors.As(err, &e) || e.Op != "certificate" {
+		t.Fatalf("first boot with a stranger's certificate = %v, want a certificate failure", err)
 	}
 }
 

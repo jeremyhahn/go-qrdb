@@ -90,3 +90,33 @@ func TestCommitSOPINRecord_RefusesMalformedRecords(t *testing.T) {
 		t.Fatalf("HashSOPIN(nil) = %v", err)
 	}
 }
+
+func TestSOPINRecordMatches_ComparesTheCommittedRecord(t *testing.T) {
+	ctx := context.Background()
+	record, err := auth.HashSOPIN([]byte("so-pin-1357"))
+	if err != nil {
+		t.Fatalf("HashSOPIN: %v", err)
+	}
+	other, err := auth.HashSOPIN([]byte("so-pin-1357"))
+	if err != nil {
+		t.Fatalf("HashSOPIN: %v", err)
+	}
+	a := newRecordSOAuth(t)
+	if ok, err := a.SOPINRecordMatches(ctx, "system", record); err != nil || ok {
+		t.Fatalf("SOPINRecordMatches(nothing committed) = %v, %v; want false", ok, err)
+	}
+	if err := a.CommitSOPINRecord(ctx, "system", record); err != nil {
+		t.Fatalf("CommitSOPINRecord: %v", err)
+	}
+	if ok, err := a.SOPINRecordMatches(ctx, "system", record); err != nil || !ok {
+		t.Fatalf("SOPINRecordMatches(committed record) = %v, %v; want true", ok, err)
+	}
+	// The same PIN under a fresh salt is a different record: only the
+	// record this enrolment committed matches.
+	if ok, err := a.SOPINRecordMatches(ctx, "system", other); err != nil || ok {
+		t.Fatalf("SOPINRecordMatches(another record) = %v, %v; want false", ok, err)
+	}
+	if _, err := a.SOPINRecordMatches(ctx, "", record); !errors.Is(err, auth.ErrSOPINEmptyTenant) {
+		t.Fatalf("SOPINRecordMatches(empty tenant) = %v, want ErrSOPINEmptyTenant", err)
+	}
+}

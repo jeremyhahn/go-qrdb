@@ -803,6 +803,60 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 	require.NoError(t, err)
 }
 
+// A cluster first booted in standard mode, with no system SO, and
+// restarted after auth.separation_of_duties is enabled must not take the
+// bound-admin fast path: Phase 3 refuses a strict boot with no enrolled
+// SO. Once the SO is enrolled, a strict restart fast-paths again.
+func TestRunFirstBoot_StrictRestartRequiresAnEnrolledSO(t *testing.T) {
+	certPEM, _ := selfSignedAdminCertPEM(t)
+
+	var admin *user.User
+	lookups := 0
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			lookups++
+			if admin == nil {
+				return nil, &user.UserNotFoundError{}
+			}
+			return admin, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			admin = &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, System: true, Lifecycle: user.LifecycleActive}
+			return admin, nil
+		},
+		addCertBindingFn: func(_ context.Context, userID uint64, thumbprint string, _ int64) (*user.User, error) {
+			admin.CertBindings = append(admin.CertBindings, user.CertBinding{
+				Thumbprint: thumbprint, NotAfter: time.Now().Add(365 * 24 * time.Hour),
+			})
+			return admin, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{}
+	pendingStore := newMockKVStore(make(map[string][]byte))
+	ctx := context.Background()
+	require.NoError(t, firstboot.WritePendingAdminCert(ctx, pendingStore, certPEM))
+
+	// Boot 1, standard mode: the admin is created and bound; no SO.
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil))
+	require.NotEmpty(t, admin.CertBindings)
+	require.NoError(t, firstboot.ClearPendingAdminCert(ctx, pendingStore))
+
+	// Boot 2, strict: the bound admin alone does not satisfy strict mode.
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil)
+	var required *firstboot.SystemSORequiredError
+	require.ErrorAs(t, err, &required)
+
+	// The SO is enrolled: an earlier first boot consumed its pending record.
+	require.NoError(t, pendingStore.Put(ctx, firstboot.PendingSystemSOKey, []byte(`{"username":"officer"}`)))
+	require.NoError(t, firstboot.ClearPendingSystemSO(ctx, pendingStore))
+
+	// Boot 3, strict: the fast path, one admin lookup and nothing else.
+	lookups = 0
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil))
+	require.Equal(t, 1, lookups)
+}
+
 // TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted
 // OU=system certificate carrying no SPIFFE ID SAN, a credential the mTLS
 // authenticator's tenant rule refuses at every login. First boot must refuse
