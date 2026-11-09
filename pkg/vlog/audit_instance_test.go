@@ -126,20 +126,73 @@ func TestAuditLogID(t *testing.T) {
 }
 
 func TestAuditInstance_ReservedOnTheNamedLogPaths(t *testing.T) {
+	// A mixed-version replay: the named-log Create, Append and ExpireBodies
+	// on the audit name apply as they did before the instance until an
+	// audit append creates it, and are refused with ReservedLogError after,
+	// so the reservation follows committed state, not the binary.
+	legacyID, beta := auditID, AuditLogID("beta")
+	replay := func(c *Chain, w Writer) []string {
+		var out []string
+		record := func(n any, err error) {
+			out = append(out, fmt.Sprintf("%d %T %v", n, err, err))
+		}
+		// Before any audit event: the pre-instance results.
+		record(c.AppendEntries(w, legacyID, [][]byte{[]byte("x")}))
+		record(c.ExpireBodies(w, legacyID, 1))
+		record(0, c.Create(w, legacyID, testDescriptor(true)))
+		record(c.AppendEntries(w, legacyID, [][]byte{[]byte("x"), []byte("y")}))
+		record(c.ExpireBodies(w, legacyID, 1))
+		record(c.AppendEntries(w, beta, [][]byte{[]byte("x")}))
+		record(c.ExpireBodies(w, beta, 1))
+		// The instance's first event, then the named-log paths on it.
+		record(c.AppendAudit(w, "beta", linked(0)))
+		record(0, c.Create(w, beta, testDescriptor(true)))
+		record(c.AppendEntries(w, beta, [][]byte{[]byte("x")}))
+		record(c.ExpireBodies(w, beta, 1))
+		return out
+	}
+
 	stg := memory.NewStorage()
-	c := NewChain()
+	got := replay(NewChain(), stg)
+	var lnf *LogNotFoundError
 	var re *ReservedLogError
-	if err := c.Create(stg, auditID, AuditDescriptor(auditTenant, 0)); !errors.As(err, &re) {
-		t.Fatalf("Create(audit) = %v, want *ReservedLogError", err)
+	for i, want := range []any{&lnf, &lnf, nil, nil, nil, &lnf, &lnf, nil, &re, &re, &re} {
+		if want == nil {
+			if !strings.HasSuffix(got[i], "<nil>") {
+				t.Errorf("command %d = %s, want success", i, got[i])
+			}
+			continue
+		}
+		if !strings.Contains(got[i], fmt.Sprintf("%T", reflect.ValueOf(want).Elem().Interface())) {
+			t.Errorf("command %d = %s, want %T", i, got[i], reflect.ValueOf(want).Elem().Interface())
+		}
 	}
-	appendInstance(t, c, stg, 0, 1)
-	if _, err := c.AppendEntries(stg, auditID, [][]byte{[]byte("x")}); !errors.As(err, &re) {
-		t.Fatalf("AppendEntries(audit) = %v, want *ReservedLogError", err)
+	if got[3] != "0 <nil> <nil>" || got[4] != "1 <nil> <nil>" {
+		t.Errorf("the legacy log's append and expiry = %q, %q, want first 0 and 1 expired", got[3], got[4])
 	}
+
+	// Every replica that replays the same commands reaches the same state.
+	again := memory.NewStorage()
+	if replayed := replay(NewChain(), again); !reflect.DeepEqual(replayed, got) {
+		t.Errorf("replayed results = %q, want %q", replayed, got)
+	}
+	if !reflect.DeepEqual(tableSnapshot(t, again, ""), tableSnapshot(t, stg, "")) {
+		t.Error("replaying the same commands on a fresh chain reached a different state")
+	}
+
+	// A chain restored from the committed state reserves the instance too.
+	restored := NewChain()
+	if err := restored.Restore(stg); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := restored.AppendEntries(stg, beta, [][]byte{[]byte("x")}); !errors.As(err, &re) {
+		t.Fatalf("AppendEntries on the restored instance = %v, want *ReservedLogError", err)
+	}
+
 	desc := testDescriptor(false)
 	desc.TreeStart = 3
 	var ide *InvalidDescriptorError
-	if err := c.Create(stg, testLog, desc); !errors.As(err, &ide) {
+	if err := NewChain().Create(stg, testLog, desc); !errors.As(err, &ide) {
 		t.Fatalf("Create with tree_start = %v, want *InvalidDescriptorError", err)
 	}
 	if re.Error() == "" {
@@ -222,7 +275,7 @@ func TestAuditInstance_SwitchStartsTheTreeAtS0(t *testing.T) {
 // the audit name before the instance existed (an alpha Create allowed it) is
 // neither reinterpreted nor corrupted: its descriptor has no "audit" field,
 // so its entries read back from its own prefix, the instance cannot be
-// created over it (AuditNameTakenError, with the linear chain unchanged),
+// created over it (an instance append extends the linear chain instead),
 // and OpAuditAppend and Prune extend and prune the linear chain alone.
 func TestAuditInstance_LegacyLogUnderTheAuditName(t *testing.T) {
 	stg := memory.NewStorage()
@@ -262,26 +315,32 @@ func TestAuditInstance_LegacyLogUnderTheAuditName(t *testing.T) {
 	}
 	readOwn()
 
-	_, err := c.AppendAudit(stg, auditTenant, linked(2))
-	var taken *AuditNameTakenError
-	if !errors.As(err, &taken) || taken.ID != auditID {
-		t.Fatalf("AppendAudit over the legacy log = %v, want AuditNameTakenError", err)
+	// An instance append over the legacy log extends the linear chain, as
+	// OpAuditAppend does, and creates no instance: the tenant's trail keeps
+	// running and the legacy log is never reinterpreted.
+	seq, err := c.AppendAudit(stg, auditTenant, linked(2))
+	if err != nil || seq != headBefore.seq+1 {
+		t.Fatalf("AppendAudit over the legacy log = %d, %v; want sequence %d", seq, err, headBefore.seq+1)
 	}
-	if c.heads[auditTenant] != headBefore || !reflect.DeepEqual(tableSnapshot(t, stg, TablePrefix), linearBefore) {
-		t.Fatal("a refused instance append changed the linear chain")
+	if reflect.DeepEqual(tableSnapshot(t, stg, TablePrefix), linearBefore) {
+		t.Fatal("the instance append over the legacy log did not extend the linear chain")
+	}
+	if st := c.logs[auditID]; st.audit {
+		t.Fatal("an instance was created over the legacy log")
 	}
 	if !reflect.DeepEqual(tableSnapshot(t, stg, LogTablePrefix), logsBefore) {
-		t.Fatal("a refused instance append changed the legacy log")
+		t.Fatal("the instance append changed the legacy log")
 	}
+	readOwn()
 
 	// OpAuditAppend and Prune keep the pre-instance behaviour: the linear
 	// chain moves, the legacy log does not.
-	appendLinear(t, c, stg, 2, 4)
+	appendLinear(t, c, stg, 3, 5)
 	if _, err := c.Prune(stg, auditTenant, 3); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	if seq, lo, _ := c.Head(auditTenant); seq != 4 || lo != 3 {
-		t.Fatalf("linear head = seq %d lo %d, want 4 and 3", seq, lo)
+	if seq, lo, _ := c.Head(auditTenant); seq != 5 || lo != 3 {
+		t.Fatalf("linear head = seq %d lo %d, want 5 and 3", seq, lo)
 	}
 	if !reflect.DeepEqual(tableSnapshot(t, stg, LogTablePrefix), logsBefore) {
 		t.Fatal("OpAuditAppend or Prune changed the legacy log")
@@ -331,7 +390,7 @@ func verifyAuditProofs(t *testing.T, r storage.Reader, n uint64, ref *testonly.T
 	}
 }
 
-func TestAuditInstance_PruneIsExpireBodies(t *testing.T) {
+func TestAuditInstance_PruneExpiresLeafBodies(t *testing.T) {
 	stg := memory.NewStorage()
 	c := NewChain()
 	appendLinear(t, c, stg, 0, 5)    // seq 1..5
@@ -361,18 +420,22 @@ func TestAuditInstance_PruneIsExpireBodies(t *testing.T) {
 		t.Fatalf("Get across the cutoff = %v, %v", got, err)
 	}
 
-	// ExpireBodies on the instance is in leaf space: below leaf 5 is below
-	// sequence S₀+5 = 11.
-	if n, err := c.ExpireBodies(stg, auditID, 5); err != nil || n != 2 {
-		t.Fatalf("ExpireBodies(5) = %d, %v, want 2", n, err)
+	// The instance's retention is Prune alone: the named-log ExpireBodies
+	// is refused on it.
+	var reserved *ReservedLogError
+	if _, err := c.ExpireBodies(stg, auditID, 5); !errors.As(err, &reserved) {
+		t.Fatalf("ExpireBodies on the instance = %v, want ReservedLogError", err)
+	}
+	if n, err := c.Prune(stg, auditTenant, 11); err != nil || n != 2 {
+		t.Fatalf("Prune(11) = %d, %v, want 2", n, err)
 	}
 	if lo := c.heads[auditTenant].lo; lo != 11 {
 		t.Fatalf("linear lo = %d, want 11", lo)
 	}
-	// A cutoff past the size stops where Prune does: the newest record
-	// keeps its body.
-	if n, err := c.ExpireBodies(stg, auditID, 1<<63); err != nil || n != 4 {
-		t.Fatalf("ExpireBodies(past the size) = %d, %v, want 4", n, err)
+	// A cutoff past the head stops short of it: the newest record keeps
+	// its body.
+	if n, err := c.Prune(stg, auditTenant, 1<<63); err != nil || n != 4 {
+		t.Fatalf("Prune(past the head) = %d, %v, want 4", n, err)
 	}
 	final, _ := ReadHead(stg, auditID)
 	if final.BodiesFrom != 9 || !bytes.Equal(final.Root, before.Root) {

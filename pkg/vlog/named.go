@@ -344,9 +344,6 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 	if err := id.Validate(); err != nil {
 		return err
 	}
-	if IsAuditLog(id) {
-		return &ReservedLogError{ID: id}
-	}
 	if err := desc.validate(); err != nil {
 		return err
 	}
@@ -363,6 +360,9 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		return &ReservedLogError{ID: id}
+	}
 	if _, ok := c.logs[id]; ok {
 		return &LogExistsError{ID: id}
 	}
@@ -441,9 +441,6 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 	if err := id.Validate(); err != nil {
 		return 0, err
 	}
-	if IsAuditLog(id) {
-		return 0, &ReservedLogError{ID: id}
-	}
 	if len(entries) == 0 || len(entries) > MaxAppendPerCommand {
 		return 0, &AppendBatchError{Count: len(entries)}
 	}
@@ -451,6 +448,9 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		return 0, &ReservedLogError{ID: id}
+	}
 	st, ok := c.logs[id]
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
@@ -583,19 +583,17 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		// The audit instance's retention is audit Prune (OpAuditPrune),
+		// which prunes its events through pkg/audit.
+		return 0, &ReservedLogError{ID: id}
+	}
 	st, ok := c.logs[id]
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
 	}
 	if !st.allowExpire {
 		return 0, &ExpireNotAllowedError{ID: id}
-	}
-	if st.audit {
-		// The audit instance's bodies are its audit events, under the
-		// linear chain's keys: leaf i is the event at sequence
-		// treeStart+i, so expiring below leaf cutoff is pruning below
-		// that sequence, and every event before the tree goes with it.
-		return c.pruneLocked(w, id.TenantID, st.treeStart+min(cutoff, st.size))
 	}
 	upper := min(cutoff, st.size, st.lo+MaxPrunePerCommand)
 	if upper <= st.lo {
@@ -628,6 +626,19 @@ func AuditLogID(tenantID string) LogID {
 }
 
 // IsAuditLog reports whether id names a tenant's audit instance.
+// auditInstanceLocked reports whether id names a tenant's audit instance
+// that exists: a log under the audit name whose state is the instance's.
+// The audit name is reserved from the named-log Create, Append and
+// ExpireBodies only then, so the reservation depends on committed state,
+// not on the binary: before the instance exists those commands apply as
+// they did before it, and the instance is created only by an audit append,
+// which is proposed only once every replica is upgraded. The caller holds
+// c.mu.
+func (c *Chain) auditInstanceLocked(id LogID) bool {
+	st, ok := c.logs[id]
+	return ok && st.audit
+}
+
 func IsAuditLog(id LogID) bool {
 	return id.Database == AuditDatabase && id.Log == AuditLog
 }
@@ -673,13 +684,10 @@ func (c *Chain) appendEvent(w Writer, tenantID string, encode Encoder, create bo
 	st, exists := c.logs[id]
 	if exists && !st.audit {
 		// A log created under the audit name before the instance existed
-		// is never reinterpreted: the instance cannot be created over it,
-		// and an OpAuditAppend event only extends the linear chain, as it
-		// did before the instance.
-		if create {
-			return 0, &AuditNameTakenError{ID: id}
-		}
-		exists = false
+		// is never reinterpreted and no instance is created over it: the
+		// event only extends the linear chain, as it did before the
+		// instance, so the tenant's trail keeps running.
+		exists, create = false, false
 	}
 	head, body, err := c.appendLinear(w, tenantID, encode)
 	if err != nil {

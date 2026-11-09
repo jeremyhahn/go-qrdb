@@ -46,8 +46,8 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		if err != nil {
 			return 0, err
 		}
-		// The audit name is refused here (ReservedLogError): only the
-		// AuditAppend sub-type reaches the audit instance.
+		// The audit instance is refused here (ReservedLogError): only the
+		// AuditAppend sub-type reaches it.
 		return logs.AppendEntries(w, id, entries)
 	},
 	protocol.VerifiableLogSubtypeAuditAppend: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
@@ -76,12 +76,8 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		if err != nil {
 			return 0, err
 		}
-		if vlog.IsAuditLog(id) {
-			// The audit instance's retention is audit Prune (OpAuditPrune),
-			// which expires its bodies through pkg/audit; the log surface
-			// only reads it.
-			return 0, &vlog.ExpireNotAllowedError{ID: id}
-		}
+		// The audit instance is refused here (ReservedLogError): its
+		// retention is audit Prune (OpAuditPrune).
 		expired, err := logs.ExpireBodies(w, id, cutoff)
 		return uint64(expired), err
 	},

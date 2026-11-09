@@ -1029,7 +1029,7 @@ fields.
 | `Create` | log name, `[descLen:4][vlog.Descriptor JSON]` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`, `Keys`), then one key record | Refuses a name that exists; stages the descriptor record, the sealed key record if present, and an empty head. |
 | `Append` | one entry, or a bounded batch of entries | Assigns each entry the next index, stages the entry, its leaf hash and every tree node the append completes, and the new head (§4). Returns the first assigned index. |
 | `Checkpoint` | tree size, root hash, signed checkpoint bytes | Checks that the size is no larger than the log's size and that the root is the tree's root at that size (§5); stages the checkpoint record. |
-| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) on a named log; on the audit instance only audit `Prune` expires bodies, and the log surface refuses `ExpireBodies` as expire-not-allowed (§7). Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
+| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) on a named log; on the audit instance only audit `Prune` expires bodies, and the log surface refuses `ExpireBodies` on it with `ReservedLogError` (§7). Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
 | `RotateKey` | log name, `[keyLen:4][vlog.HeadKey JSON]`, then one key record | Appends the next key version to the descriptor; stages its sealed key record if present. |
 
 A key record is one presence byte: `0` for none (a provider that keeps the key
@@ -1335,24 +1335,39 @@ the upgrade moves no data.
   them with the trusted sub-type `OpVerifiableLog`/`VerifiableLogSubtypeAuditAppend`
   (6), which nothing else proposes and which apply refuses on any log but an
   audit instance (`NotAuditLogError`). The generic `Append` sub-type always
-  goes through `AppendEntries`, which refuses the audit instance's name with
-  `ReservedLogError`, and `LogService.Append` refuses it before proposing, so a
-  public `qrdb vlog append` to `system/audit` fails with `ReservedLogError`
-  (`PERMISSION_DENIED`) on every transport and the trail is never forged.
+  goes through `AppendEntries`, which refuses the audit instance with
+  `ReservedLogError`, and `LogService.Append` refuses the audit name before
+  proposing, so a public `qrdb vlog append` to `system/audit` fails with
+  `ReservedLogError` (`PERMISSION_DENIED`) on every transport and the trail is
+  never forged.
   The group keeps proposing `OpAuditAppend` until the separate
   `verifiable-log-audit` gate is on, so a group with members that predate the
   trusted sub-type never applies one they cannot decode.
+- **The reservation follows committed state, not the binary.** Apply refuses a
+  named-log `Create`, `Append` or `ExpireBodies` on the audit name with
+  `ReservedLogError` only once the tenant's audit instance exists (its state,
+  restored from a descriptor that carries `Audit`). Before that, those
+  commands apply exactly as they did before the instance, so a replica that
+  predates it and an upgraded one reach the same state from the same log. The
+  instance is created only by a trusted audit append, which is proposed only
+  once the gate is on, when every replica is upgraded.
+- **An audit-instance append is an exclusive apply.** It advances the tenant
+  chain's in-memory head before its batch publishes, as `OpAuditAppend` does,
+  so the MVCC family applies an `OpVerifiableLog` batch holding one (or a body
+  it cannot decode) under the exclusive lock, guarded or not, and a concurrent
+  `Verify` never sees the new head over the old snapshot.
 - **The instance is marked.** `AuditDescriptor` sets `Descriptor.Audit`
   (`"audit"` in the descriptor JSON); the read path takes the linear-chain
   layout, and audit `Prune` updates the instance, only for a descriptor that
   carries it.
 - **A legacy log under the name is left as it was.** An alpha build let a
   tenant create a plain named log `system/audit`. Such a log keeps its
-  descriptor, entries and tree and reads as the named log it is; it blocks that
-  tenant's audit instance, whose first append is refused with
-  `AuditNameTakenError` (`FAILED_PRECONDITION`), leaving the linear chain and
-  the legacy log unchanged. The operator deletes the legacy log to enable the instance;
-  nothing is migrated before RC.
+  descriptor, entries and tree and reads as the named log it is, and no
+  instance is created over it. While it exists, that tenant's trail stays on
+  the linear chain: each trusted audit append extends the linear chain, as
+  `OpAuditAppend` does, so the tenant's audit keeps running and `Verify`
+  covers it, and the legacy log is never reinterpreted. Nothing is migrated
+  before RC.
 - **The tree starts at the first `OpVerifiableLog` append** to the instance, at
   sequence *S₀*, as leaf 0; the descriptor records *S₀*. That first leaf's bytes
   are the marshaled event with its `PrevHash`, the linear digest of everything
@@ -1366,7 +1381,7 @@ the upgrade moves no data.
   audit instance `Prune` becomes `ExpireBodies`, which removes event bodies and
   keeps the tree (§9, decision 8). Audit `Prune` (`OpAuditAppend`/`AuditSubtypePrune`) is the
   instance's only retention command: the log surface reads the instance like
-  any log, and refuses an `ExpireBodies` on it as expire-not-allowed.
+  any log, and refuses an `ExpireBodies` on it with `ReservedLogError`.
 - **The node-local trail is unchanged.** `ChainFileLogger` is a different
   mechanism — one node's file, written before the store is unsealed, and the
   sink an audit-write failure falls back on — and this design neither moves nor

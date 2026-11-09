@@ -338,8 +338,8 @@ func TestStoreAuditInstance_LogSurfaceExpireIsRefused(t *testing.T) {
 			before := table(t, n.reader(), vlog.TablePrefix)
 
 			res := n.apply(t, p(protocol.EncodeVerifiableLogExpireBodies(vlog.AuditLogID("acme"), 1)))
-			if reason, _, _, ok := protocol.DecodeLogRefusal(res[0].Data); !ok || reason != protocol.LogRefusalExpireNotAllowed {
-				t.Fatalf("ExpireBodies on the audit instance = %+v, want an expire-not-allowed refusal", res[0])
+			if msg, errKind, ok := protocol.DecodeAppErrorKind(res[0].Data); !ok || errKind != protocol.AppErrorInvalid || msg != (&vlog.ReservedLogError{ID: vlog.AuditLogID("acme")}).Error() {
+				t.Fatalf("ExpireBodies on the audit instance = %+v, want a reserved-log refusal", res[0])
 			}
 			if after := table(t, n.reader(), vlog.TablePrefix); !reflect.DeepEqual(after, before) {
 				t.Fatal("a refused ExpireBodies changed the audit table")

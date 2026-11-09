@@ -81,3 +81,57 @@ func TestMVCCConcurrency_StalledAuditInstanceAppend_VerifySeesConsistentChain(t 
 		t.Errorf("verify after the audit-instance append = %s, want a verified two-record chain", want)
 	}
 }
+
+// TestMVCC_AuditInstanceAppendOverALegacyLog_KeepsTheTrail: a tenant whose
+// system/audit log predates the audit instance keeps accepting replicated
+// audit events once VerifiableLogAudit is on. Each event extends the linear
+// chain, which verifies, and the legacy log stays a named log.
+func TestMVCC_AuditInstanceAppendOverALegacyLog_KeepsTheTrail(t *testing.T) {
+	s := NewMVCCStateMachine(nil)
+	s.SetLogs(vlog.NewChain())
+	if _, err := s.Open(context.Background(), t.TempDir(), make(chan struct{})); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close(context.Background()) })
+
+	id := vlog.AuditLogID("acme")
+	desc := vlog.Descriptor{Origin: "db.example.com/acme/system/audit", Hash: vlog.HashSHA256, VerifierKeys: []string{"key-1"}}
+	event := func(action string) []byte {
+		body, err := json.Marshal(audit.AuditEvent{
+			TenantID:  "acme",
+			Resource:  "barrier",
+			Action:    action,
+			Actor:     "operator",
+			Timestamp: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	cmds := [][]byte{
+		mustEncode(protocol.EncodeVerifiableLogCreate(id, desc)),
+		mustEncode(protocol.EncodeVerifiableLogAppend(id, [][]byte{[]byte("own-0")})),
+		mustEncode(protocol.EncodeVerifiableLogAuditAppend(id, [][]byte{event("unseal")})),
+		mustEncode(protocol.EncodeVerifiableLogAuditAppend(id, [][]byte{event("seal")})),
+		mustEncode(protocol.EncodeVerifiableLogAppend(id, [][]byte{[]byte("own-1")})),
+	}
+	entries := make([]sm.Entry, len(cmds))
+	for i, cmd := range cmds {
+		entries[i] = sm.Entry{Index: uint64(i + 1), Cmd: cmd}
+	}
+	for i, r := range applyMVCCEntries(t, s, entries) {
+		if msg, ok := protocol.DecodeAppError(r.Data); ok {
+			t.Fatalf("command %d refused: %s", i, msg)
+		}
+	}
+
+	res, err := s.Lookup(context.Background(), audit.VerifyRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	report, ok := res.(*audit.ChainContinuityReport)
+	if !ok || !report.Verified || report.Records != 2 || report.Head != 2 {
+		t.Fatalf("verify = %+v, want a verified two-record chain", res)
+	}
+}
