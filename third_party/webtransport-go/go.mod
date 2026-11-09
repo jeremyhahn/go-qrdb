@@ -3,7 +3,7 @@ module github.com/quic-go/webtransport-go
 go 1.26.0
 
 require (
-	github.com/dunglas/httpsfv v1.1.1
+	github.com/dunglas/httpsfv v1.1.1 // held at upstream webtransport-go v0.13.0's requirement; the copy changes only what README.md lists
 	github.com/quic-go/quic-go v0.65.0
 	github.com/stretchr/testify v1.12.1
 )
