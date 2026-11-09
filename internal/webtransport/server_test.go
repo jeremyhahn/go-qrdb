@@ -328,8 +328,14 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 	s := webtransport.Server{H3: &http3.Server{TLSConfig: webtransport.TLSConf}}
 	defer s.Close()
 
+	// The first session's handler runs until the test ends, so that session is
+	// still established when the second CONNECT arrives.
+	release := make(chan struct{})
+	defer close(release)
 	s.H3.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = s.Upgrade(w, r)
+		if _, err := s.Upgrade(w, r); err == nil {
+			<-release
+		}
 	})
 
 	udpConn, err := net.ListenUDP("udp", nil)

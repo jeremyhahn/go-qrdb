@@ -385,6 +385,88 @@ func TestSessionClosesWhenOutgoingCapsuleQueueFull(t *testing.T) {
 	require.Equal(t, http3.ErrCodeExcessiveLoad, h3Err.ErrorCode)
 }
 
+// At the peer's stream limit, opening a stream queues WT_STREAMS_BLOCKED. With
+// the CONNECT stream blocked and the capsule queue full, that closes the
+// session, which must not deadlock on the lock OpenStream holds.
+func TestSessionOpenStreamAtLimitWithFullCapsuleQueue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(*Session) error
+	}{
+		{"bidirectional", func(s *Session) error { _, err := s.OpenStream(); return err }},
+		{"unidirectional", func(s *Session) error { _, err := s.OpenUniStream(); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(2*time.Second))
+			defer cancel()
+
+			clientConn, serverConn := newConnPairWithServerConfig(
+				t,
+				newUDPConnLocalhost(t),
+				newUDPConnLocalhost(t),
+				&quic.Config{
+					InitialStreamReceiveWindow:       1,
+					MaxStreamReceiveWindow:           1,
+					InitialConnectionReceiveWindow:   1,
+					MaxConnectionReceiveWindow:       1,
+					EnableDatagrams:                  true,
+					EnableStreamResetPartialDelivery: true,
+				},
+			)
+
+			clientStr, err := clientConn.OpenStreamSync(ctx)
+			require.NoError(t, err)
+			_, err = clientStr.Write([]byte{0})
+			require.NoError(t, err)
+			serverStr, err := serverConn.AcceptStream(ctx)
+			require.NoError(t, err)
+			_, err = io.ReadFull(serverStr, make([]byte, 1))
+			require.NoError(t, err)
+			// Fill quic-go's per-stream packet buffer, so the first capsule
+			// write blocks while the capsule queue fills.
+			_, err = clientStr.Write(make([]byte, 1450))
+			require.NoError(t, err)
+
+			// Flow control is negotiated and the peer allows no streams.
+			sess := newSession(
+				context.Background(),
+				0,
+				clientConn,
+				quicHTTP3Stream{clientStr},
+				"",
+				sessionFlowControl{Enabled: true},
+			)
+			for range maxQueuedOutgoingCapsules {
+				sess.queueCapsule(maxDataCapsule{})
+			}
+
+			errChan := make(chan error, 1)
+			go func() { errChan <- tc.open(sess) }()
+			select {
+			case err := <-errChan:
+				require.Error(t, err)
+			case <-ctx.Done():
+				t.Fatal("opening a stream deadlocked when the capsule queue overflowed")
+			}
+
+			var h3Err *http3.Error
+			require.ErrorAs(t, tc.open(sess), &h3Err)
+			require.Equal(t, http3.ErrCodeExcessiveLoad, h3Err.ErrorCode)
+
+			closed := make(chan struct{})
+			go func() {
+				_ = sess.CloseWithError(0, "")
+				close(closed)
+			}()
+			select {
+			case <-closed:
+			case <-ctx.Done():
+				t.Fatal("closing the session blocked")
+			}
+		})
+	}
+}
+
 func TestCloseWithErrorDropsQueuedCapsulesWhenConnectStreamBlocked(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -231,6 +231,60 @@ func TestSendStreamWriteDuringSessionGoneAndCloseSession(t *testing.T) {
 	}
 }
 
+// newSessionGoneSendStream returns a SendStream held in a streams map whose
+// peer has stopped it with WT_SESSION_GONE, once that STOP_SENDING has arrived.
+// A write deadline bounds any Write that is never woken.
+func newSessionGoneSendStream(t *testing.T) (*SendStream, *outgoingStreamsMap[*SendStream]) {
+	t.Helper()
+
+	sendStr, recvStr := newUniStreamPair(t)
+	sm := newOutgoingUniStreamsMap(nil, 0, maxOutgoingStreams, nil, func(c capsule) {
+		t.Errorf("unexpected capsule: %#v", c)
+	})
+	str := newSendStream(sendStr, nil, nil, nil, func() { sm.removeStream(sendStr.StreamID()) })
+	sm.mx.Lock()
+	sm.m[sendStr.StreamID()] = str
+	sm.mx.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+	defer cancel()
+	recvStr.CancelRead(WTSessionGoneErrorCode)
+	// the QUIC stream's context ends once the STOP_SENDING has arrived
+	select {
+	case <-sendStr.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("STOP_SENDING didn't arrive")
+	}
+
+	require.NoError(t, str.SetWriteDeadline(time.Now().Add(scaleDuration(time.Second))))
+	return str, sm
+}
+
+func TestSendStreamCancelWriteDuringSessionGone(t *testing.T) {
+	str, _ := newSessionGoneSendStream(t)
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := str.Write([]byte("foo"))
+		errChan <- err
+	}()
+
+	// CancelWrite takes the stream out of the session's map, so session
+	// shutdown no longer reaches it; CancelWrite itself must end the wait.
+	str.CancelWrite(42)
+	requireLocalStreamError(t, <-errChan, 42)
+}
+
+func TestSendStreamCancelWriteThenCloseSessionDuringSessionGone(t *testing.T) {
+	str, sm := newSessionGoneSendStream(t)
+
+	str.CancelWrite(42)
+	sm.CloseSession(&SessionError{ErrorCode: 7, Message: "bye"})
+
+	_, err := str.Write([]byte("foo"))
+	requireLocalStreamError(t, err, 42)
+}
+
 type blockingHeaderStream struct {
 	unblock chan struct{}
 }
@@ -282,6 +336,83 @@ func TestSendStreamWriteWhileSendingHeaderAsync(t *testing.T) {
 			close(qstr.unblock)
 			require.Zero(t, n)
 			require.Equal(t, tc.expectedErr, err)
+		})
+	}
+}
+
+// signallingHeaderStream reports when the stream header write starts and
+// records every write.
+type signallingHeaderStream struct {
+	*blockingHeaderStream
+	started chan struct{}
+	writes  []string
+}
+
+func (s *signallingHeaderStream) Write(b []byte) (int, error) {
+	s.writes = append(s.writes, string(b))
+	if string(b) == "hdr" {
+		close(s.started)
+	}
+	return s.blockingHeaderStream.Write(b)
+}
+
+func (s *signallingHeaderStream) WriteWithLimit(b []byte, limit func(int) int) (int, error) {
+	return s.Write(b)
+}
+
+// CancelWrite and Close must not wait behind a Write that is blocked sending
+// the stream header. The header still goes out first; the Write then returns
+// their error without sending its payload.
+func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
+	const errorCode StreamErrorCode = 42
+
+	testCases := []struct {
+		name        string
+		stop        func(*SendStream) error
+		expectedErr error
+	}{
+		{
+			name:        "cancel",
+			stop:        func(s *SendStream) error { s.CancelWrite(errorCode); return nil },
+			expectedErr: &StreamError{ErrorCode: errorCode},
+		},
+		{
+			name:        "close",
+			stop:        (*SendStream).Close,
+			expectedErr: errors.New("write on closed stream"),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+			defer cancel()
+
+			qstr := &signallingHeaderStream{
+				blockingHeaderStream: &blockingHeaderStream{unblock: make(chan struct{})},
+				started:              make(chan struct{}),
+			}
+			str := newSendStream(qstr, []byte("hdr"), nil, nil, func() {})
+
+			errChan := make(chan error, 1)
+			go func() {
+				_, err := str.Write([]byte("payload"))
+				errChan <- err
+			}()
+			<-qstr.started
+
+			stopped := make(chan error, 1)
+			go func() { stopped <- tc.stop(str) }()
+			select {
+			case err := <-stopped:
+				require.NoError(t, err)
+			case <-ctx.Done():
+				t.Fatal("stopping the stream waited for the stream header write")
+			}
+
+			close(qstr.unblock)
+			require.Equal(t, tc.expectedErr, <-errChan)
+			require.Equal(t, []string{"hdr"}, qstr.writes)
 		})
 	}
 }

@@ -77,6 +77,62 @@ func TestReceiveStreamReadDuringSessionGoneAndCloseSession(t *testing.T) {
 	}
 }
 
+// newSessionGoneReceiveStream returns a ReceiveStream held in a streams map
+// whose peer has reset it with WT_SESSION_GONE, once that reset has arrived.
+// A read deadline bounds any Read that is never woken.
+func newSessionGoneReceiveStream(t *testing.T) (*ReceiveStream, *incomingStreamsMap[*ReceiveStream]) {
+	t.Helper()
+
+	sendStr, recvStr := newUniStreamPair(t)
+	sm := newIncomingStreamsMap[*ReceiveStream](maxStreamsLimit, nil)
+	str := newReceiveStream(recvStr, 0, func() { sm.RemoveStream(recvStr.StreamID()) }, nil, nil)
+	require.NoError(t, sm.AddStream(recvStr.StreamID(), str))
+
+	sendStr.CancelWrite(WTSessionGoneErrorCode)
+	// reading the QUIC stream itself returns once the reset has arrived
+	_, err := recvStr.Read(make([]byte, 1))
+	var quicErr *quic.StreamError
+	require.ErrorAs(t, err, &quicErr)
+	require.Equal(t, quic.StreamErrorCode(WTSessionGoneErrorCode), quicErr.ErrorCode)
+
+	require.NoError(t, str.SetReadDeadline(time.Now().Add(scaleDuration(time.Second))))
+	return str, sm
+}
+
+func requireLocalStreamError(t *testing.T, err error, code StreamErrorCode) {
+	t.Helper()
+
+	var strErr *StreamError
+	require.ErrorAs(t, err, &strErr)
+	require.Equal(t, code, strErr.ErrorCode)
+	require.False(t, strErr.Remote)
+}
+
+func TestReceiveStreamCancelReadDuringSessionGone(t *testing.T) {
+	str, _ := newSessionGoneReceiveStream(t)
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := str.Read(make([]byte, 100))
+		errChan <- err
+	}()
+
+	// CancelRead takes the stream out of the session's map, so session shutdown
+	// no longer reaches it; CancelRead itself must end the wait.
+	str.CancelRead(42)
+	requireLocalStreamError(t, <-errChan, 42)
+}
+
+func TestReceiveStreamCancelReadThenCloseSessionDuringSessionGone(t *testing.T) {
+	str, sm := newSessionGoneReceiveStream(t)
+
+	str.CancelRead(42)
+	sm.CloseSession(&SessionError{ErrorCode: 7, Message: "bye"})
+
+	_, err := str.Read(make([]byte, 100))
+	requireLocalStreamError(t, err, 42)
+}
+
 func TestReceiveStreamSessionGoneDeadline(t *testing.T) {
 	t.Run("deadline expires while waiting", func(t *testing.T) {
 		sendStr, recvStr := newUniStreamPair(t)
