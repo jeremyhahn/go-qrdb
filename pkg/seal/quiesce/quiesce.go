@@ -118,6 +118,9 @@ func (g *Gate) Drain(timeout time.Duration) error {
 	if timeout <= 0 {
 		return &DrainTimeoutError{Stores: held, Timeout: timeout}
 	}
+	if drainWaitHook != nil {
+		drainWaitHook(held)
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	signal := g.signal()
@@ -161,7 +164,19 @@ type Lease struct {
 	gate *Gate
 	name string
 	n    atomic.Int64
+	// gone is set by Unregister: the lease admits nothing more, and leaves
+	// the gate once its last operation releases.
+	gone atomic.Bool
 }
+
+// acquiredHook and drainWaitHook are test seams, nil in every build but the
+// qrdb_sealtest one (sealtest_hold.go): acquiredHook runs inside each
+// operation Acquire admits, and drainWaitHook runs when a drain with a
+// timeout finds leases held, before it waits.
+var (
+	acquiredHook  func(*Lease)
+	drainWaitHook func(held []string)
+)
 
 // Name is the store's name.
 func (l *Lease) Name() string {
@@ -172,39 +187,62 @@ func (l *Lease) Name() string {
 }
 
 // Acquire holds the lease for one operation, or refuses with ErrSealing once
-// the gate is closed. Every nil return must be paired with one Release.
+// the gate is closed or the lease unregistered. Every nil return must be
+// paired with one Release.
 func (l *Lease) Acquire() error {
 	if l == nil {
 		return nil
 	}
-	// Increment before the load, and Close stores before Drain loads the
-	// counts: either this sees the gate closed, or the drain sees the hold.
+	// Increment before the loads, and Close and Unregister store before
+	// Drain and Unregister load the count: either this sees the gate closed
+	// or the lease gone, or the drain sees the hold.
 	l.n.Add(1)
-	if l.gate.closed.Load() {
+	if l.gate.closed.Load() || l.gone.Load() {
 		l.Release()
 		return ErrSealing
+	}
+	if acquiredHook != nil {
+		acquiredHook(l)
 	}
 	return nil
 }
 
-// Release ends one operation Acquire admitted.
+// Release ends one operation Acquire admitted. The last Release of an
+// unregistered lease removes it from the gate.
 func (l *Lease) Release() {
 	if l == nil {
 		return
 	}
-	if l.n.Add(-1) == 0 && l.gate.closed.Load() {
-		l.gate.wake()
+	if l.n.Add(-1) != 0 {
+		return
+	}
+	g := l.gate
+	if l.gone.Load() {
+		g.mu.Lock()
+		if l.n.Load() == 0 {
+			delete(g.leases, l)
+		}
+		g.mu.Unlock()
+	}
+	if g.closed.Load() {
+		g.wake()
 	}
 }
 
-// Unregister removes the lease from its gate, when its store closes.
+// Unregister ends the lease when its store closes: it admits nothing more,
+// and an operation it already admitted keeps it in the gate's drain until
+// that operation releases. A store's Close calls it before closing the
+// store, so a seal never loses sight of work the store is still doing.
 func (l *Lease) Unregister() {
 	if l == nil {
 		return
 	}
+	l.gone.Store(true)
 	g := l.gate
 	g.mu.Lock()
-	delete(g.leases, l)
+	if l.n.Load() == 0 {
+		delete(g.leases, l)
+	}
 	g.mu.Unlock()
 	if g.closed.Load() {
 		g.wake()
