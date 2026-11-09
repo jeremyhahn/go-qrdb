@@ -220,6 +220,58 @@ func TestHandleLockTryLock_MissingKey(t *testing.T) {
 	}
 }
 
+func TestHandleLockTryLock_MissingHolderID(t *testing.T) {
+	svc := newMockLockService()
+	handler := handleLockTryLock(svc)
+
+	req := buildCallToolRequest(t, "qrdb_lock_trylock", map[string]any{
+		"key": "k",
+		"ttl": float64(5),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing holder_id")
+	}
+}
+
+func TestHandleLockTryLock_ZeroTTL(t *testing.T) {
+	svc := newMockLockService()
+	handler := handleLockTryLock(svc)
+
+	req := buildCallToolRequest(t, "qrdb_lock_trylock", map[string]any{
+		"key":       "k",
+		"holder_id": "h",
+		"ttl":       float64(0),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for zero ttl")
+	}
+}
+
+func TestHandleLockExtend_MissingFencingToken(t *testing.T) {
+	svc := newMockLockService()
+	handler := handleLockExtend(svc)
+
+	req := buildCallToolRequest(t, "qrdb_lock_extend", map[string]any{
+		"key": "k",
+		"ttl": float64(5),
+	})
+	result, err := handler(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for missing fencing_token")
+	}
+}
+
 func TestHandleLockTryLock_Success(t *testing.T) {
 	svc := newMockLockService()
 	svc.tryLockFn = func(_ context.Context, key, holderID string, _ time.Duration, _ bool) (*lock.Lock, error) {
