@@ -83,8 +83,7 @@ WORKDIR /src
 
 # Every module in the tree, at its own path: the `replace` directives point
 # between them (the root at ./sdk/go, sdk/go at ../.., the conformance and
-# clusterproof modules at both, and all four at ./third_party/webtransport-go),
-# so the layout is part of the module graph.
+# clusterproof modules at both), so the layout is part of the module graph.
 # The list is the Makefile's DEVCONTAINER_MODULES, which also hashes these
 # files into the toolchain tag.
 COPY go.mod go.sum ./
@@ -96,7 +95,6 @@ COPY test/performance/etcd-benchmark/go.mod test/performance/etcd-benchmark/go.s
 COPY test/performance/qrdb/go.mod test/performance/qrdb/go.sum test/performance/qrdb/
 COPY test/performance/tikv/go.mod test/performance/tikv/go.sum test/performance/tikv/
 COPY test/vanguardprobe/go.mod test/vanguardprobe/go.sum test/vanguardprobe/
-COPY third_party/webtransport-go/go.mod third_party/webtransport-go/go.sum third_party/webtransport-go/
 
 # Download the module caches in their own layer. Credentials for the project
 # forge arrive as the optional gomodauth BuildKit secret (the Makefile's
@@ -114,16 +112,14 @@ RUN --mount=type=secret,id=gomodauth \
     fi; \
     for m in . sdk/go sdk/go/gorm/conformance test/clusterproof \
         test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-        test/performance/qrdb test/performance/tikv test/vanguardprobe \
-        third_party/webtransport-go; do \
+        test/performance/qrdb test/performance/tikv test/vanguardprobe; do \
       echo "==> go mod download ($m)"; \
       (cd "$m" && go mod download); \
     done
 RUN set -eu; \
     for m in . sdk/go sdk/go/gorm/conformance test/clusterproof \
         test/performance/cmd/kvcompare test/performance/etcd-benchmark \
-        test/performance/qrdb test/performance/tikv test/vanguardprobe \
-        third_party/webtransport-go; do \
+        test/performance/qrdb test/performance/tikv test/vanguardprobe; do \
       (cd "$m" && go mod verify); \
     done
 

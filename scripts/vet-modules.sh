@@ -139,11 +139,6 @@ tags_for() {
 		# The vanguard blocker probe (#1151) carries no build tag: it is a
 		# module of its own, which is what keeps it out of every qrdb build.
 		printf -- '-\n' ;;
-	"$ROOT"/third_party/webtransport-go)
-		# The patched copy of upstream webtransport-go that every module
-		# replaces it with (third_party/webtransport-go/README.md). Upstream
-		# carries no build tags, and the copy adds none.
-		printf -- '-\n' ;;
 	"$ROOT"/test/clusterproof)
 		# The cluster proof harness (#669) is a module of its own so that its
 		# test-only linearizability checker never enters the database's module
