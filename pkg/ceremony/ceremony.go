@@ -530,6 +530,20 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
 	}
+	// The system SO is issued before anything is committed: before the
+	// PINs are provisioned and before the system barrier is initialized and
+	// unsealed. The SO's only durable handoff is the record in that barrier,
+	// so an SO issuance that failed after it came up would leave an unsealed
+	// barrier with no SO, which a composer reads as an initialized node and
+	// boots into a first boot strict separation refuses, with no listener
+	// left to retry the ceremony on. Failing here leaves the barrier
+	// uninitialized and the ceremony awaiting a retry.
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
+	if err != nil {
+		s.mu.Unlock()
+		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
+		return nil, err
+	}
 	// Sampled BEFORE Provision, so rollbackOfficerInit can tell whether
 	// THIS call freshly set the SO PIN or merely verified one that already
 	// existed (go-qrdb#591 re-review, non-blocking: rollbackOfficerInit
@@ -660,13 +674,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err != nil {
 		s.mu.Unlock()
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
-		return nil, err
-	}
-	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
-	if err != nil {
-		secure.Wipe(adminKeyPEM)
-		s.mu.Unlock()
-		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
 		return nil, err
 	}
 	s.lastAdminCertPEM = adminCertPEM

@@ -171,6 +171,12 @@ func adoptSystemSOCert(opts *InitializeOptions, caBundlePEM []byte, trustDomain 
 		}
 		return nil, &SystemSORejectedError{Cause: err}
 	}
+	// auth.HolderProfile classifies a certificate as a custody identity
+	// that RBAC refuses every permission: an SO bound to one could
+	// perform none of the operations reserved for it.
+	if profile, ok := auth.HolderProfile(cert); ok {
+		return nil, &SystemSORejectedError{Cause: &SystemSOHolderCertError{Profile: profile}}
+	}
 	tenant, err := auth.TenantFromClientCert(cert, trustDomain)
 	if err != nil {
 		return nil, &SystemSORejectedError{Cause: err}

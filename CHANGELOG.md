@@ -57,7 +57,14 @@ are not reconstructed here — their history is in the git log.
   refuses consumption; only not-found means no SO. An adopted SO certificate
   keeps the trust pool that validated it through the handoff, a strict restart
   of a bound admin with no enrolled SO is refused, and an enrolment retry
-  that finds a different committed SO PIN still fails.
+  that finds a different committed SO PIN still fails. The SO is signed or
+  adopted before the PIN is provisioned or the barrier initialised, so a
+  signing fault leaves the node awaiting init and a retry completes. A
+  presented SO certificate carrying a holder profile OU (`security-officer`
+  or `custodian`) is a custody identity, not a login certificate, and is
+  refused with `*ceremony.SystemSOHolderCertError`. `--admin-cert-pool` is
+  accepted with `--so-cert` alone, so a CSR or generated admin can present
+  an SO certificate chained to it.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as

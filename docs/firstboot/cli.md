@@ -27,7 +27,7 @@ default role set in a single transactional ceremony**.
 | `--sans` | string | — | comma-separated additional DNS / IP SANs |
 | `--admin-csr` | string | — | path to a PEM CSR; selects the CSR-sign admin-credential path (mutually exclusive with `--admin-cert`/`--admin-generate`) |
 | `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`/`--admin-generate`) |
-| `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` must chain to; only valid with `--admin-cert`, and required unless the certificate was issued by this deployment's own CA |
+| `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` and `--so-cert` must chain to; only valid with `--admin-cert` or `--so-cert` (so a CSR or generated admin can still present an SO certificate), and required unless the certificate was issued by this deployment's own CA |
 | `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
 | `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. **Required when the server runs strict separation of duties** |
 | `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's (mutually exclusive with `--so-cert`) |
