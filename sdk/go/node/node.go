@@ -998,6 +998,14 @@ func (n *Node) buildSealServices(ctx context.Context, infra lifecycle.Infra, cfg
 	if err != nil {
 		return nil, err
 	}
+	// The initial ceremony runs in the sealed window: every sealed-window
+	// composition carries the strict posture, so a strict node refuses a
+	// ceremony that names no system SO before any write.
+	configured := false
+	if cfg != nil {
+		configured = cfg.Auth.SeparationOfDuties
+	}
+	infra.SeparationOfDuties = infra.SeparationOfDuties || wiring.ResolveStrictSeparation(configured)
 	return lifecycle.BuildSealServicesOnly(ctx, infra)
 }
 

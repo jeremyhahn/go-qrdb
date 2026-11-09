@@ -293,8 +293,11 @@ run only as a separate SO, and the assignment gate keeps the system admin
 from becoming one, so a strict deployment without an SO could never manage
 its roles. The standard posture keeps the SO optional. The node's strict
 posture always wins: the ceremony (`CeremonyService.SetSeparationOfDuties`)
-refuses options naming no SO with `*ceremony.SystemSORejectedError` before
-any write, the embedded node ORs `Node.StrictSeparation()` into the caller's
+refuses options naming no SO, or an SO username no SPIFFE ID can carry, with
+`*ceremony.SystemSORejectedError` before any write; every sealed-window
+composition (`qrdbd` and the embedded node) carries the posture, so a strict
+deployment is refused at the sealed-window ceremony, before any write. The
+embedded node ORs `Node.StrictSeparation()` into the caller's
 `Dependencies`, tenant create refuses a tenant with no SO with
 `*bootstrap.TenantSORequiredError`, and the pending SO record is consumed
 only once `firstboot.ClearPendingSystemSOIfEnrolled` finds the SO's account
