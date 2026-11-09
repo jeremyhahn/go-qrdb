@@ -278,10 +278,10 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 	// ---------------------------------------------------------------------
 	// Phase 3: the audited operation. Tenant onboarding's records are
 	// platform events on the system tenant's trail, so the tenant files its
-	// own: its admin adds and hard-deletes an auth factor
-	// (fileTenantAuditEvent), and the factor service, whose sink is
-	// infra.AuditLogger -- the one this feature wraps with the replicated
-	// child -- files a "delete" success record under the caller's tenant.
+	// own: its admin invites a user (fileTenantAuditEvent), and the
+	// invitation service, whose sink is infra.AuditLogger -- the one this
+	// feature wraps with the replicated child -- files a "user.invite"
+	// success record under the caller's tenant.
 	// That record is what this test follows through the replicated chain.
 	// ---------------------------------------------------------------------
 	fileTenantAuditEvent(t, leaderPort, tenantID, tenantAdminClient)
@@ -297,7 +297,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 
 	// assertReplicatedChain is the shared assertion: from EVERY node's own
 	// admin port, the replicated chain for tenant "aud-acme" contains the
-	// factor delete success event this test produced, and the chain
+	// user.invite success event this test produced, and the chain
 	// verifies.
 	assertReplicatedChain := func(t *testing.T, label string) {
 		t.Helper()
@@ -309,7 +309,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 			var lastOut string
 			found := pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
 				out, qerr := runQRDB(t, cliBin, connArgs, "--output", "json", "audit", "query",
-					"--replicated", "--action", "delete")
+					"--replicated", "--action", "user.invite")
 				lastOut = out
 				if qerr != nil || json.Unmarshal([]byte(out), &page) != nil {
 					return false
@@ -322,7 +322,7 @@ func TestAuditReplicated_ThreeNodeCluster(t *testing.T) {
 				return false
 			})
 			if !found {
-				t.Fatalf("[%s] port %d: replicated chain for tenant %s missing the factor delete success entry; last output: %s",
+				t.Fatalf("[%s] port %d: replicated chain for tenant %s missing the user.invite success entry; last output: %s",
 					label, port, tenantID, lastOut)
 			}
 
