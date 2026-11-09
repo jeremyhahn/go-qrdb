@@ -297,10 +297,18 @@ its roles. The standard posture keeps the SO optional.
 `ceremony.InitializeOptions` carries `SOUsername` with exactly one of
 `SOCSRPEM` (signed under the system tenant) and `SOCertPEM` (with
 `SOChainPEM`, verified like a BYOC admin certificate). The SO PIN is
-`SOPin`. Bad inputs are `*ceremony.SystemSORejectedError`. The ceremony
-holds the PIN only as its hash, never the PIN. Its composers (`qrdbd`,
+`SOPin`. Bad inputs are `*ceremony.SystemSORejectedError`: among them a
+presented certificate whose subject CN is not `SOUsername`, and an SO key that
+is the admin's, compared from the supplied CSRs or certificates before
+anything is provisioned. The ceremony holds the PIN only as its hash, never
+the PIN. Before `Initialize` reports success it records the issued SO in the
+system barrier (`ceremony.CeremonyService.PendingSystemSO`), so a node that
+crashes before the next step recovers it on restart. Its composers (`qrdbd`,
 `sdk/go/node`) record the issued SO in the replicated system store under
-`firstboot.PendingSystemSOKey` with `firstboot.WriteIssuedSystemSOIfAny`.
+`firstboot.PendingSystemSOKey` with `firstboot.WriteIssuedSystemSOIfAny`,
+which drops the barrier's copy once the replicated record is consumed. Only
+not-found reads as no record: any other store fault fails the boot and
+refuses consumption.
 They write it before the pending admin certificate. Both records are on one
 Raft shard, so first boot's bounded wait for the admin's record covers the
 SO's too. First boot reads the record (`firstboot.PendingSystemSO`), and the
