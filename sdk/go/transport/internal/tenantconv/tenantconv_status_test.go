@@ -34,6 +34,24 @@ func TestUpdateRequest_Status(t *testing.T) {
 	}
 }
 
+// TestUpdateRequest_IsolationPolicy proves a set isolation policy reaches the
+// wire request as its own copy, and an unset one stays absent so the update
+// leaves the tenant's policy unchanged.
+func TestUpdateRequest_IsolationPolicy(t *testing.T) {
+	p := "strict"
+	set := UpdateRequest(&transport.UpdateTenantRequest{TenantID: "acme", IsolationPolicy: &p})
+	if set.IsolationPolicy == nil || set.GetIsolationPolicy() != "strict" {
+		t.Fatalf("set request isolation policy = %v; want strict", set.IsolationPolicy)
+	}
+	if set.IsolationPolicy == &p {
+		t.Fatal("set request shares the caller's isolation policy pointer; want a copy")
+	}
+	unchanged := UpdateRequest(&transport.UpdateTenantRequest{TenantID: "acme"})
+	if unchanged.IsolationPolicy != nil {
+		t.Fatalf("unchanged request isolation policy = %q; want absent", unchanged.GetIsolationPolicy())
+	}
+}
+
 // The read carries the status the server answered, and none when it sent none.
 func TestToTenantInfo_Status(t *testing.T) {
 	if got := ToTenantInfo(&pb.TenantResponse{Id: "acme", Status: "disabled"}).Status; got != transport.TenantStatusDisabled {
