@@ -489,6 +489,7 @@ Configures the underlying storage backend.
 - `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
 - `objstore.settings` and `volume_pools[].options` keys pass to the provider exactly as written (go-objstore's `forcePathStyle` stays camelCase); two keys in one map that differ only in case are refused.
 - `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
+- An `objstore` store opens only with a format-3 `qrdb-objstore-format` marker (`3\nname-limit=<n>\n`) or empty, when the marker is written; the recorded naming limit must fit beneath the database's object prefix (`objstore.NameLimitError` otherwise), and a version-2 or malformed marker is refused (`objstore.FormatVersionMismatchError`). Dropping a database removes only its own objects.
 
 **`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
 

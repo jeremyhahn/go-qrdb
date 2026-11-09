@@ -405,9 +405,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   `uvarint(len(key)) || key || value` record that every read verifies. Every
   key up to the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes), whatever its bytes, round-trips on every provider. `New` refuses a
-  non-empty store lacking the `qrdb-objstore-format` marker for version `2`
+  non-empty store lacking the `qrdb-objstore-format` marker for version `3`
   (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
-  written in any other layout is refused, not misread.
+  written in any other layout is refused, not misread. The marker records the
+  naming limit (`3\nname-limit=<n>\n`) and a reopen adopts it, refusing one
+  that no longer fits beneath its prefix (`NameLimitError`). `Destroy`
+  deletes only the engine's journal, marker and canonical `k/`/`h/` record
+  names, so an engine nested beneath its prefix keeps every object.
   There is no migration. See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
   A batch commits through a single journal object (publish, apply, clear;
@@ -584,7 +588,7 @@ non-replicated binding, is decided with OS-7.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
-| Store written in the encoded-name layout (`qrdb-objstore-format` version `2`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
+| Store written in the encoded-name layout (`qrdb-objstore-format` version `3`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
 | Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
 | go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |

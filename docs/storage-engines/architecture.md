@@ -304,14 +304,29 @@ not a record — for example, a provider's in-flight temporary file — and
 every listing skips it.
 
 **Existing data.** `New` writes a format marker object
-(`qrdb-objstore-format`, version `2`) into an empty store, and refuses to
+(`qrdb-objstore-format`, version `3`) into an empty store, and refuses to
 open a store that is not empty and has no marker (`FormatMarkerMissingError`)
-or that carries another version (`FormatVersionMismatchError`). A store
+or that carries another version or a malformed body
+(`FormatVersionMismatchError`). The marker's body is the version, then the
+store's naming limit — the longest object name it writes, 1,024 bytes less
+the length of the object prefix it was created under — as
+`3\nname-limit=<n>\n`. A reopen adopts the recorded limit, so the same
+objects reached through another spelling of their namespace (another root
+plus a shorter or longer prefix) split keys between direct and hashed names
+exactly as they were written; a recorded limit whose names no longer fit
+beneath the reopening prefix is refused (`NameLimitError`). Objects under a
+nested engine's namespace (a directory holding its own marker) do not make a
+store non-empty. A store
 written with verbatim object names has no marker, so it is refused at open,
 not read with its keys silently missing. There is no migration code: move
 the data by reading it out through the binary that wrote it and writing it
 in through this one, or start the store empty. The store must be dedicated to the engine:
 any object the engine did not write makes an unmarked store non-empty.
+`Destroy` removes only what the engine owns: its journal, its marker, and
+the canonical record names under `k/` and `h/`. A nested engine's names
+always carry a non-hex letter in their first segment, so none is ever a
+canonical record name, and an engine at `ns/child/` or `ns/k/` keeps every
+object when the one at `ns/` is destroyed.
 
 ### Alternatives rejected
 
@@ -647,7 +662,7 @@ Pebble's object-naming code (`remoteObjectName`) never takes a qrdb key as
 input, so the direct and hashed key encodings, the per-name length limits
 they work within, and the hashed records' key verification all go away with
 the one-object-per-key engine; nothing replaces them. A store written in the
-encoded-name layout (format marker `qrdb-objstore-format`, version `2`) is a
+encoded-name layout (format marker `qrdb-objstore-format`, version `3`) is a
 different on-disk format from an LSM store. The shipped engine already
 refuses a foreign layout at open rather than misread it, and ships no
 migration code.

@@ -19,12 +19,18 @@ are not reconstructed here — their history is in the git log.
   engine writes (`objstore.ObjectPrefixError` otherwise); keys are named
   within the provider limit less the prefix, so every object name fits. A
   legacy in-tree journal inside the prefix refuses the open, and dropping an
-  objstore database deletes every object in its namespace through
+  objstore database deletes the engine's own objects in its namespace through
   `Engine.Destroy` (the `ObjstoreOpener` returns the reclaim), or fails the drop;
   a barrier-enabled database is reclaimed too, an interrupted drop can be
   retried, and a write racing a drop is refused. Guarded verbs on an objstore
   database (`PutIfAbsent`, `CompareAndSwap`, `CompareAndDelete`) resolve a
-  pending journal before comparing.
+  pending journal before comparing. The format marker is now version 3 and
+  records the naming limit (`3\nname-limit=<n>\n`), so objects reopen intact
+  under another spelling of their namespace (a limit that no longer fits is
+  refused with `objstore.NameLimitError`, a version 2 marker with
+  `FormatVersionMismatchError`), and `Destroy` deletes only its journal,
+  marker and canonical record names, leaving a database nested beneath its
+  prefix intact.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,

@@ -52,9 +52,10 @@ type Engine struct {
 	closed   atomic.Bool
 
 	// nameLimit is the longest object name the engine may write beneath
-	// its object prefix: objcommon.MaxKeyLength less the prefix's length.
-	// Naming, decoding and listing all use it, so they agree on which keys
-	// are stored direct and which hashed.
+	// its object prefix, as the store's format marker records it: a new
+	// store records objcommon.MaxKeyLength less the prefix's length. Naming,
+	// decoding and listing all use it, so they agree on which keys are stored
+	// direct and which hashed, whatever prefix later reopens the objects.
 	nameLimit int
 
 	// journalMu serializes batch commits: the commit journal is a single
@@ -154,7 +155,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	}
 	if o.prefix != "" {
 		// A store that is also the journal is wrapped once, so the two stay
-		// one store: Destroy tells them apart by identity.
+		// one store.
 		shared := journal == store
 		store = withPrefix(store, o.prefix)
 		if shared {
@@ -170,8 +171,8 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 			}
 		}
 	}
-	e := &Engine{store: store, journal: journal, provider: provider, nameLimit: objcommon.MaxKeyLength - len(o.prefix)}
-	if err := e.ensureFormatMarker(); err != nil {
+	e := &Engine{store: store, journal: journal, provider: provider}
+	if err := e.ensureFormatMarker(objcommon.MaxKeyLength - len(o.prefix)); err != nil {
 		return nil, err
 	}
 	// An interrupted batch commit from a previous process is completed here;
@@ -193,8 +194,14 @@ func notFound(err error) bool {
 
 // ensureFormatMarker refuses to open a non-empty store that was not written
 // by this exact object layout (see FormatMarkerMissingError and
-// FormatVersionMismatchError), and marks an empty one as this layout.
-func (e *Engine) ensureFormatMarker() error {
+// FormatVersionMismatchError), and marks an empty one as this layout, and
+// sets e.nameLimit from the marker. maxLimit is the longest name the
+// engine's object prefix leaves room for: a new store records it, and a
+// marker recording more is refused with NameLimitError, since names written
+// to that limit no longer fit beneath this prefix. Objects under a nested
+// engine's namespace (see outsideNestedNamespaces) do not make a store
+// non-empty.
+func (e *Engine) ensureFormatMarker(maxLimit int) error {
 	rc, err := e.store.Get(formatMarkerName)
 	if err == nil {
 		defer func() { _ = rc.Close() }()
@@ -202,9 +209,17 @@ func (e *Engine) ensureFormatMarker() error {
 		if readErr != nil {
 			return readErr
 		}
-		if string(found) != formatVersion {
+		if version, _, _ := strings.Cut(string(found), "\n"); version != formatVersion {
+			return &FormatVersionMismatchError{Found: version, Want: formatVersion}
+		}
+		limit, ok := parseFormatMarker(string(found))
+		if !ok {
 			return &FormatVersionMismatchError{Found: string(found), Want: formatVersion}
 		}
+		if limit > maxLimit {
+			return &NameLimitError{Persisted: limit, Max: maxLimit}
+		}
+		e.nameLimit = limit
 		return nil
 	}
 	if !notFound(err) {
@@ -214,10 +229,11 @@ func (e *Engine) ensureFormatMarker() error {
 	if err != nil {
 		return err
 	}
-	if len(names) > 0 {
+	if len(outsideNestedNamespaces(names)) > 0 {
 		return &FormatMarkerMissingError{Provider: e.provider}
 	}
-	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
+	e.nameLimit = maxLimit
+	return e.store.Put(formatMarkerName, strings.NewReader(formatMarker(maxLimit)))
 }
 
 // Get retrieves the value for key. Returns nil, nil when the key does not exist,
@@ -558,8 +574,12 @@ func (e *Engine) Close() error {
 	return nil
 }
 
-// Destroy deletes every object the engine holds beneath its object prefix,
-// commit journal, records and format marker alike, and closes the engine.
+// Destroy deletes every object the engine owns beneath its object prefix,
+// commit journal, records and format marker alike, and closes the engine. It
+// owns only the names it writes: its journal, its marker, and the canonical
+// record names under "k/" and "h/" (see isRecordName). Every other name is
+// left alone, so an engine opened on a prefix nested inside this one, such as
+// "ns/child/" or "ns/k/" beneath "ns/", keeps every object.
 // Close leaves the objects in the bucket, where an engine reopened on the
 // same prefix would serve them again; Destroy is how a dropped database's
 // objects are reclaimed. It works on a closed engine too, so a drop retried
@@ -573,35 +593,23 @@ func (e *Engine) Destroy() error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 	e.closed.Store(true)
-	if e.journal != e.store {
-		if err := deleteAllObjects(e.journal, ""); err != nil {
-			return err
-		}
-	} else if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
+	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
 		return err
 	}
-	if err := deleteAllObjects(e.store, formatMarkerName); err != nil {
-		return err
-	}
-	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
-		return err
-	}
-	return nil
-}
-
-// deleteAllObjects deletes every object store lists but the one named keep.
-func deleteAllObjects(store objcommon.Storage, keep string) error {
-	names, err := store.List("")
+	names, err := e.store.List("")
 	if err != nil {
 		return err
 	}
 	for _, name := range names {
-		if name == keep {
+		if !isRecordName(name, e.nameLimit) {
 			continue
 		}
-		if err := store.Delete(name); err != nil && !notFound(err) {
+		if err := e.store.Delete(name); err != nil && !notFound(err) {
 			return err
 		}
+	}
+	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
+		return err
 	}
 	return nil
 }

@@ -93,7 +93,7 @@ func newFaultEngine(t *testing.T) (*Engine, *faultStore) {
 		listFails: map[string]bool{},
 	}
 	e := &Engine{store: fs, journal: fs, provider: "memory", nameLimit: objcommon.MaxKeyLength}
-	require.NoError(t, e.ensureFormatMarker())
+	require.NoError(t, e.ensureFormatMarker(objcommon.MaxKeyLength))
 	return e, fs
 }
 
@@ -101,18 +101,18 @@ func TestEnsureFormatMarker_ProviderFaults(t *testing.T) {
 	t.Run("marker read fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		fs.getFails[formatMarkerName] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 	t.Run("marker body unreadable", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		fs.readFails[formatMarkerName] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 	t.Run("emptiness check fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		require.NoError(t, fs.Storage.Delete(formatMarkerName))
 		fs.listFails[""] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 }
 

@@ -404,7 +404,8 @@ func TestNew_MarksAnEmptyStoreAndReopensIt(t *testing.T) {
 
 	marker, err := os.ReadFile(filepath.Join(dir, formatMarkerName))
 	require.NoError(t, err)
-	assert.Equal(t, formatVersion, string(marker))
+	assert.Equal(t, formatMarker(objcommon.MaxKeyLength), string(marker))
+	assert.Equal(t, "3\nname-limit=1024\n", string(marker), "the marker records the naming limit")
 
 	reopened, err := New("local", map[string]string{"path": dir})
 	require.NoError(t, err)

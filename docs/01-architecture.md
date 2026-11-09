@@ -93,7 +93,12 @@ state machine interfaces. QRDB uses a three-layer store architecture:
 1. **Storage backends** (`pkg/storage/`) implement the `storage.Storage`
    interface. Four backends are provided: `memory` (in-memory, data lost
    on restart), `file` (filesystem-backed, hashed file names), `pebble`
-   (PebbleDB-backed) and `objstore` (any go-objstore provider).
+   (PebbleDB-backed) and `objstore` (any go-objstore provider). Each
+   `objstore` database lives under its own object prefix, marked by a
+   format-3 `qrdb-objstore-format` object that records the store's naming
+   limit, so the same objects reopen intact under any spelling of their
+   namespace; dropping the database removes only that engine's own objects,
+   never those of a database nested beneath its prefix.
 
 2. **Store engines** (`pkg/engine/`) implement the `Engine` interface
    (extends `backend.SMAdapter`). They contain all handler logic for

@@ -14,6 +14,8 @@
 
 package objstore
 
+import "strconv"
+
 // UnsupportedProviderError indicates the requested go-objstore provider is not
 // registered in this build. Cloud providers are compiled in only when
 // go-objstore's matching build tag is set (e.g. -tags awss3 for "s3").
@@ -58,6 +60,23 @@ type FormatVersionMismatchError struct {
 func (e *FormatVersionMismatchError) Error() string {
 	return "objstore: store format version " + e.Found + " does not match this build's " + e.Want +
 		" — there is no migration between object layouts"
+}
+
+// NameLimitError is returned by New when the store's format marker records a
+// naming limit longer than the object prefix leaves room for: names written
+// to that limit would no longer fit within objcommon.MaxKeyLength beneath
+// this prefix, so some keys could neither be read nor listed.
+type NameLimitError struct {
+	// Persisted is the naming limit the store's marker records.
+	Persisted int
+	// Max is the longest naming limit this object prefix allows.
+	Max int
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *NameLimitError) Error() string {
+	return "objstore: store naming limit " + strconv.Itoa(e.Persisted) + " exceeds the " +
+		strconv.Itoa(e.Max) + " this object prefix allows"
 }
 
 // RecordCorruptError reports that the record stored under a hashed object
