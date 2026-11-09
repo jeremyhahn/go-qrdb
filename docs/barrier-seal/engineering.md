@@ -256,8 +256,11 @@ services and to the server, which wraps the node's sealed-window probe with
   compaction a `PebbleStorage` or `SealWatch` admits holds its store's lease
   on the barrier's `quiesce.Gate`; `Seal` closes the gate before it drains and
   drains before `EpochBarrier.Seal`. A drain that outlives
-  `seal.drain_timeout` returns `*quiesce.DrainTimeoutError` naming the stores
-  (see [architecture.md](architecture.md), "Sealing quiesces the encrypted
+  `seal.drain_timeout` still seals and returns `*quiesce.DrainTimeoutError`
+  naming the stores still in flight. It does not cancel their admitted work:
+  that work can still race the key wipe, as `SealWatch` describes, so the
+  error reports the risk rather than removing it (see
+  [architecture.md](architecture.md), "Sealing quiesces the encrypted
   stores").
 
 - **A barrier credential is a wipeable byte slice up to the service boundary,
@@ -664,7 +667,11 @@ services and to the server, which wraps the node's sealed-window probe with
   `DatabaseBarrierManager.barrierConfig`), so the one setting bounds every
   barrier's drain. A drain that runs out still seals and returns a
   `*quiesce.DrainTimeoutError` naming the stores, logged and audited (phase
-  `drain`); unseal reopens the gate. A system-managed tenant sealed by a node
+  `drain`); unseal reopens the gate. The timeout cancels none of the admitted
+  work, so a stalled operation that resumes after the wipe can still race it
+  into the panic `SealWatch` describes. `DatabaseService` treats a database
+  seal returning that error as sealed: it sets `StatusSealed` and ends the
+  database's streams, then returns the error. A system-managed tenant sealed by a node
   seal whose drain ran out is still recorded as the node seal's, so the node
   unseal brings it back. Pebble's own background flushes and
   compactions are not admitted, and a sealed barrier fails them as before.
@@ -1385,7 +1392,7 @@ key.
 | Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns; on the encrypted file backend, an open or write is refused with `*file.SealedError` wrapping `quiesce.ErrSealing` | **yes** |
 | Per-database `BarrierBackend` mutation started while its database barrier's seal is draining | refused with `*database.SealedError` before it reaches the store; a mutation already inside the store holds the `database` lease, so the drain waits for it or names it in `*quiesce.DrainTimeoutError` | **yes** |
 | Storage-layer sealed refusal reaching the API (`quiesce.ErrSealing`, `pebble.ErrBarrierSealed`), bare or under a service wrapper | classified Unavailable (retryable) like `seal.ErrSealed`; `pkg/store` and the vector adapter treat it as sealed | **yes** |
-| In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error | **yes** |
+| In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error; a database seal still marks the database sealed and ends its streams. The admitted work is not cancelled and can still race the key wipe (see `SealWatch`) | **key: yes; in-flight work: no** |
 | Several strategies registered, none named | `ErrNoStrategySpecified` | **yes** |
 | Unknown strategy name | registry lookup error | **yes** |
 | `--so-pin` without `--user-pin` (or vice versa) | refused — dual control | **yes** |
@@ -1775,7 +1782,9 @@ distinguishes them.
   writers racing a seal; `pkg/seal` (`barrier_quiesce_test.go`) proves a held
   lease blocks `Seal`, a new one is refused while sealing, the bound runs out
   with a `DrainTimeoutError` and the barrier still seals, and unseal reopens
-  the gate; `pkg/storage/pebble` proves every write, flush and compaction
+  the gate; `pkg/service` (`database_seal_drain_timeout_test.go`) proves a
+  database seal whose drain runs out still marks the database sealed and
+  ends its streams with the `SealedError`; `pkg/storage/pebble` proves every write, flush and compaction
   takes the lease. `pkg/seal/encfs` (`quiesce_test.go`) runs it over a real
   Pebble store on encfs on a real barrier, holding a WAL sync in flight
   through a gated file system rather than a sleep. The benchmark in
