@@ -375,7 +375,7 @@ elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
   . $(CURDIR)/.devcontainer/.env; \
   GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
   [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${GITEA_GO_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
+  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${MODULE_FORGE_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
@@ -2624,6 +2624,8 @@ lint-sweeps: $(LINT_SWEEPS)
 .PHONY: test-require-tool
 test-require-tool:
 	@./scripts/require-tool_test.sh
+	@./scripts/check-trivy-version_test.sh
+	@./scripts/check-trivy-version_test.sh --mutate
 
 # AGENTS.md: a feature folder is publication-bound -- it ships to GitHub when
 # the repo publishes -- so it must never carry an internal address, host name,
@@ -3573,15 +3575,17 @@ export GOLANGCI_LINT_VERSION
 export GOSEC_VERSION
 export GOVULNCHECK_VERSION
 export TRIVY_VERSION
+export TRIVY_IMAGE
 
 # The two `docker build` entrypoints get no compose interpolation, so they pass
-# the same four explicitly. One variable rather than four flags at each site,
-# for the same reason `export` beats per-recipe passing.
+# the same pins explicitly. One variable rather than a flag per pin at each
+# site, for the same reason `export` beats per-recipe passing.
 SCANNER_BUILD_ARGS := \
   --build-arg GOLANGCI_LINT_VERSION=$(GOLANGCI_LINT_VERSION) \
   --build-arg GOSEC_VERSION=$(GOSEC_VERSION) \
   --build-arg GOVULNCHECK_VERSION=$(GOVULNCHECK_VERSION) \
-  --build-arg TRIVY_VERSION=$(TRIVY_VERSION)
+  --build-arg TRIVY_VERSION=$(TRIVY_VERSION) \
+  --build-arg TRIVY_IMAGE=$(TRIVY_IMAGE)
 
 # gosec's install hint carries the same -ldflags the images use. Without it a
 # developer who follows the hint gets a binary that self-reports `dev`, which
@@ -3603,10 +3607,12 @@ SCANNER_BUILD_ARGS := \
 # and the variable would be the only thing keeping the guard alive.
 GOSEC_INSTALL       := go install -ldflags '-X main.Version=$(GOSEC_VERSION)' github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 GOVULNCHECK_INSTALL := go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-# The release tarball, which is how devops.md 8 has both CI legs install it and
-# how .devcontainer/Dockerfile bakes it into the image. The script is fetched at
-# the tag too, so the hint and the image run the same fixed artifact.
-TRIVY_INSTALL       := curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/$(TRIVY_VERSION)/contrib/install.sh | sh -s -- -b /usr/local/bin $(TRIVY_VERSION)
+# The binary out of the official image pinned by digest (TRIVY_IMAGE), which is
+# how the CI image, .devcontainer/Dockerfile and nightly.yml install it, so the
+# hint and the images run the same fixed artifact. A fixed container name rather
+# than $$(docker create ...): require-scanner echoes the hint inside double
+# quotes, which would run a command substitution instead of printing it.
+TRIVY_INSTALL       := docker create --name trivy-pin $(TRIVY_IMAGE) && docker cp trivy-pin:/usr/local/bin/trivy /usr/local/bin/trivy && docker rm trivy-pin
 
 # -tags AND a second module, because this leg scanned neither (#293).
 #
@@ -4153,6 +4159,7 @@ REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx
 DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--secret id=gomodauth,env=GOMODAUTH \
 	--build-arg GO_IMAGE=$(GO_IMAGE) \
+	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
 	-f $(DEVCONTAINER_DIR)/Dockerfile

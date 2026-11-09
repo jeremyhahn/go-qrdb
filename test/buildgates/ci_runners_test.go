@@ -65,8 +65,7 @@ var selfHostedWorkflows = map[string]bool{"code-review.yml": true}
 // giteaOnlyJobs speak the Gitea API (its issue queue, its merge endpoint) and
 // so do not run on github.com: the server_url guard is what keeps them off.
 var giteaOnlyJobs = map[string]map[string]bool{
-	"nightly.yml":   {"signal": true},
-	"automerge.yml": {"merge": true},
+	"nightly.yml": {"signal": true},
 }
 
 // serverURLExemptWorkflows keep their server_url splits for now: batch.yml's

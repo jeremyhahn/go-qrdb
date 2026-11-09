@@ -51,6 +51,64 @@ func TestTenantBarrierSignedInit_CLI_PerProtocol(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierSignedInit_CLI_ExpiredPerProtocol drives an expired
+// reference through the CLI on every transport. The node runs with
+// tenant.signed_init_ttl: 1ns, so a reference has lapsed by the time
+// barrier-init-complete reaches the node and no test waits: the complete,
+// even with the first admin's valid signature, is refused as expired and
+// initializes nothing.
+func TestTenantBarrierSignedInit_CLI_ExpiredPerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startTenantEntitlementNode(t, "signed_init_ttl: 1ns")
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			tenantID := fmt.Sprintf("six-%s-%d", proto.name, time.Now().UnixNano())
+			adminCert, adminKey := createTenantWithAdminCert(t, node, proto, tenantID, "Signed Init Expiry Tenant", "raft", false, tenantID+"-admin")
+			pair, err := tls.LoadX509KeyPair(adminCert, adminKey)
+			if err != nil {
+				t.Fatalf("[%s] load the first admin's key pair: %v", proto.name, err)
+			}
+			adminCLI := func(args ...string) (string, error) {
+				return runCLI(t, node.cli, append(tenantCLIArgsForProto(node, proto, adminCert, adminKey), args...)...)
+			}
+
+			out, err := adminCLI("--output", "json", "tenant", "barrier-init-begin", "--id", tenantID, "--strategy", "none", "--public-key", adminCert)
+			if err != nil {
+				t.Fatalf("[%s] barrier-init-begin: %v\noutput: %s", proto.name, err, out)
+			}
+			var begun struct {
+				ReferenceHex string `json:"reference_hex"`
+				StatementHex string `json:"statement_hex"`
+			}
+			start := strings.Index(out, "{")
+			if start < 0 {
+				t.Fatalf("[%s] barrier-init-begin printed no JSON: %q", proto.name, out)
+			}
+			if err := json.Unmarshal([]byte(out[start:]), &begun); err != nil {
+				t.Fatalf("[%s] barrier-init-begin output %q: %v", proto.name, out, err)
+			}
+			statement, err := hex.DecodeString(begun.StatementHex)
+			if err != nil || len(statement) == 0 || begun.ReferenceHex == "" {
+				t.Fatalf("[%s] barrier-init-begin printed no statement or reference: %q", proto.name, out)
+			}
+
+			sigPath := filepath.Join(t.TempDir(), "admin.sig")
+			if err := os.WriteFile(sigPath, signDetached(t, pair.PrivateKey.(crypto.Signer), statement), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out, err = adminCLI("tenant", "barrier-init-complete", "--id", tenantID, "--reference-hex", begun.ReferenceHex, "--sig-file", sigPath)
+			if err == nil || !strings.Contains(out+err.Error(), "statement reference expired") {
+				t.Fatalf("[%s] complete of an expired reference: err = %v, output %q; want the reference refused as expired", proto.name, err, out)
+			}
+			if out, err = adminCLI("tenant", "barrier-status", "--id", tenantID); err != nil || !strings.Contains(out, "Initialized: false") {
+				t.Fatalf("[%s] barrier-status after an expired reference: err = %v\n%s", proto.name, err, out)
+			}
+		})
+	}
+}
+
 func testTenantBarrierSignedInitOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 

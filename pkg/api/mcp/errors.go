@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"crypto/tls"
+	"strconv"
 )
 
 // StartError is returned when the MCP server fails to start listening
@@ -60,6 +61,18 @@ type UnknownPublicToolError struct {
 // Error returns a human-readable description.
 func (e *UnknownPublicToolError) Error() string {
 	return "mcp: tool " + e.Tool + " is declared public but is not registered on the server"
+}
+
+// UnknownOpTypeError is returned when a batch or transaction op names a type
+// the tool does not know. It refuses rather than defaulting to a put, which
+// would overwrite the op's key when the caller meant a read.
+type UnknownOpTypeError struct {
+	Type string
+}
+
+// Error returns a human-readable description.
+func (e *UnknownOpTypeError) Error() string {
+	return "mcp: unknown op type " + strconv.Quote(e.Type) + "; want put, get, delete or range"
 }
 
 // WeakTLSVersionError is returned by Start when WithTLS was given a

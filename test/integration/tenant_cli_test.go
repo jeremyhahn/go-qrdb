@@ -425,12 +425,18 @@ func testTenantTrustDomainRefusalOverProtocol(t *testing.T, node *multiProtoNode
 // constructor regardless of isolation type or key-management mode, so EVERY
 // dedicated isolation mode needs a configured volume pool, not just
 // volume/raft -- see TestTenant_CLI_IsolationTypeGating_PerProtocol's
-// barrier-denial case for the empirical proof on a pool-less node.
-func writeTenantEntitlementConfig(t *testing.T, volumePoolDir string) string {
+// barrier-denial case for the empirical proof on a pool-less node. Each of
+// tenantKeys ("key: value") is added to the tenant: section.
+func writeTenantEntitlementConfig(t *testing.T, volumePoolDir string, tenantKeys ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "qrdbd.yaml")
-	if err := os.WriteFile(cfgPath, []byte(tenantEntitlementYAML("passphrase", volumePoolDir)), 0o600); err != nil {
+	yaml := tenantEntitlementYAML("passphrase", volumePoolDir)
+	// tenant: is the YAML's last section, so each key continues it.
+	for _, key := range tenantKeys {
+		yaml += "  " + key + "\n"
+	}
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("writeTenantEntitlementConfig: %v", err)
 	}
 	return cfgPath
@@ -479,7 +485,8 @@ tenant:
 // --isolation-type value is actually createable. It returns a
 // *multiProtoNode so it drops directly into the same
 // runCLIProto/cliArgsFor/serverURLFor helpers as the shared harness.
-func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
+// tenantKeys go to writeTenantEntitlementConfig.
+func startTenantEntitlementNode(t *testing.T, tenantKeys ...string) *multiProtoNode {
 	t.Helper()
 
 	bin := buildBinary(t)
@@ -487,7 +494,7 @@ func startTenantEntitlementNode(t *testing.T) *multiProtoNode {
 	ca := generateTestCA(t)
 	dataDir := t.TempDir()
 	volumePoolDir := t.TempDir()
-	cfgPath := writeTenantEntitlementConfig(t, volumePoolDir)
+	cfgPath := writeTenantEntitlementConfig(t, volumePoolDir, tenantKeys...)
 
 	// Unix socket paths are limited to ~108 bytes by the kernel and
 	// t.TempDir() can exceed that, so place the socket under a short,

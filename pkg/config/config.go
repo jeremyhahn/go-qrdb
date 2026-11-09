@@ -378,11 +378,53 @@ type TenantConfig struct {
 	// logged and the stored floor stands. See docs/multi-tenancy/user.md.
 	// Overridable via QRDB_TENANT_ISOLATION_POLICY.
 	IsolationPolicy string `yaml:"isolation_policy"`
+
+	// SignedInitTTL is how long a signed barrier-init reference
+	// (barrier-init-begin) stays redeemable. Accepts a Go duration string,
+	// positive and at most MaxSignedInitTTL. Default: "5m". Overridable via
+	// QRDB_TENANT_SIGNED_INIT_TTL.
+	SignedInitTTL string `yaml:"signed_init_ttl"`
 }
 
 // DefaultQuotaReconcileIntervalString is the default
 // tenant.quota_reconcile_interval when unset.
 const DefaultQuotaReconcileIntervalString = "5m"
+
+// DefaultSignedInitTTLString is the default tenant.signed_init_ttl.
+const DefaultSignedInitTTLString = "5m"
+
+// MaxSignedInitTTL is the longest tenant.signed_init_ttl accepted: a signed
+// barrier-init reference lapses after five minutes at most.
+const MaxSignedInitTTL = 5 * time.Minute
+
+// ParseSignedInitTTL parses tenant.signed_init_ttl, treating empty as
+// DefaultSignedInitTTLString. It must be positive and at most
+// MaxSignedInitTTL.
+func ParseSignedInitTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = DefaultSignedInitTTLString
+	}
+	d, err := parseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 || d > MaxSignedInitTTL {
+		return 0, &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be positive and at most " + MaxSignedInitTTL.String()}
+	}
+	return d, nil
+}
+
+// SignedInitTTLDuration returns the parsed tenant.signed_init_ttl. Validate
+// refuses a bad value at load, so one that reaches here unvalidated yields
+// MaxSignedInitTTL, the default.
+func (c TenantConfig) SignedInitTTLDuration() time.Duration {
+	d, err := ParseSignedInitTTL(c.SignedInitTTL)
+	if err != nil {
+		return MaxSignedInitTTL
+	}
+	return d
+}
 
 const (
 	// DefaultLeaseCheckpointIntervalString is the default lease.checkpoint_interval.
@@ -1931,6 +1973,7 @@ func DefaultConfig() *Config {
 				AllowVolumeStorage:    false,
 			},
 			QuotaReconcileInterval: DefaultQuotaReconcileIntervalString,
+			SignedInitTTL:          DefaultSignedInitTTLString,
 		},
 		Auth: AuthConfig{
 			Enabled:       BoolPtr(true),
@@ -2033,6 +2076,9 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(cfg, func(dc *mapstructure.DecoderConfig) {
 		dc.TagName = "yaml"
 	}); err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+	if err := restoreProviderKeyCase(cfg, data); err != nil {
 		return nil, &LoadError{Path: path, Err: err}
 	}
 
@@ -2499,6 +2545,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.PermCacheTTL < 0 {
 		return &ValidationError{Field: "auth.perm_cache_ttl", Reason: "must not be negative"}
+	}
+	if _, err := ParseSignedInitTTL(c.Tenant.SignedInitTTL); err != nil {
+		return &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be a positive Go duration of at most " + MaxSignedInitTTL.String() + " (" + err.Error() + ")"}
 	}
 	if _, err := ParseInvitationTTL(c.Auth.InvitationTTL); err != nil {
 		return &ValidationError{Field: "auth.invitation_ttl", Reason: "must be a positive Go duration of at most " + MaxInvitationTTL.String() + " (" + err.Error() + ")"}
