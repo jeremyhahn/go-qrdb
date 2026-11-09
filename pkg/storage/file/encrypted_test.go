@@ -29,6 +29,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/testutil/memdir"
@@ -219,29 +220,45 @@ func TestEncrypted_SealedBarrierFailsClosed(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	ops := map[string]func() error{
-		"Get": func() error {
+	// Reads meet the barrier itself. A write meets the seal's closed quiesce
+	// gate first and is refused before it touches the disk.
+	ops := map[string]struct {
+		op   func() error
+		want error
+	}{
+		"Get": {func() error {
 			_, err := e.Get([]byte("customer/0001/ssn"))
 			return err
-		},
-		"Set": func() error {
+		}, seal.ErrSealed},
+		"Set": {func() error {
 			return e.Set([]byte("customer/0005/new"), []byte("v"))
-		},
-		"List": func() error {
+		}, quiesce.ErrSealing},
+		"List": {func() error {
 			_, err := e.List([]byte("customer/"))
 			return err
-		},
+		}, seal.ErrSealed},
 	}
-	for name, op := range ops {
-		if err := op(); !errors.Is(err, seal.ErrSealed) {
-			t.Errorf("%s while sealed = %v, want seal.ErrSealed", name, err)
+	for name, tc := range ops {
+		if err := tc.op(); !errors.Is(err, tc.want) {
+			t.Errorf("%s while sealed = %v, want %v", name, err, tc.want)
 		}
+	}
+	var refused *file.SealedError
+	if err := e.Set([]byte("customer/0005/new"), []byte("v")); !errors.As(err, &refused) {
+		t.Errorf("Set while sealed = %v, want a *file.SealedError", err)
 	}
 	if err := e.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	// The plaintext format marker lets a node open its store before unsealing;
+	// The seal left its quiesce gate closed: no store opens, and so no
+	// journal is replayed, until the barrier is unsealed.
+	if _, err := file.New(dir, file.WithEncryptor(atrest.New(barrier))); !errors.Is(err, quiesce.ErrSealing) {
+		t.Fatalf("New after the seal = %v, want quiesce.ErrSealing", err)
+	}
+	// A barrier sealed since boot has never closed its gate. The plaintext
+	// format marker lets a node open its store then, before unsealing;
 	// nothing in it is readable until then.
+	barrier.Quiesce().Reopen()
 	e = openEncrypted(t, dir, barrier)
 	defer e.Close()
 	reopened := map[string]func() error{
