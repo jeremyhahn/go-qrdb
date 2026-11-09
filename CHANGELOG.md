@@ -17,7 +17,11 @@ are not reconstructed here — their history is in the git log.
   (#1423). REST (`GET`/`PUT /v1/cluster/isolation-policy`), gRPC
   (`Get`/`SetClusterIsolationPolicy`), QUIC (`cluster.IsolationPolicyGet`/
   `Set`) and MCP (`qrdb_cluster_isolation_policy_get`/`_set`) read and set the
-  cluster floor, and a tenant update carries `isolation_policy`. Each verb
+  cluster floor, and a tenant update carries `isolation_policy`. The Go SDK
+  has `GetClusterIsolationPolicy`/`SetClusterIsolationPolicy` and
+  `UpdateTenantRequest.IsolationPolicy` on every transport, and the CLI has
+  `qrdb cluster-isolation-policy get|set` and
+  `qrdb tenant update --isolation-policy`. Each verb
   answers `feature.NotActiveError` (HTTP 503, `Unavailable`) and changes
   nothing until the new `strict-isolation` feature is active. This build does
   not support that feature: it is supported once G1 (a dedicated WAL for

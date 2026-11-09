@@ -333,6 +333,9 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	if req.Status != nil {
 		args["status"] = string(*req.Status)
 	}
+	if req.IsolationPolicy != nil {
+		args["isolation_policy"] = *req.IsolationPolicy
+	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update", args)
 	if err != nil {
@@ -416,6 +419,41 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	}
 
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
+}
+
+// mcpClusterIsolationPolicy is the result of both cluster isolation-floor
+// tools.
+type mcpClusterIsolationPolicy struct {
+	Policy string `json:"policy"`
+}
+
+// GetClusterIsolationPolicy returns the cluster-wide isolation floor by
+// calling the qrdb_cluster_isolation_policy_get tool.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "GetClusterIsolationPolicy", "qrdb_cluster_isolation_policy_get", map[string]any{})
+}
+
+// SetClusterIsolationPolicy sets the cluster-wide isolation floor by calling
+// the qrdb_cluster_isolation_policy_set tool, and returns the stored floor.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "SetClusterIsolationPolicy", "qrdb_cluster_isolation_policy_set", map[string]any{"policy": policy})
+}
+
+// clusterIsolationPolicy calls one of the cluster isolation-floor tools and
+// decodes the floor it answers.
+func (t *Transport) clusterIsolationPolicy(ctx context.Context, method, tool string, args map[string]any) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		return "", &transport.RequestError{Method: method, Err: err}
+	}
+	var out mcpClusterIsolationPolicy
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return "", &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return out.Policy, nil
 }
 
 // TenantBarrierInit initializes a per-tenant barrier through the

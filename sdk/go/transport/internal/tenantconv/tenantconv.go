@@ -43,6 +43,10 @@ func UpdateRequest(req *transport.UpdateTenantRequest) *pb.TenantUpdateRequest {
 		s := string(*req.Status)
 		out.Status = &s
 	}
+	if req.IsolationPolicy != nil {
+		p := *req.IsolationPolicy
+		out.IsolationPolicy = &p
+	}
 	return out
 }
 

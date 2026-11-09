@@ -207,6 +207,7 @@ system-tenant permission.
 | `--metadata` | `key=value`, repeatable | **replaces the whole metadata map** with the given entries |
 | `--clear-metadata` | bool | removes every metadata entry; not with `--metadata` |
 | `--status` | string | **`active \| suspended \| disabled`**; needs `tenants:set_status` (system-tenant Admin only) |
+| `--isolation-policy` | string | **`inherit \| strict`**; refused until the `strict-isolation` feature is active (see [`qrdb cluster-isolation-policy`](#qrdb-cluster-isolation-policy)) |
 
 A flag that is not given leaves its field unchanged. `--metadata` splits each
 entry at the first `=`, so a value may contain `=`; an entry with no `=` or an
@@ -264,6 +265,27 @@ operator sets it: `set-entitlement` needs `tenants:set_entitlements` and
 certificate must be a `system`-tenant identity. So does `tenant create`
 (`tenants:create`). A tenant's Admin is refused 403 even on its own tenant. See
 [api.md](api.md#who-may-call-what).
+
+### `qrdb cluster-isolation-policy`
+
+Reads or sets the cluster-wide tenant isolation floor
+([api.md](api.md#strict-isolation--ruled)).
+
+```
+qrdb cluster-isolation-policy get
+qrdb cluster-isolation-policy set <operator-access|strict>
+```
+
+The floor only tightens: a loosening is refused with the 409-class
+`IsolationPolicyChangeError`, and an unknown value is refused as invalid input.
+`qrdb tenant update <id> --isolation-policy strict` sets one tenant's policy,
+and a strict tenant cannot go back to `inherit`.
+
+Every one of these is refused, changing nothing, until the `strict-isolation`
+feature is active (HTTP 503, gRPC/QUIC `Unavailable`, refusal reason
+`FEATURE_NOT_ACTIVE`). This build does not support the feature: it is
+supported once G1 (a dedicated WAL for every database of a strict tenant)
+lands. The `tenant.isolation_policy` configuration key is not behind this gate.
 
 ### `qrdb tenant set-entitlement <id>`
 
