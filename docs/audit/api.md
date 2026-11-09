@@ -123,8 +123,8 @@ log, confined to the caller's own tenant: database `system`, log `audit`.
 | Inclusion / consistency proof | `vlog:proof` | RFC 9162 proofs that verify against the head's root |
 
 The audit capabilities above keep their shape; the log surface adds reads
-only. `ExpireBodies` on the instance is refused as expire-not-allowed
-(`vlog.ExpireNotAllowedError`): its retention is the audit prune, which
+only. `ExpireBodies` on the instance is refused with
+`vlog.ReservedLogError`: its retention is the audit prune, which
 expires bodies below the cutoff and keeps the tree.
 
 ## Query request

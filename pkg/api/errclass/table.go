@@ -412,7 +412,6 @@ var vlogRules = []rule{
 	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
 	as(&vlog.ReservedLogError{}, PermissionDenied),
 	as(&vlog.NotAuditLogError{}, InvalidArgument),
-	as(&vlog.AuditNameTakenError{}, FailedPrecondition),
 	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
 	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
 	// Another rotation applied first: the caller retries against the new key.

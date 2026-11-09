@@ -93,7 +93,6 @@ var refusalRules = []refusalRule{
 	{isType[vlog.ExpireNotAllowedError], protocol.AppErrorInvalid},
 	{isType[vlog.ReservedLogError], protocol.AppErrorInvalid},
 	{isType[vlog.NotAuditLogError], protocol.AppErrorInvalid},
-	{isType[vlog.AuditNameTakenError], protocol.AppErrorConflict},
 	{isType[vlog.UnsupportedKeyTypeError], protocol.AppErrorInvalid},
 	{isType[vlog.InvalidSigningKeyError], protocol.AppErrorInvalid},
 	{isType[vlog.LogExistsError], protocol.AppErrorConflict},
