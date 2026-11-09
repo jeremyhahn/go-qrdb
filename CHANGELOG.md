@@ -34,6 +34,11 @@ are not reconstructed here — their history is in the git log.
   The encrypted file backend holds the same lease across its open-time
   journal recovery and every write and journaled batch commit, and refuses
   both on a closed gate with `*file.SealedError` (`quiesce.ErrSealing`).
+  A per-database barrier's `BarrierBackend` holds a lease on its database
+  barrier's gate for every mutation, so `SealDatabase` drains it, and refuses
+  on a closed gate with `*database.SealedError`. `quiesce.ErrSealing` and
+  `pebble.ErrBarrierSealed` classify as Unavailable (retryable) under every
+  service wrapper and count as sealed in `pkg/store` and the vector adapter.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

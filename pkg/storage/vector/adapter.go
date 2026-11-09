@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
@@ -69,9 +70,12 @@ type PebbleVectorStorage struct {
 	seals *pebblestore.SealWatch
 }
 
-// barrierSealed reports whether err is a sealed barrier's refusal.
+// barrierSealed reports whether err is a sealed barrier's refusal: pkg/seal's
+// sentinels, a sealing barrier's closed quiesce gate (the file store's
+// *SealedError), or Pebble's sealed at-rest barrier.
 func barrierSealed(err error) bool {
-	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed)
+	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed) ||
+		errors.Is(err, quiesce.ErrSealing) || errors.Is(err, pebblestore.ErrBarrierSealed)
 }
 
 // leasedWriteHook, when set by a test, runs inside a write's quiesce lease

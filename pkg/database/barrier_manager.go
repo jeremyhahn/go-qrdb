@@ -25,6 +25,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -274,15 +275,28 @@ func (m *DatabaseBarrierManager) RegisterBarrier(
 
 // GetBarrier returns the BarrierEncryptor for the named database of tenantID.
 // The returned encryptor wraps the EpochBarrier from the StorageBarrier,
-// providing Encrypt/Decrypt/IsSealed for transparent data encryption.
+// providing Encrypt/Decrypt/IsSealed for transparent data encryption, and
+// exposes the StorageBarrier's quiesce gate, so a BarrierBackend over it
+// holds a lease the database seal drains.
 // Returns nil if the database is not registered in the barrier registry.
 func (m *DatabaseBarrierManager) GetBarrier(dbName, tenantID string) BarrierEncryptor {
 	tb, err := m.registry.GetTenant(barrierKey(dbName, tenantID))
 	if err != nil {
 		return nil
 	}
-	return tb.Barrier().EpochBarrier()
+	sb := tb.Barrier()
+	return gatedEncryptor{BarrierEncryptor: sb.EpochBarrier(), gate: sb.Quiesce()}
 }
+
+// gatedEncryptor is a database barrier's encryptor together with its
+// StorageBarrier's quiesce gate.
+type gatedEncryptor struct {
+	BarrierEncryptor
+	gate *quiesce.Gate
+}
+
+// Quiesce returns the gate the database barrier's seal closes and drains.
+func (g gatedEncryptor) Quiesce() *quiesce.Gate { return g.gate }
 
 // SealDatabase seals the encryption barrier for the named database of
 // tenantID, blocking all further encrypted storage operations until the
