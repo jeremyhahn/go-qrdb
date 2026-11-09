@@ -380,6 +380,8 @@ func (s *Server) Close() error {
 	return err
 }
 
+var errMultipleSessionsWithoutFlowControl = errors.New("webtransport: multiple sessions require flow control")
+
 func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
 	if err := s.initialize(); err != nil {
 		return nil, err
@@ -426,33 +428,44 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 		w.Header().Add(wtProtocolHeader, v)
 	}
 
-	str := w.(http3.HTTPStreamer).HTTPStream()
-	sessID := sessionID(str.StreamID())
 	fc := s.config.sessionFlowControl(settings)
 
 	// The session manager should already exist because ServeQUICConn creates it
 	// before any HTTP requests can be processed on this connection.
 	s.connsMx.Lock()
 	sessMgr, ok := s.conns[conn]
+	s.connsMx.Unlock()
 	if !ok {
-		s.connsMx.Unlock()
 		return nil, errors.New("webtransport: connection session manager not found")
 	}
 	// Multiple sessions on one HTTP/3 connection require WebTransport flow control.
-	if !fc.Enabled {
-		sessMgr.mx.Lock()
-		for _, entry := range sessMgr.sessions {
-			if entry.Session != nil {
-				sessMgr.mx.Unlock()
-				s.connsMx.Unlock()
-				str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-				return nil, errors.New("webtransport: multiple sessions require flow control")
-			}
+	if !fc.Enabled && sessMgr.hasSession() {
+		// Without WriteHeader, HTTPStream sends no response header.
+		if str, err := w.(http3.HTTPStreamer).HTTPStream(); err == nil {
+			str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+			str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
 		}
-		sessMgr.mx.Unlock()
+		return nil, errMultipleSessionsWithoutFlowControl
 	}
 
+	// Since quic-go v0.65.0, HTTPStream sends the response header only when
+	// WriteHeader came first, and WriteHeader after HTTPStream panics.
+	w.WriteHeader(http.StatusOK)
+	str, err := w.(http3.HTTPStreamer).HTTPStream()
+	if err != nil {
+		// The 200 response was not sent, so no session exists: refuse it.
+		return nil, fmt.Errorf("webtransport: taking over the request stream: %w", err)
+	}
+	sessID := sessionID(str.StreamID())
+
+	// Check again: another session may have been added while the header was sent.
+	s.connsMx.Lock()
+	if !fc.Enabled && sessMgr.hasSession() {
+		s.connsMx.Unlock()
+		str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+		str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+		return nil, errMultipleSessionsWithoutFlowControl
+	}
 	sess := newSession(
 		context.WithoutCancel(r.Context()),
 		sessID,
@@ -463,9 +476,6 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	)
 	sessMgr.AddSession(sessID, sess)
 	s.connsMx.Unlock()
-
-	w.WriteHeader(http.StatusOK)
-	w.(http.Flusher).Flush()
 	return sess, nil
 }
 

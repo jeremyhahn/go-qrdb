@@ -542,6 +542,14 @@ Invariants:
   `pkg/api/rest` accepts from the connection-limited QUIC listener itself and
   hands each connection to `ServeQUICConn`. The per-peer cap holds for
   WebTransport too.
+- **Bounded buffering before CONNECT.** A stream for a session that is not
+  established yet is buffered until the session arrives or the 5 s handshake
+  timeout passes. The timeout runs from the first stream for that session;
+  later streams do not extend it. A connection buffers at most 16 streams per
+  unknown session and 64 in total. Each stream past either cap is reset at
+  once with WT_BUFFERED_STREAM_REJECTED (-16 section 4.6), and so is each
+  buffered stream at the timeout. The caps live in the in-repo copy of
+  webtransport-go, `third_party/webtransport-go` (see its README.md).
 - **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
   applies its default: a request carrying an `Origin` header must match the
   request's host. The REST authentication chain is the access control.

@@ -165,7 +165,12 @@ func rejectWebTransportRequest(w http.ResponseWriter) {
 	if !ok {
 		return
 	}
-	str := streamer.HTTPStream()
+	// No header has been written, so HTTPStream sends none; it fails only
+	// once a response body was written, and then the stream is not ours.
+	str, err := streamer.HTTPStream()
+	if err != nil {
+		return
+	}
 	str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
 	str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
 }

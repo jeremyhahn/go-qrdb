@@ -45,7 +45,7 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
 	github.com/quic-go/quic-go v0.65.0
-	github.com/quic-go/webtransport-go v0.13.0
+	github.com/quic-go/webtransport-go v0.13.0 // patched in-repo copy, see third_party/webtransport-go/README.md
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.12.1
@@ -225,4 +225,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20261026165753-2ffab32bce7e // indirect
 )
 
-replace github.com/jeremyhahn/go-qrdb/sdk/go => ./sdk/go
+replace (
+	github.com/jeremyhahn/go-qrdb/sdk/go => ./sdk/go
+	github.com/quic-go/webtransport-go => ./third_party/webtransport-go
+)

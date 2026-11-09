@@ -29,8 +29,21 @@ type sessionEntry struct {
 
 const maxRecentlyClosedSessions = 16
 
+// Streams that arrive for a session that is not established yet are buffered
+// (draft-ietf-webtrans-http3-16 section 4.6), at most
+// maxBufferedStreamsPerSession for one session and maxBufferedStreamsPerConn
+// for all of them on one connection. A stream beyond either cap is rejected
+// with WT_BUFFERED_STREAM_REJECTED.
+const (
+	maxBufferedStreamsPerSession = 16
+	maxBufferedStreamsPerConn    = 64
+)
+
 type sessionManager struct {
 	timeout time.Duration
+
+	// numBuffered counts the streams buffered for all unestablished sessions.
+	numBuffered int
 
 	mx                     sync.Mutex
 	sessions               map[sessionID]sessionEntry
@@ -52,28 +65,20 @@ func (m *sessionManager) AddStream(str *quic.Stream, id sessionID, headerLen uin
 	m.mx.Lock()
 	defer m.mx.Unlock()
 
-	entry, ok := m.sessions[id]
-	if !ok {
-		// Receiving a stream for an unknown session is expected to be rare,
-		// so the performance impact of searching through the slice is negligible.
-		if slices.Contains(m.recentlyClosedSessions, id) {
-			str.CancelRead(WTBufferedStreamRejectedErrorCode)
-			str.CancelWrite(WTBufferedStreamRejectedErrorCode)
-			return
-		}
-		entry = sessionEntry{Unestablished: &unestablishedSession{}}
-		m.sessions[id] = entry
-	}
-	if entry.Session != nil {
+	if entry, ok := m.sessions[id]; ok && entry.Session != nil {
 		entry.Session.addIncomingStream(str, headerLen)
 		return
 	}
-
-	entry.Unestablished.Streams = append(
-		entry.Unestablished.Streams,
+	sess := m.bufferSlot(id)
+	if sess == nil {
+		str.CancelRead(WTBufferedStreamRejectedErrorCode)
+		str.CancelWrite(WTBufferedStreamRejectedErrorCode)
+		return
+	}
+	sess.Streams = append(
+		sess.Streams,
 		streamWithHeader[*quic.Stream]{Stream: str, HeaderLen: headerLen},
 	)
-	m.resetTimer(id)
 }
 
 // AddUniStream adds a new unidirectional stream to a WebTransport session.
@@ -84,36 +89,69 @@ func (m *sessionManager) AddUniStream(str *quic.ReceiveStream, id sessionID, hea
 	m.mx.Lock()
 	defer m.mx.Unlock()
 
+	if entry, ok := m.sessions[id]; ok && entry.Session != nil {
+		entry.Session.addIncomingUniStream(str, headerLen)
+		return
+	}
+	sess := m.bufferSlot(id)
+	if sess == nil {
+		str.CancelRead(WTBufferedStreamRejectedErrorCode)
+		return
+	}
+	sess.UniStreams = append(
+		sess.UniStreams,
+		streamWithHeader[*quic.ReceiveStream]{Stream: str, HeaderLen: headerLen},
+	)
+}
+
+// bufferSlot returns the unestablished session that buffers one more stream
+// for id, or nil if the stream must be rejected: the session was recently
+// closed or its buffering deadline expired, or a buffering cap is reached.
+// It must be called with m.mx held.
+func (m *sessionManager) bufferSlot(id sessionID) *unestablishedSession {
+	if m.numBuffered >= maxBufferedStreamsPerConn {
+		return nil
+	}
 	entry, ok := m.sessions[id]
 	if !ok {
 		// Receiving a stream for an unknown session is expected to be rare,
 		// so the performance impact of searching through the slice is negligible.
 		if slices.Contains(m.recentlyClosedSessions, id) {
-			str.CancelRead(WTBufferedStreamRejectedErrorCode)
-			return
+			return nil
 		}
 		entry = sessionEntry{Unestablished: &unestablishedSession{}}
+		// The deadline starts with the first buffered stream; later streams
+		// never extend it.
+		entry.Unestablished.Timer = time.AfterFunc(m.timeout, func() { m.onTimer(id) })
 		m.sessions[id] = entry
+	} else if len(entry.Unestablished.Streams)+len(entry.Unestablished.UniStreams) >= maxBufferedStreamsPerSession {
+		return nil
 	}
-	if entry.Session != nil {
-		entry.Session.addIncomingUniStream(str, headerLen)
-		return
-	}
-
-	entry.Unestablished.UniStreams = append(
-		entry.Unestablished.UniStreams,
-		streamWithHeader[*quic.ReceiveStream]{Stream: str, HeaderLen: headerLen},
-	)
-	m.resetTimer(id)
+	m.numBuffered++
+	return entry.Unestablished
 }
 
-func (m *sessionManager) resetTimer(id sessionID) {
-	entry := m.sessions[id]
-	if entry.Unestablished.Timer != nil {
-		entry.Unestablished.Timer.Reset(m.timeout)
-		return
+// releaseBuffered stops the deadline of an unestablished session and
+// releases its buffered streams from the connection's count.
+// It must be called with m.mx held.
+func (m *sessionManager) releaseBuffered(sess *unestablishedSession) {
+	if sess.Timer != nil {
+		sess.Timer.Stop()
 	}
-	entry.Unestablished.Timer = time.AfterFunc(m.timeout, func() { m.onTimer(id) })
+	m.numBuffered -= len(sess.Streams) + len(sess.UniStreams)
+}
+
+// hasSession reports whether an established session exists.
+func (m *sessionManager) hasSession() bool {
+	m.mx.Lock()
+	defer m.mx.Unlock()
+
+	for _, entry := range m.sessions {
+		if entry.Session != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *sessionManager) onTimer(id sessionID) {
@@ -134,6 +172,7 @@ func (m *sessionManager) onTimer(id sessionID) {
 	for _, uniStr := range sessionEntry.Unestablished.UniStreams {
 		uniStr.Stream.CancelRead(WTBufferedStreamRejectedErrorCode)
 	}
+	m.releaseBuffered(sessionEntry.Unestablished)
 	delete(m.sessions, id)
 }
 
@@ -154,9 +193,7 @@ func (m *sessionManager) AddSession(id sessionID, s *Session) {
 		for _, uniStr := range entry.Unestablished.UniStreams {
 			s.addIncomingUniStream(uniStr.Stream, uniStr.HeaderLen)
 		}
-		if entry.Unestablished.Timer != nil {
-			entry.Unestablished.Timer.Stop()
-		}
+		m.releaseBuffered(entry.Unestablished)
 		entry.Unestablished = nil
 	}
 	m.sessions[id] = sessionEntry{Session: s}
@@ -182,8 +219,8 @@ func (m *sessionManager) Close() {
 	defer m.mx.Unlock()
 
 	for _, entry := range m.sessions {
-		if entry.Unestablished != nil && entry.Unestablished.Timer != nil {
-			entry.Unestablished.Timer.Stop()
+		if entry.Unestablished != nil {
+			m.releaseBuffered(entry.Unestablished)
 		}
 	}
 	clear(m.sessions)
