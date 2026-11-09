@@ -17,6 +17,7 @@ package pebble
 import (
 	"errors"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -90,6 +91,90 @@ func TestOpen_RegistersTheStoreUnderItsDirectory(t *testing.T) {
 	defer w.Done()
 	if got := heldBy(&gate); !slices.Equal(got, []string{"db"}) {
 		t.Fatalf("held = %v; want [db]", got)
+	}
+}
+
+// createGateFS is a gated file system whose first file creation after it is
+// armed blocks until release closes, so a test holds pebble.Open in flight
+// without sleeping.
+type createGateFS struct {
+	quiesceFS
+	armed   *atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (fs createGateFS) Create(name string, category vfs.DiskWriteCategory) (vfs.File, error) {
+	if fs.armed.CompareAndSwap(true, false) {
+		close(fs.entered)
+		<-fs.release
+	}
+	return fs.quiesceFS.Create(name, category)
+}
+
+func TestOpen_HoldsTheLeaseWhileOpening(t *testing.T) {
+	var gate quiesce.Gate
+	fs := createGateFS{
+		quiesceFS: quiesceFS{FS: vfs.NewMem(), gate: &gate},
+		armed:     new(atomic.Bool),
+		entered:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	fs.armed.Store(true)
+	type opened struct {
+		db  *pebble.DB
+		w   *SealWatch
+		err error
+	}
+	done := make(chan opened, 1)
+	go func() {
+		db, w, err := Open("db", &pebble.Options{FS: fs}, nil)
+		done <- opened{db, w, err}
+	}()
+	<-fs.entered
+
+	gate.Close()
+	if got := heldBy(&gate); !slices.Equal(got, []string{"db"}) {
+		t.Fatalf("held while opening = %v; want [db]", got)
+	}
+	drained := make(chan error, 1)
+	go func() { drained <- gate.Drain(drainForever) }()
+	select {
+	case err := <-drained:
+		t.Fatalf("Drain returned %v with pebble.Open in flight", err)
+	default:
+	}
+
+	close(fs.release)
+	o := <-done
+	if o.err != nil {
+		t.Fatalf("Open: %v", o.err)
+	}
+	t.Cleanup(func() {
+		o.w.Close()
+		_ = o.db.Close()
+	})
+	if err := <-drained; err != nil {
+		t.Fatalf("Drain after Open = %v", err)
+	}
+	if got := heldBy(&gate); len(got) != 0 {
+		t.Fatalf("held after Open = %v; want none", got)
+	}
+}
+
+func TestOpen_RefusesOnAClosedGate(t *testing.T) {
+	var gate quiesce.Gate
+	gate.Close()
+	db, w, err := Open("db", &pebble.Options{FS: quiesceFS{FS: vfs.NewMem(), gate: &gate}}, nil)
+	var sealed *SealedError
+	if !errors.As(err, &sealed) || !errors.Is(err, ErrBarrierSealed) {
+		t.Fatalf("Open on a closed gate = %v; want a *SealedError", err)
+	}
+	if db != nil || w != nil {
+		t.Fatal("a refused Open returned a database")
+	}
+	if got := heldBy(&gate); len(got) != 0 {
+		t.Fatalf("held after a refused Open = %v; want none", got)
 	}
 }
 

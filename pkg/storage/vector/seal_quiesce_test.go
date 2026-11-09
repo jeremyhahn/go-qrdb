@@ -163,3 +163,111 @@ func TestVectorStorage_SealTimesOutNamingTheStore(t *testing.T) {
 		t.Fatalf("Compact while sealed = %v; want a *SealedError", err)
 	}
 }
+
+// unsealVector opens the barrier again after a seal.
+func unsealVector(t *testing.T, b *seal.StorageBarrier) {
+	t.Helper()
+	ctx := context.Background()
+	if err := b.Unseal(ctx, seal.MustCredentials(ctx, []byte(vectorQuiescePassphrase))); err != nil {
+		t.Fatalf("Unseal: %v", err)
+	}
+}
+
+// reopenVectorStore closes s and opens its directory again over b.
+func reopenVectorStore(t *testing.T, s *PebbleVectorStorage, dir string, b *seal.StorageBarrier) *PebbleVectorStorage {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	r, err := NewPebbleVectorStorage(DefaultConfig(dir), &testLogger{}, WithEncryptor(atrest.New(b)))
+	if err != nil {
+		t.Fatalf("NewPebbleVectorStorage: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// hasNamespace reports whether s lists the namespace name.
+func hasNamespace(t *testing.T, s *PebbleVectorStorage, name string) bool {
+	t.Helper()
+	infos, err := s.ListNamespaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListNamespaces: %v", err)
+	}
+	return slices.ContainsFunc(infos, func(info NamespaceInfo) bool { return info.Name == name })
+}
+
+func TestVectorStorage_CreateNamespaceCommitsWholeAcrossASeal(t *testing.T) {
+	ctx := context.Background()
+	b := newVectorQuiesceBarrier(t, seal.BarrierConfig{SealDrainTimeout: time.Minute})
+	s, dir := openSealedVectorStore(t, b)
+
+	var writes atomic.Int32
+	entered, release := make(chan struct{}), make(chan struct{})
+	leasedWriteHook = func() {
+		if writes.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+	}
+	t.Cleanup(func() { leasedWriteHook = nil })
+
+	created := make(chan error, 1)
+	go func() { created <- s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns2", Dimension: 2}) }()
+	<-entered
+	sealed := make(chan error, 1)
+	go func() { sealed <- b.Seal() }()
+	for !b.Quiesce().Closed() {
+		runtime.Gosched()
+	}
+	close(release)
+	if err := <-created; err != nil {
+		t.Fatalf("CreateNamespace across a seal = %v; want it to commit whole under its lease", err)
+	}
+	if err := <-sealed; err != nil {
+		t.Fatalf("Seal = %v", err)
+	}
+	if n := writes.Load(); n != 1 {
+		t.Fatalf("CreateNamespace made %d leased writes; want 1", n)
+	}
+
+	unsealVector(t, b)
+	if !hasNamespace(t, s, "ns2") {
+		t.Fatal("the live store does not list the created namespace")
+	}
+	if !hasNamespace(t, reopenVectorStore(t, s, dir, b), "ns2") {
+		t.Fatal("the reopened store does not list the created namespace")
+	}
+}
+
+func TestVectorStorage_CreateNamespaceRefusedWhileSealedLeavesNoHalfState(t *testing.T) {
+	ctx := context.Background()
+	b := newVectorQuiesceBarrier(t, seal.BarrierConfig{SealDrainTimeout: time.Minute})
+	s, dir := openSealedVectorStore(t, b)
+
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	var refused *pebblestore.SealedError
+	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns2", Dimension: 2}); !errors.As(err, &refused) {
+		t.Fatalf("CreateNamespace while sealed = %v; want a *SealedError", err)
+	}
+
+	unsealVector(t, b)
+	if hasNamespace(t, s, "ns2") {
+		t.Fatal("the live store lists a refused namespace")
+	}
+	s = reopenVectorStore(t, s, dir, b)
+	if hasNamespace(t, s, "ns2") {
+		t.Fatal("the reopened store lists a refused namespace")
+	}
+	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "ns2", Dimension: 2}); err != nil {
+		t.Fatalf("CreateNamespace after unseal: %v", err)
+	}
+	if !hasNamespace(t, s, "ns2") {
+		t.Fatal("the live store does not list the namespace created after unseal")
+	}
+	if !hasNamespace(t, reopenVectorStore(t, s, dir, b), "ns2") {
+		t.Fatal("the reopened store does not list the namespace created after unseal")
+	}
+}
