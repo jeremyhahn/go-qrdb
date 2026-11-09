@@ -302,6 +302,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- CI installs Trivy from its official image pinned by digest; the GitHub
+  release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
   `build/docker/devcontainer` tools stage fetched the Trivy release archive
   with a single `curl`, so one transient 504 from GitHub's release-asset
@@ -685,6 +687,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
+  and `test/performance/qrdb`, with the indirect requirement in
+  `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
+  reported it behind its latest release, inside the 7-day adoption window.
+- `golang.org/x/sync` v0.24.0 → v0.25.0 in the root module, with the indirect
+  requirement in `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`
+  following it; `deps-check` reported it behind its latest release.
 - `github.com/wailsapp/wails/v2` v2.17.0 → v2.17.1 in the root module, the
   desktop shell's only Wails requirement; `deps-check` reported it behind its
   latest release.
