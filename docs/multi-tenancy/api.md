@@ -529,7 +529,11 @@ leaks to a caller with no access to the tier.
 Every node applies the `tenant.isolation_policy` configuration key (`strict`
 or `operator-access`) to the cluster isolation-policy floor before it serves.
 The floor only tightens, and cannot become `strict` over tenants that are not:
-a refused transition is logged and the stored floor stands.
+a refused transition is logged and the stored floor stands. The key goes
+through the same `strict-isolation` gate as the verbs below, failing closed:
+until the feature is active a non-empty `tenant.isolation_policy` is a startup
+error naming `strict-isolation`, and the floor is not touched. An empty or
+unset key is a no-op.
 
 The floor and a tenant's policy have transport verbs, refused until the
 `strict-isolation` feature is active. This build does not support the feature
@@ -537,17 +541,22 @@ The floor and a tenant's policy have transport verbs, refused until the
 tenant, lands), so every one of them answers `feature.NotActiveError` and
 changes nothing:
 
-| Verb | REST | gRPC | QUIC | MCP |
-|------|------|------|------|-----|
-| Read the floor | `GET /v1/cluster/isolation-policy` | `GetClusterIsolationPolicy` | `cluster.IsolationPolicyGet` | `qrdb_cluster_isolation_policy_get` |
-| Set the floor | `PUT /v1/cluster/isolation-policy` `{"policy": "strict"}` | `SetClusterIsolationPolicy` | `cluster.IsolationPolicySet` | `qrdb_cluster_isolation_policy_set` |
-| Set a tenant's policy | a tenant update carrying `isolation_policy` | `TenantUpdate.isolation_policy` | `tenant.Update` `isolation_policy` | `qrdb_tenant_update` `isolation_policy` |
+| Verb | REST | gRPC | QUIC | MCP | Go SDK (`Tenants()`, every transport) | CLI |
+|------|------|------|------|-----|------|-----|
+| Read the floor | `GET /v1/cluster/isolation-policy` | `GetClusterIsolationPolicy` | `cluster.IsolationPolicyGet` | `qrdb_cluster_isolation_policy_get` | `GetClusterIsolationPolicy(ctx)` | `qrdb cluster-isolation-policy get` |
+| Set the floor | `PUT /v1/cluster/isolation-policy` `{"policy": "strict"}` | `SetClusterIsolationPolicy` | `cluster.IsolationPolicySet` | `qrdb_cluster_isolation_policy_set` | `SetClusterIsolationPolicy(ctx, policy)`, returning the stored floor | `qrdb cluster-isolation-policy set <operator-access\|strict>` |
+| Set a tenant's policy | a tenant update carrying `isolation_policy` | `TenantUpdate.isolation_policy` | `tenant.Update` `isolation_policy` | `qrdb_tenant_update` `isolation_policy` | `UpdateTenant` with `UpdateTenantRequest.IsolationPolicy` set (`""` is inherit; nil sends nothing and is not gated) | `qrdb tenant update <id> --isolation-policy <inherit\|strict>` |
 
-| Outcome | HTTP | gRPC / QUIC |
-|---------|------|-------------|
-| Feature not active (`feature.NotActiveError`) | 503 | `Unavailable` |
-| Unknown policy value (`tenant.InvalidIsolationPolicyError`) | 400 | `InvalidArgument` |
-| A loosening (`tenant.IsolationPolicyChangeError`) | 409 | `FailedPrecondition` |
+| Outcome | HTTP | gRPC / QUIC | Refusal reason |
+|---------|------|-------------|----------------|
+| Feature not active (`feature.NotActiveError`) | 503 | `Unavailable` | `FEATURE_NOT_ACTIVE` (metadata `feature`, `shard_id`) |
+| Unknown policy value (`tenant.InvalidIsolationPolicyError`) | 400 | `InvalidArgument` | `INVALID_ISOLATION_POLICY` (metadata `value`) |
+| A loosening (`tenant.IsolationPolicyChangeError`) | 409 | `FailedPrecondition` | |
+
+The refusal reason travels in the REST error body's `code` and metadata, the
+gRPC `ErrorInfo`, the QUIC error info and the MCP error envelope, so the Go
+SDK returns the typed error (`errors.As`) on every transport, embedded
+included.
 
 ### Capabilities
 
