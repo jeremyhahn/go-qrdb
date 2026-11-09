@@ -225,6 +225,94 @@ func TestCapsuleParseErrorClosesSessionWithDatagramError(t *testing.T) {
 	require.ErrorContains(t, err, "trailing data")
 }
 
+// TestConnectStreamFINClosesSessionCleanly: draft-ietf-webtrans-http3-16
+// section 6 makes a clean FIN on the CONNECT stream equal to
+// WT_CLOSE_SESSION with code 0 and an empty message. The session closes as
+// remotely closed and answers with a FIN, not a reset.
+func TestConnectStreamFINClosesSessionCleanly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+	defer cancel()
+	clientConn, serverConn := newConnPair(t, newUDPConnLocalhost(t), newUDPConnLocalhost(t))
+
+	clientStr, err := clientConn.OpenStreamSync(ctx)
+	require.NoError(t, err)
+	require.NoError(t, clientStr.Close())
+	serverStr, err := serverConn.AcceptStream(ctx)
+	require.NoError(t, err)
+
+	sess := newSession(context.Background(), 42, serverConn, quicHTTP3Stream{serverStr}, "", sessionFlowControl{})
+	select {
+	case <-sess.Context().Done():
+	case <-ctx.Done():
+		t.Fatal("the session stayed open after the CONNECT stream's FIN")
+	}
+
+	sess.closeMx.Lock()
+	closeErr := sess.closeErr
+	sess.closeMx.Unlock()
+	require.Equal(t, &SessionError{Remote: true, ErrorCode: 0, Message: ""}, closeErr)
+
+	require.NoError(t, clientStr.SetReadDeadline(time.Now().Add(scaleDuration(time.Second))))
+	_, err = io.ReadAll(clientStr)
+	require.NoError(t, err, "the session reset the CONNECT stream instead of closing it")
+}
+
+// TestConnectStreamFINInsideCapsuleIsAnError: a FIN that cuts a capsule
+// short is not a clean close.
+func TestConnectStreamFINInsideCapsuleIsAnError(t *testing.T) {
+	b := quicvarint.Append(nil, uint64(closeSessionCapsuleType))
+	b = quicvarint.Append(b, 8)
+	b = append(b, 0, 0, 0)
+
+	sess := newSession(context.Background(), 42, nil, mockHTTP3Stream{bytes.NewReader(b)}, "", sessionFlowControl{})
+	select {
+	case <-sess.Context().Done():
+	case <-time.After(scaleDuration(time.Second)):
+		t.Fatal("timeout")
+	}
+
+	sess.closeMx.Lock()
+	err := sess.closeErr
+	sess.closeMx.Unlock()
+	require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeDatagramError})
+}
+
+// TestMalformedCloseSessionMessageClosesSessionWithMessageError: a
+// WT_CLOSE_SESSION message over 1024 bytes or not UTF-8 is an
+// H3_MESSAGE_ERROR (draft-ietf-webtrans-http3-16 section 6).
+func TestMalformedCloseSessionMessageClosesSessionWithMessageError(t *testing.T) {
+	for name, msg := range map[string][]byte{
+		"oversized":     bytes.Repeat([]byte("b"), maxCloseCapsuleErrorMsgLen+1),
+		"invalid UTF-8": {'b', 0xff, 'b'},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := binary.BigEndian.AppendUint32(nil, 1337)
+			payload = append(payload, msg...)
+			var b bytes.Buffer
+			require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+
+			sess := newSession(
+				context.Background(),
+				42,
+				nil,
+				mockHTTP3Stream{bytes.NewReader(b.Bytes())},
+				"",
+				sessionFlowControl{},
+			)
+			select {
+			case <-sess.Context().Done():
+			case <-time.After(scaleDuration(time.Second)):
+				t.Fatal("timeout")
+			}
+
+			sess.closeMx.Lock()
+			err := sess.closeErr
+			sess.closeMx.Unlock()
+			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+		})
+	}
+}
+
 func TestForbiddenStreamDataFlowControlCapsulesCloseSession(t *testing.T) {
 	for _, tc := range []struct {
 		name string

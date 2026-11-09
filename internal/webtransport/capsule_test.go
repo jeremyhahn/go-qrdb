@@ -13,22 +13,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseCloseSessionCapsuleMessageTruncation(t *testing.T) {
-	longMsg := strings.Repeat("b", maxCloseCapsuleErrorMsgLen+500)
-	payload := make([]byte, 4+len(longMsg))
+func TestParseCloseSessionCapsuleRejectsMalformedMessage(t *testing.T) {
+	for name, msg := range map[string]string{
+		"oversized":            strings.Repeat("b", maxCloseCapsuleErrorMsgLen+500),
+		"one byte over":        strings.Repeat("b", maxCloseCapsuleErrorMsgLen+1),
+		"invalid UTF-8":        "b\xffb",
+		"truncated multi-byte": "b\xe2\x82",
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := make([]byte, 4+len(msg))
+			binary.BigEndian.PutUint32(payload[:4], uint32(1337))
+			copy(payload[4:], msg)
+
+			var b bytes.Buffer
+			require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+
+			_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+		})
+	}
+}
+
+func TestParseCloseSessionCapsuleAcceptsLongestMessage(t *testing.T) {
+	msg := strings.Repeat("é", maxCloseCapsuleErrorMsgLen/2)
+	payload := make([]byte, 4+len(msg))
 	binary.BigEndian.PutUint32(payload[:4], uint32(1337))
-	copy(payload[4:], longMsg)
+	copy(payload[4:], msg)
 
 	var b bytes.Buffer
 	require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
 
 	c, err := parseNextCapsule(http3.NewCapsuleParser(&b))
 	require.NoError(t, err)
-	closeCapsule, ok := c.(closeSessionCapsule)
-	require.True(t, ok)
-	require.Equal(t, SessionErrorCode(1337), closeCapsule.ErrorCode)
-	require.Len(t, closeCapsule.Message, maxCloseCapsuleErrorMsgLen)
-	require.Equal(t, strings.Repeat("b", maxCloseCapsuleErrorMsgLen), closeCapsule.Message)
+	require.Equal(t, closeSessionCapsule{ErrorCode: 1337, Message: msg}, c)
 }
 
 func TestAppendCloseSessionCapsuleMessageTruncation(t *testing.T) {

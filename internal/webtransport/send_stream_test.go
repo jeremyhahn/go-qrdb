@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -415,6 +416,113 @@ func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
 			require.Equal(t, []string{"hdr"}, qstr.writes)
 		})
 	}
+}
+
+// cancellableHeaderStream blocks writing the stream header until the stream
+// is cancelled, as a QUIC stream without flow-control credit does, and
+// records the code of each CancelWrite.
+type cancellableHeaderStream struct {
+	*blockingHeaderStream
+	startedOnce sync.Once
+	started     chan struct{}
+	cancelled   chan struct{}
+
+	mx    sync.Mutex
+	codes []quic.StreamErrorCode
+}
+
+func newCancellableHeaderStream() *cancellableHeaderStream {
+	return &cancellableHeaderStream{
+		blockingHeaderStream: &blockingHeaderStream{unblock: make(chan struct{})},
+		started:              make(chan struct{}),
+		cancelled:            make(chan struct{}),
+	}
+}
+
+func (s *cancellableHeaderStream) Write(b []byte) (int, error) {
+	if string(b) != "hdr" {
+		return len(b), nil
+	}
+	s.startedOnce.Do(func() { close(s.started) })
+	<-s.cancelled
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	return 0, &quic.StreamError{ErrorCode: s.codes[0]}
+}
+
+func (s *cancellableHeaderStream) WriteWithLimit(b []byte, _ func(int) int) (int, error) {
+	return s.Write(b)
+}
+
+func (s *cancellableHeaderStream) CancelWrite(code quic.StreamErrorCode) {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	s.codes = append(s.codes, code)
+	if len(s.codes) == 1 {
+		close(s.cancelled)
+	}
+}
+
+func (s *cancellableHeaderStream) firstCode() quic.StreamErrorCode {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	if len(s.codes) == 0 {
+		return 0
+	}
+	return s.codes[0]
+}
+
+// TestSendStreamCancelWriteThenCloseSessionAbortsHeader cancels a stream
+// whose header cannot be sent, then closes the session without ever giving
+// the header credit: session shutdown must reset the stream with
+// WT_SESSION_GONE, which ends the header write.
+func TestSendStreamCancelWriteThenCloseSessionAbortsHeader(t *testing.T) {
+	const errorCode StreamErrorCode = 42
+
+	t.Run("header sent by CancelWrite", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+		defer cancel()
+
+		qstr := newCancellableHeaderStream()
+		removed := make(chan struct{})
+		str := newSendStream(qstr, []byte("hdr"), nil, nil, func() { close(removed) })
+
+		str.CancelWrite(errorCode)
+		<-qstr.started
+		str.closeWithSession(&SessionError{ErrorCode: 1, Message: "bye"})
+
+		select {
+		case <-removed:
+		case <-ctx.Done():
+			t.Fatal("session shutdown left the stream header write blocked")
+		}
+		require.Equal(t, quic.StreamErrorCode(WTSessionGoneErrorCode), qstr.firstCode())
+	})
+
+	t.Run("header sent by Write", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+		defer cancel()
+
+		qstr := newCancellableHeaderStream()
+		str := newSendStream(qstr, []byte("hdr"), nil, nil, func() {})
+
+		errChan := make(chan error, 1)
+		go func() {
+			_, err := str.Write([]byte("payload"))
+			errChan <- err
+		}()
+		<-qstr.started
+		str.CancelWrite(errorCode)
+		str.closeWithSession(&SessionError{ErrorCode: 1, Message: "bye"})
+
+		select {
+		case err := <-errChan:
+			require.Equal(t, &StreamError{ErrorCode: errorCode}, err)
+		case <-ctx.Done():
+			t.Fatal("session shutdown left the stream header write blocked")
+		}
+		require.Equal(t, quic.StreamErrorCode(WTSessionGoneErrorCode), qstr.firstCode())
+	})
 }
 
 func TestSendStreamDataFlowControl(t *testing.T) {
