@@ -45,6 +45,9 @@ type restTenant struct {
 	Description   string                        `json:"description,omitempty"`
 	Metadata      map[string]string             `json:"metadata,omitempty"`
 	Status        transport.TenantStatus        `json:"status,omitempty"`
+	// IsolationPolicy is "strict", or empty when the tenant inherits the
+	// cluster floor.
+	IsolationPolicy string `json:"isolation_policy,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -130,16 +133,17 @@ type restTenantBarrierStatus struct {
 // errors leave the field at its zero value.
 func (r *restTenant) toTenantInfo() transport.TenantInfo {
 	info := transport.TenantInfo{
-		ID:            r.ID,
-		Name:          r.Name,
-		IsolationType: r.IsolationType,
-		VolumePool:    r.VolumePool,
-		Quotas:        r.Quotas,
-		Entitlements:  r.Entitlements,
-		Description:   r.Description,
-		Metadata:      r.Metadata,
-		Status:        r.Status,
-		Refusal:       r.Refusal,
+		ID:              r.ID,
+		Name:            r.Name,
+		IsolationType:   r.IsolationType,
+		VolumePool:      r.VolumePool,
+		Quotas:          r.Quotas,
+		Entitlements:    r.Entitlements,
+		Description:     r.Description,
+		Metadata:        r.Metadata,
+		Status:          r.Status,
+		IsolationPolicy: r.IsolationPolicy,
+		Refusal:         r.Refusal,
 	}
 	if ts := pickFirstNonEmpty(r.CreatedAtStr, r.CreatedAtAlt); ts != "" {
 		if parsed, err := time.Parse(time.RFC3339Nano, ts); err == nil {

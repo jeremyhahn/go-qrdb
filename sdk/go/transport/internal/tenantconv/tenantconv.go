@@ -60,13 +60,14 @@ func ToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 	}
 
 	info := transport.TenantInfo{
-		ID:            resp.GetId(),
-		Name:          resp.GetName(),
-		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
-		VolumePool:    resp.GetVolumePool(),
-		Description:   resp.GetDescription(),
-		Metadata:      resp.GetMetadata(),
-		Status:        transport.TenantStatus(resp.GetStatus()),
+		ID:              resp.GetId(),
+		Name:            resp.GetName(),
+		IsolationType:   transport.TenantIsolationType(resp.GetIsolationType()),
+		VolumePool:      resp.GetVolumePool(),
+		Description:     resp.GetDescription(),
+		Metadata:        resp.GetMetadata(),
+		Status:          transport.TenantStatus(resp.GetStatus()),
+		IsolationPolicy: resp.GetIsolationPolicy(),
 	}
 	if r := resp.GetRefusal(); r != nil {
 		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}

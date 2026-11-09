@@ -43,3 +43,15 @@ func TestToTenantInfo_Status(t *testing.T) {
 		t.Fatalf("Status = %q; want empty", got)
 	}
 }
+
+// TestToTenantInfo_IsolationPolicy proves the protobuf transports (gRPC,
+// QUIC, unix) carry the tenant's isolation policy, and leave it empty when
+// the tenant inherits the cluster floor.
+func TestToTenantInfo_IsolationPolicy(t *testing.T) {
+	if got := ToTenantInfo(&pb.TenantResponse{Id: "acme", IsolationPolicy: "strict"}).IsolationPolicy; got != "strict" {
+		t.Fatalf("IsolationPolicy = %q; want strict", got)
+	}
+	if got := ToTenantInfo(&pb.TenantResponse{Id: "acme"}).IsolationPolicy; got != "" {
+		t.Fatalf("IsolationPolicy = %q; want empty", got)
+	}
+}

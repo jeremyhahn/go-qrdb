@@ -194,3 +194,26 @@ func TestTenantUpdateCmd_IsolationPolicyFlag(t *testing.T) {
 		t.Fatalf("a refused loosening stored %q", got.IsolationPolicy)
 	}
 }
+
+// TestTenantGetCmd_PrintsIsolationPolicy proves `qrdb tenant get` reports
+// the tenant's isolation policy in both the table and the JSON output, and
+// prints no policy line for a tenant that inherits the cluster floor.
+func TestTenantGetCmd_PrintsIsolationPolicy(t *testing.T) {
+	svc := newGatedTenants(t, true)
+
+	out, err := executeRootCmd(t, svc, "table", "tenant", "get", "acme")
+	if err != nil || strings.Contains(out, "Isolation policy:") {
+		t.Fatalf("get of an inherit tenant = %v:\n%s", err, out)
+	}
+	if _, err := executeRootCmd(t, svc, "table", "tenant", "update", "acme", "--isolation-policy", "strict"); err != nil {
+		t.Fatalf("--isolation-policy strict: %v", err)
+	}
+	out, err = executeRootCmd(t, svc, "table", "tenant", "get", "acme")
+	if err != nil || !strings.Contains(out, "Isolation policy: strict") {
+		t.Fatalf("get = %v:\n%s", err, out)
+	}
+	out, err = executeRootCmd(t, svc, "json", "tenant", "get", "acme")
+	if err != nil || !strings.Contains(out, `"isolation_policy": "strict"`) {
+		t.Fatalf("get -o json = %v:\n%s", err, out)
+	}
+}

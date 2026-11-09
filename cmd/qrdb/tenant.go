@@ -885,6 +885,9 @@ func printTenant(t transport.TenantInfo) error {
 		if t.Status != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Status:     %s\n", t.Status)
 		}
+		if t.IsolationPolicy != "" {
+			_, _ = fmt.Fprintf(outputWriter, "Isolation policy: %s\n", t.IsolationPolicy)
+		}
 		if t.VolumePool != "" {
 			_, _ = fmt.Fprintf(outputWriter, "Pool:       %s\n", t.VolumePool)
 		}

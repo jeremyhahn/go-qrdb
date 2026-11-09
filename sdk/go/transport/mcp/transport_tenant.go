@@ -43,6 +43,9 @@ type mcpTenantInfo struct {
 	Description   string                        `json:"description,omitempty"`
 	Metadata      map[string]string             `json:"metadata,omitempty"`
 	Status        transport.TenantStatus        `json:"status,omitempty"`
+	// IsolationPolicy is "strict", or empty when the tenant inherits the
+	// cluster floor.
+	IsolationPolicy string `json:"isolation_policy,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -752,16 +755,17 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		return transport.TenantInfo{}
 	}
 	info := transport.TenantInfo{
-		ID:            m.ID,
-		Name:          m.Name,
-		IsolationType: m.IsolationType,
-		VolumePool:    m.VolumePool,
-		Quotas:        m.Quotas,
-		Entitlements:  m.Entitlements,
-		Description:   m.Description,
-		Metadata:      m.Metadata,
-		Status:        m.Status,
-		Refusal:       m.Refusal,
+		ID:              m.ID,
+		Name:            m.Name,
+		IsolationType:   m.IsolationType,
+		VolumePool:      m.VolumePool,
+		Quotas:          m.Quotas,
+		Entitlements:    m.Entitlements,
+		Description:     m.Description,
+		Metadata:        m.Metadata,
+		Status:          m.Status,
+		IsolationPolicy: m.IsolationPolicy,
+		Refusal:         m.Refusal,
 	}
 	if m.CreatedAt != "" {
 		if parsed, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {

@@ -35,15 +35,16 @@ import (
 // mapTenantInfo converts a tenant.TenantInfo to a transport.TenantInfo.
 func mapTenantInfo(info *tenant.TenantInfo) transport.TenantInfo {
 	ti := transport.TenantInfo{
-		ID:            info.ID,
-		Name:          info.Name,
-		IsolationType: transport.TenantIsolationType(info.EffectiveIsolationType()),
-		VolumePool:    info.VolumePool,
-		Description:   info.Description,
-		Metadata:      maps.Clone(info.Metadata),
-		Status:        transport.TenantStatus(info.Status),
-		CreatedAt:     info.CreatedAt,
-		UpdatedAt:     info.UpdatedAt,
+		ID:              info.ID,
+		Name:            info.Name,
+		IsolationType:   transport.TenantIsolationType(info.EffectiveIsolationType()),
+		VolumePool:      info.VolumePool,
+		Description:     info.Description,
+		Metadata:        maps.Clone(info.Metadata),
+		Status:          transport.TenantStatus(info.Status),
+		IsolationPolicy: string(info.IsolationPolicy),
+		CreatedAt:       info.CreatedAt,
+		UpdatedAt:       info.UpdatedAt,
 	}
 	if info.Quotas != nil {
 		ti.Quotas = mapQuotas(info.Quotas)
