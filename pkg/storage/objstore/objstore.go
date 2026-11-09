@@ -312,6 +312,52 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	return true, nil
 }
 
+var _ storage.Exclusive = (*Engine)(nil)
+
+// Exclusive runs fn under the engine's exclusive write lock, after resolving
+// a pending journal, so a read-check-write in fn compares against the state
+// the last commit left, never a half-applied one, and no other write lands
+// between its read and its write. See storage.Exclusive.
+func (e *Engine) Exclusive(fn func(storage.ReadWriter) error) error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	if err := e.resolvePendingJournal(); err != nil {
+		return err
+	}
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+	return fn(lockedView{e})
+}
+
+// lockedView is the storage.ReadWriter Exclusive hands to its callback: reads
+// and writes that do not take the write lock, because the caller already holds
+// it.
+type lockedView struct {
+	e *Engine
+}
+
+// Get reads key.
+func (v lockedView) Get(key []byte) ([]byte, error) { return v.e.Get(key) }
+
+// Set writes key without taking the write lock.
+func (v lockedView) Set(key, value []byte) error {
+	if len(key) == 0 {
+		return storage.ErrEmptyKey
+	}
+	return v.e.put(key, value)
+}
+
+// Delete removes key without taking the write lock.
+func (v lockedView) Delete(key []byte) error {
+	if len(key) == 0 {
+		return storage.ErrEmptyKey
+	}
+	return v.e.remove(key)
+}
+
 // Delete removes a key. A missing key is not an error (idempotent).
 func (e *Engine) Delete(key []byte) error {
 	if e.closed.Load() {
