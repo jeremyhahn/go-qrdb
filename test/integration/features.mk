@@ -85,7 +85,7 @@
 
 INTTEST_api_server          := cli_multiprotocol_test.go metrics_test.go grpc_web_test.go rest_cors_test.go
 INTTEST_attested_caller     :=
-INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go
+INTTEST_audit               := audit_cli_test.go audit_tenant_confinement_cli_test.go audit_replicated_cluster_test.go strict_home_audit_cluster_test.go
 INTTEST_auth_factors        := auth_cli_test.go auth_factor_condition_cli_test.go
 INTTEST_backup_restore      := backup_cli_test.go backup_restore_test.go
 INTTEST_barrier_seal        := barrier_cli_test.go barrier_change_passphrase_cli_test.go barrier_permutations_cli_test.go cluster_seal_cli_test.go cluster_seal_test.go cluster_enable_encryption_test.go cluster_rolling_encryption_test.go enable_encryption_cli_test.go enable_encryption_test.go tenant_barrier_sealed_window_cli_test.go tenant_barrier_restart_cli_test.go fips_kdf_test.go
@@ -117,7 +117,7 @@ INTTEST_identity_rbac       := roles_cli_test.go roles_reconcile_all_cli_test.go
 INTTEST_key_value           := kv_cli_test.go kv_test.go kv_version_cli_test.go kv_read_permission_test.go kv_restore_cli_test.go kv_restore_default_sm_cli_test.go batch_cli_test.go batch_import_cli_test.go batch_import_session_test.go
 INTTEST_key_wrapping        := key_wrapping_cli_test.go
 INTTEST_leases              := lease_binding_test.go lease_cli_test.go lease_keepalive_test.go
-INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go tenant_status_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go tenant_barrier_signed_init_cli_test.go strict_home_cluster_test.go tenant_home_test.go tenant_home_dataplane_cli_test.go tenant_undo_reuse_cli_test.go tenant_so_cli_test.go
+INTTEST_multi_tenancy       := tenant_cli_test.go tenant_data_root_cli_test.go tenant_deleted_cli_test.go tenant_isolation_cli_test.go tenant_status_cli_test.go isolation_raft_cluster_test.go isolation_raft_dedicated_wal_test.go isolation_raft_rebalance_test.go isolation_raft_scale_test.go isolation_raft_shard_ids_test.go tenant_barrier_init_proof_cli_test.go tenant_barrier_signed_init_cli_test.go strict_home_cluster_test.go strict_home_audit_cluster_test.go tenant_home_test.go tenant_home_dataplane_cli_test.go tenant_undo_reuse_cli_test.go tenant_so_cli_test.go
 INTTEST_rag                 := rag_cli_test.go
 INTTEST_rate_limit          := client_rate_limit_cli_test.go client_rate_limit_embedded_test.go
 INTTEST_release             :=
