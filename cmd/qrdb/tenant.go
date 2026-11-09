@@ -292,6 +292,7 @@ func newTenantUpdateCmd() *cobra.Command {
 		metadata      []string
 		clearMetadata bool
 		status        string
+		isoPolicy     string
 	)
 
 	cmd := &cobra.Command{
@@ -303,7 +304,10 @@ replaces the whole metadata map with the given key=value entries, and
 --clear-metadata removes every entry. --status moves the tenant to active,
 suspended or disabled (a disabled tenant cannot move to suspended); it needs
 tenants:set_status, which only a system-tenant Admin holds, and while a
-tenant is not active every principal of it is refused.`,
+tenant is not active every principal of it is refused. --isolation-policy
+sets the tenant's own isolation policy, inherit (follow the cluster floor) or
+strict; a strict tenant cannot go back to inherit, and the flag is refused,
+changing nothing, until the strict-isolation cluster feature is active.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := &transport.UpdateTenantRequest{
@@ -323,6 +327,10 @@ tenant is not active every principal of it is refused.`,
 				s := transport.TenantStatus(status)
 				req.Status = &s
 			}
+			if cmd.Flags().Changed("isolation-policy") {
+				p := tenantIsolationPolicyFlag(isoPolicy)
+				req.IsolationPolicy = &p
+			}
 
 			resp, err := client.Tenants().UpdateTenant(cmd.Context(), req)
 			if err != nil {
@@ -340,8 +348,19 @@ tenant is not active every principal of it is refused.`,
 	cmd.Flags().BoolVar(&clearMetadata, "clear-metadata", false, "Remove every metadata entry")
 	cmd.MarkFlagsMutuallyExclusive("metadata", "clear-metadata")
 	cmd.Flags().StringVar(&status, "status", "", "New tenant status (active|suspended|disabled)")
+	cmd.Flags().StringVar(&isoPolicy, "isolation-policy", "", "Tenant isolation policy (inherit|strict)")
 
 	return cmd
+}
+
+// tenantIsolationPolicyFlag maps the --isolation-policy value to the wire
+// form: inherit is the empty policy. Any other value goes to the server
+// unchanged, which refuses one it does not know.
+func tenantIsolationPolicyFlag(v string) string {
+	if v == "inherit" {
+		return ""
+	}
+	return v
 }
 
 // tenantMetadataFlag turns the --metadata and --clear-metadata flags into the
