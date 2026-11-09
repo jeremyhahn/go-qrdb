@@ -19,7 +19,7 @@ require (
 	github.com/quic-go/quic-go v0.65.0
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/tools v0.52.0
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20261026165753-2ffab32bce7e
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261104224025-d1e00e9f33ab
 	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	gorm.io/driver/mysql v1.6.0
