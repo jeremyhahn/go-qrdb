@@ -421,3 +421,144 @@ func TestGRPCVector_AfterClose(t *testing.T) {
 }
 
 func spIdx(s string) *string { return &s }
+
+// closedCase names one transport call expected to fail with ClosedError.
+type closedCase struct {
+	name string
+	call func() error
+}
+
+// runClosedCases runs each call as a subtest and asserts it returns
+// ClosedError.
+func runClosedCases(t *testing.T, cases []closedCase) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { assertClosed(t, c.call()) })
+	}
+}
+
+func TestGRPCUser_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"CreateUser", func() error {
+			_, e := tr.CreateUser(ctx, &transport.CreateUserRequest{WithoutEmailLoginKey: true})
+			return e
+		}},
+		{"GetUser", func() error { _, e := tr.GetUser(ctx, 1); return e }},
+		{"GetUserByUsername", func() error { _, e := tr.GetUserByUsername(ctx, "t1", "alice"); return e }},
+		{"UpdateUser", func() error { _, e := tr.UpdateUser(ctx, &transport.UpdateUserRequest{}); return e }},
+		{"DeleteUser", func() error { return tr.DeleteUser(ctx, 1) }},
+		{"ListUsers", func() error { _, e := tr.ListUsers(ctx, &transport.ListUsersRequest{}); return e }},
+		{"EnableUser", func() error { return tr.EnableUser(ctx, 1) }},
+		{"DisableUser", func() error { return tr.DisableUser(ctx, 1) }},
+		{"SuspendUser", func() error { return tr.SuspendUser(ctx, 1) }},
+		{"UnsuspendUser", func() error { return tr.UnsuspendUser(ctx, 1) }},
+	})
+}
+
+func TestGRPCRole_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"CreateRole", func() error { _, e := tr.CreateRole(ctx, &transport.CreateRoleRequest{}); return e }},
+		{"GetRole", func() error { _, e := tr.GetRole(ctx, "r1"); return e }},
+		{"UpdateRole", func() error { _, e := tr.UpdateRole(ctx, &transport.UpdateRoleRequest{}); return e }},
+		{"DeleteRole", func() error { return tr.DeleteRole(ctx, "r1") }},
+		{"ListRoles", func() error { _, e := tr.ListRoles(ctx, &transport.ListRolesRequest{}); return e }},
+		{"AssignRole", func() error { return tr.AssignRole(ctx, 1, "r1") }},
+		{"UnassignRole", func() error { return tr.UnassignRole(ctx, 1, "r1") }},
+		{"ListPermissions", func() error { _, e := tr.ListPermissions(ctx); return e }},
+	})
+}
+
+func TestGRPCCert_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"IssueCert", func() error { _, e := tr.IssueCert(ctx, &transport.IssueCertRequest{}); return e }},
+		{"EnrollCert", func() error { _, e := tr.EnrollCert(ctx, &transport.EnrollCertRequest{}); return e }},
+		{"RevokeCert", func() error { _, e := tr.RevokeCert(ctx, "001"); return e }},
+		{"ListCerts", func() error { _, e := tr.ListCerts(ctx, "t1"); return e }},
+		{"AddTrustAnchors", func() error { _, e := tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{}); return e }},
+		{"ListTrustAnchors", func() error { _, e := tr.ListTrustAnchors(ctx, "t1"); return e }},
+		{"RemoveTrustAnchor", func() error { return tr.RemoveTrustAnchor(ctx, "t1", "fp1") }},
+	})
+}
+
+func TestGRPCCollection_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"CreateCollection", func() error {
+			_, e := tr.CreateCollection(ctx, transport.CreateCollectionRequest{})
+			return e
+		}},
+		{"GetCollectionInfo", func() error { _, e := tr.GetCollectionInfo(ctx, "db", "users"); return e }},
+		{"ListCollections", func() error { _, e := tr.ListCollections(ctx, "db"); return e }},
+		{"DropCollection", func() error { return tr.DropCollection(ctx, "db", "users") }},
+		{"InsertDocument", func() error {
+			_, e := tr.InsertDocument(ctx, transport.InsertDocumentRequest{})
+			return e
+		}},
+		{"GetDocument", func() error { _, e := tr.GetDocument(ctx, "db", "users", 1); return e }},
+		{"UpdateDocument", func() error { return tr.UpdateDocument(ctx, transport.UpdateDocumentRequest{}) }},
+		{"DeleteDocument", func() error { return tr.DeleteDocument(ctx, "db", "users", 1) }},
+		{"ListDocuments", func() error { _, e := tr.ListDocuments(ctx, transport.ListDocumentsRequest{}); return e }},
+	})
+}
+
+func TestGRPCTenant_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"CreateTenant", func() error { _, e := tr.CreateTenant(ctx, &transport.CreateTenantRequest{}); return e }},
+		{"GetTenant", func() error { _, e := tr.GetTenant(ctx, "t1"); return e }},
+		{"ListTenants", func() error { _, e := tr.ListTenants(ctx); return e }},
+		{"DeleteTenant", func() error { return tr.DeleteTenant(ctx, "t1") }},
+		{"UpdateTenant", func() error { _, e := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{}); return e }},
+		{"UpdateTenantQuotas", func() error {
+			_, e := tr.UpdateTenantQuotas(ctx, &transport.UpdateTenantQuotasRequest{})
+			return e
+		}},
+	})
+}
+
+func TestGRPCUserAuthFactor_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"AddAuthFactor", func() error { _, e := tr.AddAuthFactor(ctx, &transport.AuthFactorAddRequest{}); return e }},
+		{"ListAuthFactors", func() error { _, e := tr.ListAuthFactors(ctx, &transport.AuthFactorListRequest{}); return e }},
+		{"GetAuthFactor", func() error { _, e := tr.GetAuthFactor(ctx, &transport.AuthFactorGetRequest{}); return e }},
+		{"RemoveAuthFactor", func() error {
+			_, e := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{})
+			return e
+		}},
+		{"DeleteAuthFactor", func() error {
+			_, e := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{})
+			return e
+		}},
+		{"RotateAuthFactor", func() error {
+			_, e := tr.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{})
+			return e
+		}},
+		{"RelabelAuthFactor", func() error {
+			_, e := tr.RelabelAuthFactor(ctx, &transport.AuthFactorRelabelRequest{})
+			return e
+		}},
+		{"LoginAuthFactor", func() error {
+			_, e := tr.LoginAuthFactor(ctx, &transport.AuthFactorLoginRequest{})
+			return e
+		}},
+	})
+}
+
+func TestGRPCWatch_AfterClose(t *testing.T) {
+	tr := newClosedTransport()
+	ctx := context.Background()
+	runClosedCases(t, []closedCase{
+		{"Watch", func() error { _, e := tr.Watch(ctx, "k", transport.WatchOptions{}); return e }},
+		{"WatchPrefix", func() error { _, e := tr.WatchPrefix(ctx, "p", transport.WatchOptions{}); return e }},
+	})
+}

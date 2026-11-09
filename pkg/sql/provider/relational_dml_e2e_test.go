@@ -144,6 +144,27 @@ func TestRelationalDML_EndToEnd(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
+func TestRelationalDML_EndToEnd_SelectByNonUniqueIndex(t *testing.T) {
+	h := newDDLHarness()
+	prov := h.newDDLProvider("shop")
+
+	mustExecQuery(t, prov, "shop",
+		`CREATE TABLE orders (
+			id BIGINT UNSIGNED PRIMARY KEY,
+			sku VARCHAR(64),
+			warehouse VARCHAR(32)
+		)`)
+	mustExecQuery(t, prov, "shop", "CREATE INDEX idx_warehouse ON orders (warehouse)")
+	mustExecQuery(t, prov, "shop", "INSERT INTO orders (id, sku, warehouse) VALUES (1, 'SKU-1', 'east')")
+	mustExecQuery(t, prov, "shop", "INSERT INTO orders (id, sku, warehouse) VALUES (2, 'SKU-2', 'east')")
+	mustExecQuery(t, prov, "shop", "INSERT INTO orders (id, sku, warehouse) VALUES (3, 'SKU-3', 'west')")
+
+	_, rows := mustExecQuery(t, prov, "shop", "SELECT id FROM orders WHERE warehouse = 'east' ORDER BY id")
+	require.Len(t, rows, 2)
+	assert.Equal(t, uint64(1), rows[0][0])
+	assert.Equal(t, uint64(2), rows[1][0])
+}
+
 func TestRelationalDML_EndToEnd_ReplaceInto(t *testing.T) {
 	h := newDDLHarness()
 	prov := h.newDDLProvider("shop")

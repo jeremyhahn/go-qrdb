@@ -124,7 +124,7 @@ func (b *StorageBarrier) unsealFromRootKey(ctx context.Context, rootKey *secure.
 	release()
 
 	b.activeStrategy.Store(active)
-	b.state.Store(stateUnsealed)
+	b.markUnsealed()
 	// The other rounds this unseal ends (a recovery round racing an unseal
 	// quorum, or the reverse) can never complete: their shares go now.
 	b.destroyUnrunnableRounds()
