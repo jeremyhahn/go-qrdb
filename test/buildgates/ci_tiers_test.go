@@ -24,7 +24,7 @@ package buildgates
 // stays the one required check, and it passes a skipped job only when the job
 // is tagged `full` or `nightly` and the run did not select that tier. The code
 // tier (DS-3160) runs on every event but a docs-only pull request, and the gate
-// passes its skip only when the changes job said docs-only (DOCS_ONLY true).
+// passes its skip only when the preflight job said docs-only (DOCS_ONLY true).
 //
 // Every property below is one edit from going false without anything else
 // noticing:
@@ -34,7 +34,7 @@ package buildgates
 //     that should have executed it;
 //   - a job tagged `nightly` whose `if:` differs from NIGHTLY, the same way;
 //   - a job tagged `code` whose `if:` is not exactly codeTierIf, that does not
-//     need changes and docker-build, or a DOCS_ONLY that is not changes' docs_only output;
+//     need preflight and docker-build, or a DOCS_ONLY that is not preflight' docs_only output;
 //   - a PR-tier job that gains an `if:`, so it skips on some event and either
 //     fails the gate there or, if retagged, stops gating pull requests;
 //   - a job missing from the gate's needs or check lines (fail-open);
@@ -47,7 +47,7 @@ package buildgates
 //     cancel-in-progress, Company Agent m701);
 //   - any other pull_request workflow without the ref-keyed concurrency group
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
-//     v1.22.1), or any workflow but ci.yml and automerge.yml regaining a
+//     v1.22.1), or any workflow but ci.yml regaining a
 //     `schedule:` (ruling 135: ci.yml's in-template trigger is the one
 //     scheduler, restored under Company Agent ruling 216(1); the owner ruling
 //     of 2026-10-11 and m433 forbid host cron and timers).
@@ -90,22 +90,22 @@ const (
 	// exactly so: every event but a docs-only pull request. docs_only is
 	// false off pull_request and on ci:full, so a code job runs on main,
 	// dispatch and ci:full. ci-template v1.29.2 (ruling 239(8)): a job gated
-	// on a changes output also tests an output the image build step sets, so
+	// on a preflight output also tests an output the image build step sets, so
 	// it also reads codeTierImageJob's it_image, empty on a docs-only PR; an
-	// `if:` that read only the changes output left such a job skipped
+	// `if:` that read only the preflight output left such a job skipped
 	// unstarted on a pull_request.
-	codeTierIf = "needs.changes.outputs.docs_only != 'true' && needs." + codeTierImageJob + ".outputs.it_image != ''"
+	codeTierIf = "needs.preflight.outputs.docs_only != 'true' && needs." + codeTierImageJob + ".outputs.it_image != ''"
 
 	// codeTierImageJob is the job that builds the images and whose output
 	// every code-tier `if:` tests, so every code-tier job needs it.
 	codeTierImageJob = "docker-build"
 
-	// codeTierGateEnv is ci-gate's DOCS_ONLY: the changes job's output.
-	codeTierGateEnv = "${{ needs.changes.outputs.docs_only }}"
+	// codeTierGateEnv is ci-gate's DOCS_ONLY: the preflight job's output.
+	codeTierGateEnv = "${{ needs.preflight.outputs.docs_only }}"
 
 	// changesJob decides whether a pull request is docs-only; every code
 	// job needs it, or its `if:` reads nothing.
-	changesJob = "changes"
+	changesJob = "preflight"
 
 	tierPR      = "pr"
 	tierCode    = "code"
@@ -147,25 +147,23 @@ const (
 // ci-template v1.27.0's nightly cron, the one scheduler under ruling 135,
 // restored under Company Agent ruling 216(1) (Software DS-3913); the owner
 // ruling of 2026-10-11 and m433 forbid host cron and timers, not this
-// trigger. automerge.yml is under owner hold
-// and out of #674's scope.
+// trigger.
 var scheduleAllowed = map[string]bool{
-	ciWorkflowName:  true,
-	"automerge.yml": true,
+	ciWorkflowName: true,
 }
 
 // prTierJobs, codeTierJobs, fullTierJobs, nightlyTierJobs and fullTierJob pin
 // the split itself, not just its consistency: moving a job between tiers is a
 // deliberate edit to this file. integration-features (featureJob) is one job
-// with a matrix leg per feature; ci-gate reads its aggregate result. changes
+// with a matrix leg per feature; ci-gate reads its aggregate result. preflight
 // (v1.24) is PR tier: it decides whether a pull request is docs-only, and lint
-// and image need it. lint, lint-gates (v1.27.0) and arch-gates stay PR tier
+// and image need it. lint, lint-gates (v1.27.0) and preflight stay PR tier
 // because make lint-gates and make check-public-releasable read docs too; image (#1046),
 // the unit-suite jobs (coverage, test-clusterproof, coverage-fts, test-tags
 // and test-sdk, ruling 211) and test-typescript build and test nothing a
 // docs-only pull request changes (DS-3160).
 var (
-	prTierJobs      = []string{changesJob, "lint", "lint-gates", "arch-gates"}
+	prTierJobs      = []string{changesJob, "lint", "lint-gates"}
 	codeTierJobs    = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
 	nightlyTierJobs = []string{"soak"}
@@ -538,12 +536,12 @@ jobs:
   build:
     steps:
       - run: make build
-  changes:
+  preflight:
     steps:
       - run: echo docs_only=false
   test-typescript:
     if: ` + codeTierIf + `
-    needs: [changes, docker-build]
+    needs: [preflight, docker-build]
     steps:
       - run: make test-typescript
   integration-x:
@@ -563,12 +561,12 @@ jobs:
       - run: make soak-x
   ci-gate:
     if: always()
-    needs: [build, fips, changes, test-typescript, integration-x, soak-x]
+    needs: [build, fips, preflight, test-typescript, integration-x, soak-x]
     steps:
       - env:
           RESULT_BUILD: ${{ needs.build.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
-          RESULT_CHANGES: ${{ needs.changes.result }}
+          RESULT_PREFLIGHT: ${{ needs.preflight.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
           RESULT_INTEGRATION_X: ${{ needs.integration-x.result }}
           RESULT_SOAK_X: ${{ needs.soak-x.result }}
@@ -578,7 +576,7 @@ jobs:
         run: |
           check() { :; }
           check build "$RESULT_BUILD" pr
-          check changes "$RESULT_CHANGES" pr
+          check preflight "$RESULT_PREFLIGHT" pr
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
           check integration-x "$RESULT_INTEGRATION_X" full
           check fips "$RESULT_FIPS" full
@@ -638,38 +636,38 @@ func TestCITierProblems_CanFail(t *testing.T) {
 	// The code tier (DS-3160): each case names the problem its own guard
 	// reports, so a case another guard happens to catch does not stand in for
 	// a guard that has gone missing.
-	codeJob := "  test-typescript:\n    if: " + codeTierIf + "\n    needs: [changes, docker-build]\n"
+	codeJob := "  test-typescript:\n    if: " + codeTierIf + "\n    needs: [preflight, docker-build]\n"
 	codeCases := map[string]struct{ body, want string }{
 		"code job with a different if": {replace(codeJob,
-			"  test-typescript:\n    if: github.event_name == 'push'\n    needs: [changes, docker-build]\n"),
+			"  test-typescript:\n    if: github.event_name == 'push'\n    needs: [preflight, docker-build]\n"),
 			"is tagged code in " + ciGateJob + " but its `if:`"},
-		"code job with no if": {replace(codeJob, "  test-typescript:\n    needs: [changes, docker-build]\n"),
+		"code job with no if": {replace(codeJob, "  test-typescript:\n    needs: [preflight, docker-build]\n"),
 			"is tagged code in " + ciGateJob + " but its `if:` is \"\""},
-		"code job without changes in needs": {replace(codeJob,
+		"code job without preflight in needs": {replace(codeJob,
 			"  test-typescript:\n    if: "+codeTierIf+"\n    needs: [build]\n"),
-			"code-tier job test-typescript does not need changes"},
+			"code-tier job test-typescript does not need preflight"},
 		"code job without docker-build in needs": {replace(codeJob,
-			"  test-typescript:\n    if: "+codeTierIf+"\n    needs: [changes]\n"),
+			"  test-typescript:\n    if: "+codeTierIf+"\n    needs: [preflight]\n"),
 			"code-tier job test-typescript does not need docker-build"},
 		"code job with no needs": {replace(codeJob, "  test-typescript:\n    if: "+codeTierIf+"\n"),
-			"code-tier job test-typescript does not need changes"},
+			"code-tier job test-typescript does not need preflight"},
 		"DOCS_ONLY missing": {replace("          DOCS_ONLY: "+codeTierGateEnv+"\n", ""),
 			"'s DOCS_ONLY is \"\""},
 		"DOCS_ONLY differs": {replace("DOCS_ONLY: "+codeTierGateEnv, "DOCS_ONLY: ${{ github.event_name == 'pull_request' }}"),
 			"'s DOCS_ONLY is "},
 		"pr job needs a code job": {replace("  build:\n    steps:", "  build:\n    needs: [test-typescript]\n    steps:"),
 			"pr-tier job build needs code-tier job test-typescript"},
-		"code job needs a full job": {replace("    needs: [changes, docker-build]\n", "    needs: [changes, docker-build, integration-x]\n"),
+		"code job needs a full job": {replace("    needs: [preflight, docker-build]\n", "    needs: [preflight, docker-build, integration-x]\n"),
 			"code-tier job test-typescript needs full-tier job integration-x"},
-		"code job needs a nightly job": {replace("    needs: [changes, docker-build]\n", "    needs: [changes, docker-build, soak-x]\n"),
+		"code job needs a nightly job": {replace("    needs: [preflight, docker-build]\n", "    needs: [preflight, docker-build, soak-x]\n"),
 			"code-tier job test-typescript needs nightly-tier job soak-x"},
 		"code job tagged pr": {replace(`"$RESULT_TEST_TYPESCRIPT" code`, `"$RESULT_TEST_TYPESCRIPT" pr`),
 			"is a code-tier job tagged pr"},
-		"pr job tagged code": {replace(`"$RESULT_CHANGES" pr`, `"$RESULT_CHANGES" code`),
-			"job changes is a PR-tier or full-tier job tagged code"},
+		"pr job tagged code": {replace(`"$RESULT_PREFLIGHT" pr`, `"$RESULT_PREFLIGHT" code`),
+			"job preflight is a PR-tier or full-tier job tagged code"},
 		"full job tagged code": {replace(`"$RESULT_INTEGRATION_X" full`, `"$RESULT_INTEGRATION_X" code`),
 			"job integration-x is a PR-tier or full-tier job tagged code"},
-		"code job missing from needs": {replace("changes, test-typescript, integration-x", "changes, integration-x"),
+		"code job missing from needs": {replace("preflight, test-typescript, integration-x", "preflight, integration-x"),
 			ciGateJob + " does not list test-typescript in needs"},
 	}
 	for name, tc := range codeCases {
@@ -986,9 +984,6 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	}
 	if p := workflowTriggerProblems("x.yml", parse(good)); len(p) != 0 {
 		t.Fatalf("the valid fixture must have no problems, got %v", p)
-	}
-	if p := workflowTriggerProblems("automerge.yml", parse("on:\n  schedule:\n    - cron: '0 3 * * *'\n")); len(p) != 0 {
-		t.Fatalf("automerge.yml is exempt from the schedule rule, got %v", p)
 	}
 	const ciGood = "on:\n  pull_request:\n  workflow_dispatch:\nconcurrency:\n  group: " + mainKeyedGroup + "\n  cancel-in-progress: " + cancelLiteral + "\n"
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {

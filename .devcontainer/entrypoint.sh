@@ -20,7 +20,7 @@
 # refusal git would silently skip the rewrite and resolve from the public
 # proxy, which is not what a machine holding a token asked for.
 if [ -n "${QRDB_FORGE_TOKEN_SET:-}" ] && [ -z "${QRDB_FORGE_HOST:-}" ]; then
-    echo "ERROR: .devcontainer/.env sets GITEA_GO_TOKEN but not GITEA_HOST." >&2
+    echo "ERROR: .devcontainer/.env sets MODULE_FORGE_TOKEN but not GITEA_HOST." >&2
     echo "Add GITEA_HOST=<host:port> of the module forge (see .devcontainer/.env.example)." >&2
     exit 1
 fi

@@ -487,6 +487,7 @@ Configures the underlying storage backend.
 - `cache_size` must not be negative (>= 0).
 - `max_open_files` must not be negative (>= 0).
 - `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
+- `objstore.settings` and `volume_pools[].options` keys pass to the provider exactly as written (go-objstore's `forcePathStyle` stays camelCase); two keys in one map that differ only in case are refused.
 - `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
 
 **`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
@@ -1198,6 +1199,7 @@ model.
 | `default_entitlements` | object | see below | Entitlements applied to a tenant whose own entitlements are unset |
 | `quota_reconcile_interval` | duration | `"5m"` | How often the storage-quota reconciler flushes byte counters and re-measures dedicated-volume tenants |
 | `isolation_policy` | string | `""` | Cluster isolation-policy floor applied at start: `strict` or `operator-access`. Empty applies nothing. The floor tightens only: this key can set or tighten it, never loosen it; a refused change is logged and the stored floor stands |
+| `signed_init_ttl` | duration | `"5m"` | How long a signed barrier-init reference (`qrdb tenant barrier-init-begin`) stays redeemable; positive and at most `5m`, so it can only shorten the default. Overridable via `QRDB_TENANT_SIGNED_INIT_TTL` |
 
 `default_quotas` keys: `max_databases` (default `5`), `max_raft_groups`
 (`0`), `max_replicas_per_group` (`3`), `max_total_replicas` (`3`),

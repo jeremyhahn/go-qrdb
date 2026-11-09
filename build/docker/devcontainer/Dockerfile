@@ -30,8 +30,10 @@
 
 ARG GO_IMAGE
 # Build-time module and tool downloads go through this proxy (devcontainer.md
-# §4). The caller's environment supplies another; no tracked file does.
-ARG GO_BUILD_PROXY=https://proxy.golang.org,direct
+# §4). The caller's environment supplies another; no tracked file does. It has
+# no direct entry (ci-template v1.34.1): a module the proxy cannot serve fails
+# the build instead of being fetched from its origin.
+ARG GO_BUILD_PROXY=https://proxy.golang.org
 
 # ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS tools
@@ -62,7 +64,7 @@ RUN set -eu; \
     esac; \
     v="${TRIVY_VERSION#v}"; \
     f="trivy_${v}_Linux-${arch}.tar.gz"; \
-    curl -fsSL -o "/tmp/${f}" "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${f}"; \
+    curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/${f}" "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${f}"; \
     echo "${sum}  /tmp/${f}" > /tmp/trivy.sha256; \
     sha256sum -c /tmp/trivy.sha256; \
     tar -xzf "/tmp/${f}" -C /out trivy; \
