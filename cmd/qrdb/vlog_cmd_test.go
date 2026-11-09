@@ -91,14 +91,14 @@ func (c *vlogCLI) must(args ...string) string {
 	return out
 }
 
-// seed creates a signed log named audit holding the given entries.
+// seed creates a signed log named ledger holding the given entries.
 func (c *vlogCLI) seed(entries ...string) {
 	c.t.Helper()
-	c.must("create", "--log", "audit", "--origin", servicetest.LogOrigin, "--signing-key-type", "ed25519", "--allow-expire-bodies")
+	c.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin, "--signing-key-type", "ed25519", "--allow-expire-bodies")
 	if len(entries) == 0 {
 		return
 	}
-	args := []string{"append", "--log", "audit"}
+	args := []string{"append", "--log", "ledger"}
 	for _, e := range entries {
 		args = append(args, "--entry", e)
 	}
@@ -230,38 +230,38 @@ func TestNewVlogCmd_IsRegisteredOnTheRoot(t *testing.T) {
 
 func TestVlogCreate_PrintsLogDatabaseAndKey(t *testing.T) {
 	cli := newVlogCLI(t)
-	out := cli.must("create", "--log", "audit", "--origin", servicetest.LogOrigin, "--signing-key-type", "ed25519")
-	requireContains(t, out, "Log:         audit", "Database:    system", "Key version: 1")
+	out := cli.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin, "--signing-key-type", "ed25519")
+	requireContains(t, out, "Log:         ledger", "Database:    system", "Key version: 1")
 }
 
 func TestVlogCreate_RejectsAnUnknownKeyTypeAndADuplicate(t *testing.T) {
 	cli := newVlogCLI(t)
-	if _, err := cli.run("table", "create", "--log", "audit", "--signing-key-type", "rsa"); err == nil {
+	if _, err := cli.run("table", "create", "--log", "ledger", "--signing-key-type", "rsa"); err == nil {
 		t.Fatal("create with an unknown key type succeeded")
 	}
-	cli.must("create", "--log", "audit", "--origin", servicetest.LogOrigin)
-	_, err := cli.run("table", "create", "--log", "audit", "--origin", servicetest.LogOrigin)
-	if exists := (*vlog.LogExistsError)(nil); !errors.As(err, &exists) || exists.ID.Log != "audit" {
-		t.Fatalf("second create error = %v (%T); want *vlog.LogExistsError naming audit", err, err)
+	cli.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin)
+	_, err := cli.run("table", "create", "--log", "ledger", "--origin", servicetest.LogOrigin)
+	if exists := (*vlog.LogExistsError)(nil); !errors.As(err, &exists) || exists.ID.Log != "ledger" {
+		t.Fatalf("second create error = %v (%T); want *vlog.LogExistsError naming ledger", err, err)
 	}
 }
 
 func TestVlogList_PrintsEveryLog(t *testing.T) {
 	cli := newVlogCLI(t)
-	cli.must("create", "--log", "audit", "--origin", servicetest.LogOrigin)
+	cli.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin)
 	cli.must("create", "--log", "events", "--origin", servicetest.LogOrigin)
-	requireContains(t, cli.must("list"), "audit\n", "events\n")
+	requireContains(t, cli.must("list"), "ledger\n", "events\n")
 }
 
 func TestVlogList_JSONCarriesTheLogs(t *testing.T) {
 	cli := newVlogCLI(t)
-	cli.must("create", "--log", "audit", "--origin", servicetest.LogOrigin)
+	cli.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin)
 	out, err := cli.run("json", "list")
 	if err != nil {
 		t.Fatalf("list json: %v", err)
 	}
 	var resp vlogwire.ListResult
-	if err := json.Unmarshal([]byte(out), &resp); err != nil || len(resp.Logs) != 1 || resp.Logs[0] != "audit" {
+	if err := json.Unmarshal([]byte(out), &resp); err != nil || len(resp.Logs) != 1 || resp.Logs[0] != "ledger" {
 		t.Fatalf("list json = %q (%v)", out, err)
 	}
 }
@@ -269,7 +269,7 @@ func TestVlogList_JSONCarriesTheLogs(t *testing.T) {
 func TestVlogAppend_PrintsFirstIndexAndCount(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b")
-	requireContains(t, cli.must("append", "--log", "audit", "--entry", "c"), "First index: 2", "Count:       1")
+	requireContains(t, cli.must("append", "--log", "ledger", "--entry", "c"), "First index: 2", "Count:       1")
 }
 
 func TestVlogAppend_MissingLogIsNotFound(t *testing.T) {
@@ -287,7 +287,7 @@ func TestVlogAppend_MissingLogIsNotFound(t *testing.T) {
 func TestVlogGet_PrintsIndexedBodies(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b", "c")
-	out := cli.must("get", "--log", "audit", "--from", "1", "--limit", "2")
+	out := cli.must("get", "--log", "ledger", "--from", "1", "--limit", "2")
 	if out != "1\tb\n2\tc\n" {
 		t.Fatalf("get = %q", out)
 	}
@@ -296,14 +296,14 @@ func TestVlogGet_PrintsIndexedBodies(t *testing.T) {
 func TestVlogGet_MarksExpiredEntries(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b")
-	cli.must("expire", "--log", "audit", "--cutoff", "1")
-	requireContains(t, cli.must("get", "--log", "audit"), "0\t(expired)\n", "1\tb\n")
+	cli.must("expire", "--log", "ledger", "--cutoff", "1")
+	requireContains(t, cli.must("get", "--log", "ledger"), "0\t(expired)\n", "1\tb\n")
 }
 
 func TestVlogProveInclusion_PrintsTheAuditPath(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b")
-	out := cli.must("prove-inclusion", "--log", "audit", "--index", "0", "--size", "2")
+	out := cli.must("prove-inclusion", "--log", "ledger", "--index", "0", "--size", "2")
 	requireContains(t, out, "Index: 0", "Size:  2")
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if _, err := hex.DecodeString(lines[len(lines)-1]); err != nil || len(lines) != 3 {
@@ -314,7 +314,7 @@ func TestVlogProveInclusion_PrintsTheAuditPath(t *testing.T) {
 func TestVlogProveInclusion_IndexBeyondTheTreeFails(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a")
-	if _, err := cli.run("table", "prove-inclusion", "--log", "audit", "--index", "5", "--size", "1"); err == nil {
+	if _, err := cli.run("table", "prove-inclusion", "--log", "ledger", "--index", "5", "--size", "1"); err == nil {
 		t.Fatal("prove-inclusion of an index beyond the tree succeeded")
 	}
 }
@@ -322,14 +322,14 @@ func TestVlogProveInclusion_IndexBeyondTheTreeFails(t *testing.T) {
 func TestVlogProveConsistency_PrintsTheProof(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b", "c")
-	out := cli.must("prove-consistency", "--log", "audit", "--size1", "1", "--size2", "3")
+	out := cli.must("prove-consistency", "--log", "ledger", "--size1", "1", "--size2", "3")
 	requireContains(t, out, "Size1: 1", "Size2: 3")
 }
 
 func TestVlogProveConsistency_SizeBeyondTheTreeFails(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a")
-	if _, err := cli.run("table", "prove-consistency", "--log", "audit", "--size1", "1", "--size2", "9"); err == nil {
+	if _, err := cli.run("table", "prove-consistency", "--log", "ledger", "--size1", "1", "--size2", "9"); err == nil {
 		t.Fatal("prove-consistency beyond the tree succeeded")
 	}
 }
@@ -337,8 +337,8 @@ func TestVlogProveConsistency_SizeBeyondTheTreeFails(t *testing.T) {
 func TestVlogHead_PrintsSizeRootAndCheckpoint(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b")
-	cli.must("sign-head", "--log", "audit")
-	out := cli.must("head", "--log", "audit")
+	cli.must("sign-head", "--log", "ledger")
+	out := cli.must("head", "--log", "ledger")
 	requireContains(t, out, "Size:            2", "Checkpoint size: 2", servicetest.LogOrigin)
 }
 
@@ -354,32 +354,32 @@ func TestVlogHead_MissingLogIsNotFound(t *testing.T) {
 func TestVlogSignHead_PrintsTheCheckpoint(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a")
-	out := cli.must("sign-head", "--log", "audit")
+	out := cli.must("sign-head", "--log", "ledger")
 	requireContains(t, out, servicetest.LogOrigin+"\n1\n", "— ")
 }
 
 func TestVlogSignHead_SecondSignAtTheSameSizeIsRefused(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a")
-	cli.must("sign-head", "--log", "audit")
-	_, err := cli.run("table", "sign-head", "--log", "audit")
+	cli.must("sign-head", "--log", "ledger")
+	_, err := cli.run("table", "sign-head", "--log", "ledger")
 	if exists := (*vlog.CheckpointExistsError)(nil); !errors.As(err, &exists) || exists.Size != 1 {
 		t.Fatalf("second sign-head error = %v (%T); want *vlog.CheckpointExistsError at size 1", err, err)
 	}
-	cli.must("append", "--log", "audit", "--entry", "b")
-	cli.must("sign-head", "--log", "audit")
+	cli.must("append", "--log", "ledger", "--entry", "b")
+	cli.must("sign-head", "--log", "ledger")
 }
 
 func TestVlogRotateKey_AdvancesTheKeyVersion(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed()
-	requireContains(t, cli.must("rotate-key", "--log", "audit", "--signing-key-type", "ecdsa-p256-sha256"), "Key version: 2")
+	requireContains(t, cli.must("rotate-key", "--log", "ledger", "--signing-key-type", "ecdsa-p256-sha256"), "Key version: 2")
 }
 
 func TestVlogRotateKey_RejectsAnUnknownKeyType(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed()
-	if _, err := cli.run("table", "rotate-key", "--log", "audit", "--signing-key-type", "rsa"); err == nil {
+	if _, err := cli.run("table", "rotate-key", "--log", "ledger", "--signing-key-type", "rsa"); err == nil {
 		t.Fatal("rotate-key with an unknown key type succeeded")
 	}
 }
@@ -387,15 +387,15 @@ func TestVlogRotateKey_RejectsAnUnknownKeyType(t *testing.T) {
 func TestVlogExpire_PrintsTheExpiredCount(t *testing.T) {
 	cli := newVlogCLI(t)
 	cli.seed("a", "b", "c")
-	requireContains(t, cli.must("expire", "--log", "audit", "--cutoff", "2"), "Expired: 2")
+	requireContains(t, cli.must("expire", "--log", "ledger", "--cutoff", "2"), "Expired: 2")
 }
 
 func TestVlogExpire_RefusedWhenTheLogDoesNotAllowIt(t *testing.T) {
 	cli := newVlogCLI(t)
-	cli.must("create", "--log", "audit", "--origin", servicetest.LogOrigin)
-	cli.must("append", "--log", "audit", "--entry", "a")
-	_, err := cli.run("table", "expire", "--log", "audit", "--cutoff", "1")
-	if refused := (*vlog.ExpireNotAllowedError)(nil); !errors.As(err, &refused) || refused.ID.Log != "audit" {
+	cli.must("create", "--log", "ledger", "--origin", servicetest.LogOrigin)
+	cli.must("append", "--log", "ledger", "--entry", "a")
+	_, err := cli.run("table", "expire", "--log", "ledger", "--cutoff", "1")
+	if refused := (*vlog.ExpireNotAllowedError)(nil); !errors.As(err, &refused) || refused.ID.Log != "ledger" {
 		t.Fatalf("expire on a log without --allow-expire-bodies error = %v (%T); want *vlog.ExpireNotAllowedError", err, err)
 	}
 }
