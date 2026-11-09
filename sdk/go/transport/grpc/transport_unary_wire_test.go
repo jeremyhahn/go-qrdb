@@ -946,3 +946,22 @@ func TestGRPC_ClosedTransport_RefusesEveryUnaryVerb(t *testing.T) {
 		})
 	}
 }
+
+// TestGRPC_UnaryCanceledContext_StopsEveryVerb proves each unary verb hands
+// the caller's context to the RPC: against a server that would answer every
+// call, a context cancelled before the call must surface as the cancellation.
+// A verb that substituted its own context would succeed instead.
+func TestGRPC_UnaryCanceledContext_StopsEveryVerb(t *testing.T) {
+	tr := connectWireServer(t, nil)
+	for name, call := range unaryCalls() {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var re *transport.RequestError
+			err := call(ctx, tr)
+			if !errors.As(err, &re) || re.Method != name || re.StatusCode != int(codes.Canceled) || status.Code(err) != codes.Canceled {
+				t.Fatalf("%s with a cancelled context = %v, want a RequestError naming it with status %d", name, err, codes.Canceled)
+			}
+		})
+	}
+}
