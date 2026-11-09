@@ -93,6 +93,13 @@ func validateSystemSOInputs(ca CeremonyCA, trustDomain string, strict bool, opts
 	case opts.SOPin == "":
 		return &SystemSORejectedError{Cause: errors.New("the system SO needs SOPin")}
 	}
+	// The SO's SPIFFE ID SAN is built from SOUsername: a name no SAN can be
+	// written for must be refused here, on both the CSR and the supplied
+	// certificate path, not in issueSystemSO after the PINs, the barrier
+	// and the admin credential are committed.
+	if _, err := adminLoginSignCSROptions(tenantid.System, opts.SOUsername, trustDomain).URIs(); err != nil {
+		return &SystemSORejectedError{Cause: err}
+	}
 	var soKey []byte
 	if len(opts.SOCertPEM) > 0 {
 		cert, err := adoptSystemSOCert(opts, caBundlePEM, trustDomain)

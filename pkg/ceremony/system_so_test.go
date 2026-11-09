@@ -175,6 +175,43 @@ func TestInitialize_SystemSO_SharedKeyChangesNothing(t *testing.T) {
 	}
 }
 
+// TestInitialize_SystemSO_MalformedUsernameChangesNothing: an SOUsername no
+// SPIFFE ID SAN can carry is refused in preflight, on the CSR and the
+// supplied-certificate path, before the PINs, the barrier or the admin
+// credential are committed.
+func TestInitialize_SystemSO_MalformedUsernameChangesNothing(t *testing.T) {
+	ca := newMockCA(t)
+	poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+	soCSR, _ := generateCSRPEM(t, "ignored-too")
+	cases := map[string]InitializeOptions{
+		"SO CSR":  {SOCSRPEM: soCSR},
+		"SO cert": {SOCertPEM: systemLeafPEM(t, ca, "so", newDeviceSigner(t).Public())},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			barrier := testBarrier(t)
+			svc := newTestCeremonyService(t, defaultConfig(), barrier)
+			pins := pintest.NewBackend(t)
+			svc.SetPINBackend(pins)
+			adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+			opts.AdminCSRPEM, opts.AdminCertPoolPEM = adminCSR, poolPEM
+			opts.SOPin, opts.UserPin, opts.SOUsername = "test-so-pin", "test-user-pin", "bad/name"
+			_, err := svc.Initialize(context.Background(), ca, &opts)
+			var rejected *SystemSORejectedError
+			require.ErrorAs(t, err, &rejected)
+			var subject *CertSubjectError
+			assert.ErrorAs(t, err, &subject)
+			assert.False(t, pins.IsInitialized(), "the PINs must stay uncommitted")
+			initialized, err := barrier.Initialized(context.Background())
+			require.NoError(t, err)
+			assert.False(t, initialized, "the barrier must stay uninitialised")
+			assert.Nil(t, svc.LastIssuedSystemSO())
+			last, _ := svc.LastIssuedAdminCertPEM()
+			assert.Nil(t, last)
+		})
+	}
+}
+
 // Naming no SO leaves the ceremony as it was: no SO certificate, no record.
 func TestInitialize_SystemSO_Optional(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
