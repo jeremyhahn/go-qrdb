@@ -121,17 +121,18 @@ func clusterIsolationTransitionAllowed(from, to ClusterIsolationPolicy) bool {
 	}
 }
 
-// clusterPolicyBackend is the minimal storage capability the cluster
-// isolation-policy record needs: a plain read, a guarded create (for the
-// first-ever write) and a guarded delete (the release half of the one
-// legal edit, operator-access -> strict). Both seal.StorageBackend
-// (TenantService's store) and kvstore.AtomicKVStore (kvTenantService's,
-// when its backing store carries the capability) satisfy it.
 // clusterPolicyGetter reads the stored cluster isolation floor.
 type clusterPolicyGetter interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 }
 
+// clusterPolicyBackend is the minimal storage capability the cluster
+// isolation-policy record needs: a plain read, a guarded create (for the
+// first-ever write) and a compare-and-swap (the one legal edit,
+// operator-access -> strict). Both seal.StorageBackend
+// (TenantService's store) and kvstore.AtomicKVStore (kvTenantService's,
+// when its backing store carries the capability) satisfy it. Only a write
+// requires it; every read goes through clusterPolicyGetter.
 type clusterPolicyBackend interface {
 	clusterPolicyGetter
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
@@ -256,16 +257,15 @@ func (s *TenantService) SetClusterIsolationPolicy(ctx context.Context, next Clus
 	return setClusterIsolationPolicy(ctx, backend, next)
 }
 
-// ClusterIsolationPolicy returns the cluster-wide isolation floor. A
-// no-seal backing store that carries no atomic capability reads as
-// ClusterIsolationPolicyOperatorAccess: nothing can have tightened it, since
-// SetClusterIsolationPolicy refuses on the same store (ErrTenantStoreNotAtomic).
+// ClusterIsolationPolicy returns the cluster-wide isolation floor. The read
+// needs only Get, never the write capability: a store without CompareAndSwap
+// (e.g. one on the earlier PutIfAbsent/CompareAndDelete contract) may still
+// hold a strict floor written before an upgrade, and reading it as
+// operator-access would silently loosen enforcement. There is no "no Get"
+// fallback because the store field is a kvstore.KVStore, whose Get is part of
+// the type; only SetClusterIsolationPolicy requires clusterPolicyBackend.
 func (s *kvTenantService) ClusterIsolationPolicy(ctx context.Context) (ClusterIsolationPolicy, error) {
-	backend, ok := s.store.(clusterPolicyBackend)
-	if !ok {
-		return ClusterIsolationPolicyOperatorAccess, nil
-	}
-	return getClusterIsolationPolicy(ctx, backend)
+	return getClusterIsolationPolicy(ctx, s.store)
 }
 
 // SetClusterIsolationPolicy tightens the cluster-wide isolation floor,
