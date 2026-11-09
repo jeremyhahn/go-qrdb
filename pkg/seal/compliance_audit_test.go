@@ -91,6 +91,36 @@ func TestComplianceAuditLogger_MapsBarrierEvents(t *testing.T) {
 	}
 }
 
+// A tenant barrier records on the platform trail (BarrierRegistry), which
+// holds no tenant identity: a holder conflict keeps its scope and reason
+// there but not the tenant holder's username or certificate thumbprint. The
+// system barrier's own holders are platform principals and stay named.
+func TestComplianceAuditLogger_TenantBarrierOnThePlatformTrailNamesNoHolder(t *testing.T) {
+	conflict := &AuditEvent{Subject: "seal", Action: "holder-record-conflict", Outcome: "deny", Details: map[string]string{
+		"scope": "tenant:acme", "username": "bob", "cached_cert": "thumb-CANARY", "strategy": "shamir",
+	}}
+	ring := audit.NewRingBuffer(4)
+	if err := NewComplianceAuditLogger(ring, tenantid.System, TenantBarrierAuditName("acme")).Log(context.Background(), conflict); err != nil {
+		t.Fatalf("Log = %v", err)
+	}
+	ev := ring.Snapshot()[0]
+	if ev.TenantID != tenantid.System || ev.Attributes["barrier"] != TenantBarrierAuditName("acme") || ev.Attributes["scope"] != "tenant:acme" {
+		t.Fatalf("event = %+v, want the tenant barrier's record on the platform trail", ev)
+	}
+	for _, k := range []string{"username", "cached_cert"} {
+		if _, ok := ev.Attributes[k]; ok {
+			t.Fatalf("platform record carries the tenant holder's %s: %v", k, ev.Attributes)
+		}
+	}
+	system := audit.NewRingBuffer(4)
+	if err := NewComplianceAuditLogger(system, tenantid.System, SystemBarrierAuditName).Log(context.Background(), conflict); err != nil {
+		t.Fatalf("Log = %v", err)
+	}
+	if got := system.Snapshot()[0].Attributes["username"]; got != "bob" {
+		t.Fatalf("system barrier holder conflict username = %v, want bob", got)
+	}
+}
+
 // A nil trail yields no logger, so the barrier records nothing; an empty
 // tenant is the system tenant.
 func TestNewComplianceAuditLogger_NilTrailAndSystemTenant(t *testing.T) {

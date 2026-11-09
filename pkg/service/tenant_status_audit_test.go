@@ -78,6 +78,46 @@ func TestTenantStatusAudit_RecordsTheChange(t *testing.T) {
 	}
 }
 
+// A status change made by a tenant's own principal names no actor on the
+// platform trail: the platform trail holds no tenant username, and the
+// principal is recorded on the tenant's own trail instead.
+func TestTenantStatusAudit_TenantCallerStaysOnItsOwnTrail(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	svc := auditedTenants(t, ring, audit.FailClosed)
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "alice", TenantID: "acme"})
+	if _, err := svc.UpdateTenant(ctx, "acme", setStatus(tenant.StatusSuspended)); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	var platform, own []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		switch ev.TenantID {
+		case tenantid.System:
+			platform = append(platform, ev)
+		case "acme":
+			own = append(own, ev)
+		default:
+			t.Fatalf("event on tenant %q, want system or acme: %+v", ev.TenantID, ev)
+		}
+	}
+	if len(platform) != 2 {
+		t.Fatalf("recorded %d platform events, want the permitted record and its outcome", len(platform))
+	}
+	for i, ev := range platform {
+		if ev.Actor != "" {
+			t.Fatalf("platform event %d Actor = %q, want none for a tenant principal", i, ev.Actor)
+		}
+		for k, v := range ev.Attributes {
+			if v == "alice" {
+				t.Fatalf("platform event %d attribute %s names the tenant principal", i, k)
+			}
+		}
+	}
+	if len(own) != 1 || own[0].Action != ActionTenantStatusChange || own[0].Actor != "alice" ||
+		own[0].Outcome != audit.OutcomeSuccess || own[0].Attributes["to"] != string(tenant.StatusSuspended) {
+		t.Fatalf("tenant-trail events = %+v, want one status-change success by alice", own)
+	}
+}
+
 // Under the default fail-closed policy a record that cannot be written
 // refuses the change; under fail-open the change is stored regardless.
 func TestTenantStatusAudit_GateFollowsThePolicy(t *testing.T) {

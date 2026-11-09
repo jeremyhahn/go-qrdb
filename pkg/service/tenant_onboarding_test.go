@@ -366,21 +366,45 @@ func TestOnboardTenant_EmitsAuditRecordOnSuccess(t *testing.T) {
 		t.Fatalf("OnboardTenant: %v", err)
 	}
 
-	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
-	if ev == nil {
-		t.Fatal("no tenant.onboard event recorded")
+	var platform, own []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action != ActionTenantOnboard {
+			continue
+		}
+		switch ev.TenantID {
+		case tenantid.System:
+			platform = append(platform, ev)
+		case "acme":
+			own = append(own, ev)
+		default:
+			t.Fatalf("tenant.onboard event on tenant %q, want system or acme: %+v", ev.TenantID, ev)
+		}
 	}
-	if ev.TenantID != tenantid.System || ev.Resource != "tenant:acme" {
-		t.Fatalf("event = %+v, want TenantID=system Resource=tenant:acme", ev)
+	if len(platform) != 2 {
+		t.Fatalf("recorded %d platform tenant.onboard events, want the permitted record and its outcome", len(platform))
 	}
-	if ev.Outcome != audit.OutcomeSuccess {
-		t.Fatalf("event Outcome = %q, want success", ev.Outcome)
+	for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
+		ev := platform[i]
+		if ev.Resource != "tenant:acme" || ev.Outcome != want {
+			t.Fatalf("platform event %d = %+v, want Resource=tenant:acme Outcome=%s", i, ev, want)
+		}
+		if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
+			t.Fatalf("platform event %d isolation_type = %v, want %q", i, ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+		}
+		// The platform trail holds no tenant username: the admin's identity
+		// stays on the tenant's own trail.
+		if _, ok := ev.Attributes["admin_username"]; ok {
+			t.Fatalf("platform event %d carries admin_username: %v", i, ev.Attributes)
+		}
+		for k, v := range ev.Attributes {
+			if v == "admin" {
+				t.Fatalf("platform event %d attribute %s names the tenant admin", i, k)
+			}
+		}
 	}
-	if ev.Attributes["admin_username"] != "admin" {
-		t.Fatalf("event admin_username = %v, want admin", ev.Attributes["admin_username"])
-	}
-	if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
-		t.Fatalf("event isolation_type = %v, want %q", ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+	if len(own) != 1 || own[0].Outcome != audit.OutcomeSuccess || own[0].Resource != "tenant:acme" ||
+		own[0].Attributes["admin_username"] != "admin" {
+		t.Fatalf("tenant-trail tenant.onboard events = %+v, want one success naming admin_username=admin", own)
 	}
 }
 
@@ -459,6 +483,14 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 	if ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
 		t.Fatalf("event Outcome = %q, want %q", ev.Outcome, audit.OutcomeFailure+":onboard-failed")
+	}
+	for _, rec := range ring.Snapshot() {
+		if rec.TenantID != tenantid.System {
+			t.Fatalf("a failed onboarding filed on tenant %q's trail: %+v", rec.TenantID, rec)
+		}
+		if _, ok := rec.Attributes["admin_username"]; ok {
+			t.Fatalf("platform record carries admin_username: %+v", rec)
+		}
 	}
 }
 
