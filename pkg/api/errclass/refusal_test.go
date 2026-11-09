@@ -213,6 +213,23 @@ func TestRefusal_invalidIsolationPolicy(t *testing.T) {
 	}
 }
 
+// TestRefusal_sameClassOtherErrorsCarryNone pins that the feature-not-active
+// and invalid-isolation-policy encoders key on the error's type, not only its
+// class: another Unavailable or InvalidArgument error carries no refusal.
+func TestRefusal_sameClassOtherErrorsCarryNone(t *testing.T) {
+	for want, err := range map[Class]error{
+		Unavailable:     &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}},
+		InvalidArgument: &tenant.InitStatementRequiredError{TenantID: "t"},
+	} {
+		if got := Classify(err); got != want {
+			t.Fatalf("Classify(%v) = %s, want %s", err, got, want)
+		}
+		if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+			t.Fatalf("Refusal(%v) = %q, %v, %v; want none", err, reason, md, ok)
+		}
+	}
+}
+
 // A feature refusal wrapped by an error that reclassifies it keeps the
 // wrapper's own wire shape.
 func TestRefusal_reclassifiedFeatureRefusalsCarryNone(t *testing.T) {
