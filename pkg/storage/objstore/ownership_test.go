@@ -132,8 +132,8 @@ func TestLocal_DestroyAfterCloseRefusesWhileAnotherEngineOwnsTheNamespace(t *tes
 // an engine whose provider offers no way to exclude a second opener -- here a
 // registered provider over a store another engine opens too -- does not claim
 // storage.Exclusive's cross-process guarantee: Exclusive is refused with
-// storage.ExclusiveUnsupportedError and fn never runs, so a guarded write
-// falls back to the caller's own in-process exclusion.
+// storage.ExclusiveUnsupportedError and fn never runs. Guarded, which promises
+// only in-process exclusion, still runs fn there.
 func TestExclusive_RefusedWhereTheProviderCannotExcludeOtherOpeners(t *testing.T) {
 	root, _, _ := newSharedMemory(t, "unused/")
 	a, err := New(root, map[string]string{})
@@ -149,6 +149,9 @@ func TestExclusive_RefusedWhereTheProviderCannotExcludeOtherOpeners(t *testing.T
 		var unsupported *storage.ExclusiveUnsupportedError
 		require.ErrorAs(t, err, &unsupported)
 		assert.False(t, called)
+
+		require.NoError(t, e.Guarded(func(rw storage.ReadWriter) error { called = true; return rw.Set([]byte("k"), []byte("v")) }))
+		assert.True(t, called)
 	}
 }
 

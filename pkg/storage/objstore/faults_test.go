@@ -92,7 +92,9 @@ func newFaultEngine(t *testing.T) (*Engine, *faultStore) {
 		readFails: map[string]bool{},
 		listFails: map[string]bool{},
 	}
-	e := &Engine{store: fs, journal: fs, provider: "memory", nameLimit: objcommon.MaxKeyLength}
+	// Built as New builds a "memory" engine: its store is private to it, so
+	// Exclusive holds (privateProviders).
+	e := &Engine{store: fs, journal: fs, provider: "memory", nameLimit: objcommon.MaxKeyLength, exclusive: true}
 	require.NoError(t, e.ensureFormatMarker(objcommon.MaxKeyLength))
 	return e, fs
 }

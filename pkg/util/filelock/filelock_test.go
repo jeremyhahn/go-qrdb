@@ -120,6 +120,38 @@ func TestLock_ReleasedByClose(t *testing.T) {
 	}
 }
 
+func TestTryLock_RefusedWhileAnotherHoldsAndTakenOnceReleased(t *testing.T) {
+	first, path := openTemp(t)
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	if locked, err := first.TryLock(); err != nil || !locked {
+		t.Fatalf("first TryLock = %v, %v; want true, nil", locked, err)
+	}
+	if locked, err := second.TryLock(); err != nil || locked {
+		t.Fatalf("second TryLock while held = %v, %v; want false, nil", locked, err)
+	}
+	if err := first.Unlock(); err != nil {
+		t.Fatalf("first Unlock: %v", err)
+	}
+	if locked, err := second.TryLock(); err != nil || !locked {
+		t.Fatalf("second TryLock once released = %v, %v; want true, nil", locked, err)
+	}
+}
+
+func TestTryLock_AfterCloseIsTypedError(t *testing.T) {
+	l, _ := openTemp(t)
+	_ = l.Close()
+	_, err := l.TryLock()
+	var lockErr *Error
+	if !errors.As(err, &lockErr) || lockErr.Op != "lock" {
+		t.Fatalf("TryLock after Close: err = %v, want *Error with Op lock", err)
+	}
+}
+
 func TestLock_AfterCloseIsTypedError(t *testing.T) {
 	l, _ := openTemp(t)
 	if err := l.Close(); err != nil {

@@ -314,7 +314,14 @@ the length of the object prefix it was created under — as
 objects reached through another spelling of their namespace (another root
 plus a shorter or longer prefix) split keys between direct and hashed names
 exactly as they were written; a recorded limit whose names no longer fit
-beneath the reopening prefix is refused (`NameLimitError`). Objects under a
+beneath the reopening prefix is refused (`NameLimitError`). On `local`, whose
+commit journal sits in the sibling `<path>.journal` tree named after the root
+it was opened with, another spelling would look for the journal elsewhere and
+miss an interrupted batch. Two spellings of one directory always differ in
+prefix length, so a `local` reopen whose limit differs from the recorded one
+is refused (`NamespaceSplitError`, naming both prefix lengths) and the store
+must be reopened as it was created. A canonical journal location was rejected:
+for a nested namespace it would fall inside its parent's walked tree. Objects under a
 nested engine's namespace (a directory holding its own marker) do not make a
 store non-empty. A store
 written with verbatim object names has no marker, so it is refused at open,
@@ -327,6 +334,29 @@ the canonical record names under `k/` and `h/`. A nested engine's names
 always carry a non-hex letter in their first segment, so none is ever a
 canonical record name, and an engine at `ns/child/` or `ns/k/` keeps every
 object when the one at `ns/` is destroyed.
+
+**One owner per namespace, and `Exclusive`.** `storage.Exclusive` promises
+that no other writer, in this process or another, interleaves with `fn`. An
+engine can keep that promise only where one engine owns the namespace, and
+go-objstore offers no conditional create to claim it with, so each provider
+takes the option it can:
+
+- **`local`** takes a non-blocking advisory OS lock (`pkg/util/filelock`,
+  `flock(2)` / `LockFileEx`) on `qrdb-objstore-owner` under the prefix in the
+  sibling `<path>.owner` tree at open, and holds it until `Close` or
+  `Destroy`. A second open of the namespace, in any process, is refused
+  (`NamespaceOwnedError`); a nested namespace is its own. The kernel drops the
+  lock with the process, so a crash leaves no stale owner. A `Destroy` retried
+  on a closed engine takes the lock back first and deletes nothing while
+  another engine owns the namespace.
+- **`memory`** is private to the engine that opened it, so it has one owner.
+- **Every other provider** (`s3`, `gcs`, `azure`, and any registered one)
+  cannot exclude a second opener, so `Exclusive` is refused before running
+  `fn` (`storage.ExclusiveUnsupportedError`). The engine instead offers
+  `storage.Guarded`, which settles a pending journal and holds the engine's
+  write lock: in-process exclusion only. The standalone backend runs its
+  guarded verbs under `Exclusive`, falls back to `Guarded` when `Exclusive`
+  is unsupported, and to its own mutex alone when neither applies.
 
 ### Alternatives rejected
 

@@ -39,6 +39,11 @@ type ReadWriter interface {
 // and falls back to its own in-process mutex when the backend is not shared. It
 // is deliberately not part of Storage: an in-memory or single-owner backend has
 // nothing to add, and an in-process mutex is the whole of its atomicity.
+//
+// A backend whose type implements Exclusive but cannot keep that promise for
+// the store it was opened on (an object store whose provider cannot exclude a
+// second opener) returns *ExclusiveUnsupportedError without calling fn, and
+// the caller falls back exactly as for a backend that does not implement it.
 type Exclusive interface {
 	// Exclusive runs fn while holding the backend's exclusive write lock. Every
 	// other writer on the same data blocks until fn returns, whichever process
@@ -49,4 +54,31 @@ type Exclusive interface {
 	// the ReadWriter instead. The lock is released on every return path,
 	// including when fn returns an error or panics.
 	Exclusive(fn func(ReadWriter) error) error
+}
+
+// Guarded is optionally implemented by a backend whose guarded writes need
+// more than the caller's own mutex even within one process: an object store
+// settles a half-applied batch commit before fn reads, so a read-check-write
+// never compares against it. It promises nothing about other processes; a
+// caller uses it where Exclusive is not implemented or refuses with
+// ExclusiveUnsupportedError:
+//
+//	if g, ok := stg.(storage.Guarded); ok { err = g.Guarded(fn) }
+type Guarded interface {
+	// Guarded runs fn while holding the backend's write lock for this
+	// handle, so no write through the handle lands between fn's read and its
+	// write. The ReadWriter rules of Exclusive apply to fn.
+	Guarded(fn func(ReadWriter) error) error
+}
+
+// ExclusiveUnsupportedError is returned by Exclusive, before fn runs, when the
+// backend cannot exclude writers in other processes for the store it was
+// opened on. Backend names the backend, such as an object-store provider.
+type ExclusiveUnsupportedError struct {
+	Backend string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *ExclusiveUnsupportedError) Error() string {
+	return "storage: " + e.Backend + " cannot exclude writers in other processes, so it offers no exclusive write lock"
 }

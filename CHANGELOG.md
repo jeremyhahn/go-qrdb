@@ -30,7 +30,16 @@ are not reconstructed here — their history is in the git log.
   refused with `objstore.NameLimitError`, a version 2 marker with
   `FormatVersionMismatchError`), and `Destroy` deletes only its journal,
   marker and canonical record names, leaving a database nested beneath its
-  prefix intact.
+  prefix intact. On `local`, whose journal sits in the sibling `.journal` tree
+  of the root it was opened with, a reopen through another root/prefix split
+  is refused (`objstore.NamespaceSplitError`) rather than missing an
+  interrupted batch, and a namespace has one owner: a second open, in any
+  process, is refused (`objstore.NamespaceOwnedError`) under an OS lock in
+  the sibling `.owner` tree. `storage.Exclusive` is kept on `local` and
+  `memory` only; on every other provider, which go-objstore gives no
+  conditional create to claim a namespace with, it is refused with
+  `storage.ExclusiveUnsupportedError`, and guarded verbs fall back to the new
+  `storage.Guarded` (in-process exclusion).
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,
