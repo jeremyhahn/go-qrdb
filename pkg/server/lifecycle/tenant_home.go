@@ -59,7 +59,7 @@ type TenantHomeServices interface {
 // homeGroupRouter is a resolver that routes isolated tenants to their home
 // group once one is attached: *service.SystemShardAuditResolver.
 type homeGroupRouter interface {
-	SetHomeGroupSource(source service.AuditHomeGroupSource)
+	SetHomeGroupSource(source service.AuditHomeGroupSource, routes service.AuditRouteStore)
 }
 
 // TenantHomeCatchingUpError is returned by HomeStore while this node's replica
@@ -158,9 +158,12 @@ func AttachTenantHomes(n *Node, services TenantHomeServices, served ...tenant.St
 		return false
 	}
 	// An isolated tenant's audit trail and verifiable logs apply in its
-	// home group (architecture.md decision S9).
+	// home group (architecture.md decision S9). A barrier tenant's audit
+	// route is recorded on the system shard, so a chain already there stays
+	// there.
+	routes := newKVStoreAdapter(n.KV, nil)
 	for _, r := range n.homeGroupRouters {
-		r.SetHomeGroupSource(homes)
+		r.SetHomeGroupSource(homes, routes)
 	}
 	// The home group's leader is the one node that completes a tenant's
 	// pending first admin.

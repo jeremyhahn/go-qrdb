@@ -294,6 +294,7 @@ var dataPlaneRules = []rule{
 	// audit-append on every replica of the tenant's shard yet: retry once it
 	// has, the same instruction NotLeaderError gives for a different cause.
 	as(&service.AuditFeatureNotActiveError{}, Unavailable),
+	as(&service.AuditHomeNotActiveError{}, Unavailable),
 	// A dedicated-isolation (volume/raft) tenant's audit trail is not yet
 	// routable: a healthy node declining a capability it does not implement
 	// for this tenant class, the same shape as CapabilityUnsupportedError.
