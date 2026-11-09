@@ -385,7 +385,18 @@ encrypted file backend (`pkg/storage/file`) registers the same way when
 across its journal recovery, and every write and journaled batch commit
 holds it from before its journal is published until the batch is applied.
 On a closed gate the open and every write are refused with
-`*file.SealedError` (`quiesce.ErrSealing`) and write nothing. A lease is an atomic
+`*file.SealedError` (`quiesce.ErrSealing`) and write nothing. A per-database
+barrier's value-encrypting `database.BarrierBackend` registers a lease
+(named `database`) on its database's own barrier gate, which the encryptor
+from `DatabaseBarrierManager.GetBarrier` exposes: every mutation (`Put`,
+`PutIfAbsent`, `CompareAndDelete`, `CompareAndSwap`, `Delete`,
+`DeleteRange`, `Batch`) holds it from before it reaches the store until it
+returns, so `SealDatabase` drains it, and on a closed gate it is refused
+with `*database.SealedError` before it reaches the store. The storage
+packages cannot import `pkg/seal`, so `quiesce.ErrSealing` and
+`pebble.ErrBarrierSealed` are classified like `seal.ErrSealed`: Unavailable
+and retryable in `pkg/api/errclass`, ahead of every service wrapper, and
+sealed in the `pkg/store` and vector adapters' sealed-refusal checks. A lease is an atomic
 counter; taking it is one atomic add and one atomic load, so the write path
 takes no lock. Acquire increments, then reads the gate; the seal closes the
 gate, then reads the counters, so either the operation sees the gate closed

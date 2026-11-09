@@ -639,7 +639,18 @@ services and to the server, which wraps the node's sealed-window probe with
   open-time journal recovery and around every write and journaled batch
   commit (journal published, batch applied, journal cleared), and refuses
   the open and every write on a closed gate with `*file.SealedError`
-  wrapping `quiesce.ErrSealing`, before touching the disk. SDK nodes
+  wrapping `quiesce.ErrSealing`, before touching the disk. A per-database
+  barrier's `database.BarrierBackend` registers a lease named `database` on
+  its database barrier's gate, which `DatabaseBarrierManager.GetBarrier`'s
+  encryptor exposes (`Quiesce()`); `Put`, `PutIfAbsent`, `CompareAndDelete`,
+  `CompareAndSwap`, `Delete`, `DeleteRange` and `Batch` each hold it from
+  before the inner backend call until it returns, refuse on a closed gate
+  with `*database.SealedError` before reaching the store, and `Close`
+  unregisters it. Because the storage packages cannot import `pkg/seal`,
+  `quiesce.ErrSealing` and `pebble.ErrBarrierSealed` are recognised wherever
+  `seal.ErrSealed` is: `pkg/api/errclass` classifies them Unavailable
+  (retryable) ahead of the service wrappers, and `pkg/store`'s and the
+  vector adapter's `barrierSealed` report them sealed. SDK nodes
   (`sdk/go/node`) apply `seal.drain_timeout` to the system barrier exactly as
   `qrdbd` does. `StorageBarrier.Seal`
   closes the barrier's quiesce gate, after which `Admit` refuses with the same
@@ -1369,6 +1380,8 @@ key.
 |---|---|---|
 | Barrier sealed | `ErrBarrierSealed` on every data-path read and write | **yes** |
 | Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns; on the encrypted file backend, an open or write is refused with `*file.SealedError` wrapping `quiesce.ErrSealing` | **yes** |
+| Per-database `BarrierBackend` mutation started while its database barrier's seal is draining | refused with `*database.SealedError` before it reaches the store; a mutation already inside the store holds the `database` lease, so the drain waits for it or names it in `*quiesce.DrainTimeoutError` | **yes** |
+| Storage-layer sealed refusal reaching the API (`quiesce.ErrSealing`, `pebble.ErrBarrierSealed`), bare or under a service wrapper | classified Unavailable (retryable) like `seal.ErrSealed`; `pkg/store` and the vector adapter treat it as sealed | **yes** |
 | In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error | **yes** |
 | Several strategies registered, none named | `ErrNoStrategySpecified` | **yes** |
 | Unknown strategy name | registry lookup error | **yes** |

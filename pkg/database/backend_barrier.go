@@ -19,6 +19,7 @@ import (
 	"context"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 )
 
 // BarrierEncryptor provides encrypt/decrypt/sealed-check for the barrier
@@ -48,18 +49,39 @@ type BarrierEncryptor interface {
 // wraps a filesys.FS and therefore only applies to stores that write
 // through one), a per-database store may be memory-, file-, or Pebble-backed, so
 // encryption is applied uniformly at the value layer instead.
+//
+// When the barrier exposes its seal's quiesce gate (GetBarrier's encryptor
+// does), every mutation holds the backend's lease from before it reaches the
+// inner store until it returns, so a seal's drain waits for it, and a closed
+// gate refuses it with SealedError before it reaches the store.
 type BarrierBackend struct {
 	inner   Backend
 	barrier BarrierEncryptor
+	// lease is this backend's hold on the barrier's quiesce gate; nil, which
+	// admits all, when the barrier exposes no gate.
+	lease *quiesce.Lease
+}
+
+// barrierLeaseName names a database backend in a seal's DrainTimeoutError.
+const barrierLeaseName = "database"
+
+// quiesceGated is a BarrierEncryptor that exposes its seal's quiesce gate.
+type quiesceGated interface {
+	Quiesce() *quiesce.Gate
 }
 
 // Compile-time interface check.
 var _ Backend = (*BarrierBackend)(nil)
 
 // NewBarrierBackend creates a new BarrierBackend wrapping the given inner
-// Backend with the provided BarrierEncryptor for transparent encryption.
+// Backend with the provided BarrierEncryptor for transparent encryption. When
+// the barrier exposes a quiesce gate, the backend registers its lease there.
 func NewBarrierBackend(inner Backend, barrier BarrierEncryptor) *BarrierBackend {
-	return &BarrierBackend{inner: inner, barrier: barrier}
+	b := &BarrierBackend{inner: inner, barrier: barrier}
+	if g, ok := barrier.(quiesceGated); ok {
+		b.lease = g.Quiesce().Register(barrierLeaseName)
+	}
+	return b
 }
 
 // Get retrieves and decrypts the value for the given key.
@@ -83,6 +105,10 @@ func (b *BarrierBackend) Get(ctx context.Context, key []byte) ([]byte, error) {
 
 // Put encrypts the value and stores it under the given key.
 func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
+	if err := b.lease.Acquire(); err != nil {
+		return &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return &SealedError{}
 	}
@@ -105,6 +131,10 @@ func (b *BarrierBackend) Put(ctx context.Context, key, value []byte) error {
 // barrier-over-standalone composition the dedicated-store path builds is atomic
 // end to end (go-qrdb#466).
 func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bool, error) {
+	if err := b.lease.Acquire(); err != nil {
+		return false, &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return false, &SealedError{}
 	}
@@ -131,6 +161,10 @@ func (b *BarrierBackend) PutIfAbsent(ctx context.Context, key, value []byte) (bo
 // changes the stored ciphertext, so the guarded call declines — the outcome is
 // still defined, and no value this caller never observed is destroyed.
 func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []byte) (bool, error) {
+	if err := b.lease.Acquire(); err != nil {
+		return false, &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return false, &SealedError{}
 	}
@@ -175,6 +209,10 @@ func (b *BarrierBackend) CompareAndDelete(ctx context.Context, key, expected []b
 // disabling uniqueness and single-use claims on encrypted databases. The
 // compile-time assertion below exists so that cannot recur (go-qrdb#56).
 func (b *BarrierBackend) CompareAndSwap(ctx context.Context, key, expected, next []byte) (bool, error) {
+	if err := b.lease.Acquire(); err != nil {
+		return false, &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return false, &SealedError{}
 	}
@@ -214,6 +252,10 @@ var _ AtomicBackend = (*BarrierBackend)(nil)
 
 // Delete removes the key. No decryption is needed for deletion.
 func (b *BarrierBackend) Delete(ctx context.Context, key []byte) error {
+	if err := b.lease.Acquire(); err != nil {
+		return &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return &SealedError{}
 	}
@@ -221,6 +263,10 @@ func (b *BarrierBackend) Delete(ctx context.Context, key []byte) error {
 }
 
 func (b *BarrierBackend) DeleteRange(ctx context.Context, start, end []byte) error {
+	if err := b.lease.Acquire(); err != nil {
+		return &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return &SealedError{}
 	}
@@ -259,6 +305,10 @@ func (b *BarrierBackend) Range(ctx context.Context, start, end []byte, limit int
 // before being passed to the inner backend. Delete operations pass through
 // unchanged.
 func (b *BarrierBackend) Batch(ctx context.Context, ops []BatchOp) error {
+	if err := b.lease.Acquire(); err != nil {
+		return &SealedError{}
+	}
+	defer b.lease.Release()
 	if b.barrier.IsSealed() {
 		return &SealedError{}
 	}
@@ -278,5 +328,6 @@ func (b *BarrierBackend) Batch(ctx context.Context, ops []BatchOp) error {
 
 // Close releases resources held by the inner backend.
 func (b *BarrierBackend) Close() error {
+	b.lease.Unregister()
 	return b.inner.Close()
 }
