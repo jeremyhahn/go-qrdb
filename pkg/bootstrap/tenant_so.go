@@ -65,7 +65,8 @@ type soPlan struct {
 }
 
 // planSO judges cfg.SO before the tenant is created, and returns nil when
-// the request has none. The SO is refused when it is given in part, when its
+// the request has none outside strict separation of duties; under it a
+// request with none is refused with *TenantSORequiredError. The SO is refused when it is given in part, when its
 // credential would be refused for the reasons the admin's would, under strict
 // separation of duties when it is the admin by name or by key, and outside it
 // when it is the admin by one of name and key but not the other. An SO that
@@ -75,6 +76,9 @@ type soPlan struct {
 func planSO(cfg TenantProvisionConfig, deps Dependencies, mode AdminEnrollmentMode, adminUsername string, admin *adminPlan, pending bool) (*soPlan, error) {
 	so := cfg.SO
 	if so == nil {
+		if deps.SeparationOfDuties {
+			return nil, &TenantSORequiredError{}
+		}
 		return nil, nil
 	}
 	if err := so.Validate(); err != nil {

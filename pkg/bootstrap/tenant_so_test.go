@@ -264,6 +264,29 @@ func TestPlanSO_NoSOPlansNothing(t *testing.T) {
 	}
 }
 
+// TestProvisionTenant_StrictRequiresAnSO proves a strict tenant provision with
+// no SO is refused before anything is written, and one with an SO succeeds.
+func TestProvisionTenant_StrictRequiresAnSO(t *testing.T) {
+	tenants := &fakeTenants{}
+	users := &fakeCertBindingUsers{}
+	_, err := provisionWithSO(t, nil, users, Dependencies{Tenants: tenants, SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
+	if !errAs[*TenantSORequiredError](err) {
+		t.Fatalf("err = %v (%T), want *TenantSORequiredError", err, err)
+	}
+	if len(tenants.createCalls) != 0 || len(users.createCalls) != 0 {
+		t.Fatalf("tenant creates = %d, user creates = %d; want nothing written", len(tenants.createCalls), len(users.createCalls))
+	}
+
+	users = &fakeCertBindingUsers{}
+	result, err := provisionWithSO(t, soConfig(t), users, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
+	if err != nil {
+		t.Fatalf("ProvisionTenant with an SO: %v", err)
+	}
+	if result.SOUsername != "officer" || len(users.createCalls) != 2 {
+		t.Fatalf("SO = %q, user creates = %d; want officer and two accounts", result.SOUsername, len(users.createCalls))
+	}
+}
+
 func TestPlanSO_PendingNeedsPendingSOsAndAValidName(t *testing.T) {
 	deps := Dependencies{SOPINs: &fakeSOPINs{}, TrustDomain: onboardingTrustDomain, PendingAdminSigner: &fakeSigner{}}
 	_, err := planSO(TenantProvisionConfig{TenantID: "acme", SO: soConfig(t)}, deps, AdminEnrollCert, "admin", &adminPlan{}, true)
