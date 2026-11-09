@@ -17,6 +17,10 @@ package database
 import (
 	"context"
 	"errors"
+	"io"
+	"io/fs"
+	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -25,9 +29,13 @@ import (
 )
 
 func memoryObjstoreOpener(opened *[]string) ObjstoreOpener {
-	return func(name, _ string) (storage.Storage, error) {
+	return func(name, _ string) (storage.Storage, ObjstoreReclaim, error) {
 		*opened = append(*opened, name)
-		return objstore.New("memory", map[string]string{})
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, e.Destroy, nil
 	}
 }
 
@@ -74,13 +82,134 @@ func TestEmbeddedBackendFactory_ObjstoreWithoutOpener(t *testing.T) {
 // An opener that fails is reported as a StorageCreateError naming the backend.
 func TestEmbeddedBackendFactory_ObjstoreOpenerFails(t *testing.T) {
 	boom := errors.New("bucket unreachable")
-	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string) (storage.Storage, error) {
-		return nil, boom
+	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+		return nil, nil, boom
 	}))
 	_, err := f.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}, t.TempDir())
 	var createErr *StorageCreateError
 	if !errors.As(err, &createErr) || createErr.Backend != string(BackendObjstore) || !errors.Is(err, boom) {
 		t.Fatalf("Create = %v, want StorageCreateError wrapping the opener's error", err)
+	}
+}
+
+// TestEmbeddedBackendFactory_ObjstoreOpenerWithoutReclaim checks an opener
+// that hands back no reclaim fails the open: such a database could never be
+// dropped.
+func TestEmbeddedBackendFactory_ObjstoreOpenerWithoutReclaim(t *testing.T) {
+	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		return e, nil, err
+	}))
+	_, err := f.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}, t.TempDir())
+	var createErr *StorageCreateError
+	if !errors.As(err, &createErr) || !errors.Is(err, errObjstoreNoReclaim) {
+		t.Fatalf("Create = %v, want StorageCreateError for the missing reclaim", err)
+	}
+}
+
+// localObjstoreOpener opens every database on one local root beneath the
+// object prefix "<name>/", as databases sharing a bucket are, and returns the
+// engine's Destroy as the reclaim.
+func localObjstoreOpener(root string) ObjstoreOpener {
+	return func(name, _ string) (storage.Storage, ObjstoreReclaim, error) {
+		e, err := objstore.New("local", map[string]string{"path": root}, objstore.WithObjectPrefix(name+"/"))
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, e.Destroy, nil
+	}
+}
+
+func newObjstoreManager(t *testing.T, open ObjstoreOpener) *Manager {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := newCatalogManager(logger, t.TempDir(), WithBackendFactory(NewEmbeddedBackendFactory(WithObjstoreOpener(open))))
+	t.Cleanup(func() { _ = m.Close() })
+	return m
+}
+
+// objectFiles returns the regular files beneath dir.
+func objectFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("walk %s: %v", dir, err)
+	}
+	return files
+}
+
+// TestManager_DropReclaimsTheObjstoreObjects checks a Drop deletes every
+// object of an objstore database, so a database recreated under the same name
+// and prefix does not see the old keys.
+func TestManager_DropReclaimsTheObjstoreObjects(t *testing.T) {
+	root := t.TempDir()
+	m := newObjstoreManager(t, localObjstoreOpener(root))
+	ctx := context.Background()
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore}
+
+	db, err := m.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Backend().Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := m.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if left := objectFiles(t, root); len(left) != 0 {
+		t.Fatalf("objects left after Drop: %q", left)
+	}
+
+	db, err = m.Create(cfg)
+	if err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	got, err := db.Backend().Get(ctx, []byte("k"))
+	if err != nil || got != nil {
+		t.Fatalf("Get after recreate = %q, %v; want the dropped key absent", got, err)
+	}
+}
+
+// TestManager_DropFailsWhenTheReclaimFails checks a Drop whose objects cannot
+// be deleted fails rather than reporting success, and that the retried drop
+// completes once the reclaim succeeds.
+func TestManager_DropFailsWhenTheReclaimFails(t *testing.T) {
+	boom := errors.New("bucket unreachable")
+	failing := true
+	m := newObjstoreManager(t, func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, func() error {
+			if failing {
+				return boom
+			}
+			return e.Destroy()
+		}, nil
+	})
+	ctx := context.Background()
+	if _, err := m.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	err := m.Drop(ctx, "blobs")
+	var dropErr *DropError
+	if !errors.As(err, &dropErr) || !errors.Is(err, boom) {
+		t.Fatalf("Drop = %v, want DropError wrapping the reclaim's error", err)
+	}
+	failing = false
+	if err := m.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("retried Drop: %v", err)
 	}
 }
 

@@ -17,7 +17,10 @@ are not reconstructed here — their history is in the git log.
   provider** (#1424). The prefix must be relative, end in `/`, have no empty,
   `.` or `..` segment and no backslash, and leave room for every name the
   engine writes (`objstore.ObjectPrefixError` otherwise); keys are named
-  within the provider limit less the prefix, so every object name fits.
+  within the provider limit less the prefix, so every object name fits. A
+  legacy in-tree journal inside the prefix refuses the open, and dropping an
+  objstore database deletes every object in its namespace through
+  `Engine.Destroy` (the `ObjstoreOpener` returns the reclaim), or fails the drop.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,

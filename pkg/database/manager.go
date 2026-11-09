@@ -952,7 +952,15 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    incarnation is a successor created since the check in step 1b:
 	//    what this drop removed above was still its own, because the
 	//    successor cannot open here while the drop holds the name's claim,
-	//    and its entry goes with it.
+	//    and its entry goes with it. A store whose data lives outside the
+	//    directory (an objstore database's objects) is reclaimed first: a
+	//    retry after the close above still reaches it, and a reclaim that
+	//    fails fails the drop, so the record stays for that retry.
+	if r, ok := db.rawDataBackend().(storeReclaimer); ok {
+		if err := r.ReclaimStore(); err != nil {
+			return &DropError{Name: name, Err: err}
+		}
+	}
 	if err := os.RemoveAll(m.dbDir(key.tenant, name)); err != nil {
 		return &DropError{Name: name, Err: err}
 	}
