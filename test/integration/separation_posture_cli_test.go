@@ -25,7 +25,13 @@ package integration_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,11 +42,16 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
@@ -407,7 +418,7 @@ func mustReadFile(t *testing.T, path string) string {
 // startPostureNode starts an embedded standalone node over dataDir under the
 // given auth.separation_of_duties, runs first boot, and answers it with its
 // audit log.
-func startPostureNode(t *testing.T, dataDir string, separation bool) (*node.Node, audit.AuditLogger) {
+func startPostureNode(t *testing.T, dataDir string, separation, enrollSO bool) (*node.Node, audit.AuditLogger) {
 	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = dataDir
@@ -416,19 +427,76 @@ func startPostureNode(t *testing.T, dataDir string, separation bool) (*node.Node
 	cfg.Protocols.Unix, cfg.Protocols.MCP = false, false
 	cfg.Auth.SeparationOfDuties = separation
 	trail := audit.NewRingBuffer(64)
-	n, err := node.NewStandaloneNode(context.Background(), cfg, []server.ServerOption{server.WithAuditLogger(trail)})
+	opts := []server.ServerOption{server.WithAuditLogger(trail)}
+	if enrollSO {
+		// The SO PIN store first boot commits the enrolled SO's PIN to,
+		// as cmd/qrdbd passes it.
+		soPINs, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), trail, slog.New(slog.DiscardHandler))
+		if err != nil {
+			t.Fatalf("NewSOAuthenticator: %v", err)
+		}
+		opts = append(opts, server.WithSOAuthenticator(soPINs))
+	}
+	n, err := node.NewStandaloneNode(context.Background(), cfg, opts)
 	if err != nil {
 		t.Fatalf("NewStandaloneNode: %v", err)
 	}
 	svcs := n.Services()
-	if _, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
+	deps := firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
-	}); err != nil {
+	}
+	// A strict first boot needs a system SO: the start that turns strict
+	// enrolls one, and a later strict start carries that enrollment, as
+	// a composer reading the consumed pending SO record does.
+	if separation {
+		if enrollSO {
+			postureSO(t, cfg.Auth.EffectiveClusterTrustDomain(), n, &deps)
+		} else {
+			deps.SOEnrolled = true
+		}
+	}
+	result, err := n.FirstBoot(context.Background(), deps)
+	if err != nil {
 		_ = n.Close()
 		t.Fatalf("FirstBoot: %v", err)
 	}
+	if enrollSO && !result.SOCreated {
+		_ = n.Close()
+		t.Fatal("FirstBoot did not create the system SO")
+	}
 	return n, trail
+}
+
+// postureSO sets deps to enroll a system SO from a fresh CSR, signed by a
+// test CA under trustDomain and bound to the SO's account on n.
+func postureSO(t *testing.T, trustDomain string, n *node.Node, deps *firstboot.Dependencies) {
+	t.Helper()
+	ca, _ := ceremonytest.NewCA(t, "posture-so-ca")
+	signer, err := ceremony.NewAdminCSRSigner(ca, trustDomain)
+	if err != nil {
+		t.Fatalf("NewAdminCSRSigner: %v", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "officer"}}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin, err := secure.NewSecret(context.Background(), []byte("posture-so-pin"))
+	if err != nil {
+		t.Fatalf("NewSecret: %v", err)
+	}
+	t.Cleanup(pin.Destroy)
+	deps.Signer = signer
+	deps.Binder = firstboot.UserCertBinder{Users: n.UserService()}
+	deps.SO = &firstboot.SOConfig{
+		Username: "officer",
+		CSRPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}),
+		PIN:      pin,
+	}
 }
 
 // embeddedPostureChanges answers the posture-change events in trail.
@@ -448,7 +516,7 @@ func embeddedPostureChanges(t *testing.T, trail audit.AuditLogger) []audit.Audit
 func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 	dataDir := t.TempDir()
 
-	first, trail := startPostureNode(t, dataDir, false)
+	first, trail := startPostureNode(t, dataDir, false, false)
 	if first.StrictSeparation() {
 		t.Fatal("StrictSeparation() = true under the standard posture")
 	}
@@ -459,7 +527,7 @@ func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	flipped, trail := startPostureNode(t, dataDir, true)
+	flipped, trail := startPostureNode(t, dataDir, true, true)
 	if !flipped.StrictSeparation() {
 		t.Fatal("StrictSeparation() = false after a restart under strict separation")
 	}
@@ -474,7 +542,7 @@ func TestSeparationPosture_EmbeddedRestartFlip(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	same, trail := startPostureNode(t, dataDir, true)
+	same, trail := startPostureNode(t, dataDir, true, false)
 	defer func() { _ = same.Close() }()
 	if !same.StrictSeparation() {
 		t.Fatal("StrictSeparation() = false after an unchanged restart")
