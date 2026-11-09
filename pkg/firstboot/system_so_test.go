@@ -33,11 +33,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -565,6 +568,8 @@ func externalSOCert(t *testing.T, name, rootCN string) (certPEM, rootPEM []byte)
 		URIs:         uris,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}, caCert, &leafKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatal(err)
@@ -579,26 +584,7 @@ func externalSOCert(t *testing.T, name, rootCN string) (certPEM, rootPEM []byte)
 // certificate from an issuer in neither pool is still refused.
 func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.T) {
 	ctx := context.Background()
-	soCert, soRoot := externalSOCert(t, "secofficer", "SO Org Root")
-	core := testCeremonyCore(t)
-	ca, caBundle := ceremonytest.NewCA(t, "test-ca")
-	core.SetPINBackend(pintest.NewBackend(t))
-	_, err := core.Initialize(ctx, ca, &ceremony.InitializeOptions{
-		SOPin: "test-so-pin", UserPin: "test-user-pin",
-		AdminCSRPEM: testCSR(t), AdminCertPoolPEM: soRoot,
-		SOUsername: "secofficer", SOCertPEM: soCert,
-	})
-	if err != nil {
-		t.Fatalf("ceremony Initialize: %v", err)
-	}
-	store := newMemPendingAdminCertStore()
-	if err := WriteIssuedSystemSOIfAny(ctx, core, store, nil); err != nil {
-		t.Fatalf("WriteIssuedSystemSOIfAny: %v", err)
-	}
-	so, err := PendingSystemSO(ctx, store)
-	if err != nil || so == nil {
-		t.Fatalf("PendingSystemSO = %v, %v", so, err)
-	}
+	so, soCert, caBundle := adoptedSystemSOHandoff(t)
 
 	enrol := func(so *SOConfig) (*Result, error) {
 		h := newSOHarness(t, true)
@@ -607,6 +593,8 @@ func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.
 		// First boot's own pool is the ceremony CA's alone.
 		h.deps.AdminCertPool = AdminCertPoolFromCABundle(caBundle)
 		h.deps.TrustDomain = presentedTrustDomain
+		h.deps.TrustAnchors = trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+		h.deps.ClientTrust = refreshFunc(func(context.Context) error { return nil })
 		return Initialize(ctx, h.deps)
 	}
 	result, err := enrol(so)
@@ -624,6 +612,126 @@ func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.
 	var e *SystemSOEnrollmentError
 	if _, err := enrol(&forged); !errors.As(err, &e) || e.Op != "certificate" {
 		t.Fatalf("first boot with a stranger's certificate = %v, want a certificate failure", err)
+	}
+}
+
+// adoptedSystemSOHandoff runs a ceremony that issues the admin internally
+// and adopts an SO certificate from an external root against
+// AdminCertPoolPEM, and returns the SO record first boot reads back, the SO
+// certificate and the ceremony CA's bundle, all PEM.
+func adoptedSystemSOHandoff(t *testing.T) (so *SOConfig, soCert, caBundle []byte) {
+	t.Helper()
+	ctx := context.Background()
+	soCert, soRoot := externalSOCert(t, "secofficer", "SO Org Root")
+	core := testCeremonyCore(t)
+	ca, caBundle := ceremonytest.NewCA(t, "test-ca")
+	core.SetPINBackend(pintest.NewBackend(t))
+	_, err := core.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin",
+		AdminCSRPEM: testCSR(t), AdminCertPoolPEM: soRoot,
+		SOUsername: "secofficer", SOCertPEM: soCert,
+	})
+	if err != nil {
+		t.Fatalf("ceremony Initialize: %v", err)
+	}
+	store := newMemPendingAdminCertStore()
+	if err := WriteIssuedSystemSOIfAny(ctx, core, store, nil); err != nil {
+		t.Fatalf("WriteIssuedSystemSOIfAny: %v", err)
+	}
+	so, err = PendingSystemSO(ctx, store)
+	if err != nil || so == nil {
+		t.Fatalf("PendingSystemSO = %v, %v", so, err)
+	}
+	return so, soCert, caBundle
+}
+
+// refreshFunc adapts a function to ClientTrustRefresher.
+type refreshFunc func(context.Context) error
+
+func (f refreshFunc) Refresh(ctx context.Context) error { return f(ctx) }
+
+// failingAnchors refuses every anchor it is handed.
+type failingAnchors struct{ err error }
+
+func (f failingAnchors) Add(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+	return nil, f.err
+}
+
+// noKeyB is a Key B provider that holds no CA certificates. The pool reads
+// only its CertSource methods; the embedded provider is never called.
+type noKeyB struct{ cert.CertProvider }
+
+func (noKeyB) CACertPEMs(context.Context) ([][]byte, error) { return nil, nil }
+
+func (noKeyB) IsTenantIssuer(context.Context, string, *x509.Certificate) (bool, error) {
+	return false, nil
+}
+
+// An SO certificate the ceremony adopted against AdminCertPoolPEM chains to
+// an issuer the node trusts nowhere else. First boot persists that pool as
+// the system tenant's trust anchors and refreshes runtime client trust
+// before it declares the SO enrolled, so the SO's login verifies through
+// the node's client trust with no root installed by hand. A failed persist
+// or refresh leaves the enrolment undeclared, and a retry completes it.
+func TestInitialize_AdoptedSystemSOAnchorsReachRuntimeTrust(t *testing.T) {
+	ctx := context.Background()
+	so, soCertPEM, caBundle := adoptedSystemSOHandoff(t)
+	block, _ := pem.Decode(soCertPEM)
+	soCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reg := trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
+	pool := clienttrust.New()
+	pool.SetKeyBProvider(noKeyB{})
+	pool.SetTrustAnchors(reg, clienttrust.TenantListerFunc(func(context.Context) ([]string, error) {
+		return []string{tenantid.System}, nil
+	}))
+	if err := pool.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(ctx, soCert, nil); err == nil {
+		t.Fatal("the SO's certificate verified before first boot installed its anchors")
+	}
+
+	h := newSOHarness(t, true)
+	h.deps.SO = so
+	h.deps.SOPINs = &recordPINs{records: map[string]string{}}
+	h.deps.AdminCertPool = AdminCertPoolFromCABundle(caBundle)
+	h.deps.TrustDomain = presentedTrustDomain
+
+	h.deps.TrustAnchors = nil
+	h.deps.ClientTrust = pool
+	var missing *MissingSOSeamError
+	if _, err := Initialize(ctx, h.deps); !errors.As(err, &missing) || len(h.users.creates) != 0 {
+		t.Fatalf("Initialize without an anchor registry = %v (creates %v), want *MissingSOSeamError before any write", err, h.users.creates)
+	}
+	h.deps.TrustAnchors = reg
+	h.deps.ClientTrust = nil
+	if _, err := Initialize(ctx, h.deps); !errors.As(err, &missing) || len(h.users.creates) != 0 {
+		t.Fatalf("Initialize without a client trust refresher = %v (creates %v), want *MissingSOSeamError before any write", err, h.users.creates)
+	}
+
+	boom := errors.New("boom")
+	var e *SystemSOEnrollmentError
+	h.deps.TrustAnchors = failingAnchors{err: boom}
+	h.deps.ClientTrust = pool
+	if _, err := Initialize(ctx, h.deps); !errors.As(err, &e) || e.Op != "trust anchors" || !errors.Is(err, boom) {
+		t.Fatalf("Initialize with a failing anchor registry = %v, want a trust anchors failure", err)
+	}
+	h.deps.TrustAnchors = reg
+	h.deps.ClientTrust = refreshFunc(func(context.Context) error { return boom })
+	if _, err := Initialize(ctx, h.deps); !errors.As(err, &e) || e.Op != "trust refresh" || !errors.Is(err, boom) {
+		t.Fatalf("Initialize with a failing refresh = %v, want a trust refresh failure", err)
+	}
+
+	h.deps.ClientTrust = pool
+	if _, err := Initialize(ctx, h.deps); err != nil {
+		t.Fatalf("first boot: %v", err)
+	}
+	if _, err := pool.VerifyPeerChain(ctx, soCert, nil); err != nil {
+		t.Fatalf("the SO's certificate does not verify through runtime client trust: %v", err)
 	}
 }
 

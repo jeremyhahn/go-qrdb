@@ -266,13 +266,19 @@ func TestSystemSO_IssueAndPersistRefusals(t *testing.T) {
 // identity.
 func tenantLeafPEM(t *testing.T, ca *mockCA, tenant, cn string, extraOUs ...string) []byte {
 	t.Helper()
+	return tenantLeafPEMWithEKU(t, ca, tenant, cn, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, extraOUs...)
+}
+
+// tenantLeafPEMWithEKU is tenantLeafPEM with the extended key usages given.
+func tenantLeafPEMWithEKU(t *testing.T, ca *mockCA, tenant, cn string, ekus []x509.ExtKeyUsage, extraOUs ...string) []byte {
+	t.Helper()
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject:      pkix.Name{CommonName: cn},
 		NotBefore:    time.Now().Add(-time.Minute),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:  ekus,
 	}
 	if tenant != "" {
 		u, err := spiffe.ID{TrustDomain: tenant, Kind: spiffe.KindUser, Name: cn}.URI()
@@ -350,6 +356,55 @@ func TestInitialize_SystemSO_HolderCertificateRefused(t *testing.T) {
 			assert.False(t, initialized, "a refused SO certificate commits nothing")
 		})
 	}
+}
+
+// TestInitialize_SystemSO_ServerOnlyCertificateRefused pins that an adopted
+// SO certificate must be able to authenticate as a TLS client: a trusted
+// certificate with the right CN and tenant but only the ServerAuth EKU is
+// refused before anything is committed, and the ceremony stays retryable.
+func TestInitialize_SystemSO_ServerOnlyCertificateRefused(t *testing.T) {
+	ctx := context.Background()
+	ca := newMockCA(t)
+	poolPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.certDER})
+	serverPEM := tenantLeafPEMWithEKU(t, ca, tenantid.System, "secofficer", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+
+	cert, err := adoptSystemSOCert(&InitializeOptions{
+		SOUsername:       "secofficer",
+		SOCertPEM:        serverPEM,
+		AdminCertPoolPEM: poolPEM,
+	}, nil, testTrustDomain)
+	var profile *ClientAuthProfileError
+	require.ErrorAs(t, err, &profile)
+	var rejected *SystemSORejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Nil(t, cert)
+
+	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+	barrier := testBarrier(t)
+	svc := newTestCeremonyService(t, defaultConfig(), barrier)
+	opts := func(soCert []byte) *InitializeOptions {
+		return &InitializeOptions{
+			SOPin:            "test-so-pin",
+			UserPin:          "test-user-pin",
+			AdminCSRPEM:      adminCSR,
+			AdminCertPoolPEM: poolPEM,
+			SOUsername:       "secofficer",
+			SOCertPEM:        soCert,
+		}
+	}
+	_, err = svc.Initialize(ctx, ca, opts(serverPEM))
+	require.ErrorAs(t, err, &profile)
+	assert.Equal(t, StateAwaitingInit, svc.State())
+	assert.Nil(t, svc.LastIssuedSystemSO())
+	initialized, err := barrier.Initialized(ctx)
+	require.NoError(t, err)
+	assert.False(t, initialized, "a refused SO certificate commits nothing")
+
+	// The same ceremony with a client certificate completes.
+	_, err = svc.Initialize(ctx, ca, opts(tenantLeafPEM(t, ca, tenantid.System, "secofficer")))
+	require.NoError(t, err)
+	assert.Equal(t, StateOperational, svc.State())
+	require.NotNil(t, svc.LastIssuedSystemSO())
 }
 
 // An SO named without a PIN is refused in preflight, and a certificate
