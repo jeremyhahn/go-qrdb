@@ -22,10 +22,13 @@ are not reconstructed here — their history is in the git log.
   database, on `qrdbd` and SDK nodes alike) for the ones in flight, Raft
   state-machine commits, whole snapshot recoveries and the encrypted vector
   store's writes included, then seals. A tenant whose drain runs out during a node seal is still
-  brought back by the node unseal. Work
-  outlasting the bound no longer races the key wipe into a Pebble panic: the
-  barrier still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError`
-  naming the stores, logged and audited (`seal`, phase `drain`). A store holds
+  brought back by the node unseal. When work outlasts the bound the barrier
+  still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError` naming
+  the stores still in flight, logged and audited (`seal`, phase `drain`); a
+  database seal so reported still marks the database sealed and ends its
+  streams. An expired drain reports that risk and does not remove it: the
+  admitted work is not cancelled, and once it resumes it can still race the
+  key wipe into the Pebble panic the seal watch describes. A store holds
   one lock-free lease per operation; on the write-path benchmark
   (`BenchmarkPebbleStorage_SetUnderEncfs`, `-count=6 -benchtime=2s`) a put
   averages 615 ns with the lease and 611 ns without, about 4 ns per put. Pebble is used as released.

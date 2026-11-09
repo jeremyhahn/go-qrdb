@@ -412,10 +412,18 @@ owner asked to remove. `Seal` seals, then returns a
 `*quiesce.DrainTimeoutError` naming the stores still in flight (joined with any
 observer error), logs it at `Error` and records an audit event with phase
 `drain`. As with an observer error, an error from `Seal` never means the
-barrier is unsealed. An operation the drain did not wait for meets the sealed
-barrier and fails as it did before this design; the seal watch turns that into
-a typed error, not a panic, wherever the file system can report its barrier
-state.
+barrier is unsealed. A database seal whose drain ran out still marks the
+database sealed and ends its streams and SQL sessions before it returns the
+error.
+
+An expired drain reports a risk; it does not remove it. The timeout cancels
+nothing: an operation that passed `Admit` and then stalled is still inside
+the store, and no further barrier check stands between it and Pebble. When
+it resumes after the key wipe it can still race it, up to the WAL-creation
+panic the seal watch describes. The seal watch turns a failure into a typed
+error, not a panic, only where the file system can report its barrier state
+in time. An operator who sees a `DrainTimeoutError` should treat the named
+stores as having raced the wipe, and raise `seal.drain_timeout` if it recurs.
 
 **Unseal reopens the gate**, on every unseal path (passphrase, Shamir quorum,
 recovery keys), after the barrier reports unsealed.
