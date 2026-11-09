@@ -296,6 +296,20 @@ func (a *SOAuthenticator) CommitSOPINRecord(ctx context.Context, tenantID, recor
 	return a.putPINRecord(ctx, tenantID, key, record)
 }
 
+// SOPINCommitted reports whether tenantID's SO PIN is committed. It reads
+// the record and changes nothing: first boot uses it to consume the pending
+// system SO record only once the SO it names is enrolled.
+func (a *SOAuthenticator) SOPINCommitted(ctx context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	return existing != nil, nil
+}
+
 // validPINRecord reports whether record has the shape hashPINImpl writes:
 // a known KDF tag, then a hex salt and a hex hash of 32 bytes each.
 func validPINRecord(record string) bool {

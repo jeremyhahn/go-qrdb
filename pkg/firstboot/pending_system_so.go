@@ -19,8 +19,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // PendingSystemSOKey is the record carrying the system SO the ceremony
@@ -133,6 +136,50 @@ func ClearPendingSystemSO(ctx context.Context, store PendingAdminCertStore) erro
 		return &PendingAdminCertStoreError{Op: "clear system SO", Cause: err}
 	}
 	return nil
+}
+
+// SOPINChecker reports whether a tenant's SO PIN is committed, reading and
+// changing nothing. *auth.SOAuthenticator implements it.
+type SOPINChecker interface {
+	SOPINCommitted(ctx context.Context, tenantID string) (bool, error)
+}
+
+// ClearPendingSystemSOIfEnrolled consumes the pending system SO record only
+// once the SO it names is enrolled: its account exists in the system tenant
+// with the so role, and its PIN is committed. Until then the record is kept,
+// so the next start's first boot enrols the SO; a node that only waited for
+// a leader to replicate the admin may otherwise consume it before the SO
+// exists, and a later strict first boot would read it as enrolled. It reports
+// whether no unconsumed record remains. Nil users or pins can verify nothing
+// and keep the record.
+func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertStore, users UserResolver, pins SOPINChecker) (bool, error) {
+	so, err := PendingSystemSO(ctx, store)
+	if err != nil {
+		return false, err
+	}
+	if so == nil {
+		return true, nil
+	}
+	if users == nil || pins == nil {
+		return false, nil
+	}
+	tenantID := tenantid.System
+	account, err := users.GetUserByUsername(ctx, tenantID, so.Username)
+	if err != nil || account == nil || account.TenantID != tenantID ||
+		!slices.Contains(account.RoleIDs, role.SystemRoleID(tenantID, role.RoleNameSO)) {
+		return false, nil
+	}
+	committed, err := pins.SOPINCommitted(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	if !committed {
+		return false, nil
+	}
+	if err := ClearPendingSystemSO(ctx, store); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // readPendingSystemSO reads the pending system SO record. Only not-found

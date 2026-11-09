@@ -4416,10 +4416,16 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	if err := firstboot.ClearPendingAdminCert(ctx, pendingAdminStore); err != nil {
 		slog.Warn("first-boot: failed to clear the pending admin credential record", slog.Any("error", err))
 	}
-	// Likewise the system SO's: once consumed, a later strict first boot
-	// reads it as already enrolled (firstboot.SystemSOConsumed).
-	if err := firstboot.ClearPendingSystemSO(ctx, pendingAdminStore); err != nil {
+	// The system SO's only once it is enrolled: once consumed, a later
+	// strict first boot reads it as already enrolled
+	// (firstboot.SystemSOConsumed), and a node that only waited for the
+	// leader to replicate the admin may have returned before the SO exists.
+	// Kept, the record makes the next start's first boot enrol the SO.
+	soPINCheck, _ := bootSOPINs.(firstboot.SOPINChecker)
+	if cleared, err := firstboot.ClearPendingSystemSOIfEnrolled(ctx, pendingAdminStore, bootUserSvc, soPINCheck); err != nil {
 		slog.Warn("first-boot: failed to clear the pending system SO record", slog.Any("error", err))
+	} else if !cleared {
+		slog.Warn("first-boot: the pending system SO is not enrolled yet; keeping its record for the next start")
 	}
 
 	systemStore, err := kvstore.NewNamespacedKVStore(

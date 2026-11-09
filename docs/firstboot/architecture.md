@@ -291,7 +291,16 @@ wired is `*firstboot.MissingSOSeamError`. These helpers moved here from
 `*firstboot.SystemSORequiredError`. Role create and the built-in reconciles
 run only as a separate SO, and the assignment gate keeps the system admin
 from becoming one, so a strict deployment without an SO could never manage
-its roles. The standard posture keeps the SO optional.
+its roles. The standard posture keeps the SO optional. The node's strict
+posture always wins: the ceremony (`CeremonyService.SetSeparationOfDuties`)
+refuses options naming no SO with `*ceremony.SystemSORejectedError` before
+any write, the embedded node ORs `Node.StrictSeparation()` into the caller's
+`Dependencies`, tenant create refuses a tenant with no SO with
+`*bootstrap.TenantSORequiredError`, and the pending SO record is consumed
+only once `firstboot.ClearPendingSystemSOIfEnrolled` finds the SO's account
+and committed PIN. A strict deployment already initialized without an SO has
+no recovery path: it is refused at every boot, and before RC the answer is to
+re-initialize it.
 
 **The ceremony issues the SO; first boot enrols it.**
 `ceremony.InitializeOptions` carries `SOUsername` with exactly one of

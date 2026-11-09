@@ -31,8 +31,10 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // soCeremonyCore runs a ceremony that names a system SO by CSR.
@@ -85,6 +87,59 @@ func TestPendingSystemSO_RoundTrip(t *testing.T) {
 	so, err = PendingSystemSO(ctx, store)
 	require.NoError(t, err)
 	assert.Nil(t, so)
+}
+
+// TestClearPendingSystemSOIfEnrolled_KeepsTheRecordUntilTheSOIsEnrolled
+// proves a leadership handoff that left the admin but not the SO -- and an SO
+// whose PIN is not committed yet -- keeps the pending record, so the next
+// start's first boot enrols the SO; only an SO with its account and PIN both
+// committed consumes it.
+func TestClearPendingSystemSOIfEnrolled_KeepsTheRecordUntilTheSOIsEnrolled(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	require.NoError(t, err)
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
+	require.NoError(t, err)
+	assert.True(t, cleared, "no record leaves nothing to consume")
+
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	keeps := func(why string) {
+		t.Helper()
+		cleared, err := ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
+		require.NoError(t, err)
+		assert.False(t, cleared, why)
+		assert.False(t, SystemSOConsumed(ctx, store), why)
+		pending, err := PendingSystemSO(ctx, store)
+		require.NoError(t, err)
+		assert.NotNil(t, pending, why)
+	}
+
+	// The handoff: the leader created the admin, then lost leadership.
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: adminUsername, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameAdmin)}})
+	require.NoError(t, err)
+	keeps("the admin alone must not consume the SO's record")
+
+	cleared, err = ClearPendingSystemSOIfEnrolled(ctx, store, users, nil)
+	require.NoError(t, err)
+	assert.False(t, cleared, "no PIN seam can verify nothing")
+
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	keeps("an SO account without its PIN is not enrolled")
+
+	require.NoError(t, pins.CommitSOPINRecord(ctx, tenantid.System, so.PINRecord))
+	cleared, err = ClearPendingSystemSOIfEnrolled(ctx, store, users, pins)
+	require.NoError(t, err)
+	assert.True(t, cleared)
+	assert.True(t, SystemSOConsumed(ctx, store))
 }
 
 // The first ceremony's SO wins; another node's later write is not an error

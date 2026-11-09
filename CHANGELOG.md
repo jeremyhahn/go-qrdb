@@ -204,7 +204,10 @@ are not reconstructed here — their history is in the git log.
   and the embedded transport; the tenant Admin is refused with
   `SORoleRequiredError`, and an account left holding both from the standard
   posture with `SORoleConflictError`. In the standard posture an Admin may
-  hold `so` and runs both operations as before.
+  hold `so` and runs both operations as before. Under strict separation no
+  ceremony, tenant create or first boot (embedded included, whatever the
+  caller's `Dependencies` say) finishes without an SO, and the pending system
+  SO record is kept until its account and PIN are committed.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
