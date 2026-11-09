@@ -629,7 +629,12 @@ services and to the server, which wraps the node's sealed-window probe with
   finished. The encrypted vector store opens through the same
   `pkg/storage/pebble` `Open`, so it registers with the gate like the other
   sealed stores, every write (durable writes, batch commits, ID persistence,
-  compaction) holds its lease, and `Close` leaves the gate. SDK nodes
+  compaction) holds its lease, and `Close` leaves the gate. `Open` itself
+  holds the lease across `pebble.Open`'s recovery and file creation, and
+  refuses on a closed gate. `CreateNamespace` writes the namespace metadata
+  and its ID sequence in one leased batch commit, and installs the ID
+  allocator and the cached namespace only once it commits, so a seal never
+  leaves half a namespace. SDK nodes
   (`sdk/go/node`) apply `seal.drain_timeout` to the system barrier exactly as
   `qrdbd` does. `StorageBarrier.Seal`
   closes the barrier's quiesce gate, after which `Admit` refuses with the same

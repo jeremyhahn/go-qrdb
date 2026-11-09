@@ -865,30 +865,26 @@ func (s *PebbleVectorStorage) CreateNamespace(ctx context.Context, info *Namespa
 		return err
 	}
 
-	// Write namespace metadata
-	key := schema.EncodeNamespaceMetaKey(info.Name)
-	if err := s.durably(func(o *pebble.WriteOptions) error {
-		return s.db.Set(key, value, o)
-	}); err != nil {
+	// Write namespace metadata and its ID sequence in one leased, atomic
+	// commit, so a seal cannot persist one without the other
+	b := s.newBatch()
+	defer func() { _ = b.Close() }()
+	if err := b.batch.Set(schema.EncodeNamespaceMetaKey(info.Name), value, pebble.NoSync); err != nil {
+		return err
+	}
+	if err := b.batch.Set(schema.EncodeIDSequenceKey(info.Name), encodeUint64(0), pebble.NoSync); err != nil {
+		return err
+	}
+	b.count++
+	if err := b.Commit(); err != nil {
 		s.metrics.errors.Inc()
 		return err
 	}
 
-	// Initialize ID allocator
+	// Install the ID allocator and the cache entry only once committed
 	allocator := &atomic.Uint64{}
 	allocator.Store(0)
 	s.idAllocators[info.Name] = allocator
-
-	// Initialize ID sequence
-	seqKey := schema.EncodeIDSequenceKey(info.Name)
-	if err := s.durably(func(o *pebble.WriteOptions) error {
-		return s.db.Set(seqKey, encodeUint64(0), o)
-	}); err != nil {
-		s.metrics.errors.Inc()
-		return err
-	}
-
-	// Update cache
 	s.nsCache[info.Name] = info
 	s.metrics.namespaceOps.Inc()
 	s.metrics.namespacesCount.Inc()

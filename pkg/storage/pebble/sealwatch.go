@@ -308,10 +308,19 @@ func Open(dir string, opts *pebble.Options, isSealed func(error) bool) (*pebble.
 	}
 	seals := NewSealWatch(o.Logger, isSealed)
 	seals.Attach(o)
+	// pebble.Open recovers and creates files under the barrier's key, so it
+	// holds the lease: a seal drains it, and a closed gate refuses it.
+	lease := seals.gate.Register(dir)
+	if err := lease.Acquire(); err != nil {
+		lease.Unregister()
+		return nil, nil, &SealedError{Err: ErrBarrierSealed}
+	}
 	db, err := pebble.Open(dir, o)
+	lease.Release()
 	if err != nil {
+		lease.Unregister()
 		return nil, nil, err
 	}
-	seals.lease = seals.gate.Register(dir)
+	seals.lease = lease
 	return db, seals, nil
 }

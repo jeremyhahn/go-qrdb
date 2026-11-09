@@ -29,6 +29,8 @@ are not reconstructed here — their history is in the git log.
   one lock-free lease per operation; on the write-path benchmark
   (`BenchmarkPebbleStorage_SetUnderEncfs`, `-count=6 -benchtime=2s`) a put
   averages 615 ns with the lease and 611 ns without, about 4 ns per put. Pebble is used as released.
+  Opening a store holds its lease across Pebble's recovery (a closed gate
+  refuses it), and a vector namespace is created in one leased, atomic commit.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

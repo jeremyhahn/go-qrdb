@@ -374,7 +374,9 @@ memory:
 
 Each encrypted store registers one **lease** on its barrier's gate when it
 opens (`pkg/storage/pebble.Open`, named by its directory) and unregisters it
-when it closes. Every operation the watch admits holds the lease for its whole
+when it closes. `Open` registers the lease before `pebble.Open` and holds it
+while Pebble recovers and creates its files, so a seal drains an open in
+progress, and an open on a closed gate is refused with the typed sealed error. Every operation the watch admits holds the lease for its whole
 duration (`SealWatch.Admit` ... `SealWatch.Done`): `SealWatch.Flush`, which the
 Raft state machines in `pkg/store` call from `Sync`, and every write and
 batch commit and `Compact` of a `pkg/storage/pebble.PebbleStorage`. A lease is an atomic
