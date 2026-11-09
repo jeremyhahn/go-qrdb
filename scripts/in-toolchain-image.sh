@@ -4,7 +4,7 @@
 #   usage: scripts/in-toolchain-image.sh <image> <command...>
 #   e.g.   scripts/in-toolchain-image.sh go-enclave-toolchain:abc make build
 #
-# in-toolchain-template: v4 (ci-template v1.29.5). Ships beside ci.yml; copy it to
+# in-toolchain-template: v5 (ci-template v1.34.1). Ships beside ci.yml; copy it to
 # scripts/ with the workflow. From go-quicraft's scripts/in-toolchain-image.sh
 # (a141c3c), with the container prefix and uid taken from the environment.
 #
@@ -143,8 +143,11 @@
 # GOTMPDIR) is an anonymous volume on the image's /var/tmp (IN_IMAGE_SCRATCH
 # overrides), on the daemon's data disk, removed with the container. A scratch directory that is missing or not writable fails
 # the stage by name. A bridge stage's GOPROXY puts DEVCACHE_GOPROXY (Athens)
-# first when the runner sets it: <DEVCACHE_GOPROXY>|https://proxy.golang.org|direct,
+# first when the runner sets it: <DEVCACHE_GOPROXY>|https://proxy.golang.org,
 # so any error falls through to the public proxy; GOPRIVATE travels with it.
+# v5 (ci-template v1.34.1, dependency-resolution.md §7a): the list has no
+# direct entry, so a module the proxy cannot serve fails the stage instead of
+# being fetched from its origin.
 #
 set -euo pipefail
 
@@ -300,7 +303,7 @@ if [ "$network" = bridge ]; then
   # the named-volume cache that is the gomod volume, kept across runs;
   # otherwise the run takes a writable copy of the baked cache on the
   # container's own layer, so nothing baked is downloaded twice.
-  args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org|direct" --env "GOMODCACHE=$modcache")
+  args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org" --env "GOMODCACHE=$modcache")
   if [ "$modcache" = /home/dev/gomodcache ]; then cmd="cp -a /gomodcache/. $modcache/ && $cmd"; fi
   # CUSTOMIZE (go-qrdb) end.
   for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do

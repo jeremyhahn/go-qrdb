@@ -102,7 +102,7 @@ jobs:
           IN_IMAGE_NETWORK: bridge
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
   image:
-    if: ${{ (needs.changes.outputs.docs_only != 'true') && !github.event.pull_request.draft }}
+    if: ${{ (needs.preflight.outputs.docs_only != 'true') && !github.event.pull_request.draft }}
     steps:
       - name: make security
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
@@ -135,7 +135,7 @@ func TestDepsCheckProblems_CanFail(t *testing.T) {
 		"before lint": {replace(lintStep+depsStep, depsStep+lintStep), "before make lint"},
 		"twice":       {replace(depsStep, depsStep+depsStep), "twice"},
 		"lint skips docs-only": {replace("    if: ${{ !github.event.pull_request.draft }}",
-			"    if: ${{ needs.changes.outputs.docs_only != 'true' }}"), "skips a docs-only pull request"},
+			"    if: ${{ needs.preflight.outputs.docs_only != 'true' }}"), "skips a docs-only pull request"},
 		"no lint job":       {replace("  lint:\n", "  lint-x:\n"), "has no lint job"},
 		"no make lint step": {replace(lintStep, ""), "has no make lint step"},
 	}

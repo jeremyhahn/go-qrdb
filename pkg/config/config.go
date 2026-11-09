@@ -2060,6 +2060,9 @@ func Load(path string) (*Config, error) {
 	}); err != nil {
 		return nil, &LoadError{Path: path, Err: err}
 	}
+	if err := restoreProviderKeyCase(cfg, data); err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
 
 	// Backward compatibility: synthesize a default database entry when
 	// the YAML omits the databases section entirely. The backend is
