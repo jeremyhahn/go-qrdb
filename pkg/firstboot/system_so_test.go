@@ -594,7 +594,7 @@ func TestInitialize_AdoptedSystemSOKeepsItsTrustPoolAcrossTheHandoff(t *testing.
 		h.deps.AdminCertPool = AdminCertPoolFromCABundle(caBundle)
 		h.deps.TrustDomain = presentedTrustDomain
 		h.deps.TrustAnchors = trustanchor.NewKVRegistry(kvstore.NewMemoryKVStore())
-		h.deps.ClientTrust = refreshFunc(func(context.Context) error { return nil })
+		h.deps.ClientTrust = ClientTrustRefreshFunc(func(context.Context) error { return nil })
 		return Initialize(ctx, h.deps)
 	}
 	result, err := enrol(so)
@@ -644,11 +644,6 @@ func adoptedSystemSOHandoff(t *testing.T) (so *SOConfig, soCert, caBundle []byte
 	}
 	return so, soCert, caBundle
 }
-
-// refreshFunc adapts a function to ClientTrustRefresher.
-type refreshFunc func(context.Context) error
-
-func (f refreshFunc) Refresh(ctx context.Context) error { return f(ctx) }
 
 // failingAnchors refuses every anchor it is handed.
 type failingAnchors struct{ err error }
@@ -721,7 +716,7 @@ func TestInitialize_AdoptedSystemSOAnchorsReachRuntimeTrust(t *testing.T) {
 		t.Fatalf("Initialize with a failing anchor registry = %v, want a trust anchors failure", err)
 	}
 	h.deps.TrustAnchors = reg
-	h.deps.ClientTrust = refreshFunc(func(context.Context) error { return boom })
+	h.deps.ClientTrust = ClientTrustRefreshFunc(func(context.Context) error { return boom })
 	if _, err := Initialize(ctx, h.deps); !errors.As(err, &e) || e.Op != "trust refresh" || !errors.Is(err, boom) {
 		t.Fatalf("Initialize with a failing refresh = %v, want a trust refresh failure", err)
 	}

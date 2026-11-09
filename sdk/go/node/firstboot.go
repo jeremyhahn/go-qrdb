@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // FirstBoot runs the canonical first-boot (firstboot.Initialize) under THIS
@@ -123,10 +124,28 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 			return nil, err
 		}
 		deps.SO = so
-		deps.SOEnrolled = so == nil && firstboot.SystemSOConsumed(ctx, store)
 	}
 
 	n.defaultSOPINs(&deps)
+	n.defaultSOTrust(&deps)
+	// An SO enrolled before the consumed marker existed leaves neither
+	// marker nor record: its persisted SO account and committed SO PIN are
+	// recognised, as the daemon recognises them, rather than read as no SO.
+	// A caller's own SOEnrolled is never overridden.
+	if deps.SO == nil && !deps.SOEnrolled {
+		enrolled := firstboot.SystemSOConsumed(ctx, store)
+		if !enrolled && users != nil {
+			var adminID uint64
+			if admin, err := users.GetUserByUsername(ctx, tenantid.System, "admin"); err == nil && admin != nil {
+				adminID = admin.ID
+			}
+			pinCheck, _ := deps.SOPINs.(firstboot.SOPINChecker)
+			if enrolled, err = firstboot.RecognizeEnrolledSystemSO(ctx, store, users, pinCheck, adminID); err != nil {
+				return nil, err
+			}
+		}
+		deps.SOEnrolled = enrolled
+	}
 	result, err := firstBootUnderPolicy(ctx, deps, policy, users)
 	if err != nil {
 		return nil, err
@@ -276,6 +295,22 @@ func (n *Node) defaultSOPINs(deps *firstboot.Dependencies) {
 		if pins := svcNode.SOPINs(); pins != nil {
 			deps.SOPINs = pins
 		}
+	}
+}
+
+// defaultSOTrust fills the trust-anchor registry and runtime client-trust
+// refresh an adopted SO's external CA pool is installed through, from the
+// node's own services, unless the caller supplied them.
+func (n *Node) defaultSOTrust(deps *firstboot.Dependencies) {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil || svcNode.TrustAnchors == nil {
+		return
+	}
+	if deps.TrustAnchors == nil {
+		deps.TrustAnchors = svcNode.TrustAnchors
+	}
+	if deps.ClientTrust == nil {
+		deps.ClientTrust = firstboot.ClientTrustRefreshFunc(svcNode.RefreshClientTrust)
 	}
 }
 

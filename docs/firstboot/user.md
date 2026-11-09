@@ -146,10 +146,18 @@ qrdb init --so-pin SOPIN --user-pin USERPIN --barrier-strategy none \
 
 `--so-csr` is a CSR made with the SO's own key, which must not be the admin's
 key. `--so-cert` (with `--so-chain` for intermediates) adopts a certificate the
-SO already holds. First boot creates the SO's account in the system tenant
-with only the `so` role, binds its certificate and records `--so-pin` as its
-PIN. Re-running first boot never creates a second SO. In the standard posture
-the SO is optional.
+SO already holds. It must be a client certificate: its key usage includes
+digital signature and its extended key usage includes client authentication.
+When it chains to `--admin-cert-pool`, first boot stores that pool as system
+tenant trust anchors and refreshes the server's client trust before it binds
+the SO, so the SO can log in over mTLS. First boot creates the SO's account in
+the system tenant with only the `so` role, binds its certificate and records
+`--so-pin` as its PIN. Re-running first boot never creates a second SO. In the
+standard posture the SO is optional.
+
+An embedded node upgraded from a version that recorded no SO marker
+recognises an SO it already has (a live binding and a committed SO PIN), as
+the daemon does, and boots strict without asking for a new one.
 
 ## Troubleshooting
 
@@ -160,8 +168,10 @@ because no principal could ever manage roles. Name the system SO with the
 flags above when you run `qrdb init`.
 
 **"ceremony: system SO rejected".** The SO flags named the admin's username
-or key, no SO PIN, a CSR that does not parse, or a certificate that does not
-verify under the system tenant. Fix the named input and re-run `qrdb init`.
+or key, no SO PIN, a CSR that does not parse, a certificate that does not
+verify under the system tenant, or a certificate without the client-auth
+profile (`*ceremony.ClientAuthProfileError`). Nothing is created or bound, so
+fix the named input and re-run `qrdb init`.
 
 **"M-of-N requires at least one officer".** `--barrier-strategy shamir`
 needs its share holders named: `--officers`, `--custodians` or

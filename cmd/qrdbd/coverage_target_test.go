@@ -228,7 +228,7 @@ func TestRunFirstBoot_WithBarriers_UnsealedBarrier_FirstBootError(t *testing.T) 
 		ctx, node, testLeaderWait, 1,
 		userSvc, roleSvc, &mockTenantServicer{},
 		false, sub.BarrierRegistry, seal.StrategyID("passphrase"),
-		auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+		auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 
 	// firstBootErr is assigned the *bootstrap.FirstBootError from
 	// BootstrapSystem. It is not a NotLeader condition, so it propagates with

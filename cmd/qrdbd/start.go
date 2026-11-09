@@ -2351,7 +2351,7 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
-			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
+			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, soTrustSeamsOf(svcNode), userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
 				if sigCtx.Err() != nil {
@@ -4203,7 +4203,7 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
-func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
+func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soTrust soTrustSeams, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
 	// standalone convention).
@@ -4406,7 +4406,7 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// create the admin user with the canonical Admin@system grant. The
 	// system-tenant rule in pkg/auth/rbac promotes that single grant to
 	// cross-tenant authority. Idempotent across daemon restarts.
-	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM, bootSOPINs); err != nil {
+	if err := runFirstBoot(ctx, node, leaderWait, shardID, bootUserSvc, bootRoleSvc, tenantSvc, strictSoD, barriers, sealStrategy, mtlsBindingPolicy, pendingAdminStore, ceremonyCA, clientCACertPEM, bootSOPINs, soTrust); err != nil {
 		return nil, err
 	}
 
@@ -4772,6 +4772,25 @@ func firstAdminPins(init *lifecycle.BarrierInit) middleware.FirstAdminPins {
 	return init
 }
 
+// soTrustSeams carries the node's trust-anchor registry and client-trust
+// refresh to first boot, which installs an adopted system SO's own trust
+// pool through them before it declares the SO enrolled
+// (firstboot.Dependencies.TrustAnchors). The zero value has neither, and
+// first boot then refuses an SO that brings a pool of its own.
+type soTrustSeams struct {
+	anchors firstboot.TrustAnchorAdder
+	refresh firstboot.ClientTrustRefresher
+}
+
+// soTrustSeamsOf returns the seams of a lifecycle node; a node without a
+// trust-anchor registry (no certificate provider) yields the zero value.
+func soTrustSeamsOf(n *lifecycle.Node) soTrustSeams {
+	if n == nil || n.TrustAnchors == nil {
+		return soTrustSeams{}
+	}
+	return soTrustSeams{anchors: n.TrustAnchors, refresh: firstboot.ClientTrustRefreshFunc(n.RefreshClientTrust)}
+}
+
 // adminBindingWait bounds the boot-time wait for the bootstrap admin's
 // certificate bindings to be readable (firstboot.VerifyAdminCertBindingWithin).
 // A variable so tests can shorten it; production uses the shared default.
@@ -4824,7 +4843,7 @@ func defaultAuthFactors() []authfactors.Factor {
 // reserved-id rejection on CreateTenant. Production startup always
 // supplies a non-nil tenant servicer; tests do the same via a small
 // in-memory tenant servicer.
-func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soPINs firstboot.SOPINSetter) error {
+func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, shardID uint64, userSvc user.UserServicer, roleSvc role.RoleServicer, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, mtlsBindingPolicy auth.MTLSBindingPolicy, pendingAdminCertStore firstboot.PendingAdminCertStore, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soPINs firstboot.SOPINSetter, soTrust soTrustSeams) error {
 	// Phase 1: Wait for leader election. All operations (reads on leader
 	// via SyncRead, writes via SyncPropose) require a leader.
 	if err := waitForLeaderElection(ctx, node, leaderWait, shardID); err != nil {
@@ -4979,14 +4998,16 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 				SO:                 pendingSO,
 				SOEnrolled:         soEnrolled,
 			}, bootstrap.Dependencies{
-				Tenants:      tenantSvc,
-				Users:        userSvc,
-				Roles:        roleSvc,
-				RoleResolver: roleSvc,
-				Binder:       adminBinder,
-				Barriers:     barriers,
-				SOPINs:       soPINs,
-				Logger:       slog.Default(),
+				Tenants:        tenantSvc,
+				Users:          userSvc,
+				Roles:          roleSvc,
+				RoleResolver:   roleSvc,
+				Binder:         adminBinder,
+				Barriers:       barriers,
+				SOPINs:         soPINs,
+				SOTrustAnchors: soTrust.anchors,
+				SOClientTrust:  soTrust.refresh,
+				Logger:         slog.Default(),
 			})
 			return bsErr
 		}
@@ -5007,6 +5028,8 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 			SO:                 pendingSO,
 			SOEnrolled:         soEnrolled,
 			SOPINs:             soPINs,
+			TrustAnchors:       soTrust.anchors,
+			ClientTrust:        soTrust.refresh,
 		})
 		return fbErr
 	}

@@ -618,6 +618,21 @@ func (e *SystemSOHolderCertError) Error() string {
 	return "the certificate carries the " + e.Profile + " holder profile and is a custody identity, not a login certificate"
 }
 
+// ClientAuthProfileError reports a login certificate a TLS client login
+// cannot use: its KeyUsage lacks digital signature, or its ExtKeyUsage names
+// neither client authentication nor any usage. It is the cause of a
+// *AdminCredentialRejectedError for the bootstrap admin and of a
+// *SystemSORejectedError for a presented SO certificate. Reason names the
+// missing usage.
+type ClientAuthProfileError struct {
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *ClientAuthProfileError) Error() string {
+	return e.Reason
+}
+
 // SystemSOPersistError wraps a failure recording, reading or removing the
 // system SO Initialize issued in the system barrier (go-qrdb#1128). Op names
 // the step: "encode", "write", "read", "decode" or "remove".

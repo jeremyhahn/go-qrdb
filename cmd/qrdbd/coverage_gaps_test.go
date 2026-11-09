@@ -253,7 +253,7 @@ func TestRunFirstBoot_NonLeaderFailurePropagatesItsCause(t *testing.T) {
 		createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
 			return nil, sentinel
 		},
-	}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+	}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel,
@@ -293,7 +293,7 @@ func TestRunFirstBoot_NotLeaderFallsToReplicationWait(t *testing.T) {
 				createRoleFn: func(_ context.Context, _ *role.CreateRoleRequest) (*role.Role, error) {
 					return nil, notLeader
 				},
-			}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil)
+			}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 
 			require.Error(t, err)
 			var abe *AuthBootstrapError
