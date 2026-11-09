@@ -17,6 +17,14 @@
 # GOTOOLCHAIN=local so an older base cannot satisfy that requirement (and
 # cannot auto-upgrade). This must stay >= the highest `go` directive across
 # the workspace modules.
+#
+# trivy is copied out of its official image, pinned by multi-arch index digest.
+# The default is scripts/tool-pins.sh's TRIVY_IMAGE, a second copy for a bare
+# `docker compose build` (#302) that `make check-tool-versions` holds to the
+# pin, like the analyser ARG defaults below; make passes the pin itself.
+ARG TRIVY_IMAGE=ghcr.io/aquasecurity/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
+FROM ${TRIVY_IMAGE} AS trivy
+
 FROM golang:1.27.3-bookworm AS toolchain
 
 # Fleet dev-cache passthrough (handbook software/conventions/devops.md §2a).
@@ -127,9 +135,9 @@ RUN set -eu; \
 # without it every `make ci` fails at the security step rather than passing while
 # scanning less than it claims. Both are honest; only one lets work continue.
 #
-# Installed from the release tarball via the upstream script, which is the form
-# devops.md §8 names as proven (go-quicraft's .devcontainer/Dockerfile) and the
-# form nightly.yml's Gitea leg uses — the same binary in all three places.
+# Copied from the official image pinned by digest (TRIVY_IMAGE, the `trivy`
+# stage above), the same artifact the CI image and nightly.yml install. The
+# release-download endpoint the upstream install script used returned 504s.
 #
 # ---------------------------------------------------------------------------
 # EVERY ANALYSER IS PINNED, AND NO VERSION LITERAL LIVES IN THIS FILE (#322)
@@ -244,12 +252,11 @@ RUN for i in 1 2 3; do \
         go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} && \
         go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
         go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
-        curl -sfL "https://raw.githubusercontent.com/aquasecurity/trivy/${TRIVY_VERSION}/contrib/install.sh" \
-          | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}" && \
         exit 0; \
         echo "tool install attempt $i failed; retrying"; sleep 10; \
     done; \
     echo "tool install failed after 3 attempts"; exit 1
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 
 # Every scanner `make security` runs must be present AND be the version this
 # repo gates on, or the suite is a claim nobody checked (#299, #322). Failing
@@ -269,20 +276,21 @@ RUN for i in 1 2 3; do \
 # trivy is not routed through it, and that boundary is deliberate rather than
 # an omission. require-tool.sh's contract is a GO tool named by module path:
 # its recovery branch is `go install <module>@<pin>` and its parser refuses any
-# binary whose output format it has not read. trivy comes from a release
-# tarball and has no module path, so putting it through that script would mean
+# binary whose output format it has not read. trivy comes from an image
+# and has no module path, so putting it through that script would mean
 # inventing an argument for a branch that would then do the wrong thing. Its
-# check stays inline, in the form #299 wrote it.
+# check is scripts/check-trivy-version.sh, an exact comparison with its own
+# regression suite, shared with build/docker/devcontainer/Dockerfile and
+# nightly.yml.
 COPY scripts/require-tool.sh /usr/local/bin/require-tool.sh
+COPY scripts/check-trivy-version.sh /usr/local/bin/check-trivy-version.sh
 RUN set -eu; \
     require-tool.sh golangci-lint "${GOLANGCI_LINT_VERSION}" github.com/golangci/golangci-lint/v2/cmd/golangci-lint; \
     require-tool.sh gosec "${GOSEC_VERSION}" github.com/securego/gosec/v2/cmd/gosec; \
     require-tool.sh govulncheck "${GOVULNCHECK_VERSION}" golang.org/x/vuln/cmd/govulncheck; \
     command -v trivy >/dev/null 2>&1 || { \
         echo "ERROR: trivy is not on PATH after the tool install" >&2; exit 1; }; \
-    trivy --version | grep -q "^Version: ${TRIVY_VERSION#v}$" || { \
-        echo "ERROR: trivy is not at the pinned ${TRIVY_VERSION}:" >&2; trivy --version >&2; exit 1; }; \
-    trivy --version
+    check-trivy-version.sh "$(command -v trivy)" "${TRIVY_VERSION}"
 
 WORKDIR /workspace/go-qrdb
 

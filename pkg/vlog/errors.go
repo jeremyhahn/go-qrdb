@@ -129,6 +129,16 @@ func (e *ReservedLogError) Error() string {
 	return "vlog: log " + e.ID.String() + " is the audit instance; only audit events append to it"
 }
 
+// NotAuditLogError is returned when an audit-instance append names a log
+// other than its tenant's audit instance (AuditLogID).
+type NotAuditLogError struct {
+	ID LogID
+}
+
+func (e *NotAuditLogError) Error() string {
+	return "vlog: log " + e.ID.String() + " is not an audit instance"
+}
+
 // LogExistsError is returned when Create names a log that already exists.
 type LogExistsError struct {
 	ID LogID

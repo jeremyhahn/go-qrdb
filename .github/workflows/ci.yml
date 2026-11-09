@@ -1,8 +1,12 @@
-# ci-template: v1.30 — canonical CI for all first-party Go repos.
-# go-qrdb deviations from v1.30, one line each (the CUSTOMIZE blocks below
+# ci-template: v1.34.1 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.34.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on GitHub-hosted ubuntu-latest (DS-7377); no self-hosted
 #     label, registry, cache volume, reaper or schedule guard remains
+#   - no schedule guard, so preflight merges changes and arch-gates only
+#     (DS-7377)
+#   - preflight's timeout is 15 minutes against the template's 10, because it
+#     runs the diff and every full-tree architecture gate
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
 #   - a docker-build job builds both images once and hands them on as run
 #     artifacts (scripts/ci-image.sh); on a push to main it also pushes them
@@ -114,22 +118,51 @@ jobs:
   #
   # CUSTOMIZE (go-qrdb, DS-3160): docs_only also selects the `code` tier, the
   # jobs that run on every event but a docs-only PR. Each carries exactly
-  # `if: needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != ''`
-  # (and the draft test) and lists changes and docker-build in needs; CI Gate
+  # `if: needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != ''`
+  # (and the draft test) and lists preflight and docker-build in needs; CI Gate
   # excuses its skip only when DOCS_ONLY is true. v1.29.2 (ruling 239(8)): the
   # `if:` also tests docker-build's it_image, empty on a docs-only PR.
-  changes:
+  #
+  # v1.34: preflight is the changed-file diff and the architecture gates in
+  # one job (go-qrdb has no schedule guard, DS-7377).
+  # Architecture gate (v1.20, Company Agent m270 item 9; go-xkms arch-gates).
+  # go-objstore owns every blob backend (docs/00), and a repo reaches it only
+  # through the packages that are its storage seam. Test files are exempt.
+  # CUSTOMIZE: OBJSTORE_SEAMS, an extended regex of the paths that may import
+  # go-objstore. A source check with grep, not a stage: it runs on the
+  # runner's shell. v1.23: a lint-class check, so it stays on the PR tier.
+  # CUSTOMIZE (go-qrdb, DS-3160): make check-public-releasable scans the whole
+  # tracked tree, docs included, so a docs-only PR runs these steps; the two
+  # code-only steps skip there.
+  preflight:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Changed files
+    name: Preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+    env:
+      # go-qrdb: the objstore storage backend, and the embedded transport's
+      # volume pool, which is go-objstore's pool type.
+      OBJSTORE_SEAMS: 'pkg/storage/objstore/|sdk/go/transport/embedded/'      # CUSTOMIZE
     steps:
+      # v1.34: the changed-file diff needs the PR's base, and the
+      # architecture gates scan the whole tree, so one full checkout serves both.
+      # No credential is left in the checkout: nothing after it fetches or pushes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        if: ${{ github.event_name == 'pull_request' && env.CI_FULL_TIER != 'true' }}
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
       - name: Is every changed file docs or markdown?
         id: diff
         env:
@@ -149,6 +182,47 @@ jobs:
           echo "docs only: $docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
 
+      - name: No direct go-objstore import outside the storage seam
+        if: steps.diff.outputs.docs_only != 'true'
+        run: |
+          if [ "$(sed -n 's/^module //p' go.mod)" = github.com/jeremyhahn/go-objstore ]; then
+            echo "OK: this is go-objstore"; exit 0
+          fi
+          hits=$(grep -rln --include='*.go' '"github.com/jeremyhahn/go-objstore' . \
+                 | grep -v '_test\.go$' \
+                 | { if [ -n "$OBJSTORE_SEAMS" ]; then grep -vE "$OBJSTORE_SEAMS"; else cat; fi; } || true)
+          if [ -n "$hits" ]; then
+            echo "go-objstore may be imported only in the storage seam (OBJSTORE_SEAMS='$OBJSTORE_SEAMS'):"
+            echo "$hits"; exit 1
+          fi
+          echo "OK: no go-objstore import outside the storage seam"
+
+      # CUSTOMIZE (go-qrdb): no tracked file carries a fleet value (AGENTS.md,
+      # "The whole tracked tree is publicly releasable"). The patterns are a
+      # repository secret, written to a file outside the checkout, read, and
+      # removed; they never enter the tree or a log. A repository or a fork
+      # without the secret cannot run the scan: the step says so in a warning
+      # rather than pass it silently (DS-7377).
+      - name: make check-public-releasable
+        env:
+          PUBLIC_RELEASE_PATTERNS: ${{ secrets.PUBLIC_RELEASE_PATTERNS }}
+        run: |
+          if [ -z "$PUBLIC_RELEASE_PATTERNS" ]; then
+            echo "::warning::PUBLIC_RELEASE_PATTERNS is not set for this run: make check-public-releasable did not run"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$PUBLIC_RELEASE_PATTERNS" > "$RUNNER_TEMP/public-release-patterns"
+          PUBLIC_RELEASE_PATTERNS_FILE="$RUNNER_TEMP/public-release-patterns" make check-public-releasable
+          rm -f "$RUNNER_TEMP/public-release-patterns"
+
+      # CUSTOMIZE (go-qrdb): every compose service that names a build target
+      # names a stage its Dockerfile declares, with each overlay resolved by
+      # `docker compose config` (client-side, no daemon). The toolchain image
+      # carries no Docker CLI, so the check runs on the runner's.
+      - name: make check-compose-targets test-compose-targets
+        if: steps.diff.outputs.docs_only != 'true'
+        run: make check-compose-targets test-compose-targets
   # v1.21: every stage runs in the project's own devcontainer image and no
   # other (ci-standard.md §2, devcontainer.md §7). This job builds the images
   # once from build/docker/devcontainer/Dockerfile at this commit and hands
@@ -174,7 +248,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
     runs-on: ubuntu-latest
-    needs: [changes]
+    needs: [preflight]
     timeout-minutes: 90
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
     # to GHCR, so it alone may write packages.
@@ -223,7 +297,7 @@ jobs:
       # reads none. The consumers take the image's tag from this job's
       # outputs, so no other job reads the sum.
       - name: Read the Alpine package index
-        if: ${{ needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ needs.preflight.outputs.docs_only != 'true' }}
         run: |
           sum=$(make -s apk-index-sum)
           echo "APK_INDEX_SUM=$sum" >> "$GITHUB_ENV"
@@ -231,7 +305,7 @@ jobs:
       - name: Build the devcontainer images
         id: build
         env:
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
         run: |
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
@@ -330,7 +404,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer image [lint, gosec, deps-check]
     runs-on: ubuntu-latest
-    needs: [changes, docker-build]
+    needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -395,7 +469,7 @@ jobs:
       # ci-template v1.30: gosec on the PR tier; the full tier runs it inside
       # `make security` in the image job.
       - name: make gosec (PR tier)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER != 'true' && needs.changes.outputs.docs_only != 'true' }}
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER != 'true' && needs.preflight.outputs.docs_only != 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # ci-template v1.30: vet-tags and the secure analyzer, on the nightly
@@ -418,7 +492,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Lint Gates [toolchain image]
     runs-on: ubuntu-latest
-    needs: [changes, docker-build]
+    needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -499,8 +573,8 @@ jobs:
   image:
     name: Devcontainer image [build, security, trivy image]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -630,8 +704,8 @@ jobs:
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -727,8 +801,8 @@ jobs:
   coverage-merge:
     name: Unit [make coverage-merge]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build, coverage]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -778,8 +852,8 @@ jobs:
   test-clusterproof:
     name: Unit [make test-clusterproof]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 20
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -822,8 +896,8 @@ jobs:
   coverage-fts:
     name: Unit [make coverage-fts]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 20
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -866,8 +940,8 @@ jobs:
   test-tags:
     name: Unit [make test-tags]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
@@ -935,8 +1009,8 @@ jobs:
   test-sdk:
     name: Unit [make test-sdk-leg ${{ matrix.leg }}]
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -1015,7 +1089,7 @@ jobs:
     name: Integration (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build, test-typescript, arch-gates]
+    needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
@@ -1089,7 +1163,7 @@ jobs:
     name: Integration (standalone stack)
     runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
-    needs: [docker-build, test-typescript, arch-gates]
+    needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1300,8 +1374,8 @@ jobs:
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
     runs-on: ubuntu-latest
-    if: ${{ (needs.changes.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
-    needs: [changes, docker-build]
+    if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
+    needs: [preflight, docker-build]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1402,82 +1476,6 @@ jobs:
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
 
-  # Architecture gate (v1.20, Company Agent m270 item 9; go-xkms arch-gates).
-  # go-objstore owns every blob backend (docs/00), and a repo reaches it only
-  # through the packages that are its storage seam. Test files are exempt.
-  # CUSTOMIZE: OBJSTORE_SEAMS, an extended regex of the paths that may import
-  # go-objstore. A source check with grep, not a stage: it runs on the
-  # runner's shell. v1.23: a lint-class check, so it stays on the PR tier.
-  # CUSTOMIZE (go-qrdb, DS-3160): make check-public-releasable scans the whole
-  # tracked tree, docs included, so a docs-only PR runs this job; its two
-  # code-only steps skip there.
-  arch-gates:
-    if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Architecture Gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [changes]
-    env:
-      # go-qrdb: the objstore storage backend, and the embedded transport's
-      # volume pool, which is go-objstore's pool type.
-      OBJSTORE_SEAMS: 'pkg/storage/objstore/|sdk/go/transport/embedded/'      # CUSTOMIZE
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-
-      - name: Mask the forge credentials
-        run: |
-          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
-            val=${!v:-}
-            [ -n "$val" ] || continue
-            echo "::add-mask::$val"
-            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
-          done
-
-      - name: No direct go-objstore import outside the storage seam
-        if: needs.changes.outputs.docs_only != 'true'
-        run: |
-          if [ "$(sed -n 's/^module //p' go.mod)" = github.com/jeremyhahn/go-objstore ]; then
-            echo "OK: this is go-objstore"; exit 0
-          fi
-          hits=$(grep -rln --include='*.go' '"github.com/jeremyhahn/go-objstore' . \
-                 | grep -v '_test\.go$' \
-                 | { if [ -n "$OBJSTORE_SEAMS" ]; then grep -vE "$OBJSTORE_SEAMS"; else cat; fi; } || true)
-          if [ -n "$hits" ]; then
-            echo "go-objstore may be imported only in the storage seam (OBJSTORE_SEAMS='$OBJSTORE_SEAMS'):"
-            echo "$hits"; exit 1
-          fi
-          echo "OK: no go-objstore import outside the storage seam"
-
-      # CUSTOMIZE (go-qrdb): no tracked file carries a fleet value (AGENTS.md,
-      # "The whole tracked tree is publicly releasable"). The patterns are a
-      # repository secret, written to a file outside the checkout, read, and
-      # removed; they never enter the tree or a log. A repository or a fork
-      # without the secret cannot run the scan: the step says so in a warning
-      # rather than pass it silently (DS-7377).
-      - name: make check-public-releasable
-        env:
-          PUBLIC_RELEASE_PATTERNS: ${{ secrets.PUBLIC_RELEASE_PATTERNS }}
-        run: |
-          if [ -z "$PUBLIC_RELEASE_PATTERNS" ]; then
-            echo "::warning::PUBLIC_RELEASE_PATTERNS is not set for this run: make check-public-releasable did not run"
-            exit 0
-          fi
-          umask 077
-          printf '%s\n' "$PUBLIC_RELEASE_PATTERNS" > "$RUNNER_TEMP/public-release-patterns"
-          PUBLIC_RELEASE_PATTERNS_FILE="$RUNNER_TEMP/public-release-patterns" make check-public-releasable
-          rm -f "$RUNNER_TEMP/public-release-patterns"
-
-      # CUSTOMIZE (go-qrdb): every compose service that names a build target
-      # names a stage its Dockerfile declares, with each overlay resolved by
-      # `docker compose config` (client-side, no daemon). The toolchain image
-      # carries no Docker CLI, so the check runs on the runner's.
-      - name: make check-compose-targets test-compose-targets
-        if: needs.changes.outputs.docs_only != 'true'
-        run: make check-compose-targets test-compose-targets
-
-  # The single required check (devops.md §1). Every job above must appear in
-  # BOTH the needs list and the results check — a gate that can pass vacuously
-  # is worse than no gate. Do not use join(needs.*.result).
   ci-gate:
     name: CI Gate
     runs-on: ubuntu-latest
@@ -1491,13 +1489,13 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [changes, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, arch-gates, integration-standalone, integration-features, fips, soak]
+    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak]
     steps:
       - name: Fail closed on any non-success
         env:
           # ruling 214: a draft PR runs no CI, so its gate fails rather than pass on skips.
           DRAFT: ${{ github.event.pull_request.draft == true }}
-          RESULT_CHANGES: ${{ needs.changes.result }}
+          RESULT_PREFLIGHT: ${{ needs.preflight.result }}
           RESULT_DOCKER_BUILD: ${{ needs.docker-build.result }}
           RESULT_LINT: ${{ needs.lint.result }}
           RESULT_LINT_GATES: ${{ needs.lint-gates.result }}
@@ -1509,7 +1507,6 @@ jobs:
           RESULT_TEST_TAGS: ${{ needs.test-tags.result }}
           RESULT_TEST_SDK: ${{ needs.test-sdk.result }}
           RESULT_TEST_TYPESCRIPT: ${{ needs.test-typescript.result }}
-          RESULT_ARCH_GATES: ${{ needs.arch-gates.result }}
           RESULT_INTEGRATION_STANDALONE: ${{ needs.integration-standalone.result }}
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
@@ -1521,9 +1518,9 @@ jobs:
           # v1.24: a `nightly` job runs on schedule and workflow_dispatch only.
           NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           # CUSTOMIZE (go-qrdb, DS-3160): a `code` job runs on every event but
-          # a docs-only PR (the changes job's docs_only, false off
+          # a docs-only PR (the preflight job's docs_only, false off
           # pull_request and on ci:full).
-          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
         run: |
           if [ "$DRAFT" = "true" ]; then
             echo "FAIL draft pull request: no CI runs on a draft. Mark it ready, then push an empty commit to start its run."
@@ -1533,7 +1530,7 @@ jobs:
           echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}"
           # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY
           # cannot say which skips to excuse, so it fails closed. DOCS_ONLY is
-          # empty only when changes did not succeed, which fails the gate too.
+          # empty only when preflight did not succeed, which fails the gate too.
           case "${DOCS_ONLY}" in
             true|false) ;;
             *) echo "FAIL: DOCS_ONLY is unreadable ('${DOCS_ONLY}')"; BAD=1;;
@@ -1566,7 +1563,7 @@ jobs:
           # full tier by its `if:` is marked full, one gated to schedule and
           # workflow_dispatch is nightly, one skipped on a docs-only PR
           # (go-qrdb, DS-3160) is code; every other job is pr.
-          check changes "$RESULT_CHANGES" pr
+          check preflight "$RESULT_PREFLIGHT" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
           check lint-gates "$RESULT_LINT_GATES" pr
@@ -1579,7 +1576,6 @@ jobs:
           check test-tags "$RESULT_TEST_TAGS" code
           check test-sdk "$RESULT_TEST_SDK" code
           check test-typescript "$RESULT_TEST_TYPESCRIPT" code
-          check arch-gates "$RESULT_ARCH_GATES" pr
           check integration-standalone "$RESULT_INTEGRATION_STANDALONE" full
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full

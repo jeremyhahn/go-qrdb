@@ -46,14 +46,23 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		if err != nil {
 			return 0, err
 		}
-		if vlog.IsAuditLog(id) {
-			// The audit instance (docs/databases/architecture.md §7):
-			// each entry is an audit event, validated and linked into the
-			// linear chain by pkg/audit, and its record is the leaf. The
-			// result is the last event's sequence, as OpAuditAppend's is.
-			return audit.ChainOn(logs).AppendToInstance(w, id.TenantID, entries)
-		}
+		// The audit instance is refused here (ReservedLogError): only the
+		// AuditAppend sub-type reaches it.
 		return logs.AppendEntries(w, id, entries)
+	},
+	protocol.VerifiableLogSubtypeAuditAppend: func(logs *vlog.Chain, _ storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
+		id, entries, err := protocol.DecodeVerifiableLogAuditAppend(tenantID, body)
+		if err != nil {
+			return 0, err
+		}
+		if !vlog.IsAuditLog(id) {
+			return 0, &vlog.NotAuditLogError{ID: id}
+		}
+		// The audit instance (docs/databases/architecture.md §7): each
+		// entry is an audit event, validated and linked into the linear
+		// chain by pkg/audit, and its record is the leaf. The result is
+		// the last event's sequence, as OpAuditAppend's is.
+		return audit.ChainOn(logs).AppendToInstance(w, id.TenantID, entries)
 	},
 	protocol.VerifiableLogSubtypeCheckpoint: func(logs *vlog.Chain, r storage.Reader, w vlog.Writer, tenantID string, body []byte) (uint64, error) {
 		id, size, root, signed, err := protocol.DecodeVerifiableLogCheckpoint(tenantID, body)
@@ -67,12 +76,8 @@ var vlogApplyFuncs = map[byte]vlogApplyFunc{
 		if err != nil {
 			return 0, err
 		}
-		if vlog.IsAuditLog(id) {
-			// The audit instance's retention is audit Prune (OpAuditPrune),
-			// which expires its bodies through pkg/audit; the log surface
-			// only reads it.
-			return 0, &vlog.ExpireNotAllowedError{ID: id}
-		}
+		// The audit instance is refused here (ReservedLogError): its
+		// retention is audit Prune (OpAuditPrune).
 		expired, err := logs.ExpireBodies(w, id, cutoff)
 		return uint64(expired), err
 	},

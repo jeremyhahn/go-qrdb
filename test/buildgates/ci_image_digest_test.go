@@ -552,7 +552,7 @@ jobs:
         run: toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
   lint:
     runs-on: ubuntu-latest
-    needs: [changes, docker-build]
+    needs: [preflight, docker-build]
     steps:
       - name: Download the toolchain image
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -659,7 +659,7 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "    steps:\n      - name: Early\n        run: scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n      - uses: actions/download-artifact"},
 		{name: "the integration stage without IT_PREBUILT", old: legsTest,
 			new: "        run: make integration-test IT_FEATURE=audit\n"},
-		{name: "docker-build not needed", old: "needs: [changes, docker-build]", new: "needs: [changes]"},
+		{name: "docker-build not needed", old: "needs: [preflight, docker-build]", new: "needs: [preflight]"},
 		{name: "a consumer writes packages", old: "  lint:\n    runs-on: ubuntu-latest\n",
 			new: "  lint:\n    runs-on: ubuntu-latest\n    permissions:\n      packages: write\n"},
 		{name: "no packages write", old: "packages: write", new: "packages: read"},

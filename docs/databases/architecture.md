@@ -983,11 +983,11 @@ The engine half of the log and the replicated audit chain share one mechanism
 | `vlog.Chain` | `pkg/vlog/log.go`, `pkg/vlog/named.go` | The per-state-machine registry: an in-memory head per audit tenant (`headState{seq, lo, digest}`) and per named log (`vlog.LogID{TenantID, Database, Log}`), restored from storage, updated only in Apply. `Create`, `AppendEntries`, `Checkpoint` and `ExpireBodies` are the named-log mutations; the Merkle tree comes from `github.com/transparency-dev/merkle` (`compact`, `rfc6962`, `proof`). |
 | `audit.Chain` | `pkg/audit/chain.go` | The audit trail over a `vlog.Chain` (`audit.ChainOn`). `Append` assigns the next sequence and a linear SHA-256 digest (`digest = SHA-256(prev ‖ event JSON)`, `PrevHash` embedded in the event); `Prune` drops a retired prefix; `Query` and `Verify` read. |
 | The tables | `pkg/vlog/table.go` | Two reserved raw-keyspace tables: `TablePrefix = "\x00qrdb.audit/"`, with `h/<tenant>` head records and `e/<tenant>/<seq>` event records, and `LogTablePrefix = "\x00qrdb.vlog/"` for named logs. `vlog.IsTableKey` keeps both out of KV `Range` and watch. |
-| The opcodes | `pkg/protocol/audit.go`, `pkg/protocol/vlog.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. `OpVerifiableLog` (82) with sub-types `VerifiableLogSubtypeCreate`, `…Append`, `…Checkpoint`, `…ExpireBodies` and `…RotateKey`, built by the `EncodeVerifiableLog*` functions. |
-| The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`), `featuregate.VerifiableLog` (`"verifiable-log"`) and `featuregate.VerifiableLogKeys` (`"verifiable-log-keys"`, the head-signing-key wire: the keyed `Create` body and `RotateKey`). |
+| The opcodes | `pkg/protocol/audit.go`, `pkg/protocol/vlog.go` | `OpAuditAppend` (79) with sub-types `AuditSubtypeAppend` and `AuditSubtypePrune`; `EncodeAuditAppend` refuses a zero timestamp or a tenant mismatch before proposal. `OpVerifiableLog` (82) with sub-types `VerifiableLogSubtypeCreate`, `…Append`, `…Checkpoint`, `…ExpireBodies`, `…RotateKey` and `…AuditAppend` (the audit instance's trusted append, §7), built by the `EncodeVerifiableLog*` functions. |
+| The gates | `pkg/cluster/featuregate/featuregate.go` | `featuregate.AuditAppend` (`"audit-append"`), `featuregate.VerifiableLog` (`"verifiable-log"`) and `featuregate.VerifiableLogKeys` (`"verifiable-log-keys"`, the head-signing-key wire: the keyed `Create` body and `RotateKey`) and `featuregate.VerifiableLogAudit` (`"verifiable-log-audit"`, the audit trail's switch to its log instance, §7). |
 | Dispatch | `pkg/engine/mvcc_engine.go` (`handleAuditAppend`, `handleVerifiableLog`), `pkg/store/pebble.go` (`pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`), `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`) | Both families apply both opcodes, answer `audit.QueryRequest`, `audit.VerifyRequest` and `vlog.Request` (`HeadRequest`, `GetRequest`, `InclusionRequest`, `ConsistencyRequest`) in their read path, restore the registry on open and snapshot recovery, and resync it after a failed apply. |
 | Attachment | `pkg/store/factory.go` (`WithLogs`), `pkg/store/mvcc.go` and `pkg/store/pebble.go` (`SetLogs`), `pkg/engine/mvcc_engine.go` (`WithMVCCLogs`), `cmd/qrdbd/start.go` (`buildSMCreateFunc`), `pkg/server/tenant_host.go` (`newDataPlaneCreateFunc`), `pkg/server/lifecycle/local.go` (`NewLocalEngine`) | Every create function builds a fresh `vlog.Chain` for each state machine it creates, unconditionally: the system shard, every tenant and database group, and every local engine. No two state machines share heads. |
-| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes — `OpVerifiableLog`/`Append` to the tenant's audit instance (`vlog.AuditLogID`) once `featuregate.VerifiableLog` is enabled for the group, `OpAuditAppend` before (§7); reads back through `SyncRead`. |
+| Proposer and reader | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger`), `audit_optin_logger.go`, `audit_shard_resolver.go`, `audit_errors.go` | Routes every audit append to the system shard (`SystemShardAuditResolver`; a dedicated-isolation tenant is refused with `DedicatedTenantAuditNotSupportedError`), checks the gate, sets the timestamp, proposes — `OpVerifiableLog`/`AuditAppend` to the tenant's audit instance (`vlog.AuditLogID`) once `featuregate.VerifiableLog` and `featuregate.VerifiableLogAudit` are enabled for the group, `OpAuditAppend` before (§7); reads back through `SyncRead`. |
 | Log service | `pkg/service/vlog_service.go` (`LogService`, its requests and responses), `vlog_log_service.go` (`qrdb_vlog`), `vlog_log_service_stub.go`, `vlog_errors.go` | Confines each request to the caller's tenant, routes it through `NewSystemShardLogResolver` — the audit resolver's routing, which also refuses a barrier tenant with `BarrierTenantLogNotSupportedError` (§3) — refuses a barrier-enabled database, looked up in the `LogDatabaseLookup` (the node's `database.Manager`) a composer must pass, with `BarrierDatabaseLogNotSupportedError` (§3), refuses a write with `LogFeatureNotActiveError` until `featuregate.VerifiableLog` is active on the group, and a create or key rotation until `featuregate.VerifiableLogKeys` is too, before any key is minted; proposes `OpVerifiableLog` and answers reads as `vlog.Request` values. `SignHead` reads the descriptor and head, signs through the `vlog.HeadSignerProvider` the log's `KeyRef` names, and proposes the checkpoint. Without `qrdb_vlog`, `NewLogService` refuses with `vlog.NotCompiledError`. Composed by `server.WithLogService` (wired by `qrdbd` and `sdk/go/node`) and by `embedded.WithLogService`. |
 | Node-local trail | `pkg/audit/chain_file_logger.go`, `chain_verify.go`, `trail.go`, `trail_dir.go`, `verify.go` | The hash-chained NDJSON file a node writes, its rotation-set verifier and the trail composition. A separate mechanism from the replicated chain. |
 
@@ -1029,7 +1029,7 @@ fields.
 | `Create` | log name, `[descLen:4][vlog.Descriptor JSON]` (`Origin`, `Hash`, `VerifierKeys`, `AllowExpireBodies`, `Keys`), then one key record | Refuses a name that exists; stages the descriptor record, the sealed key record if present, and an empty head. |
 | `Append` | one entry, or a bounded batch of entries | Assigns each entry the next index, stages the entry, its leaf hash and every tree node the append completes, and the new head (§4). Returns the first assigned index. |
 | `Checkpoint` | tree size, root hash, signed checkpoint bytes | Checks that the size is no larger than the log's size and that the root is the tree's root at that size (§5); stages the checkpoint record. |
-| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) on a named log; on the audit instance only audit `Prune` expires bodies, and the log surface refuses `ExpireBodies` as expire-not-allowed (§7). Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
+| `ExpireBodies` | cutoff index | Only on a log whose descriptor allows it, a flag set at create — the audit instance's does, for its retention (§9, decision 8). Proposed by an Admin (`vlog:expire`) on a named log; on the audit instance only audit `Prune` expires bodies, and the log surface refuses `ExpireBodies` on it with `ReservedLogError` (§7). Deletes entry bodies below the cutoff; leaf and node hashes stay, so the tree and every proof remain valid. |
 | `RotateKey` | log name, `[keyLen:4][vlog.HeadKey JSON]`, then one key record | Appends the next key version to the descriptor; stages its sealed key record if present. |
 
 A key record is one presence byte: `0` for none (a provider that keeps the key
@@ -1315,8 +1315,10 @@ it.
 
 #### 7. The audit trail as one log instance
 
-> **Shipped.** `ReplicatedLogger.Emit` switches on `featuregate.VerifiableLog`
-> per group; both state-machine families apply the append through
+> **Shipped.** `ReplicatedLogger.Emit` switches per group once both
+> `featuregate.VerifiableLog` and `featuregate.VerifiableLogAudit`
+> (`"verifiable-log-audit"`) are enabled, and proposes `OpAuditAppend` until
+> then; both state-machine families apply the append through
 > `statemachine.ApplyVerifiableLog` into `audit.Chain.AppendToInstance`
 > (`pkg/audit/chain.go`), which creates the instance at its first append.
 
@@ -1329,6 +1331,48 @@ the upgrade moves no data.
 - **Existing data reads unchanged.** Every record `OpAuditAppend` wrote stays
   where it is, `Query` reads it as it does, and `Verify`'s linear fold covers it
   as it does.
+- **Only audit events append to it.** The replicated audit logger proposes
+  them with the trusted sub-type `OpVerifiableLog`/`VerifiableLogSubtypeAuditAppend`
+  (6), which nothing else proposes and which apply refuses on any log but an
+  audit instance (`NotAuditLogError`). The generic `Append` sub-type always
+  goes through `AppendEntries`, which refuses the audit instance with
+  `ReservedLogError`, and `LogService.Append` refuses the audit instance (its
+  descriptor carries `Audit`) before proposing, so a public `qrdb vlog append`
+  to it fails with `ReservedLogError` (`PERMISSION_DENIED`) on every transport
+  and the trail is never forged. A legacy plain log under the audit name (its
+  descriptor has no `Audit`) stays appendable on every transport.
+  `LogService.CreateLog` refuses the audit name with `ReservedLogError` before
+  it mints a key or proposes, so no new client log is ever created there.
+  The group keeps proposing `OpAuditAppend` until the separate
+  `verifiable-log-audit` gate is on, so a group with members that predate the
+  trusted sub-type never applies one they cannot decode.
+- **The reservation follows committed state, not the binary.** Apply refuses a
+  named-log `Create`, `Append` or `ExpireBodies` on the audit name with
+  `ReservedLogError` only once the tenant's audit instance exists (its state,
+  restored from a descriptor that carries `Audit`). Before that, those
+  commands apply exactly as they did before the instance, so a replica that
+  predates it and an upgraded one reach the same state from the same log. The
+  instance is created only by a trusted audit append, which is proposed only
+  once the gate is on, when every replica is upgraded. Apply keeps accepting
+  a historical `Create` of the audit name committed before the instance; only
+  the public create path refuses a new one.
+- **An audit-instance append is an exclusive apply.** It advances the tenant
+  chain's in-memory head before its batch publishes, as `OpAuditAppend` does,
+  so the MVCC family applies an `OpVerifiableLog` batch holding one (or a body
+  it cannot decode) under the exclusive lock, guarded or not, and a concurrent
+  `Verify` never sees the new head over the old snapshot.
+- **The instance is marked.** `AuditDescriptor` sets `Descriptor.Audit`
+  (`"audit"` in the descriptor JSON); the read path takes the linear-chain
+  layout, and audit `Prune` updates the instance, only for a descriptor that
+  carries it.
+- **A legacy log under the name is left as it was.** An alpha build let a
+  tenant create a plain named log `system/audit`. Such a log keeps its
+  descriptor, entries and tree and reads as the named log it is, and no
+  instance is created over it. While it exists, that tenant's trail stays on
+  the linear chain: each trusted audit append extends the linear chain, as
+  `OpAuditAppend` does, so the tenant's audit keeps running and `Verify`
+  covers it, and the legacy log is never reinterpreted. Nothing is migrated
+  before RC.
 - **The tree starts at the first `OpVerifiableLog` append** to the instance, at
   sequence *S₀*, as leaf 0; the descriptor records *S₀*. That first leaf's bytes
   are the marshaled event with its `PrevHash`, the linear digest of everything
@@ -1342,7 +1386,7 @@ the upgrade moves no data.
   audit instance `Prune` becomes `ExpireBodies`, which removes event bodies and
   keeps the tree (§9, decision 8). Audit `Prune` (`OpAuditAppend`/`AuditSubtypePrune`) is the
   instance's only retention command: the log surface reads the instance like
-  any log, and refuses an `ExpireBodies` on it as expire-not-allowed.
+  any log, and refuses an `ExpireBodies` on it with `ReservedLogError`.
 - **The node-local trail is unchanged.** `ChainFileLogger` is a different
   mechanism — one node's file, written before the store is unsealed, and the
   sink an audit-write failure falls back on — and this design neither moves nor

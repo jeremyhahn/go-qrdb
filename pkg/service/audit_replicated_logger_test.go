@@ -135,8 +135,9 @@ func (h *perFeatureHost) FeatureEnabled(_ uint64, f feature.Feature) bool { retu
 func TestReplicatedLogger_Emit_ProposesToTheAuditInstance(t *testing.T) {
 	inner, cmds := recordingHost(sm.Result{Value: 1})
 	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
-		featuregate.AuditAppend:   true,
-		featuregate.VerifiableLog: true,
+		featuregate.AuditAppend:        true,
+		featuregate.VerifiableLog:      true,
+		featuregate.VerifiableLogAudit: true,
 	}}
 	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
 
@@ -156,10 +157,10 @@ func TestReplicatedLogger_Emit_ProposesToTheAuditInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if subtype != protocol.VerifiableLogSubtypeAppend || tenantID != "acme" {
-		t.Fatalf("subtype %d tenant %q, want append on acme", subtype, tenantID)
+	if subtype != protocol.VerifiableLogSubtypeAuditAppend || tenantID != "acme" {
+		t.Fatalf("subtype %d tenant %q, want audit append on acme", subtype, tenantID)
 	}
-	id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
+	id, entries, err := protocol.DecodeVerifiableLogAuditAppend(tenantID, body)
 	if err != nil {
 		t.Fatalf("decode append: %v", err)
 	}
@@ -175,11 +176,51 @@ func TestReplicatedLogger_Emit_ProposesToTheAuditInstance(t *testing.T) {
 	}
 }
 
+// TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate pins that only
+// featuregate.VerifiableLogAudit switches Emit to the audit instance: a
+// binary that advertises VerifiableLog but predates the instance would
+// refuse the append while its peers chain it, so with VerifiableLog alone,
+// as with neither gate or a host that gates nothing, Emit proposes
+// OpAuditAppend.
+func TestReplicatedLogger_Emit_AuditInstanceNeedsItsOwnGate(t *testing.T) {
+	cases := []struct {
+		name string
+		host func(inner *mockHost) Host
+	}{
+		{"verifiable-log off", func(inner *mockHost) Host {
+			return &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{featuregate.AuditAppend: true}}
+		}},
+		{"verifiable-log on, verifiable-log-audit off", func(inner *mockHost) Host {
+			return &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
+				featuregate.AuditAppend:   true,
+				featuregate.VerifiableLog: true,
+			}}
+		}},
+		{"ungated host", func(inner *mockHost) Host { return inner }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner, cmds := recordingHost(sm.Result{Value: 1})
+			logger := NewReplicatedLogger(&fixedShardResolver{host: tc.host(inner), shardID: 1})
+			if err := logger.Emit(context.Background(), fixedAuditEvent("acme")); err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if len(*cmds) != 1 {
+				t.Fatalf("propose was called %d times, want 1", len(*cmds))
+			}
+			if op := (*cmds)[0][0]; op != protocol.OpAuditAppend {
+				t.Fatalf("op = %d, want OpAuditAppend (%d)", op, protocol.OpAuditAppend)
+			}
+		})
+	}
+}
+
 func TestReplicatedLogger_Emit_InstanceRefusalIsTyped(t *testing.T) {
 	inner, _ := recordingHost(sm.Result{Value: 0, Data: protocol.EncodeLogRefusal(protocol.LogRefusalNotFound, 0, "malformed")})
 	host := &perFeatureHost{mockHost: inner, on: map[feature.Feature]bool{
-		featuregate.AuditAppend:   true,
-		featuregate.VerifiableLog: true,
+		featuregate.AuditAppend:        true,
+		featuregate.VerifiableLog:      true,
+		featuregate.VerifiableLogAudit: true,
 	}}
 	logger := NewReplicatedLogger(&fixedShardResolver{host: host, shardID: 1})
 

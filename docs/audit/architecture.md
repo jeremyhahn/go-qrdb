@@ -427,9 +427,12 @@ tenant:
 - **The audit instance.** Each tenant's replicated trail is the verifiable log
   `<tenant>/system/audit` (`vlog.AuditLogID`;
   [../databases/architecture.md](../databases/architecture.md) §7). Once
-  `featuregate.VerifiableLog` is enabled for the group, `ReplicatedLogger.Emit`
-  proposes each event as `OpVerifiableLog`/`Append` to it, and
-  `OpAuditAppend` before; a host that gates nothing keeps `OpAuditAppend`.
+  `featuregate.VerifiableLogAudit` is enabled for the group,
+  `ReplicatedLogger.Emit` proposes each event as `OpVerifiableLog` with the
+  trusted `AuditAppend` sub-type (`protocol.VerifiableLogSubtypeAuditAppend`)
+  to it, and `OpAuditAppend` before; a host that gates nothing keeps
+  `OpAuditAppend`. Only the replicated logger proposes that sub-type: a
+  generic `Append` to the instance is refused with `vlog.ReservedLogError`.
   The first such append creates the instance's descriptor with `TreeStart`
   *S₀*, the event's sequence, so leaf 0 carries the pre-switch `PrevHash` and
   the tree commits to the whole earlier chain. Every append still sets
@@ -437,7 +440,7 @@ tenant:
   `ChainContinuityReport` are continuous across the switch. `Prune` expires
   the instance's bodies below the cutoff and keeps its tree, so every head and
   proof stays valid; it is the instance's only retention command, and the log
-  surface refuses an `ExpireBodies` on it (`vlog.ExpireNotAllowedError`).
+  surface refuses an `ExpireBodies` on it (`vlog.ReservedLogError`).
 - **Reads through the log surface.** A caller holding `vlog:head`, `vlog:get`
   and `vlog:proof` on its own tenant reads the instance as `--database system
   --log audit`: its head, its entries (each a marshaled audit event) and
