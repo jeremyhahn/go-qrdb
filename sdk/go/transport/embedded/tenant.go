@@ -21,7 +21,6 @@ import (
 	"maps"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -453,7 +452,7 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	// active, and an explicit inherit never loosens a strict tenant: the
 	// same order REST, gRPC, QUIC and MCP apply.
 	if req.IsolationPolicy != nil {
-		if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+		if err := tenant.RequireStrictIsolation(t.tenantSvc); err != nil {
 			return nil, err
 		}
 		if patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
@@ -501,7 +500,7 @@ func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, erro
 	if err := t.authorizeTenantSelf(ctx, permission.TenantsRead); err != nil {
 		return "", err
 	}
-	if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+	if err := tenant.RequireStrictIsolation(t.tenantSvc); err != nil {
 		return "", err
 	}
 	policy, err := t.tenantSvc.ClusterIsolationPolicy(ctx)
@@ -528,7 +527,7 @@ func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string
 	if err := t.authorizeTenantSelf(ctx, permission.TenantsUpdateCross); err != nil {
 		return "", err
 	}
-	if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+	if err := tenant.RequireStrictIsolation(t.tenantSvc); err != nil {
 		return "", err
 	}
 	if err := t.tenantSvc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(policy)); err != nil {

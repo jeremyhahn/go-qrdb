@@ -23,7 +23,6 @@ import (
 	grpcapi "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -230,7 +229,7 @@ func (s *Server) handleTenantUpdate(ctx context.Context, payload []byte) ([]byte
 		return nil, err
 	}
 	if req.IsolationPolicy != nil {
-		if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
+		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
 			return nil, err
 		}
 	}
@@ -272,7 +271,7 @@ func (s *Server) handleClusterIsolationPolicyGet(ctx context.Context, _ []byte) 
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
-	if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
 		return nil, err
 	}
 	policy, err := s.tenantSvc.ClusterIsolationPolicy(ctx)
@@ -292,7 +291,7 @@ func (s *Server) handleClusterIsolationPolicySet(ctx context.Context, payload []
 	if s.tenantSvc == nil {
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
-	if err := featuregate.RequireStrictIsolation(s.tenantSvc); err != nil {
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
 		return nil, err
 	}
 	var req pb.SetClusterIsolationPolicyRequest

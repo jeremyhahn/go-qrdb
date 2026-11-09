@@ -189,7 +189,7 @@ func TestRefusal_adminCredentialRequiresCA(t *testing.T) {
 }
 
 func TestRefusal_featureNotActive(t *testing.T) {
-	want := &feature.NotActiveError{Feature: featuregate.StrictIsolation, ShardID: 7}
+	want := &feature.NotActiveError{Feature: tenant.StrictIsolation, ShardID: 7}
 	reason, md, ok := Refusal(&wrappedError{want})
 	if !ok || reason != transport.ReasonFeatureNotActive {
 		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonFeatureNotActive)

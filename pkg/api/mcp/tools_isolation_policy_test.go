@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -130,8 +129,8 @@ func TestMCPIsolationPolicy_RefusedBeforeStrictIsolation(t *testing.T) {
 	updErr := mcpTenantUpdate(t, svc, map[string]any{"isolation_policy": "strict"})
 	for name, err := range map[string]error{"get floor": getErr, "set floor": setErr, "tenant strict": updErr} {
 		var notActive *feature.NotActiveError
-		if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation || errclass.Classify(err) != errclass.Unavailable {
-			t.Fatalf("%s before activation = %v; want an Unavailable *feature.NotActiveError(%s)", name, err, featuregate.StrictIsolation)
+		if !errors.As(err, &notActive) || notActive.Feature != tenant.StrictIsolation || errclass.Classify(err) != errclass.Unavailable {
+			t.Fatalf("%s before activation = %v; want an Unavailable *feature.NotActiveError(%s)", name, err, tenant.StrictIsolation)
 		}
 	}
 	if got := mcpTenantGet(t, svc); got.IsolationPolicy != tenant.TenantIsolationPolicyInherit {

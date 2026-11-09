@@ -242,31 +242,8 @@ const CommandCaps feature.Feature = "command-caps"
 // engineering.md).
 const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
-// StrictIsolation is the cluster isolation floor's strict mode and the
-// per-tenant isolation_policy that opts into it: the cluster.IsolationPolicy
-// get and set verbs and a tenant update carrying isolation_policy are refused
-// with *feature.NotActiveError until it is active, and before then behaviour
-// is unchanged. It is deliberately NOT in supported: strict isolation is only
-// real once a strict tenant's databases have dedicated WALs (multi-tenancy
-// phase 5, G1), which this binary does not build, so advertising it would let
-// a cluster activate a strict floor that does not isolate
-// (docs/multi-tenancy/engineering.md phase 5).
-const StrictIsolation feature.Feature = "strict-isolation"
-
-// RequireStrictIsolation answers the strict-isolation activation check for a
-// transport's tenant service: nil once the service's injected check passes,
-// and otherwise its error, or *feature.NotActiveError when the service
-// carries no check (it does not implement StrictIsolationCheck, or returns
-// nil), so a composition without the gate never opens the isolation-policy
-// verbs.
-func RequireStrictIsolation(svc any) error {
-	if g, ok := svc.(interface{ StrictIsolationCheck() func() error }); ok {
-		if check := g.StrictIsolationCheck(); check != nil {
-			return check()
-		}
-	}
-	return &feature.NotActiveError{Feature: StrictIsolation}
-}
+// strict-isolation (tenant.StrictIsolation, tenant.RequireStrictIsolation in
+// pkg/tenant) is deliberately NOT in supported.
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.

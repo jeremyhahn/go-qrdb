@@ -20,6 +20,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // strictIsolationRequired is the strict-isolation activation check for host.
@@ -30,10 +31,10 @@ import (
 func strictIsolationRequired(host service.Host) func() error {
 	gated, _ := host.(service.FeatureGatedHost)
 	return func() error {
-		if slices.Contains(featuregate.Supported(), featuregate.StrictIsolation) &&
-			(standaloneHost(host) || gated != nil && gated.FeatureEnabled(0, featuregate.StrictIsolation)) {
+		if slices.Contains(featuregate.Supported(), tenant.StrictIsolation) &&
+			(standaloneHost(host) || gated != nil && gated.FeatureEnabled(0, tenant.StrictIsolation)) {
 			return nil
 		}
-		return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+		return &feature.NotActiveError{Feature: tenant.StrictIsolation}
 	}
 }

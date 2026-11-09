@@ -10,7 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -104,8 +103,8 @@ func executeRootCmd(t *testing.T, svc tenant.TenantServicer, format string, args
 func requireStrictIsolationRefusal(t *testing.T, err error, what string) {
 	t.Helper()
 	var na *feature.NotActiveError
-	if !errors.As(err, &na) || na.Feature != featuregate.StrictIsolation {
-		t.Fatalf("%s = %T %v; want *feature.NotActiveError{%s}", what, err, err, featuregate.StrictIsolation)
+	if !errors.As(err, &na) || na.Feature != tenant.StrictIsolation {
+		t.Fatalf("%s = %T %v; want *feature.NotActiveError{%s}", what, err, err, tenant.StrictIsolation)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -72,8 +71,8 @@ func (s *isoPolicySvc) state() (tenant.ClusterIsolationPolicy, []tenant.TenantPa
 func requireStrictIsolationNotActive(t *testing.T, err error, op string) {
 	t.Helper()
 	var na *feature.NotActiveError
-	if !errors.As(err, &na) || na.Feature != featuregate.StrictIsolation {
-		t.Fatalf("%s = %T %v, want *feature.NotActiveError{%s}", op, err, err, featuregate.StrictIsolation)
+	if !errors.As(err, &na) || na.Feature != tenant.StrictIsolation {
+		t.Fatalf("%s = %T %v, want *feature.NotActiveError{%s}", op, err, err, tenant.StrictIsolation)
 	}
 }
 

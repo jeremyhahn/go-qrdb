@@ -18,9 +18,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // TestStrictIsolationRequired_RefusedOnEveryHost pins that this binary, which
@@ -30,14 +30,14 @@ func TestStrictIsolationRequired_RefusedOnEveryHost(t *testing.T) {
 	hosts := map[string]service.Host{
 		"standalone": newStandaloneHost(),
 		"no host":    nil,
-		"enabled":    gatedHost{enabled: map[feature.Feature]bool{featuregate.StrictIsolation: true}},
+		"enabled":    gatedHost{enabled: map[feature.Feature]bool{tenant.StrictIsolation: true}},
 	}
 	for name, host := range hosts {
 		t.Run(name, func(t *testing.T) {
 			err := strictIsolationRequired(host)()
 			var notActive *feature.NotActiveError
-			if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation {
-				t.Fatalf("strictIsolationRequired()() = %v, want NotActiveError(%s)", err, featuregate.StrictIsolation)
+			if !errors.As(err, &notActive) || notActive.Feature != tenant.StrictIsolation {
+				t.Fatalf("strictIsolationRequired()() = %v, want NotActiveError(%s)", err, tenant.StrictIsolation)
 			}
 		})
 	}

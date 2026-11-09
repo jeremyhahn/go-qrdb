@@ -74,8 +74,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -1161,11 +1161,11 @@ func testIsolationPolicyVerbsRefusedOverProtocol(t *testing.T, node *multiProtoN
 		out, err := runQRDB(t, node.cli, sys, args...)
 		if err == nil {
 			t.Fatalf("[%s] qrdb %s succeeded before %s is active\noutput: %s",
-				proto.name, strings.Join(args, " "), featuregate.StrictIsolation, out)
+				proto.name, strings.Join(args, " "), tenant.StrictIsolation, out)
 		}
-		if !strings.Contains(out, strconv.Quote(string(featuregate.StrictIsolation))) || !strings.Contains(out, "is not active") {
+		if !strings.Contains(out, strconv.Quote(string(tenant.StrictIsolation))) || !strings.Contains(out, "is not active") {
 			t.Fatalf("[%s] qrdb %s: want the %s not-active refusal\noutput: %s",
-				proto.name, strings.Join(args, " "), featuregate.StrictIsolation, out)
+				proto.name, strings.Join(args, " "), tenant.StrictIsolation, out)
 		}
 	}
 
