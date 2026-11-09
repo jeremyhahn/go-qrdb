@@ -293,12 +293,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- CI installs Trivy from its official image pinned by digest; the GitHub
+  release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
   `build/docker/devcontainer` tools stage fetched the Trivy release archive
   with a single `curl`, so one transient 504 from GitHub's release-asset
   host failed `make docker-build-toolchain` and, with it, every CI job on
   main and on PRs. The fetch now retries five times, 3 s apart; the pinned
-  SHA-256 check is unchanged.
+  SHA-256 check is unchanged. Six 504s inside 15 s still failed a PR's
+  build, so the fetch now retries eight times, 10 s apart, on any error,
+  spanning about four minutes.
 - **An unknown op type in a transaction or batch is refused, not applied as
   a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
   and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
@@ -674,6 +678,13 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
+  and `test/performance/qrdb`, with the indirect requirement in
+  `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
+  reported it behind its latest release, inside the 7-day adoption window.
+- `golang.org/x/sync` v0.24.0 → v0.25.0 in the root module, with the indirect
+  requirement in `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`
+  following it; `deps-check` reported it behind its latest release.
 - `github.com/wailsapp/wails/v2` v2.17.0 → v2.17.1 in the root module, the
   desktop shell's only Wails requirement; `deps-check` reported it behind its
   latest release.
