@@ -212,12 +212,8 @@ func TestNewIndexManager_NilLogger(t *testing.T) {
 }
 
 func TestIndexManager_DeleteIndexes_Unit(t *testing.T) {
-	mgr, cleanup := setupUnitTestManager(t)
+	mgr, cleanup := setupManagerWithMemoryIndexes(t)
 	defer cleanup()
-
-	entityType := reflect.TypeOf(TestEntity{})
-	err := mgr.RegisterIndexes(entityType)
-	require.NoError(t, err)
 
 	entity := TestEntity{
 		ID:    1,
@@ -225,13 +221,25 @@ func TestIndexManager_DeleteIndexes_Unit(t *testing.T) {
 		Email: "test@example.com",
 	}
 
-	err = mgr.UpdateIndexes(nil, &entity, []byte("1"))
+	err := mgr.UpdateIndexes(nil, &entity, []byte("1"))
 	require.NoError(t, err)
 
-	err = mgr.DeleteIndexes(&entity, []byte("1"))
-	assert.NoError(t, err)
-
 	keys, err := mgr.QueryIndex("Name", "test")
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("1")}, keys)
+
+	keys, err = mgr.QueryIndex("Email", "test@example.com")
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("1")}, keys)
+
+	err = mgr.DeleteIndexes(&entity, []byte("1"))
+	require.NoError(t, err)
+
+	keys, err = mgr.QueryIndex("Name", "test")
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
+	keys, err = mgr.QueryIndex("Email", "test@example.com")
 	require.NoError(t, err)
 	assert.Empty(t, keys)
 }
