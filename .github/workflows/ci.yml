@@ -5,6 +5,8 @@
 #     label, registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
+#   - preflight's timeout is 15 minutes against the template's 10, because it
+#     runs the diff and every full-tree architecture gate
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
 #   - a docker-build job builds both images once and hands them on as run
 #     artifacts (scripts/ci-image.sh); on a push to main it also pushes them
@@ -136,7 +138,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
     env:
@@ -146,9 +148,11 @@ jobs:
     steps:
       # v1.34: the changed-file diff needs the PR's base, and the
       # architecture gates scan the whole tree, so one full checkout serves both.
+      # No credential is left in the checkout: nothing after it fetches or pushes.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Mask the forge credentials
         run: |

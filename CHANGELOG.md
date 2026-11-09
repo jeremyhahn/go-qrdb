@@ -171,6 +171,13 @@ are not reconstructed here — their history is in the git log.
   serve fails the image build instead of being fetched from its origin.
 - `changes` and `arch-gates` run as one `preflight` job (ci-template v1.34);
   ci.yml has 17 jobs.
+- **No Go module list ends in `direct`** (ci-template v1.34.1,
+  dependency-resolution.md §7a). `scripts/in-toolchain-image.sh` is v5: a
+  bridge stage's GOPROXY is `<DEVCACHE_GOPROXY>|https://proxy.golang.org`.
+  The devcontainer compose services set the same list, and fall back to
+  `https://proxy.golang.org` rather than an empty GOPROXY when no mirror is
+  set. The preflight checkout keeps no credential (`persist-credentials:
+  false`).
 
 - **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
   of ci.yml, release.yml, nightly.yml, automerge.yml and
