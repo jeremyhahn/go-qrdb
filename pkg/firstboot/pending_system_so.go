@@ -20,10 +20,12 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // PendingSystemSOKey is the record carrying the system SO the ceremony
@@ -139,20 +141,25 @@ func ClearPendingSystemSO(ctx context.Context, store PendingAdminCertStore) erro
 	return nil
 }
 
-// SOPINChecker reports whether a tenant's SO PIN is committed, reading and
-// changing nothing. *auth.SOAuthenticator implements it.
+// SOPINChecker reports whether a tenant's SO PIN is committed and whether
+// the committed PIN is a given record, reading and changing nothing.
+// *auth.SOAuthenticator implements it.
 type SOPINChecker interface {
 	SOPINCommitted(ctx context.Context, tenantID string) (bool, error)
+	SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error)
 }
 
 // ClearPendingSystemSOIfEnrolled consumes the pending system SO record only
 // once the SO it names is enrolled: its account exists in the system tenant
-// with the so role, and its PIN is committed. Until then the record is kept,
+// with the so role and a live binding to the record's certificate, and the
+// committed SO PIN is the record's. Until then the record is kept,
 // so the next start's first boot enrols the SO; a node that only waited for
 // a leader to replicate the admin may otherwise consume it before the SO
 // exists, and a later strict first boot would read it as enrolled. It reports
 // whether no unconsumed record remains. Nil users or pins can verify nothing
-// and keep the record.
+// and keep the record. A committed PIN that is not the record's, or an
+// account bound only to other certificates, keeps the record and returns a
+// *SystemSOUnverifiedError: a failed enrollment must not mark the SO enrolled.
 func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertStore, users UserResolver, pins SOPINChecker) (bool, error) {
 	so, err := PendingSystemSO(ctx, store)
 	if err != nil {
@@ -177,10 +184,94 @@ func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertS
 	if !committed {
 		return false, nil
 	}
+	matches := false
+	if so.PINRecord != "" {
+		if matches, err = pins.SOPINRecordMatches(ctx, tenantID, so.PINRecord); err != nil {
+			return false, err
+		}
+	}
+	if !matches {
+		return false, &SystemSOUnverifiedError{Username: so.Username, Reason: "the committed SO PIN is not the record's"}
+	}
+	thumbprint, err := spkiThumbprintFromCertPEM(so.CertPEM)
+	if err != nil {
+		return false, &SystemSOUnverifiedError{Username: so.Username, Reason: "the record's certificate is unreadable: " + err.Error()}
+	}
+	now := time.Now().UTC()
+	if !slices.ContainsFunc(account.CertBindings, func(b user.CertBinding) bool {
+		return b.Thumbprint == thumbprint && !b.IsExpired(now)
+	}) {
+		if len(account.CertBindings) == 0 {
+			// Enrollment binds the certificate after it commits the PIN:
+			// an unbound account may still be mid-enrollment.
+			return false, nil
+		}
+		return false, &SystemSOUnverifiedError{Username: so.Username, Reason: "the account holds no live binding to the record's certificate"}
+	}
 	if err := ClearPendingSystemSO(ctx, store); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// SystemSOLister lists a tenant's accounts. user.UserServicer implements it.
+type SystemSOLister interface {
+	ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
+}
+
+// RecognizeEnrolledSystemSO records the consumed marker for a system SO
+// enrolled before the marker existed. A cluster upgraded into strict
+// separation of duties carries no marker and no pending record, yet may
+// already hold its SO: an account in the system tenant, other than the
+// bootstrap admin adminID, with the so role and a live certificate binding,
+// plus a committed system SO PIN. When the persisted accounts and the PIN
+// store show one, the marker is written and true returned, so a strict
+// start treats the SO as enrolled instead of refusing it. A pending record
+// is first boot's to enrol and is left alone; with no such SO nothing is
+// written and false returned. Nil store, users or pins can verify nothing.
+func RecognizeEnrolledSystemSO(ctx context.Context, store PendingAdminCertStore, users SystemSOLister, pins SOPINChecker, adminID uint64) (bool, error) {
+	if store == nil || users == nil || pins == nil {
+		return false, nil
+	}
+	raw, err := readPendingSystemSO(ctx, store)
+	if err != nil {
+		return false, err
+	}
+	if bytes.Equal(raw, pendingAdminCertConsumedMarker) {
+		return true, nil
+	}
+	if len(raw) != 0 {
+		return false, nil
+	}
+	tenantID := tenantid.System
+	committed, err := pins.SOPINCommitted(ctx, tenantID)
+	if err != nil || !committed {
+		return false, err
+	}
+	soRole := role.SystemRoleID(tenantID, role.RoleNameSO)
+	now := time.Now().UTC()
+	for page := 1; ; page++ {
+		resp, err := users.ListUsers(ctx, &user.ListUsersRequest{TenantID: tenantID, Page: page})
+		if err != nil {
+			return false, &SystemSOEnrollmentError{Op: "list accounts", Cause: err}
+		}
+		if resp == nil {
+			return false, nil
+		}
+		for _, u := range resp.Users {
+			if u == nil || u.ID == adminID || u.TenantID != tenantID ||
+				!slices.Contains(u.RoleIDs, soRole) || user.AdminLoginBlocker(u, now) != "" {
+				continue
+			}
+			if err := store.Put(ctx, PendingSystemSOKey, pendingAdminCertConsumedMarker); err != nil {
+				return false, &PendingAdminCertStoreError{Op: "record enrolled system SO", Cause: err}
+			}
+			return true, nil
+		}
+		if !resp.HasMore || len(resp.Users) == 0 {
+			return false, nil
+		}
+	}
 }
 
 // readPendingSystemSO reads the pending system SO record. Only not-found

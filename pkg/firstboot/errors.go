@@ -364,3 +364,17 @@ func (e *SystemSOEnrollmentError) Error() string {
 func (e *SystemSOEnrollmentError) Unwrap() error {
 	return e.Cause
 }
+
+// SystemSOUnverifiedError reports a system SO enrollment that does not
+// match the pending SO record: the committed SO PIN is not the record's,
+// or the SO account is bound to a different certificate. The record is
+// kept, so the enrollment that owns it can still complete.
+type SystemSOUnverifiedError struct {
+	Username string
+	Reason   string
+}
+
+// Error implements the error interface.
+func (e *SystemSOUnverifiedError) Error() string {
+	return "firstboot: system SO " + e.Username + " does not match the pending SO record: " + e.Reason
+}
