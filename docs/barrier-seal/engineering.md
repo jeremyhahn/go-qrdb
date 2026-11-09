@@ -646,7 +646,10 @@ services and to the server, which wraps the node's sealed-window probe with
   `CompareAndSwap`, `Delete`, `DeleteRange` and `Batch` each hold it from
   before the inner backend call until it returns, refuse on a closed gate
   with `*database.SealedError` before reaching the store, and `Close`
-  unregisters it. Because the storage packages cannot import `pkg/seal`,
+  unregisters it before closing the inner backend. `Lease.Unregister` is
+  safe with work in flight: it marks the lease gone, so every later `Acquire`
+  refuses with `quiesce.ErrSealing`, and a lease with a nonzero count stays
+  in the gate's drain set until its last `Release` removes it. Because the storage packages cannot import `pkg/seal`,
   `quiesce.ErrSealing` and `pebble.ErrBarrierSealed` are recognised wherever
   `seal.ErrSealed` is: `pkg/api/errclass` classifies them Unavailable
   (retryable) ahead of the service wrappers, and `pkg/store`'s and the
@@ -1778,7 +1781,26 @@ distinguishes them.
   through a gated file system rather than a sleep. The benchmark in
   `pkg/seal/encfs/quiesce_bench_test.go` measures the write path with and without the lease:
   at `-count=6 -benchtime=2s` a put averages 615 ns with it and 611 ns
-  without (runs 601-622 ns), about 4 ns per put.
+  without (runs 601-622 ns), about 4 ns per put. The gate's own tests prove
+  that an unregistered lease with an operation in flight stays in the drain
+  until its last release and admits nothing after `Unregister`, and
+  `pkg/database` closes a `BarrierBackend` under a held `Put` and proves
+  the drain still waits for it.
+- **Seal quiesce, integration** (`seal_drain_cli_test.go`, `barrier_seal`
+  feature): `TestSealDrain_HeldWrite_PerProtocol` runs a standalone node
+  built with the `qrdb_sealtest` tag, which compiles the hold seam
+  `pkg/seal/quiesce/sealtest_hold.go` into `qrdbd`; no release build carries
+  it. Through FIFOs in the daemon's working directory the test arms the
+  barrier's Pebble store lease, holds one admitted `kv put` inside it, and
+  over every transport asserts that the CLI seal stays pending, its drain
+  reporting that one lease, until the test releases the write; then the
+  seal completes, the write is acknowledged, a later put is refused as
+  sealed, and the write reads back after unseal. The node is standalone
+  because a Raft node's seal pauses its shards and waits for their applies
+  first, which would keep the seal pending without the drain. With the drain
+  removed from `StorageBarrier.Seal` the test fails on every transport.
+  `TestSealDrain_InFlightWrites_PerProtocol` keeps writers flowing through a
+  Raft node's seal and proves no acknowledged write is lost.
 - **Cluster seal, unit**: `pkg/clusterseal` drives the monitor with an
   injected clock and an in-memory guarded KV: guarded writes and their races,
   epoch-keyed idempotent enforcement, the acknowledgement wait and its timeout,

@@ -173,3 +173,39 @@ func TestBarrierBackend_ClosedGateRefusesEveryMutation(t *testing.T) {
 		t.Errorf("Get(present) = %q, %v; want the value written before the seal", v, err)
 	}
 }
+
+// TestBarrierBackend_CloseKeepsAWriteInFlightInTheDrain: closing a database
+// backend while a mutation it admitted is still inside the store must not
+// take that mutation out of the seal's drain, and the closed backend admits
+// no new mutation.
+func TestBarrierBackend_CloseKeepsAWriteInFlightInTheDrain(t *testing.T) {
+	probe := &gateProbeBackend{
+		StandaloneBackend: newTestBackend(t),
+		block:             true,
+		entered:           make(chan struct{}),
+		release:           make(chan struct{}),
+	}
+	_, backend, gate := newGatedDatabase(t, probe)
+
+	done := make(chan error, 1)
+	go func() { done <- backend.Put(context.Background(), []byte("k"), []byte("v")) }()
+	<-probe.entered
+
+	_ = backend.Close()
+	var sealed *SealedError
+	if err := backend.Delete(context.Background(), []byte("k")); !errors.As(err, &sealed) {
+		t.Errorf("Delete on a closed backend = %v; want *SealedError", err)
+	}
+
+	gate.Close()
+	var timeout *quiesce.DrainTimeoutError
+	if err := gate.Drain(-1); !errors.As(err, &timeout) || len(timeout.Stores) != 1 {
+		t.Fatalf("Drain with a write in flight on a closed backend = %v; want a DrainTimeoutError naming one store", err)
+	}
+
+	close(probe.release)
+	<-done // the inner store is closed; only the drain matters here
+	if err := gate.Drain(-1); err != nil {
+		t.Fatalf("Drain after the write returned = %v; want nil", err)
+	}
+}

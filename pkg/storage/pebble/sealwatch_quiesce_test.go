@@ -258,7 +258,7 @@ func TestSealWatch_DoneWakesADrain(t *testing.T) {
 	}
 }
 
-func TestSealWatch_CloseUnregistersTheStore(t *testing.T) {
+func TestSealWatch_CloseKeepsInFlightWorkInTheDrainUntilDone(t *testing.T) {
 	var gate quiesce.Gate
 	db, w, err := Open("db", &pebble.Options{FS: quiesceFS{FS: vfs.NewMem(), gate: &gate}}, nil)
 	if err != nil {
@@ -269,10 +269,17 @@ func TestSealWatch_CloseUnregistersTheStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Close()
-	if got := heldBy(&gate); len(got) != 0 {
-		t.Fatalf("held = %v after Close", got)
+	if got := heldBy(&gate); len(got) != 1 || got[0] != "db" {
+		t.Fatalf("held = %v after Close with an operation in flight; want [db]", got)
+	}
+	var sealed *SealedError
+	if err := w.Admit(); !errors.As(err, &sealed) {
+		t.Fatalf("Admit after Close = %v; want a *SealedError", err)
 	}
 	w.Done()
+	if got := heldBy(&gate); len(got) != 0 {
+		t.Fatalf("held = %v after the in-flight operation's Done", got)
+	}
 	w.Close()
 }
 

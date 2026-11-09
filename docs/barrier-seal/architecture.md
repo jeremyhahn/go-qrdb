@@ -374,7 +374,11 @@ memory:
 
 Each encrypted store registers one **lease** on its barrier's gate when it
 opens (`pkg/storage/pebble.Open`, named by its directory) and unregisters it
-when it closes. `Open` registers the lease before `pebble.Open` and holds it
+when it closes. Unregistering ends admission at once, so every later operation
+on the lease is refused as sealing, but an operation the lease already
+admitted keeps it in the drain until that operation releases. A store's
+`Close` unregisters before it closes the store, so closing a store never takes
+work in flight out of a seal's sight. `Open` registers the lease before `pebble.Open` and holds it
 while Pebble recovers and creates its files, so a seal drains an open in
 progress, and an open on a closed gate is refused with the typed sealed error. Every operation the watch admits holds the lease for its whole
 duration (`SealWatch.Admit` ... `SealWatch.Done`): `SealWatch.Flush`, which the

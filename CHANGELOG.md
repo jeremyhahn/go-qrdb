@@ -50,6 +50,9 @@ are not reconstructed here — their history is in the git log.
   on a closed gate with `*database.SealedError`. `quiesce.ErrSealing` and
   `pebble.ErrBarrierSealed` classify as Unavailable (retryable) under every
   service wrapper and count as sealed in `pkg/store` and the vector adapter.
+  Closing a store no longer takes its operations in flight out of the
+  drain: an unregistered lease refuses new work and stays in the drain set
+  until its last operation releases.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

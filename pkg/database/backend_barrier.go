@@ -326,7 +326,10 @@ func (b *BarrierBackend) Batch(ctx context.Context, ops []BatchOp) error {
 	return b.inner.Batch(ctx, encrypted)
 }
 
-// Close releases resources held by the inner backend.
+// Close releases resources held by the inner backend. It ends the lease
+// first: from then on every mutation is refused as sealed, and a mutation
+// already admitted keeps the database barrier's drain waiting until it
+// returns.
 func (b *BarrierBackend) Close() error {
 	b.lease.Unregister()
 	return b.inner.Close()
