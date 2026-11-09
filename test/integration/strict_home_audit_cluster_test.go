@@ -28,7 +28,6 @@ import (
 	"github.com/transparency-dev/merkle/rfc6962"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
-	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
@@ -127,16 +126,14 @@ func TestTenant_StrictHome_BarrierAuditTrail_PerProtocol(t *testing.T) {
 	for i, proto := range multiProtocols {
 		node := nodes[i%len(nodes)]
 		t.Run(proto.name, func(t *testing.T) {
-			// The tenant admin onboards a user through this node: its create
-			// and cert-binding records are the tenant's audit events.
+			// The tenant admin invites a user over this transport: the
+			// invitation's record is the tenant's audit event.
 			username := "strict-audit-" + proto.name
-			userCert, _ := node.ca.generateClientCertForTenant(t, tenantID)
-			createBoundUser(t, adminClient, node.restPort, map[string]any{
-				"username":  username,
-				"email":     username + "@" + tenantID + ".example.com",
-				"tenant_id": tenantID,
-				"role_ids":  []string{role.SystemRoleID(tenantID, role.RoleNameOperator)},
-			}, userCert)
+			adminConn := tenantCLIArgsForProto(node, proto, adminCred.certPath, adminCred.keyPath)
+			if out, err := runQRDB(t, node.cli, adminConn, "--output", "json", "users", "invite",
+				"--username", username, "--email", username+"@"+tenantID+".example.com"); err != nil {
+				t.Fatalf("[%s] users invite: %v\noutput: %s", proto.name, err, out)
+			}
 
 			conn := tenantCLIArgsForProto(node, proto, certPath, keyPath)
 			vlogJSON := func(v any, args ...string) error {
