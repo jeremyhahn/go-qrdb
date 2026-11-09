@@ -252,7 +252,8 @@ func (s *SendStream) CancelWrite(e StreamErrorCode) {
 		close(s.closed)
 	})
 
-	s.stopAfterHeader(&StreamError{ErrorCode: e}, func() error {
+	// The stop function returns nil, so stopAfterHeader does too.
+	_ = s.stopAfterHeader(&StreamError{ErrorCode: e}, func() error {
 		s.str.CancelWrite(webtransportCodeToHTTPCode(e))
 		s.onClose()
 		return nil
@@ -274,7 +275,9 @@ func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 
 	sendHdrAndStop := func(streamHdr []byte) {
 		if len(streamHdr) > 0 {
-			s.SetWriteDeadline(time.Time{})
+			// quic-go's SetWriteDeadline returns no error; session shutdown,
+			// not a deadline, aborts this write.
+			_ = s.SetWriteDeadline(time.Time{})
 			_, _ = s.str.Write(streamHdr)
 			s.str.SetReliableBoundary()
 		}
@@ -309,9 +312,12 @@ func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 func (s *SendStream) closeWithSession(err error) {
 	s.closeOnce.Do(func() {
 		s.closeErr = err
-		s.str.CancelWrite(WTSessionGoneErrorCode)
 		close(s.closed)
 	})
+	// Reset the stream even after a local CancelWrite used closeOnce: its
+	// reset waits for the stream header, and only this reset ends a header
+	// write that never gets credit. QUIC ignores a second reset.
+	s.str.CancelWrite(WTSessionGoneErrorCode)
 }
 
 // Close closes the write-direction of the stream.

@@ -54,6 +54,7 @@ type Session struct {
 	capsuleQueueMx      sync.Mutex
 	capsuleQueue        []capsule
 	pendingCloseCapsule *closeSessionCapsule
+	pendingFIN          bool // answer the peer's clean FIN with a FIN
 	capsuleQueueUpdated chan struct{}
 
 	incomingStreams    *incomingStreamsMap[*Stream]
@@ -149,7 +150,17 @@ func (s *Session) readFromConnectStream() {
 	for {
 		c, err := parseNextCapsule(parser)
 		if err != nil {
-			s.closeWithError(&http3.Error{ErrorCode: http3.ErrCodeDatagramError, ErrorMessage: err.Error()}, nil)
+			switch {
+			case errors.Is(err, io.EOF):
+				// A clean FIN closes the session like WT_CLOSE_SESSION with
+				// code 0 and an empty message (draft-ietf-webtrans-http3-16,
+				// section 6).
+				s.closeWithFIN(&SessionError{Remote: true})
+			case errors.As(err, new(*http3.Error)):
+				s.closeWithError(err, nil)
+			default:
+				s.closeWithError(&http3.Error{ErrorCode: http3.ErrCodeDatagramError, ErrorMessage: err.Error()}, nil)
+			}
 			return
 		}
 		switch c := c.(type) {
@@ -202,12 +213,25 @@ func (s *Session) writeToConnectStream() {
 	for {
 		select {
 		case <-s.ctx.Done():
+			// The reader cancels the context as soon as it sees the peer's
+			// FIN, which may be before this goroutine picks up the signal.
+			s.capsuleQueueMx.Lock()
+			fin := s.pendingFIN
+			s.capsuleQueueMx.Unlock()
+			if fin {
+				_ = s.str.Close() // the session is already closed
+			}
 			return
 		case <-s.capsuleQueueUpdated:
 		}
 
 		for {
 			s.capsuleQueueMx.Lock()
+			if s.pendingFIN {
+				s.capsuleQueueMx.Unlock()
+				_ = s.str.Close() // the session is already closed
+				return
+			}
 			if s.pendingCloseCapsule != nil {
 				closeCapsule := *s.pendingCloseCapsule
 				s.capsuleQueueMx.Unlock()
@@ -231,7 +255,7 @@ func (s *Session) writeToConnectStream() {
 				}
 				if !s.closeWithError(err, nil) {
 					s.capsuleQueueMx.Lock()
-					hasClose := s.pendingCloseCapsule != nil
+					hasClose := s.pendingCloseCapsule != nil || s.pendingFIN
 					s.capsuleQueueMx.Unlock()
 					if hasClose {
 						continue
@@ -440,9 +464,10 @@ func (s *Session) ReceiveDatagram(ctx context.Context) ([]byte, error) {
 	return s.str.ReceiveDatagram(ctx)
 }
 
-func (s *Session) closeWithError(closeErr error, closeCapsule *closeSessionCapsule) bool {
+// markClosed records closeErr and closes the stream maps. It reports false
+// for a duplicate call, or when the remote already closed this session.
+func (s *Session) markClosed(closeErr error) bool {
 	s.closeMx.Lock()
-	// Duplicate call, or the remote already closed this session.
 	if s.closeErr != nil {
 		s.closeMx.Unlock()
 		return false
@@ -454,6 +479,34 @@ func (s *Session) closeWithError(closeErr error, closeCapsule *closeSessionCapsu
 	s.outgoingUniStreams.CloseSession(closeErr)
 	s.incomingStreams.CloseSession(closeErr)
 	s.incomingUniStreams.CloseSession(closeErr)
+	return true
+}
+
+// closeWithFIN closes the session after the peer's clean FIN, and has the
+// writer answer with a FIN instead of a reset.
+func (s *Session) closeWithFIN(closeErr error) {
+	if !s.markClosed(closeErr) {
+		return
+	}
+	s.capsuleQueueMx.Lock()
+	s.capsuleQueue = nil
+	s.pendingCloseCapsule = nil
+	s.pendingFIN = true
+	s.capsuleQueueMx.Unlock()
+
+	// quic-go's SetWriteDeadline returns no error; the deadline only bounds
+	// a capsule write that is already blocked.
+	_ = s.str.SetWriteDeadline(time.Now().Add(closeSessionTimeout))
+	select {
+	case s.capsuleQueueUpdated <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Session) closeWithError(closeErr error, closeCapsule *closeSessionCapsule) bool {
+	if !s.markClosed(closeErr) {
+		return false
+	}
 
 	if closeCapsule != nil {
 		s.capsuleQueueMx.Lock()

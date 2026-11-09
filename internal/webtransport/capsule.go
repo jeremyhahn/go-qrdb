@@ -104,12 +104,23 @@ func parseCloseSessionCapsule(r http3.CapsuleReader) (closeSessionCapsule, error
 	if _, err := io.ReadFull(r, b[:]); err != nil {
 		return closeSessionCapsule{}, err
 	}
-	msg, err := io.ReadAll(io.LimitReader(r, maxCloseCapsuleErrorMsgLen))
+	// The message is at most 1024 bytes of UTF-8; anything else is
+	// H3_MESSAGE_ERROR (draft-ietf-webtrans-http3-16, section 6).
+	if r.Remaining() > maxCloseCapsuleErrorMsgLen {
+		return closeSessionCapsule{}, &http3.Error{
+			ErrorCode:    http3.ErrCodeMessageError,
+			ErrorMessage: "WT_CLOSE_SESSION message longer than 1024 bytes",
+		}
+	}
+	msg, err := io.ReadAll(r)
 	if err != nil {
 		return closeSessionCapsule{}, err
 	}
-	if err := r.Discard(); err != nil {
-		return closeSessionCapsule{}, err
+	if !utf8.Valid(msg) {
+		return closeSessionCapsule{}, &http3.Error{
+			ErrorCode:    http3.ErrCodeMessageError,
+			ErrorMessage: "WT_CLOSE_SESSION message is not valid UTF-8",
+		}
 	}
 	return closeSessionCapsule{
 		ErrorCode: SessionErrorCode(binary.BigEndian.Uint32(b[:])),

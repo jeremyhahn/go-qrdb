@@ -22,13 +22,18 @@ only when go-qrdb itself is the main module.
   queue.
 - v0.13.0 can deadlock or leave a stream operation blocked: opening a stream
   at the peer's limit with a full capsule queue, a Read or Write left waiting
-  for session shutdown after a local cancel, and CancelWrite or Close behind a
-  Write blocked sending the stream header.
+  for session shutdown after a local cancel, CancelWrite or Close behind a
+  Write blocked sending the stream header, and a header write that session
+  shutdown cannot end after a local CancelWrite.
 - v0.13.0 keeps one accept notification however many streams arrive, so of
   two concurrent `AcceptStream` callers one can stay blocked while a stream
   waits in the queue.
+- v0.13.0 departs from draft-ietf-webtrans-http3-16 section 6 on session
+  close: it reports a clean FIN on the CONNECT stream as H3_DATAGRAM_ERROR,
+  and truncates a WT_CLOSE_SESSION message instead of rejecting one that is
+  over 1024 bytes or not UTF-8.
 
-Return to the upstream module once a release fixes all five.
+Return to the upstream module once a release fixes all six.
 
 ## Patches
 
@@ -72,6 +77,18 @@ Return to the upstream module once a release fixes all five.
    off the queue while others remain re-arms it, so a second `AcceptStream`
    or `AcceptUniStream` caller waiting at the same time is woken for the next
    stream.
+8. **Session shutdown resets a cancelled stream** (`send_stream.go`).
+   Session shutdown resets the send stream with WT_SESSION_GONE even after a
+   local `CancelWrite`. That cancel's reset waits for the stream header, so
+   only the session's reset ends a header write that never gets credit.
+9. **A clean CONNECT FIN is a remote close** (`session.go`). A FIN on the
+   CONNECT stream closes the session like WT_CLOSE_SESSION with code 0 and an
+   empty message, and the session answers with a FIN, not a reset. A FIN
+   inside a capsule is still H3_DATAGRAM_ERROR.
+10. **WT_CLOSE_SESSION messages are validated** (`capsule.go`,
+    `session.go`). A message over 1024 bytes is rejected before its body is
+    read, and one that is not UTF-8 after; either closes the session with
+    H3_MESSAGE_ERROR.
 
 ## Tests
 
@@ -83,8 +100,16 @@ deadline; its waits now fit inside one deadline.
 `TestSessionOpenStreamAtLimitWithFullCapsuleQueue` patch 4,
 `TestReceiveStreamCancelRead*DuringSessionGone` and
 `TestSendStreamCancelWrite*DuringSessionGone` patch 5, and
-`TestSendStreamStopWhileWriteSendsHeader` patch 6, and
-`TestIncomingStreamsMapConcurrentAcceptors` patch 7. go-qrdb's
+`TestSendStreamStopWhileWriteSendsHeader` patch 6,
+`TestIncomingStreamsMapConcurrentAcceptors` patch 7,
+`TestSendStreamCancelWriteThenCloseSessionAbortsHeader` patch 8,
+`TestConnectStreamFINClosesSessionCleanly` and
+`TestConnectStreamFINInsideCapsuleIsAnError` patch 9, and
+`TestParseCloseSessionCapsuleRejectsMalformedMessage`,
+`TestParseCloseSessionCapsuleAcceptsLongestMessage` and
+`TestMalformedCloseSessionMessageClosesSessionWithMessageError` patch 10.
+`TestParseCloseSessionCapsuleMessageTruncation` asserted the truncation that
+patch 10 replaces. go-qrdb's
 `pkg/api/rest` `TestWebTransport_PreSessionStreamFloodIsBounded` floods a
 server over raw QUIC, and `TestWebTransport_SessionStreamLimitsConfigured`
 holds the REST server to configured session limits.
