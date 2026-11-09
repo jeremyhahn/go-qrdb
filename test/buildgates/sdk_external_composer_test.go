@@ -16,6 +16,7 @@ package buildgates
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,9 +62,35 @@ func composerImportViolations(t *testing.T, dir string) (violations []string, fi
 	return violations, files
 }
 
+// modReplace is one replace directive as `go mod edit -json` prints it.
+type modReplace struct {
+	Old struct{ Path, Version string }
+	New struct{ Path, Version string }
+}
+
+// fileReplaces returns the replace directives of the module in dir whose
+// target is a directory rather than a module version.
+func fileReplaces(t *testing.T, dir string) []modReplace {
+	t.Helper()
+	var mod struct{ Replace []modReplace }
+	if err := json.Unmarshal([]byte(runGo(t, dir, "mod", "edit", "-json")), &mod); err != nil {
+		t.Fatalf("parse go mod edit -json in %s: %v", dir, err)
+	}
+	var out []modReplace
+	for _, r := range mod.Replace {
+		if r.New.Version == "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // writeComposerModule turns dir into a module that requires sdk/go: it starts
 // from sdk/go's own go.mod and go.sum, so every module sdk/go's packages need
-// is already listed, and replaces sdk/go and go-qrdb with this tree.
+// is already listed, and replaces sdk/go and go-qrdb with this tree. A
+// directory replace sdk/go names relative to itself (the in-repo
+// third_party/webtransport-go) is re-anchored at sdk/go, since the copy no
+// longer sits there.
 func writeComposerModule(t *testing.T, root, dir string) {
 	t.Helper()
 	sdkDir := filepath.Join(root, "sdk", "go")
@@ -81,12 +108,25 @@ func writeComposerModule(t *testing.T, root, dir string) {
 			t.Fatal(err)
 		}
 	}
-	runGo(t, dir, "mod", "edit",
+	args := []string{"mod", "edit",
 		"-module=example.com/composer",
-		"-require="+sdkModulePrefix+"@v0.0.0",
+		"-require=" + sdkModulePrefix + "@v0.0.0",
+	}
+	for _, r := range fileReplaces(t, dir) {
+		if filepath.IsAbs(r.New.Path) {
+			continue
+		}
+		old := r.Old.Path
+		if r.Old.Version != "" {
+			old += "@" + r.Old.Version
+		}
+		args = append(args, "-replace="+old+"="+filepath.Join(sdkDir, filepath.FromSlash(r.New.Path)))
+	}
+	args = append(args,
 		"-replace="+sdkModulePrefix+"="+sdkDir,
 		"-replace="+localModule+"="+root,
 	)
+	runGo(t, dir, args...)
 }
 
 // runGo runs the go command in dir as a module of its own and returns its
@@ -141,6 +181,28 @@ func TestSDK_ExternalComposerReachesEverySeam(t *testing.T) {
 	out := runGo(t, dir, "test", "-count=1", "-v", "-tags", strings.Join(fullBuildTags(t), ","), "./...")
 	if passed := strings.Count(out, "--- PASS: "); passed < minComposerTests {
 		t.Fatalf("the composer module passed %d tests, want at least %d:\n%s", passed, minComposerTests, out)
+	}
+}
+
+// TestSDK_ComposerModuleResolvesEveryDirectoryReplace holds the composer
+// module to sdk/go's directory replaces: each must still name a module
+// directory once go.mod is copied out of sdk/go, or the gate fails reading it
+// before a test runs.
+func TestSDK_ComposerModuleResolvesEveryDirectoryReplace(t *testing.T) {
+	dir := t.TempDir()
+	writeComposerModule(t, repoRoot(t), dir)
+	replaces := fileReplaces(t, dir)
+	if len(replaces) < 2 {
+		t.Fatalf("the composer module has %d directory replaces, want at least sdk/go and go-qrdb", len(replaces))
+	}
+	for _, r := range replaces {
+		if !filepath.IsAbs(r.New.Path) {
+			t.Errorf("replace %s => %s is relative to a go.mod that moved", r.Old.Path, r.New.Path)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(r.New.Path, "go.mod")); err != nil {
+			t.Errorf("replace %s => %s: %v", r.Old.Path, r.New.Path, err)
+		}
 	}
 }
 
