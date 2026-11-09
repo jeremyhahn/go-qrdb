@@ -185,6 +185,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **An isolated tenant's audit trail applies in its home group in cluster
+  mode.** Once tenant home groups are wired, a dedicated-isolation tenant's
+  replicated audit events go to its home group's `<tenant>/system/audit`
+  instead of being refused, and a barrier tenant's go wherever its audit route
+  says: a recorded fact, written once and first writer wins, that stays on the
+  system shard when the tenant already has a chain there or
+  `verifiable-log-audit` is off, and is the home group otherwise. The route
+  never changes and no record moves, so an existing chain is never split. A
+  home-group write while `verifiable-log-audit` is not active on every replica
+  is refused as unavailable (`AuditHomeNotActiveError`). Standalone nodes are
+  unchanged. This ships in the same release as the replicated-audit
+  verifiable log (#1409); a release must not carry one without the other.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot

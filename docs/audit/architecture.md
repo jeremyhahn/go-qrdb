@@ -477,12 +477,21 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
 - `tenant.TenantService.ReplicatedAuditEnabled` — resolves that entitlement,
   with the system tenant handled separately (see "Platform events" below).
 - `service.SystemShardAuditResolver` — names the `(Host, shardID)` that
-  serves a tenant's chain. Every tenant that is not dedicated-isolation, and
-  an unregistered tenant id, resolves to the system shard; a
-  dedicated-isolation tenant (volume/raft) is refused with
-  `*service.DedicatedTenantAuditNotSupportedError` rather than silently
-  guessing, because that tenant's chain belongs on its own dedicated host,
-  which this resolver does not reach.
+  serves a tenant's chain. A shared-isolation tenant, and an unregistered
+  tenant id, resolves to the system shard. In cluster mode (once
+  `AttachTenantHomes` has wired the tenant home groups) a dedicated-isolation
+  tenant (volume/raft) resolves to its home group, and a barrier tenant
+  follows its audit route: a recorded fact (`__sys:audit/route/<tenant>`,
+  first writer wins) that is `system` when the tenant already has a chain on
+  the system shard or `verifiable-log-audit` is off, and `home` otherwise.
+  The route never changes after it is recorded and no record ever moves, so an
+  existing chain is never split. The route is picked before proposing; apply
+  is unchanged. A home-group write while `verifiable-log-audit` is not active
+  on every replica is refused as unavailable with
+  `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
+  barrier tenant stays on the system shard and a dedicated-isolation tenant is
+  refused with `*service.DedicatedTenantAuditNotSupportedError` rather than
+  silently guessing.
 - `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
   and proposes `protocol.OpAuditAppend` from an ordinary `Emit` call (and
   answers `Query`/`VerifyTenantChain` by reading back through

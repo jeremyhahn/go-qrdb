@@ -788,11 +788,19 @@ committed meanwhile is kept rather than refused.
     whether the barrier encrypts or is still in plaintext mode, so the home
     group's log is always on a WAL under the tenant's key and never under the
     node key. On a node that has not enabled encryption, that tenant key is
-    itself plaintext until the tenant's barrier encrypts.
+    itself plaintext until the tenant's barrier encrypts. The home group also
+    holds the tenant's replicated audit trail, the verifiable log
+    `<tenant>/system/audit`, and its other verifiable logs. A `barrier` tenant
+    whose chain was already on the system shard when the home groups were
+    attached keeps it there: its audit route is recorded once on the system
+    shard (`__sys:audit/route/<tenant>`) and never changes, and no record is
+    moved. A tenant gets its first home-group record only once every replica
+    runs `featuregate.VerifiableLogAudit`.
   - **Standalone.** A store under the tenant's own barrier, in the tenant's
     data root (`tenant.LocalHomes`): the same records, the same keys, behind
     the same seam, including the atomic guarded batch the tenant CA is
-    written with.
+    written with. Its audit trail is not there yet: a standalone tenant's
+    chain is still in the system shard.
 
 The built home store differs from the design below in two ways:
 
