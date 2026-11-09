@@ -64,7 +64,7 @@ RUN set -eu; \
     esac; \
     v="${TRIVY_VERSION#v}"; \
     f="trivy_${v}_Linux-${arch}.tar.gz"; \
-    curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/${f}" "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${f}"; \
+    curl -fsSL --retry 8 --retry-delay 10 --retry-max-time 240 --retry-all-errors -o "/tmp/${f}" "https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/${f}"; \
     echo "${sum}  /tmp/${f}" > /tmp/trivy.sha256; \
     sha256sum -c /tmp/trivy.sha256; \
     tar -xzf "/tmp/${f}" -C /out trivy; \
