@@ -2,6 +2,7 @@ package webtransport
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,4 +138,64 @@ func TestIncomingStreamsMapRejectsStreamOverLimit(t *testing.T) {
 	err := streams.AddStream(2, newReceiveStream(nil, 0, nil, nil, nil))
 	require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCode(WTFlowControlErrorCode)})
 	require.ErrorContains(t, err, "peer opened more than 1 streams")
+}
+
+func TestIncomingStreamsMapConcurrentAcceptors(t *testing.T) {
+	t.Run("bidirectional", func(t *testing.T) {
+		testIncomingStreamsMapConcurrentAcceptors(t, func() *Stream { return &Stream{} })
+	})
+	t.Run("unidirectional", func(t *testing.T) {
+		testIncomingStreamsMapConcurrentAcceptors(t, func() *ReceiveStream { return &ReceiveStream{} })
+	})
+}
+
+// testIncomingStreamsMapConcurrentAcceptors holds two acceptors at the wait
+// point while the queue is empty, queues two streams, and requires each
+// acceptor to return one of them.
+func testIncomingStreamsMapConcurrentAcceptors[T incomingStream](t *testing.T, newStream func() T) {
+	m := newIncomingStreamsMap[T](10, nil)
+
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	var waitersMx sync.Mutex
+	var waiters int
+	m.beforeAcceptWait = func() {
+		waitersMx.Lock()
+		waiters++
+		hold := waiters <= 2
+		waitersMx.Unlock()
+		if hold {
+			arrived <- struct{}{}
+			<-release
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		str T
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			str, err := m.AcceptStream(ctx)
+			results <- result{str, err}
+		}()
+	}
+	<-arrived
+	<-arrived
+
+	first, second := newStream(), newStream()
+	require.NoError(t, m.AddStream(quic.StreamID(0), first))
+	require.NoError(t, m.AddStream(quic.StreamID(4), second))
+	close(release)
+
+	accepted := make(map[T]bool)
+	for range 2 {
+		r := <-results
+		require.NoError(t, r.err, "an acceptor missed a queued stream")
+		accepted[r.str] = true
+	}
+	require.Equal(t, map[T]bool{first: true, second: true}, accepted)
 }

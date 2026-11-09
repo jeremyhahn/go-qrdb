@@ -78,6 +78,10 @@ type incomingStreamsMap[T incomingStream] struct {
 	maxStreams     uint64 // stream limit, as advertised to the peer
 	maxOpenStreams uint64 // maximum number of concurrently open streams
 	maxPending     uint64 // maximum number of streams waiting to be accepted
+
+	// beforeAcceptWait, if set, runs when AcceptStream found the queue empty
+	// and is about to wait. Tests use it to hold acceptors at that point.
+	beforeAcceptWait func()
 }
 
 // errPendingStreamsFull is returned by AddStream for a stream that arrives
@@ -197,6 +201,9 @@ func (s *incomingStreamsMap[T]) AcceptStream(ctx context.Context) (T, error) {
 			return str, nil
 		}
 		// No stream in the accept queue. Wait until we accept one.
+		if s.beforeAcceptWait != nil {
+			s.beforeAcceptWait()
+		}
 		select {
 		case <-s.ctx.Done():
 			return zero, context.Cause(s.ctx)

@@ -18,6 +18,12 @@ var (
 	_ restapi.WebTransportHandler              = server.WebTransportHandler(nil)
 	_ *restapi.InvalidWebTransportHandlerError = (*server.InvalidWebTransportHandlerError)(nil)
 	_ error                                    = (*server.InvalidWebTransportHandlerError)(nil)
+	_ restapi.WebTransportStreamErrorCode      = server.WebTransportStreamErrorCode(0)
+	_ restapi.WebTransportSessionErrorCode     = server.WebTransportSessionErrorCode(0)
+	_ *restapi.WebTransportStreamError         = (*server.WebTransportStreamError)(nil)
+	_ *restapi.WebTransportSessionError        = (*server.WebTransportSessionError)(nil)
+	_ error                                    = (*server.WebTransportStreamError)(nil)
+	_ error                                    = (*server.WebTransportSessionError)(nil)
 )
 
 func TestWithWebTransportHandler_ReturnsAServerOption(t *testing.T) {
