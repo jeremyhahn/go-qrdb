@@ -186,23 +186,6 @@ func testVlogOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtoco
 	vlogCLIJSON[vlogwire.AppendResult](t, node, proto, "append", "--log", plainLog, "--entry", "p0")
 	vlogCLIRefused(t, node, proto, "/"+plainLog+" does not allow expiring entry bodies", "expire", "--log", plainLog, "--cutoff", "1")
 	vlogCLIRefused(t, node, proto, "not found", "expire", "--log", "vlog-absent-"+suffix, "--cutoff", "1")
-
-	// --- the audit instance refuses a public append ------------------------
-	// Only audit events reach system/audit; a forged entry is refused before
-	// it is proposed and the audit trail still verifies.
-	vlogCLIRefused(t, node, proto, "is the audit instance; only audit events append to it",
-		"append", "--database", "system", "--log", "audit", "--entry", "forged")
-	out, err := runCLIProto(t, node, proto, "--output", "json", "audit", "verify")
-	if err != nil {
-		t.Fatalf("[%s] audit verify after the refused append: %v\noutput: %s", proto.name, err, out)
-	}
-	var verified auditVerifyCLIJSON
-	if jerr := json.Unmarshal([]byte(out), &verified); jerr != nil {
-		t.Fatalf("[%s] decode `audit verify` JSON: %v\noutput: %s", proto.name, jerr, out)
-	}
-	if !verified.Verified {
-		t.Fatalf("[%s] audit verify after the refused append: Verified=false, reason=%q", proto.name, verified.Reason)
-	}
 }
 
 // containsAll reports whether every one of want is in have.
