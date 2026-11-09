@@ -22,7 +22,9 @@ are not reconstructed here — their history is in the git log.
   objstore database deletes every object in its namespace through
   `Engine.Destroy` (the `ObjstoreOpener` returns the reclaim), or fails the drop;
   a barrier-enabled database is reclaimed too, an interrupted drop can be
-  retried, and a write racing a drop is refused.
+  retried, and a write racing a drop is refused. Guarded verbs on an objstore
+  database (`PutIfAbsent`, `CompareAndSwap`, `CompareAndDelete`) resolve a
+  pending journal before comparing.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,
