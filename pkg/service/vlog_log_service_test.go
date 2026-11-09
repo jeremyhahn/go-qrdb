@@ -614,6 +614,12 @@ func TestLogService_Append_ReturnsTheFirstIndex(t *testing.T) {
 // proposed.
 func TestLogService_Append_RefusesTheAuditInstance(t *testing.T) {
 	host, cmds := recordingHost(sm.Result{Value: 1})
+	host.syncReadFn = func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
+		if _, ok := q.(vlog.DescriptorRequest); ok {
+			return &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Audit: true}, nil
+		}
+		return nil, errors.New("unexpected read")
+	}
 	svc := newTestLogService(t, host, nil)
 	_, err := svc.Append(acmeCtx(), &AppendRequest{
 		LogRef:  LogRef{Database: vlog.AuditDatabase, Log: vlog.AuditLog},
