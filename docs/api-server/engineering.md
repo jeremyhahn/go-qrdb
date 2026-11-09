@@ -562,6 +562,12 @@ Invariants:
   stream credit is returned when a stream completes, not when the handler
   accepts it, since quic-go's credit-release mode would apply
   to every HTTP/3 request stream on the listener.
+- **Stream operations never wait on a gone session.** After a peer resets a
+  stream with WT_SESSION_GONE, a handler's Read or Write waits for the session
+  to close; the handler's own `CancelRead` or `CancelWrite` also ends that
+  wait. Opening a stream at the peer's limit while the session's capsule queue
+  is full closes the session with H3_EXCESSIVE_LOAD instead of blocking.
+  `internal/webtransport/README.md` lists the patches.
 - **Same-origin by default.** `CheckOrigin` is left nil, so webtransport-go
   applies its default: a request carrying an `Origin` header must match the
   request's host. The REST authentication chain is the access control.

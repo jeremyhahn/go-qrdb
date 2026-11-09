@@ -156,6 +156,12 @@ func (s *ReceiveStream) handleSessionGoneError() error {
 // When called multiple times it is a no-op.
 func (s *ReceiveStream) CancelRead(e StreamErrorCode) {
 	s.str.CancelRead(webtransportCodeToHTTPCode(e))
+	// onClose takes the stream out of the session's map, so session shutdown
+	// no longer reaches it: end a Read waiting in handleSessionGoneError here.
+	s.closeOnce.Do(func() {
+		s.closeErr = &StreamError{ErrorCode: e}
+		close(s.closed)
+	})
 	s.onClose()
 }
 

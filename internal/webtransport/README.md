@@ -20,8 +20,12 @@ only when go-qrdb itself is the main module.
 - v0.13.0 queues every stream an established session's peer opens until the
   application accepts it. Without negotiated flow control nothing bounds that
   queue.
+- v0.13.0 can deadlock or leave a stream operation blocked: opening a stream
+  at the peer's limit with a full capsule queue, a Read or Write left waiting
+  for session shutdown after a local cancel, and CancelWrite or Close behind a
+  Write blocked sending the stream header.
 
-Return to the upstream module once a release fixes all three.
+Return to the upstream module once a release fixes all four.
 
 ## Patches
 
@@ -46,6 +50,20 @@ Return to the upstream module once a release fixes all three.
    WT_BUFFERED_STREAM_REJECTED and its stream credit returned; the session
    stays up. A stream past a negotiated WT_MAX_STREAMS limit still closes the
    session with WT_FLOW_CONTROL_ERROR.
+4. **No lock across the stream map** (`session.go`). `OpenStream` and
+   `OpenUniStream` no longer hold the session's close lock while opening. At
+   the peer's stream limit the map queues WT_STREAMS_BLOCKED, and with a full
+   capsule queue that closes the session, which takes the same lock.
+5. **Local cancel ends the session-gone wait** (`receive_stream.go`,
+   `send_stream.go`). After the peer resets a stream with WT_SESSION_GONE,
+   Read and Write wait for the session to close. `CancelRead` and
+   `CancelWrite` take the stream out of the session's map, so they now end
+   that wait themselves, with the local `StreamError`.
+6. **CancelWrite and Close do not wait for the stream header**
+   (`send_stream.go`). Write sends the stream header without holding the
+   header lock. A `CancelWrite` or `Close` during that send returns at once;
+   Write finishes the header, then cancels or closes the stream and returns
+   their error without sending its payload.
 
 ## Tests
 
@@ -53,7 +71,11 @@ Return to the upstream module once a release fixes all three.
 `TestSessionManagerBufferingDeadlineNotExtended` cover patch 2.
 `TestSessionManagerStreamReordering` asserted that each stream renewed the
 deadline; its waits now fit inside one deadline.
-`TestSessionPendingUniStreamsBounded` covers patch 3. go-qrdb's
+`TestSessionPendingUniStreamsBounded` covers patch 3,
+`TestSessionOpenStreamAtLimitWithFullCapsuleQueue` patch 4,
+`TestReceiveStreamCancelRead*DuringSessionGone` and
+`TestSendStreamCancelWrite*DuringSessionGone` patch 5, and
+`TestSendStreamStopWhileWriteSendsHeader` patch 6. go-qrdb's
 `pkg/api/rest` `TestWebTransport_PreSessionStreamFloodIsBounded` floods a
 server over raw QUIC, and `TestWebTransport_SessionStreamLimitsConfigured`
 holds the REST server to configured session limits.

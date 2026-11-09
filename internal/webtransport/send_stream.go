@@ -40,6 +40,11 @@ type SendStream struct {
 	// Set by Close or CancelWrite before sending a pending stream header asynchronously.
 	// Prevents Write from sending payload before the header.
 	writeErr error
+	// Set while Write sends the stream header without holding streamHdrMu.
+	sendingHdr bool
+	// Set by Close or CancelWrite while sendingHdr; Write runs it once the
+	// header is out.
+	stopAfterHdr func()
 
 	onClose func() // to remove the stream from the streamsMap
 
@@ -131,8 +136,26 @@ func (s *SendStream) write(b []byte) (int, error) {
 		s.streamHdrMu.Unlock()
 		return 0, err
 	}
-	err := s.maybeSendStreamHeader()
+	if len(s.streamHdr) == 0 {
+		s.streamHdrMu.Unlock()
+		return s.writeData(b)
+	}
+	// Sending the header can block on flow control, so streamHdrMu is not
+	// held across it: CancelWrite and Close leave their action for us instead.
+	s.sendingHdr = true
 	s.streamHdrMu.Unlock()
+
+	err := s.maybeSendStreamHeader()
+
+	s.streamHdrMu.Lock()
+	s.sendingHdr = false
+	stop, stopErr := s.stopAfterHdr, s.writeErr
+	s.stopAfterHdr = nil
+	s.streamHdrMu.Unlock()
+	if stop != nil {
+		stop()
+		return 0, stopErr
+	}
 	if err != nil {
 		return 0, err
 	}
@@ -222,34 +245,65 @@ func (s *SendStream) maybeSendStreamHeader() error {
 // Write will unblock immediately, and future calls to Write will fail.
 // When called multiple times it is a no-op.
 func (s *SendStream) CancelWrite(e StreamErrorCode) {
+	// onClose takes the stream out of the session's map, so session shutdown
+	// no longer reaches it: end a Write waiting in handleSessionGoneError here.
+	defer s.closeOnce.Do(func() {
+		s.closeErr = &StreamError{ErrorCode: e}
+		close(s.closed)
+	})
+
+	s.stopAfterHeader(&StreamError{ErrorCode: e}, func() error {
+		s.str.CancelWrite(webtransportCodeToHTTPCode(e))
+		s.onClose()
+		return nil
+	})
+}
+
+// stopAfterHeader runs stop (CancelWrite or Close on the QUIC stream) after
+// the stream header, without waiting for the header: sending it might block if
+// we are blocked by flow control. A pending header is sent asynchronously, or
+// by a Write already sending it, and Write then returns writeErr. Without a
+// pending header, stop runs at once and its error is returned.
+func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 	// if a Goroutine is already sending the header, return immediately
 	s.streamHdrMu.Lock()
 	if s.writeErr != nil {
 		s.streamHdrMu.Unlock()
-		return
+		return nil
 	}
 
-	if len(s.streamHdr) > 0 {
-		// Sending the stream header might block if we are blocked by flow control.
-		// Send a stream header async so that CancelWrite can return immediately.
-		s.writeErr = &StreamError{ErrorCode: e}
-		streamHdr := s.streamHdr
-		s.streamHdr = nil
-		s.streamHdrMu.Unlock()
-
-		go func() {
+	sendHdrAndStop := func(streamHdr []byte) {
+		if len(streamHdr) > 0 {
 			s.SetWriteDeadline(time.Time{})
 			_, _ = s.str.Write(streamHdr)
 			s.str.SetReliableBoundary()
-			s.str.CancelWrite(webtransportCodeToHTTPCode(e))
-			s.onClose()
-		}()
-		return
+		}
+		_ = stop()
+	}
+	if s.sendingHdr {
+		// Write is sending the header; it finishes it and then stops.
+		s.writeErr = writeErr
+		s.stopAfterHdr = func() {
+			s.streamHdrMu.Lock()
+			streamHdr := s.streamHdr
+			s.streamHdr = nil
+			s.streamHdrMu.Unlock()
+			sendHdrAndStop(streamHdr)
+		}
+		s.streamHdrMu.Unlock()
+		return nil
+	}
+	if len(s.streamHdr) > 0 {
+		s.writeErr = writeErr
+		streamHdr := s.streamHdr
+		s.streamHdr = nil
+		s.streamHdrMu.Unlock()
+		go sendHdrAndStop(streamHdr)
+		return nil
 	}
 	s.streamHdrMu.Unlock()
 
-	s.str.CancelWrite(webtransportCodeToHTTPCode(e))
-	s.onClose()
+	return stop()
 }
 
 func (s *SendStream) closeWithSession(err error) {
@@ -263,34 +317,10 @@ func (s *SendStream) closeWithSession(err error) {
 // Close closes the write-direction of the stream.
 // Future calls to Write are not permitted after calling Close.
 func (s *SendStream) Close() error {
-	// if a Goroutine is already sending the header, return immediately
-	s.streamHdrMu.Lock()
-	if s.writeErr != nil {
-		s.streamHdrMu.Unlock()
-		return nil
-	}
-
-	if len(s.streamHdr) > 0 {
-		// Sending the stream header might block if we are blocked by flow control.
-		// Send a stream header async so that CancelWrite can return immediately.
-		s.writeErr = errors.New("write on closed stream")
-		streamHdr := s.streamHdr
-		s.streamHdr = nil
-		s.streamHdrMu.Unlock()
-
-		go func() {
-			s.SetWriteDeadline(time.Time{})
-			_, _ = s.str.Write(streamHdr)
-			s.str.SetReliableBoundary()
-			_ = s.str.Close()
-			s.onClose()
-		}()
-		return nil
-	}
-	s.streamHdrMu.Unlock()
-
-	s.onClose()
-	return maybeConvertStreamError(s.str.Close())
+	return s.stopAfterHeader(errors.New("write on closed stream"), func() error {
+		s.onClose()
+		return maybeConvertStreamError(s.str.Close())
+	})
 }
 
 // The Context is canceled as soon as the write-side of the stream is closed.

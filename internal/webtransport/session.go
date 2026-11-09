@@ -328,12 +328,23 @@ func (s *Session) AcceptUniStream(ctx context.Context) (*ReceiveStream, error) {
 
 func (s *Session) OpenStream() (*Stream, error) {
 	s.closeMx.Lock()
+	if s.closeErr != nil {
+		s.closeMx.Unlock()
+		return nil, s.closeErr
+	}
+	s.closeMx.Unlock()
+
+	// closeMx is not held across OpenStream: at the stream limit it queues
+	// WT_STREAMS_BLOCKED, and a full capsule queue closes the session.
+	str, err := s.outgoingStreams.OpenStream()
+
+	s.closeMx.Lock()
 	defer s.closeMx.Unlock()
 
 	if s.closeErr != nil {
 		return nil, s.closeErr
 	}
-	return s.outgoingStreams.OpenStream()
+	return str, err
 }
 
 func (s *Session) OpenStreamSync(ctx context.Context) (*Stream, error) {
@@ -358,12 +369,22 @@ func (s *Session) OpenStreamSync(ctx context.Context) (*Stream, error) {
 
 func (s *Session) OpenUniStream() (*SendStream, error) {
 	s.closeMx.Lock()
+	if s.closeErr != nil {
+		s.closeMx.Unlock()
+		return nil, s.closeErr
+	}
+	s.closeMx.Unlock()
+
+	// See OpenStream: closeMx is not held across the stream map.
+	str, err := s.outgoingUniStreams.OpenStream()
+
+	s.closeMx.Lock()
 	defer s.closeMx.Unlock()
 
 	if s.closeErr != nil {
 		return nil, s.closeErr
 	}
-	return s.outgoingUniStreams.OpenStream()
+	return str, err
 }
 
 func (s *Session) OpenUniStreamSync(ctx context.Context) (str *SendStream, err error) {
