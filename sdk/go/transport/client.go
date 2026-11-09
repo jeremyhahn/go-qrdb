@@ -1183,6 +1183,18 @@ type TenantClient interface {
 	// UpdateTenantEntitlements sets the feature entitlements for a tenant.
 	UpdateTenantEntitlements(ctx context.Context, req *UpdateTenantEntitlementsRequest) (*UpdateTenantEntitlementsResponse, error)
 
+	// GetClusterIsolationPolicy returns the cluster-wide isolation floor,
+	// "operator-access" or "strict". Until the strict-isolation cluster
+	// feature is active it is refused with *feature.NotActiveError.
+	GetClusterIsolationPolicy(ctx context.Context) (string, error)
+
+	// SetClusterIsolationPolicy sets the cluster-wide isolation floor and
+	// returns the stored floor. The floor tightens only. Until the
+	// strict-isolation cluster feature is active it is refused with
+	// *feature.NotActiveError and nothing changes; an unknown policy is
+	// refused with *tenant.InvalidIsolationPolicyError.
+	SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error)
+
 	// AddTrustAnchors registers CA certificates as trust anchors of
 	// req.TenantID, which must be the caller's own tenant: certificates
 	// chaining to one may then be enrolled on, and log in as, that tenant's

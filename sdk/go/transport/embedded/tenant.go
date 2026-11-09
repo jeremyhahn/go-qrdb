@@ -21,6 +21,7 @@ import (
 	"maps"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/holderwire"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -436,6 +437,9 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 		s := tenant.Status(*req.Status)
 		patch.Status = &s
 	}
+	if req.IsolationPolicy != nil {
+		patch.IsolationPolicy = tenant.TenantIsolationPolicy(*req.IsolationPolicy)
+	}
 	// The RE-check: tenants:update against the named tenant, plus
 	// tenants:set_isolation (platform-operator only) when the patch also
 	// changes the isolation tier, or tenants:set_status when it changes the
@@ -443,6 +447,19 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	// AuthorizeTenantUpdate enforces on every network transport.
 	if err := t.authorizeTenantUpdate(ctx, req.TenantID, patch); err != nil {
 		return nil, err
+	}
+	// The isolation-policy field is refused until strict-isolation is
+	// active, and an explicit inherit never loosens a strict tenant: the
+	// same order REST, gRPC, QUIC and MCP apply.
+	if req.IsolationPolicy != nil {
+		if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+			return nil, err
+		}
+		if patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
+			if err := refuseIsolationPolicyLoosening(ctx, t.tenantSvc, req.TenantID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	info, err := t.tenantSvc.UpdateTenant(ctx, req.TenantID, patch)
 	if err != nil {
@@ -452,6 +469,75 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	return &transport.UpdateTenantResponse{
 		Tenant: mapTenantInfo(info),
 	}, nil
+}
+
+// refuseIsolationPolicyLoosening refuses an explicit inherit on a tenant
+// whose policy is strict: the tenant policy only tightens.
+func refuseIsolationPolicyLoosening(ctx context.Context, svc tenant.TenantServicer, id string) error {
+	info, err := svc.GetTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	if info.IsolationPolicy == tenant.TenantIsolationPolicyStrict {
+		return &tenant.IsolationPolicyChangeError{From: string(tenant.TenantIsolationPolicyStrict), To: "inherit"}
+	}
+	return nil
+}
+
+// GetClusterIsolationPolicy returns the cluster isolation floor. It is
+// refused with a *feature.NotActiveError until strict-isolation is active.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	ctx, err := t.admit(ctx, "GetClusterIsolationPolicy")
+	if err != nil {
+		return "", err
+	}
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return "", &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsRead); err != nil {
+		return "", err
+	}
+	if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+		return "", err
+	}
+	policy, err := t.tenantSvc.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(policy), nil
+}
+
+// SetClusterIsolationPolicy sets the cluster isolation floor and returns
+// the floor read back from the store. It is refused with a
+// *feature.NotActiveError until strict-isolation is active.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	ctx, err := t.admit(ctx, "SetClusterIsolationPolicy")
+	if err != nil {
+		return "", err
+	}
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	if t.tenantSvc == nil {
+		return "", &NilServiceError{Service: "TenantServicer"}
+	}
+	if err := t.authorizeTenantSelf(ctx, permission.TenantsUpdateCross); err != nil {
+		return "", err
+	}
+	if err := featuregate.RequireStrictIsolation(t.tenantSvc); err != nil {
+		return "", err
+	}
+	if err := t.tenantSvc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(policy)); err != nil {
+		return "", err
+	}
+	stored, err := t.tenantSvc.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(stored), nil
 }
 
 // UpdateTenantQuotas updates the resource quotas for a tenant by
