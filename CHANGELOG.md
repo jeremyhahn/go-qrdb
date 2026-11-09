@@ -28,7 +28,8 @@ are not reconstructed here — their history is in the git log.
   every database of a strict tenant) lands. An unknown policy value is
   `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
   to `strict` in one compare-and-swap, so a racing writer is refused and the
-  floor is never unset in between.
+  floor is never unset in between. The Go SDK's `TenantInfo` reports the
+  tenant's isolation policy (`IsolationPolicy`) on every transport.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,

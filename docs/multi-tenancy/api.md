@@ -544,6 +544,12 @@ changes nothing:
 | Set the floor | `PUT /v1/cluster/isolation-policy` `{"policy": "strict"}` | `SetClusterIsolationPolicy` | `cluster.IsolationPolicySet` | `qrdb_cluster_isolation_policy_set` | `SetClusterIsolationPolicy(ctx, policy)`, returning the stored floor | `qrdb cluster-isolation-policy set <operator-access\|strict>` |
 | Set a tenant's policy | a tenant update carrying `isolation_policy` | `TenantUpdate.isolation_policy` | `tenant.Update` `isolation_policy` | `qrdb_tenant_update` `isolation_policy` | `UpdateTenant` with `UpdateTenantRequest.IsolationPolicy` set (`""` is inherit; nil sends nothing and is not gated) | `qrdb tenant update <id> --isolation-policy <inherit\|strict>` |
 
+A tenant read reports the tenant's own policy on every transport: REST and
+MCP `isolation_policy`, protobuf `TenantResponse.isolation_policy`, and the Go
+SDK's `TenantInfo.IsolationPolicy` from `GetTenant`, `ListTenants` and
+`UpdateTenant` (`"strict"`, or empty when the tenant inherits the cluster
+floor). `qrdb tenant get` prints it as an `Isolation policy:` line when set.
+
 | Outcome | HTTP | gRPC / QUIC | Refusal reason |
 |---------|------|-------------|----------------|
 | Feature not active (`feature.NotActiveError`) | 503 | `Unavailable` | `FEATURE_NOT_ACTIVE` (metadata `feature`, `shard_id`) |
