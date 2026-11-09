@@ -18,7 +18,9 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -26,26 +28,57 @@ import (
 // handleIndexList
 // ---------------------------------------------------------------------------
 
-func TestHandleIndexList_ServiceError(t *testing.T) {
-	indexSvc := &mockIndexService{
-		listIndexesFn: func(_ context.Context) ([]string, error) {
-			return nil, errors.New("list indexes failed")
-		},
+func TestHandleIndexList(t *testing.T) {
+	tests := []struct {
+		name    string
+		names   []string
+		listErr error
+		wantRaw string
+	}{
+		{name: "populated", names: []string{"idx_a", "idx_b"}, wantRaw: `["idx_a","idx_b"]`},
+		{name: "empty", names: []string{}, wantRaw: `[]`},
+		{name: "service error", listErr: errors.New("list indexes failed")},
 	}
-	handler := handleIndexList(indexSvc)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			indexSvc := &mockIndexService{
+				listIndexesFn: func(_ context.Context) ([]string, error) {
+					return tt.names, tt.listErr
+				},
+			}
+			handler := handleIndexList(indexSvc)
 
-	req := buildCallToolRequest(t, "qrdb_index_list", map[string]any{})
+			req := buildCallToolRequest(t, "qrdb_index_list", map[string]any{})
 
-	_, err := handler(context.Background(), req)
-	if err == nil {
-		t.Fatal("expected error from service")
-	}
+			result, err := handler(context.Background(), req)
+			if tt.listErr != nil {
+				if err == nil {
+					t.Fatal("expected error from service")
+				}
+				var toolErr *ToolError
+				if !errors.As(err, &toolErr) {
+					t.Fatalf("expected *ToolError, got %T", err)
+				}
+				if toolErr.Tool != "qrdb_index_list" {
+					t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_index_list")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	var toolErr *ToolError
-	if !errors.As(err, &toolErr) {
-		t.Errorf("expected *ToolError, got %T", err)
-	}
-	if toolErr.Tool != "qrdb_index_list" {
-		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_index_list")
+			text := resultText(t, result)
+			if text != tt.wantRaw {
+				t.Errorf("raw response: got %s, want %s", text, tt.wantRaw)
+			}
+			var got []string
+			if err := json.Unmarshal([]byte(text), &got); err != nil {
+				t.Fatalf("decode response %q: %v", text, err)
+			}
+			if !reflect.DeepEqual(got, tt.names) {
+				t.Errorf("index names: got %v, want %v", got, tt.names)
+			}
+		})
 	}
 }
