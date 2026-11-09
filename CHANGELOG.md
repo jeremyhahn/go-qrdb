@@ -184,6 +184,20 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The devcontainer build proxy has no `direct` entry** (ci-template
+  v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
+  defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
+  serve fails the image build instead of being fetched from its origin.
+- `changes` and `arch-gates` run as one `preflight` job (ci-template v1.34);
+  ci.yml has 17 jobs.
+- **No Go module list ends in `direct`** (ci-template v1.34.1,
+  dependency-resolution.md §7a). `scripts/in-toolchain-image.sh` is v5: a
+  bridge stage's GOPROXY is `<DEVCACHE_GOPROXY>|https://proxy.golang.org`.
+  The devcontainer compose services set the same list, and fall back to
+  `https://proxy.golang.org` rather than an empty GOPROXY when no mirror is
+  set. The preflight checkout keeps no credential (`persist-credentials:
+  false`).
+
 - **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
   of ci.yml, release.yml, nightly.yml, automerge.yml and
   release-lockstep.yml runs on `ubuntu-latest`; only code review keeps its
@@ -280,12 +294,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- CI installs Trivy from its official image pinned by digest; the GitHub
+  release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
   `build/docker/devcontainer` tools stage fetched the Trivy release archive
   with a single `curl`, so one transient 504 from GitHub's release-asset
   host failed `make docker-build-toolchain` and, with it, every CI job on
   main and on PRs. The fetch now retries five times, 3 s apart; the pinned
-  SHA-256 check is unchanged.
+  SHA-256 check is unchanged. Six 504s inside 15 s still failed a PR's
+  build, so the fetch now retries eight times, 10 s apart, on any error,
+  spanning about four minutes.
 - **An unknown op type in a transaction or batch is refused, not applied as
   a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
   and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
@@ -297,6 +315,13 @@ are not reconstructed here — their history is in the git log.
   (`service.UnsupportedTransactionOpError`, which a batch now also returns for
   an unmapped type).
 
+- **Provider settings keep their key case** (row object-storage-provider).
+  `config.Load` passed `storage.objstore.settings` and
+  `storage.volume_pools[].options` to the provider with every key lowercased,
+  so go-objstore's `forcePathStyle` arrived as `forcepathstyle` and s3 always
+  used virtual-hosted bucket addressing. Keys now reach the provider as
+  written in the YAML file, `QRDB_` environment overrides still apply, and
+  two keys in one map that differ only in case are refused.
 - **A CI stage with no network waits for its multicast configurator's own readiness marker, and concurrent cache trims on a host run one at a time** (#1275): `scripts/in-toolchain-image.sh` starts the stage's `MULTICAST_WAIT` clock when the configurator writes `started.<n>` (its attempt n) on a marker volume and runs the stage once a `ready` marker and the route are there, retrying a failed configurator once with clocks of its own, so a daemon slow to start the configurator no longer exits the stage first, and the wait for `started` has its own bound, `MULTICAST_START_WAIT` (240 s: two configurator runs, each behind one 120 s cache trim), so a stage whose launcher died before the configurator ran exits 1 instead of waiting forever; the marker volume is labelled `qrdb.ci.multicast-marker=1`, and `scripts/reap-stale-ci-stacks.sh` removes one no container mounts; `scripts/trim-ci-caches.sh` takes a per-host lock in the runner's tool cache by polling `flock -n` (BusyBox `flock` has no `-w`) and skips its trim with one line when another job holds it past `CI_CACHE_LOCK_WAIT` seconds.
 - **A slow fsync no longer holds MVCC reads** (#1287): `MVCCStateMachine.Update` commits its batch under the read lock and takes the write lock only to publish it, in apply order; `Lookup` returns ctx's error, wrapped in `ReadError`, when ctx ends while it waits, and `Sync` takes the read lock. A batch that changes the index catalog, the lessor's tables, the compaction floors or an audit chain's head in place (an index create or drop, a lease grant, revoke, keep-alive or checkpoint, a compaction, an audit append or prune, any of those inside a guarded write, or any write while a lease exists) is still built and published under the write lock, so a reader never sees that state ahead of the published view (`MVCCEngine.RequiresExclusiveApply`, `docs/key-value/engineering.md`).
 - **The client-address rate limit refuses a malformed `Forwarded` field** (#1197): a `Forwarded` field from a trusted proxy that ends inside an unterminated quoted-string or quoted-pair is malformed as a whole (RFC 7239 §4), so the request is keyed by the trusted proxy's own address and `X-Forwarded-For` is not read in its place. A client could send `for=<any address>;x="` and the open quote hid the hop its proxy appended, so every address it chose drew a fresh bucket.
