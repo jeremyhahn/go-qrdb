@@ -3046,7 +3046,10 @@ func runStart(f *startFlags) (err error) {
 			serverOpts = append(serverOpts, server.WithDatabaseServiceRegistry(dbRegistry))
 
 			if tenantSvcInst != nil {
-				applyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy)
+				if err := applyIsolationFloor(bootCtx, tenantSvcInst, f.tenantConfig.IsolationPolicy); err != nil {
+					_ = shutdownNode(nodeCloser)
+					return err
+				}
 			}
 
 			// The sockets the sealed-window listener served on, if it ran;

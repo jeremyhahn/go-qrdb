@@ -17,9 +17,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -50,21 +52,48 @@ type isolationFloorSetter interface {
 // over tenants that are not -- is final: it is logged and the stored floor
 // stands. When the wait runs out, the remaining attempts continue in the
 // background until ctx ends.
-func applyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want string) {
+//
+// The configuration goes through the strict-isolation gate the
+// isolation-policy verbs do, failing closed: until the feature is active a
+// non-empty want is a startup error naming featuregate.StrictIsolation, and
+// the floor is not touched. The gate is re-read within the wait, so a node
+// whose replicated activation has not been applied yet at boot sees it once
+// it is.
+func applyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want string) error {
 	if want == "" {
-		return
+		return nil
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, isolationFloorWait)
 	defer cancel()
+	if err := awaitStrictIsolation(waitCtx, svc); err != nil {
+		return fmt.Errorf("tenant.isolation_policy %q: %s is not active: %w", want, featuregate.StrictIsolation, err)
+	}
 	if setIsolationFloor(waitCtx, svc, tenant.ClusterIsolationPolicy(want)) {
-		return
+		return nil
 	}
 	if ctx.Err() != nil {
-		return
+		return nil
 	}
 	slog.Warn("tenant.isolation_policy not applied yet; still trying in the background",
 		slog.String("isolation_policy", want))
 	go setIsolationFloor(ctx, svc, tenant.ClusterIsolationPolicy(want))
+	return nil
+}
+
+// awaitStrictIsolation re-reads the strict-isolation gate of svc until it
+// passes, returning nil, or ctx ends, returning the gate's last refusal.
+func awaitStrictIsolation(ctx context.Context, svc tenant.TenantServicer) error {
+	for {
+		err := featuregate.RequireStrictIsolation(svc)
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(isolationFloorRetry):
+		}
+	}
 }
 
 // setIsolationFloor tries to set want until it is set or refused, reporting

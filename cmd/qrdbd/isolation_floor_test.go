@@ -17,10 +17,13 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -36,6 +39,23 @@ type fakeFloorService struct {
 	// raceTo, when set, is the value a refused write leaves behind, standing
 	// in for another node's concurrent write.
 	raceTo tenant.ClusterIsolationPolicy
+	// inactive keeps the strict-isolation gate shut; gateRefusals shuts it
+	// for that many reads only. Otherwise the gate is open.
+	inactive     bool
+	gateRefusals int
+	gateReads    int
+}
+
+func (f *fakeFloorService) StrictIsolationCheck() func() error {
+	return func() error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.gateReads++
+		if f.inactive || f.gateReads <= f.gateRefusals {
+			return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+		}
+		return nil
+	}
 }
 
 func (f *fakeFloorService) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
@@ -72,6 +92,44 @@ func fastFloorRetries(t *testing.T, wait time.Duration) {
 	oldWait, oldRetry := isolationFloorWait, isolationFloorRetry
 	isolationFloorWait, isolationFloorRetry = wait, time.Millisecond
 	t.Cleanup(func() { isolationFloorWait, isolationFloorRetry = oldWait, oldRetry })
+}
+
+func TestApplyIsolationFloor_RefusedUntilStrictIsolationActive(t *testing.T) {
+	fastFloorRetries(t, 20*time.Millisecond)
+	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyOperatorAccess, inactive: true}
+
+	err := applyIsolationFloor(context.Background(), svc, "strict")
+	var na *feature.NotActiveError
+	if !errors.As(err, &na) || na.Feature != featuregate.StrictIsolation {
+		t.Fatalf("applyIsolationFloor before activation = %v; want *feature.NotActiveError{%s}", err, featuregate.StrictIsolation)
+	}
+	if !strings.Contains(err.Error(), string(featuregate.StrictIsolation)) {
+		t.Fatalf("startup error %q does not name %s", err, featuregate.StrictIsolation)
+	}
+	if floor, sets := svc.state(); sets != 0 || floor != tenant.ClusterIsolationPolicyOperatorAccess {
+		t.Fatalf("a refused configuration touched the floor: floor=%q sets=%d", floor, sets)
+	}
+}
+
+func TestApplyIsolationFloor_EmptyIsNoOpBeforeActivation(t *testing.T) {
+	svc := &fakeFloorService{floor: tenant.ClusterIsolationPolicyOperatorAccess, inactive: true}
+	if err := applyIsolationFloor(context.Background(), svc, ""); err != nil {
+		t.Fatalf("an unset configuration before activation = %v; want nil", err)
+	}
+	if floor, sets := svc.state(); sets != 0 || floor != tenant.ClusterIsolationPolicyOperatorAccess {
+		t.Fatalf("an unset configuration touched the floor: floor=%q sets=%d", floor, sets)
+	}
+}
+
+func TestApplyIsolationFloor_WaitsForReplicatedActivation(t *testing.T) {
+	fastFloorRetries(t, 5*time.Second)
+	svc := &fakeFloorService{gateRefusals: 3}
+	if err := applyIsolationFloor(context.Background(), svc, "strict"); err != nil {
+		t.Fatalf("applyIsolationFloor once active = %v", err)
+	}
+	if floor, _ := svc.state(); floor != tenant.ClusterIsolationPolicyStrict {
+		t.Fatalf("floor = %q; want strict once the gate opened", floor)
+	}
 }
 
 func TestApplyIsolationFloor_SetsConfiguredFloor(t *testing.T) {
