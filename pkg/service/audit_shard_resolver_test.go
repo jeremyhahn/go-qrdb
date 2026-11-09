@@ -210,8 +210,8 @@ func TestSystemShardAuditResolver_RoutesIsolatedTenantsToTheirHomeGroup(t *testi
 		t.Run(name, func(t *testing.T) {
 			homeHost := &mockHost{}
 			homes := &fakeHomeGroups{host: homeHost}
-			r := build(&mockHost{}, 1, isolatedTenantsLookup())
-			r.SetHomeGroupSource(homes)
+			r := build(newChainShard(0, auditActive()).host, 1, isolatedTenantsLookup())
+			r.SetHomeGroupSource(homes, newMemRouteStore())
 			for i, id := range []string{"widgets", "vault", "shard1"} {
 				gotHost, shardID, err := r.ResolveAuditShard(context.Background(), id)
 				if err != nil {
@@ -234,7 +234,7 @@ func TestSystemShardAuditResolver_HomeGroupKeepsSharedTenantsOnTheSystemShard(t 
 	host := &mockHost{}
 	homes := &fakeHomeGroups{host: &mockHost{}}
 	r := NewSystemShardAuditResolver(host, 1, isolatedTenantsLookup())
-	r.SetHomeGroupSource(homes)
+	r.SetHomeGroupSource(homes, newMemRouteStore())
 	for _, id := range []string{tenantid.System, "acme", "ghost"} {
 		gotHost, shardID, err := r.ResolveAuditShard(context.Background(), id)
 		if err != nil || gotHost != host || shardID != 1 {
@@ -250,8 +250,8 @@ func TestSystemShardAuditResolver_HomeGroupKeepsSharedTenantsOnTheSystemShard(t 
 // catching-up home is returned as is, never answered by the system shard.
 func TestSystemShardAuditResolver_HomeGroupErrorPropagates(t *testing.T) {
 	homeErr := errors.New("home sealed")
-	r := NewSystemShardAuditResolver(&mockHost{}, 1, isolatedTenantsLookup())
-	r.SetHomeGroupSource(&fakeHomeGroups{err: homeErr})
+	r := NewSystemShardAuditResolver(newChainShard(0, auditActive()).host, 1, isolatedTenantsLookup())
+	r.SetHomeGroupSource(&fakeHomeGroups{err: homeErr}, newMemRouteStore())
 	if gotHost, _, err := r.ResolveAuditShard(context.Background(), "widgets"); !errors.Is(err, homeErr) || gotHost != nil {
 		t.Fatalf("ResolveAuditShard = (%v, %v), want (nil, %v)", gotHost, err, homeErr)
 	}
@@ -261,8 +261,8 @@ func TestSystemShardAuditResolver_HomeGroupErrorPropagates(t *testing.T) {
 // source detaches, and the no-home-group refusals apply again.
 func TestSystemShardAuditResolver_DetachedHomeGroupRestoresTheRefusals(t *testing.T) {
 	r := NewSystemShardLogResolver(&mockHost{}, 1, isolatedTenantsLookup())
-	r.SetHomeGroupSource(&fakeHomeGroups{host: &mockHost{}})
-	r.SetHomeGroupSource(nil)
+	r.SetHomeGroupSource(&fakeHomeGroups{host: &mockHost{}}, newMemRouteStore())
+	r.SetHomeGroupSource(nil, nil)
 	var refused *BarrierTenantLogNotSupportedError
 	if _, _, err := r.ResolveAuditShard(context.Background(), "widgets"); !errors.As(err, &refused) {
 		t.Fatalf("ResolveAuditShard(widgets) = %v, want *BarrierTenantLogNotSupportedError", err)

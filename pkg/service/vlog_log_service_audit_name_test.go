@@ -24,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
@@ -92,5 +93,39 @@ func TestLogService_Append_LegacyAuditNameLogStaysWritable(t *testing.T) {
 	id, entries, err := protocol.DecodeVerifiableLogAppend(tenantID, body)
 	if err != nil || id != vlog.AuditLogID("acme") || len(entries) != 1 || string(entries[0]) != "own" {
 		t.Fatalf("decoded append = %v %q, %v; want the legacy log's entry", id, entries, err)
+	}
+}
+
+// TestLogService_Append_RefusesTheHomeGroupAuditInstance: a barrier tenant
+// whose audit chain routes to its home group has its audit instance there,
+// and a public append to system/audit is refused there too, with nothing
+// proposed to either group.
+func TestLogService_Append_RefusesTheHomeGroupAuditInstance(t *testing.T) {
+	system := newChainShard(0, auditActive())
+	homeInner, homeCmds := recordingHost(sm.Result{Value: 1})
+	homeInner.syncReadFn = func(_ context.Context, _ uint64, q interface{}) (interface{}, error) {
+		if r, ok := q.(vlog.DescriptorRequest); ok && r.ID == vlog.AuditLogID("widgets") {
+			return &vlog.Descriptor{Origin: "o", Hash: vlog.HashSHA256, Audit: true}, nil
+		}
+		return nil, errors.New("unexpected read")
+	}
+	homes := &fakeHomeGroups{host: &perFeatureHost{mockHost: homeInner, on: auditActive()}}
+	logs := NewSystemShardLogResolver(system.host, 1, isolatedTenantsLookup())
+	logs.SetHomeGroupSource(homes, newMemRouteStore())
+	svc, err := NewLogService(LogServiceConfig{Resolver: logs, Databases: noDatabases(t), Signers: &staticSignerProvider{}})
+	if err != nil {
+		t.Fatalf("NewLogService: %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "widgets")
+	_, err = svc.Append(ctx, &AppendRequest{LogRef: auditNameRef, Entries: [][]byte{[]byte("forged")}})
+	var reserved *vlog.ReservedLogError
+	if !errors.As(err, &reserved) || reserved.ID != vlog.AuditLogID("widgets") {
+		t.Fatalf("Append = %v, want ReservedLogError for widgets/system/audit", err)
+	}
+	if len(homes.asked) == 0 {
+		t.Fatal("the audit instance was not read from the home group")
+	}
+	if len(*homeCmds) != 0 || len(*system.cmds) != 0 {
+		t.Fatalf("a refused append proposed: home %d, system %d", len(*homeCmds), len(*system.cmds))
 	}
 }
