@@ -4873,6 +4873,15 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	// Under strict separation of duties a bound admin is not enough: a
 	// cluster first booted in standard mode, with no SO, and restarted
 	// strict must reach Phase 3, which refuses it until an SO is enrolled.
+	// A cluster whose SO was enrolled before the consumed marker existed
+	// has neither marker nor record: its persisted SO account and committed
+	// SO PIN are recognized and the marker written, rather than read as no SO.
+	if ok && strictSoD && pendingSO == nil && !firstboot.SystemSOConsumed(ctx, pendingAdminCertStore) {
+		soPINCheck, _ := soPINs.(firstboot.SOPINChecker)
+		if _, err := firstboot.RecognizeEnrolledSystemSO(ctx, pendingAdminCertStore, userSvc, soPINCheck, existingAdmin.ID); err != nil {
+			return err
+		}
+	}
 	soSatisfied := pendingSO == nil && (!strictSoD || firstboot.SystemSOConsumed(ctx, pendingAdminCertStore))
 	if ok {
 		if existingAdmin.System && user.AdminLoginBlocker(existingAdmin, time.Now().UTC()) == "" && soSatisfied {

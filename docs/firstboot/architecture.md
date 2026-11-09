@@ -349,6 +349,23 @@ Anything else, including an SOPINs that can prove neither
 (`*firstboot.MissingSOSeamError`), fails the enrolment, so the pending record
 is not consumed.
 
+A node that only waited for the leader consumes the record through
+`firstboot.ClearPendingSystemSOIfEnrolled`, and only once the enrolment it
+names is verified: the SO account has the so role and a live binding to the
+record's certificate, and the committed SO PIN is the record's
+(`SOPINRecordMatches`). A PIN committed by someone else, or an account bound
+only to other certificates, keeps the record and returns
+`*firstboot.SystemSOUnverifiedError`; an account not yet bound keeps it
+quietly, as enrolment binds after it commits the PIN.
+
+A strict cluster whose SO was enrolled before the consumed marker existed has
+neither marker nor record. On a strict start with a bound admin, `qrdbd`
+calls `firstboot.RecognizeEnrolledSystemSO`, which reads the persisted
+accounts and the PIN store: a system-tenant account other than the admin,
+with the so role and a live certificate binding, plus a committed system SO
+PIN, is that SO, and the marker is written. Only a cluster with no such SO
+reaches the full first boot and its `*firstboot.SystemSORequiredError`.
+
 ## Startup sequence
 
 1. Configuration loading
