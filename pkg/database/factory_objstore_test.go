@@ -180,6 +180,45 @@ func TestManager_DropReclaimsTheObjstoreObjects(t *testing.T) {
 	}
 }
 
+// TestManager_DropReclaimsABarrierEnabledObjstoreDatabase: the barrier wraps
+// the objstore backend, and the drop must still reach the reclaim beneath it
+// rather than report success over the objects it left.
+func TestManager_DropReclaimsABarrierEnabledObjstoreDatabase(t *testing.T) {
+	root := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := newCatalogManager(logger, t.TempDir(),
+		WithBackendFactory(NewEmbeddedBackendFactory(WithObjstoreOpener(localObjstoreOpener(root)))),
+		WithBarrierManager(newTestBarrierManager(t)))
+	t.Cleanup(func() { _ = m.Close() })
+	ctx := context.Background()
+	cfg := DatabaseConfig{
+		Name:    "sealed-blobs",
+		Backend: BackendObjstore,
+		DataDir: t.TempDir(),
+		Barrier: &DatabaseBarrierConfig{Enabled: true, Mode: "passphrase"},
+	}
+
+	db, err := m.CreateWithCredentials(ctx, cfg, testCreds())
+	if err != nil {
+		t.Fatalf("CreateWithCredentials: %v", err)
+	}
+	if _, ok := db.Backend().(*BarrierBackend); !ok {
+		t.Fatalf("Backend() = %T, want the barrier wrapper", db.Backend())
+	}
+	if err := db.Backend().Put(ctx, []byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if len(objectFiles(t, root)) == 0 {
+		t.Fatal("no object written before Drop")
+	}
+	if err := m.Drop(ctx, "sealed-blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if left := objectFiles(t, root); len(left) != 0 {
+		t.Fatalf("objects left after Drop: %q", left)
+	}
+}
+
 // TestManager_DropFailsWhenTheReclaimFails checks a Drop whose objects cannot
 // be deleted fails rather than reporting success, and that the retried drop
 // completes once the reclaim succeeds.

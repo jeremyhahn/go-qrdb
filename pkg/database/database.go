@@ -47,6 +47,13 @@ type Database struct {
 	// so repeated wrapping can never nest one BarrierBackend inside another.
 	rawBackend Backend
 
+	// storeReclaim deletes the data the database keeps outside its
+	// directory (an objstore database's objects), or is nil. It is taken
+	// from the backend the factory opened, before any wrapper, and set
+	// before the Database is published, so Drop reaches it whatever wraps
+	// the backend (see keepStoreReclaimer).
+	storeReclaim storeReclaimer
+
 	// barrierMetaBackend holds this database's dedicated barrier bootstrap
 	// key-material store (see Manager.openBarrierMetaBackend), kept
 	// entirely separate from rawBackend/activeBackend so the barrier's own
@@ -107,12 +114,23 @@ func NewDatabase(config DatabaseConfig, backend Backend, dataDir string) *Databa
 		rawBackend: backend,
 		dataDir:    dataDir,
 	}
+	db.keepStoreReclaimer(backend)
 	db.activeBackend.Store(&backendHolder{backend: backend})
 	db.config.Store(&config)
 	db.status.Store(StatusOpen)
 	open := make(chan struct{})
 	db.serving.Store(&open)
 	return db
+}
+
+// keepStoreReclaimer records backend's reclaim when backend keeps its data
+// outside the database directory. Manager passes the backend the factory
+// opened, before it wraps it with barrier encryption; the caller has not yet
+// published the Database.
+func (d *Database) keepStoreReclaimer(backend Backend) {
+	if r, ok := backend.(storeReclaimer); ok {
+		d.storeReclaim = r
+	}
 }
 
 // Name returns the database name.
