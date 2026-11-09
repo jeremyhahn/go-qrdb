@@ -19,6 +19,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -94,13 +98,145 @@ func TestWithObjectPrefix_EnginesOnOneProviderAreIsolated(t *testing.T) {
 }
 
 func TestWithObjectPrefix_RefusesAnInvalidPrefix(t *testing.T) {
-	for _, prefix := range []string{"/abs/", "no-slash", "/"} {
+	tooLong := prefixOfLen(maxObjectPrefixLen + 1)
+	for _, prefix := range []string{"/abs/", "no-slash", "/", "ns//", "./", "ns/./", "a/../", `ns\x/`, tooLong} {
 		_, err := New("memory", map[string]string{}, WithObjectPrefix(prefix))
 		var prefixErr *ObjectPrefixError
 		require.ErrorAs(t, err, &prefixErr, prefix)
 		assert.Equal(t, prefix, prefixErr.Prefix)
 		assert.Contains(t, prefixErr.Error(), prefix)
 	}
+}
+
+// prefixOfLen returns a valid-shaped prefix of exactly n bytes, n >= 2, made
+// of short segments so a local provider can create it as directories.
+func prefixOfLen(n int) string {
+	p := strings.Repeat("a/", n/2)
+	if n%2 == 1 {
+		p = "b" + p
+	}
+	return p
+}
+
+func TestValidObjectPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		prefix string
+		ok     bool
+	}{
+		{"", true},
+		{"ns/", true},
+		{"databases/a/", true},
+		{"a.b/..c/", true},
+		{prefixOfLen(maxObjectPrefixLen), true},
+		{"/", false},
+		{"/abs/", false},
+		{"no-slash", false},
+		{"ns//", false},
+		{"//", false},
+		{"./", false},
+		{"../", false},
+		{"ns/./", false},
+		{"ns/../", false},
+		{"a/../", false},
+		{`ns\x/`, false},
+		{`ns\`, false},
+		{prefixOfLen(maxObjectPrefixLen + 1), false},
+	} {
+		err := validObjectPrefix(tc.prefix)
+		if tc.ok {
+			assert.NoError(t, err, tc.prefix)
+			continue
+		}
+		var prefixErr *ObjectPrefixError
+		assert.ErrorAs(t, err, &prefixErr, tc.prefix)
+	}
+	// The longest prefix leaves room for every name the engine writes.
+	assert.LessOrEqual(t, maxObjectPrefixLen+hashedNameLen, objcommon.MaxKeyLength)
+	assert.LessOrEqual(t, maxObjectPrefixLen+len(journalName), objcommon.MaxKeyLength)
+	assert.LessOrEqual(t, maxObjectPrefixLen+len(formatMarkerName), objcommon.MaxKeyLength)
+}
+
+// TestWithObjectPrefix_BoundaryKeyFitsTheProvider writes, under a prefix, a
+// key whose unprefixed direct name is the longest the provider takes. Its
+// name is chosen within the limit the prefix leaves, so the batch, the
+// reads, the listing and the reopen all succeed on a provider that enforces
+// the limit, and no object name on disk exceeds it.
+func TestWithObjectPrefix_BoundaryKeyFitsTheProvider(t *testing.T) {
+	key := patterned(directThreshold(), 7)
+	require.Greater(t, directNameLen(len(key)), objcommon.MaxKeyLength-len("ns/"),
+		"the key's direct name must not fit beneath the prefix")
+	for _, prefix := range []string{"ns/", prefixOfLen(maxObjectPrefixLen)} {
+		t.Run(strconv.Itoa(len(prefix)), func(t *testing.T) {
+			dir := t.TempDir()
+			settings := map[string]string{"path": dir}
+			e, err := New("local", settings, WithObjectPrefix(prefix))
+			require.NoError(t, err)
+			b := e.Batch()
+			require.NoError(t, b.Set(key, []byte("v")))
+			require.NoError(t, b.Set([]byte("short"), []byte("s")))
+			require.NoError(t, b.Commit())
+
+			check := func(e *Engine) {
+				got, err := e.Get(key)
+				require.NoError(t, err)
+				assert.Equal(t, "v", string(got))
+				keys, err := e.List(nil)
+				require.NoError(t, err)
+				assert.ElementsMatch(t, [][]byte{key, []byte("short")}, keys)
+				keys, err = e.List(key[:len(key)-1])
+				require.NoError(t, err)
+				assert.Equal(t, [][]byte{key}, keys)
+			}
+			check(e)
+			require.NoError(t, e.Close())
+
+			e, err = New("local", settings, WithObjectPrefix(prefix))
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = e.Close() })
+			check(e)
+
+			// Every object name the provider holds fits its limit; the
+			// provider's own metadata sidecars are not object names.
+			require.NoError(t, filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+				if err != nil || d.IsDir() || strings.HasSuffix(path, ".metadata.json") {
+					return err
+				}
+				rel, err := filepath.Rel(dir, path)
+				if err != nil {
+					return err
+				}
+				assert.LessOrEqual(t, len(filepath.ToSlash(rel)), objcommon.MaxKeyLength, rel)
+				return nil
+			}))
+		})
+	}
+}
+
+// TestWithObjectPrefix_SiblingPrefixesOnOneLocalRoot opens two engines on one
+// local provider root, under "ns/" and "ns2/": each lists only its own keys.
+func TestWithObjectPrefix_SiblingPrefixesOnOneLocalRoot(t *testing.T) {
+	settings := map[string]string{"path": t.TempDir()}
+	a, err := New("local", settings, WithObjectPrefix("ns/"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := New("local", settings, WithObjectPrefix("ns2/"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.Close() })
+
+	require.NoError(t, a.Set([]byte("a-key"), []byte("a")))
+	bt := b.Batch()
+	require.NoError(t, bt.Set([]byte("b-key"), []byte("b")))
+	require.NoError(t, bt.Commit())
+
+	keys, err := a.List(nil)
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("a-key")}, keys)
+	keys, err = b.List(nil)
+	require.NoError(t, err)
+	assert.Equal(t, [][]byte{[]byte("b-key")}, keys)
+	got, err := a.Get([]byte("b-key"))
+	require.NoError(t, err)
+	assert.Nil(t, got, "ns/ sees ns2/'s key")
 }
 
 // The wrapper namespaces every name-taking method of the provider interface,

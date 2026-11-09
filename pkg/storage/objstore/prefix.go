@@ -17,6 +17,7 @@ package objstore
 import (
 	"context"
 	"io"
+	"strconv"
 	"strings"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
@@ -25,8 +26,12 @@ import (
 // WithObjectPrefix places every object the engine writes -- records, the
 // format marker and the batch commit journal -- under prefix, so engines that
 // share one provider (a bucket, or one memory store) never see each other's
-// keys. prefix must end in "/" and must not start with one; New refuses
-// anything else with ObjectPrefixError.
+// keys. prefix must end in "/" and must not start with one, every segment
+// must be a plain name (no empty, "." or ".." segment, no backslash), and it
+// must leave room for every name the engine writes within the provider's
+// name limit, so it is at most maxObjectPrefixLen bytes. New refuses
+// anything else with ObjectPrefixError. Keys are named within the limit the
+// prefix leaves, so a prefix changes which keys are stored hashed.
 func WithObjectPrefix(prefix string) Option {
 	return func(o *options) { o.prefix = prefix }
 }
@@ -39,20 +44,39 @@ type ObjectPrefixError struct {
 
 // Error returns a human-readable description of the refused prefix.
 func (e *ObjectPrefixError) Error() string {
-	return `objstore: object prefix "` + e.Prefix + `" must not start with "/" and must end with "/"`
+	return `objstore: object prefix "` + e.Prefix + `" must not start with "/", must end with "/", ` +
+		`must have no empty, "." or ".." segment and no "\", and must be at most ` +
+		strconv.Itoa(maxObjectPrefixLen) + ` bytes`
 }
 
 // validObjectPrefix accepts no prefix, or one that is a relative object-name
-// directory: no leading "/", a trailing "/".
+// directory: no leading "/", a trailing "/", only plain-name segments, and
+// short enough that every name the engine writes still fits the provider.
 func validObjectPrefix(prefix string) error {
 	if prefix == "" {
 		return nil
 	}
-	if strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || prefix == "/" {
+	if strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.Contains(prefix, `\`) {
+		return &ObjectPrefixError{Prefix: prefix}
+	}
+	// Every segment must be a plain name: an empty, "." or ".." segment is
+	// one a path-joining provider resolves away on Get and Put but matches
+	// literally on List, so two spellings would share one namespace.
+	for _, segment := range strings.Split(strings.TrimSuffix(prefix, "/"), "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return &ObjectPrefixError{Prefix: prefix}
+		}
+	}
+	if len(prefix) > maxObjectPrefixLen {
 		return &ObjectPrefixError{Prefix: prefix}
 	}
 	return nil
 }
+
+// maxObjectPrefixLen is the longest prefix that leaves room for every name
+// the engine writes beneath it: a hashed key name, the format marker and the
+// commit journal.
+const maxObjectPrefixLen = objcommon.MaxKeyLength - max(hashedNameLen, len(formatMarkerName), len(journalName))
 
 // prefixedStore namespaces a go-objstore Storage: every object name and list
 // prefix it is given gets the prefix added, and every name it lists has the

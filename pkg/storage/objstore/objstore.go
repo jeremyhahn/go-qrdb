@@ -51,6 +51,12 @@ type Engine struct {
 	provider string
 	closed   atomic.Bool
 
+	// nameLimit is the longest object name the engine may write beneath
+	// its object prefix: objcommon.MaxKeyLength less the prefix's length.
+	// Naming, decoding and listing all use it, so they agree on which keys
+	// are stored direct and which hashed.
+	nameLimit int
+
 	// journalMu serializes batch commits: the commit journal is a single
 	// object per engine, so two concurrent commits must not interleave
 	// publish/apply/clear.
@@ -144,7 +150,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if o.prefix != "" {
 		store, journal = withPrefix(store, o.prefix), withPrefix(journal, o.prefix)
 	}
-	e := &Engine{store: store, journal: journal, provider: provider}
+	e := &Engine{store: store, journal: journal, provider: provider, nameLimit: objcommon.MaxKeyLength - len(o.prefix)}
 	if err := e.ensureFormatMarker(); err != nil {
 		return nil, err
 	}
@@ -203,7 +209,7 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
-	name, hashed := objectName(key)
+	name, hashed := objectName(key, e.nameLimit)
 	if hashed {
 		stored, value, err := e.readHashed(name, true)
 		if err != nil {
@@ -245,7 +251,7 @@ func (e *Engine) Set(key, value []byte) error {
 
 // put writes the object for key. The caller holds writeMu.
 func (e *Engine) put(key, value []byte) error {
-	name, hashed := objectName(key)
+	name, hashed := objectName(key, e.nameLimit)
 	if hashed {
 		return e.store.Put(name, hashedRecord(key, value))
 	}
@@ -304,7 +310,7 @@ func (e *Engine) Delete(key []byte) error {
 // remove deletes the object for key; a missing object is not an error. The
 // caller holds writeMu.
 func (e *Engine) remove(key []byte) error {
-	name, _ := objectName(key)
+	name, _ := objectName(key, e.nameLimit)
 	if err := e.store.Delete(name); err != nil && !notFound(err) {
 		return err
 	}
@@ -377,13 +383,13 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 // deleted between the listing and its read is skipped.
 func (e *Engine) scan(prefix []byte, withValues bool) ([]kvEntry, error) {
 	var entries []kvEntry
-	if providerPrefix, ok := directListPrefix(prefix); ok {
+	if providerPrefix, ok := directListPrefix(prefix, e.nameLimit); ok {
 		names, err := e.store.List(providerPrefix)
 		if err != nil {
 			return nil, err
 		}
 		for _, name := range names {
-			key, ok := decodeDirectName(name)
+			key, ok := decodeDirectName(name, e.nameLimit)
 			// Defend against providers that do not filter server-side.
 			if !ok || !bytes.HasPrefix(key, prefix) {
 				continue
@@ -431,7 +437,7 @@ func (e *Engine) readHashed(name string, withValue bool) ([]byte, []byte, error)
 		return nil, nil, err
 	}
 	defer func() { _ = rc.Close() }()
-	return readHashedRecord(name, rc, withValue)
+	return readHashedRecord(name, rc, withValue, e.nameLimit)
 }
 
 // Exists reports whether key exists.
@@ -442,7 +448,7 @@ func (e *Engine) Exists(key []byte) (bool, error) {
 	if len(key) == 0 {
 		return false, storage.ErrEmptyKey
 	}
-	name, _ := objectName(key)
+	name, _ := objectName(key, e.nameLimit)
 	ok, err := e.store.Exists(context.Background(), name)
 	if err != nil {
 		if notFound(err) {

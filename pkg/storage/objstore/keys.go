@@ -22,8 +22,6 @@ import (
 	"encoding/hex"
 	"io"
 	"math"
-
-	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 )
 
 // Object naming. A storage key is arbitrary bytes, but a provider object name
@@ -38,8 +36,8 @@ import (
 //     the provider. The terminator keeps a leaf from ever sharing a name with
 //     the directory a longer key's segments need.
 //   - hashed: hashedPrefix + the lowercase hex SHA-256 of the key, used when
-//     the direct name would exceed objcommon.MaxKeyLength (keys longer than
-//     about 500 bytes). The object body is a record carrying the key itself,
+//     the direct name would exceed objcommon.MaxKeyLength, less the length of
+//     the engine's object prefix (keys longer than about 500 bytes). The object body is a record carrying the key itself,
 //     uvarint(len(key)) || key || value, and a read verifies the stored key.
 //
 // A name under either prefix that is not the canonical name of some key is
@@ -75,8 +73,10 @@ func directNameLen(n int) int {
 
 // objectName returns the provider object name key is stored under, and
 // whether that name is the hashed form whose body is a key-carrying record.
-func objectName(key []byte) (string, bool) {
-	if directNameLen(len(key)) > objcommon.MaxKeyLength {
+// limit is the longest name the engine may write: objcommon.MaxKeyLength less
+// the length of its object prefix (see WithObjectPrefix).
+func objectName(key []byte, limit int) (string, bool) {
+	if directNameLen(len(key)) > limit {
 		sum := sha256.Sum256(key)
 		return hashedPrefix + hex.EncodeToString(sum[:]), true
 	}
@@ -87,10 +87,10 @@ func objectName(key []byte) (string, bool) {
 // directListPrefix returns the provider prefix every direct name of a key
 // beginning with prefix starts with, and false when no direct name can: a
 // prefix whose own encoding already exceeds the provider's name limit only
-// prefixes keys that are stored hashed.
-func directListPrefix(prefix []byte) (string, bool) {
+// prefixes keys that are stored hashed. limit is objectName's.
+func directListPrefix(prefix []byte, limit int) (string, bool) {
 	p := appendSegmentedHex([]byte(directPrefix), prefix)
-	if len(p) > objcommon.MaxKeyLength {
+	if len(p) > limit {
 		return "", false
 	}
 	return string(p), true
@@ -111,7 +111,7 @@ func appendSegmentedHex(dst, b []byte) []byte {
 
 // decodeDirectName returns the key a direct object name encodes, and false
 // for any name that is not exactly the direct name objectName gives a key.
-func decodeDirectName(name string) ([]byte, bool) {
+func decodeDirectName(name string, limit int) ([]byte, bool) {
 	if len(name) <= len(directPrefix)+1 || name[:len(directPrefix)] != directPrefix ||
 		name[len(name)-1] != leafTerminator {
 		return nil, false
@@ -132,7 +132,7 @@ func decodeDirectName(name string) ([]byte, bool) {
 	}
 	// Re-encoding rejects every non-canonical spelling: uppercase hex,
 	// misplaced separators, or a key long enough to be stored hashed.
-	if canonical, hashed := objectName(key); hashed || canonical != name {
+	if canonical, hashed := objectName(key, limit); hashed || canonical != name {
 		return nil, false
 	}
 	return key, true
@@ -163,7 +163,7 @@ func hashedRecord(key, value []byte) io.Reader {
 // the key it carries and, when withValue is set, its value. The key buffer
 // grows only as bytes actually arrive, so a corrupt length cannot force a
 // large allocation, and the key must hash to name.
-func readHashedRecord(name string, r io.Reader, withValue bool) ([]byte, []byte, error) {
+func readHashedRecord(name string, r io.Reader, withValue bool, limit int) ([]byte, []byte, error) {
 	src := &sourceErrReader{r: r}
 	br := bufio.NewReader(src)
 	n, err := binary.ReadUvarint(br)
@@ -182,7 +182,7 @@ func readHashedRecord(name string, r io.Reader, withValue bool) ([]byte, []byte,
 	}
 	// The name is the stored key's hash, so a record that does not hash to
 	// the name it was read from is misplaced or corrupt, never a usable key.
-	if canonical, hashed := objectName(key); !hashed || canonical != name {
+	if canonical, hashed := objectName(key, limit); !hashed || canonical != name {
 		return nil, nil, &KeyMismatchError{Name: name}
 	}
 	if !withValue {
