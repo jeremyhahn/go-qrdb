@@ -683,7 +683,7 @@ func TestRunFirstBoot_CrashRecovery_UnboundAdminPlusPendingRecord_Binds(t *testi
 	pendingStore := &mockKVServicer{
 		getFn: func(_ context.Context, key string) ([]byte, error) {
 			if key != firstboot.PendingAdminCertKey {
-				return nil, errors.New("key not found")
+				return nil, &service.KeyNotFoundError{Key: key}
 			}
 			return certPEM, nil
 		},
