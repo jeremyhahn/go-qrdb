@@ -677,6 +677,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `golang.org/x/sync` v0.24.0 → v0.25.0 in the root module, with the indirect
+  requirement in `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`
+  following it; `deps-check` reported it behind its latest release.
 - `github.com/wailsapp/wails/v2` v2.17.0 → v2.17.1 in the root module, the
   desktop shell's only Wails requirement; `deps-check` reported it behind its
   latest release.
