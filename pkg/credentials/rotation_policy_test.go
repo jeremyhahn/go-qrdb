@@ -445,6 +445,49 @@ func TestRotateDue_PolicyChangedDuringRotationKeepsItsSchedule(t *testing.T) {
 	}
 }
 
+// The retention cleanup after a scheduled rotation applies the policy as it
+// stands at the cleanup, not the one read when the rotation was claimed: an
+// operator who raised RetainVersions, or disabled the policy, while the value
+// source ran keeps the predecessors the new policy keeps.
+func TestRotateDue_CleanupAppliesThePolicyChangedDuringRotation(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		changed RotationPolicy
+	}{
+		{"retention raised", RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 5}},
+		{"policy disabled", RotationPolicy{Enabled: false, Interval: time.Hour, RetainVersions: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var svc *CredentialService
+			svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+				if err := svc.SetRotationPolicy(ctx, name, tc.changed); err != nil {
+					return nil, err
+				}
+				return secure.NewBufferFromBytes([]byte(name + "-rotated"))
+			}))
+			ctx := t.Context()
+			storeRotationCredential(t, svc, "k")
+			if err := svc.SetRotationPolicy(ctx, "k", RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 1}); err != nil {
+				t.Fatalf("SetRotationPolicy: %v", err)
+			}
+
+			if n, err := svc.RotateDue(ctx, rotationEpoch.Add(time.Hour)); err != nil || n != 1 {
+				t.Fatalf("RotateDue = %d, %v; want 1, nil", n, err)
+			}
+			if got := versionCount(t, svc, "k"); got != 2 {
+				t.Fatalf("versions = %d, want 2: the changed policy keeps the predecessor", got)
+			}
+			prev, err := svc.store.Get(ctx, versionKey("k", 1))
+			if err != nil {
+				t.Fatalf("the predecessor's value: %v", err)
+			}
+			if string(prev) != "k-initial" {
+				t.Fatalf("the predecessor's value = %q, want %q", prev, "k-initial")
+			}
+		})
+	}
+}
+
 // TestRotateDue_DeleteDuringSourceStaysDeleted: the credential is deleted
 // while the value source runs. The scheduled commit is fenced on its
 // claim, so it recreates neither the value nor the record, leaves no
