@@ -575,10 +575,7 @@ func bigdiskStepProblems(job runnerJob) []string {
 		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["persist-credentials"] != "false" {
 			problems = append(problems, bigdiskJob+": step "+strconv.Itoa(i)+" checks out without persist-credentials: false; the token stays in the checkout's git config")
 		}
-		if strings.Contains(s.Run, "make "+bigdiskJob) &&
-			strings.Contains(s.Run, "RUNNER_ENVIRONMENT") &&
-			strings.Contains(s.Run, "github-hosted") &&
-			strings.Contains(s.Run, "PLAYWRIGHT_INSTALL_FLAGS=") {
+		if runsGuardedMake(s.Run) {
 			guarded = true
 		}
 	}
@@ -586,6 +583,34 @@ func bigdiskStepProblems(job runnerJob) []string {
 		problems = append(problems, bigdiskJob+": no step runs make "+bigdiskJob+" with PLAYWRIGHT_INSTALL_FLAGS cleared when RUNNER_ENVIRONMENT is not github-hosted")
 	}
 	return problems
+}
+
+// runnerGuard is the approved block that clears PLAYWRIGHT_INSTALL_FLAGS off
+// the hosted runner, line for line after each line's leading whitespace.
+var runnerGuard = []string{
+	`if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then`,
+	`export PLAYWRIGHT_INSTALL_FLAGS=`,
+	`fi`,
+}
+
+// runsGuardedMake reports whether script holds runnerGuard as consecutive
+// lines and, on a later line, `make test-typescript`.
+func runsGuardedMake(script string) bool {
+	lines := strings.Split(script, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimLeft(lines[i], " \t")
+	}
+	for i := 0; i+len(runnerGuard) <= len(lines); i++ {
+		if !slices.Equal(lines[i:i+len(runnerGuard)], runnerGuard) {
+			continue
+		}
+		for _, l := range lines[i+len(runnerGuard):] {
+			if l == "make "+bigdiskJob {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // makeRecipe returns the recipe lines of target in a Makefile's text.
