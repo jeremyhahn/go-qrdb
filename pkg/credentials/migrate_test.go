@@ -97,6 +97,9 @@ func legacyKeys(t *testing.T, st Store) []string {
 	t.Helper()
 	keys, err := st.List(context.Background(), legacyCredentialPrefix)
 	require.NoError(t, err)
+	notes, err := st.List(context.Background(), legacyMigrationNotePrefix)
+	require.NoError(t, err)
+	keys = append(keys, notes...)
 	sort.Strings(keys)
 	return keys
 }
@@ -149,6 +152,33 @@ func TestMigrateLegacy_SingleNode(t *testing.T) {
 	ev, ok := al.findByAction("migrate")
 	require.True(t, ok)
 	assert.Equal(t, audit.OutcomeSuccess, ev.Outcome)
+}
+
+// A credential name may contain '#', so a legacy credential can carry any
+// suffix a migration record ever had. It migrates with its value beside the
+// credential it shares a stem with, and is never read as a migration note.
+func TestMigrateLegacy_NameEndingInMigratedSurvives(t *testing.T) {
+	ctx := context.Background()
+	legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
+	writeLegacy(t, legacy, "db#migrated", "other-v2", "other-v1", nil)
+
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+	assert.Equal(t, "other-v2", retrieveString(t, svc, "db#migrated"))
+	assert.Equal(t, "other-v1", versionString(t, svc, "db#migrated", 1))
+	assert.Empty(t, legacyKeys(t, legacy))
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+
+	later := newMigratingService(t, seal.NewMemoryBackend())
+	require.NoError(t, later.BindStore(ctx, shared))
+	assert.Equal(t, "v2", retrieveString(t, later, "db"))
+	assert.Equal(t, "other-v2", retrieveString(t, later, "db#migrated"))
 }
 
 // TestMigrateLegacy_IdenticalLaterNode verifies a later node whose copy is
