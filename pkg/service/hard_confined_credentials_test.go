@@ -221,6 +221,86 @@ func TestHardConfinedWatch_RefusesAndFiltersCredentials(t *testing.T) {
 	}
 }
 
+// The credential migration claims sit beside the credential store, under
+// "__sys:credential-migrations/". A claim names the copy a migration settled
+// on, so a write through the embedded KV would redirect or replay a
+// migration: the prefix is refused exactly as a credential value key is.
+const credentialMigrationsRoot = InternalKeyPrefixSystem + "credential-migrations/"
+
+func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing.T) {
+	ctx := context.Background()
+	key := credentialMigrationsRoot + "db-pass"
+	if !isHardConfinedKey(key) {
+		t.Errorf("isHardConfinedKey(%q) = false, want true", key)
+	}
+	if !isHardConfinedRoot(credentialMigrationsRoot) {
+		t.Errorf("isHardConfinedRoot(%q) = false, want true", credentialMigrationsRoot)
+	}
+
+	fake := newFakeKV()
+	fake.store[key] = []byte("claim")
+	confined := NewHardConfinedKV(fake)
+	if _, err := confined.Get(ctx, key); err == nil {
+		t.Fatalf("Get(%q) succeeded, want a refusal", key)
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if err := confined.Put(ctx, key, []byte("replaced")); err == nil {
+		t.Fatalf("Put(%q) succeeded, want a refusal", key)
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if string(fake.store[key]) != "claim" {
+		t.Fatalf("%q changed to %q despite the write being refused", key, fake.store[key])
+	}
+	if _, err := confined.Scan(ctx, credentialMigrationsRoot); err == nil {
+		t.Fatalf("Scan(%q) succeeded, want a refusal", credentialMigrationsRoot)
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	pairs, err := confined.Scan(ctx, InternalKeyPrefixSystem)
+	if err != nil {
+		t.Fatalf("Scan(%q): %v", InternalKeyPrefixSystem, err)
+	}
+	if _, ok := pairs[key]; ok {
+		t.Fatalf("Scan(%q) returned the migration claim %q", InternalKeyPrefixSystem, key)
+	}
+
+	fakeTx := &fakeTxn{}
+	txn := NewHardConfinedTransaction(fakeTx)
+	compares := []Compare{{Key: []byte(key), Target: CompareVersion, Result: CompareEqual}}
+	if _, err := txn.Execute(ctx, compares, nil, nil); err == nil {
+		t.Fatal("a compare against a migration claim succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	ops := []Op{{Type: OpPut, Key: []byte(key), Value: []byte("replaced")}}
+	if _, err := txn.Execute(ctx, nil, ops, nil); err == nil {
+		t.Fatal("an op against a migration claim succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if fakeTx.called {
+		t.Fatal("the transaction reached the underlying servicer despite the refusal")
+	}
+
+	fakeW := &fakeWatch{}
+	w := NewHardConfinedWatch(fakeW)
+	if _, err := w.Watch(ctx, key); err == nil {
+		t.Fatal("Watch on a migration claim succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if _, err := w.WatchPrefix(ctx, credentialMigrationsRoot); err == nil {
+		t.Fatal("WatchPrefix on the migration claims succeeded, want a refusal")
+	} else {
+		assertHardConfinedError(t, err)
+	}
+	if fakeW.calledWatch {
+		t.Fatal("Watch delegated to the underlying servicer despite the refusal")
+	}
+}
+
 // The credential service's own store lists and scans its prefix through the
 // node's KV service, whose internal-key filter keeps the records for a scan
 // rooted at the prefix and strips them from a broader "__sys:" sweep.
