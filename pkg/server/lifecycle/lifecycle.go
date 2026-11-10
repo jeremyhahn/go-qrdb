@@ -673,6 +673,9 @@ type Node struct {
 	// onboarding is TenantOnboarding's concrete service, which AttachSOPINs
 	// gives the SO PIN seam once the node's SO authenticator is built.
 	onboarding *service.TenantOnboardingService
+	// nodeLocalAudit is the node-local audit trail alone, before
+	// BuildServices joins it with ReplicatedAudit.
+	nodeLocalAudit audit.AuditLogger
 
 	// Invitations is the invitation self-enrolment service every transport's
 	// users:invite and (unauthenticated) redemption verbs delegate to. Nil
@@ -844,6 +847,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// here either: introducing a sink where the caller asked for none would
 	// change its behavior, not merely extend it.
 	if infra.AuditLogger != nil {
+		n.nodeLocalAudit = infra.AuditLogger
 		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
 	}
 
@@ -1950,8 +1954,12 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	// together (BuildServices). The node-local trail takes the onboarding
 	// record at the first attempt, so a retry goes to the replicated logger
 	// alone. A composition with no audit logger has no retry sink either.
+	// The node-local trail goes in on its own as well, so the first attempt
+	// writes each trail separately and a node-local write failure does not
+	// keep a pending record the replicated logger has already taken.
 	if infra.AuditLogger != nil && n.ReplicatedAudit != nil {
 		onboardingDeps.TenantTrail = n.ReplicatedAudit
+		onboardingDeps.LocalTrail = n.nodeLocalAudit
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.

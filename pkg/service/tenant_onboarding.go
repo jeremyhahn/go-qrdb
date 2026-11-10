@@ -174,7 +174,9 @@ type TenantOnboardingService struct {
 	// tenantTrail is the sink a retry of the pending onboarding record
 	// goes to; nil retries through audit.
 	tenantTrail audit.AuditLogger
-	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
+	// localTrail is TenantOnboardingDeps.LocalTrail.
+	localTrail audit.AuditLogger
+	soPINs     atomic.Pointer[bootstrap.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
 }
@@ -320,6 +322,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 
 		pendingAudit: deps.PendingAudit,
 		tenantTrail:  deps.TenantTrail,
+		localTrail:   deps.LocalTrail,
 	}
 	if deps.SOPINs != nil {
 		s.AttachSOPINs(deps.SOPINs)
@@ -572,7 +575,12 @@ func (s *TenantOnboardingService) fileTenantOnboardEvent(ctx context.Context, te
 		audit.EmitBestEffort(ctx, s.audit, tenantOnboardingAuditComponent, ev)
 		return
 	}
-	if err := s.emitPendingOnboardAudit(ctx, tenantID, s.audit); err != nil {
+	sink := s.audit
+	if s.localTrail != nil && s.tenantTrail != nil {
+		audit.EmitBestEffort(ctx, s.localTrail, tenantOnboardingAuditComponent, ev)
+		sink = s.tenantTrail
+	}
+	if err := s.emitPendingOnboardAudit(ctx, tenantID, sink); err != nil {
 		s.logger.Debug("tenant onboarding audit record waits for the tenant's trail",
 			slog.String("tenant", tenantID), slog.Any("error", err))
 	}
@@ -596,8 +604,10 @@ func (s *TenantOnboardingService) EmitPendingOnboardAudit(ctx context.Context, t
 
 // emitPendingOnboardAudit emits tenantID's pending onboarding record on sink
 // and deletes it once sink has taken it. The first attempt's sink is the
-// node's whole audit sink; a retry's is the tenant's trail alone, because the
-// node-local trail took the record at the first attempt.
+// tenant's trail alone when the node-local trail is given separately
+// (TenantOnboardingDeps.LocalTrail), else the node's whole audit sink; a
+// retry's is the tenant's trail alone, because the node-local trail was
+// offered the record at the first attempt.
 func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, tenantID string, sink audit.AuditLogger) error {
 	if s.pendingAudit == nil || sink == nil {
 		return nil
