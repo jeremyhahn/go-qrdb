@@ -25,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -544,6 +545,21 @@ func (a *refuseOnceTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
 	return a.RingBuffer.Emit(ctx, ev)
 }
 
+// failingLocalTrail is a node-local trail whose write fails for every event
+// of one tenant, as the chain file logger fails a write to a full file sink:
+// it returns the error and records nothing. Every other event is recorded.
+type failingLocalTrail struct {
+	*audit.RingBuffer
+	tenantID string
+}
+
+func (a *failingLocalTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if ev.TenantID == a.tenantID {
+		return &audit.WriteError{Backend: "audit.log", Err: syscall.ENOSPC}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
 // The node's audit sink is the node-local trail and the tenant's replicated
 // trail together. When the tenant's trail refuses the onboarding record, the
 // node-local trail has already taken it: the retry of the pending record goes
@@ -593,6 +609,60 @@ func TestOnboardTenant_PendingRecordRetryLeavesOneNodeLocalRecord(t *testing.T) 
 	}
 	if got := onboardRecords(local); len(got) != 1 {
 		t.Fatalf("node-local trail holds %d tenant.onboard records, want 1: %+v", len(got), got)
+	}
+}
+
+// When the node-local trail fails the write and the tenant's trail takes the
+// onboarding record, the record is done: the pending record is deleted, and a
+// later retry appends nothing, so the tenant's trail holds it exactly once.
+func TestOnboardTenant_NodeLocalRefusalLeavesOneTenantTrailRecord(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	deps.PendingAudit = pendingAudit
+	local := &failingLocalTrail{RingBuffer: audit.NewRingBuffer(32), tenantID: "acme"}
+	trail := audit.NewRingBuffer(32)
+	deps.Audit = audit.NewAggregateLogger(local, trail)
+	deps.LocalTrail = local
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(ring *audit.RingBuffer) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range ring.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+
+	record, err := pendingAudit.Get(ctx, "acme")
+	if err != nil {
+		t.Fatalf("pending audit Get: %v", err)
+	}
+	if record != nil {
+		t.Fatalf("the pending onboarding record is still kept after the tenant's trail took it: %s", record)
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("EmitPendingOnboardAudit: %v", err)
+	}
+	if got := onboardRecords(trail); len(got) != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want 1: %+v", len(got), got)
+	}
+	if got := onboardRecords(local.RingBuffer); len(got) != 0 {
+		t.Fatalf("node-local trail holds %+v, want nothing: its write failed", got)
 	}
 }
 

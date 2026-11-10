@@ -275,6 +275,12 @@ type TenantOnboardingDeps struct {
 	// refuses it. Nil retries through Audit.
 	TenantTrail audit.AuditLogger
 
+	// LocalTrail is the node-local trail alone, the half of Audit that is
+	// not TenantTrail; with both set the first attempt writes the record to
+	// LocalTrail once, best effort, and files the pending record on
+	// TenantTrail alone; nil sends the first attempt through Audit.
+	LocalTrail audit.AuditLogger
+
 	// SOPINs commits a tenant SO's PIN (bootstrap.Dependencies.SOPINs). A
 	// node whose SO authenticator is built after this service attaches it
 	// with AttachSOPINs. Nil refuses a request that names an SO.
