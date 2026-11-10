@@ -462,6 +462,89 @@ func TestResolveMigrationConflict_ImportRetriedAfterCleanupFailure(t *testing.T)
 	assert.Empty(t, conflicts)
 }
 
+// getHookStore runs onGet after each read, with the key read, so a test can
+// place another service's work between two reads of one operation.
+type getHookStore struct {
+	Store
+	onGet func(key string)
+}
+
+func (g *getHookStore) Get(ctx context.Context, key string) ([]byte, error) {
+	value, err := g.Store.Get(ctx, key)
+	if g.onGet != nil {
+		g.onGet(key)
+	}
+	return value, err
+}
+
+// Each request derives its own service, so two resolutions of one tenant's
+// conflict do not share a lock: both can find the copy not yet imported
+// before either commits. The second must then be refused by the write itself.
+func TestResolveMigrationConflict_ImportRacingAcrossDerivedServices(t *testing.T) {
+	ctx := context.Background()
+	al := &fakeAuditLogger{}
+	home := &getHookStore{Store: newHomeStore(t)}
+	legacyA := seal.NewMemoryBackend()
+	legacyB := newLegacyBarrier(t)
+	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, home))
+	parent := newUnboundServiceWith(t, WithAuditLogger(al))
+	first, err := parent.ForTenant(ctx, home, legacyB)
+	require.NoError(t, err)
+	second, err := parent.ForTenant(ctx, home, legacyB)
+	require.NoError(t, err)
+	for _, svc := range []*CredentialService{first, second} {
+		conflicts, err := svc.ListMigrationConflicts(ctx)
+		require.NoError(t, err)
+		require.Len(t, conflicts, 1)
+	}
+
+	// The second resolution reads the metadata and finds nothing imported;
+	// before it writes, the first one imports the copy and the credential
+	// is rotated.
+	fired := false
+	home.onGet = func(key string) {
+		if fired || key != metaKey("db") {
+			return
+		}
+		fired = true
+		require.NoError(t, first.ResolveMigrationConflict(ctx, "db", MigrationImport))
+		_, err := first.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
+		require.NoError(t, err)
+	}
+	require.NoError(t, second.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	home.onGet = nil
+	require.True(t, fired)
+
+	assert.Equal(t, "newer", retrieveString(t, second, "db"), "a rotation since the import is not replaced")
+	meta, err := second.loadBarrierMeta(ctx, "db")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), meta.CurrentVersion, "the copy is imported as one version")
+	assert.Len(t, meta.Imported, 1)
+	assert.Empty(t, legacyKeys(t, legacyB))
+	conflicts, err := second.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+
+	var created, already int
+	al.mu.Lock()
+	defer al.mu.Unlock()
+	for _, ev := range al.events {
+		if ev.Attributes["resolution"] != string(MigrationImport) {
+			continue
+		}
+		if _, ok := ev.Attributes["new_version"]; ok {
+			created++
+		}
+		if ev.Attributes["already_imported"] == true {
+			already++
+		}
+	}
+	assert.Equal(t, 1, created, "exactly one resolution creates a version")
+	assert.Equal(t, 1, already, "the other reports the copy already imported")
+}
+
 // TestResolveMigrationConflict_Discard verifies discarding deletes the kept
 // copy, leaves the replicated record and audits every dropped record.
 func TestResolveMigrationConflict_Discard(t *testing.T) {
