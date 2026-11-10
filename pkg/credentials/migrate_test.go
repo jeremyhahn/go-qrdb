@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -57,6 +58,15 @@ func (f *faultyStore) PutIfAbsent(ctx context.Context, key string, value []byte)
 		return false, err
 	}
 	return f.Store.PutIfAbsent(ctx, key, value)
+}
+
+func (f *faultyStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for _, w := range writes {
+		if err := f.fail("putall", w.Key); err != nil {
+			return false, err
+		}
+	}
+	return f.Store.PutAllIfAllUnchanged(ctx, guards, writes)
 }
 
 func (f *faultyStore) Delete(ctx context.Context, key string) error {
@@ -282,7 +292,7 @@ func TestMigrateLegacy_CrashWritingRecords(t *testing.T) {
 	ctx := context.Background()
 	legacy, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
 	writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
-	shared := &faultyStore{Store: mem, op: "putifabsent", key: credentialPrefix + "db"}
+	shared := &faultyStore{Store: mem, op: "putall", key: credentialPrefix + "db"}
 
 	first := newMigratingService(t, legacy)
 	require.NoError(t, first.BindStore(ctx, shared), "a failed migration leaves the store bound")

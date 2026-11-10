@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -277,6 +278,13 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 	if err != nil {
 		return nil, err
 	}
+	if claim.Digest == ours.Digest && !claim.Complete {
+		// The claim that stands afterwards is another one when a live
+		// write reached the name before this copy was installed.
+		if claim, err = s.writeWinningCopy(ctx, name, c.record, claim); err != nil {
+			return nil, err
+		}
+	}
 	if claim.Digest != ours.Digest {
 		return &CredentialMigrationConflictError{
 			Name:     name,
@@ -284,11 +292,6 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 			Versions: claim.Versions != ours.Versions,
 			Policy:   claim.Policy != ours.Policy,
 		}, nil
-	}
-	if !claim.Complete {
-		if err := s.writeWinningCopy(ctx, name, c.record, claim); err != nil {
-			return nil, err
-		}
 	}
 	return nil, s.deleteLegacy(ctx, name, c)
 }
@@ -313,6 +316,9 @@ func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours m
 	if len(existing) > 0 {
 		want = existing.claim()
 		want.Complete = true
+	}
+	for _, value := range existing {
+		secure.Wipe(value)
 	}
 	raw, err := json.Marshal(want)
 	if err != nil {
@@ -352,39 +358,75 @@ func (s *CredentialService) loadClaim(ctx context.Context, key string) (migratio
 	return claim, true, nil
 }
 
-// writeWinningCopy writes the winning copy's records and marks the claim
-// complete. A record already present was written by this copy's earlier,
-// interrupted attempt or by a later live write, and is kept.
-func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, rec credentialRecord, claim migrationClaim) error {
-	suffixes := make([]string, 0, len(rec))
-	for k := range rec {
-		suffixes = append(suffixes, k)
-	}
-	// The current value goes last: until it is written no reader sees a
-	// credential, only its sidecars. It sorts first, being "".
-	sort.Strings(suffixes)
-	if len(suffixes) > 0 && suffixes[0] == "" {
-		suffixes = append(suffixes[1:], "")
-	}
-	for _, k := range suffixes {
-		if _, err := s.store.PutIfAbsent(ctx, replicatedKey(name, k), rec[k]); err != nil {
-			return &OperationError{Op: "write migrated record", Cause: err}
-		}
-	}
+// writeWinningCopy installs the winning copy and returns the claim that
+// stands afterwards. The copy's records and the completed claim are one
+// guarded write, applied only while the claim is still this copy's pending
+// one and the name has no replicated record: no value, no metadata and none
+// of the copy's own records. A rerun after a crash therefore writes again.
+// A value stored meanwhile by a live writer refuses the write and is kept:
+// the claim is re-pointed at the live record, whose digest differs, so the
+// caller reports the copy as a conflict.
+func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, rec credentialRecord, claim migrationClaim) (migrationClaim, error) {
+	key := MigrationClaimPrefix + name
 	pending, err := json.Marshal(claim)
 	if err != nil {
-		return &OperationError{Op: "encode migration claim", Cause: err}
+		return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
 	}
 	claim.Complete = true
 	done, err := json.Marshal(claim)
 	if err != nil {
-		return &OperationError{Op: "encode migration claim", Cause: err}
+		return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
 	}
-	// A failed swap means another node holding the same copy completed it.
-	if _, err := s.store.CompareAndSwap(ctx, MigrationClaimPrefix+name, pending, done); err != nil {
-		return &OperationError{Op: "complete migration claim", Cause: err}
+	absent := map[string]struct{}{credentialPrefix + name: {}, metaKey(name): {}}
+	writes := make([]kvstore.KV, 0, len(rec)+1)
+	for k, value := range rec {
+		absent[replicatedKey(name, k)] = struct{}{}
+		writes = append(writes, kvstore.KV{Key: replicatedKey(name, k), Value: value})
 	}
-	return nil
+	writes = append(writes, kvstore.KV{Key: key, Value: done})
+	// A guard with no value holds only while its key is absent.
+	guards := make([]kvstore.Guard, 0, len(absent)+1)
+	guards = append(guards, kvstore.Guard{Key: key, Value: pending})
+	for k := range absent {
+		guards = append(guards, kvstore.Guard{Key: k})
+	}
+	applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "write migrated record", Cause: err}
+	}
+	if applied {
+		return claim, nil
+	}
+	existing, err := s.loadReplicated(ctx, name)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if len(existing) > 0 {
+		live := existing.claim()
+		live.Complete = true
+		for _, value := range existing {
+			secure.Wipe(value)
+		}
+		raw, err := json.Marshal(live)
+		if err != nil {
+			return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
+		}
+		// A failed swap means another node settled the claim first.
+		if _, err := s.store.CompareAndSwap(ctx, key, pending, raw); err != nil {
+			return migrationClaim{}, &OperationError{Op: "write migration claim", Cause: err}
+		}
+	}
+	claim, ok, err := s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if !ok {
+		return migrationClaim{}, &OperationError{Op: "read migration claim", Cause: ErrStoreUnavailable}
+	}
+	if !claim.Complete {
+		return migrationClaim{}, &OperationError{Op: "write migrated record", Cause: ErrRotationMetaContended}
+	}
+	return claim, nil
 }
 
 // deleteLegacy deletes this node's old records for name. It writes the
