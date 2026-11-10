@@ -50,6 +50,39 @@ func TestChangePassword_SwapErrorIsReturnedAndWritesNothing(t *testing.T) {
 	}
 }
 
+func TestChangePassword_RefusedSwapIsAConflict(t *testing.T) {
+	fb := newFailingBackend()
+	cfg := BarrierConfig{RootKeyPath: "test/root"}
+	b, err := NewStorageBarrier(testLogger(), fb, cfg, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := b.Initialize(ctx, MustCredentials(context.Background(), []byte("old-pw"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	before, err := fb.inner.Get(ctx, cfg.RootKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// failingBackend's CompareAndSwap refuses every swap, which is what a
+	// write landing between the check and the swap looks like. The bound
+	// testSoftwareStrategy holds the passphrase the blob is under.
+	err = b.ChangePassword(ctx, MustCredentials(context.Background(), []byte(testMasterPassword)), MustCredentials(context.Background(), []byte("new-pw")))
+	if !errors.Is(err, ErrPassphraseChangeConflict) {
+		t.Fatalf("ChangePassword over a refused swap = %v; want ErrPassphraseChangeConflict", err)
+	}
+	after, err := fb.inner.Get(ctx, cfg.RootKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("a refused swap changed the persisted root-key blob")
+	}
+}
+
 // TestOpenedToLiveKey: the current credential is accepted only when the
 // blob opens to the very key the barrier holds; a blob that opens to any
 // other key, or does not open, is a credential mismatch.

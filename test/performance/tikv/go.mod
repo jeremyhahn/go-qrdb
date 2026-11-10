@@ -3,7 +3,7 @@ module github.com/jeremyhahn/go-qrdb/test/performance/tikv
 go 1.27.3
 
 require (
-	github.com/jeremyhahn/go-quicraft/test/performance v0.20.0
+	github.com/jeremyhahn/go-quicraft/test/performance v0.20.1
 	github.com/tikv/client-go/v2 v2.0.7
 )
 

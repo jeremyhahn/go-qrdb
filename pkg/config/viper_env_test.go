@@ -15,9 +15,11 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // writeMinimalConfig writes a minimal valid YAML config and returns its path.
@@ -127,6 +129,61 @@ func TestSealShareTTL_InvalidRejected(t *testing.T) {
 	_, err := Load(writeMinimalConfig(t, "seal:\n  enabled: true\n  strategy: passphrase\n  share_ttl: not-a-duration\n"))
 	if err == nil {
 		t.Fatal("expected validation error for invalid seal.share_ttl")
+	}
+}
+
+// TestSealDrainTimeout_DefaultAndOverride covers the seal.drain_timeout
+// plumbing: the 10s default when unset, a YAML override, and a
+// QRDB_SEAL_DRAIN_TIMEOUT env override.
+func TestSealDrainTimeout_DefaultAndOverride(t *testing.T) {
+	cfg, err := Load(writeMinimalConfig(t, "logging:\n  level: info\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if d, err := cfg.Seal.DrainTimeoutDuration(); err != nil || d != 10*time.Second {
+		t.Errorf("default drain_timeout = %s, %v; want 10s", d, err)
+	}
+
+	cfg, err = Load(writeMinimalConfig(t, "seal:\n  drain_timeout: 30s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if d, err := cfg.Seal.DrainTimeoutDuration(); err != nil || d != 30*time.Second {
+		t.Errorf("file drain_timeout = %s, %v; want 30s", d, err)
+	}
+
+	t.Setenv("QRDB_SEAL_DRAIN_TIMEOUT", "45s")
+	cfg, err = Load(writeMinimalConfig(t, "seal:\n  drain_timeout: 30s\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Seal.DrainTimeout != "45s" {
+		t.Errorf("env drain_timeout = %q, want 45s (env override)", cfg.Seal.DrainTimeout)
+	}
+}
+
+// TestSealDrainTimeout_InvalidRejected verifies validation refuses a
+// drain_timeout that does not parse or is not positive, naming the field.
+func TestSealDrainTimeout_InvalidRejected(t *testing.T) {
+	for _, v := range []string{"not-a-duration", "0s", "-1s"} {
+		_, err := Load(writeMinimalConfig(t, "seal:\n  enabled: true\n  drain_timeout: "+v+"\n"))
+		var verr *ValidationError
+		if !errors.As(err, &verr) || verr.Field != "seal.drain_timeout" {
+			t.Errorf("drain_timeout %q: Load = %v; want a ValidationError on seal.drain_timeout", v, err)
+		}
+	}
+}
+
+func TestSealConfig_DrainTimeoutDuration(t *testing.T) {
+	if d, err := (SealConfig{}).DrainTimeoutDuration(); err != nil || d != 10*time.Second {
+		t.Fatalf("unset = %s, %v; want the 10s default", d, err)
+	}
+	if d, err := (SealConfig{DrainTimeout: " 250ms "}).DrainTimeoutDuration(); err != nil || d != 250*time.Millisecond {
+		t.Fatalf("250ms = %s, %v", d, err)
+	}
+	var verr *ValidationError
+	if _, err := (SealConfig{DrainTimeout: "0"}).DrainTimeoutDuration(); !errors.As(err, &verr) {
+		t.Fatalf("zero = %v; want a ValidationError", err)
 	}
 }
 

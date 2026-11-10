@@ -286,6 +286,41 @@ func TestMetricsOnClosedStoreIsNil(t *testing.T) {
 	}
 }
 
+// TestClosedStoreIteratorIsRefused asserts an iterator requested from a
+// closed store never positions and reports the closure.
+func TestClosedStoreIteratorIsRefused(t *testing.T) {
+	s := newClosedTestStore(t)
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	it := s.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+	if it.SeekToFirst() {
+		t.Error("iterator on a closed store positioned itself")
+	}
+	if !errors.Is(it.Error(), storage.ErrStorageClosed) {
+		t.Errorf("iterator Error() = %v, want ErrStorageClosed", it.Error())
+	}
+}
+
+// TestCloseFailureIsOpErrorAndStillCloses asserts a PebbleDB close failure
+// (here the leaked-iterator report) is returned as OpError{Op: close} and
+// the store stays closed, so a second Close is a no-op.
+func TestCloseFailureIsOpErrorAndStillCloses(t *testing.T) {
+	s := newClosedTestStore(t)
+	_ = s.NewIterator(nil) // leaked on purpose: PebbleDB.Close reports it
+
+	err := s.Close()
+	var opErr *storage.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "close" {
+		t.Fatalf("Close with a leaked iterator = %v, want *storage.OpError{Op: close}", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil", err)
+	}
+}
+
 // TestIteratorResumedAfterCloseServesItsPinnedVersion settles what the gate
 // deliberately does NOT cover, because the answer is not obvious from reading
 // either codebase and the next reader will ask.

@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -114,4 +115,38 @@ func TestResolveNodeSealStrategies_InvalidShamir(t *testing.T) {
 	cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal = 5, 3
 	_, err := resolveNodeSealStrategies(context.Background(), cfg, nil, nil, seal.NewMemoryBackend(), "root-key")
 	require.Error(t, err)
+}
+
+// listsAGhost is a composer whose listing names a strategy its lookup does
+// not have.
+type listsAGhost struct{ *seal.DefaultStrategyRegistry }
+
+func (listsAGhost) ListAvailable() []seal.StrategyID { return []seal.StrategyID{"ghost"} }
+
+// namedStrategy is a sealing strategy reporting a fixed ID.
+type namedStrategy struct {
+	seal.SealingStrategy
+	id seal.StrategyID
+}
+
+func (s namedStrategy) ID() seal.StrategyID { return s.id }
+
+// TestResolveNodeSealStrategies_RegistryFaults: a composer that cannot
+// produce a strategy it lists, and an injected strategy with no name, each
+// fail resolution with the registry's typed error.
+func TestResolveNodeSealStrategies_RegistryFaults(t *testing.T) {
+	ctx := context.Background()
+	cfg := qrdbconfig.DefaultConfig()
+
+	var missing *seal.StrategyNotRegisteredError
+	_, err := resolveNodeSealStrategies(ctx, cfg, nil, listsAGhost{seal.NewStrategyRegistry()}, nil, "root-key")
+	if !errors.As(err, &missing) || missing.Name != "ghost" {
+		t.Fatalf("resolve with a ghost composer = %v; want StrategyNotRegisteredError for ghost", err)
+	}
+
+	var register *seal.StrategyRegisterError
+	_, err = resolveNodeSealStrategies(ctx, cfg, &nodeOptions{sealStrategy: namedStrategy{}}, nil, nil, "root-key")
+	if !errors.As(err, &register) {
+		t.Fatalf("resolve with an unnamed injected strategy = %v; want StrategyRegisterError", err)
+	}
 }

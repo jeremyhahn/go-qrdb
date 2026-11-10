@@ -186,15 +186,21 @@ func TestHandleAuditQuery_ForeignTenantIsRefused(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleAuditQuery_WithFromTo(t *testing.T) {
-	logger := newMockAuditLogger()
+	var capturedFilter audit.Filter
+	logger := &mockAuditLogger{
+		queryFn: func(_ context.Context, f audit.Filter) (*audit.Page, error) {
+			capturedFilter = f
+			return &audit.Page{Events: []audit.AuditEvent{}, Total: 0}, nil
+		},
+	}
 	handler := handleAuditQuery(logger, nil)
 
-	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 
 	req := buildCallToolRequest(t, "qrdb_audit_query", map[string]any{
-		"from": from,
-		"to":   to,
+		"from": from.Format(time.RFC3339),
+		"to":   to.Format(time.RFC3339),
 	})
 	result, err := handler(context.Background(), req)
 	if err != nil {
@@ -202,6 +208,9 @@ func TestHandleAuditQuery_WithFromTo(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("unexpected IsError: %v", result.Content)
+	}
+	if !capturedFilter.From.Equal(from) || !capturedFilter.To.Equal(to) {
+		t.Errorf("filter range = [%v, %v], want [%v, %v]", capturedFilter.From, capturedFilter.To, from, to)
 	}
 }
 

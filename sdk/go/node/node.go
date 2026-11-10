@@ -3541,6 +3541,14 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	if barrierCfg.RootKeyPath == "" {
 		barrierCfg.RootKeyPath = "root-key"
 	}
+	// seal.drain_timeout bounds how long a Seal waits for the node's writes
+	// in flight; the registry's tenant barriers inherit it.
+	drainTimeout, drainErr := cfg.Seal.DrainTimeoutDuration()
+	if drainErr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-barrier", Err: drainErr}
+	}
+	barrierCfg.SealDrainTimeout = drainTimeout
 
 	// Reconcile an encryption migration interrupted by a crash BEFORE the
 	// barrier is built or data stores are opened: roll a committed migration

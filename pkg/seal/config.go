@@ -8,6 +8,8 @@
 
 package seal
 
+import "time"
+
 // BarrierConfig configures a StorageBarrier instance.
 type BarrierConfig struct {
 	// PreferenceOrder is the explicit, ordered list of candidate sealing
@@ -53,6 +55,24 @@ type BarrierConfig struct {
 	// RotationThreshold is the percentage of InvocationLimit at which
 	// ShouldRotate() returns true. Default: 95.0.
 	RotationThreshold float64
+
+	// SealDrainTimeout bounds how long Seal waits for the encrypted stores'
+	// in-flight flushes, durable writes and compactions to drain before the
+	// key leaves memory. Zero means DefaultSealDrainTimeout; a negative value
+	// does not wait. Seal seals either way, and reports the stores that did
+	// not drain (see StorageBarrier.Seal).
+	SealDrainTimeout time.Duration
+}
+
+// DefaultSealDrainTimeout is the SealDrainTimeout a zero BarrierConfig uses.
+const DefaultSealDrainTimeout = 10 * time.Second
+
+// sealDrainTimeout resolves SealDrainTimeout's zero value to the default.
+func (c BarrierConfig) sealDrainTimeout() time.Duration {
+	if c.SealDrainTimeout == 0 {
+		return DefaultSealDrainTimeout
+	}
+	return c.SealDrainTimeout
 }
 
 // TenantBarrierConfig configures per-tenant barrier behavior.

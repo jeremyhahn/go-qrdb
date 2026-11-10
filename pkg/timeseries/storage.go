@@ -379,6 +379,9 @@ func (s *Storage) SetRetentionPolicy(batch storage.Batch, metric string, policy 
 	if s.closed.Load() {
 		return &ClosedError{}
 	}
+	if policy == nil {
+		return &NilRetentionPolicyError{}
+	}
 	key := []byte(KeyPrefixRetention + metric)
 	data, err := encodeRetentionPolicy(policy)
 	if err != nil {

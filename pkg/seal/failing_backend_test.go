@@ -8,7 +8,10 @@
 
 package seal
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // failingBackend wraps an in-memory StorageBackend and returns a configured
 // error from any operation on demand. It is a shared test fixture used across
@@ -24,6 +27,9 @@ type failingBackend struct {
 	// casErr is CompareAndSwap's error; nil makes it refuse every swap.
 	casErr error
 }
+
+// errStorageInject is the error tests inject into a failingBackend verb.
+var errStorageInject = errors.New("injected storage error")
 
 func newFailingBackend() *failingBackend {
 	return &failingBackend{inner: NewMemoryBackend()}

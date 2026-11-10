@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -34,6 +35,20 @@ func TestServeSealedWindow_NilNode(t *testing.T) {
 	err := ServeSealedWindow(context.Background(), nil)
 	var cfgErr *ConfigError
 	require.ErrorAs(t, err, &cfgErr)
+}
+
+// TestServeSealedWindow_SealedNodeWithNoPendingBoot: a sealed node that
+// holds no pending boot has nothing to serve the window for, and refuses
+// with a ConfigError naming the node.
+func TestServeSealedWindow_SealedNodeWithNoPendingBoot(t *testing.T) {
+	barrier, closeBarrier := newTestBarrier(t)
+	defer closeBarrier()
+	n := &Node{}
+	n.barrier.Store(barrier)
+	require.True(t, n.IsSealed(), "precondition: the node must report sealed")
+	var cfgErr *ConfigError
+	require.ErrorAs(t, ServeSealedWindow(context.Background(), n), &cfgErr)
+	assert.Equal(t, "node", cfgErr.Field)
 }
 
 // TestServeSealedWindow_UnsealedNodeIsNoop verifies that a node without a
@@ -145,4 +160,12 @@ func TestSealedWindowConfig(t *testing.T) {
 	defer func() { require.NoError(t, n2.Close()) }()
 	require.True(t, n2.IsSealed())
 	assert.Same(t, cfg, n2.sealedWindowConfig(), "sealed standalone node must expose its pending boot config")
+}
+
+func TestSealedWindowConfig_ClusteredBoot(t *testing.T) {
+	cfg := qrdbconfig.DefaultConfig()
+	n := &Node{pendingClustered: &pendingClusteredBoot{cfg: cfg}}
+	if got := n.sealedWindowConfig(); got != cfg {
+		t.Fatalf("sealedWindowConfig = %p; want the pending clustered boot's config %p", got, cfg)
+	}
 }

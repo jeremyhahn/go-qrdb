@@ -638,6 +638,11 @@ func TestTransactionNilEntity(t *testing.T) {
 	})
 }
 
+// TestIsNil pins that a non-pointer entity value is never treated as nil.
+func TestIsNil(t *testing.T) {
+	assert.False(t, isNil(TestEntity{ID: 1, Name: "test"}))
+}
+
 // TestTransactionSaveWithCondition validates conditional save operations.
 func TestTransactionSaveWithCondition(t *testing.T) {
 	store := newMemoryKVStore()
@@ -736,6 +741,119 @@ func TestTransactionSaveWithCondition(t *testing.T) {
 		retrieved, err := dao.Get(ctx, 303)
 		require.NoError(t, err)
 		assert.Equal(t, "New", retrieved.Name)
+	})
+}
+
+func TestTransactionConditionEvaluation(t *testing.T) {
+	store := newMemoryKVStore()
+	dao, err := NewTransactional[*TestEntity](
+		store,
+		"cond_eval",
+		func() *TestEntity { return &TestEntity{} },
+	)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	commit := func(t *testing.T, entity *TestEntity, cond Condition) error {
+		t.Helper()
+		tx, err := dao.BeginTx(ctx)
+		require.NoError(t, err)
+		require.NoError(t, tx.SaveWithCondition(entity, cond), "queuing the operation must not fail")
+		return tx.Commit(ctx)
+	}
+	requireRefused := func(t *testing.T, err error, reason string) {
+		t.Helper()
+		var failed ConditionFailedError
+		require.ErrorAs(t, err, &failed)
+		assert.Contains(t, failed.Reason, reason)
+	}
+	requireName := func(t *testing.T, id uint64, want string) {
+		t.Helper()
+		retrieved, err := dao.Get(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, want, retrieved.Name)
+	}
+
+	t.Run("CreateAndModOnNonTimestampedRefused", func(t *testing.T) {
+		require.NoError(t, dao.Save(ctx, &TestEntity{ID: 2001, Name: "Original"}))
+		for _, target := range []ConditionTarget{ConditionCreate, ConditionMod} {
+			err := commit(t, &TestEntity{ID: 2001, Name: "Updated"},
+				Condition{Target: target, Operator: OpEqual, Value: int64(0)})
+			requireRefused(t, err, "does not implement Timestamped")
+		}
+		requireName(t, 2001, "Original")
+	})
+
+	t.Run("VersionOnNonVersionedRefused", func(t *testing.T) {
+		require.NoError(t, dao.Save(ctx, &TestEntity{ID: 10001, Name: "Original"}))
+		// Every comparison value is refused, not just the ones that used to
+		// fail: OpEqual 1 is the value a substituted constant silently
+		// satisfied, so it is the case that distinguishes the refusal.
+		for _, want := range []int64{0, 1, 2} {
+			err := commit(t, &TestEntity{ID: 10001, Name: "Updated"},
+				Condition{Target: ConditionVersion, Operator: OpEqual, Value: want})
+			requireRefused(t, err, "does not implement Versioned")
+		}
+		requireName(t, 10001, "Original")
+	})
+
+	t.Run("CreateAndModOnNewEntityCompareAsZero", func(t *testing.T) {
+		for i, target := range []ConditionTarget{ConditionCreate, ConditionMod} {
+			passID, failID := uint64(9001+2*i), uint64(9002+2*i)
+			require.NoError(t, commit(t, &TestEntity{ID: passID, Name: "New"},
+				Condition{Target: target, Operator: OpEqual, Value: int64(0)}))
+			requireName(t, passID, "New")
+
+			err := commit(t, &TestEntity{ID: failID, Name: "New"},
+				Condition{Target: target, Operator: OpEqual, Value: int64(1)})
+			requireRefused(t, err, "")
+			_, err = dao.Get(ctx, failID)
+			assert.True(t, IsNotFound(err), "a refused guard must not write")
+		}
+	})
+
+	t.Run("ValueOnNewEntityComparesAgainstNil", func(t *testing.T) {
+		require.NoError(t, commit(t, &TestEntity{ID: 6001, Name: "New"},
+			Condition{Target: ConditionValue, Operator: OpEqual, Value: []byte(nil)}))
+		requireName(t, 6001, "New")
+
+		err := commit(t, &TestEntity{ID: 6002, Name: "New"},
+			Condition{Target: ConditionValue, Operator: OpNotEqual, Value: nil})
+		requireRefused(t, err, "value does not satisfy condition")
+	})
+
+	t.Run("ValueOperatorsCompareStoredBytes", func(t *testing.T) {
+		// The stored value is a JSON object, so its bytes sort above the
+		// empty string and below 0xff.
+		require.NoError(t, dao.Save(ctx, &TestEntity{ID: 8001, Name: "Original"}))
+		tests := []struct {
+			name  string
+			op    ConditionOp
+			value []byte
+			pass  bool
+		}{
+			{"NotEqualOther", OpNotEqual, []byte("something_completely_different"), true},
+			{"GreaterThanEmpty", OpGreater, []byte(""), true},
+			{"LessThanHigh", OpLess, []byte("\xff"), true},
+			{"GreaterEqualHigh", OpGreaterEqual, []byte("\xff"), false},
+			{"LessEqualEmpty", OpLessEqual, []byte(""), false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				err := commit(t, &TestEntity{ID: 8001, Name: tt.name},
+					Condition{Target: ConditionValue, Operator: tt.op, Value: tt.value})
+				if tt.pass {
+					require.NoError(t, err)
+					requireName(t, 8001, tt.name)
+					return
+				}
+				requireRefused(t, err, "value does not satisfy condition")
+				retrieved, getErr := dao.Get(ctx, 8001)
+				require.NoError(t, getErr)
+				assert.NotEqual(t, tt.name, retrieved.Name, "a refused guard must not write")
+			})
+		}
 	})
 }
 

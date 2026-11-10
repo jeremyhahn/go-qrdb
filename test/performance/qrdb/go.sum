@@ -6,8 +6,8 @@ github.com/jeremyhahn/go-qrdb v0.7.0-alpha h1:gj6yCYeCkt0V9iAMMly5KgtjTbIvrk/Ksa
 github.com/jeremyhahn/go-qrdb v0.7.0-alpha/go.mod h1:40Ls6CNv5MTekjn0nlHw09L7MVtNxM5n1T4ZgmtAGuM=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha h1:pjWXawUh5PS+17KPXVhU3S0PrSJgCI1DjysfvgqcG/M=
 github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha/go.mod h1:JOINVvuUEvqImRaMOQBC8VhY08LLZnwweIEGx5GUeBI=
-github.com/jeremyhahn/go-quicraft/test/performance v0.24.2-alpha h1:CKDSJIAWZOvPR4oAsRMGxUId5+huzfcdjz31n+RW/C8=
-github.com/jeremyhahn/go-quicraft/test/performance v0.24.2-alpha/go.mod h1:4vP4G92undzQGrXcvQSs65iBaolz4dYmWYhN0ogxJtk=
+github.com/jeremyhahn/go-quicraft/test/performance v0.24.3-alpha h1:XDyC9nUGMQULas9A98skHcimvJ23F1eywFp9w8lftDY=
+github.com/jeremyhahn/go-quicraft/test/performance v0.24.3-alpha/go.mod h1:4vP4G92undzQGrXcvQSs65iBaolz4dYmWYhN0ogxJtk=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0 h1:APacT+iIaNF6fd8AGEiN3bT/Jtkd2jz4v4TzM7MFjy0=
 github.com/quic-go/go-ossfuzz-seeds v0.1.0/go.mod h1:3IOHRbJIc+L6YKMwfDtJAM9Vj9k0YY4muhuyUYk5tbk=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=

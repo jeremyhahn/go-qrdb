@@ -17,6 +17,7 @@ package quic
 import (
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 )
 
@@ -27,3 +28,22 @@ func TestWithPINBackend_RawBackendIsThrottled(t *testing.T) {
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithPINBackend(pintest.NewSOPINBackend(t)))
 	pintest.RequireThrottled(t, srv.pinBackend)
 }
+
+// mockPINBackend is a pin.PINBackend whose every operation succeeds.
+type mockPINBackend struct{}
+
+var _ pin.PINBackend = (*mockPINBackend)(nil)
+
+func (m *mockPINBackend) Strategy() pin.StrategyID             { return pin.StrategySoftware }
+func (m *mockPINBackend) SetSOPIN(_, _ string) error           { return nil }
+func (m *mockPINBackend) SetUserPIN(_, _ string) error         { return nil }
+func (m *mockPINBackend) ChangeSOPIN(_, _ string) error        { return nil }
+func (m *mockPINBackend) ChangeUserPIN(_, _ string) error      { return nil }
+func (m *mockPINBackend) VerifySOPIN(_ string) error           { return nil }
+func (m *mockPINBackend) VerifyUserPIN(_ string) error         { return nil }
+func (m *mockPINBackend) SOPINSet() bool                       { return false }
+func (m *mockPINBackend) UserPINSet() bool                     { return false }
+func (m *mockPINBackend) ClearPINs() error                     { return nil }
+func (m *mockPINBackend) IsInitialized() bool                  { return true }
+func (m *mockPINBackend) GetLockoutStatus() *pin.LockoutStatus { return &pin.LockoutStatus{} }
+func (m *mockPINBackend) ResetLockout(_ string) error          { return nil }

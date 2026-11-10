@@ -745,8 +745,8 @@ map.
 | `pkg/audit/chain.go` | `Chain` — the audit instance over `vlog.Chain`: `Append` (event validation, `PrevHash`, the digest fold), `Query`, `Verify` |
 | `pkg/audit/chain_errors.go` | `EncodeEventError`, `MissingTimestampError`, `InvalidCursorError`, `TenantMismatchError` |
 | `pkg/protocol/audit.go` | `OpAuditAppend`, `AuditSubtypeAppend`/`AuditSubtypePrune`, `EncodeAuditAppend`, `EncodeAuditPrune`, `DecodeAuditCommand` |
-| `pkg/protocol/vlog.go` | `OpVerifiableLog`, `VerifiableLogSubtypeCreate`/`Append`/`Checkpoint`/`ExpireBodies`, their `EncodeVerifiableLog*` and `DecodeVerifiableLog*` codecs, `DecodeVerifiableLogCommand` |
-| `pkg/cluster/featuregate/featuregate.go` | `AuditAppend` and `VerifiableLog` features |
+| `pkg/protocol/vlog.go` | `OpVerifiableLog`, `VerifiableLogSubtypeCreate`/`Append`/`Checkpoint`/`ExpireBodies`/`AuditAppend`, their `EncodeVerifiableLog*` and `DecodeVerifiableLog*` codecs, `DecodeVerifiableLogCommand` |
+| `pkg/cluster/featuregate/featuregate.go` | `AuditAppend`, `VerifiableLog` and `VerifiableLogAudit` features |
 | `pkg/statemachine/vlog_apply.go` | `ApplyVerifiableLog` — the one `OpVerifiableLog` apply both families dispatch to, and its refusal-versus-halt rule (`isLogTableFault`) |
 | `pkg/engine/mvcc_engine.go` | `MVCCEngine.handleAuditAppend`, `handleVerifiableLog`, `WithMVCCLogs` (attaches the state machine's `vlog.Chain`; the audit `Chain` is `audit.ChainOn` over it), `resyncAuditChain`, the `audit.QueryRequest`/`audit.VerifyRequest` and `vlog.Request` `Lookup` cases |
 | `pkg/store/pebble.go` | `PebbleStateMachine.pebbleHandleAuditAppend`, `pebbleHandleVerifiableLog`, `pebbleAuditWriter`, `SetLogs`/`restoreAuditChain`, `resyncLogs` (rebuilds the registry from storage after a failed update), the same three `Lookup` cases |

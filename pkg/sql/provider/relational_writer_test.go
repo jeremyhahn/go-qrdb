@@ -18,6 +18,8 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
@@ -386,6 +388,86 @@ func TestRelationalWriter_Update_UniqueIndexCollision_Rejected(t *testing.T) {
 	assert.Equal(t, pk1, string(idxVal))
 }
 
+func TestRelationalWriter_Update_UniqueValueRemoved_DeletesIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
+	h := newDDLHarness()
+	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
+	ins := tbl.Inserter(ctx)
+	old := orderRow(1, "SKU-1", "east", int32(10))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
+
+	upd := tbl.Updater(ctx)
+	newRow := orderRow(1, nil, "east", int32(10))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
+
+	_, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-1"))
+	assert.Error(t, err, "clearing a unique indexed value must delete its physical entry")
+}
+
+func TestRelationalWriter_Update_UniqueValueAdded_CreatesIndexEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
+	h := newDDLHarness()
+	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
+	ins := tbl.Inserter(ctx)
+	old := orderRow(1, nil, "east", int32(10))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
+
+	upd := tbl.Updater(ctx)
+	newRow := orderRow(1, "SKU-9", "east", int32(10))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
+
+	idxVal, err := h.kvSvc.Get(context.Background(), skuIndexKey(t, def, "SKU-9"))
+	require.NoError(t, err)
+	pk, err := tbl.keyCodec.Encode(newRow)
+	require.NoError(t, err)
+	assert.Equal(t, pk, string(idxVal))
+}
+
+func TestRelationalWriter_Update_NonUniqueValueRemoved_DeletesEntry(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
+	h := newDDLHarness()
+	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
+	ins := tbl.Inserter(ctx)
+	old := orderRow(1, "SKU-1", "east", int32(10))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
+
+	upd := tbl.Updater(ctx)
+	newRow := orderRow(1, "SKU-1", nil, int32(10))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
+
+	entries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestRelationalWriter_Update_NeitherValueExists_NoIndexChange(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
+	h := newDDLHarness()
+	tbl, def := newWriterHarnessTable(t, h, ordersCreateRequest())
+	ins := tbl.Inserter(ctx)
+	old := orderRow(1, nil, nil, int32(10))
+	require.NoError(t, ins.Insert(ctx, old))
+	require.NoError(t, endStatement())
+
+	upd := tbl.Updater(ctx)
+	newRow := orderRow(1, nil, nil, int32(20))
+	require.NoError(t, upd.Update(ctx, old, newRow))
+	require.NoError(t, endStatement())
+
+	skuEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_sku")))
+	require.NoError(t, err)
+	assert.Empty(t, skuEntries)
+	whEntries, err := h.kvSvc.Scan(context.Background(), service.TableIndexPrefix(def.Database, def.TableID, 0, incarnationOf(def, "idx_warehouse")))
+	require.NoError(t, err)
+	assert.Empty(t, whEntries)
+}
+
 // ---------------------------------------------------------------------------
 // Delete
 // ---------------------------------------------------------------------------
@@ -464,6 +546,79 @@ func TestRelationalWriter_Truncate_AdvancesGenerationLeavingOldRowsUntouched(t *
 	assert.Empty(t, newRows, "the new generation must start empty")
 }
 
+func TestRelationalWriter_Truncate_TableServiceUnavailable(t *testing.T) {
+	def := ordersDefWithID(t)
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, err)
+
+	_, terr := tbl.Truncate(newTestContext())
+	var e *TableServiceUnavailableError
+	require.ErrorAs(t, terr, &e)
+}
+
+func TestRelationalWriter_Truncate_TableServiceError(t *testing.T) {
+	truncErr := errors.New("truncate failed")
+	def := ordersDefWithID(t)
+	fake := &fakeTableService{
+		truncateTableFn: func(context.Context, string, string, bool) (*service.TableDef, error) {
+			return nil, truncErr
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	_, terr := tbl.Truncate(newTestContext())
+	assert.ErrorIs(t, terr, truncErr)
+}
+
+// txContext returns a context whose session is a QRDBSession with autocommit
+// ignored, so StartTransaction opens an explicit transaction on it.
+func txContext() *sqle.Context {
+	sess := NewSession(sqle.NewBaseSession(), nil)
+	ctx := sqle.NewContext(context.Background(), sqle.WithSession(sess))
+	ctx.SetIgnoreAutoCommit(true)
+	return ctx
+}
+
+func TestRelationalTable_ActiveWriteSet_RequiresMVCCService(t *testing.T) {
+	def := ordersDefWithID(t)
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTransactionService(&memTxn{store: newMemStore()}))
+	require.NoError(t, err)
+
+	ctx := txContext()
+	_, err = ctx.Session.(*QRDBSession).StartTransaction(ctx, sqle.ReadWrite)
+	require.NoError(t, err)
+
+	_, werr := tbl.activeWriteSet(ctx)
+	var mvccErr *RelationalMVCCUnavailableError
+	require.ErrorAs(t, werr, &mvccErr)
+}
+
+func TestRelationalTable_ActiveWriteSet_RequiresTransactionService(t *testing.T) {
+	def := ordersDefWithID(t)
+	store := newMemStore()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, store)
+	require.NoError(t, err)
+
+	ctx := txContext()
+	_, err = ctx.Session.(*QRDBSession).StartTransaction(ctx, sqle.ReadWrite)
+	require.NoError(t, err)
+
+	_, werr := tbl.activeWriteSet(ctx)
+	var txnErr *TransactionServiceUnavailableError
+	require.ErrorAs(t, werr, &txnErr)
+}
+
+func TestRelationalTable_ActiveWriteSet_AutocommitReturnsNil(t *testing.T) {
+	def := ordersDefWithID(t)
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, err)
+
+	ws, werr := tbl.activeWriteSet(newTestContext())
+	require.NoError(t, werr)
+	assert.Nil(t, ws)
+}
+
 // ---------------------------------------------------------------------------
 // Availability guards
 // ---------------------------------------------------------------------------
@@ -490,6 +645,84 @@ func TestCheckKeySize(t *testing.T) {
 	big := make([]byte, maxRowKeySize+1)
 	var e *RowKeyTooLargeError
 	assert.ErrorAs(t, checkKeySize("t", string(big)), &e)
+}
+
+func TestRelationalWriter_Insert_IndexKeyTooLarge_Rejected(t *testing.T) {
+	def := &service.TableDef{
+		TableID:  1,
+		Name:     "big",
+		Database: "shop",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED"},
+			{Name: "val", Type: "TEXT", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+		Indexes: []service.TableIndex{
+			{Name: "idx_val", Columns: []service.IndexCol{{Name: "val"}}, Unique: true},
+		},
+		SchemaVersion: 1,
+	}
+	huge := strings.Repeat("x", maxRowKeySize+1)
+	row := sqle.Row{uint64(1), huge}
+
+	// buildInsertIndexWrites is exercised directly: the index value alone
+	// exceeds maxRowKeySize, so the write must be rejected before any
+	// transaction is proposed.
+	tbl, terr := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, terr)
+	_, _, werr := tbl.buildInsertIndexWrites(tbl.gen(), row, "pk")
+	var e *RowKeyTooLargeError
+	require.ErrorAs(t, werr, &e)
+}
+
+func TestRelationalTable_ResolveDuplicate_PropagatesNonNotFoundError(t *testing.T) {
+	getErr := errors.New("boom")
+	def := ordersDefWithID(t)
+	kv := &mockKVService{getFn: func(context.Context, string) ([]byte, error) {
+		return nil, getErr
+	}}
+	tbl, err := NewRelationalTable(def, kv, nil)
+	require.NoError(t, err)
+
+	_, _, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "k", isPK: true}})
+	assert.ErrorIs(t, rerr, getErr)
+}
+
+func TestRelationalTable_ResolveDuplicate_SecondGetNotFound_SkipsCandidate(t *testing.T) {
+	def := ordersDefWithID(t)
+	kv := &mockKVService{
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if key == "idxkey" {
+				return []byte("somepk"), nil
+			}
+			return nil, &service.KeyNotFoundError{Key: key}
+		},
+	}
+	tbl, err := NewRelationalTable(def, kv, nil)
+	require.NoError(t, err)
+
+	dupErr, transient, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
+	require.NoError(t, rerr)
+	assert.Nil(t, dupErr)
+	assert.True(t, transient, "a candidate whose row has since vanished must be treated as a transient race")
+}
+
+func TestRelationalTable_ResolveDuplicate_SecondGetOtherError_Propagates(t *testing.T) {
+	getErr := errors.New("boom")
+	def := ordersDefWithID(t)
+	kv := &mockKVService{
+		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if key == "idxkey" {
+				return []byte("somepk"), nil
+			}
+			return nil, getErr
+		},
+	}
+	tbl, err := NewRelationalTable(def, kv, nil)
+	require.NoError(t, err)
+
+	_, _, rerr := tbl.resolveDuplicate(newTestContext(), tbl.gen(), []uniqueCandidate{{key: "idxkey", indexName: "idx_sku"}})
+	assert.ErrorIs(t, rerr, getErr)
 }
 
 func TestCheckValueSize(t *testing.T) {

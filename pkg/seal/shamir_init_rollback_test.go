@@ -17,8 +17,31 @@ package seal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
+
+func TestInitializeShamir_ExistsError(t *testing.T) {
+	existsErr := errors.New("exists failed")
+	shamirStrat, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewStorageBarrier(testLogger(), &errorBackend{existsErr: existsErr}, BarrierConfig{
+		RootKeyPath: "test/root-key",
+		Shamir:      &ShamirConfig{Threshold: 2, TotalShares: 3},
+	}, shamirStrat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.SetCeremonyDistributor(newCaptureDistributor("h1", "h2", "h3"))
+
+	// The cause reaches the caller as text: InitializeShamir reports it under
+	// ErrCorruptRootKey without wrapping it.
+	if _, err := b.InitializeShamir(context.Background(), ""); err == nil || !strings.Contains(err.Error(), existsErr.Error()) {
+		t.Fatalf("InitializeShamir: got %v, want an error carrying the backend's Exists error", err)
+	}
+}
 
 // newUninitializedShamirBarrier returns a Shamir-configured barrier over a
 // fresh memory backend with a capture distributor holding total holders.

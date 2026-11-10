@@ -128,3 +128,106 @@ func TestRotateAuthFactor_refusesAnAddCondition(t *testing.T) {
 		})
 	}
 }
+
+func TestUserAuthRecordToDomain(t *testing.T) {
+	rec := &transport.AuthFactorAddRequest{
+		UserID:     99,
+		Type:       "fido2",
+		Label:      "hw-key",
+		Credential: []byte("cred"),
+		CreatedBy:  "admin",
+		Metadata:   map[string]string{"aaguid": "abc"},
+	}
+	got := userAuthRecordToDomain(rec, 10)
+	if got.UserID != 10 || got.Type != auth.AuthFactorFIDO2 || got.Label != "hw-key" ||
+		string(got.Credential) != "cred" || got.CreatedBy != "admin" {
+		t.Fatalf("fields not projected: %+v", got)
+	}
+	if got.Metadata["aaguid"] != "abc" {
+		t.Fatalf("metadata not copied: %v", got.Metadata)
+	}
+	rec.Metadata["aaguid"] = "mutated"
+	rec.Credential[0] = 'X'
+	if got.Metadata["aaguid"] != "abc" || string(got.Credential) != "cred" {
+		t.Errorf("projection aliases the wire record: %+v", got)
+	}
+
+	if bare := userAuthRecordToDomain(&transport.AuthFactorAddRequest{Type: "mtls"}, 5); bare.Metadata != nil {
+		t.Errorf("expected nil metadata, got %v", bare.Metadata)
+	}
+}
+
+func TestDomainToUserAuthRecord(t *testing.T) {
+	if got := domainToUserAuthRecord(nil); got.ID != "" || got.UserID != 0 || got.Metadata != nil {
+		t.Errorf("expected zero record for nil input, got %+v", got)
+	}
+
+	f := &auth.AuthFactor{
+		ID:       "fid-1",
+		UserID:   5,
+		Type:     auth.AuthFactorMTLS,
+		Label:    "cert",
+		Metadata: map[string]string{"slot": "9c"},
+	}
+	got := domainToUserAuthRecord(f)
+	if got.ID != "fid-1" || got.UserID != 5 || got.Type != string(auth.AuthFactorMTLS) || got.Label != "cert" {
+		t.Fatalf("fields not projected: %+v", got)
+	}
+	f.Metadata["slot"] = "mutated"
+	if got.Metadata["slot"] != "9c" {
+		t.Errorf("metadata not copied: %v", got.Metadata)
+	}
+}
+
+func TestUserAuthFactor_MissingService(t *testing.T) {
+	tr := newExtTransport(t)
+	ctx := context.Background()
+	calls := map[string]func() error{
+		"AddAuthFactor": func() error {
+			_, e := tr.AddAuthFactor(ctx, &transport.AuthFactorAddRequest{})
+			return e
+		},
+		"ListAuthFactors": func() error {
+			_, e := tr.ListAuthFactors(ctx, &transport.AuthFactorListRequest{})
+			return e
+		},
+		"GetAuthFactor": func() error {
+			_, e := tr.GetAuthFactor(ctx, &transport.AuthFactorGetRequest{FactorID: "f"})
+			return e
+		},
+		"RemoveAuthFactor": func() error {
+			_, e := tr.RemoveAuthFactor(ctx, &transport.AuthFactorRemoveRequest{FactorID: "f"})
+			return e
+		},
+		"DeleteAuthFactor": func() error {
+			_, e := tr.DeleteAuthFactor(ctx, &transport.AuthFactorDeleteRequest{FactorID: "f"})
+			return e
+		},
+		"RotateAuthFactor": func() error {
+			_, e := tr.RotateAuthFactor(ctx, &transport.AuthFactorRotateRequest{OldFactorID: "f"})
+			return e
+		},
+		"RelabelAuthFactor": func() error {
+			_, e := tr.RelabelAuthFactor(ctx, &transport.AuthFactorRelabelRequest{FactorID: "f"})
+			return e
+		},
+	}
+	for name, call := range calls {
+		if err := call(); !errors.As(err, new(*MissingUserAuthFactorServiceError)) {
+			t.Errorf("%s: err = %T (%v), want *MissingUserAuthFactorServiceError", name, err, err)
+		}
+	}
+
+	// LoginAuthFactor is served by the login resolver, not the factor service.
+	_, err := tr.LoginAuthFactor(ctx, &transport.AuthFactorLoginRequest{})
+	if !errors.As(err, new(*transport.NotImplementedError)) {
+		t.Errorf("LoginAuthFactor: err = %T (%v), want *transport.NotImplementedError", err, err)
+	}
+}
+
+func TestUserAuthFactorClient_IsTheTransport(t *testing.T) {
+	tr := newExtTransport(t)
+	if client, ok := tr.UserAuthFactorClient().(*Transport); !ok || client != tr {
+		t.Errorf("UserAuthFactorClient() = %T, want the transport itself", tr.UserAuthFactorClient())
+	}
+}

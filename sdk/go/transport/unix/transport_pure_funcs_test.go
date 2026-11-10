@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
@@ -99,6 +100,47 @@ func TestProtoWriteMode_Batched(t *testing.T) {
 	got := protoWriteMode(transport.WithWriteMode(transport.WriteModeBatched))
 	if got != pb.WriteMode_WRITE_MODE_BATCHED {
 		t.Errorf("expected BATCHED, got %v", got)
+	}
+}
+
+// TestApplyWriteMetadata proves a write option reaches the outgoing gRPC
+// metadata, and that no header is sent when the mode is unset.
+func TestApplyWriteMetadata(t *testing.T) {
+	md, _ := metadata.FromOutgoingContext(applyWriteMetadata(context.Background()))
+	if got := md.Get("x-qrdb-write-mode"); len(got) != 0 {
+		t.Errorf("unset mode sent x-qrdb-write-mode=%v", got)
+	}
+	ctx := applyWriteMetadata(context.Background(), transport.WithWriteMode(transport.WriteModeSync))
+	md, _ = metadata.FromOutgoingContext(ctx)
+	if got := md.Get("x-qrdb-write-mode"); len(got) != 1 || got[0] != transport.WriteModeSync.String() {
+		t.Errorf("x-qrdb-write-mode = %v, want [%s]", got, transport.WriteModeSync)
+	}
+}
+
+// TestApplyReadMetadata proves each read option reaches its outgoing gRPC
+// metadata header, and that none is sent without options.
+func TestApplyReadMetadata(t *testing.T) {
+	keys := []string{"x-qrdb-consistency", "x-qrdb-read-timeout", "x-qrdb-allow-stale"}
+	md, _ := metadata.FromOutgoingContext(applyReadMetadata(context.Background()))
+	for _, k := range keys {
+		if got := md.Get(k); len(got) != 0 {
+			t.Errorf("no options sent %s=%v", k, got)
+		}
+	}
+	ctx := applyReadMetadata(context.Background(),
+		transport.WithConsistency(transport.ConsistencyLinearizable),
+		transport.WithReadTimeout(5000),
+		transport.WithAllowStale())
+	md, _ = metadata.FromOutgoingContext(ctx)
+	want := map[string]string{
+		"x-qrdb-consistency":  transport.ConsistencyLinearizable.String(),
+		"x-qrdb-read-timeout": "5000",
+		"x-qrdb-allow-stale":  "true",
+	}
+	for k, v := range want {
+		if got := md.Get(k); len(got) != 1 || got[0] != v {
+			t.Errorf("%s = %v, want [%s]", k, got, v)
+		}
 	}
 }
 

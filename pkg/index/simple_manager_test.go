@@ -249,6 +249,15 @@ func TestSimpleIndexManager_QueryIndex_Success(t *testing.T) {
 	assert.Contains(t, keys, []byte("11"))
 }
 
+func TestSimpleIndexManager_QueryIndex_ConvertError(t *testing.T) {
+	mgr := NewSimpleIndexManager()
+	require.NoError(t, mgr.RegisterEntityType("TestEntity", reflect.TypeOf(TestEntity{})))
+
+	// A channel cannot be JSON-marshaled into an index value.
+	_, err := mgr.QueryIndex("Name", make(chan int))
+	assert.Error(t, err)
+}
+
 func TestSimpleIndexManager_ScanIndex(t *testing.T) {
 	mgr := NewSimpleIndexManager()
 
@@ -279,6 +288,17 @@ func TestSimpleIndexManager_ScanIndex_NilBounds(t *testing.T) {
 	results, err := mgr.ScanIndex("field", nil, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, results)
+}
+
+func TestSimpleIndexManager_ScanIndex_ConvertError(t *testing.T) {
+	mgr := NewSimpleIndexManager()
+	require.NoError(t, mgr.RegisterEntityType("TestEntity", reflect.TypeOf(TestEntity{})))
+
+	// A channel cannot be JSON-marshaled into either scan bound.
+	_, err := mgr.ScanIndex("Name", make(chan int), nil)
+	assert.Error(t, err, "start bound")
+	_, err = mgr.ScanIndex("Name", nil, make(chan int))
+	assert.Error(t, err, "end bound")
 }
 
 func TestSimpleIndexManager_ListIndexes(t *testing.T) {

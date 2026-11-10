@@ -29,7 +29,7 @@ func registryWithBothTenantKinds(t *testing.T) *BarrierRegistry {
 	if err := reg.SystemBarrier().Initialize(ctx, Credentials{}); err != nil {
 		t.Fatalf("system Initialize: %v", err)
 	}
-	if _, err := reg.RegisterTenant(ctx, "auto", NewMemoryBackend(), tenantBarrierConfig("auto"), reg.systemBarrierStrategy()); err != nil {
+	if _, err := reg.RegisterTenant(ctx, "auto", NewMemoryBackend(), reg.tenantBarrierConfig("auto"), reg.systemBarrierStrategy()); err != nil {
 		t.Fatalf("register auto: %v", err)
 	}
 	if err := reg.InitializeTenant(ctx, "auto", Credentials{}); err != nil {

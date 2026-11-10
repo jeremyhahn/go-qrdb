@@ -279,10 +279,44 @@ func TestAddCertBinding_RejectsCrossUserConflict(t *testing.T) {
 	if !errors.As(err, &cce) {
 		t.Fatalf("expected *CertBindingConflictError, got %T: %v", err, err)
 	}
+	if cce.BoundUserID != victim.ID {
+		t.Errorf("BoundUserID: got %d, want %d", cce.BoundUserID, victim.ID)
+	}
 	// The thumbprint must still resolve the original (victim) user.
 	got, err := s.UserByCertThumbprint(ctx, tp)
 	if err != nil || got.ID != victim.ID {
 		t.Fatalf("thumbprint must still resolve victim: got %v (err %v)", got, err)
+	}
+}
+
+func TestAddCertBinding_EmptyThumbprint(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+	u := createTestUser(t, svc, "alice", "acme")
+	_, err := svc.AddCertBinding(ctx, u.ID, "", 0)
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError for empty thumbprint, got %T: %v", err, err)
+	}
+}
+
+// TestAddCertBinding_WithExpiry pins that a positive notAfterUnix is stored
+// as the binding's NotAfter, to the second.
+func TestAddCertBinding_WithExpiry(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+	u := createTestUser(t, svc, "alice", "acme")
+	thumb := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	const notAfter = int64(9999999999)
+	updated, err := svc.AddCertBinding(ctx, u.ID, thumb, notAfter)
+	if err != nil {
+		t.Fatalf("AddCertBinding with expiry: %v", err)
+	}
+	if len(updated.CertBindings) != 1 {
+		t.Fatalf("CertBindings: got %d, want 1", len(updated.CertBindings))
+	}
+	if got := updated.CertBindings[0].NotAfter.Unix(); got != notAfter {
+		t.Errorf("NotAfter: got %d, want %d", got, notAfter)
 	}
 }
 
@@ -312,5 +346,27 @@ func TestUserByCertThumbprint_EnforcesExpiry(t *testing.T) {
 		if !errors.As(err, &nf) {
 			t.Fatalf("expected UserNotFoundError for expired binding, got %T: %v", err, err)
 		}
+	}
+}
+
+func TestUserByCertThumbprint_EmptyThumbprint(t *testing.T) {
+	svc := newTestStore(t)
+	_, err := svc.UserByCertThumbprint(context.Background(), "")
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("expected *ValidationError, got %T: %v", err, err)
+	}
+}
+
+func TestUserByCertThumbprint_IndexGetError(t *testing.T) {
+	eStore := &errKVStore{getErr: errors.New("disk fault")}
+	svc, err := NewStore(eStore, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	_, err = svc.UserByCertThumbprint(context.Background(), "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	var se *StoreError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *StoreError, got %T: %v", err, err)
 	}
 }

@@ -17,11 +17,14 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
 )
 
 // TestEnsureTimeout validates the ensureTimeout helper function.
@@ -168,14 +171,10 @@ func TestPrefixKey(t *testing.T) {
 
 // TestIsNotFoundError validates the isNotFoundError helper function.
 func TestIsNotFoundError(t *testing.T) {
-	t.Run("NilError", func(t *testing.T) {
-		assert.False(t, isNotFoundError(nil))
-	})
-
-	// Note: We can't easily test the QRDBError case without creating
-	// a real QRDBError, which would require importing from pkg/errors
-	// and potentially creating circular dependencies. The function is
-	// tested indirectly through Get operations that return not found errors.
+	assert.False(t, isNotFoundError(nil))
+	assert.True(t, isNotFoundError(&dberrors.QRDBError{Code: dberrors.ErrNotFound, Op: "test"}))
+	assert.False(t, isNotFoundError(&dberrors.QRDBError{Code: dberrors.ErrInternal, Op: "test"}))
+	assert.False(t, isNotFoundError(errors.New("some error")))
 }
 
 // TestCodecSerialization validates codec serialization edge cases.

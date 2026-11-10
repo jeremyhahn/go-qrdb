@@ -55,3 +55,18 @@ func TestToCollectionInfo_CarriesIndexesAndState(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
+
+func TestToCollectionInfo_CarriesFieldHashSchemaAndCount(t *testing.T) {
+	got := ToCollectionInfo(&pb.CollectionInfoResponse{
+		Name: "users", Database: "main", IdStrategy: "auto", FieldHash: "_id",
+		Schema:        map[string]string{"field": "string"},
+		DocumentCount: 42,
+		CreatedAt:     "2026-01-01T00:00:00Z",
+	})
+	if got.FieldHash != "_id" || got.DocumentCount != 42 || got.CreatedAt != "2026-01-01T00:00:00Z" {
+		t.Fatalf("got %+v", got)
+	}
+	if !reflect.DeepEqual(got.Schema, map[string]string{"field": "string"}) {
+		t.Fatalf("Schema = %v", got.Schema)
+	}
+}

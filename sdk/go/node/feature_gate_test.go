@@ -16,6 +16,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/embedded"
@@ -138,4 +140,13 @@ func TestNode_StartFeatureGateWithoutAGate(t *testing.T) {
 	n := &Node{}
 	n.startFeatureGate(&leader{}, &activationKV{})
 	require.NoError(t, n.stopFeatureGate())
+}
+
+// The feature client needs a started node: over an empty one it refuses
+// with the typed client-creation error rather than connecting.
+func TestNewConnectedEmbeddedClient_RefusesAnEmptyNode(t *testing.T) {
+	var create *ClientCreateError
+	if c, err := newConnectedEmbeddedClient(context.Background(), &lifecycle.Node{}, nil); c != nil || !errors.As(err, &create) {
+		t.Fatalf("client over an empty node = %v, %v; want *ClientCreateError", c, err)
+	}
 }

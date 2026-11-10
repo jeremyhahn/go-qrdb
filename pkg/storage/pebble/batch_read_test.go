@@ -302,3 +302,33 @@ func TestBatch_IteratorAfterClose(t *testing.T) {
 		t.Error("iterator on a closed batch reported no error")
 	}
 }
+
+// TestBatch_IteratorAfterStoreClose verifies an open batch whose store has
+// closed hands out an iterator that never positions and reports a
+// BatchError wrapping ClosedError.
+func TestBatch_IteratorAfterStoreClose(t *testing.T) {
+	s := openTestStorage(t)
+	b := s.Batch()
+	defer func() { _ = b.Close() }()
+	if err := b.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("batch Set: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	it := b.NewIterator(nil)
+	defer func() { _ = it.Close() }()
+	if it.SeekToFirst() {
+		t.Error("batch iterator after store close positioned")
+	}
+	err := it.Error()
+	var batchErr *storage.BatchError
+	if !errors.As(err, &batchErr) || batchErr.Op != "iterate" {
+		t.Fatalf("Error() = %v, want *storage.BatchError{Op: iterate}", err)
+	}
+	var closed *storage.ClosedError
+	if !errors.As(err, &closed) {
+		t.Errorf("Error() = %v, want a wrapped ClosedError", err)
+	}
+}

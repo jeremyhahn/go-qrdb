@@ -2246,6 +2246,142 @@ func TestHandleVectorHybridSearch_UnmarshalError(t *testing.T) {
 	}
 }
 
+// requireMetadataMarshalError fails t unless err is the typed error a vector
+// handler returns when a result's metadata cannot be encoded as JSON.
+func requireMetadataMarshalError(t *testing.T, err error) {
+	t.Helper()
+	var me *MetadataMarshalError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MetadataMarshalError for unmarshalable metadata, got %T: %v", err, err)
+	}
+}
+
+func TestHandleVectorGet_MetadataError(t *testing.T) {
+	mock := &mockVectorService{
+		getVectorFn: func(_ context.Context, _ *service.GetVectorRequest) (*service.GetVectorResponse, error) {
+			return &service.GetVectorResponse{
+				ID:       1,
+				Vector:   []float32{0.1, 0.2},
+				Metadata: map[string]interface{}{"ch": make(chan int)},
+			}, nil
+		},
+	}
+	srv := newVectorServer(mock)
+	payload, err := proto.Marshal(&pb.VectorGetRequest{Namespace: "ns", Id: "1"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	_, err = srv.handleVectorGet(context.Background(), payload)
+	requireMetadataMarshalError(t, err)
+}
+
+func TestHandleVectorSearchSimilar_MetadataError(t *testing.T) {
+	mock := &mockVectorService{
+		searchSimilarFn: func(_ context.Context, _ *service.SearchSimilarRequest) (*service.SearchSimilarResponse, error) {
+			return &service.SearchSimilarResponse{
+				Results: []*service.VectorSearchResult{
+					{ID: 1, Score: 0.95, Vector: []float32{0.1}, Metadata: map[string]interface{}{"bad": make(chan int)}},
+				},
+			}, nil
+		},
+	}
+	srv := newVectorServer(mock)
+	payload, err := proto.Marshal(&pb.VectorSearchSimilarRequest{Namespace: "ns", Vector: []float32{0.1, 0.2}, K: 5})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	_, err = srv.handleVectorSearchSimilar(context.Background(), payload)
+	requireMetadataMarshalError(t, err)
+}
+
+func TestHandleVectorHybridSearch_MetadataError(t *testing.T) {
+	mock := &mockVectorService{
+		hybridSearchFn: func(_ context.Context, _ *service.HybridSearchRequest) (*service.HybridSearchResponse, error) {
+			return &service.HybridSearchResponse{
+				Results: []*service.VectorSearchResult{
+					{ID: 2, Score: 0.88, Vector: []float32{0.5}, Metadata: map[string]interface{}{"fn": func() {}}},
+				},
+			}, nil
+		},
+	}
+	srv := newVectorServer(mock)
+	payload, err := proto.Marshal(&pb.VectorHybridSearchRequest{Namespace: "ns", Vector: []float32{0.5}, K: 3})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	_, err = srv.handleVectorHybridSearch(context.Background(), payload)
+	requireMetadataMarshalError(t, err)
+}
+
+func TestHandleVectorSearchByMetadata_MetadataError(t *testing.T) {
+	mock := &mockVectorService{
+		searchByMetadataFn: func(_ context.Context, _ *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+			return &service.SearchByMetadataResponse{
+				Results: []*service.VectorData{
+					{ID: 3, Vector: []float32{0.3}, Metadata: map[string]interface{}{"fn": func() {}}},
+				},
+				TotalCount: 1,
+			}, nil
+		},
+	}
+	srv := newVectorServer(mock)
+	payload, err := proto.Marshal(&pb.VectorSearchByMetadataRequest{Namespace: "ns", Limit: 10})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	_, err = srv.handleVectorSearchByMetadata(context.Background(), payload)
+	requireMetadataMarshalError(t, err)
+}
+
+func TestHandleVectorHybridSearch_InvalidMetadataFilter(t *testing.T) {
+	mock := &mockVectorService{
+		hybridSearchFn: func(_ context.Context, _ *service.HybridSearchRequest) (*service.HybridSearchResponse, error) {
+			t.Fatal("service called with an undecodable metadata filter")
+			return nil, nil
+		},
+	}
+	srv := newVectorServer(mock)
+	payload, err := proto.Marshal(&pb.VectorHybridSearchRequest{
+		Namespace:           "ns",
+		Vector:              []float32{0.1},
+		MetadataFiltersJson: "{bad json",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	_, err = srv.handleVectorHybridSearch(context.Background(), payload)
+	var me *MetadataUnmarshalError
+	if !errors.As(err, &me) {
+		t.Fatalf("expected *MetadataUnmarshalError for invalid metadata filter JSON, got %T: %v", err, err)
+	}
+}
+
+// TestVectorHandlers_NilService proves every vector handler without a vector
+// service refuses with ServiceNotConfiguredError before decoding its payload.
+func TestVectorHandlers_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"List":                  srv.handleVectorList,
+		"GetNamespaceInfo":      srv.handleVectorGetNamespaceInfo,
+		"BatchUpsert":           srv.handleVectorBatchUpsert,
+		"SearchByID":            srv.handleVectorSearchByID,
+		"RebuildIndex":          srv.handleVectorRebuildIndex,
+		"GetRebuildProgress":    srv.handleVectorGetRebuildProgress,
+		"GetIndexStats":         srv.handleVectorGetIndexStats,
+		"CompactNamespace":      srv.handleVectorCompactNamespace,
+		"GetCompactionProgress": srv.handleVectorGetCompactionProgress,
+	}
+	for name, h := range handlers {
+		t.Run(name, func(t *testing.T) {
+			_, err := h(context.Background(), nil)
+			var snc *ServiceNotConfiguredError
+			if !errors.As(err, &snc) {
+				t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestHandleVectorSearchByID_UnmarshalError(t *testing.T) {
 	srv := newVectorServer(&mockVectorService{
 		searchByIDFn: func(_ context.Context, _ *service.SearchByIDRequest) (*service.SearchByIDResponse, error) {

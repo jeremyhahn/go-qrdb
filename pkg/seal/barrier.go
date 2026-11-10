@@ -24,6 +24,7 @@ import (
 	quicraftseal "github.com/jeremyhahn/go-quicraft/pkg/seal"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
@@ -178,6 +179,11 @@ type StorageBarrier struct {
 
 	// state: 0 = sealed, 1 = unsealed
 	state atomic.Int32
+
+	// quiesce admits the encrypted stores' flushes, durable writes and
+	// compactions while unsealed; Seal closes and drains it before the
+	// EpochBarrier zeroes the key, and an unseal reopens it.
+	quiesce quiesce.Gate
 
 	// activeStrategy is the strategy ID that sealed the root key.
 	activeStrategy atomic.Value
@@ -515,7 +521,7 @@ func (b *StorageBarrier) initializeWithStrategy(ctx context.Context, strategy Se
 
 	// Transition to unsealed.
 	b.activeStrategy.Store(strategy.ID())
-	b.state.Store(stateUnsealed)
+	b.markUnsealed()
 	b.notifyUnsealed(ctx)
 	initAt := time.Now().UTC()
 	b.initializedAt.Store(initAt)
@@ -629,7 +635,7 @@ func (b *StorageBarrier) unseal(ctx context.Context, chosen SealingStrategy, cre
 		b.setStrategy(sealed.Strategy, chosen)
 	}
 	b.activeStrategy.Store(sealed.Strategy)
-	b.state.Store(stateUnsealed)
+	b.markUnsealed()
 	b.notifyUnsealed(ctx)
 	// Recover the initialization timestamp. The original timestamp is
 	// persisted in the barrier metadata (not in the sealed root key blob),
@@ -820,6 +826,13 @@ func (b *StorageBarrier) Encryptor() (SymmetricEncrypter, error) {
 // Seal transitions the barrier to sealed state and seals the EpochBarrier.
 // All subsequent storage operations will return ErrSealed until Unseal
 // is called again. Seal is idempotent.
+//
+// Before the key leaves memory, Seal quiesces the encrypted stores over the
+// barrier (see Quiesce): it refuses their new flushes, durable writes and
+// compactions, then waits up to BarrierConfig.SealDrainTimeout for the
+// admitted ones to finish. When the wait runs out it seals anyway and
+// returns a *quiesce.DrainTimeoutError naming the stores still in flight. A
+// non-nil error never means the barrier is unsealed: IsSealed is true.
 func (b *StorageBarrier) Seal() error {
 	if b.state.Load() == stateSealed {
 		return nil // already sealed, idempotent
@@ -828,8 +841,14 @@ func (b *StorageBarrier) Seal() error {
 	// Run the sealing observers (e.g. a VolumeLifecycle locking this node's
 	// pool volumes) while the root key is still live, and BEFORE the
 	// EpochBarrier zeroes it below. A failing observer is reported to the
-	// caller but never blocks the wipe: see notifySealing.
+	// caller but never blocks the wipe: see notifySealing. They run before
+	// the quiesce gate closes, so a store they close still flushes.
 	sealingErr := b.notifySealing(context.Background())
+
+	// Quiesce the encrypted stores: refuse new flushes, durable writes and
+	// compactions at once, then wait, bounded, for the admitted ones to
+	// finish, so none is in flight when the key leaves memory.
+	drainErr := b.quiesceStores()
 
 	// Seal the EpochBarrier (zeroes root key and DEKs).
 	_ = b.barrier.Seal()
@@ -843,7 +862,43 @@ func (b *StorageBarrier) Seal() error {
 		"allow", nil)
 
 	b.logger.Info("barrier sealed")
-	return sealingErr
+	if drainErr == nil {
+		return sealingErr
+	}
+	return errors.Join(sealingErr, drainErr)
+}
+
+// quiesceStores closes the quiesce gate and drains it within the configured
+// SealDrainTimeout. A drain that runs out does not stop the seal: the
+// operator's seal is never vetoed by a store that will not finish. It is
+// logged, audited and returned as a *quiesce.DrainTimeoutError naming the
+// stores still in flight, so the crash window is reported, not passed over.
+func (b *StorageBarrier) quiesceStores() error {
+	b.quiesce.Close()
+	err := b.quiesce.Drain(b.config.sealDrainTimeout())
+	var timeout *quiesce.DrainTimeoutError
+	if errors.As(err, &timeout) {
+		emitAudit(b.config.AuditLogger, "seal", "barrier", b.config.RootKeyPath,
+			"deny", map[string]string{"phase": "drain", "stores": strings.Join(timeout.Stores, ",")})
+		b.logger.Error("barrier sealing with stores still in flight",
+			slog.Any("stores", timeout.Stores),
+			slog.Duration("timeout", timeout.Timeout))
+	}
+	return err
+}
+
+// markUnsealed turns the barrier unsealed and reopens the quiesce gate, in
+// that order, so no store is admitted before the key is live.
+func (b *StorageBarrier) markUnsealed() {
+	b.state.Store(stateUnsealed)
+	b.quiesce.Reopen()
+}
+
+// Quiesce returns the gate through which the encrypted stores over this
+// barrier hold their in-flight work, so Seal can drain it (see
+// encfs.FS.Quiesce and the pebble storage's SealWatch).
+func (b *StorageBarrier) Quiesce() *quiesce.Gate {
+	return &b.quiesce
 }
 
 // IsSealed reports whether the barrier is in sealed state.

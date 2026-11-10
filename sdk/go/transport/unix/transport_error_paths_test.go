@@ -232,7 +232,7 @@ func TestUnixRT_UnassignRole_Error(t *testing.T) {
 }
 
 func TestUnixRT_ListPermissions_Closed(t *testing.T) {
-	tr := newClosed()
+	tr := newClosedTransport()
 	var ce *transport.ClosedError
 	_, err := tr.ListPermissions(context.Background())
 	if !errors.As(err, &ce) {
@@ -286,7 +286,7 @@ func TestUnixRT_Delete_Error(t *testing.T) {
 
 func TestUnixRT_Health_Error(t *testing.T) {
 	// A closed transport returns a ClosedError immediately.
-	tr := newClosed()
+	tr := newClosedTransport()
 	_, err := tr.Health(context.Background())
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
@@ -295,7 +295,7 @@ func TestUnixRT_Health_Error(t *testing.T) {
 }
 
 func TestUnixRT_Status_Error(t *testing.T) {
-	tr := newClosed()
+	tr := newClosedTransport()
 	_, err := tr.Status(context.Background())
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
@@ -304,7 +304,7 @@ func TestUnixRT_Status_Error(t *testing.T) {
 }
 
 func TestUnixRT_Capabilities_Error(t *testing.T) {
-	tr := newClosed()
+	tr := newClosedTransport()
 	_, err := tr.Capabilities(context.Background())
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
@@ -754,7 +754,7 @@ func TestUnixRT_GetTenant_NoService(t *testing.T) {
 // ===========================================================================
 
 func TestUnixRT_BarrierUnseal_Error(t *testing.T) {
-	tr := newClosed()
+	tr := newClosedTransport()
 	var ce *transport.ClosedError
 	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{})
 	if !errors.As(err, &ce) {
@@ -763,7 +763,7 @@ func TestUnixRT_BarrierUnseal_Error(t *testing.T) {
 }
 
 func TestUnixRT_BarrierInitializeShamir_Error(t *testing.T) {
-	tr := newClosed()
+	tr := newClosedTransport()
 	var ce *transport.ClosedError
 	_, err := tr.BarrierInitializeShamir(context.Background(), &transport.BarrierInitializeShamirRequest{})
 	if !errors.As(err, &ce) {

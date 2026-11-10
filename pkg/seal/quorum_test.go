@@ -23,7 +23,63 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
+
+// The temporary recovery strategy's protected copy of the root key is
+// destroyed before a quorum unseal returns.
+//
+// Barrier.Unseal does not retain the strategy — it calls UnsealRootKey and
+// drops it — so without the deferred Close the copy would outlive the round
+// that produced it, at the one point where the root key is most exposed
+// (found in review of go-qrdb#46). The strategy is built and discarded inside
+// unsealFromRootKey, so it is observed through newRecoveryStrategyFn.
+func TestQuorumUnseal_DestroysTheTemporaryStrategysRootKeyCopy(t *testing.T) {
+	for _, tc := range []struct {
+		domain QuorumDomain
+		op     QuorumOp
+	}{{DomainUnseal, OpUnseal}, {DomainRecovery, OpRecover}} {
+		t.Run(string(tc.op), func(t *testing.T) {
+			f := newHolderFixture(t, 2, 3)
+			f.dist.setHolders(DomainRecovery, "r1", "r2", "r3")
+			if _, err := f.b.GenerateRecoveryKeys(context.Background(), 2, ""); err != nil {
+				t.Fatal(err)
+			}
+			f.sealWith("h1", "h2")
+
+			var captured *recoveryStrategy
+			original := newRecoveryStrategyFn
+			newRecoveryStrategyFn = func(ctx context.Context, rootKey *secure.Buffer, delegate SealingStrategy) (*recoveryStrategy, error) {
+				rs, err := original(ctx, rootKey, delegate)
+				if err != nil {
+					return nil, err
+				}
+				captured = rs
+				buf, openErr := captured.rootKey.Open(ctx)
+				if openErr != nil {
+					t.Fatalf("the strategy was handed an unreadable root key; this test would prove nothing: %v", openErr)
+				}
+				buf.Destroy()
+				return captured, nil
+			}
+			t.Cleanup(func() { newRecoveryStrategyFn = original })
+
+			holders := []string{"h1", "h2"}
+			if tc.domain == DomainRecovery {
+				holders = []string{"r1", "r3"}
+			}
+			if o := f.quorum(tc.domain, tc.op, holders...); !o.Complete {
+				t.Fatalf("quorum incomplete: %+v", o)
+			}
+			if captured == nil {
+				t.Fatal("no recovery strategy was built; the seam did not fire")
+			}
+			if _, openErr := captured.rootKey.Open(t.Context()); openErr == nil {
+				t.Error("the temporary strategy's protected root-key copy was left readable after the unseal returned")
+			}
+		})
+	}
+}
 
 // TestSetClock_NilRestoresTheRealClock pins the default: with no clock
 // installed, or after a nil one, rounds are dated by the wall clock.

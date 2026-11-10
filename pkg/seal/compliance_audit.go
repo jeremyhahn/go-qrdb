@@ -68,6 +68,8 @@ var barrierAuditAttributes = map[string]bool{
 	"domain": true, "op": true, "strategy": true, "threshold": true,
 	"removed": true, "from": true, "to": true, "rolled_back": true,
 	"submitted": true, "required": true,
+	// A seal whose quiesce drain ran out (StorageBarrier.quiesceStores).
+	"phase": true, "stores": true,
 	// The holder registry's record conflict (holderScope.evictConflict).
 	"scope": true, "username": true, "cached_cert": true,
 }

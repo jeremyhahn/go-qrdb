@@ -333,6 +333,44 @@ func TestHandleTSQuery_WithOptions(t *testing.T) {
 	}
 }
 
+func TestHandleTSQuery_WithTags(t *testing.T) {
+	var gotTags map[string]string
+	tsSvc := &mockTimeSeriesService{
+		queryFn: func(_ context.Context, _ string, _, _ time.Time, opts ...timeseries.TSQueryOption) ([]timeseries.DataPoint, error) {
+			gotTags = timeseries.ApplyTSQueryOptions(opts).Tags
+			return []timeseries.DataPoint{}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTimeSeries(tsSvc))
+
+	payload, err := proto.Marshal(&pb.TSQueryRequest{
+		Metric:  "cpu.usage",
+		StartNs: 1000,
+		EndNs:   2000,
+		Tags:    []*pb.TSTag{{Key: "host", Value: "web-01"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	if _, err := srv.handleTSQuery(context.Background(), payload); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotTags) != 1 || gotTags["host"] != "web-01" {
+		t.Errorf("tags forwarded = %v, want map[host:web-01]", gotTags)
+	}
+}
+
+func TestHandleTSQuery_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTimeSeries(&mockTimeSeriesService{}))
+
+	_, err := srv.handleTSQuery(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
+	}
+}
+
 func TestHandleTSQuery_ServiceError(t *testing.T) {
 	svcErr := &testError{msg: "ts query failed"}
 	tsSvc := &mockTimeSeriesService{

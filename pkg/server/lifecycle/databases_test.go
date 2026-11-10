@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // DatabaseServices projects every engine of the graph, named and on the given
@@ -40,5 +41,13 @@ func TestNode_DatabaseServices_SharesTheGraph(t *testing.T) {
 	}
 	if got.MVCC != nil || got.Vector != nil {
 		t.Fatalf("an engine the graph does not have was projected: %+v", got)
+	}
+}
+
+// TestSystemDatabase_IsTheAuditInstanceDatabase pins the audit instance,
+// tenant/system/audit, to the database the node reserves as "system".
+func TestSystemDatabase_IsTheAuditInstanceDatabase(t *testing.T) {
+	if vlog.AuditDatabase != SystemDatabase {
+		t.Fatalf("vlog.AuditDatabase = %q, want SystemDatabase %q", vlog.AuditDatabase, SystemDatabase)
 	}
 }

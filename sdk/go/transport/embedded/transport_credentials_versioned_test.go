@@ -762,3 +762,24 @@ func TestEmbeddedCredential_Dispatch_InvalidRequest(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedCredential_StoreRetrieve_NilServiceAndClosed(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(*Transport) error{
+		"CredentialStore": func(tr *Transport) error { return tr.CredentialStore(ctx, "k", []byte("v")) },
+		"retrieveBytes": func(tr *Transport) error {
+			_, err := tr.retrieveBytes(ctx, "k")
+			return err
+		},
+	}
+	for name, call := range calls {
+		var ne *NilServiceError
+		if err := call(newExtTransport(t)); !errors.As(err, &ne) {
+			t.Errorf("%s nil service: expected NilServiceError, got %T: %v", name, err, err)
+		}
+		var ce *transport.ClosedError
+		if err := call(closedExtTransport(t)); !errors.As(err, &ce) {
+			t.Errorf("%s closed: expected ClosedError, got %T: %v", name, err, err)
+		}
+	}
+}
