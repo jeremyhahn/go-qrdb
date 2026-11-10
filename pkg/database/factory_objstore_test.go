@@ -180,6 +180,44 @@ func TestManager_DropReclaimsTheObjstoreObjects(t *testing.T) {
 	}
 }
 
+// TestManager_FailedCreateReclaimsTheObjstoreObjects checks a Create that
+// fails after the objstore engine opened deletes what the open wrote. The
+// rollback removes the catalog record, so no later Drop could reclaim them.
+func TestManager_FailedCreateReclaimsTheObjstoreObjects(t *testing.T) {
+	root := t.TempDir()
+	reclaims := 0
+	open := func(_, name, _ string) (storage.Storage, ObjstoreReclaim, error) {
+		e, err := objstore.New("local", map[string]string{"path": root}, objstore.WithObjectPrefix(name+"/"))
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, func() error {
+			reclaims++
+			return e.Destroy()
+		}, nil
+	}
+	cause := errors.New("unfence refused")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := newCatalogManager(logger, t.TempDir(),
+		WithBackendFactory(NewEmbeddedBackendFactory(WithObjstoreOpener(open))),
+		WithKeyspaceReclaimer(&spyReclaimer{unfenceErr: cause}))
+	t.Cleanup(func() { _ = m.Close() })
+
+	_, err := m.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore})
+	if !errors.Is(err, cause) {
+		t.Fatalf("Create = %v, want the unfence failure", err)
+	}
+	if reclaims != 1 {
+		t.Fatalf("reclaim ran %d times, want 1", reclaims)
+	}
+	if left := objectFiles(t, root); len(left) != 0 {
+		t.Fatalf("objects left after the failed Create: %q", left)
+	}
+	if _, err := m.Get("blobs"); err == nil {
+		t.Fatal("the failed Create left the database registered")
+	}
+}
+
 // TestManager_DropReclaimsABarrierEnabledObjstoreDatabase: the barrier wraps
 // the objstore backend, and the drop must still reach the reclaim beneath it
 // rather than report success over the objects it left.
