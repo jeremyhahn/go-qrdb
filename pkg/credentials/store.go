@@ -23,6 +23,11 @@ type Store interface {
 	List(ctx context.Context, prefix string) ([]string, error)
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
 	CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error)
+	// PutAllIfAllUnchanged applies every write in one commit, and only
+	// while every guard's key still holds its expected value (a nil
+	// Guard.Value means the key must be absent). It reports false with a
+	// nil error, having written nothing, when a guard did not hold.
+	PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error)
 }
 
 var (
@@ -31,21 +36,30 @@ var (
 	_ Store = kvStore{}
 )
 
-// kvStore is a Store over a kvstore.AtomicKVStore, the shape of a tenant's
-// home store. kvstore reports a missing key as nil, nil; a Store reports it
-// as seal.ErrSecretNotFound.
-type kvStore struct{ kvstore.AtomicKVStore }
+// atomicBatchKV is the kvstore surface a Store needs: conditional writes on
+// one key and the guarded batch that commits several records at once.
+type atomicBatchKV interface {
+	kvstore.AtomicKVStore
+	kvstore.MultiGuardedBatchKVStore
+}
+
+// kvStore is a Store over a kvstore.AtomicKVStore that also serves the
+// guarded batch, the shape of a tenant's home store. kvstore reports a
+// missing key as nil, nil; a Store reports it as seal.ErrSecretNotFound.
+type kvStore struct{ atomicBatchKV }
 
 // NewKVStore returns a Store over kv, which must serve conditional writes
-// (kvstore.AtomicKVStore): a tenant's home store on a cluster decides them
-// in its Raft group, so a rotation claim taken through one node fences every
-// other. It returns ErrNilStore for a nil kv and ErrStoreNotAtomic for one
-// that serves no conditional writes.
+// (kvstore.AtomicKVStore) and the guarded batch
+// (kvstore.MultiGuardedBatchKVStore): a tenant's home store on a cluster
+// decides them in its Raft group, so a rotation claim taken through one
+// node fences every other and a rotation commits its records in one write.
+// It returns ErrNilStore for a nil kv and ErrStoreNotAtomic for one that
+// serves no conditional writes or no guarded batch.
 func NewKVStore(kv kvstore.KVStore) (Store, error) {
 	if kv == nil {
 		return nil, ErrNilStore
 	}
-	atomicKV, ok := kv.(kvstore.AtomicKVStore)
+	atomicKV, ok := kv.(atomicBatchKV)
 	if !ok {
 		return nil, ErrStoreNotAtomic
 	}
@@ -54,7 +68,7 @@ func NewKVStore(kv kvstore.KVStore) (Store, error) {
 
 // Get returns key's value, or seal.ErrSecretNotFound when it is absent.
 func (s kvStore) Get(ctx context.Context, key string) ([]byte, error) {
-	data, err := s.AtomicKVStore.Get(ctx, key)
+	data, err := s.atomicBatchKV.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -155,4 +169,13 @@ func (b *boundStore) CompareAndSwap(ctx context.Context, key string, expected, n
 		return false, err
 	}
 	return st.CompareAndSwap(ctx, key, expected, next)
+}
+
+// PutAllIfAllUnchanged implements Store.
+func (b *boundStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	st, err := b.current()
+	if err != nil {
+		return false, err
+	}
+	return st.PutAllIfAllUnchanged(ctx, guards, writes)
 }
