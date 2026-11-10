@@ -119,6 +119,21 @@ func TestMCPIsolationPolicy_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMCPIsolationPolicy_EmptyPolicyIsRefusedAsInvalid pins that the set-floor
+// tool passes an empty policy to the service, so the caller gets the same
+// typed refusal every other transport returns, and the floor stays as it was.
+func TestMCPIsolationPolicy_EmptyPolicyIsRefusedAsInvalid(t *testing.T) {
+	svc := strictIsolationActiveMCPTenants(t)
+	_, err := mcpFloorSet(t, svc, "")
+	var invalid *tenant.InvalidIsolationPolicyError
+	if !errors.As(err, &invalid) || invalid.Value != "" || errclass.Classify(err) != errclass.InvalidArgument {
+		t.Fatalf("empty policy = %v; want an InvalidArgument *tenant.InvalidIsolationPolicyError with an empty Value", err)
+	}
+	if got, err := mcpFloorGet(t, svc); err != nil || got != string(tenant.ClusterIsolationPolicyOperatorAccess) {
+		t.Fatalf("floor after the refusal = %q, %v; want operator-access", got, err)
+	}
+}
+
 // TestMCPIsolationPolicy_RefusedBeforeStrictIsolation pins that before
 // strict-isolation is active the floor tools and a tenant update carrying
 // isolation_policy return *feature.NotActiveError and change nothing.
