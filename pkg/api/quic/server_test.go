@@ -442,6 +442,25 @@ func TestServer_Start_NoTLS_ErrorsAs(t *testing.T) {
 	}
 }
 
+// TestServer_Start_InvalidAddress verifies that Start returns a *StartError
+// when ListenAddr cannot bind the address. The port is out of range, so the
+// address fails to resolve without a DNS lookup.
+func TestServer_Start_InvalidAddress(t *testing.T) {
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:65536", WithTLS(tlsCfg))
+
+	err := srv.Start()
+	if err == nil {
+		srv.Stop()
+		t.Fatal("expected error when binding invalid address")
+	}
+
+	var se *StartError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *StartError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Handler map categories test
 // ---------------------------------------------------------------------------
@@ -646,4 +665,63 @@ func TestLogRequest_OKStatus(t *testing.T) {
 func TestLogRequest_ErrorStatus(t *testing.T) {
 	srv := NewServer(&mockKVService{}, &mockAdminService{}, "127.0.0.1:0")
 	srv.logRequest("kv.Get", 2, 1, time.Now())
+}
+
+func TestMaxLimitOptions_Resolve(t *testing.T) {
+	tests := map[string]struct {
+		n           int
+		wantPayload int
+		wantStreams int
+	}{
+		"zero takes the defaults":     {n: 0, wantPayload: DefaultMaxPayloadBytes, wantStreams: DefaultMaxStreamsPerConn},
+		"negative takes the defaults": {n: -1, wantPayload: DefaultMaxPayloadBytes, wantStreams: DefaultMaxStreamsPerConn},
+		"positive is kept":            {n: 7, wantPayload: 7, wantStreams: 7},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(&mockKVService{}, &mockAdminService{},
+				WithMaxPayloadBytes(tc.n), WithMaxStreamsPerConn(tc.n))
+			if srv.maxPayloadBytes != tc.n || srv.maxStreamsPerConn != tc.n {
+				t.Fatalf("options stored (%d, %d), want %d", srv.maxPayloadBytes, srv.maxStreamsPerConn, tc.n)
+			}
+			if got := resolveMaxPayloadBytes(srv.maxPayloadBytes); got != tc.wantPayload {
+				t.Fatalf("resolveMaxPayloadBytes = %d, want %d", got, tc.wantPayload)
+			}
+			if got := resolveMaxStreamsPerConn(srv.maxStreamsPerConn); got != tc.wantStreams {
+				t.Fatalf("resolveMaxStreamsPerConn = %d, want %d", got, tc.wantStreams)
+			}
+		})
+	}
+}
+
+func TestWithKVService_SetsField(t *testing.T) {
+	kv := &mockKVService{}
+	srv := NewServer(nil, nil, "localhost:0", WithKVService(kv))
+	if srv.kvSvc != kv {
+		t.Errorf("kvSvc = %v, want the supplied service", srv.kvSvc)
+	}
+}
+
+func TestWithAdminService_SetsField(t *testing.T) {
+	admin := &mockAdminService{}
+	srv := NewServer(nil, nil, "localhost:0", WithAdminService(admin))
+	if srv.adminSvc != admin {
+		t.Errorf("adminSvc = %v, want the supplied service", srv.adminSvc)
+	}
+}
+
+func TestWithServiceRegistry_RoutesResolvers(t *testing.T) {
+	reg := &recordingRegistry{kv: &mockKVService{}}
+	srv := newTestServer(nil, &mockAdminService{}, WithServiceRegistry(reg))
+
+	got, err := srv.kvSvcFor(scopedCtx("acme", "db1"))
+	if err != nil {
+		t.Fatalf("kvSvcFor: %v", err)
+	}
+	if got != reg.kv {
+		t.Fatalf("kvSvcFor returned %p, want the registry's KV service %p", got, reg.kv)
+	}
+	if len(reg.calls) != 1 || reg.calls[0] != (scopeCall{service: "kv", tenant: "acme", db: "db1"}) {
+		t.Fatalf("registry calls = %+v, want one kv call for acme/db1", reg.calls)
+	}
 }

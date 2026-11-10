@@ -418,6 +418,8 @@ var vlogRules = []rule{
 	// A log whose descriptor forbids expiry, a checkpoint over another root
 	// and an undecodable key record are states of the log, not of the request.
 	as(&vlog.ExpireNotAllowedError{}, FailedPrecondition),
+	as(&vlog.ReservedLogError{}, PermissionDenied),
+	as(&vlog.NotAuditLogError{}, InvalidArgument),
 	as(&vlog.CheckpointRootMismatchError{}, FailedPrecondition),
 	as(&vlog.InvalidSigningKeyError{}, FailedPrecondition),
 	// Another rotation applied first: the caller retries against the new key.

@@ -17,7 +17,9 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -248,6 +250,191 @@ func TestStoreAuditAppend_WritesNoMerkleNode(t *testing.T) {
 				t.Fatal("OpAuditAppend wrote no audit record")
 			}
 		})
+	}
+}
+
+// TestStoreAuditInstance_FamiliesAgree applies the same committed entries --
+// OpAuditAppend before the switch, OpVerifiableLog appends to the audit
+// instance after it, and a prune -- to both state-machine families, and
+// requires identical results and identical audit and log tables.
+func TestStoreAuditInstance_FamiliesAgree(t *testing.T) {
+	p := enc(t)
+	event := func(i int) []byte {
+		ev := fixedAuditEvent("acme")
+		ev.Action = fmt.Sprintf("action-%d", i)
+		b, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	var entries [][]byte
+	for i := range 3 {
+		ev := fixedAuditEvent("acme")
+		ev.Action = fmt.Sprintf("action-%d", i)
+		entries = append(entries, p(protocol.EncodeAuditAppend("acme", ev)))
+	}
+	for i := 3; i < 8; i++ {
+		entries = append(entries, p(protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID("acme"), [][]byte{event(i)})))
+	}
+	entries = append(entries, p(protocol.EncodeAuditPrune("acme", 6)))
+
+	type state struct {
+		values      []uint64
+		audit, logs map[string]string
+		root        []byte
+		treeSize    uint64
+		seq, lo     uint64
+		digest      [32]byte
+	}
+	var states []state
+	for _, kind := range auditSMKinds {
+		logs := vlog.NewChain()
+		n := openLogNode(t, kind, t.TempDir(), logs)
+		var s state
+		for _, e := range entries {
+			res := n.apply(t, e)
+			requireNoRefusal(t, res)
+			s.values = append(s.values, res[0].Value)
+		}
+		s.audit, s.logs = table(t, n.reader(), vlog.TablePrefix), table(t, n.reader(), vlog.LogTablePrefix)
+		head := n.lookup(t, vlog.HeadRequest{ID: vlog.AuditLogID("acme")}).(*vlog.Head)
+		s.root, s.treeSize = head.Root, head.Size
+		s.seq, s.lo, s.digest = logs.Head("acme")
+		states = append(states, s)
+	}
+	if states[0].treeSize != 5 || len(states[0].root) == 0 {
+		t.Fatalf("audit instance head = size %d, root %x; want 5 leaves and a root", states[0].treeSize, states[0].root)
+	}
+	if states[0].seq != 8 || states[0].digest == ([32]byte{}) {
+		t.Fatalf("linear head = seq %d, digest %x; want seq 8 and a digest", states[0].seq, states[0].digest)
+	}
+	if want := []uint64{1, 2, 3, 4, 5, 6, 7, 8, 5}; !reflect.DeepEqual(states[0].values, want) {
+		t.Fatalf("results = %v, want %v", states[0].values, want)
+	}
+	if len(states[0].logs) == 0 {
+		t.Fatal("the audit instance wrote no tree")
+	}
+	for i := 1; i < len(states); i++ {
+		if !reflect.DeepEqual(states[i], states[0]) {
+			t.Fatalf("%s's state differs from %s's", auditSMKinds[i].name, auditSMKinds[0].name)
+		}
+	}
+}
+
+// TestStoreAuditInstance_LogSurfaceExpireIsRefused pins that an
+// OpVerifiableLog ExpireBodies naming the audit instance is a refusal on both
+// families and changes nothing: the instance's retention is audit Prune.
+func TestStoreAuditInstance_LogSurfaceExpireIsRefused(t *testing.T) {
+	for _, kind := range auditSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			p := enc(t)
+			n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+			body, err := json.Marshal(fixedAuditEvent("acme"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNoRefusal(t, n.apply(t, p(protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID("acme"), [][]byte{body}))))
+			before := table(t, n.reader(), vlog.TablePrefix)
+
+			res := n.apply(t, p(protocol.EncodeVerifiableLogExpireBodies(vlog.AuditLogID("acme"), 1)))
+			if msg, errKind, ok := protocol.DecodeAppErrorKind(res[0].Data); !ok || errKind != protocol.AppErrorInvalid || msg != (&vlog.ReservedLogError{ID: vlog.AuditLogID("acme")}).Error() {
+				t.Fatalf("ExpireBodies on the audit instance = %+v, want a reserved-log refusal", res[0])
+			}
+			if after := table(t, n.reader(), vlog.TablePrefix); !reflect.DeepEqual(after, before) {
+				t.Fatal("a refused ExpireBodies changed the audit table")
+			}
+		})
+	}
+}
+
+// TestStoreAuditInstance_GenericAppendIsRefused pins that the generic Append
+// sub-type never reaches the audit instance: a client's entry chained as an
+// audit event would be a forged event, so the apply refuses the audit name
+// with ReservedLogError on every replica and changes nothing. Only the
+// AuditAppend sub-type, which the replicated audit logger alone proposes,
+// appends to the instance; it in turn refuses any other log.
+func TestStoreAuditInstance_GenericAppendIsRefused(t *testing.T) {
+	for _, kind := range auditSMKinds {
+		t.Run(kind.name, func(t *testing.T) {
+			p := enc(t)
+			n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+			body, err := json.Marshal(fixedAuditEvent("acme"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireNoRefusal(t, n.apply(t, p(protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID("acme"), [][]byte{body}))))
+			auditBefore, logsBefore := table(t, n.reader(), vlog.TablePrefix), table(t, n.reader(), vlog.LogTablePrefix)
+
+			forged, err := json.Marshal(fixedAuditEvent("acme"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := n.apply(t, p(protocol.EncodeVerifiableLogAppend(vlog.AuditLogID("acme"), [][]byte{forged})))
+			msg, errKind, ok := protocol.DecodeAppErrorKind(res[0].Data)
+			if want := (&vlog.ReservedLogError{ID: vlog.AuditLogID("acme")}).Error(); !ok || errKind != protocol.AppErrorInvalid || msg != want {
+				t.Fatalf("generic append to the audit instance = %+v, want an invalid refusal %q", res[0], want)
+			}
+			res = n.apply(t, p(protocol.EncodeVerifiableLogAuditAppend(storeLog, [][]byte{forged})))
+			if msg, _, ok := protocol.DecodeAppErrorKind(res[0].Data); !ok || msg != (&vlog.NotAuditLogError{ID: storeLog}).Error() {
+				t.Fatalf("audit append to %v = %+v, want a not-audit-log refusal", storeLog, res[0])
+			}
+			if after := table(t, n.reader(), vlog.TablePrefix); !reflect.DeepEqual(after, auditBefore) {
+				t.Fatal("a refused append changed the audit table")
+			}
+			if after := table(t, n.reader(), vlog.LogTablePrefix); !reflect.DeepEqual(after, logsBefore) {
+				t.Fatal("a refused append changed the named-log table")
+			}
+		})
+	}
+}
+
+// TestStoreAuditInstance_MixedVersionReplay pins the rolling upgrade: until
+// featuregate.VerifiableLogAudit is enabled the replicated audit logger
+// proposes OpAuditAppend (with VerifiableLog on or off), which a replica
+// built before the audit instance applies by extending the linear chain
+// alone and writing no named-log record. A replica of this build applying
+// the same committed entries reaches that state byte for byte, on every
+// state machine, so a mixed group cannot diverge on an audit event.
+func TestStoreAuditInstance_MixedVersionReplay(t *testing.T) {
+	p := enc(t)
+	var entries [][]byte
+	for i := range 4 {
+		ev := fixedAuditEvent("acme")
+		ev.Action = fmt.Sprintf("action-%d", i)
+		entries = append(entries, p(protocol.EncodeAuditAppend("acme", ev)))
+	}
+	entries = append(entries, p(protocol.EncodeAuditPrune("acme", 2)))
+
+	type state struct {
+		values []uint64
+		audit  map[string]string
+		logs   int
+	}
+	var states []state
+	for _, kind := range auditSMKinds {
+		n := openLogNode(t, kind, t.TempDir(), vlog.NewChain())
+		var s state
+		for _, e := range entries {
+			res := n.apply(t, e)
+			requireNoRefusal(t, res)
+			s.values = append(s.values, res[0].Value)
+		}
+		s.audit, s.logs = table(t, n.reader(), vlog.TablePrefix), len(table(t, n.reader(), vlog.LogTablePrefix))
+		states = append(states, s)
+	}
+	// The pre-instance apply: sequences 1..4, the prune's count, and no
+	// named-log record.
+	if want := []uint64{1, 2, 3, 4, 1}; !reflect.DeepEqual(states[0].values, want) {
+		t.Fatalf("results = %v, want %v", states[0].values, want)
+	}
+	if states[0].logs != 0 {
+		t.Fatalf("OpAuditAppend wrote %d named-log records; a pre-instance replica writes none", states[0].logs)
+	}
+	for i := 1; i < len(states); i++ {
+		if !reflect.DeepEqual(states[i], states[0]) {
+			t.Fatalf("%s's state differs from %s's", auditSMKinds[i].name, auditSMKinds[0].name)
+		}
 	}
 }
 
