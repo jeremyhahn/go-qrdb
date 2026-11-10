@@ -1011,12 +1011,14 @@ func (s *CredentialService) readBarrierMeta(ctx context.Context, name string) (*
 
 func (s *CredentialService) loadBarrierCurrent(ctx context.Context, name string) ([]byte, bool, error) {
 	value, err := s.store.Get(ctx, credentialPrefix+name)
-	if err != nil {
-		// We can't distinguish "missing" from "I/O failure" at this
-		// layer because StorageBarrier collapses everything to a
-		// single error. Treat any error as "not found"; downstream
-		// puts will fail if the I/O is genuinely broken.
+	if errors.Is(err, seal.ErrSecretNotFound) {
 		return nil, false, nil
+	}
+	if err != nil {
+		// Any other failure is not absence: a caller deciding on absence
+		// would number a version, or invoke the rotation value source,
+		// over a value it never read.
+		return nil, false, &OperationError{Op: "read current", Cause: err}
 	}
 	return value, true, nil
 }
