@@ -82,6 +82,36 @@ func TestCredentialRotationScheduler_PassOnceReportsRotatedOnError(t *testing.T)
 	}
 }
 
+// deadlineRecordingRotator records whether the context of a pass carries a
+// deadline.
+type deadlineRecordingRotator struct {
+	service.CredentialServicer
+	passes      int
+	hasDeadline bool
+}
+
+func (d *deadlineRecordingRotator) CredentialRotateDue(ctx context.Context, _ time.Time) (int, error) {
+	d.passes++
+	_, d.hasDeadline = ctx.Deadline()
+	return 0, ctx.Err()
+}
+
+// A pass runs under the scheduler's own context: each credential's attempt
+// is bounded by the credential service, so a deadline on the whole pass
+// would let one slow credential starve those after it.
+func TestCredentialRotationScheduler_PassOnceSetsNoDeadline(t *testing.T) {
+	rotator := &deadlineRecordingRotator{}
+	sched := newTestCredentialRotationScheduler(rotator, nil)
+
+	sched.passOnce(context.Background())
+	if rotator.passes != 1 {
+		t.Fatalf("passes = %d, want 1", rotator.passes)
+	}
+	if rotator.hasDeadline {
+		t.Fatal("the context passOnce hands the rotator has a deadline, want none")
+	}
+}
+
 func TestCredentialRotationScheduler_PassOnceSkipsWhenRunning(t *testing.T) {
 	rotator := &fakeCredentialRotator{}
 	sched := newTestCredentialRotationScheduler(rotator, nil)
