@@ -712,6 +712,11 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20261026165753-2ffab32bce7e
+  → v0.0.0-20261104224025-d1e00e9f33ab in the root module and `sdk/go`, with
+  the indirect requirement in `sdk/go/gorm/conformance` and
+  `test/clusterproof` following it; `deps-check` reported it behind its latest
+  release, inside the 7-day adoption window.
 - `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
   and `test/performance/qrdb`, with the indirect requirement in
   `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
