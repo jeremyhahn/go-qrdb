@@ -252,6 +252,28 @@ func TestManager_DropFailsWhenTheReclaimFails(t *testing.T) {
 	}
 }
 
+// A Raft-mode factory refuses a backend: objstore database before any opener
+// is reached, and still opens the other engines.
+func TestEmbeddedBackendFactory_ObjstoreRaftModeRefused(t *testing.T) {
+	var opened []string
+	f := NewEmbeddedBackendFactory(WithRaftMode(), WithObjstoreOpener(memoryObjstoreOpener(&opened)))
+	_, err := f.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}, t.TempDir())
+	var raftErr *ObjstoreRaftModeError
+	if !errors.As(err, &raftErr) || raftErr.Name != "blobs" {
+		t.Fatalf("Create(objstore) in raft mode = %v, want *ObjstoreRaftModeError", err)
+	}
+	if len(opened) != 0 {
+		t.Fatalf("the opener ran in raft mode: %q", opened)
+	}
+	b, err := f.Create(DatabaseConfig{Name: "mem", Backend: BackendMemory}, "")
+	if err != nil {
+		t.Fatalf("Create(memory) in raft mode: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close(memory): %v", err)
+	}
+}
+
 func TestObjstoreRaftModeError_NamesTheReason(t *testing.T) {
 	err := &ObjstoreRaftModeError{Name: "blobs"}
 	if msg := err.Error(); msg == "" || !strings.Contains(msg, ObjstoreRaftModeReason) {
