@@ -702,3 +702,64 @@ func TestMigrateLegacy_NamesEndingInRecordSuffixesAreCredentials(t *testing.T) {
 		assert.Empty(t, legacyKeys(t, legacy))
 	})
 }
+
+// putIfAbsentHookStore calls onPutIfAbsent after each PutIfAbsent the store
+// beneath has answered, so a test can place another writer between a
+// migration's claim and what the migration does next.
+type putIfAbsentHookStore struct {
+	Store
+	onPutIfAbsent func(key string)
+}
+
+func (p *putIfAbsentHookStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	won, err := p.Store.PutIfAbsent(ctx, key, value)
+	if p.onPutIfAbsent != nil {
+		p.onPutIfAbsent(key)
+	}
+	return won, err
+}
+
+// A service with no legacy copy stores a credential after a migrating node
+// claimed the name and before it installed its copy. The stored value is
+// kept, nothing of the legacy copy is mixed into it, and the copy is a
+// conflict the operator settles.
+func TestMigrateLegacy_LiveWriteBetweenClaimAndInstall(t *testing.T) {
+	ctx := context.Background()
+	legacy, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", testPolicy)
+	live := newUnboundService(t)
+	require.NoError(t, live.BindStore(ctx, mem))
+
+	fired := false
+	shared := &putIfAbsentHookStore{Store: mem}
+	shared.onPutIfAbsent = func(key string) {
+		if fired || key != MigrationClaimPrefix+"db" {
+			return
+		}
+		fired = true
+		require.NoError(t, live.StoreCredential(ctx, "db", []byte("fresh")))
+	}
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+	require.True(t, fired)
+
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	require.Len(t, conflicts, 1)
+	assert.Equal(t, "db", conflicts[0].Name)
+	assert.True(t, conflicts[0].Value)
+	assert.Equal(t, "fresh", retrieveString(t, svc, "db"), "the value stored meanwhile is kept")
+	_, err = mem.Get(ctx, metaKey("db"))
+	assert.ErrorIs(t, err, seal.ErrSecretNotFound, "no legacy metadata is added to the live credential")
+	_, err = mem.Get(ctx, versionKey("db", 1))
+	assert.ErrorIs(t, err, seal.ErrSecretNotFound, "no legacy version is added to the live credential")
+	assert.Len(t, legacyKeys(t, legacy), 3, "the legacy copy is kept")
+	value, err := legacy.Get(ctx, legacyCredentialPrefix+"db")
+	require.NoError(t, err)
+	assert.Equal(t, "v2", string(value))
+
+	require.NoError(t, svc.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+	assert.Equal(t, "fresh", versionString(t, svc, "db", 1))
+	assert.Empty(t, legacyKeys(t, legacy))
+}
