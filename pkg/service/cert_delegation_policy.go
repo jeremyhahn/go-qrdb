@@ -5,6 +5,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -46,13 +48,22 @@ func WithEnrollmentTenants(tenants TenantGetter) CertEnrollmentOption {
 
 // tenantLive reports whether tenantID names a live tenant: the system
 // tenant always is, any other tenant only while the registry still
-// returns it. A read error is "no", so a mint fails closed.
-func (s *CertEnrollmentService) tenantLive(ctx context.Context, tenantID string) bool {
+// returns it. Only the registry's not-found answer is "no": any other
+// read error is returned, so a mint fails closed without reporting an
+// outage as a missing tenant.
+func (s *CertEnrollmentService) tenantLive(ctx context.Context, tenantID string) (bool, error) {
 	if tenantid.IsSystem(tenantID) {
-		return true
+		return true, nil
 	}
 	info, err := s.tenants.GetTenant(ctx, tenantID)
-	return err == nil && info != nil
+	if err != nil {
+		var gone *TenantNotFoundError
+		if errors.Is(err, tenant.ErrTenantNotFound) || errors.As(err, &gone) {
+			return false, nil
+		}
+		return false, fmt.Errorf("service: tenant lookup for %q: %w", tenantID, err)
+	}
+	return info != nil, nil
 }
 
 // DelegationPolicyRequest writes TenantID's standing delegation policy for
@@ -216,7 +227,11 @@ func (s *CertEnrollmentService) MintDelegation(ctx context.Context, req *MintDel
 	if err != nil {
 		return nil, err
 	}
-	if !s.tenantLive(ctx, own) {
+	live, err := s.tenantLive(ctx, own)
+	if err != nil {
+		return nil, err
+	}
+	if !live {
 		return nil, &TenantNotFoundError{TenantID: own}
 	}
 	policy, found, err := s.policies.DelegationPolicy(ctx, own, principal)
