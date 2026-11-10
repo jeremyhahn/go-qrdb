@@ -817,7 +817,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		}
 		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
-			return nil, ErrCredentialNotFound
+			return nil, readFailure("retrieve version", err, ErrCredentialNotFound)
 		}
 		return bufferFromHeap(value)
 	}
@@ -825,7 +825,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 	if version == meta.CurrentVersion {
 		value, err := s.store.Get(ctx, credentialPrefix+name)
 		if err != nil {
-			return nil, ErrCredentialNotFound
+			return nil, readFailure("retrieve version", err, ErrCredentialNotFound)
 		}
 		return bufferFromHeap(value)
 	}
@@ -839,7 +839,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 		}
 		value, err := s.store.Get(ctx, versionKey(name, version))
 		if err != nil {
-			return nil, ErrVersionExpired
+			return nil, readFailure("retrieve version", err, ErrVersionExpired)
 		}
 		return bufferFromHeap(value)
 	}
@@ -1043,6 +1043,16 @@ func (s *CredentialService) loadBarrierCurrent(ctx context.Context, name string)
 		return nil, false, &OperationError{Op: "read current", Cause: err}
 	}
 	return value, true, nil
+}
+
+// readFailure maps the error of a store read to what the caller is told:
+// absent when the store answered that the key does not exist, and an
+// OperationError for every other failure, which says nothing about the key.
+func readFailure(op string, err, absent error) error {
+	if errors.Is(err, seal.ErrSecretNotFound) {
+		return absent
+	}
+	return &OperationError{Op: op, Cause: err}
 }
 
 // =============================================================================

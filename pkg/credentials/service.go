@@ -528,12 +528,14 @@ func (s *CredentialService) removeWaiter(name string, ch chan waiterDelivery) {
 	}
 }
 
-// retrieveBarrier retrieves a credential from the StorageBarrier. If the
-// underlying storage returns an error, ErrCredentialNotFound is returned.
+// retrieveBarrier reads the credential from the barrier store; only a store
+// that answers "no such key" yields ErrCredentialNotFound, because a caller
+// told "not found" for a store it could not read would treat a live
+// credential as absent.
 func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) (*secure.Buffer, error) {
 	data, err := s.store.Get(ctx, credentialPrefix+name)
 	if err != nil {
-		return nil, ErrCredentialNotFound
+		return nil, readFailure("retrieve", err, ErrCredentialNotFound)
 	}
 	return bufferFromHeap(data)
 }
