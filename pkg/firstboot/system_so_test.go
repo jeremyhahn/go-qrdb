@@ -425,6 +425,26 @@ func TestInitialize_SystemSOPresentedCertMustNameTheSO(t *testing.T) {
 	}
 }
 
+// A certificate handed to first boot directly (an embedded caller's
+// Dependencies.SO, or a record no ceremony vetted) is held to the client-auth
+// profile the ceremony holds --so-cert to: the SO logs in by it.
+func TestInitialize_SystemSOPresentedCertHeldToClientAuthProfile(t *testing.T) {
+	h := newSOHarness(t, true)
+	// issueNamedCertFromCA's leaf carries neither a key usage nor an EKU.
+	certPEM, pool := issueNamedCertFromCA(t, h.deps.SO.Username, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	h.deps.SO.CSRPEM = nil
+	h.deps.SO.CertPEM = certPEM
+	h.deps.AdminCertPool = pool
+	_, err := Initialize(context.Background(), h.deps)
+	var profileErr *ceremony.ClientAuthProfileError
+	if !errors.As(err, &profileErr) {
+		t.Fatalf("Initialize: %v, want the certificate's profile refused", err)
+	}
+	if len(h.users.byName) != 0 || len(h.binder.calls) != 0 {
+		t.Fatalf("an account was created or bound: %v, %v", h.users.byName, h.binder.calls)
+	}
+}
+
 func TestInitialize_SystemSOPINCommitFailureOnFreshSO(t *testing.T) {
 	h := newSOHarness(t, true)
 	h.pins.pins[tenantid.System] = "someone else's"
