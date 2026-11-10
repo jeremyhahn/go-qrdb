@@ -485,10 +485,15 @@ func (s *CredentialService) updateBarrierMeta(ctx context.Context, name, op stri
 	for range rotationMetaRetries {
 		var meta credentialMeta
 		raw, getErr := s.store.Get(ctx, key)
-		if getErr == nil {
+		switch {
+		case getErr == nil:
 			if err := json.Unmarshal(raw, &meta); err != nil {
 				return &OperationError{Op: "decode meta", Cause: err}
 			}
+		case !errors.Is(getErr, seal.ErrSecretNotFound):
+			// Only an absent record starts from the zero value: fn must
+			// not decide on metadata that could not be read.
+			return &OperationError{Op: "read meta", Cause: getErr}
 		}
 		if !fn(&meta) {
 			return nil
