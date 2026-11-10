@@ -103,6 +103,7 @@ type runnerStep struct {
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
 	Env  map[string]string `yaml:"env"`
+	With map[string]string `yaml:"with"`
 }
 
 type runnerJob struct {
@@ -466,6 +467,116 @@ func TestRunnerProblems_BigdiskJob(t *testing.T) {
 		changed := bigdiskRunsOn[:i] + string(c) + bigdiskRunsOn[i+1:]
 		if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, changed))); len(p) == 0 {
 			t.Errorf("%s's runs-on %q, one character off bigdiskRunsOn, passed", bigdiskJob, changed)
+		}
+	}
+}
+
+// bigdiskStepProblems reports what in bigdiskJob's steps is unsafe on a
+// runner that outlives the job and forbids sudo: a checkout that leaves the
+// workflow token in the checkout's git config, and a `make test-typescript`
+// that does not clear PLAYWRIGHT_INSTALL_FLAGS off the hosted runner (the
+// Makefile's default, `--with-deps`, installs apt packages through sudo).
+func bigdiskStepProblems(job runnerJob) []string {
+	var problems []string
+	guarded := false
+	for i, s := range job.Steps {
+		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["persist-credentials"] != "false" {
+			problems = append(problems, bigdiskJob+": step "+strconv.Itoa(i)+" checks out without persist-credentials: false; the token stays in the checkout's git config")
+		}
+		if strings.Contains(s.Run, "make "+bigdiskJob) &&
+			strings.Contains(s.Run, "RUNNER_ENVIRONMENT") &&
+			strings.Contains(s.Run, "github-hosted") &&
+			strings.Contains(s.Run, "PLAYWRIGHT_INSTALL_FLAGS=") {
+			guarded = true
+		}
+	}
+	if !guarded {
+		problems = append(problems, bigdiskJob+": no step runs make "+bigdiskJob+" with PLAYWRIGHT_INSTALL_FLAGS cleared when RUNNER_ENVIRONMENT is not github-hosted")
+	}
+	return problems
+}
+
+// makeRecipe returns the recipe lines of target in a Makefile's text.
+func makeRecipe(makefile, target string) []string {
+	var recipe []string
+	in := false
+	for _, line := range strings.Split(makefile, "\n") {
+		switch {
+		case strings.HasPrefix(line, target+":"):
+			in = true
+		case in && strings.HasPrefix(line, "\t"):
+			recipe = append(recipe, line)
+		case in:
+			return recipe
+		}
+	}
+	return recipe
+}
+
+func TestCIBigdiskJobLeavesNoCredentialAndRunsNoApt(t *testing.T) {
+	var wf struct {
+		Jobs map[string]runnerJob `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(workflowFiles(t)["ci.yml"], &wf); err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	job, ok := wf.Jobs[bigdiskJob]
+	if !ok {
+		t.Fatalf("ci.yml has no job %s", bigdiskJob)
+	}
+	for _, p := range bigdiskStepProblems(job) {
+		t.Error(p)
+	}
+
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	recipe := makeRecipe(string(b), bigdiskJob)
+	if len(recipe) == 0 {
+		t.Fatalf("Makefile has no recipe for %s", bigdiskJob)
+	}
+	const install = "npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium"
+	installs := false
+	for _, line := range recipe {
+		if strings.Contains(line, "--with-deps") {
+			t.Errorf("Makefile's %s recipe holds --with-deps outside PLAYWRIGHT_INSTALL_FLAGS: %q", bigdiskJob, line)
+		}
+		if strings.Contains(line, install) {
+			installs = true
+		}
+	}
+	if !installs {
+		t.Errorf("Makefile's %s recipe has no line %q", bigdiskJob, install)
+	}
+}
+
+func TestBigdiskStepProblems_CanFail(t *testing.T) {
+	const guard = "          if [ \"${RUNNER_ENVIRONMENT:-}\" != github-hosted ]; then\n            export PLAYWRIGHT_INSTALL_FLAGS=\n          fi\n"
+	const checkout = "      - uses: actions/checkout@0000000000000000000000000000000000000000\n"
+	const safe = "        with:\n          persist-credentials: false\n"
+	guarded := "      - run: |\n" + guard + "          make " + bigdiskJob + "\n"
+	cases := []struct {
+		name  string
+		steps string
+		want  bool
+	}{
+		{"valid", checkout + safe + guarded, false},
+		{"checkout with no with", checkout + guarded, true},
+		{"checkout with persist-credentials: true", checkout + "        with:\n          persist-credentials: true\n" + guarded, true},
+		{"checkout with another with key only", checkout + "        with:\n          fetch-depth: 0\n" + guarded, true},
+		{"make without the guard", checkout + safe + "      - run: make " + bigdiskJob + "\n", true},
+		{"guard in another step", checkout + safe + "      - run: |\n" + guard + "      - run: make " + bigdiskJob + "\n", true},
+		{"no make step", checkout + safe, true},
+	}
+	for _, tc := range cases {
+		var job runnerJob
+		if err := yaml.Unmarshal([]byte("steps:\n"+tc.steps), &job); err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		p := bigdiskStepProblems(job)
+		if got := len(p) != 0; got != tc.want {
+			t.Errorf("%s: problems %v, want a problem: %v", tc.name, p, tc.want)
 		}
 	}
 }
