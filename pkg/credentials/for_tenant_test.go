@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -16,7 +17,7 @@ import (
 // a tenant's home store.
 func newHomeStore(t *testing.T) Store {
 	t.Helper()
-	home, err := NewKVStore(kvstore.NewMemoryKVStore())
+	home, err := NewKVStore(kvstoretest.NewGuardedMemoryStore())
 	require.NoError(t, err)
 	return home
 }
@@ -115,10 +116,15 @@ func TestNewKVStore_RefusesNilAndNonAtomic(t *testing.T) {
 
 	_, err = NewKVStore(plainKV{kvstore.NewMemoryKVStore()})
 	assert.ErrorIs(t, err, ErrStoreNotAtomic)
+
+	// Conditional writes alone are not enough: a rotation commits its
+	// records in one guarded batch.
+	_, err = NewKVStore(kvstore.NewMemoryKVStore())
+	assert.ErrorIs(t, err, ErrStoreNotAtomic)
 }
 
 func TestNewKVStore_MissingKeyIsSecretNotFound(t *testing.T) {
-	kv := kvstore.NewMemoryKVStore()
+	kv := kvstoretest.NewGuardedMemoryStore()
 	store, err := NewKVStore(kv)
 	require.NoError(t, err)
 	ctx := context.Background()

@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -74,11 +76,23 @@ func TestCredentialServiceOptions_NilRegistryBindsNothing(t *testing.T) {
 // With a barrier registry the option binds it, so a tenant with its own
 // barrier is served from a barrier-strategy store over that barrier while
 // the system tenant keeps the node-wide store.
+// credentialOptionsHomes is a tenant.HomeStoreSource that serves one store.
+type credentialOptionsHomes struct{ store kvstore.KVStore }
+
+func (h credentialOptionsHomes) EnsureHome(context.Context, string) error { return nil }
+
+func (h credentialOptionsHomes) HomeStore(context.Context, string) (kvstore.KVStore, error) {
+	return h.store, nil
+}
+
 func TestCredentialServiceOptions_RegistryBindsTenantStores(t *testing.T) {
 	opts := credentialServiceOptions(Infra{BarrierRegistry: newCredentialOptionsRegistry(t)})
 	require.Len(t, opts, 1)
 
 	svc := service.NewCredentialService(newCredentialOptionsCore(t), opts...)
+	// A tenant's records live in its home store, attached once the stores
+	// that host the homes have started.
+	svc.(*service.CredentialService).SetTenantHomes(credentialOptionsHomes{kvstoretest.NewGuardedMemoryStore()})
 	got, err := svc.CredentialStrategy(tenant.WithTenantID(context.Background(), "acme"))
 	require.NoError(t, err)
 	assert.Equal(t, credentials.StrategyBarrier, got)

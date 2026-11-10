@@ -180,6 +180,17 @@ func (b kvSealBackend) CompareAndSwap(ctx context.Context, key string, expected,
 	return resp.Succeeded, nil
 }
 
+// PutAllIfAllUnchanged applies every write in one transaction, and only
+// while every guard's key still holds its expected value (a nil Guard.Value
+// means the key must be absent). See ExecuteGuardedBatch, which this
+// delegates to.
+func (b kvSealBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if b.tx == nil {
+		return false, ErrNoTransactionService
+	}
+	return ExecuteGuardedBatch(ctx, b.tx, guards, writes)
+}
+
 // Get adapts the kvstore.KVStore missing-key convention (nil, nil) to the
 // seal.StorageBackend contract, which signals a missing key with
 // seal.ErrSecretNotFound. Services built on StorageBackend (custodian groups,

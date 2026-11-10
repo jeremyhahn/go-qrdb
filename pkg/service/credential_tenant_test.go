@@ -26,6 +26,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -352,7 +353,7 @@ var errHomeLookup = errors.New("home store lookup failed")
 // tenant, as a cluster's home groups serve one store per tenant to every node.
 type memoryHomes struct {
 	mu     sync.Mutex
-	stores map[string]*kvstore.MemoryKVStore
+	stores map[string]*kvstoretest.GuardedMemoryStore
 	err    error
 	plain  bool
 }
@@ -360,7 +361,7 @@ type memoryHomes struct {
 var _ tenant.HomeStoreSource = (*memoryHomes)(nil)
 
 func newMemoryHomes() *memoryHomes {
-	return &memoryHomes{stores: make(map[string]*kvstore.MemoryKVStore)}
+	return &memoryHomes{stores: make(map[string]*kvstoretest.GuardedMemoryStore)}
 }
 
 func (h *memoryHomes) EnsureHome(ctx context.Context, tenantID string) error {
@@ -376,7 +377,7 @@ func (h *memoryHomes) HomeStore(_ context.Context, tenantID string) (kvstore.KVS
 	defer h.mu.Unlock()
 	store, ok := h.stores[tenantID]
 	if !ok {
-		store = kvstore.NewMemoryKVStore()
+		store = kvstoretest.NewGuardedMemoryStore()
 		h.stores[tenantID] = store
 	}
 	if h.plain {
