@@ -29,8 +29,8 @@ import (
 )
 
 func memoryObjstoreOpener(opened *[]string) ObjstoreOpener {
-	return func(name, _ string) (storage.Storage, ObjstoreReclaim, error) {
-		*opened = append(*opened, name)
+	return func(tenantID, name, _ string) (storage.Storage, ObjstoreReclaim, error) {
+		*opened = append(*opened, tenantID+"/"+name)
 		e, err := objstore.New("memory", map[string]string{})
 		if err != nil {
 			return nil, nil, err
@@ -44,13 +44,13 @@ func memoryObjstoreOpener(opened *[]string) ObjstoreOpener {
 func TestEmbeddedBackendFactory_ObjstoreOpensThroughOpener(t *testing.T) {
 	var opened []string
 	f := NewEmbeddedBackendFactory(WithObjstoreOpener(memoryObjstoreOpener(&opened)))
-	b, err := f.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}, t.TempDir())
+	b, err := f.Create(DatabaseConfig{TenantID: "acme", Name: "blobs", Backend: BackendObjstore}, t.TempDir())
 	if err != nil {
 		t.Fatalf("Create(objstore): %v", err)
 	}
 	t.Cleanup(func() { _ = b.Close() })
-	if len(opened) != 1 || opened[0] != "blobs" {
-		t.Fatalf("opener calls = %q, want [blobs]", opened)
+	if len(opened) != 1 || opened[0] != "acme/blobs" {
+		t.Fatalf("opener calls = %q, want [acme/blobs]", opened)
 	}
 	ctx := context.Background()
 	if err := b.Put(ctx, []byte("k"), []byte("v")); err != nil {
@@ -82,7 +82,7 @@ func TestEmbeddedBackendFactory_ObjstoreWithoutOpener(t *testing.T) {
 // An opener that fails is reported as a StorageCreateError naming the backend.
 func TestEmbeddedBackendFactory_ObjstoreOpenerFails(t *testing.T) {
 	boom := errors.New("bucket unreachable")
-	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string, string) (storage.Storage, ObjstoreReclaim, error) {
 		return nil, nil, boom
 	}))
 	_, err := f.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore}, t.TempDir())
@@ -96,7 +96,7 @@ func TestEmbeddedBackendFactory_ObjstoreOpenerFails(t *testing.T) {
 // that hands back no reclaim fails the open: such a database could never be
 // dropped.
 func TestEmbeddedBackendFactory_ObjstoreOpenerWithoutReclaim(t *testing.T) {
-	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+	f := NewEmbeddedBackendFactory(WithObjstoreOpener(func(string, string, string) (storage.Storage, ObjstoreReclaim, error) {
 		e, err := objstore.New("memory", map[string]string{})
 		return e, nil, err
 	}))
@@ -111,7 +111,7 @@ func TestEmbeddedBackendFactory_ObjstoreOpenerWithoutReclaim(t *testing.T) {
 // object prefix "<name>/", as databases sharing a bucket are, and returns the
 // engine's Destroy as the reclaim.
 func localObjstoreOpener(root string) ObjstoreOpener {
-	return func(name, _ string) (storage.Storage, ObjstoreReclaim, error) {
+	return func(_, name, _ string) (storage.Storage, ObjstoreReclaim, error) {
 		e, err := objstore.New("local", map[string]string{"path": root}, objstore.WithObjectPrefix(name+"/"))
 		if err != nil {
 			return nil, nil, err
@@ -225,7 +225,7 @@ func TestManager_DropReclaimsABarrierEnabledObjstoreDatabase(t *testing.T) {
 func TestManager_DropFailsWhenTheReclaimFails(t *testing.T) {
 	boom := errors.New("bucket unreachable")
 	failing := true
-	m := newObjstoreManager(t, func(string, string) (storage.Storage, ObjstoreReclaim, error) {
+	m := newObjstoreManager(t, func(string, string, string) (storage.Storage, ObjstoreReclaim, error) {
 		e, err := objstore.New("memory", map[string]string{})
 		if err != nil {
 			return nil, nil, err
