@@ -1298,6 +1298,13 @@ func recordSecureMemoryWipe(err *error) {
 // first (typically the RLIMIT-sized lazy default), which is exactly the
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
+// databaseManagerOptions returns the options runStart builds the node's
+// database manager with, for the node's mode and its storage.objstore
+// configuration.
+func databaseManagerOptions(mode string, objCfg qrdbconfig.ObjstoreConfig) []database.ManagerOption {
+	return nil
+}
+
 func runStart(f *startFlags) (err error) {
 	// Discovery/peer flag validation runs FIRST, before anything with a
 	// side effect -- the secure memory budget, TLS/bootstrap servers, and
@@ -1513,7 +1520,7 @@ func runStart(f *startFlags) (err error) {
 	// from the replicated store, and its record is kept in the replicated
 	// catalog (lifecycle.BuildServices wires both and opens every recorded
 	// database), never in anything on this node's disk.
-	dbManager := database.NewManager(slog.Default(), f.dataDir)
+	dbManager := database.NewManager(slog.Default(), f.dataDir, databaseManagerOptions(f.mode, f.storageConfig.Objstore)...)
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.
