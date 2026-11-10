@@ -22,6 +22,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
@@ -212,5 +214,55 @@ func TestMapServiceError_DefaultDatabaseDropIsInvalidArgument(t *testing.T) {
 	err := mapServiceError(&database.DefaultDatabaseDropError{Name: "system"})
 	if got := status.Code(err); got != codes.InvalidArgument {
 		t.Fatalf("code = %v, want %v", got, codes.InvalidArgument)
+	}
+}
+
+// TestErrorClass_MarshalAndDecodeErrors asserts the marshal errors classify
+// as Internal and a bad signature encoding as InvalidArgument.
+func TestErrorClass_MarshalAndDecodeErrors(t *testing.T) {
+	inner := errors.New("boom")
+	tests := []struct {
+		name string
+		err  interface{ ErrorClass() errclass.Class }
+		want errclass.Class
+	}{
+		{name: "metadata marshal", err: &MetadataMarshalError{Err: inner}, want: errclass.Internal},
+		{name: "document marshal", err: &DocumentMarshalError{Err: inner}, want: errclass.Internal},
+		{name: "signature decode", err: &SignatureDecodeError{Err: inner}, want: errclass.InvalidArgument},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.ErrorClass(); got != tt.want {
+				t.Errorf("ErrorClass() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMapServiceError_UserAuthFactorErrors asserts each auth-factor sentinel
+// maps to its gRPC code, an unclassified error to Internal, and nil to nil.
+func TestMapServiceError_UserAuthFactorErrors(t *testing.T) {
+	if err := mapServiceError(nil); err != nil {
+		t.Fatalf("mapServiceError(nil) = %v, want nil", err)
+	}
+	tests := []struct {
+		err  error
+		want codes.Code
+	}{
+		{auth.ErrFactorNotFound, codes.NotFound},
+		{auth.ErrUserHasNoFactors, codes.NotFound},
+		{auth.ErrFactorRevoked, codes.FailedPrecondition},
+		{auth.ErrLastFactor, codes.FailedPrecondition},
+		{auth.ErrFactorAlreadyExists, codes.AlreadyExists},
+		{auth.ErrFactorTypeUnsupported, codes.InvalidArgument},
+		{auth.ErrInvalidFactor, codes.InvalidArgument},
+		{errors.New("unknown error"), codes.Internal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.err.Error(), func(t *testing.T) {
+			if st, _ := status.FromError(mapServiceError(tt.err)); st.Code() != tt.want {
+				t.Fatalf("code = %s, want %s", st.Code(), tt.want)
+			}
+		})
 	}
 }

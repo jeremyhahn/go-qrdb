@@ -487,6 +487,7 @@ Configures the underlying storage backend.
 - `cache_size` must not be negative (>= 0).
 - `max_open_files` must not be negative (>= 0).
 - `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
+- `objstore.settings` and `volume_pools[].options` keys pass to the provider exactly as written (go-objstore's `forcePathStyle` stays camelCase); two keys in one map that differ only in case are refused.
 - `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
 
 **`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
@@ -908,6 +909,7 @@ brings the barrier up.
 | `cluster_lease` | string | `"15s"` | no | N/A | How long a successful read of the cluster seal records lets this node serve; a node that cannot read them for longer stops serving, keeping its keys. At most `60s`. |
 | `cluster_poll_interval` | string | `"1s"` | no | N/A | How often this node reads the cluster seal records. At most a third of `cluster_lease`. |
 | `cluster_ack_timeout` | string | `"5s"` | no | N/A | How long a node waits for every node to acknowledge a node-barrier seal before wiping its own key. At most half of `cluster_lease`. |
+| `drain_timeout` | string | `"10s"` | no | N/A (env `QRDB_SEAL_DRAIN_TIMEOUT`) | How long a seal waits for the flushes, durable writes (state-machine commits included) and compactions already in flight on the barrier's encrypted stores to end before it wipes the key. It applies to every barrier: the system barrier and each tenant and database barrier. A seal that waits it out still seals, and reports the stores that had not drained. |
 | `migration_credentials_dir` | string | `""` | no | N/A | Directory of this node's own credentials for a cluster `enable-encryption` migration it did not accept the request for: `system` for the node barrier, `tenant-<id>` for a tenant barrier. Each file mode 0600 or stricter. |
 
 **Validation rules:**
@@ -924,6 +926,7 @@ brings the barrier up.
   `"shamir"`: the threshold must be `>= 2` and the total `>=` the threshold.
 - `credential_strategy`, when non-empty, must be `manual` or `barrier`.
 - `share_ttl`, when non-empty, must be a Go duration greater than zero.
+- `drain_timeout`, when non-empty, must be a Go duration greater than zero.
 - `cluster_lease`, `cluster_poll_interval` and `cluster_ack_timeout` must each
   be a Go duration greater than zero (empty takes the default) and keep the
   bounds in the table.

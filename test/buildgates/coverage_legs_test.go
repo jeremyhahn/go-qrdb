@@ -253,7 +253,7 @@ const legFixture = `jobs:
           path: coverage/leg-${{ matrix.leg }}.out
           if-no-files-found: error
   coverage-merge:
-    needs: [changes, coverage]
+    needs: [preflight, coverage]
     steps:
       - uses: actions/download-artifact@0000000000000000000000000000000000000000 # v7
         with:
@@ -288,7 +288,7 @@ func TestCoverageLegs_CanFail(t *testing.T) {
 		"no copy-out":                {"          IN_IMAGE_COPY_OUT: coverage/leg-${{ matrix.leg }}.out\n", "", "IN_IMAGE_COPY_OUT"},
 		"an optional upload":         {"if-no-files-found: error", "if-no-files-found: warn", "does not upload"},
 		"two leg steps":              {"      - uses: actions/upload-artifact", "      - run: make coverage-leg COVER_LEG=x\n      - uses: actions/upload-artifact", "want exactly one"},
-		"merge without the legs":     {"needs: [changes, coverage]", "needs: [changes]", "does not need coverage"},
+		"merge without the legs":     {"needs: [preflight, coverage]", "needs: [preflight]", "does not need coverage"},
 		"merge without the profiles": {"pattern: coverage-leg-*", "pattern: coverage-leg-a", "does not download"},
 		"merge without the gate":     {"run: make coverage-merge", "run: make coverage", "does not run `make coverage-merge`"},
 	}

@@ -305,6 +305,23 @@ func TestTranslateRanges_ScanError(t *testing.T) {
 	assert.True(t, errors.As(err, &ie))
 }
 
+func TestTranslateRanges_ScanRangeError_ClosedClosed(t *testing.T) {
+	scanErr := errors.New("scan unavailable")
+	svc := &mockIndexQueryer{
+		scanFn: func(_ context.Context, _ string, _, _ []byte) (map[string][][]byte, error) {
+			return nil, scanErr
+		},
+	}
+
+	r := sqle.MySQLRange{
+		sqle.ClosedRangeColumnExpr("aaa", "zzz", types.LongText),
+	}
+	_, err := translateRanges(context.Background(), svc, "Name", []sqle.Range{r})
+	require.Error(t, err)
+	var ie *IndexLookupError
+	assert.True(t, errors.As(err, &ie))
+}
+
 // ---------------------------------------------------------------------------
 // Non-MySQLRange type
 // ---------------------------------------------------------------------------

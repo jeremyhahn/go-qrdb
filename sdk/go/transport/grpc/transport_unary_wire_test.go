@@ -751,6 +751,52 @@ func unaryCalls() map[string]func(context.Context, *Transport) error {
 		"LockRelease": func(ctx context.Context, tr *Transport) error {
 			return tr.LockRelease(ctx, &transport.LockReleaseRequest{})
 		},
+		"DeleteUser": func(ctx context.Context, tr *Transport) error {
+			return tr.DeleteUser(ctx, 1)
+		},
+		"EnableUser": func(ctx context.Context, tr *Transport) error {
+			return tr.EnableUser(ctx, 1)
+		},
+		"DisableUser": func(ctx context.Context, tr *Transport) error {
+			return tr.DisableUser(ctx, 1)
+		},
+		"SuspendUser": func(ctx context.Context, tr *Transport) error {
+			return tr.SuspendUser(ctx, 1)
+		},
+		"UnsuspendUser": func(ctx context.Context, tr *Transport) error {
+			return tr.UnsuspendUser(ctx, 1)
+		},
+		"DeleteRole": func(ctx context.Context, tr *Transport) error {
+			return tr.DeleteRole(ctx, "r")
+		},
+		"AssignRole": func(ctx context.Context, tr *Transport) error {
+			return tr.AssignRole(ctx, 1, "r")
+		},
+		"UnassignRole": func(ctx context.Context, tr *Transport) error {
+			return tr.UnassignRole(ctx, 1, "r")
+		},
+		"LeaseGrant": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.LeaseGrant(ctx, 60)
+			return err
+		},
+		"LeaseList": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.LeaseList(ctx)
+			return err
+		},
+		"IndexCreate": func(ctx context.Context, tr *Transport) error {
+			return tr.IndexCreate(ctx, "i", "f", transport.IndexConfig{})
+		},
+		"AddAuthFactor": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.AddAuthFactor(ctx, &transport.AuthFactorAddRequest{UserID: 1, Type: "mtls", Credential: []byte("c")})
+			return err
+		},
+		"Compact": func(ctx context.Context, tr *Transport) error {
+			return tr.Compact(ctx, 1)
+		},
+		"ExecuteTransaction": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.ExecuteTransaction(ctx, &transport.TransactionRequest{})
+			return err
+		},
 	}
 }
 
@@ -896,6 +942,25 @@ func TestGRPC_ClosedTransport_RefusesEveryUnaryVerb(t *testing.T) {
 			var ce *transport.ClosedError
 			if err := call(context.Background(), tr); !errors.As(err, &ce) {
 				t.Fatalf("%s on a closed transport = %v, want a ClosedError", name, err)
+			}
+		})
+	}
+}
+
+// TestGRPC_UnaryCanceledContext_StopsEveryVerb proves each unary verb hands
+// the caller's context to the RPC: against a server that would answer every
+// call, a context cancelled before the call must surface as the cancellation.
+// A verb that substituted its own context would succeed instead.
+func TestGRPC_UnaryCanceledContext_StopsEveryVerb(t *testing.T) {
+	tr := connectWireServer(t, nil)
+	for name, call := range unaryCalls() {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			var re *transport.RequestError
+			err := call(ctx, tr)
+			if !errors.As(err, &re) || re.Method != name || re.StatusCode != int(codes.Canceled) || status.Code(err) != codes.Canceled {
+				t.Fatalf("%s with a cancelled context = %v, want a RequestError naming it with status %d", name, err, codes.Canceled)
 			}
 		})
 	}

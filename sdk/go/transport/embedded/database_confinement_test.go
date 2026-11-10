@@ -137,3 +137,21 @@ func TestDatabaseConfinement(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedDatabaseBarrier_NilDatabaseService(t *testing.T) {
+	tr := newExtTransport(t)
+	ctx := context.Background()
+	for name, call := range map[string]func() error{
+		"SealDatabase":   func() error { return tr.SealDatabase(ctx, "mydb") },
+		"UnsealDatabase": func() error { return tr.UnsealDatabase(ctx, "mydb", "secret") },
+		"DatabaseBarrierStatus": func() error {
+			_, err := tr.DatabaseBarrierStatus(ctx, "mydb")
+			return err
+		},
+	} {
+		var ne *NilServiceError
+		if err := call(); !errors.As(err, &ne) {
+			t.Errorf("%s: expected NilServiceError, got %T: %v", name, err, err)
+		}
+	}
+}

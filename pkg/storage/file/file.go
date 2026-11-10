@@ -27,6 +27,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -37,6 +38,7 @@ import (
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/filelock"
@@ -139,6 +141,43 @@ type Engine struct {
 	// syncs times every fsync the engine issues on its write path (see
 	// timedSync). Nil, in an Engine built by hand, times nothing.
 	syncs *syncwatch.Observer
+
+	// lease registers an encrypted store with its barrier's quiesce gate
+	// (see quiesceGate). Every mutation holds it from before its journal is
+	// published until the write is applied, so a Seal's drain cannot finish
+	// with a write half done; once the gate closes, a mutation is refused
+	// with a *SealedError. Nil for a plaintext store, which a
+	// seal does not touch.
+	lease *quiesce.Lease
+}
+
+// quiesceGate returns the quiesce gate of an encrypting file system, or nil
+// for one that does not encrypt through a barrier.
+func quiesceGate(fs filesys.FS) *quiesce.Gate {
+	if g, ok := fs.(interface{ Quiesce() *quiesce.Gate }); ok {
+		return g.Quiesce()
+	}
+	return nil
+}
+
+// SealedError is returned by New and by every mutation once the quiesce gate
+// of the at-rest barrier under an encrypted store has closed for a seal:
+// nothing is written, so a seal never finishes with a write half done. Err
+// is quiesce.ErrSealing, which Unwrap exposes to errors.Is.
+type SealedError struct {
+	Err error
+}
+
+func (e *SealedError) Error() string {
+	return fmt.Sprintf("qrdb/storage/file: at-rest barrier sealed: %v", e.Err)
+}
+
+func (e *SealedError) Unwrap() error { return e.Err }
+
+// errSealing is the refusal a mutation meets once the seal's quiesce gate
+// has closed.
+func errSealing() error {
+	return &SealedError{Err: quiesce.ErrSealing}
 }
 
 // timedSync runs one fsync through e's observer (observeSync).
@@ -304,18 +343,38 @@ func New(dir string, opts ...Option) (*Engine, error) {
 	if cfg.syncs == nil {
 		cfg.syncs = syncwatch.ForStorage(syncwatch.BackendFile, syncwatch.WithAttrs(slog.String("dir", dir)))
 	}
-	if err := mkdirAllDurable(dir, cfg.syncs); err != nil {
+	fs, atRest := filesys.Default, atRestPlaintext
+	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
+		fs, atRest = cfg.encryptor.Wrap(filesys.Default), atRestEncrypted
+	}
+	// Admit the open before it touches the disk: recovery may replay a
+	// journal, and a seal must not finish with that half done. A gate
+	// already closed refuses here, leaving nothing behind.
+	lease := quiesceGate(fs).Register(dir)
+	if err := lease.Acquire(); err != nil {
+		lease.Unregister()
+		return nil, errSealing()
+	}
+	e, err := open(dir, fs, atRest, cfg.syncs, lease)
+	lease.Release()
+	if err != nil {
+		lease.Unregister()
+		return nil, err
+	}
+	return e, nil
+}
+
+// open creates dir, takes its lock and recovers it, with the caller holding
+// lease across all of it.
+func open(dir string, fs filesys.FS, atRest string, syncs *syncwatch.Observer, lease *quiesce.Lease) (*Engine, error) {
+	if err := mkdirAllDurable(dir, syncs); err != nil {
 		return nil, err
 	}
 	lock, err := filelock.Open(filepath.Join(dir, lockFileName))
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{dir: dir, fs: filesys.Default, atRest: atRestPlaintext, lock: lock, syncs: cfg.syncs}
-	if cfg.encryptor != nil && cfg.encryptor.Enabled() {
-		e.fs = cfg.encryptor.Wrap(filesys.Default)
-		e.atRest = atRestEncrypted
-	}
+	e := &Engine{dir: dir, fs: fs, atRest: atRest, lock: lock, syncs: syncs, lease: lease}
 	if err := e.recoverUnderLock(); err != nil {
 		_ = lock.Close()
 		return nil, err
@@ -326,10 +385,10 @@ func New(dir string, opts ...Option) (*Engine, error) {
 // recoverUnderLock performs the open-time work of New while holding the write
 // lock.
 func (e *Engine) recoverUnderLock() (err error) {
-	if err := e.acquireWrites(); err != nil {
+	if err := e.lockFiles(); err != nil {
 		return err
 	}
-	defer func() { err = e.unlockWrites(err) }()
+	defer func() { err = e.unlockFiles(err) }()
 
 	// The format is validated before the journal is replayed: a directory
 	// this build refuses must not be written to on the way to refusing it.
@@ -352,9 +411,7 @@ func (e *Engine) lockWrites() error {
 	// A process that died mid-commit left its journal behind; finish that
 	// commit before admitting any other mutation.
 	if err := e.replayJournal(); err != nil {
-		_ = e.lock.Unlock()
-		e.writeMu.Unlock()
-		return err
+		return e.unlockWrites(err)
 	}
 	return nil
 }
@@ -365,6 +422,22 @@ func (e *Engine) lockWrites() error {
 // a lock file observed open here stays open until unlockWrites. On any error
 // nothing is held.
 func (e *Engine) acquireWrites() error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if err := e.lease.Acquire(); err != nil {
+		return errSealing()
+	}
+	if err := e.lockFiles(); err != nil {
+		e.lease.Release()
+		return err
+	}
+	return nil
+}
+
+// lockFiles takes writeMu and the cross-process lock, without the quiesce
+// lease: open-time recovery runs under the lease New already holds.
+func (e *Engine) lockFiles() error {
 	if e.closed.Load() {
 		return &storage.ClosedError{}
 	}
@@ -385,6 +458,14 @@ func (e *Engine) acquireWrites() error {
 // back is reported rather than hiding a stuck lock. writeMu is released even
 // then; filelock.Unlock closes the file on failure so the OS lets go regardless.
 func (e *Engine) unlockWrites(err error) error {
+	err = e.unlockFiles(err)
+	e.lease.Release()
+	return err
+}
+
+// unlockFiles releases what lockFiles took and returns err, or the unlock's
+// own error when err is nil.
+func (e *Engine) unlockFiles(err error) error {
 	uerr := e.lock.Unlock()
 	e.writeMu.Unlock()
 	if err != nil {
@@ -1039,6 +1120,7 @@ func (e *Engine) Close() error {
 	if e.closed.Swap(true) {
 		return nil
 	}
+	e.lease.Unregister()
 	if e.lock == nil {
 		return nil
 	}
