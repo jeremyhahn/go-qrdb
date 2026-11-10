@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // A scheduled rotation that fails after it persisted the new value and before
@@ -249,6 +251,46 @@ func TestDeleteCredential_RemovesAStagedValue(t *testing.T) {
 	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err == nil {
 		t.Fatalf("the staged value under v%d survived the delete", next)
 	}
+}
+
+// A spent staged value whose delete failed outlives its rotation. Deleting
+// the credential removes it with every other staged record of the name, so a
+// credential later stored under the name rotates to a fresh value.
+func TestDeleteCredential_RemovesASpentStagedValue(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 5)
+	var calls atomic.Int32
+	countSource(svc, &calls)
+	before, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	_, next := rotationVersions(before.CurrentVersion, true)
+	due := rotationEpoch.Add(time.Hour)
+
+	arm(&backend.failDelete, stagedKey("k", next))
+	_, err = svc.RotateDue(t.Context(), due)
+	requireOperationError(t, err, "delete staged rotation")
+	backend.failDelete.Store(nil)
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); err != nil {
+		t.Fatalf("the spent staged value under v%d: %v; want it left by the failed cleanup", next, err)
+	}
+
+	if err := svc.DeleteCredential(t.Context(), "k"); err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+	if _, err := svc.store.Get(t.Context(), stagedKey("k", next)); !errors.Is(err, seal.ErrSecretNotFound) {
+		t.Fatalf("Get of the spent staged value after the delete = %v, want ErrSecretNotFound", err)
+	}
+
+	setFaultPolicy(t, svc, "k", 5)
+	if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+		t.Fatalf("RotateDue on the stored-again credential = %d, %v; want 1, nil", n, err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("value source called %d times, want 2", got)
+	}
+	requireCurrentValue(t, svc, "k-rotated-2")
 }
 
 // A staged value that cannot be read is not absent: the claimant reports the
