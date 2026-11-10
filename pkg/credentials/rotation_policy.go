@@ -288,12 +288,13 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if err != nil {
 		return err
 	}
-	// A value staged for the current version is spent. It lives under its
-	// own key, so a rotation that retained a version since the read above
-	// keeps it.
+	// A value staged for a version up to the current one is spent, or was
+	// staged by a rotation that lost that version to another. It lives
+	// under its own key, so a rotation that retained a version since the
+	// read above keeps it, and a value staged since is for a later version.
 	if meta.CurrentVersion > 0 {
-		if err := s.store.Delete(ctx, stagedKey(name, meta.CurrentVersion)); err != nil {
-			return &OperationError{Op: "delete staged rotation", Cause: err}
+		if err := s.deleteBarrierStaged(ctx, name, meta.CurrentVersion); err != nil {
+			return err
 		}
 	}
 	if _, err := s.GCExpiredVersions(ctx, name); err != nil {
@@ -367,13 +368,13 @@ func (s *CredentialService) claimRotation(ctx context.Context, name string, now 
 // interval.
 func (s *CredentialService) rotateClaimed(ctx context.Context, name string, claim *rotationClaim, now time.Time) (time.Time, error) {
 	sched := &scheduledRotation{claim: claim, now: now}
-	staged, err := s.stagedRotation(ctx, name)
+	staged, version, err := s.stagedRotation(ctx, name)
 	if err != nil {
 		return time.Time{}, err
 	}
 	if staged != nil {
 		defer secure.Wipe(staged)
-		sched.resumed = true
+		sched.resumed, sched.staged = true, version
 		_, err := s.RotateCredential(ctx, name, RotateOptions{NewValue: staged, retainPrevious: true, schedule: sched})
 		return sched.next, err
 	}
@@ -393,30 +394,36 @@ func (s *CredentialService) rotateClaimed(ctx context.Context, name string, clai
 }
 
 // stagedRotation returns the value an earlier scheduled rotation of name
-// staged under the next version and did not land, or nil when there is none.
-// Like the current record, a staged one the store cannot read is treated as
-// absent.
-func (s *CredentialService) stagedRotation(ctx context.Context, name string) ([]byte, error) {
+// staged and did not land, with the version it is staged for, or nil when
+// there is none. Only the version the metadata record names is resumed, and
+// only while it is still the next version: a staged record the metadata does
+// not name is never read, whatever its key.
+func (s *CredentialService) stagedRotation(ctx context.Context, name string) ([]byte, uint64, error) {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	if meta.Staged == 0 {
+		return nil, 0, nil
 	}
 	current, exists, err := s.loadBarrierCurrent(ctx, name)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	secure.Wipe(current)
-	_, next := rotationVersions(meta.CurrentVersion, exists)
-	staged, err := s.store.Get(ctx, stagedKey(name, next))
+	if _, next := rotationVersions(meta.CurrentVersion, exists); meta.Staged != next {
+		return nil, 0, nil
+	}
+	staged, err := s.store.Get(ctx, stagedKey(name, meta.Staged))
 	if errors.Is(err, seal.ErrSecretNotFound) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
 		// Any other failure is not absence: reading it as absence would
 		// invoke the rotation source again for a value already staged.
-		return nil, &OperationError{Op: "read staged rotation", Cause: err}
+		return nil, 0, &OperationError{Op: "read staged rotation", Cause: err}
 	}
-	return staged, nil
+	return staged, meta.Staged, nil
 }
 
 // settle ends the claim in the metadata write that lands its rotation and

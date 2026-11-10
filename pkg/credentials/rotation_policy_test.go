@@ -659,7 +659,7 @@ func requireStillDue(t *testing.T, svc *CredentialService, name string, due time
 }
 
 // TestRotateDue_FailedRotationRetriedAtOnce: a claimed rotation whose
-// current-value write fails leaves the credential due, so the next check,
+// commit fails leaves the credential due, so the next check,
 // and a service restarted over the same storage, retries it rather than
 // waiting an Interval.
 func TestRotateDue_FailedRotationRetriedAtOnce(t *testing.T) {
@@ -669,7 +669,7 @@ func TestRotateDue_FailedRotationRetriedAtOnce(t *testing.T) {
 	arm(&backend.failCAS, credentialPrefix+"k")
 
 	n, err := svc.RotateDue(t.Context(), due)
-	requireRotationOpError(t, err, "k", "write current")
+	requireRotationOpError(t, err, "k", "commit rotation")
 	if n != 0 {
 		t.Fatalf("rotated %d, want 0", n)
 	}
@@ -744,8 +744,10 @@ func TestRotateDue_UnreleasedClaimLapses(t *testing.T) {
 		return source(ctx, name)
 	}
 
+	// The metadata is written with the staged value, so the fault armed by
+	// the source fails the staging and then the release.
 	_, err := svc.RotateDue(t.Context(), due)
-	requireRotationOpError(t, err, "k", "write meta")
+	requireRotationOpError(t, err, "k", "stage rotation")
 	backend.failCAS.Store(nil)
 	svc.rotationSource = source
 
@@ -1242,7 +1244,7 @@ func TestRotateDue_RotateFailureReported(t *testing.T) {
 	arm(&backend.failCAS, credentialPrefix+"k")
 
 	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
-	requireRotationOpError(t, err, "k", "write current")
+	requireRotationOpError(t, err, "k", "commit rotation")
 	if !errors.Is(err, errInjectedFault) || n != 0 {
 		t.Fatalf("RotateDue = %d, %v; want 0 and the injected fault", n, err)
 	}

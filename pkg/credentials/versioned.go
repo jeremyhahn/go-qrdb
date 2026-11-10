@@ -15,11 +15,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -123,10 +125,13 @@ type RotateOptions struct {
 type scheduledRotation struct {
 	claim *rotationClaim
 	now   time.Time
-	// resumed reports that the new value was read back from a staged
-	// version left by an earlier attempt, whose writes before the staging
-	// are therefore already persisted.
+	// resumed reports that the new value was read back from the staged
+	// version an earlier attempt left, which is therefore not staged again.
 	resumed bool
+	// staged is the version the value is staged for, as the metadata
+	// record names it. The rotation commits only while the record still
+	// does.
+	staged uint64
 	// next is the schedule's next due time once the write settles it.
 	next time.Time
 }
@@ -182,6 +187,12 @@ type credentialMeta struct {
 	// Every later check retries the cleanup, without invoking the value
 	// source, until it succeeds.
 	PendingCleanup string `json:"pending_cleanup,omitempty"`
+
+	// Staged is the version a scheduled rotation's staged value is
+	// pending for, 0 when none is. Only the staged value the record names
+	// is resumed; every write of the current value clears it, so a value
+	// staged before a replacement is never replayed over it.
+	Staged uint64 `json:"staged,omitempty"`
 }
 
 type credentialMetaEntry struct {
@@ -551,170 +562,209 @@ func (s *CredentialService) listBarrier(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
+// rotateBarrier lands a rotation in one guarded batch: the retained copy of
+// the previous version, the new current value and the metadata record are
+// written together, and only while the metadata record and the current
+// value are still exactly what the rotation read. A refused batch means
+// another writer got there first; the rotation reads again and re-applies.
+// A manual rotation then numbers its versions from the fresh record. A
+// scheduled one goes on only while the record still carries its claim and
+// still names its staged version, and otherwise returns
+// ErrRotationClaimLost having written nothing.
 func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
-	meta, err := s.loadBarrierMeta(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-
-	prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	prevVersion, newVersion := rotationVersions(meta.CurrentVersion, prevExists)
 	sched := opts.schedule
-
-	now := time.Now().UTC()
-	var graceUntil time.Time
-	if opts.GracePeriod > 0 {
-		graceUntil = now.Add(opts.GracePeriod)
-	}
-	retained := prevExists && (opts.GracePeriod > 0 || opts.retainPrevious)
-	// A resumed scheduled rotation retained the previous version before it
-	// staged the new one, and its current record may already hold the new
-	// value, so the retained copy is not written again.
-	if retained && (sched == nil || !sched.resumed) {
-		if err := s.store.Put(ctx, versionKey(name, prevVersion), prevValue); err != nil {
-			return nil, &OperationError{Op: "write grace version", Cause: err}
-		}
-	}
 	if sched != nil && !sched.resumed {
-		// The staged value is the persisted evidence a later attempt
-		// resumes from instead of invoking the value source again. It is
-		// keyed apart from the version records, so the delete that spends
-		// it cannot remove a version a concurrent rotation retained.
-		if err := s.store.Put(ctx, stagedKey(name, newVersion), opts.NewValue); err != nil {
-			return nil, &OperationError{Op: "stage rotation", Cause: err}
+		if err := s.stageScheduled(ctx, name, sched, opts.NewValue); err != nil {
+			return nil, err
 		}
 	}
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		prevVersion, newVersion := rotationVersions(meta.CurrentVersion, prevExists)
+		// A scheduled commit is fenced on its claim and its staged
+		// version: when the claim is gone (the credential was deleted) or
+		// replaced, or a rotation or a stored value since took the staged
+		// version's place, nothing is written, so a deleted credential's
+		// records are never recreated.
+		if sched != nil && (!prevExists || meta.Claim == nil || meta.Claim.ID != sched.claim.ID ||
+			meta.Staged != sched.staged || newVersion != sched.staged) {
+			secure.Wipe(prevValue)
+			s.abandonScheduled(ctx, name, sched.staged, meta.Staged == sched.staged)
+			return nil, &OperationError{Op: "commit rotation", Cause: ErrRotationClaimLost}
+		}
 
-	if sched == nil {
-		if err := s.store.Put(ctx, credentialPrefix+name, opts.NewValue); err != nil {
-			return nil, &OperationError{Op: "write current", Cause: err}
+		now := time.Now().UTC()
+		var graceUntil time.Time
+		if opts.GracePeriod > 0 {
+			graceUntil = now.Add(opts.GracePeriod)
 		}
-	} else if err := s.writeScheduledCurrent(ctx, name, prevValue, prevExists, opts.NewValue); err != nil {
-		if errors.Is(err, ErrRotationClaimLost) {
-			s.abandonScheduled(ctx, name, prevVersion, newVersion, retained && !sched.resumed)
+		guards := []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}, {Key: credentialPrefix + name}}
+		if prevExists {
+			guards[1].Value = prevValue
 		}
-		return nil, err
-	}
-	// The version fields are applied to the record as it stands at the
-	// write, so a policy change or claim made since the read survives. A
-	// record that already names newVersion took this rotation's version
-	// write, and a second history entry would duplicate it. A scheduled
-	// rotation settles its claim and schedule in the same write.
-	// A scheduled commit is fenced on its claim: when the claim is gone
-	// (the credential was deleted) or replaced, the record is not written,
-	// so a deleted credential's metadata is never recreated.
-	var lost bool
-	if err := s.updateBarrierMeta(ctx, name, "write meta", func(m *credentialMeta) bool {
-		lost = sched != nil && (m.Claim == nil || m.Claim.ID != sched.claim.ID)
-		if lost {
-			return false
+		var writes []kvstore.KV
+		if prevExists && (opts.GracePeriod > 0 || opts.retainPrevious) {
+			writes = append(writes, kvstore.KV{Key: versionKey(name, prevVersion), Value: prevValue})
+			meta.History = append(meta.History, credentialMetaEntry{
+				Version:    prevVersion,
+				CreatedAt:  now,
+				GraceUntil: graceUntil,
+			})
 		}
-		if m.CurrentVersion != newVersion {
-			if retained {
-				m.History = append(m.History, credentialMetaEntry{
-					Version:    prevVersion,
-					CreatedAt:  now,
-					GraceUntil: graceUntil,
-				})
-			}
-			m.CurrentVersion = newVersion
-		}
-		if opts.importDigest != "" && !slices.Contains(m.Imported, opts.importDigest) {
-			m.Imported = append(m.Imported, opts.importDigest)
+		// The version fields are applied to the record as it stands at
+		// the read the batch is guarded on, so a policy change or claim
+		// made before it survives. A scheduled rotation settles its claim
+		// and schedule in the same write.
+		meta.CurrentVersion = newVersion
+		meta.Staged = 0
+		if opts.importDigest != "" && !slices.Contains(meta.Imported, opts.importDigest) {
+			meta.Imported = append(meta.Imported, opts.importDigest)
 		}
 		if sched != nil {
-			sched.settle(m)
+			sched.settle(meta)
 		}
-		return true
-	}); err != nil {
-		return nil, err
-	}
-	if lost {
-		// The value written above is taken back unless another writer
-		// replaced it since; a delete in progress removes it either way.
-		if _, err := s.store.CompareAndSwap(ctx, credentialPrefix+name, opts.NewValue, prevValue); err != nil {
-			s.logger.Warn("scheduled rotation value left after its claim was lost",
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			secure.Wipe(prevValue)
+			return nil, &OperationError{Op: "encode meta", Cause: err}
+		}
+		writes = append(writes,
+			kvstore.KV{Key: credentialPrefix + name, Value: opts.NewValue},
+			kvstore.KV{Key: metaKey(name), Value: nextMeta})
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
+		// The in-memory copy of the previous value is wiped once it is on
+		// disk, or once this attempt is over.
+		secure.Wipe(prevValue)
+		if err != nil {
+			return nil, &OperationError{Op: "commit rotation", Cause: err}
+		}
+		if !applied {
+			continue
+		}
+		// newVersion is current, so a value staged for it is spent,
+		// whichever rotation staged it. One left by a failed delete is
+		// reaped by the scheduled rotation's cleanup.
+		if err := s.store.Delete(ctx, stagedKey(name, newVersion)); err != nil {
+			s.logger.Warn("staged rotation value left for cleanup",
 				slog.String("name", name),
+				slog.Uint64("version", newVersion),
 				slog.String("error", err.Error()))
 		}
-		s.abandonScheduled(ctx, name, prevVersion, newVersion, retained && !sched.resumed)
-		return nil, &OperationError{Op: "write meta", Cause: ErrRotationClaimLost}
-	}
-	// newVersion is current, so a value staged for it is spent, whichever
-	// rotation staged it. One left by a failed delete is reaped by the
-	// scheduled rotation's cleanup.
-	if err := s.store.Delete(ctx, stagedKey(name, newVersion)); err != nil {
-		s.logger.Warn("staged rotation value left for cleanup",
+
+		s.logger.Debug("credential rotated",
 			slog.String("name", name),
-			slog.Uint64("version", newVersion),
-			slog.String("error", err.Error()))
+			slog.String("strategy", StrategyBarrier),
+			slog.Uint64("previous_version", prevVersion),
+			slog.Uint64("new_version", newVersion),
+			slog.Duration("grace_period", opts.GracePeriod))
+
+		return &RotateResult{
+			Name:            name,
+			PreviousVersion: prevVersion,
+			NewVersion:      newVersion,
+			GraceUntil:      graceUntil,
+		}, nil
 	}
-
-	// Wipe in-memory copy of the previous value once it is on disk
-	// (or once we've decided not to keep it).
-	if prevExists {
-		secure.Wipe(prevValue)
-	}
-
-	s.logger.Debug("credential rotated",
-		slog.String("name", name),
-		slog.String("strategy", StrategyBarrier),
-		slog.Uint64("previous_version", prevVersion),
-		slog.Uint64("new_version", newVersion),
-		slog.Duration("grace_period", opts.GracePeriod))
-
-	return &RotateResult{
-		Name:            name,
-		PreviousVersion: prevVersion,
-		NewVersion:      newVersion,
-		GraceUntil:      graceUntil,
-	}, nil
+	return nil, &OperationError{Op: "commit rotation", Cause: ErrRotationMetaContended}
 }
 
-// writeScheduledCurrent replaces the current value a scheduled rotation
-// read, and only that value. A credential deleted while the value source
-// ran has no current value, and one rotated by another writer holds a
-// different one; either way the claim the rotation was taken under no
-// longer describes the record, and ErrRotationClaimLost is returned
-// with nothing written.
-func (s *CredentialService) writeScheduledCurrent(ctx context.Context, name string, prevValue []byte, prevExists bool, next []byte) error {
-	if !prevExists {
-		return &OperationError{Op: "write current", Cause: ErrRotationClaimLost}
+// stageScheduled persists a scheduled rotation's new value before it
+// becomes current: the staged value and the metadata record naming its
+// version are written in one batch, guarded on the metadata as read. The
+// staged value is the evidence a later attempt resumes from instead of
+// invoking the value source again, and only the version the metadata names
+// is ever resumed. It is keyed apart from the version records, so the
+// delete that spends it cannot remove a version a rotation retained. A
+// claim that is gone or replaced stages nothing.
+func (s *CredentialService) stageScheduled(ctx context.Context, name string, sched *scheduledRotation, value []byte) error {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		if meta.Claim == nil || meta.Claim.ID != sched.claim.ID {
+			return &OperationError{Op: "stage rotation", Cause: ErrRotationClaimLost}
+		}
+		current, exists, err := s.loadBarrierCurrent(ctx, name)
+		if err != nil {
+			return err
+		}
+		secure.Wipe(current)
+		_, next := rotationVersions(meta.CurrentVersion, exists)
+		meta.Staged = next
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			return &OperationError{Op: "encode meta", Cause: err}
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: metaKey(name), Value: rawMeta}},
+			[]kvstore.KV{{Key: stagedKey(name, next), Value: value}, {Key: metaKey(name), Value: nextMeta}})
+		if err != nil {
+			return &OperationError{Op: "stage rotation", Cause: err}
+		}
+		if applied {
+			sched.staged = next
+			return nil
+		}
 	}
-	swapped, err := s.store.CompareAndSwap(ctx, credentialPrefix+name, prevValue, next)
-	if err != nil {
-		return &OperationError{Op: "write current", Cause: err}
-	}
-	if !swapped {
-		return &OperationError{Op: "write current", Cause: ErrRotationClaimLost}
-	}
-	return nil
+	return &OperationError{Op: "stage rotation", Cause: ErrRotationMetaContended}
 }
 
-// abandonScheduled removes what a scheduled rotation that lost its claim
-// wrote before its commit, once the credential is deleted: the staged
-// value and, when wroteRetained, the retained copy of the previous
-// version. While the credential exists they are kept, since a concurrent
-// rotation may have written the same version key and the scheduled
-// cleanup reaps a stale staged value.
-func (s *CredentialService) abandonScheduled(ctx context.Context, name string, prevVersion, newVersion uint64, wroteRetained bool) {
-	if _, err := s.store.Get(ctx, metaKey(name)); !errors.Is(err, seal.ErrSecretNotFound) {
+// storeBarrier writes the credential's current value in one batch guarded
+// on the metadata record as read. A record naming a staged rotation value
+// is written in the same batch with that name cleared, and the staged value
+// is deleted by it: the stored value replaces what the rotation staged, so
+// the next scheduled rotation invokes its value source again and retains
+// the stored value. The current version is not advanced.
+func (s *CredentialService) storeBarrier(ctx context.Context, name string, value []byte) error {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		writes := []kvstore.KV{{Key: credentialPrefix + name, Value: value}}
+		if staged := meta.Staged; staged != 0 {
+			meta.Staged = 0
+			nextMeta, err := json.Marshal(meta)
+			if err != nil {
+				return &OperationError{Op: "encode meta", Cause: err}
+			}
+			writes = append(writes,
+				kvstore.KV{Key: metaKey(name), Value: nextMeta},
+				kvstore.KV{Key: stagedKey(name, staged), Delete: true})
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
+	}
+	return &OperationError{Op: "store credential", Cause: ErrRotationMetaContended}
+}
+
+// abandonScheduled removes the value staged for version by a scheduled
+// rotation that will not commit it, unless the metadata record still names
+// it. A staged value the record does not name is never resumed; one left by
+// a failed delete is reaped by the scheduled cleanup or the credential's
+// delete.
+func (s *CredentialService) abandonScheduled(ctx context.Context, name string, version uint64, named bool) {
+	if named {
 		return
 	}
-	keys := []string{stagedKey(name, newVersion)}
-	if wroteRetained {
-		keys = append(keys, versionKey(name, prevVersion))
-	}
-	for _, key := range keys {
-		if err := s.store.Delete(ctx, key); err != nil {
-			s.logger.Warn("abandoned scheduled rotation record left behind",
-				slog.String("name", name),
-				slog.String("key", key),
-				slog.String("error", err.Error()))
-		}
+	if err := s.store.Delete(ctx, stagedKey(name, version)); err != nil {
+		s.logger.Warn("abandoned staged rotation value left behind",
+			slog.String("name", name),
+			slog.Uint64("version", version),
+			slog.String("error", err.Error()))
 	}
 }
 
@@ -893,7 +943,7 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 	// Every value a scheduled rotation staged under the name goes too, an
 	// unfinished rotation's and a spent one a failed cleanup left alike, so
 	// a credential later stored under the name never lands one.
-	if err := s.deleteBarrierStaged(ctx, name); err != nil {
+	if err := s.deleteBarrierStaged(ctx, name, math.MaxUint64); err != nil {
 		return err
 	}
 	if err := s.store.Delete(ctx, metaKey(name)); err != nil {
@@ -931,24 +981,32 @@ func metaKey(name string) string {
 }
 
 func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*credentialMeta, error) {
+	meta, _, err := s.readBarrierMeta(ctx, name)
+	return meta, err
+}
+
+// readBarrierMeta returns the metadata record with the bytes it was decoded
+// from, the guard of a batch that writes it. The bytes are nil when the
+// record is absent.
+func (s *CredentialService) readBarrierMeta(ctx context.Context, name string) (*credentialMeta, []byte, error) {
 	raw, err := s.store.Get(ctx, metaKey(name))
 	if errors.Is(err, seal.ErrSecretNotFound) {
 		// Missing metadata is normal for legacy (untracked) entries
 		// and for credentials that have never been rotated. Return
 		// a zero-valued meta the caller can populate.
-		return &credentialMeta{}, nil
+		return &credentialMeta{}, nil, nil
 	}
 	if err != nil {
 		// Any other failure is not absence: a caller deciding on an
 		// empty record would number a version, or invoke the rotation
 		// value source, over metadata it never read.
-		return nil, &OperationError{Op: "read meta", Cause: err}
+		return nil, nil, &OperationError{Op: "read meta", Cause: err}
 	}
 	var meta credentialMeta
 	if err := json.Unmarshal(raw, &meta); err != nil {
-		return nil, &OperationError{Op: "decode meta", Cause: err}
+		return nil, nil, &OperationError{Op: "decode meta", Cause: err}
 	}
-	return &meta, nil
+	return &meta, raw, nil
 }
 
 func (s *CredentialService) loadBarrierCurrent(ctx context.Context, name string) ([]byte, bool, error) {
@@ -980,9 +1038,9 @@ func sortStrings(in []string) {
 	}
 }
 
-// deleteBarrierStaged removes every staged rotation value of exactly the
-// named credential, whichever version it was staged for.
-func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string) error {
+// deleteBarrierStaged removes the staged rotation values of exactly the
+// named credential that were staged for a version up to upTo.
+func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string, upTo uint64) error {
 	prefix := StagedKeyPrefix + encodedName(name) + "/"
 	keys, err := s.store.List(ctx, prefix)
 	if err != nil {
@@ -991,7 +1049,7 @@ func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string
 	for _, k := range keys {
 		// A staged key ends in its version.
 		version, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 64)
-		if err != nil || k != stagedKey(name, version) {
+		if err != nil || k != stagedKey(name, version) || version > upTo {
 			continue
 		}
 		if err := s.store.Delete(ctx, k); err != nil {
