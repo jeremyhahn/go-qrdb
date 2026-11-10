@@ -528,6 +528,74 @@ func TestOnboardTenant_SealedTenantTrailGetsItsOnboardingRecordAtUnseal(t *testi
 	}
 }
 
+// refuseOnceTrail is a tenant trail that refuses the first event of one
+// tenant and takes every event after it.
+type refuseOnceTrail struct {
+	*audit.RingBuffer
+	tenantID string
+	refused  bool
+}
+
+func (a *refuseOnceTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if ev.TenantID == a.tenantID && !a.refused {
+		a.refused = true
+		return &audit.WriteError{Backend: "home-group", Err: tenant.ErrTenantSealed}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
+// The node's audit sink is the node-local trail and the tenant's replicated
+// trail together. When the tenant's trail refuses the onboarding record, the
+// node-local trail has already taken it: the retry of the pending record goes
+// to the tenant's trail alone, so the node-local trail holds it once.
+func TestOnboardTenant_PendingRecordRetryLeavesOneNodeLocalRecord(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	local := audit.NewRingBuffer(32)
+	trail := &refuseOnceTrail{RingBuffer: audit.NewRingBuffer(32), tenantID: "acme"}
+	deps.Audit = audit.NewAggregateLogger(local, trail)
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(ring *audit.RingBuffer) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range ring.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	if !trail.refused {
+		t.Fatal("the tenant's trail was never offered the onboarding record")
+	}
+	if got := onboardRecords(trail.RingBuffer); len(got) != 0 {
+		t.Fatalf("tenant trail holds %+v before the retry, want nothing", got)
+	}
+
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("EmitPendingOnboardAudit: %v", err)
+	}
+	if got := onboardRecords(trail.RingBuffer); len(got) != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records after the retry, want 1: %+v", len(got), got)
+	}
+	if got := onboardRecords(local); len(got) != 1 {
+		t.Fatalf("node-local trail holds %d tenant.onboard records, want 1: %+v", len(got), got)
+	}
+}
+
 // TestOnboardTenant_AuditGateFailClosedRefusesBeforeProvisioning proves the
 // default audit failure policy (FailClosed) refuses the whole operation
 // before bootstrap.ProvisionTenant ever runs: the gating record is part of
