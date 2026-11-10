@@ -17,10 +17,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 )
 
-// credentialRotationPassTimeout bounds one pass of the credential rotation
-// scheduler, so a stalled value source cannot hold the pass past Stop.
-const credentialRotationPassTimeout = 30 * time.Second
-
 // credentialRotator carries out the rotation policies due at now.
 // service.CredentialService implements it; it is not a transport verb.
 type credentialRotator interface {
@@ -64,16 +60,17 @@ func (r *credentialRotationScheduler) run(ctx context.Context) {
 }
 
 // passOnce runs RotateDue once and returns how many credentials it
-// rotated. It is a no-op when a pass is already running.
+// rotated. It is a no-op when a pass is already running. The pass runs under
+// the scheduler's context with no deadline of its own: the credential
+// service bounds each credential's attempt, so a slow one does not starve
+// those after it, and Stop ends the pass by cancelling the context.
 func (r *credentialRotationScheduler) passOnce(ctx context.Context) int {
 	if !r.running.CompareAndSwap(false, true) {
 		return 0
 	}
 	defer r.running.Store(false)
 
-	pctx, cancel := context.WithTimeout(ctx, credentialRotationPassTimeout)
-	defer cancel()
-	rotated, err := r.rotator.CredentialRotateDue(pctx, r.now())
+	rotated, err := r.rotator.CredentialRotateDue(ctx, r.now())
 	if err != nil {
 		r.logger.Warn("credential rotation scheduler: rotation failed",
 			slog.Int("rotated", rotated), slog.Any("error", err))
