@@ -398,13 +398,19 @@ func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *le
 			return &OperationError{Op: "write migration note", Cause: err}
 		}
 	}
+	// The version records go first and the metadata after them: while a
+	// version record is left, the metadata that makes it one of name's is
+	// too. The value goes last.
 	for k := range c.record {
-		// The value goes last: while a metadata or version record is
-		// left, the value that makes it one of name's is too.
-		if k == "" {
+		if k == "" || k == metaSuffix {
 			continue
 		}
 		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name+k); err != nil {
+			return &OperationError{Op: "delete legacy record", Cause: err}
+		}
+	}
+	if _, ok := c.record[metaSuffix]; ok {
+		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name+metaSuffix); err != nil {
 			return &OperationError{Op: "delete legacy record", Cause: err}
 		}
 	}
@@ -421,10 +427,12 @@ func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *le
 
 // loadLegacy reads the legacy store's records, grouped by the name
 // splitRecordKey parses from each key. A non-empty only restricts the result
-// to that name. A name is held, so that keys ending in a record suffix
-// after it are its records, when the listing holds its value, when this
+// to that name. A name is held when the listing holds its value, when this
 // node's migration note names it (its deletion was interrupted), or when it
-// is the name asked for.
+// is the name asked for. A key ending in a record suffix after a held name
+// is that name's record only when validated metadata accounts for it;
+// otherwise it is a credential of its own. Every value read ends in a copy,
+// which the caller wipes, or is wiped here.
 func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[string]*legacyCopy, error) {
 	keys, err := s.legacy.List(ctx, legacyCredentialPrefix+only)
 	if err != nil {
@@ -444,21 +452,28 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 	if only != "" {
 		held[only] = struct{}{}
 	}
-	copies := make(map[string]*legacyCopy)
+	values := make(map[string][]byte, len(keys))
 	for _, key := range keys {
-		name, suffix := splitRecordKey(strings.TrimPrefix(key, legacyCredentialPrefix), held)
+		value, err := s.legacy.Get(ctx, key)
+		if err != nil {
+			for _, v := range values {
+				secure.Wipe(v)
+			}
+			return nil, &OperationError{Op: "read legacy record", Cause: err}
+		}
+		values[strings.TrimPrefix(key, legacyCredentialPrefix)] = value
+	}
+	copies := make(map[string]*legacyCopy)
+	for rest, value := range values {
+		name, suffix := splitRecordKey(rest, held, values)
 		if only != "" && name != only {
+			secure.Wipe(value)
 			continue
 		}
 		c := copies[name]
 		if c == nil {
 			c = &legacyCopy{record: credentialRecord{}}
 			copies[name] = c
-		}
-		value, err := s.legacy.Get(ctx, key)
-		if err != nil {
-			wipeCopies(copies)
-			return nil, &OperationError{Op: "read legacy record", Cause: err}
 		}
 		c.record[suffix] = value
 	}
@@ -543,12 +558,15 @@ func replicatedKey(name, suffix string) string {
 
 // splitRecordKey splits a key relative to the legacy prefix into the
 // credential name and the record's suffix. The legacy store appended
-// metaSuffix or versionPrefix+n to the name, and a name may itself hold a
-// '#', so the key is read from its end: it is a metadata or version record
-// of <name> only when it ends in exactly metaSuffix or versionPrefix and a
-// decimal version, and held, the keys of the same listing, holds <name>'s
-// value. Any other key is the value of the credential the whole key names.
-func splitRecordKey(rest string, held map[string]struct{}) (name, suffix string) {
+// metaSuffix or versionPrefix+n to the name, but it also accepted any
+// non-blank name, so a key ending that way may be a credential of its own.
+// The key is read from its end, and it is a record of <name> only when held,
+// the names of the same listing, holds <name> and validated metadata
+// accounts for it: a metadata record must decode as metadata, and a version
+// record must be a version <name>'s metadata lists. values holds the listed
+// values by key. Any other key is the value of the credential the whole key
+// names.
+func splitRecordKey(rest string, held map[string]struct{}, values map[string][]byte) (name, suffix string) {
 	base, ok := strings.CutSuffix(rest, metaSuffix)
 	if !ok {
 		i := strings.LastIndex(rest, versionPrefix)
@@ -565,10 +583,39 @@ func splitRecordKey(rest string, held map[string]struct{}) (name, suffix string)
 	}
 	// base is a credential's value only when it is not itself a record of
 	// a shorter name.
-	if _, sub := splitRecordKey(base, held); sub != "" {
+	if _, sub := splitRecordKey(base, held, values); sub != "" {
 		return rest, ""
 	}
-	return base, rest[len(base):]
+	suffix = rest[len(base):]
+	if suffix == metaSuffix {
+		if _, ok := legacyMeta(values[rest]); !ok {
+			return rest, ""
+		}
+		return base, suffix
+	}
+	meta, ok := legacyMeta(values[base+metaSuffix])
+	n, _ := strconv.ParseUint(suffix[len(versionPrefix):], 10, 64)
+	if !ok || !slices.ContainsFunc(meta.History, func(e credentialMetaEntry) bool { return e.Version == n }) {
+		return rest, ""
+	}
+	return base, suffix
+}
+
+// legacyMeta decodes raw as a credential's metadata record. It is one only
+// when it decodes strictly, with no unknown field, and says something: a
+// version, a history entry or a policy. Anything else under a metadata key
+// is a credential's own value.
+func legacyMeta(raw []byte) (*credentialMeta, bool) {
+	var meta credentialMeta
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&meta); err != nil {
+		return nil, false
+	}
+	if meta.CurrentVersion == 0 && len(meta.History) == 0 && meta.Policy == nil {
+		return nil, false
+	}
+	return &meta, true
 }
 
 // ListMigrationConflicts returns the unresolved migration conflicts on this

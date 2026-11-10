@@ -103,6 +103,11 @@ copies into `__sys:credentials/` once, under these rules.
 **What moves.** Every record under the old prefix: a credential's current
 value, its retained versions and its metadata record (rotation policy and
 claim). The key layout under the prefix is unchanged; only the prefix moves.
+The old store accepted any name, so a key ending in `#meta` or `#v<n>` is
+read as a record of the shorter name only when validated metadata accounts
+for it: a `#meta` value must decode as a metadata record, and a `#v<n>` key
+must be a version that record lists. Any other such key is a credential of
+its own and moves under its whole name.
 A `manual`-strategy node keeps no records and has nothing to move.
 
 **When it runs.** Once per node, when the credential service is bound to the
