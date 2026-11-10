@@ -653,3 +653,51 @@ func TestResolveMigrationConflict_ImportWithoutValue(t *testing.T) {
 	assert.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), ErrCredentialNotFound)
 	assert.Len(t, legacyKeys(t, legacyB), 2)
 }
+
+// The old API accepted any non-blank name, so a node may hold credentials
+// whose names end like a metadata or version record of another credential.
+// Each migrates as itself unless validated metadata accounts for it.
+func TestMigrateLegacy_NamesEndingInRecordSuffixesAreCredentials(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("beside an unrotated credential", func(t *testing.T) {
+		legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		own := map[string]string{"db": "db-value", "db#meta": "meta-secret", "db#v1": "v1-secret"}
+		for name, value := range own {
+			require.NoError(t, legacy.Put(ctx, legacyCredentialPrefix+name, []byte(value)))
+		}
+		svc := newMigratingService(t, legacy)
+		require.NoError(t, svc.BindStore(ctx, shared))
+
+		conflicts, err := svc.ListMigrationConflicts(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, conflicts)
+		names, err := svc.ListCredentials(ctx)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"db", "db#meta", "db#v1"}, names)
+		for name, value := range own {
+			assert.Equal(t, value, retrieveString(t, svc, name), name)
+		}
+		meta, err := svc.loadBarrierMeta(ctx, "db")
+		require.NoError(t, err)
+		assert.Zero(t, meta.CurrentVersion)
+		assert.Empty(t, meta.History)
+		assert.Empty(t, legacyKeys(t, legacy))
+	})
+
+	t.Run("beside a rotated credential", func(t *testing.T) {
+		legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		writeLegacy(t, legacy, "db", "v2", "v1", nil)
+		require.NoError(t, legacy.Put(ctx, legacyCredentialPrefix+"db#v7", []byte("other")))
+		svc := newMigratingService(t, legacy)
+		require.NoError(t, svc.BindStore(ctx, shared))
+
+		names, err := svc.ListCredentials(ctx)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"db", "db#v7"}, names)
+		assert.Equal(t, "other", retrieveString(t, svc, "db#v7"))
+		assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+		assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+		assert.Empty(t, legacyKeys(t, legacy))
+	})
+}
