@@ -1946,6 +1946,13 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 
 		SeparationOfDuties: infra.SeparationOfDuties,
 	}
+	// infra.AuditLogger is the node-local trail and the replicated logger
+	// together (BuildServices). The node-local trail takes the onboarding
+	// record at the first attempt, so a retry goes to the replicated logger
+	// alone. A composition with no audit logger has no retry sink either.
+	if infra.AuditLogger != nil && n.ReplicatedAudit != nil {
+		onboardingDeps.TenantTrail = n.ReplicatedAudit
+	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.
 	if n.BarrierInit != nil {

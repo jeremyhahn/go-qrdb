@@ -171,7 +171,10 @@ type TenantOnboardingService struct {
 	pendingSOs  tenantadmin.Store
 	// pendingAudit is TenantOnboardingDeps.PendingAudit.
 	pendingAudit tenantadmin.AuditStore
-	soPINs       atomic.Pointer[bootstrap.SOPINSetter]
+	// tenantTrail is the sink a retry of the pending onboarding record
+	// goes to; nil retries through audit.
+	tenantTrail audit.AuditLogger
+	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
 }
@@ -264,6 +267,14 @@ type TenantOnboardingDeps struct {
 	// onboarding answers. Nil emits the record once, best effort.
 	PendingAudit tenantadmin.AuditStore
 
+	// TenantTrail is the tenant's own trail alone, the sink a retry of the
+	// pending onboarding record goes to (EmitPendingOnboardAudit). The
+	// first attempt goes to Audit, which on a node is the node-local trail
+	// and the tenant's trail together: a retry through Audit would write
+	// the record to the node-local trail again each time the tenant's trail
+	// refuses it. Nil retries through Audit.
+	TenantTrail audit.AuditLogger
+
 	// SOPINs commits a tenant SO's PIN (bootstrap.Dependencies.SOPINs). A
 	// node whose SO authenticator is built after this service attaches it
 	// with AttachSOPINs. Nil refuses a request that names an SO.
@@ -302,6 +313,7 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		strictSoD:   deps.SeparationOfDuties,
 
 		pendingAudit: deps.PendingAudit,
+		tenantTrail:  deps.TenantTrail,
 	}
 	if deps.SOPINs != nil {
 		s.AttachSOPINs(deps.SOPINs)
@@ -554,7 +566,7 @@ func (s *TenantOnboardingService) fileTenantOnboardEvent(ctx context.Context, te
 		audit.EmitBestEffort(ctx, s.audit, tenantOnboardingAuditComponent, ev)
 		return
 	}
-	if err := s.EmitPendingOnboardAudit(ctx, tenantID); err != nil {
+	if err := s.emitPendingOnboardAudit(ctx, tenantID, s.audit); err != nil {
 		s.logger.Debug("tenant onboarding audit record waits for the tenant's trail",
 			slog.String("tenant", tenantID), slog.Any("error", err))
 	}
@@ -569,7 +581,19 @@ func (s *TenantOnboardingService) fileTenantOnboardEvent(ctx context.Context, te
 // nothing. Callers run it on one node per tenant, the leader of the tenant's
 // home group, so the record is appended once.
 func (s *TenantOnboardingService) EmitPendingOnboardAudit(ctx context.Context, tenantID string) error {
-	if s.pendingAudit == nil || s.audit == nil {
+	sink := s.tenantTrail
+	if sink == nil {
+		sink = s.audit
+	}
+	return s.emitPendingOnboardAudit(ctx, tenantID, sink)
+}
+
+// emitPendingOnboardAudit emits tenantID's pending onboarding record on sink
+// and deletes it once sink has taken it. The first attempt's sink is the
+// node's whole audit sink; a retry's is the tenant's trail alone, because the
+// node-local trail took the record at the first attempt.
+func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, tenantID string, sink audit.AuditLogger) error {
+	if s.pendingAudit == nil || sink == nil {
 		return nil
 	}
 	record, err := s.pendingAudit.Get(ctx, tenantID)
@@ -580,7 +604,7 @@ func (s *TenantOnboardingService) EmitPendingOnboardAudit(ctx context.Context, t
 	if err := json.Unmarshal(record, &ev); err != nil {
 		return &tenantadmin.StoreError{Op: "decode", Err: err}
 	}
-	if err := s.audit.Emit(ctx, ev); err != nil {
+	if err := sink.Emit(ctx, ev); err != nil {
 		return err
 	}
 	_, err = s.pendingAudit.Delete(ctx, tenantID, record)
