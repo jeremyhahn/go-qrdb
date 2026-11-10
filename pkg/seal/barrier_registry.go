@@ -1090,7 +1090,7 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 	}
 	backend := NewStorageAdapter(storage)
 
-	cfg := tenantBarrierConfig(tenantID)
+	cfg := r.tenantBarrierConfig(tenantID)
 	// Reconcile any interrupted encryption migration recorded in the tenant's
 	// journal BEFORE the barrier is built: a crash in the swap→adopt commit
 	// window leaves half-swapped store dirs, staged snapshot siblings, and a
@@ -1138,7 +1138,7 @@ func (r *BarrierRegistry) registerVolumeTenant(ctx context.Context, tenantID str
 // path is used.
 func (r *BarrierRegistry) RegisterTenantDefault(tenantID string) (*TenantBarrier, error) {
 	base := NewMemoryBackend()
-	config := tenantBarrierConfig(tenantID)
+	config := r.tenantBarrierConfig(tenantID)
 	return r.RegisterTenant(context.Background(), tenantID, base, config, r.systemStrategies()...)
 }
 
@@ -1196,7 +1196,7 @@ func (r *BarrierRegistry) RegisterTenantPooledWithStrategy(
 	tenantID string,
 	strategies ...SealingStrategy,
 ) (*TenantBarrier, error) {
-	return r.RegisterTenant(ctx, tenantID, nil, tenantBarrierConfig(tenantID), strategies...)
+	return r.RegisterTenant(ctx, tenantID, nil, r.tenantBarrierConfig(tenantID), strategies...)
 }
 
 // RegisterTenantPooledShamir creates and registers a durable, barrier-isolated
@@ -1219,7 +1219,7 @@ func (r *BarrierRegistry) RegisterTenantPooledShamir(
 	if err != nil {
 		return nil, err
 	}
-	cfg := tenantBarrierConfig(tenantID)
+	cfg := r.tenantBarrierConfig(tenantID)
 	cfg.Shamir = &ShamirConfig{
 		Threshold:   threshold,
 		TotalShares: total,
@@ -1279,10 +1279,16 @@ func (r *BarrierRegistry) ReconfigureTenantShamir(tenantID string, threshold, to
 // tenantBarrierConfig returns the canonical BarrierConfig for a per-tenant
 // barrier. It is the single source of truth for the per-tenant root-key
 // path so every registration variant derives it identically.
-func tenantBarrierConfig(tenantID string) BarrierConfig {
-	return BarrierConfig{
+func (r *BarrierRegistry) tenantBarrierConfig(tenantID string) BarrierConfig {
+	cfg := BarrierConfig{
 		RootKeyPath: "tenant/" + tenantID + "/root-key",
 	}
+	// A tenant barrier drains its stores within the node's seal.drain_timeout:
+	// the system barrier's resolved bound is the one source of truth.
+	if system := r.SystemBarrier(); system != nil {
+		cfg.SealDrainTimeout = system.Config().SealDrainTimeout
+	}
+	return cfg
 }
 
 // systemBarrierStrategy returns a fresh SystemBarrierStrategy that wraps tenant
@@ -1783,11 +1789,12 @@ func (r *BarrierRegistry) sealTenantsLocked() error {
 		if tenantID, ok := key.(string); ok {
 			sealAllTenantHook(tenantID)
 		}
+		// A Seal that errors after sealing (a drain timeout) still leaves
+		// the tenant sealed: record it so the node unseal restores it.
 		if err := tb.Seal(); err != nil {
 			errs = append(errs, err)
-			return true
 		}
-		if tenantID, ok := key.(string); ok && systemManaged {
+		if tenantID, ok := key.(string); ok && systemManaged && tb.IsSealed() {
 			r.nodeSealed[tenantID] = nil
 		}
 		return true

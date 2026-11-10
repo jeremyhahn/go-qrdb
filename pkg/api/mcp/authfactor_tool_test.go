@@ -384,9 +384,9 @@ func TestHandleAuthFactorVerify_ServiceError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHandleAuthFactorList_Success(t *testing.T) {
+	revokedAt := time.Now().Add(-time.Hour)
 	svc := newMockAuthFactorService()
 	svc.listFn = func(_ context.Context, subject string) ([]*authfactors.Enrollment, error) {
-		revokedAt := time.Now().Add(-time.Hour)
 		return []*authfactors.Enrollment{
 			{EnrollmentID: "e-1", FactorName: "pkcs11", UserID: subject, EnrolledAt: time.Now()},
 			{EnrollmentID: "e-2", FactorName: "piv", UserID: subject, EnrolledAt: time.Now(), RevokedAt: revokedAt},
@@ -403,13 +403,21 @@ func TestHandleAuthFactorList_Success(t *testing.T) {
 		t.Fatalf("unexpected IsError: %v", result.Content)
 	}
 	text := resultText(t, result)
-	var out map[string]any
+	var out struct {
+		Enrollments []map[string]any `json:"enrollments"`
+		Total       int              `json:"total"`
+	}
 	if err := json.Unmarshal([]byte(text), &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	total, _ := out["total"].(float64)
-	if int(total) != 2 {
-		t.Errorf("expected total=2, got %v", out["total"])
+	if out.Total != 2 || len(out.Enrollments) != 2 {
+		t.Fatalf("expected total=2 with 2 enrollments, got total=%d len=%d", out.Total, len(out.Enrollments))
+	}
+	if _, ok := out.Enrollments[0]["revoked_at"]; ok {
+		t.Errorf("active enrollment carries revoked_at: %v", out.Enrollments[0])
+	}
+	if got, want := out.Enrollments[1]["revoked_at"], revokedAt.Format(time.RFC3339); got != want {
+		t.Errorf("revoked enrollment revoked_at = %v, want %q", got, want)
 	}
 }
 

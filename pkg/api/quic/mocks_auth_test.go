@@ -45,6 +45,7 @@ type mockUserService struct {
 	unsuspendUserFn     func(ctx context.Context, id uint64) error
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
 	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
+	userByThumbprintFn  func(ctx context.Context, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -91,7 +92,10 @@ func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
 	return m.unsuspendUserFn(ctx, id)
 }
 
-func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
+func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.userByThumbprintFn != nil {
+		return m.userByThumbprintFn(ctx, thumbprint)
+	}
 	return nil, nil
 }
 
@@ -253,7 +257,7 @@ func (m *mockCertProvider) TenantForSerial(ctx context.Context, serial string) (
 // business rules (first-admin credential issuance), which pkg/service and
 // pkg/bootstrap test directly against the real TenantOnboardingService. No
 // build constraint: it is used from both the tagged (handlers_tenant_test.go)
-// and untagged (handlers_coverage_extra2_test.go) tenant test files, so its
+// and untagged (tenant_isolation_test.go) tenant test files, so its
 // own constraint must be the superset -- none at all.
 type fakeTenantOnboarding struct {
 	tenants tenant.TenantServicer
