@@ -21,6 +21,10 @@ are not reconstructed here — their history is in the git log.
   legacy in-tree journal inside the prefix refuses the open, and dropping an
   objstore database deletes the engine's own objects in its namespace through
   `Engine.Destroy` (the `ObjstoreOpener` returns the reclaim), or fails the drop;
+  a standalone node (`qrdbd` and the Go SDK node) now opens and serves every
+  `backend: objstore` database on its `storage.objstore` provider, under
+  `databases/<name>/` or `tenants/<sha256(tenant)>/databases/<name>/`, and a
+  Raft-mode node refuses one with `database.ObjstoreRaftModeError`;
   a barrier-enabled database is reclaimed too, an interrupted drop can be
   retried, and a write racing a drop is refused. Guarded verbs on an objstore
   database (`PutIfAbsent`, `CompareAndSwap`, `CompareAndDelete`) resolve a

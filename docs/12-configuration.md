@@ -479,7 +479,7 @@ Configures the underlying storage backend.
 | `max_open_files` | int    | `0`      | no       | Maximum number of open files for PebbleDB         |
 | `volume_pools`   | []VolumePoolConfig | `[]` | no | Map of this node's local mounts to catalog pool names; see [volume-pools](volume-pools/user.md#2-map-it-on-each-node) |
 | `allow_degraded_volume_boot` | bool | `false` | no | Start even when a `volume_pools` entry fails to open, skipping only that pool's databases (`--allow-degraded-volume-boot`) |
-| `objstore`       | ObjstoreConfig | — | no | Object-storage backend settings, used when a backend is `objstore`; see [storage-engines](storage-engines/engineering.md#configuration) |
+| `objstore`       | ObjstoreConfig | — | no | Object-storage backend settings, used when a backend is `objstore`. They also serve every `backend: objstore` database of a standalone node, each under `databases/<name>/`, or `tenants/<sha256(tenant)>/databases/<name>/` for a tenant's database; a Raft-mode node refuses such a database with `database.ObjstoreRaftModeError`. See [storage-engines](storage-engines/engineering.md#configuration) |
 
 **Validation rules:**
 

@@ -1300,9 +1300,17 @@ func recordSecureMemoryWipe(err *error) {
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
 // databaseManagerOptions returns the options runStart builds the node's
 // database manager with, for the node's mode and its storage.objstore
-// configuration.
+// configuration. A standalone node opens a backend: objstore database on
+// that provider, each database under its own object prefix; any other mode
+// refuses one with database.ObjstoreRaftModeError.
 func databaseManagerOptions(mode string, objCfg qrdbconfig.ObjstoreConfig) []database.ManagerOption {
-	return nil
+	opt := database.WithRaftMode()
+	if mode == capabilities.ModeStandalone {
+		opt = database.WithObjstoreOpener(lifecycle.DatabaseObjstoreOpener(objCfg))
+	}
+	return []database.ManagerOption{
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(opt)),
+	}
 }
 
 func runStart(f *startFlags) (err error) {
@@ -1519,7 +1527,10 @@ func runStart(f *startFlags) (err error) {
 	// Initialize the database manager. A raft database's shard ID is claimed
 	// from the replicated store, and its record is kept in the replicated
 	// catalog (lifecycle.BuildServices wires both and opens every recorded
-	// database), never in anything on this node's disk.
+	// database), never in anything on this node's disk. A standalone node's
+	// manager opens a backend: objstore database through the node's
+	// storage.objstore provider, and a Raft-mode node's refuses one
+	// (databaseManagerOptions).
 	dbManager := database.NewManager(slog.Default(), f.dataDir, databaseManagerOptions(f.mode, f.storageConfig.Objstore)...)
 	defer func() { _ = dbManager.Close() }()
 

@@ -508,10 +508,11 @@ the model itself:
 - **It is outside the barrier.** A standalone `objstore` store starts with
   one WARN and an `unencryptedAtRest` capability entry naming the gap; the
   barrier's encrypting file system does not reach a provider's objects.
-- **It is refused where a database needs it.** A per-database `objstore`
-  backend is refused when the database opens
-  (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
-  apply path.
+- **It is refused under Raft.** A standalone node opens a per-database
+  `objstore` backend on its `storage.objstore` provider, each database under
+  its own object prefix; a Raft-mode node refuses one
+  (`database.ObjstoreRaftModeError`), because `objstore` is refused as a Raft
+  hot apply path.
 
 ### Direction this design proposes
 

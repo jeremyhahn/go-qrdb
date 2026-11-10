@@ -62,8 +62,10 @@ is down, the database is unavailable. This holds for `pebble`, `memory`,
 **Know what the backend does today.** For most databases the backend you choose
 is recorded but is not where the data goes: the tenant's isolation mode and the
 server's own settings decide that. Vector data from every database on a node
-goes to one node-local store. `objstore` is accepted and then fails when the
-database is opened. The design below fixes all three.
+goes to one node-local store. `objstore` is the exception on a standalone
+node: the database's data goes to the node's `storage.objstore` provider,
+under the database's own object prefix. A Raft-mode node refuses an
+`objstore` database when it is created. The design below fixes the rest.
 
 ### Coming change: every database is multi-model
 
