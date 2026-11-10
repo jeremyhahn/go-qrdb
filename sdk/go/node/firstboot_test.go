@@ -353,7 +353,10 @@ func (s *lateRecordStore) PutIfAbsent(context.Context, string, []byte) (bool, er
 	return false, errors.New("store is read-only")
 }
 
-func (s *lateRecordStore) Get(context.Context, string) ([]byte, error) {
+func (s *lateRecordStore) Get(_ context.Context, key string) ([]byte, error) {
+	if key != firstboot.PendingAdminCertKey {
+		return nil, nil // only the admin's record arrives late
+	}
 	if s.reads.Add(1) == 1 {
 		return nil, nil
 	}
