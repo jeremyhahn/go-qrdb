@@ -238,6 +238,48 @@ func TestParseStreamsBlockedCapsuleTrailingData(t *testing.T) {
 	require.ErrorContains(t, err, "WT_STREAMS_BLOCKED capsule has trailing data")
 }
 
+// shortCapsuleBodies returns known capsules whose declared body ends before
+// the capsule's first field: a declared length of 0 for each type, and a
+// WT_MAX_DATA body of one byte that announces a two-byte varint.
+func shortCapsuleBodies() []struct {
+	name string
+	b    []byte
+} {
+	empty := func(typ http3.CapsuleType) []byte {
+		return quicvarint.Append(quicvarint.Append(nil, uint64(typ)), 0)
+	}
+	shortVarint := quicvarint.Append(quicvarint.Append(nil, uint64(maxDataCapsuleType)), 1)
+	shortVarint = append(shortVarint, 0x40)
+	return []struct {
+		name string
+		b    []byte
+	}{
+		{"WT_CLOSE_SESSION length 0", empty(closeSessionCapsuleType)},
+		{"WT_MAX_DATA length 0", empty(maxDataCapsuleType)},
+		{"WT_MAX_STREAMS bidi length 0", empty(maxStreamsBidiCapsuleType)},
+		{"WT_MAX_STREAMS uni length 0", empty(maxStreamsUniCapsuleType)},
+		{"WT_DATA_BLOCKED length 0", empty(dataBlockedCapsuleType)},
+		{"WT_STREAMS_BLOCKED bidi length 0", empty(streamsBlockedBidiCapsuleType)},
+		{"WT_STREAMS_BLOCKED uni length 0", empty(streamsBlockedUniCapsuleType)},
+		{"WT_MAX_DATA length 1 short varint", shortVarint},
+	}
+}
+
+func TestParseNextCapsuleShortBodyIsNotEOF(t *testing.T) {
+	for _, tc := range shortCapsuleBodies() {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.b)))
+			require.Error(t, err)
+			require.NotErrorIs(t, err, io.EOF)
+		})
+	}
+}
+
+func TestParseNextCapsuleEndOfStreamIsEOF(t *testing.T) {
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(nil)))
+	require.Equal(t, io.EOF, err)
+}
+
 func TestTruncateUTF8(t *testing.T) {
 	input := "Go 🚀"
 	require.Len(t, input, 7)

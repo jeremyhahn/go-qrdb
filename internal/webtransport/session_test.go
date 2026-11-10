@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -276,6 +277,26 @@ func TestConnectStreamFINInsideCapsuleIsAnError(t *testing.T) {
 	err := sess.closeErr
 	sess.closeMx.Unlock()
 	require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeDatagramError})
+}
+
+func TestConnectStreamShortCapsuleBodyIsAnError(t *testing.T) {
+	for _, tc := range shortCapsuleBodies() {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := newSession(context.Background(), 42, nil, mockHTTP3Stream{bytes.NewReader(tc.b)}, "", sessionFlowControl{})
+			select {
+			case <-sess.Context().Done():
+			case <-time.After(scaleDuration(time.Second)):
+				t.Fatal("timeout")
+			}
+
+			sess.closeMx.Lock()
+			err := sess.closeErr
+			sess.closeMx.Unlock()
+			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeDatagramError})
+			var sessErr *SessionError
+			require.False(t, errors.As(err, &sessErr), "a short capsule body must not read as a remote close")
+		})
+	}
 }
 
 // TestMalformedCloseSessionMessageClosesSessionWithMessageError: a
