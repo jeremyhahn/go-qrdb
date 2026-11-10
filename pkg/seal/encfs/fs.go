@@ -14,6 +14,7 @@ import (
 	"os"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 )
 
 // FS is a filesys.FS that transparently encrypts file contents using a
@@ -289,4 +290,15 @@ func (fs *FS) Stat(name string) (os.FileInfo, error) {
 func (fs *FS) BarrierSealed() bool {
 	b, ok := fs.barrier.(interface{ IsSealed() bool })
 	return ok && b.IsSealed()
+}
+
+// Quiesce returns the quiesce gate of the barrier keying this file system,
+// through which a store over it holds its in-flight work while the barrier
+// seals; nil when the barrier has none.
+func (fs *FS) Quiesce() *quiesce.Gate {
+	b, ok := fs.barrier.(interface{ Quiesce() *quiesce.Gate })
+	if !ok {
+		return nil
+	}
+	return b.Quiesce()
 }

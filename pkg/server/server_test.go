@@ -53,6 +53,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -441,6 +442,46 @@ func TestNew_WithOptions(t *testing.T) {
 	}
 	if srv.opts.host != host {
 		t.Fatal("WithHost option not applied")
+	}
+}
+
+// TestServiceRegistry_NilWithoutDatabaseRegistry verifies ServiceRegistry
+// reports no registry when the server has no database registry to resolve
+// through.
+func TestServiceRegistry_NilWithoutDatabaseRegistry(t *testing.T) {
+	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{})
+
+	if reg := srv.ServiceRegistry(); reg != nil {
+		t.Fatalf("ServiceRegistry() = %#v, want nil when no database registry is configured", reg)
+	}
+}
+
+// TestServiceRegistry_ResolvesThroughDatabaseRegistry verifies the registry
+// ServiceRegistry returns resolves a database's services through the
+// configured database registry, and that each call builds a fresh registry.
+func TestServiceRegistry_ResolvesThroughDatabaseRegistry(t *testing.T) {
+	dbReg := NewDatabaseServiceRegistry("system")
+	kv := newMockKVService()
+	dbReg.Register("system", &DatabaseServices{Name: "system", KV: kv})
+
+	srv := New(testConfig(t, false, false), kv, &mockAdminService{},
+		WithDatabaseServiceRegistry(dbReg))
+
+	reg := srv.ServiceRegistry()
+	if reg == nil {
+		t.Fatal("ServiceRegistry() = nil, want a registry")
+	}
+
+	resolved, err := reg.KVService(tenantid.System, "system")
+	if err != nil {
+		t.Fatalf("KVService: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("KVService returned a nil servicer")
+	}
+
+	if second := srv.ServiceRegistry(); second == reg {
+		t.Error("ServiceRegistry() must build a fresh registry per call, matching every internal call site")
 	}
 }
 

@@ -403,3 +403,53 @@ func TestHandleIndexScan_UnmarshalError(t *testing.T) {
 		t.Fatalf("expected *UnmarshalError, got %T: %v", err, err)
 	}
 }
+
+func TestHandleIndexList_Success(t *testing.T) {
+	indexSvc := &mockIndexService{
+		listIndexesFn: func(_ context.Context) ([]string, error) {
+			return []string{"email_idx", "name_idx"}, nil
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithIndex(indexSvc))
+
+	resp, err := srv.handleIndexList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleIndexList returned unexpected error: %v", err)
+	}
+
+	var out pb.IndexListResponse
+	if err := proto.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("failed to unmarshal IndexListResponse: %v", err)
+	}
+	if names := out.GetNames(); len(names) != 2 || names[0] != "email_idx" || names[1] != "name_idx" {
+		t.Errorf("names = %v, want [email_idx name_idx]", names)
+	}
+}
+
+func TestHandleIndexList_ServiceError(t *testing.T) {
+	svcErr := &testError{msg: "list indexes failed"}
+	indexSvc := &mockIndexService{
+		listIndexesFn: func(_ context.Context) ([]string, error) {
+			return nil, svcErr
+		},
+	}
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithIndex(indexSvc))
+
+	_, err := srv.handleIndexList(context.Background(), nil)
+	if !errors.Is(err, svcErr) {
+		t.Fatalf("expected the service error, got %T: %v", err, err)
+	}
+}
+
+func TestHandleIndexList_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+
+	_, err := srv.handleIndexList(context.Background(), nil)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) {
+		t.Fatalf("expected *ServiceNotConfiguredError, got %T: %v", err, err)
+	}
+	if snc.Service != "index" {
+		t.Errorf("expected service %q, got %q", "index", snc.Service)
+	}
+}

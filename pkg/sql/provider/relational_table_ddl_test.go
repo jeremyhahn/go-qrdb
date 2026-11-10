@@ -107,6 +107,18 @@ func TestRelationalTable_AddColumn_NoTableService(t *testing.T) {
 	require.ErrorAs(t, err, &e)
 }
 
+func TestRelationalTable_AddColumn_GeneratedColumn(t *testing.T) {
+	def := testUsersDef()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(&fakeTableService{}))
+	require.NoError(t, err)
+
+	genDef, gerr := sqle.NewColumnDefaultValue(nil, nil, false, false, true)
+	require.NoError(t, gerr)
+	err = tbl.AddColumn(newTestContext(), &sqle.Column{Name: "computed", Generated: genDef}, nil)
+	var e *GeneratedColumnUnsupportedError
+	require.ErrorAs(t, err, &e)
+}
+
 // ---------------------------------------------------------------------------
 // DROP COLUMN: rewrite
 // ---------------------------------------------------------------------------
@@ -266,6 +278,59 @@ func TestRelationalTable_Rewrite_ResumeIsIdempotentOnAlreadyMigratedRows(t *test
 	require.Len(t, rows, 1)
 }
 
+func TestRelationalTable_RewriteInserter_AlterTableGenericError(t *testing.T) {
+	def := testUsersDef()
+	fake := &alterTableErrorService{TableServicer: &fakeTableService{}, err: assert.AnError}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	_, err = tbl.RewriteInserter(newTestContext(), sqle.PrimaryKeySchema{}, sqle.PrimaryKeySchema{},
+		&sqle.Column{Name: "email"}, nil, nil)
+	assert.ErrorIs(t, err, assert.AnError)
+}
+
+func TestRelationalTable_RewriteInserter_RewriteJournalError(t *testing.T) {
+	def := testUsersDef()
+	fake := &fakeTableService{
+		rewriteJournalFn: func(_ context.Context, database, name string) (*service.TableDDLJournal, *service.TableDef, error) {
+			return nil, nil, assert.AnError
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	_, err = tbl.RewriteInserter(newTestContext(), sqle.PrimaryKeySchema{}, sqle.PrimaryKeySchema{},
+		&sqle.Column{Name: "email"}, nil, nil)
+	assert.ErrorIs(t, err, assert.AnError)
+}
+
+func TestRelationalTable_RewriteInserter_JournalMissingTarget(t *testing.T) {
+	def := testUsersDef()
+	fake := &fakeTableService{
+		rewriteJournalFn: func(_ context.Context, database, name string) (*service.TableDDLJournal, *service.TableDef, error) {
+			return &service.TableDDLJournal{}, def, nil
+		},
+	}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	_, err = tbl.RewriteInserter(newTestContext(), sqle.PrimaryKeySchema{}, sqle.PrimaryKeySchema{},
+		&sqle.Column{Name: "email"}, nil, nil)
+	var e *RewriteJournalMissingTargetError
+	require.ErrorAs(t, err, &e)
+}
+
+// alterTableErrorService wraps a service.TableServicer, forcing AlterTable
+// to fail with a generic (non-TableRewriteRequiredError) error.
+type alterTableErrorService struct {
+	service.TableServicer
+	err error
+}
+
+func (e *alterTableErrorService) AlterTable(context.Context, *service.AlterTableRequest) (*service.TableDef, error) {
+	return nil, e.err
+}
+
 // ---------------------------------------------------------------------------
 // CREATE / DROP / RENAME INDEX, BuildIndex
 // ---------------------------------------------------------------------------
@@ -379,6 +444,158 @@ func TestRelationalTable_RenameIndex_NotFound(t *testing.T) {
 	err = tbl.RenameIndex(newTestContext(), "missing", "renamed")
 	var e *service.TableIndexNotFoundError
 	require.ErrorAs(t, err, &e)
+}
+
+func TestRelationalTable_CreateIndex_NoTableService(t *testing.T) {
+	def := testUsersDef()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, err)
+
+	err = tbl.CreateIndex(newTestContext(), sqle.IndexDef{Name: "idx", Columns: []sqle.IndexColumn{{Name: "email"}}})
+	var e *TableServiceUnavailableError
+	require.ErrorAs(t, err, &e)
+}
+
+func TestRelationalTable_CreateIndex_NoColumns(t *testing.T) {
+	def := testUsersDef()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(&fakeTableService{}))
+	require.NoError(t, err)
+
+	err = tbl.CreateIndex(newTestContext(), sqle.IndexDef{Name: "idx"})
+	var e *IndexNoColumnsError
+	require.ErrorAs(t, err, &e)
+}
+
+func TestRelationalTable_CreateIndex_TableServiceError(t *testing.T) {
+	def := testUsersDef()
+	fake := &erroringTableService{TableServicer: &fakeTableService{}, createIndexErr: assert.AnError}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	err = tbl.CreateIndex(newTestContext(), sqle.IndexDef{Name: "idx", Columns: []sqle.IndexColumn{{Name: "email"}}})
+	assert.ErrorIs(t, err, assert.AnError)
+}
+
+func TestRelationalTable_DropIndex_NoTableService(t *testing.T) {
+	def := testUsersDef()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, err)
+
+	err = tbl.DropIndex(newTestContext(), "idx_email")
+	var e *TableServiceUnavailableError
+	require.ErrorAs(t, err, &e)
+}
+
+func TestRelationalTable_DropIndex_TableServiceError(t *testing.T) {
+	def := testUsersDef()
+	fake := &erroringTableService{TableServicer: &fakeTableService{}, dropIndexErr: assert.AnError}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	err = tbl.DropIndex(newTestContext(), "idx_email")
+	assert.ErrorIs(t, err, assert.AnError)
+}
+
+// TestRelationalTable_DropIndex_DeletesNothingInline proves DROP INDEX leaves
+// every entry to the reclaim job the catalog publishes: no statement's
+// reads are cut short by an inline delete.
+func TestRelationalTable_DropIndex_DeletesNothingInline(t *testing.T) {
+	def := testUsersDef()
+	kv := &mockKVService{
+		listFn: func(context.Context, string) ([]string, error) {
+			t.Fatal("drop must not list entries")
+			return nil, nil
+		},
+		scanFn: func(context.Context, string) (map[string][]byte, error) {
+			t.Fatal("drop must not scan entries")
+			return nil, nil
+		},
+		deleteFn: func(context.Context, string) error { t.Fatal("drop must not delete entries"); return nil },
+	}
+	tbl, err := NewRelationalTable(def, kv, nil, WithTableService(&fakeTableService{}))
+	require.NoError(t, err)
+	require.NoError(t, tbl.DropIndex(newTestContext(), "idx_email"))
+}
+
+func TestRelationalTable_RenameIndex_NoTableService(t *testing.T) {
+	def := testUsersDef()
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil)
+	require.NoError(t, err)
+
+	err = tbl.RenameIndex(newTestContext(), "idx_email", "idx_email2")
+	var e *TableServiceUnavailableError
+	require.ErrorAs(t, err, &e)
+}
+
+// TestRelationalTable_RenameIndex_IsCatalogOnly proves RENAME INDEX touches
+// no index entry: entries are keyed by incarnation, which the renamed index
+// keeps, so there is nothing to copy, delete or reclaim.
+func TestRelationalTable_RenameIndex_IsCatalogOnly(t *testing.T) {
+	def := testUsersDef()
+	kv := &mockKVService{
+		scanFn: func(context.Context, string) (map[string][]byte, error) {
+			t.Fatal("rename must not read entries")
+			return nil, nil
+		},
+		putFn:    func(context.Context, string, []byte) error { t.Fatal("rename must not write entries"); return nil },
+		deleteFn: func(context.Context, string) error { t.Fatal("rename must not delete entries"); return nil },
+	}
+	var got *service.RenameTableIndexRequest
+	fake := &erroringTableService{TableServicer: &fakeTableService{}, renameHook: func(req *service.RenameTableIndexRequest) { got = req }}
+	tbl, err := NewRelationalTable(def, kv, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	require.NoError(t, tbl.RenameIndex(newTestContext(), "idx_email", "idx_email2"))
+	require.NotNil(t, got)
+	assert.Equal(t, service.RenameTableIndexRequest{Database: "shop", Table: "users", From: "idx_email", To: "idx_email2"}, *got)
+}
+
+// TestRelationalTable_RenameIndex_PropagatesTheCatalogError proves a refused
+// rename is reported as the catalog reported it.
+func TestRelationalTable_RenameIndex_PropagatesTheCatalogError(t *testing.T) {
+	def := testUsersDef()
+	fake := &erroringTableService{TableServicer: &fakeTableService{}, renameIndexErr: &service.TableIndexAlreadyExistsError{Index: "idx_email2"}}
+	tbl, err := NewRelationalTable(def, &mockKVService{}, nil, WithTableService(fake))
+	require.NoError(t, err)
+
+	err = tbl.RenameIndex(newTestContext(), "idx_email", "idx_email2")
+	var exists *service.TableIndexAlreadyExistsError
+	require.ErrorAs(t, err, &exists)
+}
+
+// erroringTableService wraps a service.TableServicer, overriding specific
+// methods to return injected errors, for exercising this package's error
+// propagation from each individual TableServicer call.
+type erroringTableService struct {
+	service.TableServicer
+	createIndexErr error
+	dropIndexErr   error
+	renameIndexErr error
+	renameHook     func(*service.RenameTableIndexRequest)
+}
+
+func (e *erroringTableService) RenameIndex(ctx context.Context, req *service.RenameTableIndexRequest) error {
+	if e.renameHook != nil {
+		e.renameHook(req)
+	}
+	if e.renameIndexErr != nil {
+		return e.renameIndexErr
+	}
+	return e.TableServicer.RenameIndex(ctx, req)
+}
+
+func (e *erroringTableService) CreateIndex(ctx context.Context, req *service.CreateTableIndexRequest) error {
+	if e.createIndexErr != nil {
+		return e.createIndexErr
+	}
+	return e.TableServicer.CreateIndex(ctx, req)
+}
+
+func (e *erroringTableService) DropIndex(ctx context.Context, database, table, index string) error {
+	if e.dropIndexErr != nil {
+		return e.dropIndexErr
+	}
+	return e.TableServicer.DropIndex(ctx, database, table, index)
 }
 
 func TestRelationalTable_BuildIndex_UnknownColumn(t *testing.T) {

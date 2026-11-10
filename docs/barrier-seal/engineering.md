@@ -251,6 +251,18 @@ services and to the server, which wraps the node's sealed-window probe with
 
 ## Invariants
 
+- **No encrypted-store work the seal admitted is in flight when the key leaves
+  memory, unless the seal reports it.** Every flush, durable write and
+  compaction a `PebbleStorage` or `SealWatch` admits holds its store's lease
+  on the barrier's `quiesce.Gate`; `Seal` closes the gate before it drains and
+  drains before `EpochBarrier.Seal`. A drain that outlives
+  `seal.drain_timeout` still seals and returns `*quiesce.DrainTimeoutError`
+  naming the stores still in flight. It does not cancel their admitted work:
+  that work can still race the key wipe, as `SealWatch` describes, so the
+  error reports the risk rather than removing it (see
+  [architecture.md](architecture.md), "Sealing quiesces the encrypted
+  stores").
+
 - **A barrier credential is a wipeable byte slice up to the service boundary,
   and protected memory from there on.** The transport request field, the
   protobuf field and the service-layer parameter are all `[]byte`, never
@@ -602,10 +614,69 @@ services and to the server, which wraps the node's sealed-window probe with
   flush, durable write and compaction, and the state machines' `Sync` flushes
   through the watch; `encfs.FS.BarrierSealed` is what the check asks. The
   node closes its own data-plane store before it seals its barriers, so a
-  clean `Close` never meets the refusal. The check and Pebble's next file
-  creation are not atomic, so a seal landing between them is still a crash;
-  closing that window is the planned seal-quiesce row in
-  [SPEC.md](../SPEC.md).
+  clean `Close` never meets the refusal.
+- **A seal drains the work already in flight before the key leaves memory**
+  (seal-quiesce). The check alone would leave a window between it and
+  Pebble's next file creation, so every flush, durable write and compaction
+  the watch admits holds its store's quiesce lease (`SealWatch.Admit` ...
+  `SealWatch.Done`, one atomic add and one atomic load). The Raft state
+  machines' commits hold it too: every `PebbleStorage` that `pkg/store` wraps
+  over a sealed store's db takes the store's watch (`NewFromDB(...,
+  WithSealWatch(w))`), and the Pebble state machine's own `Update` batch
+  commits take the lease around `Commit`, so a seal never reports a store
+  drained while a state-machine commit is in flight; a commit that meets the
+  closed gate is refused with the typed sealed error. Snapshot recovery, on
+  both state-machine families, takes one lease for the whole recovery, from
+  the delete of the old data through the commit of its replacement: a seal
+  either refuses it before anything is deleted or drains until it has
+  finished. The encrypted vector store opens through the same
+  `pkg/storage/pebble` `Open`, so it registers with the gate like the other
+  sealed stores, every write (durable writes, batch commits, ID persistence,
+  compaction) holds its lease, and `Close` leaves the gate. `Open` itself
+  holds the lease across `pebble.Open`'s recovery and file creation, and
+  refuses on a closed gate. `CreateNamespace` writes the namespace metadata
+  and its ID sequence in one leased batch commit, and installs the ID
+  allocator and the cached namespace only once it commits, so a seal never
+  leaves half a namespace. The encrypted file backend (`pkg/storage/file`)
+  registers with its barrier's gate in `file.New`, holds the lease across
+  open-time journal recovery and around every write and journaled batch
+  commit (journal published, batch applied, journal cleared), and refuses
+  the open and every write on a closed gate with `*file.SealedError`
+  wrapping `quiesce.ErrSealing`, before touching the disk. A per-database
+  barrier's `database.BarrierBackend` registers a lease named `database` on
+  its database barrier's gate, which `DatabaseBarrierManager.GetBarrier`'s
+  encryptor exposes (`Quiesce()`); `Put`, `PutIfAbsent`, `CompareAndDelete`,
+  `CompareAndSwap`, `Delete`, `DeleteRange` and `Batch` each hold it from
+  before the inner backend call until it returns, refuse on a closed gate
+  with `*database.SealedError` before reaching the store, and `Close`
+  unregisters it before closing the inner backend. `Lease.Unregister` is
+  safe with work in flight: it marks the lease gone, so every later `Acquire`
+  refuses with `quiesce.ErrSealing`, and a lease with a nonzero count stays
+  in the gate's drain set until its last `Release` removes it. Because the storage packages cannot import `pkg/seal`,
+  `quiesce.ErrSealing` and `pebble.ErrBarrierSealed` are recognised wherever
+  `seal.ErrSealed` is: `pkg/api/errclass` classifies them Unavailable
+  (retryable) ahead of the service wrappers, and `pkg/store`'s and the
+  vector adapter's `barrierSealed` report them sealed. SDK nodes
+  (`sdk/go/node`) apply `seal.drain_timeout` to the system barrier exactly as
+  `qrdbd` does. `StorageBarrier.Seal`
+  closes the barrier's quiesce gate, after which `Admit` refuses with the same
+  `*SealedError` wrapping `ErrBarrierSealed`, waits up to `seal.drain_timeout`
+  (`QRDB_SEAL_DRAIN_TIMEOUT`, default `10s`) for every store's leases to
+  drain, then wipes the key. Tenant and database barriers inherit the system
+  barrier's resolved `SealDrainTimeout` (`BarrierRegistry.tenantBarrierConfig`,
+  `DatabaseBarrierManager.barrierConfig`), so the one setting bounds every
+  barrier's drain. A drain that runs out still seals and returns a
+  `*quiesce.DrainTimeoutError` naming the stores, logged and audited (phase
+  `drain`); unseal reopens the gate. The timeout cancels none of the admitted
+  work, so a stalled operation that resumes after the wipe can still race it
+  into the panic `SealWatch` describes. `DatabaseService` treats a database
+  seal returning that error as sealed: it sets `StatusSealed` and ends the
+  database's streams, then returns the error. A system-managed tenant sealed by a node
+  seal whose drain ran out is still recorded as the node seal's, so the node
+  unseal brings it back. Pebble's own background flushes and
+  compactions are not admitted, and a sealed barrier fails them as before.
+  Pebble is used as released (see *Sealing quiesces the encrypted stores* in
+  [architecture.md](architecture.md)).
 - **Until `cluster-seal` is activated, sealing is node-local** and every
   status reports `active: false`. No record is written and none is enforced;
   the monitor still reads them, to hold a fresh lease when the feature turns
@@ -1318,6 +1389,10 @@ key.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | Barrier sealed | `ErrBarrierSealed` on every data-path read and write | **yes** |
+| Encrypted-store write, flush or compaction started while a seal is draining | refused with `*pebble.SealedError` wrapping `pebble.ErrBarrierSealed`, the error a sealed barrier returns; on the encrypted file backend, an open or write is refused with `*file.SealedError` wrapping `quiesce.ErrSealing` | **yes** |
+| Per-database `BarrierBackend` mutation started while its database barrier's seal is draining | refused with `*database.SealedError` before it reaches the store; a mutation already inside the store holds the `database` lease, so the drain waits for it or names it in `*quiesce.DrainTimeoutError` | **yes** |
+| Storage-layer sealed refusal reaching the API (`quiesce.ErrSealing`, `pebble.ErrBarrierSealed`), bare or under a service wrapper | classified Unavailable (retryable) like `seal.ErrSealed`; `pkg/store` and the vector adapter treat it as sealed | **yes** |
+| In-flight store work outlives `seal.drain_timeout` | the barrier seals anyway; `Seal` returns `*quiesce.DrainTimeoutError{Stores, Timeout}`, audited (phase `drain`) and logged at Error; a database seal still marks the database sealed and ends its streams. The admitted work is not cancelled and can still race the key wipe (see `SealWatch`) | **key: yes; in-flight work: no** |
 | Several strategies registered, none named | `ErrNoStrategySpecified` | **yes** |
 | Unknown strategy name | registry lookup error | **yes** |
 | `--so-pin` without `--user-pin` (or vice versa) | refused — dual control | **yes** |
@@ -1425,7 +1500,12 @@ tenant could act on any tenant's database.
 seal:
   enabled: true          # false (the default) runs with no barrier at all
   strategy: passphrase   # passphrase | none | shamir
+  drain_timeout: 10s     # how long a seal waits for in-flight store work to drain
 ```
+
+`drain_timeout` must be a positive duration; a seal that waits it out still
+seals and reports the stores that had not drained (`QRDB_SEAL_DRAIN_TIMEOUT`
+overrides it, as every key has an env override).
 
 Cluster sealing and cluster enable-encryption add:
 
@@ -1698,6 +1778,38 @@ distinguishes them.
   hardware, so integration tests need no hardware coupling. That is the point of
   the seam.
 - **No `time.Sleep`** anywhere in the coordinator or its tests.
+- **Seal quiesce, unit**: `pkg/seal/quiesce` proves the gate's ordering with
+  writers racing a seal; `pkg/seal` (`barrier_quiesce_test.go`) proves a held
+  lease blocks `Seal`, a new one is refused while sealing, the bound runs out
+  with a `DrainTimeoutError` and the barrier still seals, and unseal reopens
+  the gate; `pkg/service` (`database_seal_drain_timeout_test.go`) proves a
+  database seal whose drain runs out still marks the database sealed and
+  ends its streams with the `SealedError`; `pkg/storage/pebble` proves every write, flush and compaction
+  takes the lease. `pkg/seal/encfs` (`quiesce_test.go`) runs it over a real
+  Pebble store on encfs on a real barrier, holding a WAL sync in flight
+  through a gated file system rather than a sleep. The benchmark in
+  `pkg/seal/encfs/quiesce_bench_test.go` measures the write path with and without the lease:
+  at `-count=6 -benchtime=2s` a put averages 615 ns with it and 611 ns
+  without (runs 601-622 ns), about 4 ns per put. The gate's own tests prove
+  that an unregistered lease with an operation in flight stays in the drain
+  until its last release and admits nothing after `Unregister`, and
+  `pkg/database` closes a `BarrierBackend` under a held `Put` and proves
+  the drain still waits for it.
+- **Seal quiesce, integration** (`seal_drain_cli_test.go`, `barrier_seal`
+  feature): `TestSealDrain_HeldWrite_PerProtocol` runs a standalone node
+  built with the `qrdb_sealtest` tag, which compiles the hold seam
+  `pkg/seal/quiesce/sealtest_hold.go` into `qrdbd`; no release build carries
+  it. Through FIFOs in the daemon's working directory the test arms the
+  barrier's Pebble store lease, holds one admitted `kv put` inside it, and
+  over every transport asserts that the CLI seal stays pending, its drain
+  reporting that one lease, until the test releases the write; then the
+  seal completes, the write is acknowledged, a later put is refused as
+  sealed, and the write reads back after unseal. The node is standalone
+  because a Raft node's seal pauses its shards and waits for their applies
+  first, which would keep the seal pending without the drain. With the drain
+  removed from `StorageBarrier.Seal` the test fails on every transport.
+  `TestSealDrain_InFlightWrites_PerProtocol` keeps writers flowing through a
+  Raft node's seal and proves no acknowledged write is lost.
 - **Cluster seal, unit**: `pkg/clusterseal` drives the monitor with an
   injected clock and an in-memory guarded KV: guarded writes and their races,
   epoch-keyed idempotent enforcement, the acknowledgement wait and its timeout,
@@ -1761,8 +1873,9 @@ keyed by the tenant that owns the barrier -- the system tenant for the system
 barrier, the tenant for a tenant barrier, the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
-details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`, `from`,
-`to`, `rolled_back`, `submitted`, `required`, and the holder record
+details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`,
+`from`, `to`, `rolled_back`, `submitted`, `required`, a drain's `phase` and
+`stores`, and the holder record
 conflict's `scope`, `username`, `cached_cert`); no key material is among
 them, and any other detail is dropped. The records are post-hoc: a trail
 that refuses one is counted on
@@ -1773,7 +1886,7 @@ operation's outcome stands.
 |--------|---------------|
 | `initialize` | the barrier is initialized, or the initialization refused |
 | `unseal` | the barrier is unsealed, by a credential or a completed quorum, or the unseal refused |
-| `seal` | the barrier is sealed |
+| `seal` | the barrier is sealed; a `deny` with `phase=drain` and the `stores` still in flight when `seal.drain_timeout` ran out (the seal still completes) |
 | `quorum-complete` | a holder quorum's round completes and its operation runs, or the reconstructed key is refused |
 | `distribute` | a domain's key is split to its holders |
 | `change_password` | a passphrase barrier's passphrase is changed |

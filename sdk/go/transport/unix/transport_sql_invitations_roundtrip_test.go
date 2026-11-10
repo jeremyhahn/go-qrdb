@@ -341,7 +341,8 @@ func TestUnixRT_ClosedTransport_DatabaseBarrier(t *testing.T) {
 	ctx := context.Background()
 
 	calls := map[string]func() error{
-		"SealDatabase": func() error { return tr.SealDatabase(ctx, "db1") },
+		"SealDatabase":   func() error { return tr.SealDatabase(ctx, "db1") },
+		"UnsealDatabase": func() error { return tr.UnsealDatabase(ctx, "db1", "secret") },
 		"DatabaseBarrierStatus": func() error {
 			_, err := tr.DatabaseBarrierStatus(ctx, "db1")
 			return err

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	dberrors "github.com/jeremyhahn/go-qrdb/pkg/errors"
@@ -176,6 +177,21 @@ func TestStoreError_As(t *testing.T) {
 	}
 	if target.Op != "delete" {
 		t.Fatalf("Op: got %q, want %q", target.Op, "delete")
+	}
+}
+
+func TestCertBindingConflictError_Error(t *testing.T) {
+	e := &CertBindingConflictError{
+		Thumbprint:   "abc123",
+		BoundUserID:  42,
+		TargetUserID: 99,
+	}
+	msg := e.Error()
+	if !strings.Contains(msg, "abc123") {
+		t.Errorf("expected thumbprint in error message, got: %q", msg)
+	}
+	if !strings.Contains(msg, "42") {
+		t.Errorf("expected bound user ID in error message, got: %q", msg)
 	}
 }
 

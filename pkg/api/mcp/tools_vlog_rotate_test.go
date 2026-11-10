@@ -33,16 +33,16 @@ import (
 // signed before still verifies under the key it named.
 func TestVlogRotateKey_RotatesTheRealLog(t *testing.T) {
 	svc := servicetest.NewLogService(t)
-	key1 := servicetest.SeedSignedLog(t, svc, "acme", tenant.DefaultDatabase, "audit")
+	key1 := servicetest.SeedSignedLog(t, svc, "acme", tenant.DefaultDatabase, "ledger")
 	f := newVlogFixtureOver(t, svc)
 	f.as(roleIdentity("acme", role.RoleNameOperator))
 	sign := func() []byte {
 		t.Helper()
 		var signed vlogwire.SignHeadResult
-		vlogDecode(t, f.call(t, "qrdb_vlog_sign_head", map[string]any{"log": "audit"}), nil, &signed)
+		vlogDecode(t, f.call(t, "qrdb_vlog_sign_head", map[string]any{"log": "ledger"}), nil, &signed)
 		return signed.Checkpoint
 	}
-	rotate := map[string]any{"log": "audit", "signing_key_type": "ed25519"}
+	rotate := map[string]any{"log": "ledger", "signing_key_type": "ed25519"}
 
 	before := sign()
 	f.as(roleIdentity("acme", role.RoleNameAdmin))
@@ -53,7 +53,7 @@ func TestVlogRotateKey_RotatesTheRealLog(t *testing.T) {
 	if rotated.Key.Version != key1.Version+1 {
 		t.Fatalf("rotated key version = %d, want %d", rotated.Key.Version, key1.Version+1)
 	}
-	wantOK(t, "append", f.call(t, "qrdb_vlog_append", map[string]any{"log": "audit", "entries": []any{"c2Vjb25k"}}))
+	wantOK(t, "append", f.call(t, "qrdb_vlog_append", map[string]any{"log": "ledger", "entries": []any{"c2Vjb25k"}}))
 	after := sign()
 
 	servicetest.RequireHeadSignedBy(t, servicetest.LogOrigin, after, vlog.HeadKey{Version: rotated.Key.Version, PublicKey: rotated.Key.PublicKey})
