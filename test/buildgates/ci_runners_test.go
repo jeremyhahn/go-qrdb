@@ -12,9 +12,13 @@
 //     code-review.yml, whose review jobs keep their self-hosted hosts, and
 //     outside the named Docker-free jobs (bigdiskJobs, DS-8233), which may
 //     carry exactly bigdiskRunner: the self-hosted bigdisk pool for a push to
-//     main and a same-repository pull request, ubuntu-latest otherwise;
-//   - one of those jobs has a container, a service or a Docker step the
-//     pool could reach, or its workflow triggers on pull_request_target;
+//     main and a same-repository pull request, ubuntu-latest otherwise,
+//     and outside the named Docker jobs (dockerPoolJobs, ruling 442), which
+//     may carry exactly dockerPoolRunner: the same events on the
+//     bigdisk-docker pool, a throwaway guest per job with its own Docker;
+//   - one of those Docker-free jobs has a container, a service or a Docker
+//     step the pool could reach, or the workflow of any pool job triggers on
+//     pull_request_target;
 //   - an `if:` still splits on github.server_url, outside the jobs that speak
 //     the Gitea API (giteaOnlyJobs) and batch.yml, whose splits are left to
 //     their owner;
@@ -57,6 +61,11 @@ const (
 	// a pull request whose head is this repository, the hosted runner for
 	// everything else (a fork's pull request never reaches the pool).
 	bigdiskRunner = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
+	// dockerPoolRunner is the one runs-on a dockerPoolJobs job may carry
+	// besides the hosted runner, character for character: bigdiskRunner's
+	// events on the bigdisk-docker pool (ruling 442), whose throwaway guest
+	// per job has its own Docker daemon.
+	dockerPoolRunner = `${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}`
 	// hostedStepTerm is the conjunct a Docker step of a bigdiskJobs job
 	// carries in its `if:`, so the step never runs on the pool.
 	hostedStepTerm = "runner.environment == 'github-hosted'"
@@ -89,6 +98,25 @@ var bigdiskJobs = map[string]map[string]bool{
 		"test-clusterproof": true,
 		"coverage-fts":      true,
 		"ci-gate":           true,
+	},
+}
+
+// dockerPoolJobs are the Docker jobs that may carry dockerPoolRunner (ruling
+// 442), by workflow and job. A job is in bigdiskJobs or here, never both.
+var dockerPoolJobs = map[string]map[string]bool{
+	"ci.yml": {
+		"docker-build":           true,
+		"lint":                   true,
+		"lint-gates":             true,
+		"image":                  true,
+		"coverage":               true,
+		"test-tags":              true,
+		"test-sdk":               true,
+		"integration-features":   true,
+		"integration-standalone": true,
+		"fips":                   true,
+		"test-typescript":        true,
+		"soak":                   true,
 	},
 }
 
@@ -187,11 +215,12 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	add := func(format string, a ...string) {
 		problems = append(problems, file+": "+strings.Join(append([]string{format}, a...), ""))
 	}
-	allowed := bigdiskJobs[file]
+	allowed, docker := bigdiskJobs[file], dockerPoolJobs[file]
 	for _, m := range removedMachinery {
-		// A workflow with bigdiskJobs names the label in their runs-on and
-		// their comments; the per-job runs-on check below bounds its use.
-		if m == bigdiskLabel && len(allowed) > 0 {
+		// A workflow with bigdiskJobs or dockerPoolJobs names the label in
+		// their runs-on and their comments; the per-job runs-on check below
+		// bounds its use.
+		if m == bigdiskLabel && (len(allowed) > 0 || len(docker) > 0) {
 			continue
 		}
 		if strings.Contains(string(body), m) {
@@ -215,8 +244,14 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			for _, p := range bigdiskProblems(job, wf) {
 				add("job " + name + " may run on the self-hosted pool (DS-8233), and " + p)
 			}
+		case docker[name] && job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == dockerPoolRunner:
+			if slices.Contains(triggerNames(wf.On), "pull_request_target") {
+				add("job " + name + " may run on the Docker pool (ruling 442), and the workflow triggers on pull_request_target")
+			}
 		case allowed[name]:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" or exactly the DS-8233 expression (bigdiskRunner)")
+		case docker[name]:
+			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" or exactly the ruling 442 expression (dockerPoolRunner)")
 		default:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner)
 		}
@@ -595,21 +630,99 @@ func TestRunnerProblems_BigdiskJobs(t *testing.T) {
 	}
 }
 
-// TestBigdiskJobsExist keeps bigdiskJobs from outliving its jobs: a listed
-// name that is no job of its workflow is an allowance nothing answers for.
+// dockerPoolFixture is a workflow with one dockerPoolJobs job as ruling 442
+// shapes it: the exact expression and a Docker step, beside an ordinary
+// hosted job.
+const dockerPoolFixture = `on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - run: make build
+  image:
+    runs-on: ` + dockerPoolRunner + `
+    timeout-minutes: 20
+    steps:
+      - run: docker build -t qrdb .
+`
+
+// TestRunnerProblems_DockerPoolJobs is the ruling 442 allowance and its
+// edges: a named Docker job of ci.yml may carry exactly dockerPoolRunner, and
+// every other shape of it (another job, another workflow, another
+// expression, a label, pull_request_target) fails, as does a bigdiskJobs job
+// that carries it.
+func TestRunnerProblems_DockerPoolJobs(t *testing.T) {
+	if p, jobs := runnerProblems("ci.yml", []byte(dockerPoolFixture)); len(p) != 0 || jobs != 2 {
+		t.Fatalf("the fixture must pass with 2 jobs, got %d jobs: %v", jobs, p)
+	}
+	hosted := strings.Replace(dockerPoolFixture, dockerPoolRunner, hostedRunner, 1)
+	if p, _ := runnerProblems("ci.yml", []byte(hosted)); len(p) != 0 {
+		t.Errorf("a listed job may stay on the hosted runner, got %v", p)
+	}
+	onDockerPool := strings.Replace(bigdiskFixture, bigdiskRunner, dockerPoolRunner, 1)
+	if p, _ := runnerProblems("ci.yml", []byte(onDockerPool)); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, "job coverage-fts runs on") }) {
+		t.Errorf("a bigdiskJobs job on the Docker pool passed, got %v", p)
+	}
+	const runsOn = "    runs-on: " + dockerPoolRunner
+	cases := map[string]struct {
+		file, old, new, want string
+	}{
+		"another workflow's job":     {"nightly.yml", "", "", "job image runs on"},
+		"another workflow's label":   {"nightly.yml", "", "", "names `bigdisk`"},
+		"a job not listed":           {"ci.yml", "  build:\n    runs-on: ubuntu-latest", "  build:\n" + runsOn, "job build runs on"},
+		"the Docker-free pool":       {"ci.yml", `"bigdisk-docker"]`, `"bigdisk"]`, "job image runs on"},
+		"another pool":               {"ci.yml", `"bigdisk-docker"]`, `"batch"]`, "job image runs on"},
+		"any push":                   {"ci.yml", "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "job image runs on"},
+		"a fork's pull request":      {"ci.yml", " && github.event.pull_request.head.repo.full_name == github.repository", "", "job image runs on"},
+		"pull_request_target routed": {"ci.yml", "github.event_name == 'pull_request'", "github.event_name == 'pull_request_target'", "job image runs on"},
+		"no hosted fallback":         {"ci.yml", " || 'ubuntu-latest'", "", "job image runs on"},
+		"the label list":             {"ci.yml", runsOn, "    runs-on: [self-hosted, linux, x64, bigdisk-docker]", "job image runs on"},
+		"the bare label":             {"ci.yml", runsOn, "    runs-on: bigdisk-docker", "job image runs on"},
+		"pull_request_target":        {"ci.yml", "  pull_request:\n", "  pull_request_target:\n", "triggers on pull_request_target"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(dockerPoolFixture, c.old) {
+				t.Fatalf("the fixture lacks %q", c.old)
+			}
+			body := strings.Replace(dockerPoolFixture, c.old, c.new, 1)
+			problems, _ := runnerProblems(c.file, []byte(body))
+			if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, c.want) }) {
+				t.Fatalf("want a problem containing %q, got %v", c.want, problems)
+			}
+		})
+	}
+}
+
+// TestBigdiskJobsExist keeps bigdiskJobs and dockerPoolJobs from outliving
+// their jobs: a listed name that is no job of its workflow is an allowance
+// nothing answers for, and a job in both is on two pools at once.
 func TestBigdiskJobsExist(t *testing.T) {
 	files := workflowFiles(t)
-	if len(bigdiskJobs) == 0 {
-		t.Fatal("bigdiskJobs is empty; the loop below would pass on nothing")
-	}
-	for file, names := range bigdiskJobs {
-		var wf runnerWorkflow
-		if err := yaml.Unmarshal(files[file], &wf); err != nil {
-			t.Fatalf("%s: %v", file, err)
+	for list, jobs := range map[string]map[string]map[string]bool{"bigdiskJobs": bigdiskJobs, "dockerPoolJobs": dockerPoolJobs} {
+		if len(jobs) == 0 {
+			t.Fatalf("%s is empty; the loop below would pass on nothing", list)
 		}
+		for file, names := range jobs {
+			var wf runnerWorkflow
+			if err := yaml.Unmarshal(files[file], &wf); err != nil {
+				t.Fatalf("%s: %v", file, err)
+			}
+			for name := range names {
+				if _, ok := wf.Jobs[name]; !ok {
+					t.Errorf("%s lists %s's job %s, which the workflow does not have", list, file, name)
+				}
+			}
+		}
+	}
+	for file, names := range dockerPoolJobs {
 		for name := range names {
-			if _, ok := wf.Jobs[name]; !ok {
-				t.Errorf("bigdiskJobs lists %s's job %s, which the workflow does not have", file, name)
+			if bigdiskJobs[file][name] {
+				t.Errorf("%s's job %s is in both bigdiskJobs and dockerPoolJobs", file, name)
 			}
 		}
 	}
