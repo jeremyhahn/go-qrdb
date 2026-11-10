@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -97,6 +98,11 @@ type RotateOptions struct {
 	// count rather than by time.
 	retainPrevious bool
 
+	// importDigest, set by a migration import, is the digest of the legacy
+	// copy the new value comes from. It is recorded in the same metadata
+	// write that advances the version.
+	importDigest string
+
 	// schedule, set by a scheduled rotation, stages the new value before it
 	// becomes current and settles the claim in the same metadata write that
 	// advances the version.
@@ -152,6 +158,10 @@ type credentialMeta struct {
 	// NextRotation is when an enabled Policy next falls due. Zero when
 	// no enabled policy is set.
 	NextRotation time.Time `json:"next_rotation,omitzero"`
+
+	// Imported holds the digest of each legacy copy a migration import
+	// has committed as a version, so a retried import commits it once.
+	Imported []string `json:"imported,omitempty"`
 
 	// Claim is the lease of the scheduled rotation in progress, nil when
 	// none is. Only its holder invokes the rotation value source.
@@ -607,6 +617,9 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 				})
 			}
 			m.CurrentVersion = newVersion
+		}
+		if opts.importDigest != "" && !slices.Contains(m.Imported, opts.importDigest) {
+			m.Imported = append(m.Imported, opts.importDigest)
 		}
 		if sched != nil {
 			sched.settle(m)

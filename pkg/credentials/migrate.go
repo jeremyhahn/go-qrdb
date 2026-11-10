@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 
@@ -478,9 +479,14 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 		delete(s.conflicts, name)
 		return ErrMigrationConflictNotFound
 	}
-	attrs, err := resolve(s, ctx, name, c)
-	if err != nil {
-		return err
+	// A settled copy was resolved by an earlier call whose deletion was
+	// interrupted, and what is left of it is not the copy that was decided
+	// on: only the deletion runs again.
+	attrs := map[string]any{"already_resolved": true}
+	if !c.settled {
+		if attrs, err = resolve(s, ctx, name, c); err != nil {
+			return err
+		}
 	}
 	if err := s.deleteLegacy(ctx, name, c); err != nil {
 		return err
@@ -498,9 +504,21 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 	if !ok || len(value) == 0 {
 		return nil, ErrCredentialNotFound
 	}
+	digest := c.record.claim().Digest
+	meta, err := s.loadBarrierMeta(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(meta.Imported, digest) {
+		// An earlier resolve committed this copy and failed deleting it.
+		// The credential may have been rotated since, so nothing is
+		// imported or replaced; only the deletion is left.
+		return map[string]any{"already_imported": true}, nil
+	}
 	res, err := s.rotateBarrier(ctx, name, RotateOptions{
 		NewValue:       bytes.Clone(value),
 		retainPrevious: true,
+		importDigest:   digest,
 	})
 	if err != nil {
 		return nil, err
