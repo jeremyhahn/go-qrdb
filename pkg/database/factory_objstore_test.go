@@ -218,6 +218,31 @@ func TestManager_FailedCreateReclaimsTheObjstoreObjects(t *testing.T) {
 	}
 }
 
+// TestManager_FailedCreateReportsAFailedReclaim checks a rollback that cannot
+// delete the objects says so beside the error that failed the Create, rather
+// than leave them unreported.
+func TestManager_FailedCreateReportsAFailedReclaim(t *testing.T) {
+	reclaimFailed := errors.New("provider refused the delete")
+	open := func(_, _, _ string) (storage.Storage, ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, func() error { return reclaimFailed }, nil
+	}
+	cause := errors.New("unfence refused")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := newCatalogManager(logger, t.TempDir(),
+		WithBackendFactory(NewEmbeddedBackendFactory(WithObjstoreOpener(open))),
+		WithKeyspaceReclaimer(&spyReclaimer{unfenceErr: cause}))
+	t.Cleanup(func() { _ = m.Close() })
+
+	_, err := m.Create(DatabaseConfig{Name: "blobs", Backend: BackendObjstore})
+	if !errors.Is(err, cause) || !errors.Is(err, reclaimFailed) {
+		t.Fatalf("Create = %v, want the unfence failure joined with the reclaim failure", err)
+	}
+}
+
 // TestManager_DropReclaimsABarrierEnabledObjstoreDatabase: the barrier wraps
 // the objstore backend, and the drop must still reach the reclaim beneath it
 // rather than report success over the objects it left.
