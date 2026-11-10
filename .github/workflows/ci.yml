@@ -1,8 +1,10 @@
 # ci-template: v1.34.1 — canonical CI for all first-party Go repos.
 # go-qrdb deviations from v1.34.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on GitHub-hosted ubuntu-latest (DS-7377); no self-hosted
-#     label, registry, cache volume, reaper or schedule guard remains
+#   - every job runs on GitHub-hosted ubuntu-latest (DS-7377) but one:
+#     test-typescript, which uses no Docker, runs on the worker node's runner on push
+#     and same-repository pull_request (Company Agent m2396); no other
+#     self-hosted label, registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - preflight's timeout is 15 minutes against the template's 10, because it
@@ -1373,7 +1375,7 @@ jobs:
   # (DS-3160). It needs docker-build only for the code-tier `if:` (v1.29.2).
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 30

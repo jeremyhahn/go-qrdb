@@ -9,7 +9,9 @@
 // each piece from coming back. It fails when:
 //
 //   - a job's runs-on is not the literal `ubuntu-latest`, outside
-//     code-review.yml, whose review jobs keep their self-hosted hosts;
+//     code-review.yml, whose review jobs keep their self-hosted hosts, and
+//     ci.yml's bigdiskJob, which may name bigdiskRunsOn and nothing else
+//     (Company Agent m2396);
 //   - an `if:` still splits on github.server_url, outside the jobs that speak
 //     the Gitea API (giteaOnlyJobs) and batch.yml, whose splits are left to
 //     their owner;
@@ -44,6 +46,13 @@ const (
 	jobMinutesCeiling = 350
 	// hostedRunner is the one runs-on a CI job may name.
 	hostedRunner = "ubuntu-latest"
+	// bigdiskJob is the one ci.yml job that may leave the hosted runner: it
+	// uses no Docker, so the owner moved it to the returned worker node
+	// (Company Agent m2396, 2026-11-10).
+	bigdiskJob = "test-typescript"
+	// bigdiskRunsOn is bigdiskJob's runs-on: the bigdisk runner on a push and
+	// on a pull_request from this repository, ubuntu-latest on anything else.
+	bigdiskRunsOn = `${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// ciPublishExpr is when a run publishes: a push to main, and nothing else.
 	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 	// cachePublishTerm is the conjunct every cache save's `if:` carries.
@@ -147,8 +156,14 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	add := func(format string, a ...string) {
 		problems = append(problems, file+": "+strings.Join(append([]string{format}, a...), ""))
 	}
+	// bigdiskRunsOn names bigdisk; the job loop below refuses it on any job
+	// but bigdiskJob, so the scan for removed names looks past it.
+	scan := string(body)
+	if file == "ci.yml" {
+		scan = strings.ReplaceAll(scan, bigdiskRunsOn, "")
+	}
 	for _, m := range removedMachinery {
-		if strings.Contains(string(body), m) {
+		if strings.Contains(scan, m) {
 			add("names `" + m + "`, part of the self-hosted CI DS-7377 removed")
 		}
 	}
@@ -163,7 +178,13 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	for _, name := range names {
 		job := wf.Jobs[name]
 		jobs++
-		if job.RunsOn.Kind != yaml.ScalarNode || job.RunsOn.Value != hostedRunner {
+		bigdisk := file == "ci.yml" && name == bigdiskJob
+		switch {
+		case job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == hostedRunner:
+		case bigdisk && job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == bigdiskRunsOn:
+		case bigdisk:
+			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" or bigdiskRunsOn")
+		default:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner)
 		}
 		problems = append(problems, timeoutProblems(file, name, job)...)
@@ -413,6 +434,39 @@ func TestRunnerProblems_Exemptions(t *testing.T) {
 	}
 	if p, _ := runnerProblems("batch.yml", []byte(guarded)); len(p) != 0 {
 		t.Errorf("batch.yml keeps its splits for its owner, got %v", p)
+	}
+}
+
+// TestRunnerProblems_BigdiskJob holds the bigdisk exception to its one job in
+// its one workflow, and to its one expression, character for character.
+func TestRunnerProblems_BigdiskJob(t *testing.T) {
+	withJob := func(job, runsOn string) string {
+		return strings.Replace(runnerFixture, "  legs:\n", "  "+job+":\n    runs-on: "+runsOn+"\n    timeout-minutes: 30\n    steps:\n      - run: make "+job+"\n  legs:\n", 1)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, bigdiskRunsOn))); len(p) != 0 {
+		t.Errorf("ci.yml's %s may run on bigdiskRunsOn, got %v", bigdiskJob, p)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, hostedRunner))); len(p) != 0 {
+		t.Errorf("ci.yml's %s may run on %s, got %v", bigdiskJob, hostedRunner, p)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob("test-sdk", bigdiskRunsOn))); len(p) == 0 {
+		t.Error("bigdiskRunsOn on another ci.yml job passed; the exception is " + bigdiskJob + "'s alone")
+	}
+	if p, _ := runnerProblems("nightly.yml", []byte(withJob(bigdiskJob, bigdiskRunsOn))); len(p) == 0 {
+		t.Error("bigdiskRunsOn in nightly.yml passed; the exception is ci.yml's alone")
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, "bigdisk"))); len(p) == 0 {
+		t.Error("the bare bigdisk label on " + bigdiskJob + " passed")
+	}
+	for i := range len(bigdiskRunsOn) {
+		c := byte('x')
+		if bigdiskRunsOn[i] == c {
+			c = 'y'
+		}
+		changed := bigdiskRunsOn[:i] + string(c) + bigdiskRunsOn[i+1:]
+		if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, changed))); len(p) == 0 {
+			t.Errorf("%s's runs-on %q, one character off bigdiskRunsOn, passed", bigdiskJob, changed)
+		}
 	}
 }
 
