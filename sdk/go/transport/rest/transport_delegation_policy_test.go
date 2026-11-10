@@ -35,6 +35,35 @@ func TestRESTPutDelegationPolicy_RequestAndResponseFields(t *testing.T) {
 	}
 }
 
+// A nil request is refused on the client: it is not posted as a JSON null.
+func TestRESTPutDelegationPolicy_NilRequest(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	reached := make(chan struct{}, 2)
+	rs.handle(exactPath(http.MethodPost, "/certs/delegate/policies"), func(w http.ResponseWriter, _ *http.Request) {
+		reached <- struct{}{}
+		writeJSON(w, &transport.DelegationPolicy{TenantID: "acme", Principal: "billing"})
+	})
+
+	for _, name := range []string{"first call", "second call"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("PutDelegationPolicy(nil) panicked: %v", r)
+				}
+			}()
+			got, err := rt.PutDelegationPolicy(context.Background(), nil)
+			var nilReq *transport.NilRequestError
+			var reqErr *transport.RequestError
+			if got != nil || !errors.As(err, &nilReq) || !errors.As(err, &reqErr) || reqErr.Method != "PutDelegationPolicy" {
+				t.Fatalf("PutDelegationPolicy(nil) = %+v, %v; want a PutDelegationPolicy *transport.RequestError wrapping *transport.NilRequestError", got, err)
+			}
+			if len(reached) != 0 {
+				t.Fatal("the nil request reached the server")
+			}
+		})
+	}
+}
+
 func TestRESTPutDelegationPolicy_RefusalIsARequestError(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/certs/delegate/policies"), func(w http.ResponseWriter, _ *http.Request) {

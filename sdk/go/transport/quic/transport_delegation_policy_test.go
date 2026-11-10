@@ -38,6 +38,36 @@ func TestE2E_PutDelegationPolicy_HappyPath(t *testing.T) {
 	}
 }
 
+// A nil request is refused on the client: it is not sent as a JSON null.
+func TestE2E_PutDelegationPolicy_NilRequest(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	reached := make(chan struct{}, 2)
+	srv.SetResponder("cert.DelegationPolicyPut", func([]byte) (uint16, []byte) {
+		reached <- struct{}{}
+		b, _ := json.Marshal(transport.DelegationPolicy{TenantID: "t1", Principal: "billing"})
+		return wire.StatusOK, b
+	})
+
+	for _, name := range []string{"first call", "second call"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("PutDelegationPolicy(nil) panicked: %v", r)
+				}
+			}()
+			got, err := tr.PutDelegationPolicy(context.Background(), nil)
+			var nilReq *transport.NilRequestError
+			var reqErr *transport.RequestError
+			if got != nil || !errors.As(err, &nilReq) || !errors.As(err, &reqErr) || reqErr.Method != "PutDelegationPolicy" {
+				t.Fatalf("PutDelegationPolicy(nil) = %+v, %v; want a PutDelegationPolicy *transport.RequestError wrapping *transport.NilRequestError", got, err)
+			}
+			if len(reached) != 0 {
+				t.Fatal("the nil request reached the server")
+			}
+		})
+	}
+}
+
 func TestE2E_PutDelegationPolicy_ServerError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("cert.DelegationPolicyPut", func(_ []byte) (uint16, []byte) {
