@@ -1,3 +1,5 @@
+//go:build codec_json && raft && qrdb_ts && qrdb_vector && qrdb_mysql && qrdb_pgsql && qrdb_etcd
+
 // Copyright 2026 Jeremy Hahn
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
