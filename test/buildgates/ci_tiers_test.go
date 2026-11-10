@@ -932,6 +932,96 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 	return problems
 }
 
+// ciSchedule is the one cron ci.yml may carry: 04:00 UTC on Sunday, the end of
+// this project's Saturday night in the factory's rotation (#1349).
+const ciSchedule = "0 4 * * 0"
+
+// ciScheduleProblems checks that ci.yml's `on.schedule` is exactly one entry
+// whose cron is ciSchedule. The rotation gives each project one night a week;
+// a nightly cron, another weekday or a second entry takes another project's
+// night.
+func ciScheduleProblems(wf workflowFile) []string {
+	if wf.On.Kind != yaml.MappingNode {
+		return []string{"on: has no schedule key; want one cron, " + strconv.Quote(ciSchedule)}
+	}
+	var schedule *yaml.Node
+	for i := 0; i+1 < len(wf.On.Content); i += 2 {
+		if wf.On.Content[i].Value == "schedule" {
+			schedule = wf.On.Content[i+1]
+			break
+		}
+	}
+	if schedule == nil {
+		return []string{"on: has no schedule key; want one cron, " + strconv.Quote(ciSchedule)}
+	}
+	if schedule.Kind != yaml.SequenceNode || len(schedule.Content) != 1 {
+		return []string{"on.schedule must be a sequence of exactly one entry, the cron " + strconv.Quote(ciSchedule) +
+			"; found " + strconv.Itoa(len(schedule.Content))}
+	}
+	entry := schedule.Content[0]
+	cron, found := "", false
+	if entry.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(entry.Content); i += 2 {
+			if entry.Content[i].Value == "cron" {
+				cron, found = entry.Content[i+1].Value, true
+				break
+			}
+		}
+	}
+	if !found {
+		return []string{"on.schedule's entry has no cron key; want " + strconv.Quote(ciSchedule)}
+	}
+	if cron != ciSchedule {
+		return []string{"on.schedule cron is " + strconv.Quote(cron) + "; want " + strconv.Quote(ciSchedule) +
+			", this project's night alone (#1349)"}
+	}
+	return nil
+}
+
+// TestCIScheduleIsThisProjectsNight holds ci.yml's one schedule to this
+// project's night in the factory's rotation (#1349).
+func TestCIScheduleIsThisProjectsNight(t *testing.T) {
+	var wf workflowFile
+	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
+		t.Fatalf("parse %s: %v", ciWorkflowName, err)
+	}
+	for _, p := range ciScheduleProblems(wf) {
+		t.Errorf("%s: %s", ciWorkflowName, p)
+	}
+}
+
+// TestCIScheduleProblems_CanFail proves the schedule gate reddens on a nightly
+// cron, another weekday, a second entry and a missing schedule.
+func TestCIScheduleProblems_CanFail(t *testing.T) {
+	const good = "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * 0'\n"
+	parse := func(body string) workflowFile {
+		var wf workflowFile
+		if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
+			t.Fatalf("parse fixture: %v", err)
+		}
+		return wf
+	}
+	if p := ciScheduleProblems(parse(good)); len(p) != 0 {
+		t.Fatalf("the valid fixture must have no problems, got %v", p)
+	}
+	cases := map[string]string{
+		"nightly cron":    strings.Replace(good, "'0 4 * * 0'", "'0 4 * * *'", 1),
+		"another weekday": strings.Replace(good, "'0 4 * * 0'", "'0 4 * * 6'", 1),
+		"two entries":     good + "    - cron: '0 4 * * 3'\n",
+		"no schedule":     "on:\n  workflow_dispatch:\n",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if body == good {
+				t.Fatal("the mutation left the valid fixture unchanged")
+			}
+			if p := ciScheduleProblems(parse(body)); len(p) == 0 {
+				t.Fatal("expected at least one problem, got none")
+			}
+		})
+	}
+}
+
 // TestPullRequestWorkflowsCancelSupersededRuns scans every workflow file on
 // both planes.
 func TestPullRequestWorkflowsCancelSupersededRuns(t *testing.T) {
@@ -989,9 +1079,10 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
 		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
-	// Ruling 216(1): ci.yml carries v1.27.0's nightly cron; any other workflow's
-	// schedule still reddens (the "schedule" case below).
-	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n", 1)
+	// Ruling 216(1): ci.yml carries one weekly cron, this project's night in the
+	// factory's rotation (#1349); any other workflow's schedule still reddens
+	// (the "schedule" case below).
+	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * 0'\n", 1)
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciScheduled)); len(p) != 0 {
 		t.Fatalf("%s may run on schedule, got %v", ciWorkflowName, p)
 	}
