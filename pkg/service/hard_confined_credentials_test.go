@@ -291,13 +291,37 @@ func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing
 	} else {
 		assertHardConfinedError(t, err)
 	}
-	if _, err := w.WatchPrefix(ctx, credentialMigrationsRoot); err == nil {
-		t.Fatal("WatchPrefix on the migration claims succeeded, want a refusal")
-	} else {
-		assertHardConfinedError(t, err)
-	}
 	if fakeW.calledWatch {
 		t.Fatal("Watch delegated to the underlying servicer despite the refusal")
+	}
+
+	// A prefix watch is filtered, as it is for a credential record.
+	watcher, err := w.WatchPrefix(ctx, credentialMigrationsRoot)
+	if err != nil {
+		t.Fatalf("WatchPrefix(%q): %v", credentialMigrationsRoot, err)
+	}
+	fakeW.prefixWatcher.events <- watch.WatchResponse{
+		WatchID:  1,
+		Revision: 1,
+		Events: []*watch.Event{
+			{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte(key), Value: []byte("claim")}},
+			{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte("ordinary/a"), Value: []byte("1")}},
+		},
+	}
+	fakeW.prefixWatcher.Close()
+	select {
+	case resp, ok := <-watcher.Events():
+		if !ok {
+			t.Fatal("Events() closed before delivering the one response pushed")
+		}
+		if len(resp.Events) != 1 || string(resp.Events[0].Kv.Key) != "ordinary/a" {
+			t.Fatalf("WatchPrefix delivered %v, want exactly the non-claim event", resp.Events)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the filtered watch event")
+	}
+	if err := watcher.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

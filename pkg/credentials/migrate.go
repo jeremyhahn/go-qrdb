@@ -34,7 +34,7 @@ const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key pref
 // any non-blank string, '#' included, so every key under credentialPrefix or
 // legacyCredentialPrefix is a credential's; a key under neither is none.
 const (
-	migrationClaimPrefix      = "__sys:credential-migrations/"
+	MigrationClaimPrefix      = "__sys:credential-migrations/"
 	legacyMigrationNotePrefix = "credential-migrations/"
 )
 
@@ -250,7 +250,7 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 // none. A replicated record written before any node migrated the name was
 // first, so the claim then names that record, complete.
 func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours migrationClaim) (migrationClaim, error) {
-	key := migrationClaimPrefix + name
+	key := MigrationClaimPrefix + name
 	if claim, ok := s.loadClaim(ctx, key); ok {
 		return claim, nil
 	}
@@ -323,7 +323,7 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 		return &OperationError{Op: "encode migration claim", Cause: err}
 	}
 	// A failed swap means another node holding the same copy completed it.
-	if _, err := s.store.CompareAndSwap(ctx, migrationClaimPrefix+name, pending, done); err != nil {
+	if _, err := s.store.CompareAndSwap(ctx, MigrationClaimPrefix+name, pending, done); err != nil {
 		return &OperationError{Op: "complete migration claim", Cause: err}
 	}
 	return nil
