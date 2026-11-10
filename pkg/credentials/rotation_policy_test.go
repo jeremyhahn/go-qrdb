@@ -1069,6 +1069,29 @@ func TestRotateDue_ClaimFailureReported(t *testing.T) {
 	}
 }
 
+// A metadata record that cannot be read is not an absent one: the pass
+// reports the due credential instead of taking it for one with no policy.
+func TestRotateDue_MetaReadFailureReported(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 2)
+	due := rotationEpoch.Add(time.Hour)
+	arm(&backend.failGet, metaKey("k"))
+
+	n, err := svc.RotateDue(t.Context(), due)
+	requireRotationOpError(t, err, "k", "read meta")
+	if !errors.Is(err, errInjectedFault) || n != 0 {
+		t.Fatalf("RotateDue = %d, %v; want 0 and the injected fault", n, err)
+	}
+	backend.failGet.Store(nil)
+	if got := versionCount(t, svc, "k"); got != 1 {
+		t.Fatalf("versions = %d, want 1: nothing may rotate on unread metadata", got)
+	}
+
+	if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+		t.Fatalf("RotateDue after the fault = %d, %v; want 1, nil", n, err)
+	}
+}
+
 func TestRotateDue_RotateFailureReported(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 2)

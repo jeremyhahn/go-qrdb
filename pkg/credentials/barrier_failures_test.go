@@ -103,7 +103,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 		},
 		{
 			name: "gc",
-			op:   "write meta",
+			op:   "read meta",
 			run: func(svc *CredentialService) error {
 				_, err := svc.GCExpiredVersions(ctx, "k")
 				return err
