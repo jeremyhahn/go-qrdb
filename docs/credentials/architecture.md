@@ -124,8 +124,12 @@ from a store its own records have not reached.
 **Who wins.** Per credential name, the first node to migrate wins: it writes a
 migration claim beside the replicated record (the digests of its value,
 versions and policy, never the value) with a conditional write, then writes
-its records, then deletes its old ones. A replicated record that already
-existed before any node migrated the name counts as first. A later node whose
+its records and the completed claim in one guarded write, then deletes its
+old ones. The guarded write is applied only while the name has no replicated
+record. A replicated record that already existed before any node migrated the
+name counts as first, and so does a value stored between the claim and the
+guarded write: that value is kept, the claim is re-pointed at it, and the
+node's own copy becomes a conflict unless it is identical. A later node whose
 copy is byte-identical in value, versions and policy deletes its old records.
 A later node whose copy differs in any of the three keeps its old records
 untouched and reports a **migration conflict**: a warning in the log, a
@@ -133,9 +137,10 @@ untouched and reports a **migration conflict**: a warning in the log, a
 entry in the conflict list.
 
 **Idempotent after a crash.** A node that crashes part-way and runs again
-reaches the same result. The claim is written before the records and marked
-complete after them, so a rerun finishes the writes of an incomplete claim
-that is its own and keeps any record already present. Before deleting its old
+reaches the same result. The claim is written before the records, and the
+records and the completed claim are one guarded write that either applies
+whole or not at all, so a rerun that finds an incomplete claim of its own
+writes again. Before deleting its old
 records a node writes a settled note under the old prefix and deletes the
 note last, so a rerun interrupted mid-deletion finishes the deletion instead
 of reading the remainder as a different copy.
