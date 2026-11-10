@@ -44,6 +44,9 @@ func (t *Transport) PutDelegationPolicy(ctx context.Context, req *transport.Dele
 	if err != nil {
 		return nil, err
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "PutDelegationPolicy", Err: &transport.NilRequestError{}}
+	}
 	var ttl time.Duration
 	if req.TTL != "" {
 		if ttl, err = time.ParseDuration(req.TTL); err != nil {

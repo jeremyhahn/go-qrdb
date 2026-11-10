@@ -35,6 +35,9 @@ func (t *Transport) callJSON(ctx context.Context, method, op string, req, out an
 
 // PutDelegationPolicy implements transport.CertClient.
 func (t *Transport) PutDelegationPolicy(ctx context.Context, req *transport.DelegationPolicyRequest) (*transport.DelegationPolicy, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "PutDelegationPolicy", Err: &transport.NilRequestError{}}
+	}
 	var out transport.DelegationPolicy
 	if err := t.callJSON(ctx, "PutDelegationPolicy", "cert.DelegationPolicyPut", req, &out); err != nil {
 		return nil, err

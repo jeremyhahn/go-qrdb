@@ -19,6 +19,9 @@ func (t *Transport) PutDelegationPolicy(ctx context.Context, req *transport.Dele
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "PutDelegationPolicy", Err: &transport.NilRequestError{}}
+	}
 	var out transport.DelegationPolicy
 	if err := t.postJSONDecode(ctx, "PutDelegationPolicy", delegationPoliciesPath, req, &out); err != nil {
 		return nil, err

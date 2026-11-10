@@ -19,6 +19,9 @@ func (t *Transport) PutDelegationPolicy(ctx context.Context, req *transport.Dele
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	if req == nil {
+		return nil, &transport.RequestError{Method: "PutDelegationPolicy", Err: &transport.NilRequestError{}}
+	}
 	resp, err := t.client.PutDelegationPolicy(ctx, &pb.PutDelegationPolicyRequest{Principal: req.Principal, Scope: req.Scope, Ttl: req.TTL})
 	if err != nil {
 		return nil, mapGRPCError("PutDelegationPolicy", err)
