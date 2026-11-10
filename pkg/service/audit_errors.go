@@ -42,6 +42,18 @@ func (e *AuditFeatureNotActiveError) Error() string {
 // system shard's chain under its own tenant segment would be a correctness
 // defect (the wrong replica set, the wrong barrier), not merely a missing
 // feature, so this is refused rather than guessed.
+// AuditInstanceRefusedError is returned when the state machine refuses an
+// audit event proposed to the tenant's audit instance (system/audit) with a
+// log refusal; Reason is the refusal's message.
+type AuditInstanceRefusedError struct {
+	TenantID string
+	Reason   string
+}
+
+func (e *AuditInstanceRefusedError) Error() string {
+	return "audit: the audit instance of tenant " + strconv.Quote(e.TenantID) + " refused the event: " + e.Reason
+}
+
 type DedicatedTenantAuditNotSupportedError struct {
 	TenantID      string
 	IsolationType string

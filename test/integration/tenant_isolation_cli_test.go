@@ -175,6 +175,23 @@ func provisionTenantIdentity(t *testing.T, node *multiProtoNode, tenantID, roleN
 // provisionTenantCLIIdentity), not the feature under test.
 func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string, certPath string) {
 	t.Helper()
+	provisionTenantIdentityGrantedBy(t, node, tenantID, roleName, permissions, certPath, false)
+}
+
+// provisionTenantSOIdentity is provisionTenantIdentity for a role holding a
+// permission only the tenant's security officer holds and may grant (such as
+// audit:verify_replicated): the tenant's provisioner is seated as SO too.
+func provisionTenantSOIdentity(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string) (certPath, keyPath string) {
+	t.Helper()
+	certPath, keyPath = node.ca.generateClientCertForTenant(t, tenantID)
+	provisionTenantIdentityGrantedBy(t, node, tenantID, roleName, permissions, certPath, true)
+	return certPath, keyPath
+}
+
+// provisionTenantIdentityGrantedBy is provisionTenantIdentityFor whose
+// provisioner is also seated as the tenant's security officer when so is set.
+func provisionTenantIdentityGrantedBy(t *testing.T, node *multiProtoNode, tenantID, roleName string, permissions []string, certPath string, so bool) {
+	t.Helper()
 	// Authenticate as the tenant's OWN first admin, registered by
 	// createTenant/createTenantWithAdminCert. The system admin can no
 	// longer provision records inside another tenant at all (owner ruling,
@@ -184,7 +201,7 @@ func provisionTenantIdentityFor(t *testing.T, node *multiProtoNode, tenantID, ro
 	var adminClient *http.Client
 	if cred, ok := lookupTenantAdminCred(tenantID); ok {
 		adminClient = mtlsHTTPClientFromFiles(t, node.ca, cred.certPath, cred.keyPath, 15*time.Second)
-		adminClient = seatTenantProvisioner(t, node.ca, node.restPort, tenantID, adminClient, false)
+		adminClient = seatTenantProvisioner(t, node.ca, node.restPort, tenantID, adminClient, so)
 	} else {
 		adminClient = mtlsHTTPClient(t, node.ca, 15*time.Second)
 	}

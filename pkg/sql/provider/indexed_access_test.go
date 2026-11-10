@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	sqle "github.com/dolthub/go-mysql-server/sql"
+	"github.com/dolthub/go-mysql-server/sql/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -228,6 +229,40 @@ func TestKVTable_LookupPartitions_NonQRDBIndex_FallsToFullScan(t *testing.T) {
 	require.NotNil(t, iter)
 }
 
+func TestKVTable_LookupPartitions_WithIndex(t *testing.T) {
+	idxSvc := &entityMockIndexServicer{
+		queryFn: func(_ context.Context, _ string, value []byte) ([][]byte, error) {
+			return [][]byte{value}, nil
+		},
+	}
+
+	tbl := NewKVTable(&mockKVService{}, tenant.ComposeNamespace("system", ""), idxSvc)
+	ctx := newTestContext()
+
+	qIdx := newQRDBIndex("qrdb", "kv", "key", "string", false)
+	lookup := sqle.IndexLookup{
+		Index: qIdx,
+		Ranges: sqle.MySQLRangeCollection{
+			sqle.MySQLRange{sqle.ClosedRangeColumnExpr("k1", "k1", types.LongText)},
+		},
+	}
+
+	iter, err := tbl.LookupPartitions(ctx, lookup)
+	require.NoError(t, err)
+	requireIndexedPartition(t, ctx, iter, 1)
+}
+
+// requireIndexedPartition asserts that iter's first partition is the
+// index-service-backed indexedPartition carrying wantKeys keys.
+func requireIndexedPartition(t *testing.T, ctx *sqle.Context, iter sqle.PartitionIter, wantKeys int) {
+	t.Helper()
+	part, err := iter.Next(ctx)
+	require.NoError(t, err)
+	ip, ok := part.(*indexedPartition)
+	require.True(t, ok, "an equality lookup on a QRDB index must use the index service, got %T", part)
+	assert.Len(t, ip.keys, wantKeys)
+}
+
 // ---------------------------------------------------------------------------
 // KVTable indexed partition row fetch
 // ---------------------------------------------------------------------------
@@ -357,6 +392,30 @@ func TestCollectionTable_LookupPartitions_NonQRDBIndex(t *testing.T) {
 	iter, err := tbl.LookupPartitions(ctx, lookup)
 	require.NoError(t, err)
 	require.NotNil(t, iter)
+}
+
+func TestCollectionTable_LookupPartitions_WithIndex(t *testing.T) {
+	idxSvc := &entityMockIndexServicer{
+		queryFn: func(_ context.Context, _ string, value []byte) ([][]byte, error) {
+			return [][]byte{value}, nil
+		},
+	}
+
+	colSvc := &mockCollectionService{}
+	tbl := NewCollectionTable(colSvc, "qrdb", "orders", map[string]string{"name": "VARCHAR"}, idxSvc)
+	ctx := newTestContext()
+
+	qIdx := newQRDBIndex("qrdb", "orders", "name", "string", false)
+	lookup := sqle.IndexLookup{
+		Index: qIdx,
+		Ranges: sqle.MySQLRangeCollection{
+			sqle.MySQLRange{sqle.ClosedRangeColumnExpr("order1", "order1", types.LongText)},
+		},
+	}
+
+	iter, err := tbl.LookupPartitions(ctx, lookup)
+	require.NoError(t, err)
+	requireIndexedPartition(t, ctx, iter, 1)
 }
 
 // ---------------------------------------------------------------------------

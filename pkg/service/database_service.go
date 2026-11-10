@@ -31,6 +31,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -1394,18 +1395,20 @@ func (s *DatabaseService) sealOwnedDatabase(ctx context.Context, db *database.Da
 		_, err := s.sealer.Seal(ctx, s.databaseBarrier(ctx, db.Name()), clusterseal.PrincipalFrom(ctx))
 		return err
 	}
-	if err := s.sealDatabaseHere(db); err != nil {
+	err := s.sealDatabaseHere(db)
+	if err != nil && !isDrainTimeout(err) {
 		return err
 	}
 	// A node-local seal ends the database's open streams and its tenant's
 	// SQL sessions, as a cluster seal does: after the barrier is sealed and
 	// the database marked, so a stream opening between the two finds it
-	// refused.
+	// refused. A seal whose drain ran out has sealed too, so its streams end
+	// as well before its DrainTimeoutError is returned.
 	if streams := clusterseal.StreamsOf(s.sealer); streams != nil {
 		b := s.databaseBarrier(ctx, db.Name())
 		streams.EndDatabase(b.Tenant(), b.Database(), &clusterseal.SealedError{Barrier: b})
 	}
-	return nil
+	return err
 }
 
 // SealDatabaseLocal seals, on this node, the database name owned by
@@ -1438,14 +1441,25 @@ func (s *DatabaseService) sealDatabaseHere(db *database.Database) error {
 	if s.barrierMgr == nil {
 		return &BarrierManagerNotConfiguredError{}
 	}
-	if err := s.barrierMgr.SealAuthorized(db.Name(), db.TenantID()); err != nil {
+	// A *quiesce.DrainTimeoutError means the barrier sealed and its key is
+	// gone with stores still in flight: the database is sealed all the same,
+	// and the error still reaches the caller.
+	err := s.barrierMgr.SealAuthorized(db.Name(), db.TenantID())
+	if err != nil && !isDrainTimeout(err) {
 		return err
 	}
 	// Reflect the sealed state on the Database's own status so
 	// DatabaseInfo.Status (database info / database list) stays consistent
 	// with the barrier registry's authoritative sealed/unsealed state.
 	db.SetStatus(database.StatusSealed)
-	return nil
+	return err
+}
+
+// isDrainTimeout reports whether err says a seal completed but its drain ran
+// out, so the barrier is sealed.
+func isDrainTimeout(err error) bool {
+	var timeout *quiesce.DrainTimeoutError
+	return errors.As(err, &timeout)
 }
 
 // UnsealDatabase unseals the encryption barrier for the named database on

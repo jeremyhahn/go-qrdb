@@ -439,6 +439,26 @@ Invariants:
   `servicetest.VerifyInclusion` and `servicetest.VerifyConsistency` (RFC 9162
   tree hashing, `transparency-dev/merkle`).
 
+## The audit instance
+
+The replicated audit trail is the log instance `<tenant>/system/audit`
+(`vlog.AuditLogID`; [architecture.md](architecture.md) §7):
+
+| Piece | Where | What it does |
+|---|---|---|
+| The switch | `pkg/service/audit_replicated_logger.go` (`ReplicatedLogger.Emit`) | Proposes `protocol.EncodeVerifiableLogAuditAppend` (the trusted `AuditAppend` sub-type) to the instance once `featuregate.VerifiableLogAudit` is enabled for the shard, `OpAuditAppend` before. A generic `Append` to the instance is refused with `vlog.ReservedLogError`. A host that gates nothing (a single-binary composition) keeps `OpAuditAppend`. |
+| Apply | `pkg/statemachine/vlog_apply.go` (`ApplyVerifiableLog`), `pkg/audit/chain.go` (`Chain.AppendToInstance`, `Chain.Prune`), `pkg/vlog/named.go` | Both families route an append to the audit instance into `audit.Chain`: the first creates the descriptor (origin `<tenant>/system/audit`, SHA-256, `AllowExpireBodies`, `TreeStart` *S₀*), every one sets `PrevHash`, advances the linear digest and adds the leaf. `Prune` expires bodies below the cutoff and keeps the tree. A log-surface `ExpireBodies` on the instance is refused with `vlog.ReservedLogError`. |
+| Reads | `pkg/service/vlog_log_service.go` | The log service reads the instance like any log, confined to the caller's tenant; the audit service's `Query` and `Verify` read the same records. |
+
+Invariants:
+
+- With the gate off, state is byte-identical to the pre-switch trail: no Merkle
+  node is written for an `OpAuditAppend`.
+- Leaf 0 sits at *S₀* and carries the pre-switch `PrevHash`, so `Verify` is
+  continuous across the switch.
+- Both families produce the same root, size and linear digest
+  (`pkg/store/vlog_apply_test.go`).
+
 ## Invariants
 
 ### Shipped
