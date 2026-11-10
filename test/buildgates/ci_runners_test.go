@@ -660,6 +660,9 @@ func TestBigdiskStepProblems_CanFail(t *testing.T) {
 		{"make without the guard", checkout + safe + "      - run: make " + bigdiskJob + "\n", true},
 		{"guard in another step", checkout + safe + "      - run: |\n" + guard + "      - run: make " + bigdiskJob + "\n", true},
 		{"no make step", checkout + safe, true},
+		{"the comparison reversed", checkout + safe + "      - run: |\n" + strings.Replace(guard, " != ", " = ", 1) + "          make " + bigdiskJob + "\n", true},
+		{"the flag set but not exported", checkout + safe + "      - run: |\n" + strings.Replace(guard, "export ", "", 1) + "          make " + bigdiskJob + "\n", true},
+		{"make before the guard", checkout + safe + "      - run: |\n          make " + bigdiskJob + "\n" + guard, true},
 	}
 	for _, tc := range cases {
 		var job runnerJob
