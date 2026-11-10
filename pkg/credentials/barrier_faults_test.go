@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -127,6 +128,42 @@ func (f *faultBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 		return false, errInjectedFault
 	}
 	return f.MemoryBackend.PutIfAbsent(ctx, key, data)
+}
+
+// PutAllIfAllUnchanged is one conditional write of several keys, all or
+// nothing. It fails with errInjectedFault, having written nothing, when a
+// written key ends with the armed Put or CompareAndSwap suffix, and reports
+// a refused batch, without writing, when one ends with the loseCAS suffix
+// and a loss is still owed. onCAS runs before the batch is decided, once
+// for each written key, and onPut after it applied.
+func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for _, w := range writes {
+		for _, p := range []*atomic.Pointer[string]{&f.failPut, &f.failCAS} {
+			if s := p.Load(); s != nil && strings.HasSuffix(w.Key, *s) {
+				return false, errInjectedFault
+			}
+		}
+	}
+	for _, w := range writes {
+		if s := f.loseCAS.Load(); s != nil && strings.HasSuffix(w.Key, *s) && f.casLosses.Add(-1) >= 0 {
+			return false, nil
+		}
+	}
+	if f.onCAS != nil {
+		for _, w := range writes {
+			f.onCAS(ctx, w.Key)
+		}
+	}
+	applied, err := f.MemoryBackend.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil || !applied {
+		return applied, err
+	}
+	if f.onPut != nil {
+		for _, w := range writes {
+			f.onPut(w.Key)
+		}
+	}
+	return true, nil
 }
 
 // newFaultBarrierService builds a barrier-strategy service over a
