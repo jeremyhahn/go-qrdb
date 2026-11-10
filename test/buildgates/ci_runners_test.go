@@ -79,15 +79,25 @@ const (
 var selfHostedWorkflows = map[string]bool{"code-review.yml": true}
 
 // bigdiskJobs are the Docker-free jobs that may carry bigdiskRunner (DS-8233),
-// by workflow and job. Each runs its make target natively on the pool; a job
-// that needs Docker stays on the hosted runner and is never listed here.
+// by workflow and job. Each runs its make target natively on the pool, or, for
+// preflight and ci-gate (m2479), needs no toolchain at all; a job that needs
+// Docker stays on the hosted runner and is never listed here.
 var bigdiskJobs = map[string]map[string]bool{
-	"ci.yml": {"coverage-merge": true, "test-clusterproof": true, "coverage-fts": true},
+	"ci.yml": {
+		"preflight":         true,
+		"coverage-merge":    true,
+		"test-clusterproof": true,
+		"coverage-fts":      true,
+		"ci-gate":           true,
+	},
 }
 
-// dockerStep matches a step that needs a Docker daemon: the docker CLI, a
-// docker/* action, or the toolchain-image wrapper.
-var dockerStep = regexp.MustCompile(`\bdocker\b|in-toolchain-image\.sh`)
+// dockerStep matches a step that needs Docker: the docker or docker-compose
+// CLI, a docker/* action, a make target named docker-*, or the image wrappers
+// (scripts/in-toolchain-image.sh, scripts/ci-image.sh). A job name such as
+// docker-build, which ci-gate reads the result of, is not a Docker use, so
+// the CLI matches only as a command word.
+var dockerStep = regexp.MustCompile(`(^|[^\w.-])docker(-compose)?(\s|$)|(^|[^\w.-])docker/|\bmake\b[^\n]*[\s'"]docker-|in-toolchain-image\.sh|ci-image\.sh`)
 
 // giteaOnlyJobs speak the Gitea API (its issue queue, its merge endpoint) and
 // so do not run on github.com: the server_url guard is what keeps them off.
@@ -537,6 +547,12 @@ func TestRunnerProblems_BigdiskJobs(t *testing.T) {
 	if p, _ := runnerProblems("ci.yml", []byte(hosted)); len(p) != 0 {
 		t.Errorf("a listed job may stay on the hosted runner, got %v", p)
 	}
+	// ci-gate on the pool (m2479) names docker-build as a job whose result it
+	// reads; that is not a Docker use.
+	gate := strings.Replace(bigdiskFixture, "        run: make coverage-fts", "        run: |\n          check docker-build \"$RESULT_DOCKER_BUILD\" pr\n          echo \"needs.docker-build.result\"", 1)
+	if p, _ := runnerProblems("ci.yml", []byte(gate)); len(p) != 0 {
+		t.Errorf("a step that only names the docker-build job may run on the pool, got %v", p)
+	}
 	const runsOn = "    runs-on: " + bigdiskRunner
 	const dockerLoad = "      - if: runner.environment == 'github-hosted'\n        run: docker load -i toolchain.tar"
 	cases := map[string]struct {
@@ -556,6 +572,10 @@ func TestRunnerProblems_BigdiskJobs(t *testing.T) {
 		"a Docker step, pool only":    {"ci.yml", dockerLoad, "      - if: runner.environment == 'self-hosted'\n        run: docker load -i toolchain.tar", "a step that needs Docker"},
 		"the image wrapper":           {"ci.yml", "        run: make coverage-fts", "        run: scripts/in-toolchain-image.sh \"$IMAGE\" \"make coverage-fts\"", "a step that needs Docker"},
 		"a docker action":             {"ci.yml", "        run: make coverage-fts", "        uses: docker/login-action@0000000000000000000000000000000000000000 # v4", "a step that needs Docker"},
+		"a docker make target":        {"ci.yml", "        run: make coverage-fts", "        run: make docker-build", "a step that needs Docker"},
+		"docker compose":              {"ci.yml", "        run: make coverage-fts", "        run: (cd stack && docker compose config)", "a step that needs Docker"},
+		"the docker-compose CLI":      {"ci.yml", "        run: make coverage-fts", "        run: docker-compose up -d", "a step that needs Docker"},
+		"the image loader":            {"ci.yml", "        run: make coverage-fts", "        run: scripts/ci-image.sh load \"$DIR\" \"$IMAGE\" \"$ID\"", "a step that needs Docker"},
 		"a container":                 {"ci.yml", "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    container: golang:1.27.3\n", "has a container:"},
 		"a service":                   {"ci.yml", "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    services:\n      db:\n        image: postgres:18\n", "has services:"},
 		"pull_request_target":         {"ci.yml", "  pull_request:\n", "  pull_request_target:\n", "triggers on pull_request_target"},
