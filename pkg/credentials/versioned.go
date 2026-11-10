@@ -873,11 +873,11 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 	if _, err := s.deleteBarrierVersionKeys(ctx, name, meta.History); err != nil {
 		return err
 	}
-	// A value an unfinished scheduled rotation staged goes too, so a
-	// credential later stored under the name never lands it.
-	_, staged := rotationVersions(meta.CurrentVersion, true)
-	if err := s.store.Delete(ctx, stagedKey(name, staged)); err != nil {
-		return &OperationError{Op: "delete staged rotation", Cause: err}
+	// Every value a scheduled rotation staged under the name goes too, an
+	// unfinished rotation's and a spent one a failed cleanup left alike, so
+	// a credential later stored under the name never lands one.
+	if err := s.deleteBarrierStaged(ctx, name); err != nil {
+		return err
 	}
 	if err := s.store.Delete(ctx, metaKey(name)); err != nil {
 		return &OperationError{Op: "delete meta", Cause: err}
@@ -946,4 +946,26 @@ func sortStrings(in []string) {
 			j--
 		}
 	}
+}
+
+// deleteBarrierStaged removes every staged rotation value of exactly the
+// named credential, whichever version it was staged for.
+func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string) error {
+	prefix := credentialPrefix + name + stagedPrefix
+	keys, err := s.store.List(ctx, prefix)
+	if err != nil {
+		return &OperationError{Op: "list staged rotations", Cause: err}
+	}
+	for _, k := range keys {
+		// A staged key ends in its version; anything else under the
+		// prefix belongs to another name.
+		version, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 64)
+		if err != nil || k != stagedKey(name, version) {
+			continue
+		}
+		if err := s.store.Delete(ctx, k); err != nil {
+			return &OperationError{Op: "delete staged rotation", Cause: err}
+		}
+	}
+	return nil
 }
