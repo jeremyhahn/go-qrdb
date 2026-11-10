@@ -1135,6 +1135,67 @@ func TestRotateDue_MetaReadFailureReported(t *testing.T) {
 	}
 }
 
+// A metadata read that fails once the rotation is claimed stops it where it
+// is: the staged-value lookup must not read the failure as "nothing staged"
+// and invoke the value source, and the rotation itself must not number the
+// new version from an empty record. Neither writes anything.
+func TestRotateDue_MetaReadFailureAfterTheClaimWritesNothing(t *testing.T) {
+	t.Run("staged lookup", func(t *testing.T) {
+		svc, backend := newFaultRotationService(t)
+		setFaultPolicy(t, svc, "k", 2)
+		var calls atomic.Int32
+		countSource(svc, &calls)
+		var puts atomic.Int32
+		backend.onPut = func(string) { puts.Add(1) }
+		// The claim is the first write of the metadata record; every read
+		// of the record after it fails.
+		backend.onCAS = func(_ context.Context, key string) {
+			if strings.HasSuffix(key, metaKey("k")) {
+				arm(&backend.failGet, metaKey("k"))
+			}
+		}
+
+		n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
+		requireRotationOpError(t, err, "k", "read meta")
+		if !errors.Is(err, errInjectedFault) || n != 0 {
+			t.Fatalf("RotateDue = %d, %v; want 0 and the injected fault", n, err)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("source calls = %d, want 0: the staged value could not be looked up", calls.Load())
+		}
+		if puts.Load() != 0 {
+			t.Fatalf("writes = %d, want 0", puts.Load())
+		}
+	})
+
+	t.Run("rotation", func(t *testing.T) {
+		svc, backend := newFaultRotationService(t)
+		setFaultPolicy(t, svc, "k", 2)
+		var puts atomic.Int32
+		backend.onPut = func(string) { puts.Add(1) }
+		// The value source runs after the staged lookup and before the
+		// rotation reads the record to number the new version.
+		source := svc.rotationSource
+		svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+			arm(&backend.failGet, metaKey("k"))
+			return source(ctx, name)
+		}
+
+		n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
+		requireRotationOpError(t, err, "k", "read meta")
+		if !errors.Is(err, errInjectedFault) || n != 0 {
+			t.Fatalf("RotateDue = %d, %v; want 0 and the injected fault", n, err)
+		}
+		if puts.Load() != 0 {
+			t.Fatalf("writes = %d, want 0: no version is numbered from unread metadata", puts.Load())
+		}
+		backend.failGet.Store(nil)
+		if got := versionCount(t, svc, "k"); got != 1 {
+			t.Fatalf("versions = %d, want 1", got)
+		}
+	})
+}
+
 func TestRotateDue_RotateFailureReported(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 2)
