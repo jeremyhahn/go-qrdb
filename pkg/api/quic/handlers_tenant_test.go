@@ -640,6 +640,76 @@ func TestHandleTenantUpdateQuotas_UnmarshalError(t *testing.T) {
 	}
 }
 
+func TestHandleTenantUpdateEntitlements_NilService(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	payload, _ := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{
+		Id:           "acme",
+		Entitlements: &pb.TenantEntitlements{AllowDedicatedRaft: true},
+	})
+
+	_, err := srv.handleTenantUpdateEntitlements(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) || snc.Service != "tenant" {
+		t.Fatalf("error = %v (%T), want *ServiceNotConfiguredError for tenant", err, err)
+	}
+}
+
+func TestHandleTenantUpdateEntitlements_UnmarshalError(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+
+	_, err := srv.handleTenantUpdateEntitlements(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("error type = %T, want *UnmarshalError", err)
+	}
+}
+
+func TestHandleTenantUpdateEntitlements_NilEntitlements(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+	payload, _ := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{Id: "acme"})
+
+	resp, err := srv.handleTenantUpdateEntitlements(context.Background(), payload)
+	var ee *tenantEntitlementError
+	if !errors.As(err, &ee) {
+		t.Fatalf("error type = %T, want *tenantEntitlementError", err)
+	}
+	if resp != nil {
+		t.Fatalf("response = %x, want nil on a rejected request", resp)
+	}
+}
+
+// TestHandleTenantUpdateEntitlements_EveryFieldRoundTrips sets every
+// entitlement field; the mock echoes what it was given, so the response
+// proves each field is forwarded to the service and mapped back.
+func TestHandleTenantUpdateEntitlements_EveryFieldRoundTrips(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{}, WithTenantService(&mockTenantService{}))
+	want := &pb.TenantEntitlements{
+		AllowedIsolationModes:     []string{"barrier", "prefix"},
+		AllowDedicatedRaft:        true,
+		AllowVolumeStorage:        true,
+		AllowSystemManagedBarrier: true,
+		AllowedBarrierModes:       []string{"none", "passphrase", "shamir"},
+		AllowDedicatedWal:         true,
+		AllowedVolumePools:        []string{"fast", "bulk"},
+	}
+	payload, _ := proto.Marshal(&pb.TenantUpdateEntitlementsRequest{Id: "acme", Entitlements: want})
+
+	resp, err := srv.handleTenantUpdateEntitlements(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("handleTenantUpdateEntitlements: %v", err)
+	}
+	var got pb.TenantResponse
+	if err := proto.Unmarshal(resp, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.GetId() != "acme" {
+		t.Errorf("id = %q, want acme", got.GetId())
+	}
+	if !proto.Equal(got.GetEntitlements(), want) {
+		t.Errorf("entitlements = %v, want %v", got.GetEntitlements(), want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // tenantInfoToProto (unexported converter)
 // ---------------------------------------------------------------------------

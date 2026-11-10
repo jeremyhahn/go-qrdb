@@ -49,6 +49,21 @@ func (e *EncodeEventError) Unwrap() error { return e.Err }
 // time would differ from one replica to the next for the same committed
 // entry. The caller proposing the command must set Timestamp before
 // encoding it.
+// MalformedEventError is returned when an entry of an audit-instance append
+// does not unmarshal as an AuditEvent: a deterministic consequence of the
+// committed entry's own bytes, refused identically on every replica.
+type MalformedEventError struct {
+	Err error
+}
+
+func (e *MalformedEventError) Error() string {
+	return "audit: malformed event: " + e.Err.Error()
+}
+
+func (e *MalformedEventError) Unwrap() error {
+	return e.Err
+}
+
 type MissingTimestampError struct{}
 
 func (e *MissingTimestampError) Error() string {

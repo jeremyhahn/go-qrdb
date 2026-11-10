@@ -136,3 +136,16 @@ func TestCodecRoundTripJSON(t *testing.T) {
 	assert.Equal(t, original.Name, decoded.Name)
 	assert.Equal(t, original.Value, decoded.Value)
 }
+
+// TestSupportedCodecs validates SupportedCodecs and IsCodecSupported in a
+// build that carries the codec_json tag.
+func TestSupportedCodecs(t *testing.T) {
+	codecs := SupportedCodecs()
+	assert.Contains(t, codecs, CodecJSON)
+	for _, c := range codecs {
+		assert.True(t, IsCodecSupported(c), "codec %s should be supported", c)
+	}
+
+	assert.False(t, IsCodecSupported(CodecType("fake_codec_xyz")))
+	assert.False(t, IsCodecSupported(CodecType("")))
+}

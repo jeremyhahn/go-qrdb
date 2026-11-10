@@ -389,3 +389,148 @@ func TestBarrierStatusToProto_ClusterMigration(t *testing.T) {
 		t.Errorf("unconfirmed = %+v, want unconfirmed with no nodes", got)
 	}
 }
+
+func TestGRPC_BarrierInitialize_Error(t *testing.T) {
+	barrierSvc := newMockBarrierService()
+	barrierSvc.initErr = &service.ProposeError{Err: errors.New("init failed")}
+	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
+	defer cleanup()
+
+	_, err := client.BarrierInitialize(context.Background(), &pb.BarrierInitializeRequest{Secret: []byte("s")})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+// TestGRPC_BarrierSeal_NoPINBackendFailsClosed pins the fail-closed
+// behaviour: with no PIN backend wired, BarrierSeal cannot verify the SO PIN
+// and must refuse rather than seal unauthenticated.
+func TestGRPC_BarrierSeal_NoPINBackendFailsClosed(t *testing.T) {
+	client, cleanup := startTestServerFull(t, WithBarrierService(newMockBarrierService()))
+	defer cleanup()
+
+	_, err := client.BarrierSeal(context.Background(), &pb.BarrierSealRequest{SoPin: "any"})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("BarrierSeal without a PIN backend = %v, want FailedPrecondition", err)
+	}
+}
+
+func TestGRPC_BarrierStatus_Success(t *testing.T) {
+	client, cleanup := startTestServerFull(t, WithBarrierService(newMockBarrierService()))
+	defer cleanup()
+
+	resp, err := client.BarrierStatus(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("BarrierStatus failed: %v", err)
+	}
+	if resp.GetStrategy() != "shamir" {
+		t.Fatalf("expected strategy 'shamir', got %q", resp.GetStrategy())
+	}
+}
+
+func TestGRPC_BarrierShamirInitialize_Success(t *testing.T) {
+	client, cleanup := startTestServerFull(t, WithBarrierService(newMockBarrierService()))
+	defer cleanup()
+
+	resp, err := client.BarrierShamirInitialize(context.Background(), &pb.BarrierShamirInitializeRequest{
+		Threshold:   2,
+		TotalShares: 3,
+	})
+	if err != nil {
+		t.Fatalf("BarrierShamirInitialize failed: %v", err)
+	}
+	if resp.GetThreshold() != 2 {
+		t.Fatalf("expected threshold 2, got %d", resp.GetThreshold())
+	}
+}
+
+func TestGRPC_BarrierRecoveryGenerate_Success(t *testing.T) {
+	client, cleanup := startTestServerFull(t, WithBarrierService(newMockBarrierService()), WithPINBackend(newStubPINBackend()))
+	defer cleanup()
+
+	resp, err := client.BarrierRecoveryGenerate(context.Background(), &pb.BarrierRecoveryGenerateRequest{
+		Threshold: 1,
+	})
+	if err != nil {
+		t.Fatalf("BarrierRecoveryGenerate failed: %v", err)
+	}
+	// INV-1/INV-11: recovery key bytes never in response; assert share_count only.
+	if resp.GetShareCount() != 1 {
+		t.Fatalf("expected share_count=1, got %d", resp.GetShareCount())
+	}
+}
+
+func TestGRPC_BarrierRecoveryDelete_Success(t *testing.T) {
+	client, cleanup := startTestServerFull(t, WithBarrierService(newMockBarrierService()))
+	defer cleanup()
+
+	_, err := client.BarrierRecoveryDelete(context.Background(), &pb.BarrierRecoveryDeleteRequest{})
+	if err != nil {
+		t.Fatalf("BarrierRecoveryDelete failed: %v", err)
+	}
+}
+
+func TestGRPC_BarrierRecoveryStatus_Success(t *testing.T) {
+	barrierSvc := newMockBarrierService()
+	barrierSvc.recoveryHasResult = true
+	client, cleanup := startTestServerFull(t, WithBarrierService(barrierSvc))
+	defer cleanup()
+
+	resp, err := client.BarrierRecoveryStatus(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("BarrierRecoveryStatus failed: %v", err)
+	}
+	if !resp.GetHasRecoveryKeys() {
+		t.Fatal("expected HasRecoveryKeys=true")
+	}
+}
+
+// TestGRPC_Barrier_NilService checks that every node-barrier RPC answers
+// Unimplemented when the server has no barrier service.
+func TestGRPC_Barrier_NilService(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(pb.QRDBServiceClient) error{
+		"BarrierInitialize": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierInitialize(ctx, &pb.BarrierInitializeRequest{Secret: []byte("s")})
+			return err
+		},
+		"BarrierUnseal": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierUnseal(ctx, &pb.BarrierUnsealRequest{Secret: []byte("s")})
+			return err
+		},
+		"BarrierSeal": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierSeal(ctx, &pb.BarrierSealRequest{})
+			return err
+		},
+		"BarrierStatus": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierStatus(ctx, &emptypb.Empty{})
+			return err
+		},
+		"BarrierShamirInitialize": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierShamirInitialize(ctx, &pb.BarrierShamirInitializeRequest{})
+			return err
+		},
+		"BarrierRecoveryGenerate": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierRecoveryGenerate(ctx, &pb.BarrierRecoveryGenerateRequest{})
+			return err
+		},
+		"BarrierRecoveryDelete": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierRecoveryDelete(ctx, &pb.BarrierRecoveryDeleteRequest{})
+			return err
+		},
+		"BarrierRecoveryStatus": func(c pb.QRDBServiceClient) error {
+			_, err := c.BarrierRecoveryStatus(ctx, &emptypb.Empty{})
+			return err
+		},
+	}
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			requireUnimplemented(t, call(client))
+		})
+	}
+}

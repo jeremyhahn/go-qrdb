@@ -206,6 +206,18 @@ func TestWithFactorRegistry_Applied(t *testing.T) {
 	}
 }
 
+// TestWithQuotaAccountant_Applied verifies WithQuotaAccountant stores the
+// accountant the server hands its REST service registry.
+func TestWithQuotaAccountant_Applied(t *testing.T) {
+	t.Parallel()
+	acct, _ := newTestAccountant(t, nil)
+	var opts serverOptions
+	WithQuotaAccountant(acct)(&opts)
+	if opts.quotaAccountant != acct {
+		t.Error("WithQuotaAccountant did not store provided accountant")
+	}
+}
+
 // TestWithTrustAnchors_Applied asserts that an injected trustanchor.Registry
 // is reachable from the server's serverOptions, in place of qrdb's built-in
 // store, for the lifecycle layer to forward into the cert-enrollment service.

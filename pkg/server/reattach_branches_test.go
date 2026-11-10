@@ -19,6 +19,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -105,4 +108,71 @@ func TestReattachRaftTenants_SkipsUnprovisioned(t *testing.T) {
 	if _, gerr := reg.GetTenant("raft-t"); gerr == nil {
 		t.Error("unprovisioned raft tenant must not be registered from the replicated DataRoot")
 	}
+}
+
+// TestReattachRaftTenants_SkipsNonRaftDatabase verifies a raft tenant's
+// non-raft database is never attached: with a nil raft factory, an Attach
+// would panic.
+func TestReattachRaftTenants_SkipsNonRaftDatabase(t *testing.T) {
+	svc, reg := newRaftReattachFixture(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "rnoskip", "No Skip Raft", tenant.IsolationRaft,
+		tenant.WithBarrierAutoUnseal(true)); err != nil {
+		t.Fatalf("CreateTenant(rnoskip): %v", err)
+	}
+
+	mgr := claimingManager(t, reattachTestLogger(), t.TempDir())
+	t.Cleanup(func() { _ = mgr.Close() })
+
+	tenantCtx := tenant.WithTenantID(ctx, "rnoskip")
+	_, err := mgr.CreateForTenant(tenantCtx, database.DatabaseConfig{
+		Name:    "memdb",
+		Backend: database.BackendMemory,
+	})
+	require.NoError(t, err, "CreateForTenant(memdb): unexpected error")
+
+	require.NoError(t, reg.SealTenant("rnoskip"))
+	require.NoError(t, reattachRaftTenants(ctx, svc, reg, nil, mgr, reattachTestLogger()))
+}
+
+// TestReattachVolumeTenants_UnsealTenantError verifies a failed fallback
+// unseal of an auto-unseal volume tenant is returned as *VolumeReattachError.
+func TestReattachVolumeTenants_UnsealTenantError(t *testing.T) {
+	svc, reg := newReattachFixture(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "vunseal-err", "UnsealErr", tenant.IsolationVolume,
+		tenant.WithBarrierAutoUnseal(true)); err != nil {
+		t.Fatalf("CreateTenant(vunseal-err): %v", err)
+	}
+	require.NoError(t, reg.SealTenant("vunseal-err"))
+	// Seal the system barrier so UnsealTenant fails.
+	require.NoError(t, reg.SystemBarrier().Seal())
+
+	rerr := reattachVolumeTenants(ctx, svc, reg, nil, reattachTestLogger())
+	var vrErr *VolumeReattachError
+	require.True(t, errors.As(rerr, &vrErr),
+		"expected *VolumeReattachError from UnsealTenant failure, got %T: %v", rerr, rerr)
+}
+
+// TestReattachRaftTenants_UnsealTenantError verifies a failed fallback unseal
+// of an auto-unseal raft tenant is returned as *RaftReattachError.
+func TestReattachRaftTenants_UnsealTenantError(t *testing.T) {
+	svc, reg := newRaftReattachFixture(t)
+	ctx := context.Background()
+
+	if _, err := svc.CreateTenant(ctx, "runseal-err", "RUnsealErr", tenant.IsolationRaft,
+		tenant.WithBarrierAutoUnseal(true)); err != nil {
+		t.Fatalf("CreateTenant(runseal-err): %v", err)
+	}
+	require.NoError(t, reg.SealTenant("runseal-err"))
+	// Seal the system barrier so UnsealTenant fails.
+	require.NoError(t, reg.SystemBarrier().Seal())
+
+	// nil raftReg and manager: the function returns before any Attach.
+	rerr := reattachRaftTenants(ctx, svc, reg, nil, nil, reattachTestLogger())
+	var rrErr *RaftReattachError
+	require.True(t, errors.As(rerr, &rrErr),
+		"expected *RaftReattachError from UnsealTenant failure, got %T: %v", rerr, rerr)
 }

@@ -27,7 +27,7 @@ import (
 // vlogCalls drives every VlogClient method with a well-formed request, or
 // with a nil one when nilReq is set, and returns each call's error by method.
 func vlogCalls(ctx context.Context, c transport.VlogClient, nilReq bool) map[string]error {
-	log := "audit"
+	log := "ledger"
 	out := map[string]error{}
 	var err error
 	if !nilReq {

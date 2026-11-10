@@ -43,6 +43,22 @@ func newSwapBarrier(t *testing.T, rootKeyPath string) *StorageBarrier {
 	return b
 }
 
+// newNoPoolRegistry builds a BarrierRegistry with NO volume pool configured, so
+// the pool-resolution helpers take their fail-closed branches.
+func newNoPoolRegistry(t *testing.T) *BarrierRegistry {
+	t.Helper()
+	sys, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "sys/root"}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	reg, err := NewBarrierRegistry(testLogger(), sys)
+	if err != nil {
+		t.Fatalf("NewBarrierRegistry: %v", err)
+	}
+	return reg
+}
+
 // TestSetSystemBarrierReplacesTheLiveBarrier covers the system-barrier swap.
 func TestSetSystemBarrierReplacesTheLiveBarrier(t *testing.T) {
 	reg := newNoPoolRegistry(t)

@@ -16,6 +16,9 @@ package errors
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQRDBError_Error(t *testing.T) {
@@ -105,6 +108,18 @@ func TestQRDBError_Is(t *testing.T) {
 			target: nil,
 			want:   false,
 		},
+		{
+			name:   "nil underlying does not match a plain error",
+			err:    &QRDBError{Code: ErrNotFound},
+			target: baseErr,
+			want:   false,
+		},
+		{
+			name:   "nil underlying still matches by code",
+			err:    &QRDBError{Code: ErrNotFound},
+			target: &QRDBError{Code: ErrNotFound},
+			want:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -144,6 +159,10 @@ func TestQRDBError_WithContext(t *testing.T) {
 	if _, ok := err.GetContext("nonexistent"); ok {
 		t.Error("GetContext(nonexistent) should return false")
 	}
+
+	val, ok := (&QRDBError{Code: ErrNotFound}).GetContext("key")
+	assert.Nil(t, val, "GetContext on a nil Context map")
+	assert.False(t, ok, "GetContext on a nil Context map")
 }
 
 func TestQRDBError_IsRetryable(t *testing.T) {
@@ -181,6 +200,24 @@ func TestQRDBError_IsRetryable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestQRDBError_WithRetry(t *testing.T) {
+	t.Run("set retry to true", func(t *testing.T) {
+		err := &QRDBError{Code: ErrNotFound}
+		assert.False(t, err.IsRetryable())
+		assert.True(t, err.WithRetry(true).IsRetryable())
+	})
+
+	t.Run("set retry to false keeps a retryable code retryable", func(t *testing.T) {
+		err := &QRDBError{Code: ErrTimeout, Retry: true}
+		assert.True(t, err.WithRetry(false).IsRetryable())
+	})
+
+	t.Run("explicit retry takes precedence over the code", func(t *testing.T) {
+		err := &QRDBError{Code: ErrNotFound, Retry: true}
+		assert.True(t, err.IsRetryable())
+	})
 }
 
 func TestNew(t *testing.T) {
@@ -510,18 +547,51 @@ func TestErrorCode_String(t *testing.T) {
 		code ErrorCode
 		want string
 	}{
+		{ErrUnknown, "unknown"},
 		{ErrNotFound, "not_found"},
-		{ErrTimeout, "timeout"},
 		{ErrConflict, "conflict"},
+		{ErrTimeout, "timeout"},
 		{ErrInternal, "internal"},
+		{ErrInvalidInput, "invalid_input"},
+		{ErrUnauthorized, "unauthorized"},
+		{ErrForbidden, "forbidden"},
+		{ErrUnavailable, "unavailable"},
+		{ErrStorage, "storage"},
+		{ErrRaft, "raft"},
+		{ErrEncryption, "encryption"},
+		{ErrDecryption, "decryption"},
+		{ErrValidation, "validation"},
+		{ErrConfiguration, "configuration"},
+		{ErrCanceled, "canceled"},
+		{ErrDeadlineExceeded, "deadline_exceeded"},
+		{ErrAlreadyExists, "already_exists"},
+		{ErrResourceExhausted, "resource_exhausted"},
+		{ErrPreconditionFailed, "precondition_failed"},
+		{ErrAborted, "aborted"},
+		{ErrOutOfRange, "out_of_range"},
+		{ErrUnimplemented, "unimplemented"},
+		{ErrDataLoss, "data_loss"},
+		{ErrSnapshot, "snapshot"},
+		{ErrReplication, "replication"},
+		{ErrLeaderNotAvailable, "leader_not_available"},
+		{ErrClusterNotReady, "cluster_not_ready"},
+		{ErrQuorumLost, "quorum_lost"},
+		{ErrSplitBrain, "split_brain"},
+		{ErrRateLimited, "rate_limited"},
+		{ErrNotImplemented, "not_implemented"},
+		{ErrNotAllowed, "not_allowed"},
+		{ErrSystemKeyspaceViolation, "system_keyspace_violation"},
+		{ErrCrossTenantAccess, "cross_tenant_access"},
+		{ErrMissingTenantContext, "missing_tenant_context"},
+		{ErrMissingJustification, "missing_justification"},
+		{ErrMissingUserContext, "missing_user_context"},
+		{ErrCircuitOpen, "circuit_open"},
 		{ErrorCode(9999), "unknown"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
-			if got := tt.code.String(); got != tt.want {
-				t.Errorf("ErrorCode.String() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tt.code.String())
 		})
 	}
 }
@@ -533,19 +603,49 @@ func TestErrorCode_HTTPStatus(t *testing.T) {
 	}{
 		{ErrNotFound, 404},
 		{ErrConflict, 409},
+		{ErrAlreadyExists, 409},
 		{ErrTimeout, 408},
+		{ErrDeadlineExceeded, 408},
 		{ErrInvalidInput, 400},
+		{ErrValidation, 400},
+		{ErrOutOfRange, 400},
 		{ErrUnauthorized, 401},
 		{ErrForbidden, 403},
 		{ErrUnavailable, 503},
+		{ErrLeaderNotAvailable, 503},
+		{ErrClusterNotReady, 503},
+		{ErrUnimplemented, 501},
+		{ErrResourceExhausted, 429},
+		{ErrPreconditionFailed, 412},
 		{ErrInternal, 500},
+		{ErrUnknown, 500},
+		{ErrStorage, 503},
+		{ErrRaft, 503},
+		{ErrEncryption, 500},
+		{ErrDecryption, 500},
+		{ErrConfiguration, 500},
+		{ErrCanceled, 500},
+		{ErrAborted, 500},
+		{ErrDataLoss, 500},
+		{ErrSnapshot, 500},
+		{ErrReplication, 500},
+		{ErrNotAllowed, 403},
+		{ErrSystemKeyspaceViolation, 403},
+		{ErrCrossTenantAccess, 403},
+		{ErrMissingTenantContext, 400},
+		{ErrMissingJustification, 400},
+		{ErrMissingUserContext, 400},
+		{ErrQuorumLost, 503},
+		{ErrNotImplemented, 501},
+		{ErrRateLimited, 429},
+		{ErrSplitBrain, 500},
+		{ErrCircuitOpen, 503},
+		{ErrorCode(9999), 500},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.code.String(), func(t *testing.T) {
-			if got := tt.code.HTTPStatus(); got != tt.want {
-				t.Errorf("ErrorCode.HTTPStatus() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tt.code.HTTPStatus())
 		})
 	}
 }
@@ -559,6 +659,7 @@ func TestErrorCode_IsRetryable(t *testing.T) {
 		ErrDeadlineExceeded,
 		ErrResourceExhausted,
 		ErrAborted,
+		ErrRateLimited,
 	}
 
 	for _, code := range retryable {
@@ -747,6 +848,11 @@ func TestIsResourceExhausted(t *testing.T) {
 			err:  &QRDBError{Code: ErrNotFound},
 			want: false,
 		},
+		{
+			name: "plain error",
+			err:  errors.New("standard error"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -756,6 +862,37 @@ func TestIsResourceExhausted(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	assert.True(t, IsNotFound(NotFound("test.Op", "resource")))
+	assert.False(t, IsNotFound(nil))
+	assert.False(t, IsNotFound(New(ErrStorage, "test.Op", "storage error")))
+	assert.False(t, IsNotFound(errors.New("plain error")))
+}
+
+func TestIsCanceled(t *testing.T) {
+	assert.True(t, IsCanceled(New(ErrCanceled, "test.Op", "canceled")))
+	assert.False(t, IsCanceled(nil))
+	assert.False(t, IsCanceled(New(ErrTimeout, "test.Op", "timeout")))
+	assert.False(t, IsCanceled(errors.New("plain error")))
+}
+
+func TestIsInvalidInput(t *testing.T) {
+	assert.True(t, IsInvalidInput(InvalidInput("test.Op", "invalid input")))
+	assert.False(t, IsInvalidInput(nil))
+	assert.False(t, IsInvalidInput(New(ErrStorage, "test.Op", "storage error")))
+	assert.False(t, IsInvalidInput(errors.New("plain error")))
+}
+
+func TestWrappedMessageError(t *testing.T) {
+	cause := errors.New("database connection failed")
+	wrapped := &WrappedMessageError{Message: "service unavailable", Cause: cause}
+
+	assert.Contains(t, wrapped.Error(), "service unavailable")
+	assert.Contains(t, wrapped.Error(), "database connection failed")
+	assert.Same(t, cause, wrapped.Unwrap())
+	assert.ErrorIs(t, wrapped, cause)
 }
 
 func TestIsMissingJustification(t *testing.T) {
@@ -879,5 +1016,95 @@ func TestNewMissingUserContextError(t *testing.T) {
 	msg := err.Error()
 	if msg == "" {
 		t.Error("Error() should return non-empty message")
+	}
+}
+
+func TestNewSystemKeyspaceViolationError(t *testing.T) {
+	err := NewSystemKeyspaceViolationError("kv.Put", "__system/config")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrSystemKeyspaceViolation, err.Code)
+	assert.Equal(t, "kv.Put", err.Op)
+	assert.Contains(t, err.Error(), "__system/config")
+	assert.Contains(t, err.Error(), "system keyspace")
+	assert.Equal(t, "__system/config", err.Context["key"])
+}
+
+func TestIsSystemKeyspaceViolation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "system keyspace violation error", err: NewSystemKeyspaceViolationError("op", "key"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrSystemKeyspaceViolation}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsSystemKeyspaceViolation(tt.err))
+		})
+	}
+}
+
+func TestNewCrossTenantAccessError(t *testing.T) {
+	err := NewCrossTenantAccessError("kv.Get", "tenant-A", "tenant-B")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrCrossTenantAccess, err.Code)
+	assert.Equal(t, "kv.Get", err.Op)
+	assert.Contains(t, err.Error(), "tenant-A")
+	assert.Contains(t, err.Error(), "tenant-B")
+	assert.Contains(t, err.Error(), "cross-tenant access denied")
+	assert.Equal(t, "tenant-A", err.Context["requesting_tenant"])
+	assert.Equal(t, "tenant-B", err.Context["target_tenant"])
+}
+
+func TestNewMissingTenantContextError(t *testing.T) {
+	err := NewMissingTenantContextError("kv.List")
+	require.NotNil(t, err)
+	assert.Equal(t, ErrMissingTenantContext, err.Code)
+	assert.Equal(t, "kv.List", err.Op)
+	assert.Contains(t, err.Error(), "tenant context is required")
+}
+
+func TestIsCrossTenantAccess(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "cross tenant access error", err: NewCrossTenantAccessError("op", "a", "b"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrCrossTenantAccess}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsCrossTenantAccess(tt.err))
+		})
+	}
+}
+
+func TestIsMissingTenantContext(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil error", err: nil, want: false},
+		{name: "missing tenant context error", err: NewMissingTenantContextError("op"), want: true},
+		{name: "qrdb error with correct code", err: &QRDBError{Code: ErrMissingTenantContext}, want: true},
+		{name: "different error code", err: &QRDBError{Code: ErrNotFound}, want: false},
+		{name: "plain error", err: errors.New("some error"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsMissingTenantContext(tt.err))
+		})
 	}
 }

@@ -528,7 +528,7 @@ jobs:
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
     if: (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')
-    needs: [docker-build, arch-gates]
+    needs: [docker-build, preflight]
     timeout-minutes: 120
     env:
       IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
@@ -646,7 +646,7 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "project shared by every shard", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}\n"},
 		{name: "a per-shard image tag", old: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n", new: "      IT_PROJECT: qrdb-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}\n      IT_IMAGE: qrdb-ci-it:${{ github.run_id }}-${{ matrix.shard }}\n"},
 		{name: "a job-level IT_IMAGE", old: "matrix.features }}\n    strategy:", new: "matrix.features }}\n      IT_IMAGE: ${{ needs.docker-build.outputs.it_image }}\n    strategy:"},
-		{name: "docker-build not needed", old: "needs: [docker-build, arch-gates]", new: "needs: [arch-gates]"},
+		{name: "docker-build not needed", old: "needs: [docker-build, preflight]", new: "needs: [preflight]"},
 		{name: "no download", old: "      - name: Download the integration image\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n", new: ""},
 		{name: "the toolchain artifact", old: "          name: it-image\n", new: "          name: toolchain-image\n"},
 		{name: "no load", old: "          scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n", new: ""},

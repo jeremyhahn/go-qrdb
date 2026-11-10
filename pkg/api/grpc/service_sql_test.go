@@ -28,7 +28,7 @@ import (
 
 // startSQLTestServer creates a gRPC server on a random port with the given
 // options and returns a connected client and a cleanup function. Defined
-// locally (rather than reusing grpc_coverage_test.go's
+// locally (rather than reusing mock_services_test.go's
 // startTestServerWithAll) because that helper lives in a build-tag-gated
 // file and this test must build under plain tags too.
 func startSQLTestServer(t *testing.T, opts ...ServerOption) (pb.QRDBServiceClient, func()) {

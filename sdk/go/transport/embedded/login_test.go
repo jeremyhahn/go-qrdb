@@ -17,6 +17,7 @@ package embedded
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"testing"
 	"time"
@@ -969,5 +970,38 @@ func TestLoginClient_BeginLogin_RateLimitsTenantWideChallengeIssuance(t *testing
 	var limited *authmw.RateLimitedError
 	if !errors.As(err, &limited) {
 		t.Fatalf("second BeginLogin over burst: err = %v, want *authmw.RateLimitedError", err)
+	}
+}
+
+func TestMergeLoginMetadata(t *testing.T) {
+	cases := map[string]struct {
+		stored, req, want map[string]string
+	}{
+		"both empty":  {},
+		"only stored": {stored: map[string]string{"session": "abc"}, want: map[string]string{"session": "abc"}},
+		"only req":    {req: map[string]string{"assertion": "xyz"}, want: map[string]string{"assertion": "xyz"}},
+		"req wins": {
+			stored: map[string]string{"key": "old-val", "session": "abc"},
+			req:    map[string]string{"key": "new-val"},
+			want:   map[string]string{"key": "new-val", "session": "abc"},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := mergeLoginMetadata(tc.stored, tc.req)
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("expected nil, got %v", got)
+				}
+				return
+			}
+			if !maps.Equal(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			got["injected"] = "x"
+			if _, ok := tc.stored["injected"]; ok {
+				t.Error("merge result aliases the stored map")
+			}
+		})
 	}
 }

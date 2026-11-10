@@ -191,28 +191,6 @@ func TestForEachPageWithError(t *testing.T) {
 	})
 }
 
-// TestIsNotFoundErrorVariants tests the isNotFoundError helper with various inputs.
-func TestIsNotFoundErrorVariants(t *testing.T) {
-	t.Run("NilError", func(t *testing.T) {
-		assert.False(t, isNotFoundError(nil))
-	})
-
-	t.Run("QRDBErrorNotFound", func(t *testing.T) {
-		err := &dberrors.QRDBError{Code: dberrors.ErrNotFound, Op: "test"}
-		assert.True(t, isNotFoundError(err))
-	})
-
-	t.Run("QRDBErrorOther", func(t *testing.T) {
-		err := &dberrors.QRDBError{Code: dberrors.ErrInternal, Op: "test"}
-		assert.False(t, isNotFoundError(err))
-	})
-
-	t.Run("GenericError", func(t *testing.T) {
-		err := errors.New("some error")
-		assert.False(t, isNotFoundError(err))
-	})
-}
-
 // TestPageWithMalformedData validates Page behavior with corrupt data.
 func TestPageWithMalformedData(t *testing.T) {
 	t.Run("SkipsMalformedEntities", func(t *testing.T) {

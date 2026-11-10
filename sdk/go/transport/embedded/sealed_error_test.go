@@ -17,6 +17,7 @@ package embedded
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -47,5 +48,21 @@ func TestBarrierSealedError_AsRefusesOtherTargets(t *testing.T) {
 	var reqErr *transport.RequestError
 	if errors.As(&BarrierSealedError{}, &reqErr) {
 		t.Fatal("matched an unrelated target")
+	}
+}
+
+// A BarrierSealedError names and unwraps the cause it carries, and still
+// reads as a message when it carries none.
+func TestBarrierSealedError_CarriesItsCause(t *testing.T) {
+	if (&BarrierSealedError{}).Error() == "" {
+		t.Fatal("Error() is empty without a cause")
+	}
+	inner := errors.New("inner")
+	e := &BarrierSealedError{Err: inner}
+	if !strings.Contains(e.Error(), "inner") {
+		t.Fatalf("Error() = %q, want it to name the cause", e.Error())
+	}
+	if !errors.Is(e, inner) {
+		t.Fatal("errors.Is(e, cause) = false")
 	}
 }

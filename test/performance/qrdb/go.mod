@@ -15,8 +15,8 @@ require (
 	github.com/jeremyhahn/go-qrdb/sdk/go v0.7.0-alpha
 	// go-quicraft/test/performance: the newest tag, in lockstep with the root
 	// module's go-quicraft (#944).
-	github.com/jeremyhahn/go-quicraft/test/performance v0.24.2-alpha
-	github.com/quic-go/quic-go v0.64.1
+	github.com/jeremyhahn/go-quicraft/test/performance v0.24.3-alpha
+	github.com/quic-go/quic-go v0.65.0
 	google.golang.org/grpc v1.85.0
 )
 

@@ -99,6 +99,14 @@ func (e *InvalidMetricError) Error() string {
 	return "timeseries: metric name must not be empty"
 }
 
+// NilRetentionPolicyError is returned when a retention policy to store is nil.
+type NilRetentionPolicyError struct{}
+
+// Error returns a human-readable description indicating a nil retention policy.
+func (e *NilRetentionPolicyError) Error() string {
+	return "timeseries: retention policy must not be nil"
+}
+
 // InvalidTimestampError is returned when a timestamp is zero.
 type InvalidTimestampError struct{}
 

@@ -62,6 +62,24 @@ func TestNewTenantHostRegistryFromLookup_NilLookupIsUnavailable(t *testing.T) {
 	}
 }
 
+// TestTenantHostRegistry_AttachPropagatesUnavailable verifies Attach returns
+// the Services resolution error, typed, rather than swallowing it.
+func TestTenantHostRegistry_AttachPropagatesUnavailable(t *testing.T) {
+	reg := NewTenantHostRegistry(nil, nil, nil)
+	if err := reg.Attach(context.Background(), "acme"); !errors.Is(err, ErrTenantHostUnavailable) {
+		t.Fatalf("Attach on an unwired registry = %v, want ErrTenantHostUnavailable", err)
+	}
+}
+
+// TestTenantHostRegistry_CloseAbsentTenantIsNoOp verifies Close of a tenant
+// with no live Host returns nil.
+func TestTenantHostRegistry_CloseAbsentTenantIsNoOp(t *testing.T) {
+	reg := NewTenantHostRegistry(nil, nil, nil)
+	if err := reg.Close("never-attached"); err != nil {
+		t.Fatalf("Close of an absent tenant = %v, want nil", err)
+	}
+}
+
 // TestLookupDataRootSource_ResolvesThroughTheRegistryAtUseTime is the
 // unit-level half of go-qrdb#383, re-expressed for the catalog-backed
 // resolution path: lookupDataRootSource.dataRootOf delegates to

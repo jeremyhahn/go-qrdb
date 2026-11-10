@@ -212,6 +212,26 @@ serving the barrier holds its own
 barrier is sealed or unencrypted. `qrdb tenant barrier-status` prints it as
 `Fingerprint:`.
 
+## A seal drains in-flight store work
+
+Every seal on this page — node, tenant and database, by one caller or by a
+share-holder quorum — first refuses new writes, flushes and compactions on the
+barrier's encrypted stores, then waits up to `seal.drain_timeout` (default
+`10s`) for the ones already in flight, then wipes the key. A write refused
+during the drain fails with the same sealed error a sealed barrier returns.
+Request bodies do not change.
+
+When the in-flight work outlasts `seal.drain_timeout`, the barrier **still
+seals** and the seal call fails with an unclassified error (HTTP `500`, gRPC
+`INTERNAL`) whose message is
+`qrdb/seal/quiesce: in-flight work did not drain before the barrier sealed:
+after <timeout>, stores still in flight: <dir>, ...`. A failed seal never
+means the barrier is unsealed; the barrier status reports it sealed. The node
+logs the error and records a `seal` audit event with outcome `deny`, phase
+`drain` and the `stores`; see
+[engineering.md](engineering.md) and
+[architecture.md](architecture.md#sealing-quiesces-the-encrypted-stores).
+
 ## Sealing in a cluster
 
 Once the cluster has activated the `cluster-seal` feature, every seal on this

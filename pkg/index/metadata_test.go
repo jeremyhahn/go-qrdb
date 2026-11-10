@@ -178,6 +178,22 @@ func TestParseIndexTag(t *testing.T) {
 			wantErr:   false,
 		},
 		{
+			name:      "case sensitive",
+			fieldName: "Field7",
+			fieldType: reflect.TypeOf(""),
+			tag:       "case_sensitive",
+			wantType:  IndexTypeNormal,
+			wantCS:    true,
+		},
+		{
+			name:      "case sensitive short form",
+			fieldName: "Field8",
+			fieldType: reflect.TypeOf(""),
+			tag:       "cs",
+			wantType:  IndexTypeNormal,
+			wantCS:    true,
+		},
+		{
 			name:      "empty tag",
 			fieldName: "Field5",
 			fieldType: reflect.TypeOf(""),
@@ -280,6 +296,12 @@ func TestGetFieldValue(t *testing.T) {
 			fieldName: "Email",
 			want:      []byte("test@example.com"),
 			wantErr:   false,
+		},
+		{
+			name:      "pointer to non-struct",
+			entity:    new(string),
+			fieldName: "Field",
+			wantErr:   true,
 		},
 	}
 
@@ -477,6 +499,8 @@ func TestFieldValueToBytes(t *testing.T) {
 		{"bool false", false, false},
 		{"float64", float64(3.14), false},
 		{"[]byte", []byte("test"), false},
+		{"unsupported slice", []string{"a", "b"}, true},
+		{"unsupported struct", struct{ x int }{x: 1}, true},
 	}
 
 	for _, tt := range tests {

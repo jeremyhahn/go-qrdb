@@ -215,6 +215,25 @@ func connectTransportWithCredentials(t *testing.T, credSvc *mockCredentialSvc) (
 // CredentialSubmit
 // ---------------------------------------------------------------------------
 
+func TestTransport_CredentialStore_RoundTrip(t *testing.T) {
+	var storedName, storedValue string
+	svc := &mockCredentialSvc{
+		storeFn: func(_ context.Context, name string, value []byte) error {
+			storedName, storedValue = name, string(value)
+			return nil
+		},
+	}
+	tr, cleanup := connectTransportWithCredentials(t, svc)
+	defer cleanup()
+
+	if err := tr.CredentialStore(context.Background(), "mykey", []byte("myvalue")); err != nil {
+		t.Fatalf("CredentialStore: %v", err)
+	}
+	if storedName != "mykey" || storedValue != "myvalue" {
+		t.Errorf("server got (%q, %q), want (mykey, myvalue)", storedName, storedValue)
+	}
+}
+
 func TestTransport_CredentialSubmit_RoundTrip(t *testing.T) {
 	var gotName string
 	var gotValue []byte
@@ -792,6 +811,9 @@ func TestTransport_Credential_ClosedTransport(t *testing.T) {
 	}{
 		{"Submit", func() error {
 			return tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "x", Value: []byte("y")})
+		}},
+		{"Store", func() error {
+			return tr.CredentialStore(context.Background(), "x", []byte("y"))
 		}},
 		{"Strategy", func() error {
 			_, err := tr.CredentialStrategy(context.Background())

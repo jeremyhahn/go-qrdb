@@ -20,14 +20,19 @@ import (
 	"github.com/cockroachdb/pebble/v2"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/quiesce"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 )
 
 // barrierSealed reports whether err is an at-rest barrier refusing to encrypt
 // because it is sealed: qrdb's StorageBarrier, or the go-quicraft
-// EpochBarrier under it, which a closing quicraft Host seals on its own.
+// EpochBarrier under it, which a closing quicraft Host seals on its own; or a
+// storage package's refusal of the same seal, which cannot carry pkg/seal's
+// sentinels: a sealing barrier's closed quiesce gate, or Pebble's sealed
+// at-rest barrier.
 func barrierSealed(err error) bool {
-	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed)
+	return errors.Is(err, seal.ErrSealed) || errors.Is(err, seal.ErrBarrierSealed) ||
+		errors.Is(err, quiesce.ErrSealing) || errors.Is(err, pebbleStorage.ErrBarrierSealed)
 }
 
 // openPebble opens the state machine database in dir with a SealWatch

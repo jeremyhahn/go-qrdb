@@ -1722,6 +1722,29 @@ func TestStoragePebbleIndex_DeleteBatch(t *testing.T) {
 	}
 }
 
+func TestStoragePebbleIndex_DeleteBatch_StorageError(t *testing.T) {
+	s, err := pebbleStorage.New(pebbleStorage.TestConfig(t.TempDir()))
+	if err != nil {
+		t.Fatalf("pebbleStorage.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	fs := newFailableStorage(s)
+	idx, err := NewStoragePebbleIndex(fs, normalConfig("batch-del-err"), testLogger(t))
+	if err != nil {
+		t.Fatalf("NewStoragePebbleIndex: %v", err)
+	}
+
+	injected := &ClosedError{Name: "batch-delete-fail"}
+	fs.batchErr.Store(injected)
+
+	batch := fs.Batch()
+	defer func() { _ = batch.Close() }()
+	if err := idx.DeleteBatch(batch, []byte("ek"), []byte("fv")); !errors.Is(err, injected) {
+		t.Fatalf("DeleteBatch error = %v, want the batch's delete error", err)
+	}
+}
+
 func TestStoragePebbleIndex_PutBatch_UniqueConstraintViolation(t *testing.T) {
 	idx := newTestStoragePebbleIndex(t, uniqueConfig("test"))
 

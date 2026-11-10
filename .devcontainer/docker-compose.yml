@@ -51,6 +51,7 @@ x-go-scanner-pins: &go-scanner-pins
 x-scanner-pins: &scanner-pins
   <<: *go-scanner-pins
   TRIVY_VERSION:
+  TRIVY_IMAGE:
 
 # Fleet dev-cache passthrough (devops.md §2a). Unset, empty or unreachable
 # means no proxy -- the behaviour without the cache -- so every entry below
@@ -71,7 +72,9 @@ x-devcache-build-args: &devcache-build-args
 # any GOPROXY, public or private), so adding the dev-cache's Athens mirror
 # ahead of the public proxy here cannot send a private module anywhere it
 # does not already go -- private modules must never reach a public proxy,
-# and GOPRIVATE is what guarantees that, unchanged.
+# and GOPRIVATE is what guarantees that, unchanged. The list ends at the
+# public proxy, with or without the mirror, and has no direct entry
+# (ci-template v1.34.1, dependency-resolution.md §7a).
 x-devcache-env: &devcache-env
   - DEVCACHE_APT_PROXY=${DEVCACHE_APT_PROXY:-}
   - DEVCACHE_NPM_REGISTRY=${DEVCACHE_NPM_REGISTRY:-}
@@ -81,7 +84,7 @@ x-devcache-env: &devcache-env
   - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
   - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
   - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
-  - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
+  - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
 
 # devcontainer, client-build, benchmark and e2e all bind-mount the worktree
 # over /workspace/go-qrdb (below) and run `go build`/`go test` against that
@@ -206,7 +209,7 @@ services:
       - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
       - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
       - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
-      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
     command: ["make", "_build-client"]
 
   e2e:
@@ -245,7 +248,7 @@ services:
       - DEVCACHE_MCR_MIRROR=${DEVCACHE_MCR_MIRROR:-}
       - DEVCACHE_GHCR_MIRROR=${DEVCACHE_GHCR_MIRROR:-}
       - DEVCACHE_PLAYWRIGHT_HOST=${DEVCACHE_PLAYWRIGHT_HOST:-}
-      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|https://proxy.golang.org|direct}
+      - GOPROXY=${DEVCACHE_GOPROXY:+${DEVCACHE_GOPROXY}|}https://proxy.golang.org
     command: ["make", "_test-e2e"]
     # The e2e suite starts qrdbd; same locked-memory caps as devcontainer.
     cap_add:

@@ -510,6 +510,113 @@ func TestUnixRT_SuspendUnsuspendUser(t *testing.T) {
 	}
 }
 
+// mockUserSvcWithCert extends mockUserSvc with recording thumbprint and
+// binding methods.
+type mockUserSvcWithCert struct {
+	mockUserSvc
+	certThumbprintFn    func(ctx context.Context, thumbprint string) (*user.User, error)
+	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
+	removeCertBindingFn func(ctx context.Context, userID uint64, thumbprint string) (*user.User, error)
+}
+
+func (m *mockUserSvcWithCert) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.certThumbprintFn != nil {
+		return m.certThumbprintFn(ctx, thumbprint)
+	}
+	return &user.User{ID: 1, Username: "cert-user"}, nil
+}
+
+func (m *mockUserSvcWithCert) AddCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertBindingFn != nil {
+		return m.addCertBindingFn(ctx, userID, thumbprint, notAfterUnix)
+	}
+	return &user.User{ID: userID, Username: "cert-user"}, nil
+}
+
+func (m *mockUserSvcWithCert) RemoveCertBinding(ctx context.Context, userID uint64, thumbprint string) (*user.User, error) {
+	if m.removeCertBindingFn != nil {
+		return m.removeCertBindingFn(ctx, userID, thumbprint)
+	}
+	return &user.User{ID: userID, Username: "cert-user"}, nil
+}
+
+var _ user.UserServicer = (*mockUserSvcWithCert)(nil)
+
+func TestUnixRT_GetUserByCertThumbprint(t *testing.T) {
+	var gotThumbprint string
+	usvc := &mockUserSvcWithCert{
+		certThumbprintFn: func(_ context.Context, tp string) (*user.User, error) {
+			gotThumbprint = tp
+			return &user.User{ID: 1, Username: "cert-user"}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	got, err := tr.GetUserByCertThumbprint(context.Background(), "AABBCC")
+	if err != nil {
+		t.Fatalf("GetUserByCertThumbprint: %v", err)
+	}
+	if got == nil || got.Username != "cert-user" {
+		t.Errorf("unexpected result: %+v", got)
+	}
+	if gotThumbprint != "AABBCC" {
+		t.Errorf("service saw thumbprint %q, want AABBCC", gotThumbprint)
+	}
+}
+
+func TestUnixRT_AddCertBinding(t *testing.T) {
+	var gotID uint64
+	var gotThumbprint string
+	var gotNotAfter int64
+	usvc := &mockUserSvcWithCert{
+		addCertBindingFn: func(_ context.Context, userID uint64, tp string, notAfter int64) (*user.User, error) {
+			gotID, gotThumbprint, gotNotAfter = userID, tp, notAfter
+			return &user.User{ID: userID, Username: "cert-user"}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	got, err := tr.AddCertBinding(context.Background(), 7, "AABBCC", 1700000000)
+	if err != nil {
+		t.Fatalf("AddCertBinding: %v", err)
+	}
+	if got == nil || got.ID != 7 {
+		t.Errorf("unexpected result: %+v", got)
+	}
+	if gotID != 7 || gotThumbprint != "AABBCC" || gotNotAfter != 1700000000 {
+		t.Errorf("service saw (%d, %q, %d), want (7, \"AABBCC\", 1700000000)", gotID, gotThumbprint, gotNotAfter)
+	}
+}
+
+// TestUnixRT_RemoveCertBinding round-trips the withdrawal verb over the unix
+// socket, asserting both arguments reach the service: a thumbprint that did
+// not arrive withdraws nothing and reports a not-found (go-qrdb#518).
+func TestUnixRT_RemoveCertBinding(t *testing.T) {
+	var gotID uint64
+	var gotThumbprint string
+	usvc := &mockUserSvcWithCert{
+		removeCertBindingFn: func(_ context.Context, userID uint64, tp string) (*user.User, error) {
+			gotID, gotThumbprint = userID, tp
+			return &user.User{ID: userID, Username: "cert-user"}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	got, err := tr.RemoveCertBinding(context.Background(), 7, "AABBCC")
+	if err != nil {
+		t.Fatalf("RemoveCertBinding: %v", err)
+	}
+	if got == nil || got.Username != "cert-user" {
+		t.Errorf("unexpected result: %+v", got)
+	}
+	if gotID != 7 || gotThumbprint != "AABBCC" {
+		t.Fatalf("service saw (%d, %q), want (7, \"AABBCC\")", gotID, gotThumbprint)
+	}
+}
+
 func TestUnixRT_CreateUser_ServiceUnavailable(t *testing.T) {
 	tr, cleanup := startAuthServer(t)
 	defer cleanup()

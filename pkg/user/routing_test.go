@@ -344,6 +344,33 @@ func TestRoutingUserService_SealedTenantFailsClosed(t *testing.T) {
 		t.Fatalf("ListUsers(sealed) = %v, want ErrTenantSealed", err)
 	}
 
+	// Lookups and by-id writes for an id the sealed tenant may hold fail
+	// closed too, rather than reporting not-found from the shared store.
+	activator, ok := svc.(CertActivator)
+	if !ok {
+		t.Fatal("the routing service does not implement CertActivator")
+	}
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"GetUserByUsername", func() error { _, e := svc.GetUserByUsername(vctx, "vault", "alice"); return e }},
+		{"UserByCertThumbprint", func() error { _, e := svc.UserByCertThumbprint(vctx, "somethumb"); return e }},
+		{"AddCertBinding", func() error { _, e := svc.AddCertBinding(vctx, 1, "somethumb", 0); return e }},
+		{"ActivateWithCertBinding", func() error {
+			_, e := activator.ActivateWithCertBinding(vctx, 1, "somethumb", 0)
+			return e
+		}},
+		{"UpdateUser", func() error { _, e := svc.UpdateUser(vctx, &UpdateUserRequest{ID: 1}); return e }},
+		{"DeleteUser", func() error { return svc.DeleteUser(vctx, 1) }},
+		{"EnableUser", func() error { return svc.EnableUser(vctx, 1) }},
+		{"DisableUser", func() error { return svc.DisableUser(vctx, 1) }},
+	} {
+		if err := tc.call(); !errors.Is(err, tenant.ErrTenantSealed) {
+			t.Errorf("%s(sealed) = %v, want ErrTenantSealed", tc.name, err)
+		}
+	}
+
 	// No fallback: the shared store must remain untouched.
 	if len(shared.m) != 0 {
 		t.Fatal("sealed-tenant write leaked into the shared store")
@@ -532,6 +559,46 @@ func TestNewRoutingService_NilArgs(t *testing.T) {
 	}
 }
 
+// TestRoutingUserService_NilRequestIsAValidationError pins that a nil request
+// routes to the caller's tenant and is refused there, not dereferenced.
+func TestRoutingUserService_NilRequestIsAValidationError(t *testing.T) {
+	resolver := &fakeResolver{shared: newFakeKVStore(), tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	var ve *ValidationError
+	if _, err := svc.ListUsers(context.Background(), nil); !errors.As(err, &ve) {
+		t.Errorf("ListUsers(nil) = %v, want *ValidationError", err)
+	}
+	if _, err := svc.CreateUser(context.Background(), nil); !errors.As(err, &ve) {
+		t.Errorf("CreateUser(nil) = %v, want *ValidationError", err)
+	}
+}
+
+// storeForKV caching: two calls for the same KV pointer return the same store.
+func TestRouting_StoreForKV_Caching(t *testing.T) {
+	shared := newFakeKVStore()
+	resolver := &fakeResolver{shared: shared, tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	r := svc.(*routingUserService)
+
+	s1, err := r.storeForKV(shared, &r.stores, r.opts)
+	if err != nil {
+		t.Fatalf("storeForKV: %v", err)
+	}
+	s2, err := r.storeForKV(shared, &r.stores, r.opts)
+	if err != nil {
+		t.Fatalf("storeForKV (2nd call): %v", err)
+	}
+	if s1 != s2 {
+		t.Error("expected the same UserServicer instance for the same KVStore key")
+	}
+}
+
 // The regression this branch had to close. Confining each tenant to its own
 // keyspace (#41) broke every operation that names a user by its globally
 // unique id: `users delete <id>` issued by the admin routed to the SYSTEM
@@ -581,6 +648,9 @@ func TestRoutingUserService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 	if _, err := svc.AddCertBinding(ctx, created.ID, thumbprint, 0); err != nil {
 		t.Fatalf("AddCertBinding by id: %v", err)
 	}
+	if bound, err := svc.UserByCertThumbprint(ctx, thumbprint); err != nil || bound.ID != created.ID {
+		t.Fatalf("UserByCertThumbprint after enrolment = (%v, %v), want user %d", bound, err, created.ID)
+	}
 	// Withdrawal must reach the SAME tenant store the enrolment wrote, or it
 	// would report success having removed nothing.
 	if _, err := svc.RemoveCertBinding(ctx, created.ID, thumbprint); err != nil {
@@ -592,8 +662,10 @@ func TestRoutingUserService_ByIDReachesTheTenantThatHoldsIt(t *testing.T) {
 	if _, err := svc.AddCertBinding(ctx, created.ID, thumbprint, 0); err != nil {
 		t.Fatalf("re-enrolling after a withdrawal: %v", err)
 	}
-	if _, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: created.ID, Username: "dana2"}); err != nil {
+	if updated, err := svc.UpdateUser(ctx, &UpdateUserRequest{ID: created.ID, Username: "dana2"}); err != nil {
 		t.Fatalf("UpdateUser by id: %v", err)
+	} else if updated.Username != "dana2" {
+		t.Fatalf("UpdateUser by id: Username = %q, want dana2", updated.Username)
 	}
 	if err := svc.DisableUser(ctx, created.ID); err != nil {
 		t.Fatalf("DisableUser by id: %v", err)

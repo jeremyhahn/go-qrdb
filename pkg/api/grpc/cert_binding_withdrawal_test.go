@@ -76,6 +76,21 @@ func TestRemoveCertBinding_NilServiceIsUnimplemented(t *testing.T) {
 	}
 }
 
+// TestAddCertBinding_NilServiceIsUnimplemented asserts AddCertBinding on a
+// server with no auth service answers Unimplemented.
+func TestAddCertBinding_NilServiceIsUnimplemented(t *testing.T) {
+	s := &qrdbServiceServer{}
+
+	_, err := s.AddCertBinding(context.Background(), &pb.AddCertBindingRequest{
+		UserId:       42,
+		Thumbprint:   "sha256:abc123",
+		NotAfterUnix: 1800000000,
+	})
+	if st, _ := status.FromError(err); st.Code() != codes.Unimplemented {
+		t.Fatalf("code = %s, want Unimplemented", st.Code())
+	}
+}
+
 // TestRemoveCertBinding_UnheldBindingIsNotFound pins the refusal's code. A
 // withdrawal that removed nothing is NotFound, not OK: an operator who
 // mistyped a thumbprint must not read a success.

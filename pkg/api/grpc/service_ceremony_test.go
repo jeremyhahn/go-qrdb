@@ -16,6 +16,8 @@ package grpc
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,7 +34,7 @@ import (
 )
 
 // fixedErrCeremonyService is a service.CeremonyServicer double local to this
-// file (unconstrained by build tags, unlike grpc_coverage_test.go's
+// file (unconstrained by build tags, unlike mock_services_test.go's
 // mockCeremonyService) that fails every call with a fixed error.
 type fixedErrCeremonyService struct{ err error }
 
@@ -159,5 +161,23 @@ func TestWithRegisterReplicaForwarding(t *testing.T) {
 	WithRegisterReplicaForwarding(fwd)(svc)
 	if svc.replicaForwarder != fwd {
 		t.Fatalf("replicaForwarder = %v; want %v", svc.replicaForwarder, fwd)
+	}
+}
+
+func TestSignatureDecodeError_Error(t *testing.T) {
+	e := &SignatureDecodeError{Err: errors.New("bad encoding")}
+	msg := e.Error()
+	if !strings.Contains(msg, "bad encoding") {
+		t.Fatalf("expected error to contain 'bad encoding', got %q", msg)
+	}
+	if !strings.Contains(msg, "decode") {
+		t.Fatalf("expected error to contain 'decode', got %q", msg)
+	}
+}
+
+func TestSignatureDecodeError_Unwrap(t *testing.T) {
+	inner := errors.New("inner")
+	if got := (&SignatureDecodeError{Err: inner}).Unwrap(); got != inner {
+		t.Fatalf("Unwrap = %v, want %v", got, inner)
 	}
 }

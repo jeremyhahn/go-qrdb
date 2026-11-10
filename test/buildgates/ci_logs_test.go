@@ -47,13 +47,12 @@ import (
 // credentials: a make target, a script, npm or curl. The runner injects the
 // credentials into every job (dependency-resolution.md §6), so each of these
 // masks them in its first step after the checkout.
-var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "arch-gates", "integration-standalone", "integration-features", "fips", "soak"}
+var credentialJobs = []string{"docker-build", "lint", "lint-gates", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk", "test-typescript", "preflight", "integration-standalone", "integration-features", "fips", "soak"}
 
 // unmaskedJobs are the jobs that hold the credentials but run only inline
 // steps that cannot print them, each with the reason. Every job in ci.yml is
 // in one of the two lists, so a new job fails the gate until it is placed.
 var unmaskedJobs = map[string]string{
-	"changes": "prints only the changed file names",
 	"ci-gate": "prints only the jobs' results",
 }
 
@@ -224,7 +223,7 @@ func TestMaskProblems_CanFail(t *testing.T) {
 	if p := maskProblems(parseLogWorkflow(t, jobs(good)+"  new-job:\n    steps:"+checkout+other+"\n")); len(p) == 0 {
 		t.Fatal("a job in neither list passed")
 	}
-	if p := maskProblems(parseLogWorkflow(t, jobs(good)+"  changes:\n    steps:"+checkout+other+"\n")); len(p) != 0 {
+	if p := maskProblems(parseLogWorkflow(t, jobs(good)+"  ci-gate:\n    steps:"+checkout+other+"\n")); len(p) != 0 {
 		t.Fatalf("an unmasked job in unmaskedJobs reported %v", p)
 	}
 	delete(good, "image")

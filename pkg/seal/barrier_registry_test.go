@@ -15,6 +15,29 @@ import (
 	"testing"
 )
 
+func TestBarrierRegistry_RegisterTenant_NilStrategy(t *testing.T) {
+	backend := NewMemoryBackend()
+	sysBarrier, err := NewStorageBarrier(testLogger(), backend, BarrierConfig{
+		RootKeyPath: "test/root-key",
+	}, testSoftwareStrategy(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewBarrierRegistry(testLogger(), sysBarrier)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register without providing any strategy. NewTenantBarrier calls
+	// NewStorageBarrier which requires at least one strategy.
+	_, err = registry.RegisterTenant(context.Background(), "tenant-no-strategy", NewMemoryBackend(), BarrierConfig{
+		RootKeyPath: "t/root-key",
+	})
+	if !errors.Is(err, ErrNoAvailableStrategy) {
+		t.Errorf("RegisterTenant without strategy: got %v, want ErrNoAvailableStrategy", err)
+	}
+}
+
 // newSystemBarrier creates a system-level barrier for registry tests.
 func newSystemBarrier(t *testing.T) *StorageBarrier {
 	t.Helper()
@@ -171,6 +194,43 @@ func TestBarrierRegistry_RegisterTenant_Duplicate(t *testing.T) {
 	_, err = reg.RegisterTenant(context.Background(), "tenant-1", base, BarrierConfig{}, testSoftwareStrategy(t))
 	if err != ErrTenantAlreadyExists {
 		t.Errorf("expected ErrTenantAlreadyExists, got %v", err)
+	}
+}
+
+func TestBarrierRegistry_RegisterTenant_ConcurrentRace(t *testing.T) {
+	reg := newTestRegistry(t)
+
+	const tenantID = "concurrent-tenant"
+	const goroutines = 20
+
+	results := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			_, err := reg.RegisterTenant(context.Background(), tenantID, NewMemoryBackend(), BarrierConfig{
+				RootKeyPath: "t/root-key",
+			}, testSoftwareStrategy(t))
+			results <- err
+		}()
+	}
+
+	successCount := 0
+	conflictCount := 0
+	for i := 0; i < goroutines; i++ {
+		err := <-results
+		if err == nil {
+			successCount++
+		} else if errors.Is(err, ErrTenantAlreadyExists) {
+			conflictCount++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 successful registration, got %d", successCount)
+	}
+	if conflictCount != goroutines-1 {
+		t.Errorf("expected %d conflicts, got %d", goroutines-1, conflictCount)
 	}
 }
 
