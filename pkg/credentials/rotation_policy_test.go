@@ -9,6 +9,7 @@
 package credentials
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -1249,6 +1250,81 @@ func TestRotateDue_MetaReadFailureAfterTheClaimWritesNothing(t *testing.T) {
 			t.Fatalf("versions = %d, want 1", got)
 		}
 	})
+}
+
+// A failed read of the current value is not absence. An unversioned
+// credential whose scheduled rotation failed at commit holds a staged
+// version 2 over a current version recorded as 0; read as absent, the staged
+// value would be taken for a stale one and the value source invoked again.
+func TestRotateDue_CurrentReadFailureIsNotAbsence(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 2)
+	var calls atomic.Int32
+	countSource(svc, &calls)
+	due := rotationEpoch.Add(time.Hour)
+
+	arm(&backend.failCAS, credentialPrefix+"k")
+	if n, err := svc.RotateDue(t.Context(), due); n != 0 || !errors.Is(err, errInjectedFault) || calls.Load() != 1 {
+		t.Fatalf("RotateDue under the commit fault = %d, %v with %d source calls; want 0, the injected fault, 1", n, err, calls.Load())
+	}
+	backend.failCAS.Store(nil)
+	meta, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	if meta.CurrentVersion != 0 || meta.Staged != 2 {
+		t.Fatalf("current = %d, staged = %d; want 0 and 2", meta.CurrentVersion, meta.Staged)
+	}
+	want, err := svc.store.Get(t.Context(), stagedKey("k", 2))
+	if err != nil {
+		t.Fatalf("read the staged value: %v", err)
+	}
+
+	arm(&backend.failGet, credentialPrefix+"k")
+	var puts atomic.Int32
+	backend.onPut = func(string) { puts.Add(1) }
+	staged, version, err := svc.stagedRotation(t.Context(), "k")
+	var opErr *OperationError
+	if !errors.As(err, &opErr) || opErr.Op != "read current" || !errors.Is(err, errInjectedFault) {
+		t.Fatalf("stagedRotation = %v; want a read current error holding the injected fault", err)
+	}
+	if staged != nil || version != 0 {
+		t.Fatalf("stagedRotation = %d bytes, version %d; want nothing", len(staged), version)
+	}
+	n, err := svc.RotateDue(t.Context(), due)
+	requireRotationOpError(t, err, "k", "read current")
+	if !errors.Is(err, errInjectedFault) || n != 0 {
+		t.Fatalf("RotateDue = %d, %v; want 0 and the injected fault", n, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("source calls = %d, want 1: the current value could not be read", calls.Load())
+	}
+	if puts.Load() != 0 {
+		t.Fatalf("writes = %d, want 0", puts.Load())
+	}
+	backend.failGet.Store(nil)
+	backend.onPut = nil
+
+	if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+		t.Fatalf("RotateDue after recovery = %d, %v; want 1, nil", n, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("source calls = %d, want 1: the staged value is resumed", calls.Load())
+	}
+	got, err := svc.store.Get(t.Context(), credentialPrefix+"k")
+	if err != nil {
+		t.Fatalf("read the current value: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("the current value is not the staged one")
+	}
+	meta, err = svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	if meta.CurrentVersion != 2 || meta.Staged != 0 {
+		t.Fatalf("current = %d, staged = %d; want 2 and 0", meta.CurrentVersion, meta.Staged)
+	}
 }
 
 func TestRotateDue_RotateFailureReported(t *testing.T) {
