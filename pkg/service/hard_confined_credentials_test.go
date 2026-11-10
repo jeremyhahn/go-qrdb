@@ -228,13 +228,35 @@ func TestHardConfinedWatch_RefusesAndFiltersCredentials(t *testing.T) {
 const credentialMigrationsRoot = InternalKeyPrefixSystem + "credential-migrations/"
 
 func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing.T) {
+	requireConfinedWhole(t, credentialMigrationsRoot, credentialMigrationsRoot+"db-pass")
+}
+
+// TestHardConfinedKeys_TheCredentialSidecarPrefixesAreConfinedWhole verifies
+// the prefixes holding a credential's metadata, retained versions and staged
+// values are confined exactly as the migration prefix is. The version and
+// staged keys carry the name in unpadded URL-safe base64.
+func TestHardConfinedKeys_TheCredentialSidecarPrefixesAreConfinedWhole(t *testing.T) {
+	for _, tc := range []struct{ root, key string }{
+		{InternalKeyPrefixSystem + "credential-meta/", InternalKeyPrefixSystem + "credential-meta/db-pass"},
+		{InternalKeyPrefixSystem + "credential-versions/", InternalKeyPrefixSystem + "credential-versions/ZGItcGFzcw/1"},
+		{InternalKeyPrefixSystem + "credential-staged/", InternalKeyPrefixSystem + "credential-staged/ZGItcGFzcw/2"},
+	} {
+		t.Run(tc.root, func(t *testing.T) {
+			requireConfinedWhole(t, tc.root, tc.key)
+		})
+	}
+}
+
+// requireConfinedWhole asserts key, a record under root, is refused to the
+// embedded KV, transaction and watch surfaces and filtered from broad reads.
+func requireConfinedWhole(t *testing.T, root, key string) {
+	t.Helper()
 	ctx := context.Background()
-	key := credentialMigrationsRoot + "db-pass"
 	if !isHardConfinedKey(key) {
 		t.Errorf("isHardConfinedKey(%q) = false, want true", key)
 	}
-	if !isHardConfinedRoot(credentialMigrationsRoot) {
-		t.Errorf("isHardConfinedRoot(%q) = false, want true", credentialMigrationsRoot)
+	if !isHardConfinedRoot(root) {
+		t.Errorf("isHardConfinedRoot(%q) = false, want true", root)
 	}
 
 	fake := newFakeKV()
@@ -253,8 +275,8 @@ func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing
 	if string(fake.store[key]) != "claim" {
 		t.Fatalf("%q changed to %q despite the write being refused", key, fake.store[key])
 	}
-	if _, err := confined.Scan(ctx, credentialMigrationsRoot); err == nil {
-		t.Fatalf("Scan(%q) succeeded, want a refusal", credentialMigrationsRoot)
+	if _, err := confined.Scan(ctx, root); err == nil {
+		t.Fatalf("Scan(%q) succeeded, want a refusal", root)
 	} else {
 		assertHardConfinedError(t, err)
 	}
@@ -296,9 +318,9 @@ func TestHardConfinedKeys_TheCredentialMigrationPrefixIsConfinedWhole(t *testing
 	}
 
 	// A prefix watch is filtered, as it is for a credential record.
-	watcher, err := w.WatchPrefix(ctx, credentialMigrationsRoot)
+	watcher, err := w.WatchPrefix(ctx, root)
 	if err != nil {
-		t.Fatalf("WatchPrefix(%q): %v", credentialMigrationsRoot, err)
+		t.Fatalf("WatchPrefix(%q): %v", root, err)
 	}
 	fakeW.prefixWatcher.events <- watch.WatchResponse{
 		WatchID:  1,

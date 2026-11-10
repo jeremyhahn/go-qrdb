@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -145,6 +146,45 @@ func TestRotateDue_RetainOneKeepsOnlyCurrent(t *testing.T) {
 	}
 	if got := versionCount(t, svc, "api-key"); got != 1 {
 		t.Fatalf("versions left = %d, want 1", got)
+	}
+}
+
+// TestRotateDue_NameContainingHashIsScheduled verifies a credential whose
+// name contains '#' is visited by the scheduler, and that the listing holds
+// the stored names and none of their metadata, version or staged records,
+// even beside names shaped like the records the old layout kept.
+func TestRotateDue_NameContainingHashIsScheduled(t *testing.T) {
+	var calls atomic.Int32
+	svc := newRotationService(t, WithRotationValueSource(countingSource(&calls)))
+	ctx := t.Context()
+	names := []string{"db", "db#due", "db#meta", "db#v1"}
+	for _, name := range names {
+		storeRotationCredential(t, svc, name)
+	}
+	if err := svc.SetRotationPolicy(ctx, "db#due", RotationPolicy{Enabled: true, Interval: time.Minute, RetainVersions: 3}); err != nil {
+		t.Fatalf("SetRotationPolicy: %v", err)
+	}
+	if n, err := svc.RotateDue(ctx, rotationEpoch.Add(time.Minute)); err != nil || n != 1 {
+		t.Fatalf("RotateDue = %d, %v; want 1, nil", n, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("value source calls = %d, want 1", got)
+	}
+	if got := versionCount(t, svc, "db#due"); got != 2 {
+		t.Fatalf("versions of db#due = %d, want 2", got)
+	}
+	listed, err := svc.ListCredentials(ctx)
+	if err != nil {
+		t.Fatalf("ListCredentials: %v", err)
+	}
+	if !slices.Equal(listed, names) {
+		t.Fatalf("ListCredentials = %q, want %q", listed, names)
+	}
+	for _, name := range names {
+		value := retrieveString(t, svc, name)
+		if name != "db#due" && value != name+"-initial" {
+			t.Fatalf("RetrieveCredential(%q) = %q, want its stored value", name, value)
+		}
 	}
 }
 
