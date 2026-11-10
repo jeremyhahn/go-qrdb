@@ -230,8 +230,13 @@ func TestDelegationPolicy_CorruptRecord(t *testing.T) {
 	if _, err := p.ListDelegationPolicies(ctx, "acme"); !errors.As(err, &se) || se.Op != "scan" {
 		t.Fatalf("ListDelegationPolicies over a corrupt record: err = %v, want a scan *StoreError", err)
 	}
-	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); !errors.As(err, &se) || deleted {
-		t.Fatalf("DeleteDelegationPolicy of a corrupt record = %v, %v; want the read's *StoreError", deleted, err)
+	// The delete does not decode the record, so the corrupt one goes and the
+	// reads recover.
+	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); err != nil || !deleted {
+		t.Fatalf("DeleteDelegationPolicy of a corrupt record = %v, %v; want true, nil", deleted, err)
+	}
+	if list, err := p.ListDelegationPolicies(ctx, "acme"); err != nil || len(list) != 0 {
+		t.Fatalf("ListDelegationPolicies after the delete = %v, %v; want none", list, err)
 	}
 }
 
