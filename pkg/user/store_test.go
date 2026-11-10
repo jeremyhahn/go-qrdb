@@ -367,6 +367,20 @@ func TestNewStore_NilKVStore(t *testing.T) {
 	}
 }
 
+func TestNewStore_NilIDGen(t *testing.T) {
+	_, err := NewStore(newMemKVStore(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil id generator")
+	}
+	var se *StoreError
+	if !errors.As(err, &se) {
+		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+	if se.Op != "new" {
+		t.Errorf("Op: got %q, want new", se.Op)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateUser
 // ---------------------------------------------------------------------------
@@ -1531,6 +1545,9 @@ func TestGetUserByUsername_StoreGetError(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
 	}
+	if target.Op != "get_by_username" {
+		t.Errorf("Op: got %q, want get_by_username", target.Op)
+	}
 }
 
 func TestUpdateUser_PutPrimaryFails(t *testing.T) {
@@ -1796,6 +1813,9 @@ func TestEnableUser_PutFails(t *testing.T) {
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
 	}
+	if target.Op != "enable" {
+		t.Errorf("Op: got %q, want %q", target.Op, "enable")
+	}
 }
 
 func TestDisableUser_PutFails(t *testing.T) {
@@ -1816,6 +1836,9 @@ func TestDisableUser_PutFails(t *testing.T) {
 	var target *StoreError
 	if !errors.As(err, &target) {
 		t.Fatalf("expected *StoreError, got %T: %v", err, err)
+	}
+	if target.Op != "disable" {
+		t.Errorf("Op: got %q, want %q", target.Op, "disable")
 	}
 }
 

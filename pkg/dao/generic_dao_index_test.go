@@ -1204,6 +1204,20 @@ func TestGenericDAO_QueryByIndex_IndexNameFormat(t *testing.T) {
 	assert.Equal(t, uint64(1), results[0].ID)
 }
 
+// TestGenericDAO_IndexName_WithDatabase pins that a named database prefixes
+// the index name, so two databases' indexes on one collection never collide.
+func TestGenericDAO_IndexName_WithDatabase(t *testing.T) {
+	dao, err := New[*TestEntity](
+		newMemoryKVStore(),
+		"users",
+		func() *TestEntity { return &TestEntity{} },
+		WithDatabase("mydb"),
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, "mydb.users.email", dao.(*genericDAO[*TestEntity]).indexName("email"))
+}
+
 // TestGenericDAO_QueryByIndex_ValueConversion verifies that query values
 // are converted to strings via fmt.Sprint for index lookup.
 func TestGenericDAO_QueryByIndex_ValueConversion(t *testing.T) {

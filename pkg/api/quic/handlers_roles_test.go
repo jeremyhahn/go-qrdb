@@ -885,6 +885,53 @@ func TestHandleAssignRole_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHandleAssignRole_UserNotFound(t *testing.T) {
+	mockRole := &mockRoleService{
+		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
+			return testRole("role-x", "admin", "t"), nil
+		},
+	}
+	userErr := &testError{msg: "user not found"}
+	mockUser := &mockUserService{
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
+			return nil, userErr
+		},
+	}
+
+	srv := newRoleServer(mockRole, mockUser)
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 9999, RoleID: "role-x"})
+
+	_, err := srv.handleAssignRole(context.Background(), payload)
+	if !errors.Is(err, userErr) {
+		t.Fatalf("expected the user lookup error, got %T: %v", err, err)
+	}
+}
+
+func TestHandleAssignRole_UpdateUserError(t *testing.T) {
+	mockRole := &mockRoleService{
+		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
+			return testRole("role-z", "viewer", "t"), nil
+		},
+	}
+	updateErr := &testError{msg: "update user failed"}
+	mockUser := &mockUserService{
+		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
+			return testUser(99, "charlie", "t"), nil
+		},
+		updateUserFn: func(_ context.Context, _ *user.UpdateUserRequest) (*user.User, error) {
+			return nil, updateErr
+		},
+	}
+
+	srv := newRoleServer(mockRole, mockUser)
+	payload, _ := json.Marshal(assignRoleWireRequest{UserID: 99, RoleID: "role-z"})
+
+	_, err := srv.handleAssignRole(context.Background(), payload)
+	if !errors.Is(err, updateErr) {
+		t.Fatalf("expected the UpdateUser error, got %T: %v", err, err)
+	}
+}
+
 func TestHandleUnassignRole_InvalidJSON(t *testing.T) {
 	srv := NewServer(nil, nil, "localhost:0",
 		WithRoleService(&mockRoleService{
