@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"sort"
@@ -22,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // legacyCredentialPrefix is the key prefix the barrier strategy kept its
@@ -578,6 +580,11 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	return nil
 }
 
+// errAlreadyImported is rotateBarrier's refusal of an import whose digest the
+// credential's metadata already records. It never leaves the package:
+// importLegacy reports it as a copy already imported.
+var errAlreadyImported = errors.New("credentials: legacy copy already imported")
+
 // importLegacy writes the kept copy's current value as a new version.
 func (s *CredentialService) importLegacy(ctx context.Context, name string, c *legacyCopy) (map[string]any, error) {
 	value, ok := c.record[""]
@@ -595,11 +602,18 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 		// imported or replaced; only the deletion is left.
 		return map[string]any{"already_imported": true}, nil
 	}
+	imported := bytes.Clone(value)
 	res, err := s.rotateBarrier(ctx, name, RotateOptions{
-		NewValue:       bytes.Clone(value),
+		NewValue:       imported,
 		retainPrevious: true,
 		importDigest:   digest,
 	})
+	if errors.Is(err, errAlreadyImported) {
+		// Another service derived over the same stores committed this copy
+		// between the check above and the write. Nothing was written.
+		secure.Wipe(imported)
+		return map[string]any{"already_imported": true}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

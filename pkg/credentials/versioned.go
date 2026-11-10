@@ -583,6 +583,13 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		if err != nil {
 			return nil, err
 		}
+		// An import is refused on the record the batch is guarded on: a
+		// service derived for another request shares no lock with this
+		// one, so only this read, inside the retry loop, sees an import
+		// of the same copy committed since the caller's own check.
+		if opts.importDigest != "" && slices.Contains(meta.Imported, opts.importDigest) {
+			return nil, errAlreadyImported
+		}
 		prevValue, prevExists, err := s.loadBarrierCurrent(ctx, name)
 		if err != nil {
 			return nil, err
@@ -624,7 +631,7 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		// and schedule in the same write.
 		meta.CurrentVersion = newVersion
 		meta.Staged = 0
-		if opts.importDigest != "" && !slices.Contains(meta.Imported, opts.importDigest) {
+		if opts.importDigest != "" {
 			meta.Imported = append(meta.Imported, opts.importDigest)
 		}
 		if sched != nil {
