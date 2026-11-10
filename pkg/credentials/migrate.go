@@ -282,7 +282,11 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 // first, so the claim then names that record, complete.
 func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours migrationClaim) (migrationClaim, error) {
 	key := MigrationClaimPrefix + name
-	if claim, ok := s.loadClaim(ctx, key); ok {
+	claim, ok, err := s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if ok {
 		return claim, nil
 	}
 	existing, err := s.loadReplicated(ctx, name)
@@ -305,24 +309,31 @@ func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours m
 	if won {
 		return want, nil
 	}
-	claim, ok := s.loadClaim(ctx, key)
+	claim, ok, err = s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
 	if !ok {
 		return migrationClaim{}, &OperationError{Op: "read migration claim", Cause: ErrStoreUnavailable}
 	}
 	return claim, nil
 }
 
-// loadClaim reads and decodes the claim at key.
-func (s *CredentialService) loadClaim(ctx context.Context, key string) (migrationClaim, bool) {
+// loadClaim reads and decodes the claim at key. A claim the store could not
+// read is an error, not a claim nobody holds.
+func (s *CredentialService) loadClaim(ctx context.Context, key string) (migrationClaim, bool, error) {
 	raw, err := s.store.Get(ctx, key)
-	if err != nil || len(raw) == 0 {
-		return migrationClaim{}, false
+	if err != nil {
+		return migrationClaim{}, false, readFailure("read migration claim", err, nil)
+	}
+	if len(raw) == 0 {
+		return migrationClaim{}, false, nil
 	}
 	var claim migrationClaim
 	if err := json.Unmarshal(raw, &claim); err != nil {
-		return migrationClaim{}, false
+		return migrationClaim{}, false, nil
 	}
-	return claim, true
+	return claim, true, nil
 }
 
 // writeWinningCopy writes the winning copy's records and marks the claim
