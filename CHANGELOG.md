@@ -13,6 +13,26 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **The replicated audit trail is a verifiable log.** Once the
+  `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
+  group, each tenant's
+  replicated audit events are appended to the log instance
+  `<tenant>/system/audit`: a Merkle tree starts at the first such event, whose
+  `prev_hash` links it to the whole earlier chain, and `qrdb audit verify
+  --replicated` stays continuous across the switch. `qrdb vlog head`, `get`,
+  `prove-inclusion` and `prove-consistency` with `--database system --log
+  audit` read it on every transport, confined to the caller's own tenant.
+  Audit prune expires event bodies and keeps the tree; `ExpireBodies` through
+  the log surface is refused on the instance, and so is a public `qrdb vlog
+  append` (`ReservedLogError`, `PERMISSION_DENIED`): only audit events, through
+  their own trusted log op, append to it. Apply reserves the name only once
+  the instance exists, so replicas of either version apply a committed log
+  the same way, and an audit-instance append is an exclusive MVCC apply, so a
+  concurrent verify never sees a half-published head. A public create of
+  `system/audit` is refused before a key is minted or a command proposed. A
+  legacy log already named `system/audit` is left as it was and stays
+  appendable; that tenant's trail stays on the linear chain and keeps running. Before the gates, the trail is written
+  exactly as before.
 - **A seal quiesces the encrypted stores before the key leaves memory**
   (seal-quiesce). `StorageBarrier.Seal` now refuses new Pebble writes,
   flushes and compactions on the barrier's encrypted stores with the typed

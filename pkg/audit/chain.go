@@ -95,17 +95,61 @@ func (c *Chain) Restore(r storage.Reader) error {
 // comment for why silently "stamping" tenantID over a conflicting value
 // would be worse than refusing.
 func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint64, err error) {
+	if err := validateEvent(tenantID, ev); err != nil {
+		return 0, err
+	}
+	return c.log.Append(w, tenantID, linkEvent(ev))
+}
+
+// AppendToInstance applies one protocol.OpVerifiableLog append to tenantID's
+// audit instance (vlog.AuditLogID): each entry is a marshaled AuditEvent,
+// validated and linked exactly as Append does, and lands both on the linear
+// chain and as the instance's next leaf, the first creating the instance at
+// its sequence S₀ (docs/databases/architecture.md §7). It returns the last
+// event's sequence. A malformed entry refuses the whole command before
+// anything is written.
+func (c *Chain) AppendToInstance(w vlog.Writer, tenantID string, entries [][]byte) (seq uint64, err error) {
 	if err := vlog.ValidateTenantID(tenantID); err != nil {
 		return 0, err
 	}
+	if len(entries) == 0 || len(entries) > vlog.MaxAppendPerCommand {
+		return 0, &vlog.AppendBatchError{Count: len(entries)}
+	}
+	events := make([]AuditEvent, len(entries))
+	for i, e := range entries {
+		if err := json.Unmarshal(e, &events[i]); err != nil {
+			return 0, &MalformedEventError{Err: err}
+		}
+		if err := validateEvent(tenantID, events[i]); err != nil {
+			return 0, err
+		}
+	}
+	for _, ev := range events {
+		if seq, err = c.log.AppendAudit(w, tenantID, linkEvent(ev)); err != nil {
+			return 0, err
+		}
+	}
+	return seq, nil
+}
+
+// validateEvent checks ev can be appended to tenantID's chain.
+func validateEvent(tenantID string, ev AuditEvent) error {
+	if err := vlog.ValidateTenantID(tenantID); err != nil {
+		return err
+	}
 	if ev.Timestamp.IsZero() {
-		return 0, &MissingTimestampError{}
+		return &MissingTimestampError{}
 	}
 	if ev.TenantID != "" && ev.TenantID != tenantID {
-		return 0, &TenantMismatchError{EventTenantID: ev.TenantID, RoutingTenantID: tenantID}
+		return &TenantMismatchError{EventTenantID: ev.TenantID, RoutingTenantID: tenantID}
 	}
+	return nil
+}
 
-	return c.log.Append(w, tenantID, func(prev [32]byte, genesis bool) ([]byte, [32]byte, error) {
+// linkEvent returns the encoder that sets ev's PrevHash to the chain's
+// current digest and folds its marshaled bytes into the next.
+func linkEvent(ev AuditEvent) vlog.Encoder {
+	return func(prev [32]byte, genesis bool) ([]byte, [32]byte, error) {
 		if genesis {
 			ev.PrevHash = ""
 		} else {
@@ -120,7 +164,7 @@ func (c *Chain) Append(w vlog.Writer, tenantID string, ev AuditEvent) (seq uint6
 		folded = append(folded, prev[:]...)
 		folded = append(folded, body...)
 		return body, sha256.Sum256(folded), nil
-	})
+	}
 }
 
 // Prune deletes tenantID's events below cutoff, from the Chain's own head

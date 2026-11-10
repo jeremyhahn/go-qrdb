@@ -76,6 +76,11 @@ const (
 	// VerifiableLogSubtypeRotateKey makes a new key the log's current
 	// head-signing key.
 	VerifiableLogSubtypeRotateKey byte = 5
+
+	// VerifiableLogSubtypeAuditAppend appends audit events to the tenant's
+	// audit instance, the log system/audit. Only the replicated audit
+	// logger proposes it, once featuregate.VerifiableLogAudit is enabled.
+	VerifiableLogSubtypeAuditAppend byte = 6
 )
 
 // The presence byte of a Create or RotateKey body's key record.
@@ -148,6 +153,19 @@ func encodeVerifiableLogKeyed(subtype byte, what string, id vlog.LogID, v any, k
 // appending entries, in order, to the log id. It refuses an empty batch or
 // one larger than vlog.MaxAppendPerCommand, as apply would.
 func EncodeVerifiableLogAppend(id vlog.LogID, entries [][]byte) ([]byte, error) {
+	return encodeVerifiableLogEntries(VerifiableLogSubtypeAppend, id, entries)
+}
+
+// EncodeVerifiableLogAuditAppend encodes an append of audit events to the
+// tenant's audit instance, the log system/audit
+// (docs/databases/architecture.md §7). Its body is an Append body. Only the
+// replicated audit logger proposes it: the public Append surface refuses
+// the audit name, so no client can forge an audit event.
+func EncodeVerifiableLogAuditAppend(id vlog.LogID, entries [][]byte) ([]byte, error) {
+	return encodeVerifiableLogEntries(VerifiableLogSubtypeAuditAppend, id, entries)
+}
+
+func encodeVerifiableLogEntries(subtype byte, id vlog.LogID, entries [][]byte) ([]byte, error) {
 	if len(entries) == 0 || len(entries) > vlog.MaxAppendPerCommand {
 		return nil, &vlog.AppendBatchError{Count: len(entries)}
 	}
@@ -155,7 +173,7 @@ func EncodeVerifiableLogAppend(id vlog.LogID, entries [][]byte) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	return encodeVerifiableLog(VerifiableLogSubtypeAppend, id, fieldsSize, func(buf []byte) []byte {
+	return encodeVerifiableLog(subtype, id, fieldsSize, func(buf []byte) []byte {
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(entries)))
 		for _, e := range entries {
 			buf = binary.BigEndian.AppendUint32(buf, uint32(len(e)))
@@ -326,6 +344,12 @@ func DecodeVerifiableLogAppend(tenantID string, body []byte) (vlog.LogID, [][]by
 		return vlog.LogID{}, nil, &InvalidCommandError{Reason: "verifiable log append: trailing bytes"}
 	}
 	return id, entries, nil
+}
+
+// DecodeVerifiableLogAuditAppend decodes an AuditAppend body, which is
+// framed as an Append body.
+func DecodeVerifiableLogAuditAppend(tenantID string, body []byte) (vlog.LogID, [][]byte, error) {
+	return DecodeVerifiableLogAppend(tenantID, body)
 }
 
 // DecodeVerifiableLogCheckpoint decodes a Checkpoint body of tenantID's
