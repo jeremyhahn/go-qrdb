@@ -90,6 +90,26 @@ func TestStandaloneNode_ObjstoreDatabaseServes(t *testing.T) {
 	})
 	require.NoError(t, err, "a standalone node refused a backend: objstore database")
 
+	// The create already writes the engine's format marker, so a file under
+	// root proves nothing about the write: the Put must add one.
+	objects := func() map[string]bool {
+		t.Helper()
+		found := map[string]bool{}
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.Type().IsRegular() {
+				found[path] = true
+			}
+			return nil
+		})
+		require.NoError(t, walkErr, "the node's object-storage path holds nothing")
+		return found
+	}
+	before := objects()
+	require.NotEmpty(t, before, "the create wrote nothing to the node's object-storage provider")
+
 	blobs, err := n.Client().DatabaseScoped("blobs")
 	require.NoError(t, err)
 	require.NoError(t, blobs.KV().Put(ctx, "k", []byte("v")))
@@ -97,18 +117,13 @@ func TestStandaloneNode_ObjstoreDatabaseServes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "v", string(got))
 
-	var objects []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	var added []string
+	for path := range objects() {
+		if !before[path] {
+			added = append(added, path)
 		}
-		if d.Type().IsRegular() {
-			objects = append(objects, path)
-		}
-		return nil
-	})
-	require.NoError(t, walkErr, "the node's object-storage path holds nothing")
-	require.NotEmpty(t, objects, "the database's data is not on the node's object-storage provider")
+	}
+	require.NotEmpty(t, added, "the write did not reach the node's object-storage provider")
 
 	_, err = n.Client().KV().Get(ctx, "k")
 	require.Error(t, err, "a write to the objstore database landed in the node's default database")
