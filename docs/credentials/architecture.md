@@ -348,9 +348,12 @@ that fails releases its claim and leaves the credential due, so the next check
 retries it. A claim whose holder crashed lapses after a five-minute lease, and
 the credential is due again, on any node and after a restart. The lease is
 timed from the moment the claim is taken, not from the start of the check, and
-the holder runs the value source and the rotation under a deadline at the
-lease's own expiry, so it has stopped writing before another node may take the
-claim. Ending the claim, by completing or releasing it, gets its own 30-second
+the holder runs the value source and the rotation under a deadline of 30
+seconds or the lease's own expiry, whichever is sooner, so it has stopped
+writing before another node may take the claim. That bound is per credential:
+an attempt past it releases its claim and stays due, and the pass goes on to
+the next credential. The scheduler puts no deadline on the pass as a whole,
+so one slow value source does not starve the credentials after it. Ending the claim, by completing or releasing it, gets its own 30-second
 bound that starts once the rotation has returned, so a rotation that used its
 whole lease can still settle its claim.
 

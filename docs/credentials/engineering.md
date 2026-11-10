@@ -345,8 +345,12 @@ strategy's credentials and, for each one whose enabled policy is due:
    for this credential rather than at the start of the pass (see
    [Invariants](#invariants)), and stops here if another caller holds a claim
    that has not expired at that moment;
-2. draws the new value from the `RotationValueSource`, under a deadline at the
-   claim's own expiry, unless an earlier attempt left a staged value (below);
+2. draws the new value from the `RotationValueSource`, unless an earlier
+   attempt left a staged value (below). Steps 2 to 4 are one attempt, under a
+   deadline of 30 seconds or the claim's own expiry, whichever is sooner. An
+   attempt past it fails like any other, and the pass goes on to the next
+   credential, so one slow source does not starve the rest; the scheduler
+   sets no deadline on the pass, and only its own context ending stops one;
 3. stages the new value: one guarded batch, refused unless the metadata record
    is exactly as read, writes the value under the next version's staged key
    (`credential-staged/<e>/<N+1>`) and the metadata record naming that version

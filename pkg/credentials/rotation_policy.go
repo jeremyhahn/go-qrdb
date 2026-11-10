@@ -32,6 +32,13 @@ const rotationMetaRetries = 8
 // holds the credential for at most one lease.
 const rotationClaimLease = 5 * time.Minute
 
+// rotationAttemptTimeout bounds one credential's attempt in a pass: its
+// value source and its rotation. An attempt that exceeds it releases its
+// claim and stays due, and the pass goes on to the next credential, so one
+// slow credential does not starve the rest. The service holds it in a field
+// so a test can shorten it.
+const rotationAttemptTimeout = 30 * time.Second
+
 // rotationSettleTimeout bounds the one metadata update that releases the
 // claim of a failed rotation, which runs past the scheduler's own context. A
 // rotation that lands ends its claim in its own version write, under the
@@ -248,8 +255,10 @@ func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now ti
 
 	// The holder stops when its lease lapses, so no other caller takes
 	// the claim while this one may still write. The remaining lease is
-	// read on the clock the claim was taken on.
-	rctx, cancel := context.WithTimeout(ctx, claim.Until.Sub(s.now()))
+	// read on the clock the claim was taken on. One attempt gets the
+	// smaller of that and the attempt bound: past it the claim is released
+	// as for any failure, and the caller goes on to the next credential.
+	rctx, cancel := context.WithTimeout(ctx, min(s.rotationAttemptTimeout, claim.Until.Sub(s.now())))
 	next, err := s.rotateClaimed(rctx, name, claim, now)
 	cancel()
 	if err != nil {
