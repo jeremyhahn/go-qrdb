@@ -448,3 +448,26 @@ func TestDecodeVerifiableLogAppend_EntriesDoNotGrowIntoEachOther(t *testing.T) {
 		t.Fatalf("appending to entry 0 overwrote entry 1: %q", entries[1])
 	}
 }
+
+// TestVerifiableLogAuditAppend_RoundTrip pins the AuditAppend sub-type: its
+// own sub-type byte, so the apply can tell it from a client's Append, over
+// an Append body, and the same batch bounds.
+func TestVerifiableLogAuditAppend_RoundTrip(t *testing.T) {
+	id := vlog.AuditLogID("acme")
+	cmd, err := EncodeVerifiableLogAuditAppend(id, [][]byte{[]byte("e0"), []byte("e1")})
+	if err != nil {
+		t.Fatalf("EncodeVerifiableLogAuditAppend: %v", err)
+	}
+	if len(cmd) != cap(cmd) {
+		t.Fatalf("len = %d, cap = %d: size precomputed wrongly", len(cmd), cap(cmd))
+	}
+	tenantID, body := splitVerifiableLog(t, cmd, VerifiableLogSubtypeAuditAppend)
+	got, entries, err := DecodeVerifiableLogAuditAppend(tenantID, body)
+	if err != nil || got != id || len(entries) != 2 || string(entries[1]) != "e1" {
+		t.Fatalf("decoded = %v, %q, %v; want %v with both entries", got, entries, err, id)
+	}
+	var batch *vlog.AppendBatchError
+	if _, err := EncodeVerifiableLogAuditAppend(id, nil); !errors.As(err, &batch) {
+		t.Fatalf("empty audit append: err = %v, want AppendBatchError", err)
+	}
+}

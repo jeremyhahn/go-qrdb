@@ -27,6 +27,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -786,6 +787,43 @@ func TestWithProtocol_Any(t *testing.T) {
 	p := NewManagerProvider(mgr, svc, WithProtocol(ProtocolAny))
 
 	assert.Equal(t, ProtocolAny, p.protocol)
+}
+
+// TestWithCollectionService_DatabaseResolvesCollections pins that the
+// servicer given to WithCollectionService reaches the databases the provider
+// hands out: with no relational registry, their table names list its
+// collections and a collection name resolves to a CollectionTable.
+func TestWithCollectionService_DatabaseResolvesCollections(t *testing.T) {
+	mgr := newTestManager(t)
+	_, err := mgr.Create(database.DatabaseConfig{Name: "appdb", Backend: database.BackendMemory})
+	require.NoError(t, err)
+
+	colSvc := &mockCollectionService{
+		listColFn: func(context.Context, *service.ListCollectionsRequest) (*service.ListCollectionsResponse, error) {
+			return &service.ListCollectionsResponse{
+				Collections: []service.CollectionInfo{{Name: "orders"}, {Name: "products"}},
+			}, nil
+		},
+		getInfoFn: func(_ context.Context, _, name string) (*service.CollectionInfo, error) {
+			return &service.CollectionInfo{Name: name, Schema: map[string]string{"field1": "VARCHAR"}}, nil
+		},
+	}
+	p := NewManagerProvider(mgr, &mockKVService{}, WithCollectionService(colSvc))
+	ctx := newTestContext()
+
+	db, err := p.Database(ctx, "appdb")
+	require.NoError(t, err)
+	names, err := db.GetTableNames(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, names, "orders")
+	assert.Contains(t, names, "products")
+
+	tbl, found, err := db.GetTableInsensitive(ctx, "mycollection")
+	require.NoError(t, err)
+	require.True(t, found)
+	_, isCollection := tbl.(*CollectionTable)
+	assert.True(t, isCollection, "a collection name must resolve to a CollectionTable")
+	assert.Equal(t, "mycollection", tbl.Name())
 }
 
 func TestNewManagerProvider_NoOptions(t *testing.T) {

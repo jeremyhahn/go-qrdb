@@ -139,6 +139,12 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 		DeploymentID: f.deploymentID,
 		AuditLogger:  seal.NewComplianceAuditLogger(complianceAudit, tenantid.System, seal.SystemBarrierAuditName),
 	}
+	drainTimeout, drainErr := f.sealConfig.DrainTimeoutDuration()
+	if drainErr != nil {
+		_ = sealStore.Close()
+		return nil, &SealBarrierError{Err: drainErr}
+	}
+	barrierCfg.SealDrainTimeout = drainTimeout
 
 	// Reconcile a system-scope enable-encryption interrupted by a crash, BEFORE
 	// the barrier is built or any data store is opened: roll a committed migration

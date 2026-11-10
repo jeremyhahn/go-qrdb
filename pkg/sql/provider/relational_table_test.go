@@ -1004,6 +1004,96 @@ func TestRelationalTable_LookupPartitions_SecondaryColumn_RangePredicate_Filtere
 	assert.Equal(t, uint64(2), fp.rows[0][0])
 }
 
+func TestRelationalTable_SecondaryIndexKeysFromRanges_NonEqualityShapes(t *testing.T) {
+	ctx, endStatement := autocommitStatement(t)
+	h := newDDLHarness()
+	tbl, _ := newWriterHarnessTable(t, h, ordersCreateRequest())
+	ins := tbl.Inserter(ctx)
+	require.NoError(t, ins.Insert(ctx, orderRow(1, "SKU-1", "east", int32(10))))
+	require.NoError(t, endStatement())
+
+	spec, found := tbl.indexSpecByName("idx_sku") // sku
+	require.True(t, found)
+	strType := tbl.schema[1].Type
+
+	// Not a MySQLRange at all.
+	_, exact, err := tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{})
+	require.NoError(t, err)
+	assert.True(t, exact)
+
+	// A genuine (non-degenerate) closed range is not a point match.
+	rangeExpr := sqle.ClosedRangeColumnExpr("SKU-1", "SKU-9", strType)
+	_, exact, err = tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{sqle.MySQLRange{rangeExpr}})
+	require.NoError(t, err)
+	assert.False(t, exact, "a genuine range must fall back to the filtered scan")
+
+	// An unbound (all rows) range.
+	allExpr := sqle.AllRangeColumnExpr(strType)
+	_, exact, err = tbl.secondaryIndexKeysFromRanges(ctx, spec, []sqle.Range{sqle.MySQLRange{allExpr}})
+	require.NoError(t, err)
+	assert.False(t, exact)
+}
+
+func TestRelationalTable_LookupIndexValue_NonUniqueScanError(t *testing.T) {
+	scanErr := errors.New("scan failed")
+	def := ordersDefWithID(t)
+	kv := &mockKVService{
+		scanFn: func(context.Context, string) (map[string][]byte, error) {
+			return nil, scanErr
+		},
+	}
+	tbl, err := NewRelationalTable(def, kv, nil)
+	require.NoError(t, err)
+
+	spec, found := tbl.indexSpecByName("idx_warehouse") // non-unique
+	require.True(t, found)
+
+	_, lerr := tbl.lookupIndexValue(newTestContext(), spec, "x", true)
+	assert.ErrorIs(t, lerr, scanErr)
+}
+
+func TestRelationalTable_LookupIndexValue_UniqueGetError(t *testing.T) {
+	getErr := errors.New("get failed")
+	def := ordersDefWithID(t)
+	kv := &mockKVService{
+		getFn: func(context.Context, string) ([]byte, error) {
+			return nil, getErr
+		},
+	}
+	tbl, err := NewRelationalTable(def, kv, nil)
+	require.NoError(t, err)
+
+	spec, found := tbl.indexSpecByName("idx_sku") // unique
+	require.True(t, found)
+
+	_, lerr := tbl.lookupIndexValue(newTestContext(), spec, "x", true)
+	assert.ErrorIs(t, lerr, getErr)
+}
+
+// ordersDefWithID is the orders table definition, a unique idx_sku and a
+// non-unique idx_warehouse, for tests that build a RelationalTable over a
+// mock KV service.
+func ordersDefWithID(t *testing.T) *service.TableDef {
+	t.Helper()
+	return &service.TableDef{
+		TableID:  42,
+		Name:     "orders",
+		Database: "shop",
+		Columns: []service.ColumnDef{
+			{Name: "id", Type: "BIGINT UNSIGNED"},
+			{Name: "sku", Type: "VARCHAR(64)", Nullable: true},
+			{Name: "warehouse", Type: "VARCHAR(32)", Nullable: true},
+			{Name: "qty", Type: "INT", Nullable: true},
+		},
+		PrimaryKey: []service.PKColumn{{Name: "id"}},
+		Indexes: []service.TableIndex{
+			{Name: "idx_sku", Columns: []service.IndexCol{{Name: "sku"}}, Unique: true},
+			{Name: "idx_warehouse", Columns: []service.IndexCol{{Name: "warehouse"}}, Unique: false},
+		},
+		SchemaVersion: 1,
+	}
+}
+
 func TestRelationalTable_LookupPartitions_ScanError(t *testing.T) {
 	def := testUsersDef()
 	scanErr := errors.New("scan failed")

@@ -28,3 +28,13 @@ func TestShamirStrategy_UnsealRootKey_AlwaysErrors(t *testing.T) {
 		t.Errorf("UnsealRootKey: got %v, want ErrShamirUnsealRequiresQuorum", err)
 	}
 }
+
+func TestShamirStrategy_Close(t *testing.T) {
+	strategy, err := NewShamirStrategy(2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := strategy.Close(); err != nil {
+		t.Fatalf("ShamirStrategy.Close: %v", err)
+	}
+}

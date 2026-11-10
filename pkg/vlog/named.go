@@ -97,6 +97,20 @@ type Descriptor struct {
 	// first, RotateKey appends the next. A log without keys is not signed
 	// by the service.
 	Keys []HeadKey `json:"keys,omitempty"`
+
+	// TreeStart is S₀, the audit sequence number of the audit instance's
+	// leaf 0: the first audit event appended after featuregate.VerifiableLog
+	// is enabled for its group (docs/databases/architecture.md §7). Leaf i
+	// is the audit event at sequence TreeStart+i. Zero, and absent, on
+	// every other log.
+	TreeStart uint64 `json:"tree_start,omitempty"`
+
+	// Audit marks the audit instance: only AuditDescriptor sets it. A log
+	// is the instance when IsAuditLog names it and its descriptor has
+	// Audit; a log created under the audit name before the instance
+	// existed has no Audit, keeps its own entries, and is never
+	// reinterpreted (docs/databases/architecture.md §7).
+	Audit bool `json:"audit,omitempty"`
 }
 
 // Key returns the log's key at version.
@@ -139,6 +153,12 @@ type logState struct {
 	lo          uint64
 	hashes      [][]byte
 	allowExpire bool
+	// treeStart is the descriptor's TreeStart: the audit sequence of leaf 0
+	// on an audit instance, zero on every other log.
+	treeStart uint64
+	// audit is the descriptor's Audit: the log is its tenant's audit
+	// instance.
+	audit bool
 }
 
 // getFunc reads one record, answering nil, nil for an absent key as
@@ -200,7 +220,7 @@ func readLogState(get getFunc, id LogID) (logState, error) {
 	if err != nil {
 		return logState{}, err
 	}
-	return logState{size: size, lo: lo, hashes: hashes, allowExpire: desc.AllowExpireBodies}, nil
+	return logState{size: size, lo: lo, hashes: hashes, allowExpire: desc.AllowExpireBodies, treeStart: desc.TreeStart, audit: desc.Audit}, nil
 }
 
 // readLogHead reads and decodes id's head record, answering
@@ -330,6 +350,9 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 	if len(desc.Keys) > 1 {
 		return &InvalidDescriptorError{Reason: "a log is created with at most its first key"}
 	}
+	if desc.TreeStart != 0 {
+		return &InvalidDescriptorError{Reason: "tree_start is recorded only by the audit instance's first event"}
+	}
 	// A struct of strings, slices, integers and a bool always marshals, and
 	// always to the same bytes.
 	body, _ := json.Marshal(desc)
@@ -337,6 +360,9 @@ func (c *Chain) create(w Writer, id LogID, desc Descriptor, key *SigningKey) err
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		return &ReservedLogError{ID: id}
+	}
 	if _, ok := c.logs[id]; ok {
 		return &LogExistsError{ID: id}
 	}
@@ -422,14 +448,36 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		return 0, &ReservedLogError{ID: id}
+	}
 	st, ok := c.logs[id]
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
 	}
+	for i, e := range entries {
+		if err := w.Set(entryKey(id, st.size+uint64(i)), e); err != nil {
+			return 0, &TableWriteError{Err: err}
+		}
+	}
+	next, staged, err := appendLeaves(w, id, st, entries)
+	if err != nil {
+		return 0, err
+	}
+	maps.Copy(c.staged, staged)
+	c.logs[id] = next
+	return st.size, nil
+}
+
+// appendLeaves stages leaves as the next leaves of id's tree, from st: every
+// tree node they complete and the new head. It returns the state to install
+// and the staged nodes by key, leaving st and c untouched, so a failed append
+// changes nothing in memory. The leaves' bodies are the caller's to store.
+func appendLeaves(w Writer, id LogID, st logState, leaves [][]byte) (logState, map[string][]byte, error) {
 	// The range is built over a copy, so a failed append leaves st as it was.
 	rng, err := factory.NewRange(0, st.size, append([][]byte(nil), st.hashes...))
 	if err != nil {
-		return 0, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+		return logState{}, nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
 	}
 
 	staged := make(map[string][]byte)
@@ -445,28 +493,22 @@ func (c *Chain) AppendEntries(w Writer, id LogID, entries [][]byte) (first uint6
 		}
 		staged[string(k)] = hash
 	}
-	for i, e := range entries {
-		if err := w.Set(entryKey(id, st.size+uint64(i)), e); err != nil {
-			return 0, &TableWriteError{Err: err}
-		}
+	for _, e := range leaves {
 		if err := rng.Append(hasher.HashLeaf(e), visit); err != nil {
-			return 0, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
+			return logState{}, nil, &CorruptTableError{Key: string(logHeadKey(id)), Reason: err.Error()}
 		}
 		if stageErr != nil {
-			return 0, stageErr
+			return logState{}, nil, stageErr
 		}
 	}
 
-	size := st.size + uint64(len(entries))
+	size := st.size + uint64(len(leaves))
 	hashes := rng.Hashes()
 	if err := w.Set(logHeadKey(id), encodeLogHead(size, st.lo, hashes)); err != nil {
-		return 0, &TableWriteError{Err: err}
+		return logState{}, nil, &TableWriteError{Err: err}
 	}
-	maps.Copy(c.staged, staged)
-	first = st.size
 	st.size, st.hashes = size, hashes
-	c.logs[id] = st
-	return first, nil
+	return st, staged, nil
 }
 
 // Checkpoint stages a signed checkpoint for id's tree at size, after
@@ -541,6 +583,11 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.auditInstanceLocked(id) {
+		// The audit instance's retention is audit Prune (OpAuditPrune),
+		// which prunes its events through pkg/audit.
+		return 0, &ReservedLogError{ID: id}
+	}
 	st, ok := c.logs[id]
 	if !ok {
 		return 0, &LogNotFoundError{ID: id}
@@ -564,4 +611,111 @@ func (c *Chain) ExpireBodies(w Writer, id LogID, cutoff uint64) (expired int, er
 	st.lo = upper
 	c.logs[id] = st
 	return expired, nil
+}
+
+// AuditDatabase and AuditLog name a tenant's audit instance: the log AuditLog
+// in the tenant's reserved system database (lifecycle.SystemDatabase).
+const (
+	AuditDatabase = "system"
+	AuditLog      = "audit"
+)
+
+// AuditLogID returns the LogID of tenantID's audit instance.
+func AuditLogID(tenantID string) LogID {
+	return LogID{TenantID: tenantID, Database: AuditDatabase, Log: AuditLog}
+}
+
+// IsAuditLog reports whether id names a tenant's audit instance.
+// auditInstanceLocked reports whether id names a tenant's audit instance
+// that exists: a log under the audit name whose state is the instance's.
+// The audit name is reserved from the named-log Create, Append and
+// ExpireBodies only then, so the reservation depends on committed state,
+// not on the binary: before the instance exists those commands apply as
+// they did before it, and the instance is created only by an audit append,
+// which is proposed only once every replica is upgraded. The caller holds
+// c.mu.
+func (c *Chain) auditInstanceLocked(id LogID) bool {
+	st, ok := c.logs[id]
+	return ok && st.audit
+}
+
+func IsAuditLog(id LogID) bool {
+	return id.Database == AuditDatabase && id.Log == AuditLog
+}
+
+// AuditDescriptor returns the descriptor of tenantID's audit instance whose
+// leaf 0 is the audit event at sequence treeStart: it allows ExpireBodies
+// (Prune), and nothing signs its heads until a key is rotated in.
+func AuditDescriptor(tenantID string, treeStart uint64) Descriptor {
+	return Descriptor{
+		Origin:            AuditLogID(tenantID).String(),
+		Hash:              HashSHA256,
+		AllowExpireBodies: true,
+		TreeStart:         treeStart,
+		Audit:             true,
+	}
+}
+
+// AppendAudit appends one event to tenantID's linear chain exactly as Append
+// does, and the record's bytes -- the marshaled event with its PrevHash -- as
+// the next leaf of the tenant's audit instance. The instance's first append
+// creates it, its descriptor recording the event's sequence as TreeStart
+// (S₀), so leaf 0 commits through its PrevHash to the whole chain before it.
+// The body is stored once, under the linear chain's key; the instance holds
+// the tree.
+func (c *Chain) AppendAudit(w Writer, tenantID string, encode Encoder) (seq uint64, err error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return 0, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.appendEvent(w, tenantID, encode, true)
+}
+
+// appendEvent appends one event to tenantID's linear chain and, when the
+// tenant's audit instance exists or create is set, as the instance's next
+// leaf, creating the instance with TreeStart at the event's sequence if it
+// does not yet exist. Leaf i of the instance is therefore always the event at
+// TreeStart+i, whichever opcode carried it. c.mu must be held.
+func (c *Chain) appendEvent(w Writer, tenantID string, encode Encoder, create bool) (uint64, error) {
+	id := AuditLogID(tenantID)
+	st, exists := c.logs[id]
+	if exists && !st.audit {
+		// A log created under the audit name before the instance existed
+		// is never reinterpreted and no instance is created over it: the
+		// event only extends the linear chain, as it did before the
+		// instance, so the tenant's trail keeps running.
+		exists, create = false, false
+	}
+	head, body, err := c.appendLinear(w, tenantID, encode)
+	if err != nil {
+		return 0, err
+	}
+	if !exists && !create {
+		c.heads[tenantID] = head
+		return head.seq, nil
+	}
+	var descBody []byte
+	if !exists {
+		// A struct of strings, integers and a bool always marshals, and
+		// always to the same bytes.
+		descBody, _ = json.Marshal(AuditDescriptor(tenantID, head.seq))
+		if err := w.Set(descriptorKey(id), descBody); err != nil {
+			return 0, &TableWriteError{Err: err}
+		}
+		st = logState{allowExpire: true, treeStart: head.seq, audit: true}
+	}
+	next, staged, err := appendLeaves(w, id, st, [][]byte{body})
+	if err != nil {
+		return 0, err
+	}
+	if descBody != nil {
+		c.staged[string(descriptorKey(id))] = descBody
+	}
+	maps.Copy(c.staged, staged)
+	c.logs[id] = next
+	c.heads[tenantID] = head
+	return head.seq, nil
 }
