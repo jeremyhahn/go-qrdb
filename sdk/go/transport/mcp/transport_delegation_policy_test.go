@@ -40,6 +40,37 @@ func TestPutDelegationPolicy_Success(t *testing.T) {
 	}
 }
 
+// A nil request is refused on the client: no tool call reaches the server.
+func TestPutDelegationPolicy_NilRequest(t *testing.T) {
+	reached := make(chan struct{}, 2)
+	enroll := newMockCertEnrollmentServicer()
+	enroll.policyPutFn = func(_ context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error) {
+		reached <- struct{}{}
+		return &delegation.Policy{Tenant: "t1", Principal: req.Principal, Scope: req.Scope, TTL: req.TTL}, nil
+	}
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil, mcpapi.WithCertEnrollment(enroll))
+	defer cleanup()
+
+	for _, name := range []string{"first call", "second call"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("PutDelegationPolicy(nil) panicked: %v", r)
+				}
+			}()
+			got, err := tr.PutDelegationPolicy(context.Background(), nil)
+			var nilReq *transport.NilRequestError
+			var reqErr *transport.RequestError
+			if got != nil || !errors.As(err, &nilReq) || !errors.As(err, &reqErr) || reqErr.Method != "PutDelegationPolicy" {
+				t.Fatalf("PutDelegationPolicy(nil) = %+v, %v; want a PutDelegationPolicy *transport.RequestError wrapping *transport.NilRequestError", got, err)
+			}
+			if len(reached) != 0 {
+				t.Fatal("the nil request reached the server")
+			}
+		})
+	}
+}
+
 func TestPutDelegationPolicy_ServiceError(t *testing.T) {
 	enroll := newMockCertEnrollmentServicer()
 	enroll.policyPutFn = func(context.Context, *service.DelegationPolicyRequest) (*delegation.Policy, error) {

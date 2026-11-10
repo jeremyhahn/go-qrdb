@@ -41,6 +41,40 @@ func TestPutDelegationPolicy_Success(t *testing.T) {
 	}
 }
 
+// A nil request is refused before the service is reached, with or without
+// a tenant on the context.
+func TestPutDelegationPolicy_NilRequest(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"with a tenant":    tenant.WithTenantID(context.Background(), "tenant-a"),
+		"without a tenant": context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			reached := make(chan struct{}, 1)
+			mock := &mockCertEnrollmentServicer{
+				policyPutFn: func(_ context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error) {
+					reached <- struct{}{}
+					return &delegation.Policy{Tenant: req.TenantID, Principal: req.Principal}, nil
+				},
+			}
+			tr := newAuthTransport(t, WithCertEnrollment(mock))
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("PutDelegationPolicy(nil) panicked: %v", r)
+				}
+			}()
+			p, err := tr.PutDelegationPolicy(ctx, nil)
+			var nilReq *transport.NilRequestError
+			var reqErr *transport.RequestError
+			if p != nil || !errors.As(err, &nilReq) || !errors.As(err, &reqErr) || reqErr.Method != "PutDelegationPolicy" {
+				t.Fatalf("PutDelegationPolicy(nil) = %+v, %v; want a PutDelegationPolicy *transport.RequestError wrapping *transport.NilRequestError", p, err)
+			}
+			if len(reached) != 0 {
+				t.Fatal("the nil request reached the service")
+			}
+		})
+	}
+}
+
 func TestPutDelegationPolicy_InvalidTTL(t *testing.T) {
 	tr := newAuthTransport(t, WithCertEnrollment(&mockCertEnrollmentServicer{}))
 	if _, err := tr.PutDelegationPolicy(tenant.WithTenantID(context.Background(), "tenant-a"), &transport.DelegationPolicyRequest{

@@ -29,6 +29,30 @@ func TestGRPCPutDelegationPolicy_RoundTrip(t *testing.T) {
 	}
 }
 
+// A nil request is refused on the client, before any RPC is built from it.
+func TestGRPCPutDelegationPolicy_NilRequest(t *testing.T) {
+	addr, stop := startUserRoleCertServer(t)
+	defer stop()
+	tr, cleanup := connectUserTransport(t, addr)
+	defer cleanup()
+
+	for _, name := range []string{"first call", "second call"} {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("PutDelegationPolicy(nil) panicked: %v", r)
+				}
+			}()
+			got, err := tr.PutDelegationPolicy(context.Background(), nil)
+			var nilReq *transport.NilRequestError
+			var reqErr *transport.RequestError
+			if got != nil || !errors.As(err, &nilReq) || !errors.As(err, &reqErr) || reqErr.Method != "PutDelegationPolicy" {
+				t.Fatalf("PutDelegationPolicy(nil) = %+v, %v; want a PutDelegationPolicy *transport.RequestError wrapping *transport.NilRequestError", got, err)
+			}
+		})
+	}
+}
+
 func TestGRPCPutDelegationPolicy_RefusalsAreRequestErrors(t *testing.T) {
 	addr, stop := startUserRoleCertServer(t)
 	defer stop()
