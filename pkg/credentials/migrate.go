@@ -222,6 +222,7 @@ func (s *CredentialService) migrateLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	defer wipeCopies(copies)
 	names := make([]string, 0, len(copies))
 	for name := range copies {
 		names = append(names, name)
@@ -441,6 +442,7 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 		}
 		value, err := s.legacy.Get(ctx, key)
 		if err != nil {
+			wipeCopies(copies)
 			return nil, &OperationError{Op: "read legacy record", Cause: err}
 		}
 		c.record[suffix] = value
@@ -458,6 +460,17 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 		c.settled = true
 	}
 	return copies, nil
+}
+
+// wipeCopies zeroes every record value of the legacy copies. Whoever loaded
+// the copies calls it when done with them: they hold the node's plaintext
+// values, and the stores keep their own.
+func wipeCopies(copies map[string]*legacyCopy) {
+	for _, c := range copies {
+		for _, value := range c.record {
+			secure.Wipe(value)
+		}
+	}
 }
 
 // loadReplicated reads the bound store's records for name, without its
@@ -591,6 +604,7 @@ func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name s
 	if err != nil {
 		return err
 	}
+	defer wipeCopies(copies)
 	c := copies[name]
 	if c == nil {
 		delete(s.conflicts, name)

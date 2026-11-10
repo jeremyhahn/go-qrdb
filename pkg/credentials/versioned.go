@@ -847,7 +847,7 @@ func (s *CredentialService) retrieveBarrierVersion(ctx context.Context, name str
 }
 
 func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string) ([]CredentialVersion, error) {
-	_, exists, err := s.loadBarrierCurrent(ctx, name)
+	exists, err := s.barrierExists(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -1053,6 +1053,14 @@ func readFailure(op string, err, absent error) error {
 		return absent
 	}
 	return &OperationError{Op: op, Cause: err}
+}
+
+// barrierExists reports whether the credential has a current value. The
+// value is read to learn that and wiped before returning.
+func (s *CredentialService) barrierExists(ctx context.Context, name string) (bool, error) {
+	value, exists, err := s.loadBarrierCurrent(ctx, name)
+	secure.Wipe(value)
+	return exists, err
 }
 
 // =============================================================================

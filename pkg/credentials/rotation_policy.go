@@ -129,7 +129,7 @@ func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, 
 	if err := policy.validate(); err != nil {
 		return err
 	}
-	if _, exists, err := s.loadBarrierCurrent(ctx, name); err != nil {
+	if exists, err := s.barrierExists(ctx, name); err != nil {
 		return err
 	} else if !exists {
 		return ErrCredentialNotFound
@@ -199,7 +199,7 @@ func (s *CredentialService) rotationMeta(ctx context.Context, name string) (*cre
 		}
 		return &credentialMeta{}, nil
 	}
-	if _, exists, err := s.loadBarrierCurrent(ctx, name); err != nil {
+	if exists, err := s.barrierExists(ctx, name); err != nil {
 		return nil, err
 	} else if !exists {
 		return nil, ErrCredentialNotFound
