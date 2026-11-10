@@ -373,7 +373,10 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 	second, err := conn.OpenRequestStream(ctx)
 	require.NoError(t, err)
 	require.NoError(t, second.SendRequestHeader(newWebTransportRequest(t, url)))
-	_, err = second.ReadResponse()
+	rsp, err = second.ReadResponse()
+	if rsp != nil {
+		_ = rsp.Body.Close()
+	}
 	var streamErr *quic.StreamError
 	require.ErrorAs(t, err, &streamErr)
 	require.True(t, streamErr.Remote)

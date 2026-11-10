@@ -97,7 +97,10 @@ func TestClientInvalidResponseHandling(t *testing.T) {
 	}()
 
 	d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
-	_, _, err = d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+	rsp, _, err := d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+	if rsp != nil {
+		_ = rsp.Body.Close()
+	}
 	require.Error(t, err)
 	var sErr error
 	select {
@@ -150,7 +153,10 @@ func TestClientConnChecksServerQUICSupportOnDial(t *testing.T) {
 			defer tr.Close()
 			conn, err := tr.NewClientConn(qconn)
 			require.NoError(t, err)
-			_, _, err = conn.Dial(t.Context(), "https://localhost", nil)
+			rsp, _, err := conn.Dial(t.Context(), "https://localhost", nil)
+			if rsp != nil {
+				_ = rsp.Body.Close()
+			}
 			require.ErrorContains(t, err, tt.wantErrMsg)
 			var reqErr *webtransport.RequirementsNotMetError
 			require.ErrorAs(t, err, &reqErr)
@@ -171,7 +177,10 @@ func TestClientClosesConnectionForInvalidSessionID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			go func() {
 				d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
-				_, _, _ = d.Dial(context.Background(), addr, nil)
+				rsp, _, _ := d.Dial(context.Background(), addr, nil)
+				if rsp != nil {
+					_ = rsp.Body.Close()
+				}
 			}()
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -231,7 +240,10 @@ func TestClientWaitForSettingsTimeout(t *testing.T) {
 	errChan := make(chan error)
 	go func() {
 		d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
-		_, _, err := d.Dial(ctx, fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+		rsp, _, err := d.Dial(ctx, fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+		if rsp != nil {
+			_ = rsp.Body.Close()
+		}
 		errChan <- err
 	}()
 
@@ -325,7 +337,10 @@ func TestClientInvalidSettingsHandling(t *testing.T) {
 			}()
 
 			d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
-			_, _, err = d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+			rsp, _, err := d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
+			if rsp != nil {
+				_ = rsp.Body.Close()
+			}
 			require.Error(t, err)
 			require.ErrorContains(t, err, tc.errorStr)
 			var reqErr *webtransport.RequirementsNotMetError
