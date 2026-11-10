@@ -1762,7 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg.Storage.Objstore)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1944,8 +1944,14 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // database it records, and to the server, so a named database resolves
 // through the server's registry, is confined to its owning tenant, and is
 // refused while sealed.
-func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir)
+//
+// The manager opens a backend: objstore database through the node's
+// storage.objstore provider (objCfg), each database under its own object
+// prefix.
+func (n *Node) newStandaloneDatabaseManager(dataDir string, objCfg qrdbconfig.ObjstoreConfig) *database.Manager {
+	dbManager := database.NewManager(n.logger, dataDir,
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(
+			database.WithObjstoreOpener(lifecycle.DatabaseObjstoreOpener(objCfg)))))
 	n.dbManager = dbManager
 	return dbManager
 }
@@ -2351,8 +2357,11 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
-	// externally-supplied manager.
-	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
+	// externally-supplied manager. A clustered node's databases are Raft
+	// state machines, so its manager refuses a backend: objstore database
+	// with database.ObjstoreRaftModeError.
+	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithRaftMode())))
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3152,7 +3161,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(dataDir)
+	dbManager := n.newStandaloneDatabaseManager(dataDir, cfg.Storage.Objstore)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
