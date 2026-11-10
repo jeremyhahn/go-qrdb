@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -692,5 +693,177 @@ func TestHandleCapabilities_ServiceError(t *testing.T) {
 	var te *testError
 	if !errors.As(err, &te) {
 		t.Fatalf("expected *testError, got %T: %v", err, err)
+	}
+}
+
+// joinReviewAdmin extends mockAdminService with the optional join-review
+// interfaces the handlers type-assert for.
+type joinReviewAdmin struct {
+	mockAdminService
+	err      error
+	pending  []*service.PendingJoinRequest
+	gotID    string
+	gotArg   string
+	observer [3]any
+}
+
+var (
+	_ service.JoinRequestReviewer = (*joinReviewAdmin)(nil)
+	_ service.ObserverMemberAdder = (*joinReviewAdmin)(nil)
+	_ service.JoinIdentityRetirer = (*joinReviewAdmin)(nil)
+)
+
+func (a *joinReviewAdmin) ListPendingJoinRequests(context.Context) ([]*service.PendingJoinRequest, error) {
+	return a.pending, a.err
+}
+
+func (a *joinReviewAdmin) ApproveJoinRequest(_ context.Context, id, nodeID string) error {
+	a.gotID, a.gotArg = id, nodeID
+	return a.err
+}
+
+func (a *joinReviewAdmin) RejectJoinRequest(_ context.Context, id, reason string) error {
+	a.gotID, a.gotArg = id, reason
+	return a.err
+}
+
+func (a *joinReviewAdmin) AddObserverMember(_ context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
+	a.observer = [3]any{shardID, replicaID, raftAddr}
+	a.gotArg = identity
+	return a.err
+}
+
+func (a *joinReviewAdmin) RetireJoinIdentity(_ context.Context, nodeID, reason string) error {
+	a.gotID, a.gotArg = nodeID, reason
+	return a.err
+}
+
+func TestJoinReviewHandlers_Unsupported(t *testing.T) {
+	srv := newTestServer(&mockKVService{}, &mockAdminService{})
+	review := map[string]func(context.Context, []byte) ([]byte, error){
+		"list":     srv.handleListPendingJoinRequests,
+		"approve":  srv.handleApproveJoinRequest,
+		"reject":   srv.handleRejectJoinRequest,
+		"observer": srv.handleAddObserverMember,
+	}
+	for name, h := range review {
+		t.Run(name, func(t *testing.T) {
+			var ue *service.ClusterJoinRequestReviewUnsupportedError
+			if _, err := h(context.Background(), nil); !errors.As(err, &ue) {
+				t.Fatalf("err = %v, want *ClusterJoinRequestReviewUnsupportedError", err)
+			}
+		})
+	}
+	t.Run("retire", func(t *testing.T) {
+		var nc *service.ClusterJoinTokenNotConfiguredError
+		if _, err := srv.handleRetireJoinIdentity(context.Background(), nil); !errors.As(err, &nc) {
+			t.Fatalf("err = %v, want *ClusterJoinTokenNotConfiguredError", err)
+		}
+	})
+}
+
+func TestJoinReviewHandlers_UnmarshalAndServiceErrors(t *testing.T) {
+	svcErr := &testError{msg: "review refused"}
+	admin := &joinReviewAdmin{err: svcErr}
+	srv := newTestServer(&mockKVService{}, admin)
+	handlers := map[string]func(context.Context, []byte) ([]byte, error){
+		"approve":  srv.handleApproveJoinRequest,
+		"reject":   srv.handleRejectJoinRequest,
+		"observer": srv.handleAddObserverMember,
+		"retire":   srv.handleRetireJoinIdentity,
+	}
+	for name, h := range handlers {
+		t.Run(name+"/unmarshal", func(t *testing.T) {
+			var ue *UnmarshalError
+			if _, err := h(context.Background(), badProto); !errors.As(err, &ue) {
+				t.Fatalf("err = %v, want *UnmarshalError", err)
+			}
+		})
+		t.Run(name+"/service", func(t *testing.T) {
+			if _, err := h(context.Background(), nil); !errors.Is(err, svcErr) {
+				t.Fatalf("err = %v, want the service error", err)
+			}
+		})
+	}
+	t.Run("list/service", func(t *testing.T) {
+		if _, err := srv.handleListPendingJoinRequests(context.Background(), nil); !errors.Is(err, svcErr) {
+			t.Fatalf("err = %v, want the service error", err)
+		}
+	})
+}
+
+func TestHandleListPendingJoinRequests_Success(t *testing.T) {
+	submitted := time.Date(2026, 10, 1, 12, 0, 0, 0, time.FixedZone("x", 3600))
+	admin := &joinReviewAdmin{pending: []*service.PendingJoinRequest{{
+		ID: "abc", NodeURI: "spiffe://db.example.com/node/n2", ReplicaID: 2,
+		Features: []string{"f1"}, SubmittedAt: submitted, ExpiresAt: submitted.Add(time.Hour),
+	}}}
+	srv := newTestServer(&mockKVService{}, admin)
+	out, err := srv.handleListPendingJoinRequests(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("handleListPendingJoinRequests: %v", err)
+	}
+	var resp pb.ListPendingJoinRequestsResponse
+	if err := proto.Unmarshal(out, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.GetRequests()) != 1 {
+		t.Fatalf("requests = %+v", resp.GetRequests())
+	}
+	r := resp.GetRequests()[0]
+	if r.GetId() != "abc" || r.GetReplicaId() != 2 || r.GetSubmittedAt() != "2026-10-01T11:00:00Z" || r.GetExpiresAt() != "2026-10-01T12:00:00Z" {
+		t.Fatalf("request = %+v", r)
+	}
+}
+
+func TestJoinReviewHandlers_Success(t *testing.T) {
+	tests := map[string]struct {
+		call    func(*Server) ([]byte, error)
+		wantID  string
+		wantArg string
+	}{
+		"approve": {
+			call: func(s *Server) ([]byte, error) {
+				return s.handleApproveJoinRequest(context.Background(), mustMarshal(t, &pb.ApproveJoinRequestRequest{Id: "abc", NodeId: "n2"}))
+			},
+			wantID: "abc", wantArg: "n2",
+		},
+		"reject": {
+			call: func(s *Server) ([]byte, error) {
+				return s.handleRejectJoinRequest(context.Background(), mustMarshal(t, &pb.RejectJoinRequestRequest{Id: "abc", Reason: "unknown"}))
+			},
+			wantID: "abc", wantArg: "unknown",
+		},
+		"retire": {
+			call: func(s *Server) ([]byte, error) {
+				return s.handleRetireJoinIdentity(context.Background(), mustMarshal(t, &pb.RetireJoinIdentityRequest{NodeId: "n3", Reason: "decommissioned"}))
+			},
+			wantID: "n3", wantArg: "decommissioned",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			admin := &joinReviewAdmin{}
+			if _, err := tc.call(newTestServer(&mockKVService{}, admin)); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if admin.gotID != tc.wantID || admin.gotArg != tc.wantArg {
+				t.Fatalf("service got (%q, %q), want (%q, %q)", admin.gotID, admin.gotArg, tc.wantID, tc.wantArg)
+			}
+		})
+	}
+}
+
+func TestHandleAddObserverMember_Success(t *testing.T) {
+	admin := &joinReviewAdmin{}
+	srv := newTestServer(&mockKVService{}, admin)
+	_, err := srv.handleAddObserverMember(context.Background(), mustMarshal(t, &pb.AddObserverMemberRequest{
+		ShardId: 1, ReplicaId: 4, RaftAddress: "n4.db.example.com:7000", MemberIdentity: "spiffe://db.example.com/node/n4",
+	}))
+	if err != nil {
+		t.Fatalf("handleAddObserverMember: %v", err)
+	}
+	if admin.observer != [3]any{uint64(1), uint64(4), "n4.db.example.com:7000"} || admin.gotArg != "spiffe://db.example.com/node/n4" {
+		t.Fatalf("service got %v identity=%q", admin.observer, admin.gotArg)
 	}
 }

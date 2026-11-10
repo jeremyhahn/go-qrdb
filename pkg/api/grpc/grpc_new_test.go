@@ -791,6 +791,16 @@ func TestProtoToOp_Range(t *testing.T) {
 	}
 }
 
+// An enum value this server does not know must not become the zero OpPut.
+func TestProtoToOp_UnknownTypeIsNotAPut(t *testing.T) {
+	for _, v := range []pb.OpType{pb.OpType(4), pb.OpType(99), pb.OpType(256)} {
+		so := protoToOp(&pb.Op{Type: v, Key: []byte("k"), Value: []byte("v")})
+		if so.Type != service.OpUnknown {
+			t.Fatalf("type %d became %d, want OpUnknown", v, so.Type)
+		}
+	}
+}
+
 func TestOpResponseToProto_WithKvs(t *testing.T) {
 	r := service.OpResponse{
 		Kvs: []*kv.KeyValue{
@@ -2302,6 +2312,49 @@ func TestGRPC_IndexScan_NilService(t *testing.T) {
 	_, err := client.IndexScan(context.Background(), &pb.IndexScanRequest{
 		IndexName: "idx", Start: []byte("a"), End: []byte("z"),
 	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", st.Code())
+	}
+}
+
+func TestGRPC_IndexList_Success(t *testing.T) {
+	indexSvc := &mockIndexService{listResult: []string{"idx1", "idx2"}}
+	client, cleanup := startTestServerFull(t, WithIndex(indexSvc))
+	defer cleanup()
+
+	resp, err := client.IndexList(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("IndexList failed: %v", err)
+	}
+	if len(resp.GetNames()) != 2 {
+		t.Fatalf("expected 2 names, got %d", len(resp.GetNames()))
+	}
+}
+
+func TestGRPC_IndexList_Error(t *testing.T) {
+	indexSvc := &mockIndexService{listErr: &service.ReadError{Err: errors.New("list failed")}}
+	client, cleanup := startTestServerFull(t, WithIndex(indexSvc))
+	defer cleanup()
+
+	_, err := client.IndexList(context.Background(), &emptypb.Empty{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("expected Internal, got %s", st.Code())
+	}
+}
+
+func TestGRPC_IndexList_NilService(t *testing.T) {
+	client, cleanup := startTestServerFull(t)
+	defer cleanup()
+
+	_, err := client.IndexList(context.Background(), &emptypb.Empty{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

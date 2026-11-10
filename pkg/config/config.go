@@ -378,11 +378,53 @@ type TenantConfig struct {
 	// logged and the stored floor stands. See docs/multi-tenancy/user.md.
 	// Overridable via QRDB_TENANT_ISOLATION_POLICY.
 	IsolationPolicy string `yaml:"isolation_policy"`
+
+	// SignedInitTTL is how long a signed barrier-init reference
+	// (barrier-init-begin) stays redeemable. Accepts a Go duration string,
+	// positive and at most MaxSignedInitTTL. Default: "5m". Overridable via
+	// QRDB_TENANT_SIGNED_INIT_TTL.
+	SignedInitTTL string `yaml:"signed_init_ttl"`
 }
 
 // DefaultQuotaReconcileIntervalString is the default
 // tenant.quota_reconcile_interval when unset.
 const DefaultQuotaReconcileIntervalString = "5m"
+
+// DefaultSignedInitTTLString is the default tenant.signed_init_ttl.
+const DefaultSignedInitTTLString = "5m"
+
+// MaxSignedInitTTL is the longest tenant.signed_init_ttl accepted: a signed
+// barrier-init reference lapses after five minutes at most.
+const MaxSignedInitTTL = 5 * time.Minute
+
+// ParseSignedInitTTL parses tenant.signed_init_ttl, treating empty as
+// DefaultSignedInitTTLString. It must be positive and at most
+// MaxSignedInitTTL.
+func ParseSignedInitTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		s = DefaultSignedInitTTLString
+	}
+	d, err := parseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 || d > MaxSignedInitTTL {
+		return 0, &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be positive and at most " + MaxSignedInitTTL.String()}
+	}
+	return d, nil
+}
+
+// SignedInitTTLDuration returns the parsed tenant.signed_init_ttl. Validate
+// refuses a bad value at load, so one that reaches here unvalidated yields
+// MaxSignedInitTTL, the default.
+func (c TenantConfig) SignedInitTTLDuration() time.Duration {
+	d, err := ParseSignedInitTTL(c.SignedInitTTL)
+	if err != nil {
+		return MaxSignedInitTTL
+	}
+	return d
+}
 
 const (
 	// DefaultLeaseCheckpointIntervalString is the default lease.checkpoint_interval.
@@ -1785,6 +1827,12 @@ type SealConfig struct {
 	// default "5s".
 	ClusterAckTimeout string `yaml:"cluster_ack_timeout"`
 
+	// DrainTimeout bounds how long a seal waits for the flushes, writes and
+	// compactions already in flight on the barrier's encrypted stores to end
+	// before it wipes the key; a seal that runs out still seals and names the
+	// stores that did not drain. Go duration; default "10s".
+	DrainTimeout string `yaml:"drain_timeout"`
+
 	// MigrationCredentialsDir holds this node's own credentials for a
 	// cluster enable-encryption migration it did not accept the request for:
 	// "system" for the node barrier and "tenant-<id>" for a tenant barrier.
@@ -1803,6 +1851,17 @@ func (c SealConfig) ShareTTLDuration() (time.Duration, error) {
 		s = DefaultShareTTLString
 	}
 	return parseDuration(s)
+}
+
+// DefaultDrainTimeoutString is the default seal.drain_timeout when unset; it
+// matches seal.DefaultSealDrainTimeout.
+const DefaultDrainTimeoutString = "10s"
+
+// DrainTimeoutDuration returns the parsed DrainTimeout, or the default 10s
+// when unset. A value that does not parse, or is not positive, is a
+// *ValidationError.
+func (c SealConfig) DrainTimeoutDuration() (time.Duration, error) {
+	return positiveDuration("seal.drain_timeout", c.DrainTimeout, DefaultDrainTimeoutString)
 }
 
 // validSealStrategies contains the accepted seal strategy strings.
@@ -1914,6 +1973,7 @@ func DefaultConfig() *Config {
 				AllowVolumeStorage:    false,
 			},
 			QuotaReconcileInterval: DefaultQuotaReconcileIntervalString,
+			SignedInitTTL:          DefaultSignedInitTTLString,
 		},
 		Auth: AuthConfig{
 			Enabled:       BoolPtr(true),
@@ -1953,6 +2013,7 @@ func DefaultConfig() *Config {
 			Strategy:           "none",
 			RootKeyPath:        "__sys:seal/root_key",
 			ShareTTL:           DefaultShareTTLString,
+			DrainTimeout:       DefaultDrainTimeoutString,
 			CredentialStrategy: "barrier",
 		},
 		Bootstrap: BootstrapConfig{
@@ -2015,6 +2076,9 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(cfg, func(dc *mapstructure.DecoderConfig) {
 		dc.TagName = "yaml"
 	}); err != nil {
+		return nil, &LoadError{Path: path, Err: err}
+	}
+	if err := restoreProviderKeyCase(cfg, data); err != nil {
 		return nil, &LoadError{Path: path, Err: err}
 	}
 
@@ -2482,6 +2546,9 @@ func (c *Config) Validate() error {
 	if c.Auth.PermCacheTTL < 0 {
 		return &ValidationError{Field: "auth.perm_cache_ttl", Reason: "must not be negative"}
 	}
+	if _, err := ParseSignedInitTTL(c.Tenant.SignedInitTTL); err != nil {
+		return &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be a positive Go duration of at most " + MaxSignedInitTTL.String() + " (" + err.Error() + ")"}
+	}
 	if _, err := ParseInvitationTTL(c.Auth.InvitationTTL); err != nil {
 		return &ValidationError{Field: "auth.invitation_ttl", Reason: "must be a positive Go duration of at most " + MaxInvitationTTL.String() + " (" + err.Error() + ")"}
 	}
@@ -2602,6 +2669,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		if _, err := c.Seal.ClusterSealTiming(); err != nil {
+			return err
+		}
+		if _, err := c.Seal.DrainTimeoutDuration(); err != nil {
 			return err
 		}
 	} else if c.Auth.IsEnabled() {

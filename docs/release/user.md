@@ -44,7 +44,7 @@ The file is line-oriented. Blank lines and `#` lines are ignored; every other
 line is `<class>[/i] <ERE>`, where the class is `lab-address`, `lab-host` or
 `owner-path`, `/i` matches case-insensitively, and the ERE is POSIX extended.
 Every class needs at least one rule. For CI, store the file's content as the
-Actions secret `PUBLIC_RELEASE_PATTERNS`; the `arch-gates` job writes it to a temp file
+Actions secret `PUBLIC_RELEASE_PATTERNS`; the `preflight` job writes it to a temp file
 for the one step that reads it.
 
 | Name | Kind | Value |

@@ -577,8 +577,9 @@ that carry only the public key and a detached signature:
    signing key's DER SubjectPublicKeyInfo (base64). The node prepares the
    epoch-1 init statement naming that key as its signer and returns
    `statement` (the exact bytes to sign), `reference` (single-use, base64) and
-   `expires_at`. The reference lapses after `SignedInitTTL` (five minutes), and
-   a node holds at most `MaxOutstandingSignedInits` (1024) unredeemed
+   `expires_at`. The reference lapses after `SignedInitTTL` (five minutes), or
+   sooner when the node sets `tenant.signed_init_ttl` (at most `5m`), and a
+   node holds at most `MaxOutstandingSignedInits` (1024) unredeemed
    statements.
 2. **`signed-init/complete`** (`POST /v1/tenants/{id}/barrier/signed-init/complete`)
    carries `reference`, `signature` and, for the passphrase strategy,

@@ -154,10 +154,16 @@ func protoToCompare(c *pb.Compare) service.Compare {
 	return sc
 }
 
-// protoToOp converts a proto Op to a service Op.
+// protoToOp converts a proto Op to a service Op. An enum value this server
+// does not know becomes service.OpUnknown, which the service refuses, never
+// the zero OpPut.
 func protoToOp(op *pb.Op) service.Op {
+	opType, ok := protoOpTypeMap[op.GetType()]
+	if !ok {
+		opType = service.OpUnknown
+	}
 	return service.Op{
-		Type:     protoOpTypeMap[op.GetType()],
+		Type:     opType,
 		Key:      op.GetKey(),
 		Value:    op.GetValue(),
 		RangeEnd: op.GetRangeEnd(),

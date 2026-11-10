@@ -21,6 +21,69 @@ are not reconstructed here — their history is in the git log.
   credential, the adapter holds no plaintext copy, and both handles are
   destroyed when the open returns, on success and on every error path.
   qrdbd never echoes either value or writes it under its data directory.
+- **The replicated audit trail is a verifiable log.** Once the
+  `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
+  group, each tenant's
+  replicated audit events are appended to the log instance
+  `<tenant>/system/audit`: a Merkle tree starts at the first such event, whose
+  `prev_hash` links it to the whole earlier chain, and `qrdb audit verify
+  --replicated` stays continuous across the switch. `qrdb vlog head`, `get`,
+  `prove-inclusion` and `prove-consistency` with `--database system --log
+  audit` read it on every transport, confined to the caller's own tenant.
+  Audit prune expires event bodies and keeps the tree; `ExpireBodies` through
+  the log surface is refused on the instance, and so is a public `qrdb vlog
+  append` (`ReservedLogError`, `PERMISSION_DENIED`): only audit events, through
+  their own trusted log op, append to it. Apply reserves the name only once
+  the instance exists, so replicas of either version apply a committed log
+  the same way, and an audit-instance append is an exclusive MVCC apply, so a
+  concurrent verify never sees a half-published head. A public create of
+  `system/audit` is refused before a key is minted or a command proposed. A
+  legacy log already named `system/audit` is left as it was and stays
+  appendable; that tenant's trail stays on the linear chain and keeps running. Before the gates, the trail is written
+  exactly as before.
+- **A seal quiesces the encrypted stores before the key leaves memory**
+  (seal-quiesce). `StorageBarrier.Seal` now refuses new Pebble writes,
+  flushes and compactions on the barrier's encrypted stores with the typed
+  sealed error (`*pebble.SealedError` wrapping `ErrBarrierSealed`), waits up
+  to the new `seal.drain_timeout` (default `10s`, env
+  `QRDB_SEAL_DRAIN_TIMEOUT`, which bounds every barrier: system, tenant and
+  database, on `qrdbd` and SDK nodes alike) for the ones in flight, Raft
+  state-machine commits, whole snapshot recoveries and the encrypted vector
+  store's writes included, then seals. A tenant whose drain runs out during a node seal is still
+  brought back by the node unseal. When work outlasts the bound the barrier
+  still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError` naming
+  the stores still in flight, logged and audited (`seal`, phase `drain`); a
+  database seal so reported still marks the database sealed and ends its
+  streams. An expired drain reports that risk and does not remove it: the
+  admitted work is not cancelled, and once it resumes it can still race the
+  key wipe into the Pebble panic the seal watch describes. A store holds
+  one lock-free lease per operation; on the write-path benchmark
+  (`BenchmarkPebbleStorage_SetUnderEncfs`, `-count=6 -benchtime=2s`) a put
+  averages 615 ns with the lease and 611 ns without, about 4 ns per put. Pebble is used as released.
+  Opening a store holds its lease across Pebble's recovery (a closed gate
+  refuses it), and a vector namespace is created in one leased, atomic commit.
+- **A transaction branch can read** (#1211). A `get` or `range` op in a
+  transaction's success or failure branch is answered inside the transaction:
+  its `OpResponse` carries the key-values with their create and mod revision,
+  version and lease, and `count`, at the transaction's own revision, seeing the
+  writes staged before it in the same branch. A read-then-compare-and-set can
+  read back what it wrote, and a failed compare can report what beat it, in
+  one round trip. Through REST, gRPC, QUIC, MCP, Unix, embedded and `qrdb tx`.
+  Reads need an MVCC state machine, and a transaction carrying one is refused
+  whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
+  feature `transaction-reads` is active on every member. A branch that only
+  reads does not advance the revision.
+  The encrypted file backend holds the same lease across its open-time
+  journal recovery and every write and journaled batch commit, and refuses
+  both on a closed gate with `*file.SealedError` (`quiesce.ErrSealing`).
+  A per-database barrier's `BarrierBackend` holds a lease on its database
+  barrier's gate for every mutation, so `SealDatabase` drains it, and refuses
+  on a closed gate with `*database.SealedError`. `quiesce.ErrSealing` and
+  `pebble.ErrBarrierSealed` classify as Unavailable (retryable) under every
+  service wrapper and count as sealed in `pkg/store` and the vector adapter.
+  Closing a store no longer takes its operations in flight out of the
+  drain: an unregistered lease refuses new work and stays in the drain set
+  until its last operation releases.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as
@@ -77,7 +140,7 @@ are not reconstructed here — their history is in the git log.
   with those databases unlisted. A create releases an entry this node holds
   for a database another node dropped before refusing the name as a duplicate.
 - **`qrdb roles reconcile --all-tenants`** converges the built-in roles of every live tenant in one pass, so a renamed permission no longer needs each tenant's own Admin to repair. `role.ReconcileAllTenants` backs it on gRPC (`ReconcileBuiltInRolesAllTenants`), REST, QUIC, MCP, Unix and the embedded transport, and each `sdk/go` client exposes `ReconcileBuiltInRolesAllTenants`. It needs the new cross-scope permission `roles:reconcile_all`, granted only to the system tenant's built-in Admin, and refuses a caller bound to any other tenant with `tenant.PlatformOperatorRequiredError` (403). The report carries one per-tenant reconcile report for each tenant reached (the system tenant first), the skipped tenants with their reason (`sealed`, `refused`) and the failed ones; the CLI exits non-zero on a failed tenant and rejects `--all-tenants` with `--tenant`. A system Admin stored before this release gains the permission by running the system tenant's own `qrdb roles reconcile` first (#1219).
-- **Signed tenant barrier init** (#1212): a two-phase init for a first admin whose key signs away from the node. `POST /v1/tenants/{id}/barrier/signed-init/begin` (gRPC `TenantBarrierService.SignedInitBegin`, QUIC `tenant.BarrierSignedInitBegin`, MCP `qrdb_tenant_barrier_signed_init_begin`) takes the signer's SubjectPublicKeyInfo and returns the epoch-1 init statement to sign and a single-use reference valid for five minutes; `…/signed-init/complete` (`SignedInitComplete`, `tenant.BarrierSignedInitComplete`, `qrdb_tenant_barrier_signed_init_complete`) redeems it with the detached signature. Every complete attempt spends its reference. The Go SDK carries `Tenants().TenantBarrierSignedInitBegin` / `TenantBarrierSignedInitComplete` on every transport, and `sdk/go` re-exports the service types and refusals as `ServiceTenantBarrierInitBeginRequest`, `ServiceTenantSignedInitError` and the rest. The CLI adds `qrdb tenant barrier-init-begin` (`--public-key`, `--statement-out`) and `qrdb tenant barrier-init-complete` (`--reference-hex`, `--sig-file`).
+- **Signed tenant barrier init** (#1212): a two-phase init for a first admin whose key signs away from the node. `POST /v1/tenants/{id}/barrier/signed-init/begin` (gRPC `TenantBarrierService.SignedInitBegin`, QUIC `tenant.BarrierSignedInitBegin`, MCP `qrdb_tenant_barrier_signed_init_begin`) takes the signer's SubjectPublicKeyInfo and returns the epoch-1 init statement to sign and a single-use reference valid for five minutes (`tenant.signed_init_ttl` may shorten it, never lengthen it); `…/signed-init/complete` (`SignedInitComplete`, `tenant.BarrierSignedInitComplete`, `qrdb_tenant_barrier_signed_init_complete`) redeems it with the detached signature. Every complete attempt spends its reference. The Go SDK carries `Tenants().TenantBarrierSignedInitBegin` / `TenantBarrierSignedInitComplete` on every transport, and `sdk/go` re-exports the service types and refusals as `ServiceTenantBarrierInitBeginRequest`, `ServiceTenantSignedInitError` and the rest. The CLI adds `qrdb tenant barrier-init-begin` (`--public-key`, `--statement-out`) and `qrdb tenant barrier-init-complete` (`--reference-hex`, `--sig-file`).
 - `service.LeaseService.LogRenewals` counts the lease keep-alives sent
   through the raft log rather than answered by the lease primary from memory.
   `TestRaft_LeaseKeepAliveLatencyTail` now asserts that count stays at zero
@@ -161,6 +224,20 @@ are not reconstructed here — their history is in the git log.
   either form satisfies them; the handler still refuses a call with neither.
 
 ### Changed
+
+- **The devcontainer build proxy has no `direct` entry** (ci-template
+  v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
+  defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
+  serve fails the image build instead of being fetched from its origin.
+- `changes` and `arch-gates` run as one `preflight` job (ci-template v1.34);
+  ci.yml has 17 jobs.
+- **No Go module list ends in `direct`** (ci-template v1.34.1,
+  dependency-resolution.md §7a). `scripts/in-toolchain-image.sh` is v5: a
+  bridge stage's GOPROXY is `<DEVCACHE_GOPROXY>|https://proxy.golang.org`.
+  The devcontainer compose services set the same list, and fall back to
+  `https://proxy.golang.org` rather than an empty GOPROXY when no mirror is
+  set. The preflight checkout keeps no credential (`persist-credentials:
+  false`).
 
 - **CI runs on GitHub-hosted `ubuntu-latest` runners** (DS-7377). Every job
   of ci.yml, release.yml, nightly.yml, automerge.yml and
@@ -258,6 +335,34 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- CI installs Trivy from its official image pinned by digest; the GitHub
+  release download it replaced returns 504.
+- **The toolchain image build retries its Trivy download.** The
+  `build/docker/devcontainer` tools stage fetched the Trivy release archive
+  with a single `curl`, so one transient 504 from GitHub's release-asset
+  host failed `make docker-build-toolchain` and, with it, every CI job on
+  main and on PRs. The fetch now retries five times, 3 s apart; the pinned
+  SHA-256 check is unchanged. Six 504s inside 15 s still failed a PR's
+  build, so the fetch now retries eight times, 10 s apart, on any error,
+  spanning about four minutes.
+- **An unknown op type in a transaction or batch is refused, not applied as
+  a put** (#1211). REST and MCP read an unrecognised `type` string, and gRPC
+  and QUIC an unknown `OpType` enum value, as `put`, which overwrote the key
+  with the op's value; the batch service dropped an op type it did not know
+  while applying the rest. Each is now refused before anything is proposed:
+  REST answers 400 (`rest.UnknownOpTypeError`), MCP a tool error
+  (`mcp.UnknownOpTypeError`), and gRPC and QUIC, which now pass the value as
+  `service.OpUnknown`, `INVALID_ARGUMENT`
+  (`service.UnsupportedTransactionOpError`, which a batch now also returns for
+  an unmapped type).
+
+- **Provider settings keep their key case** (row object-storage-provider).
+  `config.Load` passed `storage.objstore.settings` and
+  `storage.volume_pools[].options` to the provider with every key lowercased,
+  so go-objstore's `forcePathStyle` arrived as `forcepathstyle` and s3 always
+  used virtual-hosted bucket addressing. Keys now reach the provider as
+  written in the YAML file, `QRDB_` environment overrides still apply, and
+  two keys in one map that differ only in case are refused.
 - **A CI stage with no network waits for its multicast configurator's own readiness marker, and concurrent cache trims on a host run one at a time** (#1275): `scripts/in-toolchain-image.sh` starts the stage's `MULTICAST_WAIT` clock when the configurator writes `started.<n>` (its attempt n) on a marker volume and runs the stage once a `ready` marker and the route are there, retrying a failed configurator once with clocks of its own, so a daemon slow to start the configurator no longer exits the stage first, and the wait for `started` has its own bound, `MULTICAST_START_WAIT` (240 s: two configurator runs, each behind one 120 s cache trim), so a stage whose launcher died before the configurator ran exits 1 instead of waiting forever; the marker volume is labelled `qrdb.ci.multicast-marker=1`, and `scripts/reap-stale-ci-stacks.sh` removes one no container mounts; `scripts/trim-ci-caches.sh` takes a per-host lock in the runner's tool cache by polling `flock -n` (BusyBox `flock` has no `-w`) and skips its trim with one line when another job holds it past `CI_CACHE_LOCK_WAIT` seconds.
 - **A slow fsync no longer holds MVCC reads** (#1287): `MVCCStateMachine.Update` commits its batch under the read lock and takes the write lock only to publish it, in apply order; `Lookup` returns ctx's error, wrapped in `ReadError`, when ctx ends while it waits, and `Sync` takes the read lock. A batch that changes the index catalog, the lessor's tables, the compaction floors or an audit chain's head in place (an index create or drop, a lease grant, revoke, keep-alive or checkpoint, a compaction, an audit append or prune, any of those inside a guarded write, or any write while a lease exists) is still built and published under the write lock, so a reader never sees that state ahead of the published view (`MVCCEngine.RequiresExclusiveApply`, `docs/key-value/engineering.md`).
 - **The client-address rate limit refuses a malformed `Forwarded` field** (#1197): a `Forwarded` field from a trusted proxy that ends inside an unterminated quoted-string or quoted-pair is malformed as a whole (RFC 7239 §4), so the request is keyed by the trusted proxy's own address and `X-Forwarded-For` is not read in its place. A client could send `for=<any address>;x="` and the open quote hid the hop its proxy appended, so every address it chose drew a fresh bucket.
@@ -615,6 +720,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
+  and `test/performance/qrdb`, with the indirect requirement in
+  `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
+  reported it behind its latest release, inside the 7-day adoption window.
+- `golang.org/x/sync` v0.24.0 → v0.25.0 in the root module, with the indirect
+  requirement in `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof`
+  following it; `deps-check` reported it behind its latest release.
+- `github.com/wailsapp/wails/v2` v2.17.0 → v2.17.1 in the root module, the
+  desktop shell's only Wails requirement; `deps-check` reported it behind its
+  latest release.
 - `github.com/mark3labs/mcp-go` v1.4.0 → v1.5.0 in the root and `sdk/go`
   modules (indirect in `sdk/go/gorm/conformance` and `test/clusterproof`).
 - `github.com/jackc/pgx/v5` v5.11.0 → v5.12.0 in the root module (indirect in
@@ -719,6 +834,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Credentials are per tenant.** Every credential operation, on every transport and through `Client.Credentials()`, acts on the caller's own tenant's store: the platform's for a system principal, a store kept under the tenant's own barrier (always the `barrier` strategy) for a principal of a tenant onboarded with `barrier`, `volume` or `raft` isolation. A tenant on `prefix` isolation is refused with `CapabilityUnsupportedError` (501 / `UNIMPLEMENTED`), and a sealed tenant barrier with `BarrierSealedError` (503 / `UNAVAILABLE`); neither falls back to the system store. The ten `credentials:*` permissions move from `ScopeCross` to `ScopeSelf`, so a tenant administrator can grant them inside the tenant, and their SDK names move to `sdk/go/types_permission_credentials.go`. `credentials.CredentialService.ForBarrier` builds a store over a given barrier. The embedded transport now receives the node's credential service, so `Client.Credentials()` on an in-process node no longer fails with a nil service (#1185).
 - **A verifiable log's checkpoint is a C2SP signed note** (#912): the bytes
   sign-head returns and records are the tlog-checkpoint text (origin, tree
   size, base64 root) and one signed-note signature line carrying the key name

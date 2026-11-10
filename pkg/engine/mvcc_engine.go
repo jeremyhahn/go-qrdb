@@ -27,6 +27,7 @@ import (
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
+	"github.com/tidwall/btree"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -457,14 +458,24 @@ func commandRequiresExclusiveApply(op byte, payload []byte) bool {
 	if _, ok := exclusiveApplyOps[op]; ok {
 		return true
 	}
-	if op != protocol.OpGuarded {
+	switch op {
+	case protocol.OpVerifiableLog:
+		// An audit-instance append advances the tenant chain's in-memory
+		// head before its batch publishes, as OpAuditAppend does.
+		subtype, _, _, err := protocol.DecodeVerifiableLogCommand(payload)
+		if err != nil {
+			return true
+		}
+		return subtype == protocol.VerifiableLogSubtypeAuditAppend
+	case protocol.OpGuarded:
+		_, inner, err := protocol.DecodeGuarded(payload)
+		if err != nil {
+			return true
+		}
+		return commandRequiresExclusiveApply(inner[0], inner[1:])
+	default:
 		return false
 	}
-	_, inner, err := protocol.DecodeGuarded(payload)
-	if err != nil {
-		return true
-	}
-	return commandRequiresExclusiveApply(inner[0], inner[1:])
 }
 
 // ApplyVectorIndexEffects applies effects to the engine's vector index
@@ -1000,6 +1011,18 @@ func decodedOpSupported(op byte) bool {
 	default:
 		return false
 	}
+}
+
+// validateTxnOps is validateDecodedOps for a transaction's executed branch,
+// which may also read: a transaction answers an OpMVCCRange op itself
+// (txnRead) rather than dispatching it, so a batch still refuses one.
+func validateTxnOps(ops []protocol.DecodedOp) error {
+	for _, op := range ops {
+		if op.Type != protocol.OpMVCCRange && !decodedOpSupported(op.Type) {
+			return &protocol.UnknownOpError{Op: op.Type}
+		}
+	}
+	return nil
 }
 
 // validateDecodedOps rejects an operation set naming an operation this engine
@@ -1720,7 +1743,7 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 
 	// Pre-validate the OPCODES of the selected set first: an operation this
 	// engine cannot execute refuses the whole transaction and stages nothing.
-	if verr := validateDecodedOps(ops); verr != nil {
+	if verr := validateTxnOps(ops); verr != nil {
 		return sm.Result{}, nil, verr
 	}
 	// No operation in the selected branch may touch the reserved vector
@@ -1747,23 +1770,200 @@ func (e *MVCCEngine) handleTransaction(s *mvcc.Store, lr *lease.Lessor, batch st
 	}
 
 	rev := s.CurrentRevision() + 1
+	// The read bound is decided before anything in the branch is staged:
+	// the Update batch is shared by every entry and has no savepoint, so a
+	// refusal after a staged write would apply that write.
+	if res, refused, err := txnReadRefusal(s, batch, rev, ops); err != nil || refused {
+		return res, nil, err
+	}
 	var notifs []Notification
-	for _, op := range ops {
+	var reads []protocol.TxnReadResult
+	if hasDecodedRead(ops) {
+		reads = make([]protocol.TxnReadResult, len(ops))
+	}
+	wrote := false
+	for i, op := range ops {
+		if op.Type == protocol.OpMVCCRange {
+			read, readErr := txnRead(s, batch, rev, op)
+			if readErr != nil {
+				return sm.Result{}, nil, readErr
+			}
+			reads[i] = read
+			continue
+		}
 		opNotifs, opErr := e.executeDecodedOpWithNotify(s, lr, batch, op, rev)
 		if opErr != nil {
 			return sm.Result{}, nil, opErr
 		}
 		notifs = append(notifs, opNotifs...)
+		wrote = true
 	}
-	if len(ops) > 0 {
+	// Only a write advances the revision: a branch of reads alone leaves
+	// the store where it was and reports the revision it observed, as an
+	// etcd response header does.
+	if wrote {
 		s.SetRevision(rev)
+	} else {
+		rev = s.CurrentRevision()
 	}
 
-	var data [1]byte
-	if succeeded {
-		data[0] = 1
+	data, err := protocol.EncodeTransactionResult(succeeded, reads)
+	if err != nil {
+		return sm.Result{}, nil, err
 	}
-	return sm.Result{Value: uint64(rev), Data: data[:]}, notifs, nil
+	return sm.Result{Value: uint64(rev), Data: data}, notifs, nil
+}
+
+// hasDecodedRead reports whether ops holds a read, so a transaction without
+// one keeps its one-byte result.
+func hasDecodedRead(ops []protocol.DecodedOp) bool {
+	for _, op := range ops {
+		if op.Type == protocol.OpMVCCRange {
+			return true
+		}
+	}
+	return false
+}
+
+// txnReadRefusal decides, before any write of a transaction's executed
+// branch is staged, whether the branch's reply could encode to more than
+// service.MaxReplyBytes, and if so returns the refusal result.
+//
+// The reply is charged its framing (service.TxnReplyHeaderBytes, and
+// service.TxnReplyOpBytes for every op of the branch) and, for each entry a
+// read answers, service.TxnReplyKVBytes plus its key and value bytes. Each
+// read is charged the entries it answers over the state before the branch
+// plus the latest put staged ahead of it to each key in its range. That is
+// never less than what the read answers once the branch runs: a branch
+// writes only puts and deletes, so every key the read returns either holds
+// the value its latest put wrote or holds the value it held before the
+// branch. The staged puts are kept in an ordered map, so a read visits only
+// the puts in its range and each visit is charged: the preflight is
+// O(n log n) in the branch's ops. Each scan stops as soon as the running
+// total passes the bound, so no answer larger than the bound is held. A
+// failed read is returned as an error and fails the transaction.
+func txnReadRefusal(s *mvcc.Store, batch storage.Batch, rev int64, ops []protocol.DecodedOp) (sm.Result, bool, error) {
+	total := int64(service.TxnReplyHeaderBytes) + int64(len(ops))*service.TxnReplyOpBytes
+	if total > service.MaxReplyBytes {
+		return txnReadRefusalResult(total), true, nil
+	}
+	var staged txnStagedPuts
+	for _, op := range ops {
+		if op.Type != protocol.OpMVCCRange {
+			staged.stage(op)
+			continue
+		}
+		total = staged.charge(op, total)
+		if total > service.MaxReplyBytes {
+			return txnReadRefusalResult(total), true, nil
+		}
+		var end []byte
+		if len(op.RangeEnd) > 0 {
+			end = op.RangeEnd
+		}
+		// Every entry costs at least TxnReplyKVBytes, so one past what the
+		// remaining budget pays for is enough to tell it is crossed.
+		// WithMaxResultBytes takes a positive bound; with none left, the
+		// one entry the limit allows crosses it.
+		remaining := service.MaxReplyBytes - total
+		bounds := []service.RangeOption{service.WithLimit(remaining/service.TxnReplyKVBytes + 1)}
+		if remaining > 0 {
+			bounds = append(bounds, service.WithMaxResultBytes(remaining))
+		}
+		kvs, _, _, err := s.RangeInBatchAt(batch, rev, op.Key, end, bounds...)
+		var tooLarge *service.RangeResultTooLargeError
+		if errors.As(err, &tooLarge) {
+			return txnReadRefusalResult(total + tooLarge.Read), true, nil
+		}
+		if err != nil {
+			return sm.Result{}, false, err
+		}
+		for _, kv := range kvs {
+			total += service.TxnReplyKVBytes + int64(len(kv.Key)) + int64(len(kv.Value))
+		}
+		if total > service.MaxReplyBytes {
+			return txnReadRefusalResult(total), true, nil
+		}
+	}
+	return sm.Result{}, false, nil
+}
+
+// txnStagedPuts is the puts a transaction branch has staged so far, ordered
+// by key: each key maps to the reply bytes of the entry its latest put
+// answers, service.TxnReplyKVBytes plus its key and value.
+type txnStagedPuts struct {
+	puts btree.Map[string, int64]
+	// visited counts the staged entries reads were charged, for the tests.
+	visited int
+}
+
+// stage records a write op of the branch: a put replaces the entry of its
+// key, and a delete of one key removes it. A range delete leaves the puts it
+// covers in place, which only over-charges the reads after it.
+func (p *txnStagedPuts) stage(op protocol.DecodedOp) {
+	switch {
+	case op.Type == protocol.OpMVCCPut:
+		p.puts.Set(string(op.Key), service.TxnReplyKVBytes+int64(len(op.Key))+int64(len(op.Value)))
+	case op.Type == protocol.OpMVCCDelete && len(op.RangeEnd) == 0:
+		p.puts.Delete(string(op.Key))
+	}
+}
+
+// charge adds to total the staged entries a read op answers for -- the key
+// itself for a get, [Key, RangeEnd) for a range, where a range end of a
+// single 0x00 byte is etcd's "every key from Key on" -- and stops as soon
+// as total passes service.MaxReplyBytes.
+func (p *txnStagedPuts) charge(read protocol.DecodedOp, total int64) int64 {
+	if len(read.RangeEnd) == 0 {
+		if n, ok := p.puts.Get(string(read.Key)); ok {
+			p.visited++
+			total += n
+		}
+		return total
+	}
+	toEnd := bytes.Equal(read.RangeEnd, []byte{0})
+	end := string(read.RangeEnd)
+	p.puts.Ascend(string(read.Key), func(key string, n int64) bool {
+		if !toEnd && key >= end {
+			return false
+		}
+		p.visited++
+		total += n
+		return total <= service.MaxReplyBytes
+	})
+	return total
+}
+
+// txnReadRefusalResult is the non-fatal refusal of a transaction whose reply
+// crossed service.MaxReplyBytes at read bytes.
+func txnReadRefusalResult(read int64) sm.Result {
+	return sm.Result{Data: protocol.EncodeTxnReadRefusal(service.MaxReplyBytes, read)}
+}
+
+// txnRead answers one read op of a transaction's executed branch at rev, the
+// revision the branch's writes are staged at, through the batch, so the read
+// sees every write staged before it in the same branch. An empty range end is
+// a single-key get. Reserved and vector-namespace keys are never returned: the
+// read's start key was refused before the branch ran, and a range spanning
+// them answers as though they were absent.
+func txnRead(s *mvcc.Store, batch storage.Batch, rev int64, op protocol.DecodedOp) (protocol.TxnReadResult, error) {
+	var end []byte
+	if len(op.RangeEnd) > 0 {
+		end = op.RangeEnd
+	}
+	kvs, count, _, err := s.RangeInBatchAt(batch, rev, op.Key, end)
+	if err != nil {
+		return protocol.TxnReadResult{}, err
+	}
+	visible := kvs[:0]
+	for _, e := range kvs {
+		if statemachine.IsReservedKey(e.Key) || vector.IsForgedKey(e.Key) {
+			count--
+			continue
+		}
+		visible = append(visible, e)
+	}
+	return protocol.TxnReadResult{Kvs: visible, Count: count}, nil
 }
 
 // handleBatch processes a batch of operations. All operations are executed

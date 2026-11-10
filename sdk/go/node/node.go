@@ -1834,6 +1834,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		SignedInitTTL:             pending.cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
@@ -2455,6 +2456,7 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       pending.cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(pending.cfg),
+		SignedInitTTL:             pending.cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(pending.serverOpts...).TrustAnchors,
 	}, pending.cfg, pending.serverOpts)
@@ -3186,6 +3188,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		// WithDefaultTenantEntitlements overrides the configured entitlements.
 		DefaultTenantQuotas:       cfg.Tenant.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: n.tenantEntitlements(cfg),
+		SignedInitTTL:             cfg.Tenant.SignedInitTTLDuration(),
 		// And an injected trust store for the tenants' trust anchors.
 		TrustAnchors: server.ResolveCryptoOptions(serverOpts...).TrustAnchors,
 	}, cfg, serverOpts)
@@ -3538,6 +3541,14 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	if barrierCfg.RootKeyPath == "" {
 		barrierCfg.RootKeyPath = "root-key"
 	}
+	// seal.drain_timeout bounds how long a Seal waits for the node's writes
+	// in flight; the registry's tenant barriers inherit it.
+	drainTimeout, drainErr := cfg.Seal.DrainTimeoutDuration()
+	if drainErr != nil {
+		_ = sealStore.Close()
+		return nil, &StorageCreateError{Backend: "seal-barrier", Err: drainErr}
+	}
+	barrierCfg.SealDrainTimeout = drainTimeout
 
 	// Reconcile an encryption migration interrupted by a crash BEFORE the
 	// barrier is built or data stores are opened: roll a committed migration

@@ -124,6 +124,21 @@ func TestProvision_UserPINNeedsSOPIN(t *testing.T) {
 	}
 }
 
+// TestProvision_SurfacesTheUserPINBackendError proves a user PIN the backend
+// refuses fails Provision with the backend's own error, after the SO PIN was set.
+func TestProvision_SurfacesTheUserPINBackendError(t *testing.T) {
+	b := newProvisionBackend(t)
+	if err := Provision(context.Background(), b, "so-pin-123", "short"); !errors.Is(err, ErrPINTooShort) {
+		t.Fatalf("too-short user PIN = %v, want ErrPINTooShort", err)
+	}
+	if !b.SOPINSet() {
+		t.Fatal("SO PIN not set before the user PIN was refused")
+	}
+	if b.UserPINSet() {
+		t.Fatal("a refused user PIN was set")
+	}
+}
+
 func TestRequireSOPIN_GatesOnTheProvisionedPIN(t *testing.T) {
 	b := newProvisionBackend(t)
 	if err := RequireSOPIN(context.Background(), b, "anything"); err != nil {

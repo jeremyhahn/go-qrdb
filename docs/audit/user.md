@@ -109,6 +109,22 @@ gives for the node-local verify's own `Genesis: false`. See
 [architecture.md](architecture.md#chain-hash-continuity-verification) for
 what this check does and does not prove.
 
+**Prove an event is in the replicated chain.** The replicated chain is also
+the verifiable log `system/audit` in your tenant, so the `qrdb vlog` commands
+read it with the `vlog:head`, `vlog:get` and `vlog:proof` permissions. Events
+appended since the cluster enabled the verifiable log are its leaves:
+
+```bash
+qrdb vlog head --database system --log audit
+qrdb vlog get --database system --log audit --from 0 --limit 10
+qrdb vlog prove-inclusion --database system --log audit --index 3 --size 10
+```
+
+Each entry is one audit event as JSON. An inclusion proof verifies against the
+head's root with any RFC 9162 verifier. Pruning the chain removes old event
+bodies but keeps the tree, so heads and proofs stay valid; the log can't be
+expired through `qrdb vlog`.
+
 ## What is recorded
 
 Identity changes, role changes, certificate issuance and revocation, every
