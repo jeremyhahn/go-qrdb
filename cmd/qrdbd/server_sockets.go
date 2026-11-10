@@ -15,9 +15,11 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"strconv"
 
+	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 )
@@ -84,22 +86,22 @@ func bindServerSockets(cfg *qrdbconfig.Config) (_ []server.ServerOption, err err
 
 	if cfg.Protocols.REST {
 		addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.AdminPort))
-		ln, err := net.Listen("tcp", addr)
-		if err != nil {
-			return nil, &ServerSocketBindError{Protocol: "rest", Network: "tcp", Addr: addr, Err: err}
-		}
-		opts = append(opts, server.WithRESTListener(ln))
-
 		// HTTP/3 shares the TCP listener's host and port: the port is the one
 		// Alt-Svc advertises, and the REST server refuses a socket on any
-		// other. It is read back from the bound listener, as the server does
-		// when it binds the pair itself, so a kernel-chosen port carries over.
-		h3Addr := ln.Addr().String()
-		pc, err := net.ListenPacket("udp", h3Addr)
+		// other. netport.ListenPair binds the two as the server does when it
+		// binds the pair itself: the UDP address is read back from the bound
+		// listener, so a kernel-chosen port carries over, and a kernel-chosen
+		// port another holder has on UDP is drawn again.
+		ln, pc, err := netport.ListenPair(addr)
 		if err != nil {
-			return nil, &ServerSocketBindError{Protocol: "rest", Network: "udp", Addr: h3Addr, Err: err}
+			bindErr := &ServerSocketBindError{Protocol: "rest", Network: netport.NetworkTCP, Addr: addr, Err: err}
+			var pairErr *netport.ListenPairError
+			if errors.As(err, &pairErr) {
+				bindErr.Network, bindErr.Addr, bindErr.Err = pairErr.Network, pairErr.Addr, pairErr.Err
+			}
+			return nil, bindErr
 		}
-		opts = append(opts, server.WithRESTPacketConn(pc))
+		opts = append(opts, server.WithRESTListener(ln), server.WithRESTPacketConn(pc))
 	}
 
 	if cfg.Protocols.GRPC {
