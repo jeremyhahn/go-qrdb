@@ -315,6 +315,7 @@ func TestMigrateLegacy_CrashDeletingLegacy(t *testing.T) {
 	first := newMigratingService(t, legacy)
 	require.NoError(t, first.BindStore(ctx, shared))
 	require.True(t, legacy.fired)
+	assert.NotContains(t, legacyKeys(t, mem), legacyCredentialPrefix+"db"+versionPrefix+"1")
 
 	rerun := newMigratingService(t, legacy)
 	require.NoError(t, rerun.BindStore(ctx, shared))
