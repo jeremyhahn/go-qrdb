@@ -43,14 +43,15 @@ type EmbeddedBackendFactory struct {
 	objstoreOpener ObjstoreOpener
 }
 
-// ObjstoreOpener opens the objstore engine of the database name, whose own
-// directory is dataDir. The node supplies it, because only the node holds the
+// ObjstoreOpener opens the objstore engine of tenantID's database name, whose
+// own directory is dataDir. tenantID is empty for a database no tenant owns.
+// The node supplies the opener, because only the node holds the
 // object-storage provider configuration and its credential files.
 //
 // The database's objects outlive its directory, so the opener also returns
 // the ObjstoreReclaim that deletes them; an opener that returns none fails the
 // open, because such a database could never be dropped.
-type ObjstoreOpener func(name, dataDir string) (storage.Storage, ObjstoreReclaim, error)
+type ObjstoreOpener func(tenantID, name, dataDir string) (storage.Storage, ObjstoreReclaim, error)
 
 // ObjstoreReclaim deletes every object an objstore database holds in its
 // namespace: records, format marker and commit journal. Drop calls it after
@@ -103,7 +104,7 @@ func NewEmbeddedBackendFactory(opts ...EmbeddedBackendOption) *EmbeddedBackendFa
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
 	if cfg.Backend == BackendObjstore {
-		return f.openObjstore(cfg.Name, dataDir)
+		return f.openObjstore(cfg.TenantID, cfg.Name, dataDir)
 	}
 	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
 	if err != nil {
@@ -119,11 +120,11 @@ var errObjstoreNoReclaim = errors.New("database: the objstore opener returned no
 // openObjstore opens a backend: objstore database through the node's opener.
 // The Backend carries the opener's reclaim, which Drop calls to delete the
 // database's objects.
-func (f *EmbeddedBackendFactory) openObjstore(name, dataDir string) (Backend, error) {
+func (f *EmbeddedBackendFactory) openObjstore(tenantID, name, dataDir string) (Backend, error) {
 	if f.objstoreOpener == nil {
 		return nil, &ObjstoreNotConfiguredError{Name: name}
 	}
-	store, reclaim, err := f.objstoreOpener(name, dataDir)
+	store, reclaim, err := f.objstoreOpener(tenantID, name, dataDir)
 	if err != nil {
 		return nil, &StorageCreateError{Name: name, Backend: string(BackendObjstore), Err: err}
 	}
