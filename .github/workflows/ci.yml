@@ -3,7 +3,8 @@
 # give each one's reason):
 #   - every job runs on GitHub-hosted ubuntu-latest (DS-7377) but one:
 #     test-typescript, which uses no Docker, runs on the worker node's runner on push
-#     and same-repository pull_request (Company Agent m2396); no other
+#     and same-repository pull_request (Company Agent m2396), where it leaves
+#     no credential in its checkout and installs no apt package; no other
 #     self-hosted label, registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
@@ -1380,7 +1381,12 @@ jobs:
     needs: [preflight, docker-build]
     timeout-minutes: 30
     steps:
+      # No credential is left in the checkout: nothing after it fetches or
+      # pushes, and off the hosted runner the workspace outlives the job
+      # (InfoSec W-4 Q1).
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Mask the forge credentials before any other step (see docker-build):
       # npm, curl and make all run here with them in the environment.
@@ -1397,8 +1403,15 @@ jobs:
         with:
           node-version: "22"
 
+      # `--with-deps` installs apt packages through sudo. Only the hosted
+      # runner allows that; anywhere else the runner image carries Chromium's
+      # libraries and the job installs the browser alone (InfoSec W-4 Q2).
       - name: TypeScript SDK and desktop frontend
-        run: make test-typescript
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+            export PLAYWRIGHT_INSTALL_FLAGS=
+          fi
+          make test-typescript
 
   # Soak (v1.23, owner item 101): one feature's suite, SOAK_FEATURE, looped in
   # the integration image until SOAK_MINUTES have passed, each iteration its
