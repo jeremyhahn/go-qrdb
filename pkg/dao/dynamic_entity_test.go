@@ -228,6 +228,26 @@ func TestDynamicEntity_UnmarshalJSON_NumericID(t *testing.T) {
 	assert.Equal(t, "legacy", e.Fields["name"])
 }
 
+func TestJsonNumberToUint64(t *testing.T) {
+	tests := []struct {
+		name string
+		in   interface{}
+		want uint64
+	}{
+		{"string", "12345", 12345},
+		{"invalid string", "not-a-uint", 0},
+		{"float64", float64(42), 42},
+		{"json.Number", json.Number("12345"), 12345},
+		{"invalid json.Number", json.Number("not-a-number"), 0},
+		{"unknown type", struct{ x int }{x: 1}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, jsonNumberToUint64(tt.in))
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DynamicEntity DAO round-trip tests
 // ---------------------------------------------------------------------------

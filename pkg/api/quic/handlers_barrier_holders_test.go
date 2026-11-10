@@ -146,6 +146,10 @@ func mustMarshal(t *testing.T, m proto.Message) []byte {
 	return b
 }
 
+// badProto is a payload no protobuf message unmarshals: a field tag with
+// wire type 7, which does not exist.
+var badProto = []byte{0xff, 0xff, 0xff, 0xff}
+
 // systemHolderFrames are the system-barrier holder frames with valid payloads.
 func systemHolderFrames(t *testing.T, s *Server) map[string]func(context.Context) ([]byte, error) {
 	reg := mustMarshal(t, &pb.BarrierOfficerRegisterRequest{Username: "carol", Role: "custodian", CsrPem: []byte("csr")})

@@ -19,6 +19,7 @@ package timeseries
 import (
 	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,6 +272,77 @@ func TestStorage_Write_NegativeValue(t *testing.T) {
 	results, _ := s.Query("temperature", timestamp, timestamp)
 	if len(results) != 1 || results[0].Value != -15.3 {
 		t.Errorf("Query: got %v, want -15.3", results)
+	}
+}
+
+func TestStorage_WritePoint_ValidPoint(t *testing.T) {
+	s := newStorage(t)
+	timestamp := ts(2026, 3, 1, 12, 0, 0)
+
+	point := &DataPoint{
+		Metric:    "cpu.load",
+		Value:     75.5,
+		Timestamp: timestamp,
+		Tags:      map[string]string{"host": "node1"},
+	}
+
+	if err := writePoint(t, s, point); err != nil {
+		t.Fatalf("WritePoint: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.load", timestamp, timestamp)
+	if err != nil {
+		t.Fatalf("Query: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query: got %d results, want 1", len(results))
+	}
+	if results[0].Value != 75.5 {
+		t.Errorf("Query: value got %f, want 75.5", results[0].Value)
+	}
+	if results[0].Tags["host"] != "node1" {
+		t.Errorf("Query: tag host got %q, want %q", results[0].Tags["host"], "node1")
+	}
+}
+
+// TestStorage_WritePoint_EmptyMetric checks that WritePoint validates the
+// point; each field rule of DataPoint.Validate has its own test.
+func TestStorage_WritePoint_EmptyMetric(t *testing.T) {
+	s := newStorage(t)
+
+	point := &DataPoint{
+		Metric:    "",
+		Value:     1.0,
+		Timestamp: time.Now(),
+	}
+
+	err := writePoint(t, s, point)
+	if err == nil {
+		t.Fatal("WritePoint(empty metric): expected error, got nil")
+	}
+	var ime *InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("WritePoint(empty metric): expected InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_WritePoint_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	point := &DataPoint{
+		Metric:    "cpu.load",
+		Value:     1.0,
+		Timestamp: time.Now(),
+	}
+
+	err := writePoint(t, s, point)
+	if err == nil {
+		t.Fatal("WritePoint(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("WritePoint(after close): expected ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -545,6 +617,835 @@ func TestStorage_Query_AfterClose(t *testing.T) {
 	var ce *ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("Query(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_QueryRich_RawPoints(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	for i := 0; i < 5; i++ {
+		_ = write(t, s, "req.latency", float64(i+1)*10.0, base.Add(time.Duration(i)*time.Minute), map[string]string{"host": "web1"})
+	}
+
+	req := &QueryRequest{
+		Metric:    "req.latency",
+		StartTime: base,
+		EndTime:   base.Add(4 * time.Minute),
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich: unexpected error: %v", err)
+	}
+	if result.Metric != "req.latency" {
+		t.Errorf("QueryRich: metric got %q, want %q", result.Metric, "req.latency")
+	}
+	if len(result.Points) != 5 {
+		t.Errorf("QueryRich: got %d points, want 5", len(result.Points))
+	}
+	if result.AggregatedValue != nil {
+		t.Error("QueryRich: expected nil AggregatedValue for raw query")
+	}
+}
+
+func TestStorage_QueryRich_WithTagFilter(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
+
+	req := &QueryRequest{
+		Metric:    "cpu.usage",
+		StartTime: base,
+		EndTime:   base.Add(2 * time.Minute),
+		Tags:      map[string]string{"host": "srv1"},
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(tags): unexpected error: %v", err)
+	}
+	if len(result.Points) != 2 {
+		t.Errorf("QueryRich(tags): got %d points, want 2", len(result.Points))
+	}
+	for _, p := range result.Points {
+		if p.Tags["host"] != "srv1" {
+			t.Errorf("QueryRich(tags): point has host=%q, want srv1", p.Tags["host"])
+		}
+	}
+}
+
+func TestStorage_QueryRich_WithAggregation(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+
+	req := &QueryRequest{
+		Metric:      "cpu.usage",
+		StartTime:   base,
+		EndTime:     base.Add(2 * time.Minute),
+		Aggregation: AggAvg,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(agg): unexpected error: %v", err)
+	}
+	if result.AggregatedValue == nil {
+		t.Fatal("QueryRich(agg): expected non-nil AggregatedValue")
+	}
+	if *result.AggregatedValue != 20.0 {
+		t.Errorf("QueryRich(agg): got %f, want 20.0", *result.AggregatedValue)
+	}
+}
+
+func TestStorage_QueryRich_FirstAggregation(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "metric", 10.0, base, nil)
+	_ = write(t, s, "metric", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "metric", 30.0, base.Add(2*time.Minute), nil)
+
+	req := &QueryRequest{
+		Metric:      "metric",
+		StartTime:   base,
+		EndTime:     base.Add(2 * time.Minute),
+		Aggregation: AggFirst,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(first): unexpected error: %v", err)
+	}
+	if result.AggregatedValue == nil {
+		t.Fatal("QueryRich(first): expected non-nil AggregatedValue")
+	}
+	if *result.AggregatedValue != 10.0 {
+		t.Errorf("QueryRich(first): got %f, want 10.0", *result.AggregatedValue)
+	}
+}
+
+func TestStorage_QueryRich_LastAggregation(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "metric", 10.0, base, nil)
+	_ = write(t, s, "metric", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "metric", 30.0, base.Add(2*time.Minute), nil)
+
+	req := &QueryRequest{
+		Metric:      "metric",
+		StartTime:   base,
+		EndTime:     base.Add(2 * time.Minute),
+		Aggregation: AggLast,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(last): unexpected error: %v", err)
+	}
+	if result.AggregatedValue == nil {
+		t.Fatal("QueryRich(last): expected non-nil AggregatedValue")
+	}
+	if *result.AggregatedValue != 30.0 {
+		t.Errorf("QueryRich(last): got %f, want 30.0", *result.AggregatedValue)
+	}
+}
+
+func TestStorage_QueryRich_PercentileAggregation(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	for i := 1; i <= 100; i++ {
+		_ = write(t, s, "latency", float64(i), base.Add(time.Duration(i)*time.Second), nil)
+	}
+
+	req := &QueryRequest{
+		Metric:      "latency",
+		StartTime:   base,
+		EndTime:     base.Add(101 * time.Second),
+		Aggregation: AggPercentile,
+		Percentile:  95.0,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(percentile): unexpected error: %v", err)
+	}
+	if result.AggregatedValue == nil {
+		t.Fatal("QueryRich(percentile): expected non-nil AggregatedValue")
+	}
+	if *result.AggregatedValue < 90.0 {
+		t.Errorf("QueryRich(percentile): p95 got %f, expected >= 90.0", *result.AggregatedValue)
+	}
+}
+
+func TestStorage_QueryRich_WithDownsampling(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	// Write 6 points across 2 hours.
+	for i := 0; i < 6; i++ {
+		_ = write(t, s, "cpu.usage", float64(i+1)*10.0, base.Add(time.Duration(i)*20*time.Minute), nil)
+	}
+
+	req := &QueryRequest{
+		Metric:      "cpu.usage",
+		StartTime:   base,
+		EndTime:     base.Add(100 * time.Minute),
+		Aggregation: AggSum,
+		Interval:    time.Hour,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(downsample): unexpected error: %v", err)
+	}
+	// With hour-sized buckets over 100 minutes, we should get 2 buckets.
+	if len(result.Points) < 2 {
+		t.Errorf("QueryRich(downsample): got %d buckets, want >= 2", len(result.Points))
+	}
+	// AggregatedValue should be nil when downsampling is used.
+	if result.AggregatedValue != nil {
+		t.Error("QueryRich(downsample): expected nil AggregatedValue for downsampled query")
+	}
+}
+
+func TestStorage_QueryRich_WithGroupBy(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1", "region": "us"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2", "region": "us"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1", "region": "eu"})
+	_ = write(t, s, "cpu.usage", 40.0, base.Add(3*time.Minute), map[string]string{"host": "srv2", "region": "eu"})
+
+	req := &QueryRequest{
+		Metric:      "cpu.usage",
+		StartTime:   base,
+		EndTime:     base.Add(3 * time.Minute),
+		Aggregation: AggSum,
+		GroupBy:     []string{"region"},
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(groupBy): unexpected error: %v", err)
+	}
+	if len(result.GroupedResults) != 2 {
+		t.Fatalf("QueryRich(groupBy): got %d groups, want 2", len(result.GroupedResults))
+	}
+	// Verify each group has aggregated values.
+	for _, group := range result.GroupedResults {
+		if group.AggregatedValue == nil {
+			t.Error("QueryRich(groupBy): expected non-nil AggregatedValue per group")
+		}
+		region := group.Tags["region"]
+		if region == "us" && *group.AggregatedValue != 30.0 {
+			t.Errorf("QueryRich(groupBy): US sum got %f, want 30.0", *group.AggregatedValue)
+		}
+		if region == "eu" && *group.AggregatedValue != 70.0 {
+			t.Errorf("QueryRich(groupBy): EU sum got %f, want 70.0", *group.AggregatedValue)
+		}
+	}
+}
+
+func TestStorage_QueryRich_WithGroupByAndInterval(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(30*time.Minute), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(time.Hour), map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 40.0, base, map[string]string{"host": "srv2"})
+
+	req := &QueryRequest{
+		Metric:      "cpu.usage",
+		StartTime:   base,
+		EndTime:     base.Add(time.Hour),
+		Aggregation: AggSum,
+		GroupBy:     []string{"host"},
+		Interval:    time.Hour,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(groupBy+interval): unexpected error: %v", err)
+	}
+	if len(result.GroupedResults) != 2 {
+		t.Fatalf("QueryRich(groupBy+interval): got %d groups, want 2", len(result.GroupedResults))
+	}
+	// With interval set, each group should have downsampled Points, not AggregatedValue.
+	for _, group := range result.GroupedResults {
+		if len(group.Points) == 0 {
+			t.Error("QueryRich(groupBy+interval): expected non-empty Points per group")
+		}
+	}
+}
+
+func TestStorage_QueryRich_WithLimit(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	for i := 0; i < 10; i++ {
+		_ = write(t, s, "cpu.usage", float64(i), base.Add(time.Duration(i)*time.Minute), nil)
+	}
+
+	req := &QueryRequest{
+		Metric:    "cpu.usage",
+		StartTime: base,
+		EndTime:   base.Add(9 * time.Minute),
+		Limit:     3,
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(limit): unexpected error: %v", err)
+	}
+	if len(result.Points) != 3 {
+		t.Errorf("QueryRich(limit): got %d points, want 3", len(result.Points))
+	}
+}
+
+func TestStorage_QueryRich_EmptyResult(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	req := &QueryRequest{
+		Metric:    "nonexistent.metric",
+		StartTime: base,
+		EndTime:   base.Add(time.Hour),
+	}
+
+	result, err := s.QueryRich(req)
+	if err != nil {
+		t.Fatalf("QueryRich(empty): unexpected error: %v", err)
+	}
+	if len(result.Points) != 0 {
+		t.Errorf("QueryRich(empty): got %d points, want 0", len(result.Points))
+	}
+}
+
+// TestStorage_QueryRich_InvalidMetric checks that QueryRich validates the
+// request; each rule of QueryRequest.Validate has its own test.
+func TestStorage_QueryRich_InvalidMetric(t *testing.T) {
+	s := newStorage(t)
+
+	req := &QueryRequest{
+		Metric:    "",
+		StartTime: time.Now(),
+		EndTime:   time.Now().Add(time.Hour),
+	}
+
+	_, err := s.QueryRich(req)
+	if err == nil {
+		t.Fatal("QueryRich(empty metric): expected error, got nil")
+	}
+	var ime *InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("QueryRich(empty metric): expected InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_QueryRich_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	req := &QueryRequest{
+		Metric:    "cpu.usage",
+		StartTime: time.Now(),
+		EndTime:   time.Now().Add(time.Hour),
+	}
+
+	_, err := s.QueryRich(req)
+	if err == nil {
+		t.Fatal("QueryRich(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("QueryRich(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_DeleteSeries_AllPoints(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+
+	req := &DeleteRequest{Metric: "cpu.usage"}
+	if err := deleteSeries(t, s, req); err != nil {
+		t.Fatalf("DeleteSeries: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Query after delete: unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("Query after delete: got %d results, want 0", len(results))
+	}
+
+	// Metric index should also be cleaned.
+	metrics, err := s.ListMetrics("", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics after delete: unexpected error: %v", err)
+	}
+	for _, m := range metrics {
+		if m == "cpu.usage" {
+			t.Error("ListMetrics after full delete: metric index not cleaned")
+		}
+	}
+}
+
+func TestStorage_DeleteSeries_TimeRange(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+
+	// Delete only middle point.
+	req := &DeleteRequest{
+		Metric:    "cpu.usage",
+		StartTime: base.Add(30 * time.Second),
+		EndTime:   base.Add(90 * time.Second),
+	}
+	if err := deleteSeries(t, s, req); err != nil {
+		t.Fatalf("DeleteSeries(range): unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Query after range delete: unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Query after range delete: got %d results, want 2", len(results))
+	}
+	if results[0].Value != 10.0 || results[1].Value != 30.0 {
+		t.Errorf("Query after range delete: got values %v and %v, want 10 and 30", results[0].Value, results[1].Value)
+	}
+}
+
+func TestStorage_DeleteSeries_WithTagFilter(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, map[string]string{"host": "srv1"})
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), map[string]string{"host": "srv2"})
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), map[string]string{"host": "srv1"})
+
+	req := &DeleteRequest{
+		Metric: "cpu.usage",
+		Tags:   map[string]string{"host": "srv1"},
+	}
+	if err := deleteSeries(t, s, req); err != nil {
+		t.Fatalf("DeleteSeries(tags): unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base, base.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("Query after tag delete: unexpected error: %v", err)
+	}
+	// Only srv2 should remain.
+	if len(results) != 1 {
+		t.Fatalf("Query after tag delete: got %d results, want 1", len(results))
+	}
+	if results[0].Tags["host"] != "srv2" {
+		t.Errorf("Query after tag delete: remaining point has host=%q, want srv2", results[0].Tags["host"])
+	}
+}
+
+// TestStorage_DeleteSeries_InvalidMetric checks that DeleteSeries validates
+// the request; each rule of DeleteRequest.Validate has its own test.
+func TestStorage_DeleteSeries_InvalidMetric(t *testing.T) {
+	s := newStorage(t)
+
+	req := &DeleteRequest{Metric: ""}
+	err := deleteSeries(t, s, req)
+	if err == nil {
+		t.Fatal("DeleteSeries(empty metric): expected error, got nil")
+	}
+	var ime *InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("DeleteSeries(empty metric): expected InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_DeleteSeries_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	req := &DeleteRequest{Metric: "cpu.usage"}
+	err := deleteSeries(t, s, req)
+	if err == nil {
+		t.Fatal("DeleteSeries(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("DeleteSeries(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_DeleteSeries_NonExistentMetric(t *testing.T) {
+	s := newStorage(t)
+
+	req := &DeleteRequest{Metric: "nonexistent"}
+	// Deleting a metric with no data should not error.
+	if err := deleteSeries(t, s, req); err != nil {
+		t.Fatalf("DeleteSeries(nonexistent): unexpected error: %v", err)
+	}
+}
+
+func TestStorage_RetentionPolicy_SetAndGet(t *testing.T) {
+	s := newStorage(t)
+
+	policy := &RetentionPolicy{
+		Duration:    7 * 24 * time.Hour,
+		Resolution:  5 * time.Minute,
+		Aggregation: AggAvg,
+	}
+
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy); err != nil {
+		t.Fatalf("SetRetentionPolicy: unexpected error: %v", err)
+	}
+
+	got, err := s.GetRetentionPolicy("cpu.usage")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if got.Duration != policy.Duration {
+		t.Errorf("Duration: got %v, want %v", got.Duration, policy.Duration)
+	}
+	if got.Resolution != policy.Resolution {
+		t.Errorf("Resolution: got %v, want %v", got.Resolution, policy.Resolution)
+	}
+	if got.Aggregation != policy.Aggregation {
+		t.Errorf("Aggregation: got %v, want %v", got.Aggregation, policy.Aggregation)
+	}
+}
+
+func TestStorage_GetRetentionPolicy_Default(t *testing.T) {
+	s := newStorage(t)
+
+	got, err := s.GetRetentionPolicy("nonexistent.metric")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy(default): unexpected error: %v", err)
+	}
+	if got.Duration != 0 {
+		t.Errorf("Duration: got %v, want 0", got.Duration)
+	}
+	if got.Resolution != 0 {
+		t.Errorf("Resolution: got %v, want 0", got.Resolution)
+	}
+	if got.Aggregation != AggNone {
+		t.Errorf("Aggregation: got %v, want AggNone", got.Aggregation)
+	}
+}
+
+func TestStorage_SetRetentionPolicy_Overwrite(t *testing.T) {
+	s := newStorage(t)
+
+	policy1 := &RetentionPolicy{Duration: 24 * time.Hour, Aggregation: AggAvg}
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy1); err != nil {
+		t.Fatalf("SetRetentionPolicy(1): unexpected error: %v", err)
+	}
+
+	policy2 := &RetentionPolicy{Duration: 48 * time.Hour, Aggregation: AggMax}
+	if err := setRetentionPolicy(t, s, "cpu.usage", policy2); err != nil {
+		t.Fatalf("SetRetentionPolicy(2): unexpected error: %v", err)
+	}
+
+	got, err := s.GetRetentionPolicy("cpu.usage")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if got.Duration != 48*time.Hour {
+		t.Errorf("Duration: got %v, want 48h", got.Duration)
+	}
+	if got.Aggregation != AggMax {
+		t.Errorf("Aggregation: got %v, want AggMax", got.Aggregation)
+	}
+}
+
+func TestStorage_GetRetentionPolicy_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	_, err := s.GetRetentionPolicy("cpu.usage")
+	if err == nil {
+		t.Fatal("GetRetentionPolicy(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("GetRetentionPolicy(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_SetRetentionPolicy_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	err := setRetentionPolicy(t, s, "cpu.usage", &RetentionPolicy{Duration: time.Hour})
+	if err == nil {
+		t.Fatal("SetRetentionPolicy(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("SetRetentionPolicy(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_SetRetentionPolicy_NilPolicy(t *testing.T) {
+	s := newStorage(t)
+
+	err := setRetentionPolicy(t, s, "cpu.usage", nil)
+	var nrp *NilRetentionPolicyError
+	if !errors.As(err, &nrp) {
+		t.Fatalf("SetRetentionPolicy(nil): expected NilRetentionPolicyError, got %T: %v", err, err)
+	}
+	// Nothing was stored: the metric still reports the default policy.
+	policy, err := s.GetRetentionPolicy("cpu.usage")
+	if err != nil {
+		t.Fatalf("GetRetentionPolicy: unexpected error: %v", err)
+	}
+	if policy.Duration != 0 {
+		t.Errorf("GetRetentionPolicy: duration got %v, want 0 (default)", policy.Duration)
+	}
+}
+
+func TestStorage_ApplyRetention_DeletesPointsOlderThanCutoff(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.usage", 20.0, base.Add(time.Minute), nil)
+	_ = write(t, s, "cpu.usage", 30.0, base.Add(2*time.Minute), nil)
+
+	// cutoff sits strictly between the first and second point: the first
+	// is older than cutoff and expired, the other two are not.
+	cutoff := base.Add(30 * time.Second)
+	if err := applyRetention(t, s, "cpu.usage", cutoff); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base, base.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("Query after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Query after ApplyRetention: got %d results, want 2", len(results))
+	}
+	for _, p := range results {
+		if p.Timestamp.Before(cutoff) {
+			t.Errorf("surviving point at %v is before cutoff %v", p.Timestamp, cutoff)
+		}
+	}
+}
+
+func TestStorage_ApplyRetention_CutoffIsExclusive(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+
+	// A point exactly at cutoff is NOT older than cutoff and must survive.
+	if err := applyRetention(t, s, "cpu.usage", base); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query after ApplyRetention: got %d results, want 1 (point at cutoff must survive)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_NonExistentMetric(t *testing.T) {
+	s := newStorage(t)
+
+	if err := applyRetention(t, s, "does.not.exist", time.Now()); err != nil {
+		t.Fatalf("ApplyRetention(nonexistent metric): unexpected error: %v", err)
+	}
+}
+
+func TestStorage_ApplyRetention_LeavesOtherMetricsAlone(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.usage", 20.0, base, nil)
+
+	if err := applyRetention(t, s, "cpu.usage", base.Add(time.Hour)); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("mem.usage", base.Add(-time.Minute), base.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query mem.usage after ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query mem.usage after ApplyRetention: got %d results, want 1 (untouched metric)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_BoundsDeletesPerCall(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	// One more point than the bound, all expired by the cutoff. WriteBatch
+	// commits all of them in one fsync so setup stays fast.
+	total := MaxRetentionDeletesPerApply + 1
+	points := make([]DataPoint, total)
+	for i := 0; i < total; i++ {
+		points[i] = DataPoint{Metric: "cpu.usage", Value: float64(i), Timestamp: base.Add(time.Duration(i) * time.Millisecond)}
+	}
+	if err := writeBatch(t, s, points); err != nil {
+		t.Fatalf("WriteBatch: unexpected error: %v", err)
+	}
+
+	cutoff := base.Add(time.Duration(total) * time.Millisecond)
+	if err := applyRetention(t, s, "cpu.usage", cutoff); err != nil {
+		t.Fatalf("ApplyRetention: unexpected error: %v", err)
+	}
+
+	results, err := s.Query("cpu.usage", base.Add(-time.Minute), base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Query after bounded ApplyRetention: unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Query after bounded ApplyRetention: got %d results, want 1 (only the bound's overflow survives this call)", len(results))
+	}
+}
+
+func TestStorage_ApplyRetention_InvalidMetric(t *testing.T) {
+	s := newStorage(t)
+
+	err := applyRetention(t, s, "", time.Now())
+	if err == nil {
+		t.Fatal("ApplyRetention(empty metric): expected error, got nil")
+	}
+	var ime *InvalidMetricError
+	if !errors.As(err, &ime) {
+		t.Fatalf("ApplyRetention(empty metric): expected InvalidMetricError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_ApplyRetention_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	err := applyRetention(t, s, "cpu.usage", time.Now())
+	if err == nil {
+		t.Fatal("ApplyRetention(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ApplyRetention(after close): expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestStorage_ListMetrics_ReturnsAllMetrics(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
+
+	metrics, err := s.ListMetrics("", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics: unexpected error: %v", err)
+	}
+	if len(metrics) != 3 {
+		t.Fatalf("ListMetrics: got %d metrics, want 3", len(metrics))
+	}
+
+	found := map[string]bool{}
+	for _, m := range metrics {
+		found[m] = true
+	}
+	for _, expected := range []string{"cpu.usage", "mem.free", "disk.io"} {
+		if !found[expected] {
+			t.Errorf("ListMetrics: missing metric %q", expected)
+		}
+	}
+}
+
+func TestStorage_ListMetrics_WithPrefix(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "cpu.load", 5.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+
+	metrics, err := s.ListMetrics("cpu", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics(prefix): unexpected error: %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Errorf("ListMetrics(prefix): got %d metrics, want 2", len(metrics))
+	}
+	for _, m := range metrics {
+		if !strings.HasPrefix(m, "cpu") {
+			t.Errorf("ListMetrics(prefix): metric %q does not start with 'cpu'", m)
+		}
+	}
+}
+
+func TestStorage_ListMetrics_WithLimit(t *testing.T) {
+	s := newStorage(t)
+	base := ts(2026, 3, 1, 10, 0, 0)
+
+	_ = write(t, s, "cpu.usage", 10.0, base, nil)
+	_ = write(t, s, "mem.free", 1024.0, base, nil)
+	_ = write(t, s, "disk.io", 50.0, base, nil)
+
+	metrics, err := s.ListMetrics("", 2)
+	if err != nil {
+		t.Fatalf("ListMetrics(limit): unexpected error: %v", err)
+	}
+	if len(metrics) != 2 {
+		t.Errorf("ListMetrics(limit): got %d metrics, want 2", len(metrics))
+	}
+}
+
+func TestStorage_ListMetrics_EmptyStorage(t *testing.T) {
+	s := newStorage(t)
+
+	metrics, err := s.ListMetrics("", 0)
+	if err != nil {
+		t.Fatalf("ListMetrics(empty): unexpected error: %v", err)
+	}
+	if len(metrics) != 0 {
+		t.Errorf("ListMetrics(empty): got %d metrics, want 0", len(metrics))
+	}
+}
+
+func TestStorage_ListMetrics_AfterClose(t *testing.T) {
+	s := newStorage(t)
+	_ = s.Close()
+
+	_, err := s.ListMetrics("", 0)
+	if err == nil {
+		t.Fatal("ListMetrics(after close): expected ClosedError, got nil")
+	}
+	var ce *ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("ListMetrics(after close): expected ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -994,6 +1895,47 @@ func TestDecodeDataPoint_MetricLengthExceedsData(t *testing.T) {
 	}
 }
 
+// TestDecodeDataPoint_EveryTruncationIsDecodeError cuts a tagged encoding at
+// every length short of complete: each cut lands in a different field (metric,
+// value, timestamp, tag count, tag key length, key, value length, value) and
+// must fail as a DecodeError, never decode a partial point or panic.
+func TestDecodeDataPoint_EveryTruncationIsDecodeError(t *testing.T) {
+	encoded, err := encodeDataPoint(&DataPoint{
+		Metric:    "cpu",
+		Value:     1.5,
+		Timestamp: ts(2026, 2, 24, 10, 30, 0),
+		Tags:      map[string]string{"host": "srv1"},
+	})
+	if err != nil {
+		t.Fatalf("encodeDataPoint: %v", err)
+	}
+	for n := range len(encoded) {
+		_, err := decodeDataPoint(encoded[:n])
+		var de *DecodeError
+		if !errors.As(err, &de) {
+			t.Errorf("decodeDataPoint(%d of %d bytes) = %v, want *DecodeError", n, len(encoded), err)
+		}
+	}
+	if _, err := decodeDataPoint(encoded); err != nil {
+		t.Fatalf("decodeDataPoint(complete) = %v, want nil", err)
+	}
+}
+
+// TestStorage_GetRetentionPolicy_CorruptData verifies stored policy bytes
+// too short to decode surface as a DecodeError.
+func TestStorage_GetRetentionPolicy_CorruptData(t *testing.T) {
+	s := newStorage(t)
+	if err := s.stg.Set([]byte(KeyPrefixRetention+"corrupt.metric"), []byte{0x01, 0x02}); err != nil {
+		t.Fatalf("stg.Set: %v", err)
+	}
+
+	_, err := s.GetRetentionPolicy("corrupt.metric")
+	var de *DecodeError
+	if !errors.As(err, &de) {
+		t.Fatalf("GetRetentionPolicy = %v, want *DecodeError", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Key ordering (chronological sort in PebbleDB)
 // ---------------------------------------------------------------------------
@@ -1186,6 +2128,111 @@ func TestComputeAggregation_Unknown(t *testing.T) {
 	result := computeAggregation(AggFunc(99), []float64{10, 20, 30})
 	if result != 0 {
 		t.Errorf("computeAggregation(unknown): got %f, want 0", result)
+	}
+}
+
+func TestComputeAggregationWithPercentile_PercentileFunc(t *testing.T) {
+	values := make([]float64, 100)
+	for i := range values {
+		values[i] = float64(i + 1)
+	}
+
+	result := computeAggregationWithPercentile(AggPercentile, values, 50.0)
+	// P50 of 1..100: index = (100-1)*0.5 = 49.5, int = 49 -> values[49] = 50
+	if result != 50.0 {
+		t.Errorf("computeAggregationWithPercentile(p50): got %f, want 50.0", result)
+	}
+}
+
+func TestComputeAggregationWithPercentile_EmptyValues(t *testing.T) {
+	result := computeAggregationWithPercentile(AggPercentile, []float64{}, 95.0)
+	if result != 0 {
+		t.Errorf("computeAggregationWithPercentile(empty): got %f, want 0", result)
+	}
+}
+
+func TestAggregatePoints_Empty(t *testing.T) {
+	result := aggregatePoints([]*DataPoint{}, AggSum, 0)
+	if result != 0 {
+		t.Errorf("aggregatePoints(empty): got %f, want 0", result)
+	}
+}
+
+func TestDownsample_BucketsData(t *testing.T) {
+	base := ts(2026, 3, 1, 10, 0, 0)
+	points := []*DataPoint{
+		{Metric: "cpu", Value: 10.0, Timestamp: base},
+		{Metric: "cpu", Value: 20.0, Timestamp: base.Add(30 * time.Minute)},
+		{Metric: "cpu", Value: 30.0, Timestamp: base.Add(time.Hour)},
+		{Metric: "cpu", Value: 40.0, Timestamp: base.Add(90 * time.Minute)},
+	}
+
+	result := downsample(points, time.Hour, AggSum, 0)
+	if len(result) != 2 {
+		t.Fatalf("downsample: got %d buckets, want 2", len(result))
+	}
+	// First bucket: 10+20=30, second: 30+40=70.
+	if result[0].Value != 30.0 {
+		t.Errorf("downsample bucket[0]: got %f, want 30.0", result[0].Value)
+	}
+	if result[1].Value != 70.0 {
+		t.Errorf("downsample bucket[1]: got %f, want 70.0", result[1].Value)
+	}
+}
+
+func TestDownsample_ZeroInterval(t *testing.T) {
+	points := []*DataPoint{{Value: 1.0}}
+	result := downsample(points, 0, AggAvg, 0)
+	if len(result) != 1 {
+		t.Errorf("downsample(zero interval): got %d, want 1 (passthrough)", len(result))
+	}
+}
+
+func TestGroupAndAggregate_EmptyPoints(t *testing.T) {
+	results := groupAndAggregate([]*DataPoint{}, []string{"host"}, AggSum, 0, 0)
+	if results != nil {
+		t.Errorf("groupAndAggregate(empty): expected nil, got %v", results)
+	}
+}
+
+func TestGroupAndAggregate_WithInterval(t *testing.T) {
+	base := ts(2026, 3, 1, 10, 0, 0)
+	points := []*DataPoint{
+		{Metric: "cpu", Value: 10.0, Tags: map[string]string{"host": "a"}, Timestamp: base},
+		{Metric: "cpu", Value: 20.0, Tags: map[string]string{"host": "a"}, Timestamp: base.Add(30 * time.Minute)},
+		{Metric: "cpu", Value: 30.0, Tags: map[string]string{"host": "a"}, Timestamp: base.Add(time.Hour)},
+	}
+
+	results := groupAndAggregate(points, []string{"host"}, AggSum, time.Hour, 0)
+	if len(results) != 1 {
+		t.Fatalf("groupAndAggregate(interval): got %d groups, want 1", len(results))
+	}
+	// With interval, the group holds one summed point per bucket instead of an AggregatedValue.
+	if results[0].AggregatedValue != nil {
+		t.Errorf("groupAndAggregate(interval): AggregatedValue got %v, want nil", *results[0].AggregatedValue)
+	}
+	got := results[0].Points
+	if len(got) != 2 {
+		t.Fatalf("groupAndAggregate(interval): got %d downsampled points, want 2", len(got))
+	}
+	if got[0].Value != 30.0 || got[1].Value != 30.0 {
+		t.Errorf("groupAndAggregate(interval): bucket sums got %v, %v; want 30, 30", got[0].Value, got[1].Value)
+	}
+}
+
+func TestBuildGroupKey_MultipleTags(t *testing.T) {
+	tags := map[string]string{"host": "srv1", "region": "us"}
+	key := buildGroupKey(tags, []string{"host", "region"})
+	if key != "srv1|us" {
+		t.Errorf("buildGroupKey(multi): got %q, want %q", key, "srv1|us")
+	}
+}
+
+func TestBuildGroupKey_MissingTag(t *testing.T) {
+	tags := map[string]string{"host": "srv1"}
+	key := buildGroupKey(tags, []string{"host", "region"})
+	if key != "srv1|" {
+		t.Errorf("buildGroupKey(missing): got %q, want %q", key, "srv1|")
 	}
 }
 

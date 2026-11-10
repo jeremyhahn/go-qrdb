@@ -16,7 +16,10 @@ package node
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -103,6 +107,110 @@ func TestCanonicalRootKeyStrategy_NoSealStore_RefusesTyped(t *testing.T) {
 	require.Contains(t, notSupported.Reason, "seal store")
 	// The refusal every transport maps to 501 / Unimplemented.
 	require.ErrorIs(t, err, service.ErrMigrationProviderUnavailable)
+}
+
+func TestCanonicalRootKey(t *testing.T) {
+	ctx := context.Background()
+	if got := canonicalRootKeyPath(&Node{}); got != "root-key" {
+		t.Errorf("default root-key path = %q", got)
+	}
+	cfg := &qrdbconfig.Config{}
+	cfg.Seal.RootKeyPath = "custom-root"
+	if got := canonicalRootKeyPath(&Node{retainedStandalone: &pendingStandaloneBoot{cfg: cfg}}); got != "custom-root" {
+		t.Errorf("configured root-key path = %q", got)
+	}
+
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	n := &Node{sealStore: store}
+	if id, err := canonicalRootKeyStrategy(ctx, n); err == nil || id != "" {
+		t.Errorf("strategy with no root key = %q, %v; want an error", id, err)
+	}
+	if err := seal.NewStorageAdapter(store).Put(ctx, "root-key", []byte("not json")); err != nil {
+		t.Fatal(err)
+	}
+	var syntax *json.SyntaxError
+	if id, err := canonicalRootKeyStrategy(ctx, n); !errors.As(err, &syntax) || id != "" {
+		t.Errorf("strategy from a corrupt root key = %q, %v; want *json.SyntaxError", id, err)
+	}
+
+	if s, err := keyedStrategyForStrategy("none", seal.Credentials{}); s != nil || !errors.Is(err, seal.ErrMigrationInvalidTarget) {
+		t.Errorf("keyedStrategyForStrategy(none) = %v, %v", s, err)
+	}
+}
+
+func TestEnableEncryption_RefusalsBeforeBoot(t *testing.T) {
+	ctx := context.Background()
+	system := service.BarrierScope{Kind: service.ScopeSystem}
+	var unsupported *MigrationNotSupportedError
+
+	n := &Node{}
+	if err := n.EnableEncryption(ctx, system, seal.MigrationOptions{}); !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, "no barrier registry") {
+		t.Fatalf("EnableEncryption with no registry = %v", err)
+	}
+	n.barrierRegistry.Store(&seal.BarrierRegistry{})
+	if err := n.EnableEncryption(ctx, system, seal.MigrationOptions{}); !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, "not yet fully booted") {
+		t.Fatalf("EnableEncryption before boot = %v", err)
+	}
+
+	if err := (&nodeEmbeddedMigrator{node: &Node{}}).EnableEncryption(ctx, system, seal.MigrationOptions{}); !errors.Is(err, service.ErrMigrationProviderUnavailable) {
+		t.Fatalf("embedded migrator with no router = %v, want ErrMigrationProviderUnavailable", err)
+	}
+
+	sys := &nodeSystemMigrator{node: &Node{}}
+	for name, tc := range map[string]struct {
+		scope  service.BarrierScope
+		reason string
+	}{
+		"system, no registry": {scope: system, reason: "no barrier registry"},
+		"tenant":              {scope: service.BarrierScope{Kind: service.ScopeTenant}, reason: "TenantHostRegistry"},
+		"unknown":             {scope: service.BarrierScope{Kind: "galaxy"}, reason: "unknown scope galaxy"},
+	} {
+		if err := sys.EnableEncryption(ctx, tc.scope, seal.MigrationOptions{}); !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, tc.reason) {
+			t.Errorf("%s: system migrator = %v, want a refusal naming %q", name, err, tc.reason)
+		}
+	}
+}
+
+func TestNodeMigrationProvider_Refusals(t *testing.T) {
+	ctx := context.Background()
+	system := service.BarrierScope{Kind: service.ScopeSystem}
+	tenantScope := service.BarrierScope{Kind: service.ScopeTenant}
+	var unsupported *MigrationNotSupportedError
+
+	p := &nodeMigrationProvider{node: &Node{}}
+	if _, err := p.MintKeyedTarget(ctx, tenantScope, seal.MigrationOptions{}); !errors.As(err, &unsupported) {
+		t.Errorf("MintKeyedTarget tenant scope = %v", err)
+	}
+	if _, err := p.MintKeyedTarget(ctx, system, seal.MigrationOptions{TargetStrategy: "none"}); !errors.Is(err, seal.ErrMigrationInvalidTarget) {
+		t.Errorf("MintKeyedTarget to a non-keyed strategy = %v, want ErrMigrationInvalidTarget", err)
+	}
+	if err := p.Reopen(ctx, tenantScope); !errors.As(err, &unsupported) {
+		t.Errorf("Reopen tenant scope = %v", err)
+	}
+	if err := p.Reopen(ctx, system); !errors.As(err, &unsupported) || !strings.Contains(unsupported.Reason, "no seal store") {
+		t.Errorf("Reopen with no seal store = %v", err)
+	}
+
+	store := memory.NewStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	blob, err := json.Marshal(map[string]seal.StrategyID{"strategy": seal.StrategyShamir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seal.NewStorageAdapter(store).Put(ctx, "root-key", blob); err != nil {
+		t.Fatal(err)
+	}
+	n := &Node{sealStore: store}
+	p = &nodeMigrationProvider{node: n}
+	var reopenErr *MigrationReopenError
+	if err := p.Reopen(ctx, system); !errors.As(err, &reopenErr) {
+		t.Errorf("Reopen with no retained boot params = %v, want *MigrationReopenError", err)
+	}
+	n.retainedStandalone = &pendingStandaloneBoot{}
+	if err := p.Reopen(ctx, system); !errors.Is(err, seal.ErrShamirThresholdInvalid) {
+		t.Errorf("Reopen of a Shamir commit with no recorded scheme = %v, want ErrShamirThresholdInvalid", err)
+	}
 }
 
 // TestNode_EnableEncryption_NoSealStore_RefusesTyped pins the same refusal at

@@ -211,3 +211,99 @@ func TestQUICResolversNotConfigured(t *testing.T) {
 		t.Fatalf("error type = %T, want *ServiceNotConfiguredError", err)
 	}
 }
+
+// TestQUICResolverBranches drives every remaining per-request resolver
+// through its three branches: the registry (with the request's scope), the
+// singleton fallback, and the not-configured error.
+func TestQUICResolverBranches(t *testing.T) {
+	resolvers := map[string]struct {
+		resolve   func(*Server, context.Context) (any, error)
+		singleton func() (*Server, any)
+	}{
+		"transaction": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.txSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockTransactionService{}
+				return &Server{txSvc: svc}, svc
+			},
+		},
+		"batch": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.batchSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockBatchService{}
+				return &Server{batchSvc: svc}, svc
+			},
+		},
+		"lease": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.leaseSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockLeaseService{}
+				return &Server{leaseSvc: svc}, svc
+			},
+		},
+		"index": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.indexSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockIndexService{}
+				return &Server{indexSvc: svc}, svc
+			},
+		},
+		"vector": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.vectorSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockVectorService{}
+				return &Server{vectorSvc: svc}, svc
+			},
+		},
+		"watch": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.watchSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockWatchService{}
+				return &Server{watchSvc: svc}, svc
+			},
+		},
+		"mvcc": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.mvccSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockMVCCKVService{}
+				return &Server{mvccSvc: svc}, svc
+			},
+		},
+		"timeseries": {
+			resolve: func(s *Server, c context.Context) (any, error) { return s.tsSvcFor(c) },
+			singleton: func() (*Server, any) {
+				svc := &mockTimeSeriesService{}
+				return &Server{tsSvc: svc}, svc
+			},
+		},
+	}
+
+	for name, r := range resolvers {
+		t.Run(name+"/registry", func(t *testing.T) {
+			reg := &recordingRegistry{}
+			if _, err := r.resolve(&Server{registry: reg}, scopedCtx("acme", "db2")); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if len(reg.calls) != 1 || reg.calls[0] != (scopeCall{service: name, tenant: "acme", db: "db2"}) {
+				t.Fatalf("registry calls = %+v, want one %s call for acme/db2", reg.calls, name)
+			}
+		})
+		t.Run(name+"/singleton", func(t *testing.T) {
+			s, want := r.singleton()
+			got, err := r.resolve(s, scopedCtx("acme", "db2"))
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if got != want {
+				t.Fatalf("resolve returned %p, want singleton %p", got, want)
+			}
+		})
+		t.Run(name+"/notconfigured", func(t *testing.T) {
+			_, err := r.resolve(&Server{}, context.Background())
+			var snc *ServiceNotConfiguredError
+			if !errors.As(err, &snc) {
+				t.Fatalf("error type = %T, want *ServiceNotConfiguredError", err)
+			}
+		})
+	}
+}
