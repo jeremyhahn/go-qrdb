@@ -1531,7 +1531,7 @@ These conditions have a typed error today:
 |---|---|---|---|---|
 | An isolated tenant's home store cannot be reached on this node | `*tenant.TenantHomeUnavailableError{TenantID, Err}`; matches `tenant.ErrTenantSealed` | 503 | `UNAVAILABLE` | yes |
 | An identity acts in another tenant on a non-cross permission | `*rbac.PermissionDeniedError` at the RBAC check; `*tenant.CrossTenantDeniedError` at the routing layer | 403 | `PERMISSION_DENIED` | no |
-| Loosening the floor or a tenant's policy, or losing a concurrent change | `*tenant.IsolationPolicyChangeError{From, To}`; not yet classified in `pkg/api/errclass` | 409 | `FAILED_PRECONDITION` | no |
+| Loosening the floor or a tenant's policy, or losing a concurrent change | `*tenant.IsolationPolicyChangeError{From, To}` | 409 | `FAILED_PRECONDITION` | no |
 | A CSR that does not parse | `*cert.InvalidCSRError` | 400 | `INVALID_ARGUMENT` | no |
 | Init proof of possession absent, stale, from another connection or by the wrong key | `*tenant.FirstAdminProofError{TenantID, Reason, Err}` | 401 | `UNAUTHENTICATED` | with a fresh nonce |
 | An isolated tenant's barrier is initialized before `per-node-barrier-keys` is activated | `*feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}` | 503 | `UNAVAILABLE` | yes, after activation |

@@ -377,8 +377,10 @@ tenant's key auto-unseals is the tenant's own choice, never refused.
 `tenant.isolation_policy` (`strict` or `operator-access`; environment
 `QRDB_TENANT_ISOLATION_POLICY`). It is applied on every start and only ever
 tightens: a value looser than the stored floor is logged and ignored. Left
-unset, nothing is applied. A node running in FIPS 140-3 mode raises the floor to `strict`. No
-CLI verb or API endpoint reads or sets a policy.
+unset, nothing is applied. A node running in FIPS 140-3 mode raises the floor to `strict`. The
+CLI and API verbs that read and set a policy are in the strict isolation
+section of [api.md](api.md); each is refused until the
+`strict-isolation` feature is active.
 
 ```yaml
 tenant:

@@ -447,8 +447,10 @@ certificates from their own CA, are managed with `qrdb tenant trust-anchors`:
 
 ## Strict isolation
 
-No CLI verb reads or sets an isolation policy. The REST, gRPC, QUIC and MCP
-verbs that do ([api.md](api.md)) are refused until the `strict-isolation`
+`qrdb cluster-isolation-policy get|set` reads and sets the cluster floor, and
+`qrdb tenant update --isolation-policy` sets a tenant's policy. They and the
+REST, gRPC, QUIC and MCP verbs ([api.md](api.md)) are refused until the
+`strict-isolation`
 feature is active, which this build does not support (it is supported once
 G1 lands): each answers `feature.NotActiveError` (HTTP 503, `Unavailable`)
 and changes nothing. A node running in FIPS 140-3 mode raises the

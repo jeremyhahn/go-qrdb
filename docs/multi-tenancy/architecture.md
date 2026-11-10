@@ -1409,8 +1409,8 @@ form within its startup budget.
 
 | Setting | Where | Values | Who sets it |
 |---|---|---|---|
-| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. |
-| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. No transport or CLI verb sets it. |
+| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
+| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. On the transports, a tenant update's `isolation_policy` field and `qrdb tenant update --isolation-policy`, refused until the `strict-isolation` feature is active. |
 
 `tenant.EffectiveIsolationPolicy` is `strict` when either setting is `strict`.
 
