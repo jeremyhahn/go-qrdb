@@ -165,6 +165,7 @@ func TestApplyVerifiableLog_Refusals(t *testing.T) {
 	}
 	missing := vlog.LogID{TenantID: applyLog.TenantID, Database: applyLog.Database, Log: "absent"}
 	appendOne := p(protocol.EncodeVerifiableLogAppend(applyLog, [][]byte{[]byte("x")}))
+	auditAppendOne := p(protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID(applyLog.TenantID), [][]byte{[]byte("x")}))
 	// The encoder refuses a tenant id with a '/', so only committed bytes
 	// from elsewhere can carry one: rewrite "acme" in place.
 	invalidTenant := bytes.Clone(appendOne)
@@ -184,6 +185,9 @@ func TestApplyVerifiableLog_Refusals(t *testing.T) {
 		{"checkpoint root mismatch", p(protocol.EncodeVerifiableLogCheckpoint(applyLog, 2, make([]byte, 32), []byte("s"))), protocol.AppErrorInvalid},
 		{"empty checkpoint", p(protocol.EncodeVerifiableLogCheckpoint(applyLog, 2, make([]byte, 32), nil)), protocol.AppErrorInvalid},
 		{"expire not allowed", p(protocol.EncodeVerifiableLogExpireBodies(applyLog, 1)), protocol.AppErrorInvalid},
+		{"generic append to the audit instance", p(protocol.EncodeVerifiableLogAppend(vlog.AuditLogID(applyLog.TenantID), [][]byte{[]byte("x")})), protocol.AppErrorInvalid},
+		{"audit append to a named log", p(protocol.EncodeVerifiableLogAuditAppend(applyLog, [][]byte{[]byte("x")})), protocol.AppErrorInvalid},
+		{"malformed audit append", auditAppendOne[:len(auditAppendOne)-1], protocol.AppErrorInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

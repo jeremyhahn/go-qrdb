@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
@@ -85,5 +86,29 @@ func TestServiceContext_WithoutPrincipal(t *testing.T) {
 	ctx, err := (&Node{}).ServiceContext(context.Background())
 	if !errors.Is(err, ErrNoServicePrincipal) || ctx != nil {
 		t.Fatalf("ServiceContext = (%v, %v), want (nil, ErrNoServicePrincipal)", ctx, err)
+	}
+}
+
+// A node that holds a service principal but has no server -- it is
+// recycling its data plane -- refuses a delegation with the retryable
+// recycling error rather than presenting it.
+func TestMintDelegation_RefusedWhileRecycling(t *testing.T) {
+	n := &Node{servicePrincipal: "billing"}
+	got, err := n.MintDelegation(context.Background(), &service.MintDelegationRequest{TenantID: "acme"})
+	var recycling *service.DataPlaneRecyclingError
+	if got != nil || !errors.As(err, &recycling) || recycling.Service != "delegation mint" {
+		t.Fatalf("MintDelegation = %+v, %v; want *service.DataPlaneRecyclingError for the delegation mint", got, err)
+	}
+}
+
+func TestDelegatedContext_RefusedWhileRecycling(t *testing.T) {
+	n := &Node{servicePrincipal: "billing"}
+	ctx, err := n.DelegatedContext(context.Background(), nil)
+	var recycling *service.DataPlaneRecyclingError
+	if ctx != nil || !errors.As(err, &recycling) || recycling.Service != "delegated context" {
+		t.Fatalf("DelegatedContext = %v, %v; want *service.DataPlaneRecyclingError for the delegated context", ctx, err)
+	}
+	if errors.Is(err, ErrNoServicePrincipal) {
+		t.Fatal("a recycling refusal must not read as a missing service principal")
 	}
 }

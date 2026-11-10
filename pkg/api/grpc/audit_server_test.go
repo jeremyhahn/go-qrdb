@@ -130,6 +130,58 @@ func TestAuditQuery_NilLogger(t *testing.T) {
 	}
 }
 
+// serveAudit registers the audit service on a server with the given unary
+// interceptors and returns a client for it.
+func serveAudit(t *testing.T, logger *mockAuditLogger, opts ...grpc.ServerOption) pb.AuditServiceClient {
+	t.Helper()
+	grpcSrv := grpc.NewServer(opts...)
+	RegisterAuditService(grpcSrv, logger, nil)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.Stop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return pb.NewAuditServiceClient(conn)
+}
+
+// TestAuditQuery_RunsThroughInterceptor asserts the Query handler hands the
+// request to the server's unary interceptor under its full method name.
+func TestAuditQuery_RunsThroughInterceptor(t *testing.T) {
+	var methods []string
+	interceptor := func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		methods = append(methods, info.FullMethod)
+		return handler(ctx, req)
+	}
+	client := serveAudit(t, &mockAuditLogger{}, grpc.UnaryInterceptor(interceptor))
+
+	if _, err := client.Query(context.Background(), &pb.AuditQueryRequest{}); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(methods) != 1 || methods[0] != pb.AuditService_Query_FullMethodName {
+		t.Fatalf("interceptor saw %v, want [%s]", methods, pb.AuditService_Query_FullMethodName)
+	}
+}
+
+// TestAuditQuery_LoggerErrorIsInternal asserts a failing audit logger
+// surfaces to the client as codes.Internal.
+func TestAuditQuery_LoggerErrorIsInternal(t *testing.T) {
+	client := serveAudit(t, &mockAuditLogger{queryFn: func(context.Context, audit.Filter) (*audit.Page, error) {
+		return nil, errors.New("server error")
+	}})
+
+	_, err := client.Query(context.Background(), &pb.AuditQueryRequest{})
+	if st, _ := status.FromError(err); st.Code() != codes.Internal {
+		t.Fatalf("Query error = %v, want Internal", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // auditServer.Query — success with empty filter
 // ---------------------------------------------------------------------------

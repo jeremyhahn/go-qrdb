@@ -213,3 +213,19 @@ func TestServer_MultipleOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_WithKVService(t *testing.T) {
+	kvSvc := newMockKVService()
+	s := NewServer(nil, newMockAdminService(), ":0", WithKVService(kvSvc))
+	if s.kvSvc != kvSvc {
+		t.Error("kvSvc not set via WithKVService")
+	}
+}
+
+func TestServer_WithAdminService(t *testing.T) {
+	adminSvc := newMockAdminService()
+	s := NewServer(newMockKVService(), nil, ":0", WithAdminService(adminSvc))
+	if s.adminSvc != adminSvc {
+		t.Error("adminSvc not set via WithAdminService")
+	}
+}

@@ -16,7 +16,15 @@ package embedded
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
@@ -134,4 +142,31 @@ func TestEmbeddedClaim_APresentedCertificateIsChecked(t *testing.T) {
 			t.Fatalf("call = %+v, want the presented thumbprint %s and no in-process mark", c, want)
 		}
 	}
+}
+
+// ctxWithEmbeddedPeerCert returns a context carrying a self-signed leaf as the
+// mTLS peer certificate, mirroring what a real transport installs.
+func ctxWithEmbeddedPeerCert(t *testing.T) context.Context {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "embedded-officer"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parse cert: %v", err)
+	}
+	return auth.WithTLSState(context.Background(), &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+	})
 }
