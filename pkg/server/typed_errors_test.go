@@ -609,6 +609,44 @@ func TestResolveDedicatedDatabaseBarrier_ServesAnObjstoreDatabaseFromItsEngine(t
 	}
 }
 
+// TestDedicatedStoreServiceCache_SameNameAcrossTenants checks two tenants'
+// databases of one name each keep their own cached bundle. A cache keyed by
+// name alone would have each evict the other, and every rebuild restarts the
+// bundle's in-memory state, such as its increment ID generator.
+func TestDedicatedStoreServiceCache_SameNameAcrossTenants(t *testing.T) {
+	open := func(string, string, string) (storage.Storage, database.ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, e.Destroy, nil
+	}
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithObjstoreOpener(open))))
+	t.Cleanup(func() { _ = mgr.Close() })
+	a, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore, TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("Create(acme/blobs): %v", err)
+	}
+	b, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore, TenantID: "globex"})
+	if err != nil {
+		t.Fatalf("Create(globex/blobs): %v", err)
+	}
+
+	c := newDedicatedStoreServiceCache()
+	first := c.getOrBuild(a)
+	other := c.getOrBuild(b)
+	if first == other {
+		t.Fatal("two tenants' databases share one service bundle")
+	}
+	if again := c.getOrBuild(a); again != first {
+		t.Fatal("the other tenant's same-named database evicted the cached bundle")
+	}
+	if again := c.getOrBuild(b); again != other {
+		t.Fatal("the first tenant's same-named database evicted the cached bundle")
+	}
+}
+
 // TestResolveDedicatedDatabaseBarrier_RefusesCrossTenantAccess is the security
 // property in this function.
 //
