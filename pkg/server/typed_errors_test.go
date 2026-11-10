@@ -41,7 +41,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 )
 
 func TestOwnerResolveError_ErrorAndUnwrap(t *testing.T) {
@@ -563,6 +565,48 @@ func newBarrierResolveRegistry(t *testing.T) (*restServiceRegistry, *database.Ma
 		systemTenant:   "system",
 		dedicatedStore: newDedicatedStoreServiceCache(),
 	}, mgr
+}
+
+// TestResolveDedicatedDatabaseBarrier_ServesAnObjstoreDatabaseFromItsEngine
+// checks a backend: objstore database is resolved to services over its own
+// engine, barrier or not: a key written through them is in the database's
+// backend, and another tenant still gets the fall-through sentinel.
+func TestResolveDedicatedDatabaseBarrier_ServesAnObjstoreDatabaseFromItsEngine(t *testing.T) {
+	open := func(string, string, string) (storage.Storage, database.ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, e.Destroy, nil
+	}
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithObjstoreOpener(open))))
+	t.Cleanup(func() { _ = mgr.Close() })
+	r := &restServiceRegistry{
+		dbManager:      mgr,
+		systemTenant:   "system",
+		dedicatedStore: newDedicatedStoreServiceCache(),
+	}
+	db, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore, TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("Create(objstore): %v", err)
+	}
+
+	svcs, err := r.resolveDedicatedDatabaseBarrier("acme", "blobs", nil)
+	if err != nil || svcs == nil {
+		t.Fatalf("resolveDedicatedDatabaseBarrier(acme, blobs) = %v, %v; want the database's own services", svcs, err)
+	}
+	if other, err := r.resolveDedicatedDatabaseBarrier("globex", "blobs", nil); !errors.Is(err, errNotDedicatedDatabaseBarrier) || other != nil {
+		t.Fatalf("another tenant resolved the database: %v, %v", other, err)
+	}
+
+	ctx := context.Background()
+	if err := svcs.KV.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put through the resolved services: %v", err)
+	}
+	if got, err := db.Backend().Get(ctx, []byte("k")); err != nil || string(got) != "v" {
+		t.Fatalf("the database's backend Get = %q, %v; want the key the services wrote", got, err)
+	}
 }
 
 // TestResolveDedicatedDatabaseBarrier_RefusesCrossTenantAccess is the security
