@@ -264,14 +264,17 @@ func (h *TenantHomes) HomeStore(ctx context.Context, tenantID string) (kvstore.K
 // HomeGroup returns the Raft propose target of tenantID's home group, the
 // group its audit trail and verifiable logs apply in. It refuses as
 // HomeStore does: a sealed tenant through the services lookup, and a home
-// replica still catching up with *TenantHomeCatchingUpError.
+// replica still catching up with *TenantHomeCatchingUpError. Each refusal
+// is wrapped in *tenant.TenantHomeUnavailableError, the shape the HomeStore
+// path gives the same causes, so a transport answers a retryable
+// unavailable.
 func (h *TenantHomes) HomeGroup(ctx context.Context, tenantID string) (service.Host, uint64, error) {
 	host, shardID, err := h.services.HomeGroup(ctx, tenantID)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, &tenant.TenantHomeUnavailableError{TenantID: tenantID, Err: err}
 	}
 	if err := h.caughtUp(tenantID, shardID); err != nil {
-		return nil, 0, err
+		return nil, 0, &tenant.TenantHomeUnavailableError{TenantID: tenantID, Err: err}
 	}
 	return host, shardID, nil
 }
