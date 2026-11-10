@@ -774,9 +774,6 @@ func handleClusterIsolationPolicySet(svc tenant.TenantServicer) mcpserver.ToolHa
 			return nil, &ToolError{Tool: tool, Err: err}
 		}
 		policy := mcp.ParseString(req, "policy", "")
-		if policy == "" {
-			return mcp.NewToolResultError("policy is required"), nil
-		}
 		if err := svc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(policy)); err != nil {
 			return nil, &ToolError{Tool: tool, Err: err}
 		}
