@@ -2,8 +2,10 @@ package credentials
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +74,67 @@ func requireWiped(t *testing.T, captured map[string][][]byte, key string) {
 		require.NotEmpty(t, buf)
 		assert.Equal(t, make([]byte, len(buf)), buf, "plaintext left in a dropped buffer for %s", key)
 	}
+}
+
+// An operation that reads the current value only to learn whether the
+// credential exists leaves no plaintext in the buffer it was handed.
+func TestExistenceChecks_WipeTheValueTheyRead(t *testing.T) {
+	ctx := context.Background()
+	store := &captureStore{Store: seal.NewMemoryBackend()}
+	svc := newMigratingService(t, seal.NewMemoryBackend())
+	require.NoError(t, svc.BindStore(ctx, store))
+	require.NoError(t, svc.StoreCredential(ctx, "db", []byte("v1")))
+
+	ops := map[string]func() error{
+		"SetRotationPolicy": func() error {
+			return svc.SetRotationPolicy(ctx, "db", RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2})
+		},
+		"RotationPolicy": func() error {
+			_, err := svc.RotationPolicy(ctx, "db")
+			return err
+		},
+		"NextRotation": func() error {
+			_, err := svc.NextRotation(ctx, "db")
+			return err
+		},
+		"ListCredentialVersions": func() error {
+			_, err := svc.ListCredentialVersions(ctx, "db")
+			return err
+		},
+	}
+	for _, name := range []string{"SetRotationPolicy", "RotationPolicy", "NextRotation", "ListCredentialVersions"} {
+		t.Run(name, func(t *testing.T) {
+			store.reset()
+			require.NoError(t, ops[name]())
+			requireWiped(t, store.gets, credentialPrefix+"db")
+		})
+	}
+	assert.Equal(t, "v1", retrieveString(t, svc, "db"), "the stored value is untouched")
+}
+
+// A migration leaves no plaintext in the buffers it read the node's own
+// copies into, and what it wrote to the replicated store is intact.
+func TestMigrateLegacy_WipesTheLegacyValuesItRead(t *testing.T) {
+	ctx := context.Background()
+	legacy := &captureStore{Store: seal.NewMemoryBackend()}
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	shared := seal.NewMemoryBackend()
+	svc := newMigratingService(t, legacy)
+
+	require.NoError(t, svc.BindStore(ctx, shared))
+	require.NoError(t, svc.MigrateLegacy(ctx))
+
+	requireWiped(t, legacy.gets, legacyCredentialPrefix+"db")
+	for key := range legacy.gets {
+		if strings.HasPrefix(key, legacyCredentialPrefix) {
+			requireWiped(t, legacy.gets, key)
+		}
+	}
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"), "the migrated value is intact")
+	value, err := shared.Get(ctx, credentialPrefix+"db")
+	require.NoError(t, err)
+	assert.Equal(t, "v2", string(value))
+	assert.Empty(t, legacyKeys(t, legacy))
 }
 
 // An import that fails leaves no copy of the legacy value behind: the buffer
