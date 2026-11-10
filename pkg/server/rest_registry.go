@@ -476,13 +476,18 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 }
 
 // servesFromNodeLocalStore reports whether a catalogued database is served
-// from its own encrypting store on this node (resolveDedicatedDatabaseBarrier)
-// rather than from the shared replicated store: a barrier-enabled database
-// with a dedicated store that is not raft-backed. Raft-backed isolation is
-// never served that way: it comes exclusively from an IsolationRaft tenant's
-// dedicated shard, never from a per-database barrier layered onto a
-// shared/prefix tenant's database.
+// from its own store on this node (resolveDedicatedDatabaseBarrier) rather
+// than from the shared replicated store. A backend: objstore database always
+// is, with or without a barrier: its objstore engine is its own, so the
+// node's store never stands in for the object storage it asked for. Any
+// other database is when it is barrier-enabled with a dedicated store that
+// is not raft-backed. Raft-backed isolation is never served that way: it
+// comes exclusively from an IsolationRaft tenant's dedicated shard, never
+// from a per-database barrier layered onto a shared/prefix tenant's database.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	if cfg.Backend == database.BackendObjstore {
+		return true
+	}
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 
