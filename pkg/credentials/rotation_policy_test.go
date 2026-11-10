@@ -929,22 +929,32 @@ func TestRotateDue_SettlementTimedFromRotationEnd(t *testing.T) {
 			svc, backend := newFaultRotationService(t)
 			setFaultPolicy(t, svc, "k", 5)
 			source := svc.rotationSource
-			var returned time.Time
+			var returned, attempt time.Time
 			svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+				attempt, _ = ctx.Deadline()
 				defer func() { returned = time.Now() }()
 				if tc.fail {
 					return nil, errInjectedFault
 				}
 				return source(ctx, name)
 			}
-			var deadlines []time.Time
+			var (
+				deadlines []time.Time
+				own       int
+			)
 			backend.onCAS = func(ctx context.Context, _ string) {
 				if returned.IsZero() {
 					return
 				}
 				// The retention cleanup runs under the caller's context,
-				// which here has no deadline.
-				if d, ok := ctx.Deadline(); ok {
+				// which here has no deadline. The staging and the commit
+				// are the rotation itself, under its attempt's deadline;
+				// the commit is also what settles a completed rotation.
+				d, ok := ctx.Deadline()
+				switch {
+				case ok && d.Equal(attempt):
+					own++
+				case ok:
 					deadlines = append(deadlines, d)
 				}
 			}
@@ -953,7 +963,10 @@ func TestRotateDue_SettlementTimedFromRotationEnd(t *testing.T) {
 			if n != tc.wantN || (err != nil) != tc.fail {
 				t.Fatalf("RotateDue = %d, %v; want %d, failed %v", n, err, tc.wantN, tc.fail)
 			}
-			if len(deadlines) == 0 {
+			if tc.fail == (own != 0) {
+				t.Fatalf("%d writes under the attempt's deadline after the source returned, failed %v", own, tc.fail)
+			}
+			if tc.fail && len(deadlines) == 0 {
 				t.Fatalf("no %s CompareAndSwap after the rotation returned", tc.settle)
 			}
 			// Every write after the rotation, the settlement among them,

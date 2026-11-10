@@ -77,6 +77,10 @@ type CredentialService struct {
 	// now is the clock SetRotationPolicy reads; tests replace it.
 	now func() time.Time
 
+	// rotationAttemptTimeout bounds one credential's attempt in a RotateDue
+	// pass; tests shorten it.
+	rotationAttemptTimeout time.Duration
+
 	// legacy is the node-local store holding this node's records under the
 	// old credentials/ layout, nil when there is none (WithLegacyStore).
 	legacy Store
@@ -156,6 +160,8 @@ func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ..
 		manualCreds: make(map[string]*secure.Secret),
 		waiters:     make(map[string][]chan waiterDelivery),
 		now:         time.Now,
+
+		rotationAttemptTimeout: rotationAttemptTimeout,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -192,6 +198,7 @@ func (s *CredentialService) ForTenant(ctx context.Context, home Store, legacy *s
 		return nil, err
 	}
 	out.now = s.now
+	out.rotationAttemptTimeout = s.rotationAttemptTimeout
 	if _, done := s.migratedBarriers.Load(legacy); done {
 		out.migrated = true
 		return out, nil
