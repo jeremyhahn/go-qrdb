@@ -198,7 +198,8 @@ period.
 **`migration-conflicts list` shows nothing on a node that logged a
 conflict.** You are talking to a different node: the list is per node. Point
 the CLI at the node that logged it. If the node's own store was still sealed
-when it started, the migration ran again on that first list call.
+when it started, the migration ran again on the first credential operation or
+list call after that.
 
 **Everything fails with a barrier error.** The `barrier` strategy needs the
 barrier unsealed. See [../barrier-seal/user.md](../barrier-seal/user.md).

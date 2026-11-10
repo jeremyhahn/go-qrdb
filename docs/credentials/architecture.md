@@ -107,9 +107,14 @@ A `manual`-strategy node keeps no records and has nothing to move.
 
 **When it runs.** Once per node, when the credential service is bound to the
 replicated store after the system shard starts. A migration that cannot
-finish then, such as one whose node-local store is still sealed, leaves the
-service serving the replicated store, is logged, and runs again on the next
-conflict list or resolve call.
+finish then, such as one whose node-local store is still sealed or one bound
+before the system shard has a leader, leaves the service bound to the
+replicated store and is logged. It runs again before the next credential
+operation on that node (store, retrieve, list, rotate, delete, the rotation
+policy operations and the scheduled rotation pass) and on the next conflict
+list or resolve call. Until it finishes, those operations return the
+migration's error and serve, list or rotate nothing: the node does not answer
+from a store its own records have not reached.
 
 **Who wins.** Per credential name, the first node to migrate wins: it writes a
 migration claim beside the replicated record (the digests of its value,

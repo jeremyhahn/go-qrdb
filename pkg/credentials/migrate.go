@@ -153,9 +153,12 @@ type legacyCopy struct {
 // When the service has a legacy store (WithLegacyStore), BindStore then
 // migrates this node's old credentials/ records into st (MigrateLegacy). A
 // migration that cannot finish, such as one whose legacy store is still
-// sealed, leaves the store bound and is logged; the next MigrateLegacy,
-// ListMigrationConflicts or ResolveMigrationConflict runs it again, so the
-// bind error is only ErrNilStore.
+// sealed or one bound before the system shard has a leader, leaves the store
+// bound and is logged, so the bind error is only ErrNilStore. It runs again
+// before the next ordinary operation (store, retrieve, list, rotate, delete,
+// the policy verbs and RotateDue, through ensureMigrated), which returns the
+// migration's error and does nothing else until it finishes, and on the next
+// MigrateLegacy, ListMigrationConflicts or ResolveMigrationConflict.
 func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 	if err := s.store.bind(st); err != nil {
 		return err
@@ -186,6 +189,27 @@ func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
 	s.migrateMu.Lock()
 	defer s.migrateMu.Unlock()
 	return s.migrateLocked(ctx)
+}
+
+// ensureMigrated runs the migration when it has not finished, before an
+// ordinary operation reads or writes credentials: a migration that failed
+// when the store was bound (the system shard had no leader yet) would
+// otherwise leave this node's records out of reach until an operator asked
+// for the conflicts. A finished migration, with or without conflicts, costs
+// one lock and no store read. The error is the migration's, as an
+// OperationError with Op "migrate"; the caller serves nothing over a store
+// the node's own records have not reached. It takes migrateMu, so nothing
+// the migration or the resolve verbs call may call it.
+func (s *CredentialService) ensureMigrated(ctx context.Context) error {
+	if s.legacy == nil || s.strategy != StrategyBarrier {
+		return nil
+	}
+	s.migrateMu.Lock()
+	defer s.migrateMu.Unlock()
+	if err := s.migrateLocked(ctx); err != nil {
+		return &OperationError{Op: "migrate", Cause: err}
+	}
+	return nil
 }
 
 // migrateLocked runs the migration unless it already ran. Callers hold

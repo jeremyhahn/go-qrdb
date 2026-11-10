@@ -288,8 +288,10 @@ func TestMigrateLegacy_CrashWritingRecords(t *testing.T) {
 	require.NoError(t, first.BindStore(ctx, shared), "a failed migration leaves the store bound")
 	require.True(t, shared.fired)
 	assert.Len(t, legacyKeys(t, legacy), 3, "nothing is deleted before the copy is written")
-	_, err := first.retrieveBytes(ctx, "db")
-	require.Error(t, err)
+	// The value is read from the store itself: a retrieve through the
+	// service would run the unfinished migration again first.
+	_, err := mem.Get(ctx, credentialPrefix+"db")
+	require.ErrorIs(t, err, seal.ErrSecretNotFound)
 
 	rerun := newMigratingService(t, legacy)
 	require.NoError(t, rerun.BindStore(ctx, shared))

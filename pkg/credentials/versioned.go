@@ -212,6 +212,9 @@ type credentialMetaEntry struct {
 // enumerate (current strategies all can; reserved for future HSM-only
 // strategies).
 func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	switch s.strategy {
 	case StrategyManual:
 		s.mu.RLock()
@@ -237,6 +240,9 @@ func (s *CredentialService) ListCredentials(ctx context.Context) ([]string, erro
 // If the credential does not exist yet RotateCredential behaves
 // identically to StoreCredential and returns NewVersion == 1.
 func (s *CredentialService) RotateCredential(ctx context.Context, name string, opts RotateOptions) (*RotateResult, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -279,6 +285,9 @@ func (s *CredentialService) RotateCredential(ctx context.Context, name string, o
 // period has elapsed (GC may or may not have reaped the storage yet —
 // either way the caller is denied).
 func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context, name string, version uint64) (*secure.Buffer, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -303,6 +312,9 @@ func (s *CredentialService) RetrieveCredentialVersionBuffer(ctx context.Context,
 //
 // Returns ErrCredentialNotFound when name does not exist.
 func (s *CredentialService) ListCredentialVersions(ctx context.Context, name string) ([]CredentialVersion, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -325,6 +337,9 @@ func (s *CredentialService) ListCredentialVersions(ctx context.Context, name str
 // and invoke this per name on whatever cadence matches their grace
 // granularity (typically once per minute).
 func (s *CredentialService) GCExpiredVersions(ctx context.Context, name string) (int, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return 0, err
+	}
 	if err := validateName(name); err != nil {
 		return 0, err
 	}

@@ -117,6 +117,9 @@ func WithRotationValueSource(src RotationValueSource) Option {
 // *InvalidRotationPolicyError, and an unknown credential with
 // ErrCredentialNotFound.
 func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, policy RotationPolicy) error {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return err
+	}
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -156,6 +159,9 @@ func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, 
 // RotationPolicy returns the named credential's rotation policy, the zero
 // policy when none is set. An unknown credential is ErrCredentialNotFound.
 func (s *CredentialService) RotationPolicy(ctx context.Context, name string) (RotationPolicy, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return RotationPolicy{}, err
+	}
 	meta, err := s.rotationMeta(ctx, name)
 	if err != nil || meta.Policy == nil {
 		return RotationPolicy{}, err
@@ -167,6 +173,9 @@ func (s *CredentialService) RotationPolicy(ctx context.Context, name string) (Ro
 // falls due, the zero time when no enabled policy is set. An unknown
 // credential is ErrCredentialNotFound.
 func (s *CredentialService) NextRotation(ctx context.Context, name string) (time.Time, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return time.Time{}, err
+	}
 	meta, err := s.rotationMeta(ctx, name)
 	if err != nil {
 		return time.Time{}, err
@@ -215,6 +224,11 @@ func (s *CredentialService) rotationMeta(ctx context.Context, name string) (*cre
 // after rotationClaimLease and the credential is due again. A manual service has no policies and rotates
 // nothing.
 func (s *CredentialService) RotateDue(ctx context.Context, now time.Time) (int, error) {
+	// A pass rotates nothing over a store this node's own records have
+	// not reached.
+	if err := s.ensureMigrated(ctx); err != nil {
+		return 0, err
+	}
 	if s.strategy != StrategyBarrier {
 		return 0, nil
 	}
