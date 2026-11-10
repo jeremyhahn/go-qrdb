@@ -31,6 +31,9 @@ func (t *Transport) callToolJSON(ctx context.Context, method, tool string, args 
 
 // PutDelegationPolicy implements transport.CertClient.
 func (t *Transport) PutDelegationPolicy(ctx context.Context, req *transport.DelegationPolicyRequest) (*transport.DelegationPolicy, error) {
+	if req == nil {
+		return nil, &transport.RequestError{Method: "PutDelegationPolicy", Err: &transport.NilRequestError{}}
+	}
 	args := map[string]any{"principal": req.Principal, "scope": req.Scope}
 	if req.TTL != "" {
 		args["ttl"] = req.TTL
