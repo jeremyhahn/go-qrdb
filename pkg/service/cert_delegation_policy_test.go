@@ -236,3 +236,40 @@ func TestMintDelegation_RefusesADeletedTenant(t *testing.T) {
 		t.Fatalf("mint with no tenant registry: err = %v, want *CertEnrollmentNotConfiguredError", err)
 	}
 }
+
+// failingTenants is a tenant registry whose every read fails with err.
+type failingTenants struct{ err error }
+
+func (f failingTenants) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	return nil, f.err
+}
+
+// A registry read that fails is an outage, not a deletion: the mint is
+// still refused, and the caller gets the cause, not a missing tenant.
+func TestMintDelegation_ReportsATenantLookupFailure(t *testing.T) {
+	store := kvstoretest.NewGuardedMemoryStore()
+	if _, err := newPolicyServiceOver(t, newCertEnrollmentProviderOver(t, store), liveTenants{"acme": true}).
+		PutDelegationPolicy(anchorCaller("acme", "alice"), billingPolicy()); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	cause := errors.New("registry storage unavailable")
+	ring := audit.NewRingBuffer(16)
+	svc := newPolicyServiceOver(t, newCertEnrollmentProviderOver(t, store), failingTenants{err: cause}, WithEnrollmentAuditLogger(ring))
+
+	var gone *TenantNotFoundError
+	issued, err := svc.MintDelegation(servicePrincipalCtx("billing"), &MintDelegationRequest{TenantID: "acme", CSRPEM: delegationCSR(t)})
+	if issued != nil || err == nil {
+		t.Fatalf("mint over a failing registry: issued %v, err = %v, want a refusal", issued, err)
+	}
+	if errors.As(err, &gone) || errors.Is(err, tenant.ErrTenantNotFound) {
+		t.Fatalf("mint over a failing registry: err = %v, a lookup failure must not read as a missing tenant", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("mint over a failing registry: err = %v, want it to wrap %v", err, cause)
+	}
+	for _, ev := range ring.Snapshot() {
+		if ev.Action == ActionCertDelegationMint {
+			t.Fatalf("a mint over a failing registry was audited: %+v", ev)
+		}
+	}
+}
