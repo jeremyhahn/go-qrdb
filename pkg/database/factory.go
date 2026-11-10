@@ -41,6 +41,7 @@ type BackendFactory interface {
 // engines (memory, file, pebble).
 type EmbeddedBackendFactory struct {
 	objstoreOpener ObjstoreOpener
+	raftMode       bool
 }
 
 // ObjstoreOpener opens the objstore engine of tenantID's database name, whose
@@ -92,6 +93,16 @@ func WithObjstoreOpener(open ObjstoreOpener) EmbeddedBackendOption {
 	}
 }
 
+// WithRaftMode marks the factory as the one of a Raft-mode node, whose
+// databases are Raft state machines. Such a factory refuses a backend:
+// objstore database with ObjstoreRaftModeError, because an object store
+// cannot be a state machine's hot apply path.
+func WithRaftMode() EmbeddedBackendOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.raftMode = true
+	}
+}
+
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
 func NewEmbeddedBackendFactory(opts ...EmbeddedBackendOption) *EmbeddedBackendFactory {
 	f := &EmbeddedBackendFactory{}
@@ -103,6 +114,9 @@ func NewEmbeddedBackendFactory(opts ...EmbeddedBackendOption) *EmbeddedBackendFa
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
+	if f.raftMode && cfg.Backend == BackendObjstore {
+		return nil, &ObjstoreRaftModeError{Name: cfg.Name}
+	}
 	if cfg.Backend == BackendObjstore {
 		return f.openObjstore(cfg.TenantID, cfg.Name, dataDir)
 	}
