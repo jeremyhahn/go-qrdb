@@ -134,9 +134,14 @@ func (f *faultBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 // nothing. It fails with errInjectedFault, having written nothing, when a
 // written key ends with the armed Put or CompareAndSwap suffix, and reports
 // a refused batch, without writing, when one ends with the loseCAS suffix
-// and a loss is still owed. onCAS runs before the batch is decided, once
-// for each written key, and onPut after it applied.
+// and a loss is still owed. onCAS runs first, before the batch is decided,
+// once for each written key, and onPut after it applied.
 func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if f.onCAS != nil {
+		for _, w := range writes {
+			f.onCAS(ctx, w.Key)
+		}
+	}
 	for _, w := range writes {
 		for _, p := range []*atomic.Pointer[string]{&f.failPut, &f.failCAS} {
 			if s := p.Load(); s != nil && strings.HasSuffix(w.Key, *s) {
@@ -147,11 +152,6 @@ func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstor
 	for _, w := range writes {
 		if s := f.loseCAS.Load(); s != nil && strings.HasSuffix(w.Key, *s) && f.casLosses.Add(-1) >= 0 {
 			return false, nil
-		}
-	}
-	if f.onCAS != nil {
-		for _, w := range writes {
-			f.onCAS(ctx, w.Key)
 		}
 	}
 	applied, err := f.MemoryBackend.PutAllIfAllUnchanged(ctx, guards, writes)
@@ -197,8 +197,10 @@ func arm(p *atomic.Pointer[string], suffix string) {
 	p.Store(&suffix)
 }
 
-// TestBarrierFault_RotateWriteFailures: each write a barrier rotation makes
-// surfaces its own typed failure carrying the storage cause.
+// TestBarrierFault_RotateWriteFailures: a barrier rotation writes the
+// retained version, the current value and the metadata in one commit, and a
+// failure of any of them surfaces as that commit's typed failure carrying
+// the storage cause, with nothing written.
 func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -206,9 +208,9 @@ func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 		fault func(*faultBackend)
 		op    string
 	}{
-		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionKey("k", 1)) }, op: "write grace version"},
-		// The metadata record is only ever written conditionally.
-		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaKey("k")) }, op: "write meta"},
+		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionKey("k", 1)) }, op: "commit rotation"},
+		{name: "current", fault: func(b *faultBackend) { arm(&b.failPut, credentialPrefix+"k") }, op: "commit rotation"},
+		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaKey("k")) }, op: "commit rotation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, backend := newFaultBarrierService(t)
@@ -218,6 +220,14 @@ func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 			_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("v2"), GracePeriod: time.Hour})
 			requireOperationError(t, err, tc.op)
 			assert.ErrorIs(t, err, errInjectedFault)
+
+			got, err := svc.store.Get(ctx, credentialPrefix+"k")
+			require.NoError(t, err)
+			assert.Equal(t, "v1", string(got), "a failed commit leaves the current value")
+			_, err = svc.store.Get(ctx, versionKey("k", 1))
+			assert.ErrorIs(t, err, seal.ErrSecretNotFound, "a failed commit retains no version")
+			_, err = svc.store.Get(ctx, metaKey("k"))
+			assert.ErrorIs(t, err, seal.ErrSecretNotFound, "a failed commit writes no metadata")
 		})
 	}
 }

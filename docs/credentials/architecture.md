@@ -329,6 +329,19 @@ needed. The record is the lock: it lives in the replicated store on the system
 shard (above), and the compare-and-swap is one Raft transaction, so exactly
 one node takes each claim.
 
+**Every writer of the current value commits once.** A rotation writes the
+retained previous version, the new current value and the metadata record in
+one guarded batch, one Raft transaction that applies only while the metadata
+record and the current value are exactly what the rotation read. A scheduled
+rotation first stages its new value in a batch that also names the staged
+version in the metadata, and commits only while the record still carries its
+claim and still names that version; a manual rotation or a stored value that
+lands in between clears the name, and the scheduled rotation then writes
+nothing. Storing a value goes through the same batch, guarded on the metadata.
+The store must therefore offer the guarded batch
+(`kvstore.MultiGuardedBatchKVStore`); one that does not is refused with
+`ErrStoreNotAtomic`.
+
 **A rotation that does not complete is retried, not skipped.** The schedule
 moves one interval forward only when the claimed rotation lands. A rotation
 that fails releases its claim and leaves the credential due, so the next check

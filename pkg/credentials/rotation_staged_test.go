@@ -25,8 +25,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// A scheduled rotation that fails after it persisted the new value and before
-// the write that advances the version and settles the schedule is landed by
+// A scheduled rotation that fails after it staged the new value, in the one
+// commit that advances the version and settles the schedule, is landed by
 // the next claimant from the staged value: the value source is called exactly
 // once for the interval.
 func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
@@ -40,11 +40,11 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 		lapse bool
 	}{
 		{
-			name:   "current write fails after staging",
+			name:   "commit fails after staging",
 			inject: func(b *faultBackend) { arm(&b.failCAS, current) },
 		},
 		{
-			name: "version write contended after the current write",
+			name: "commit contended after staging",
 			inject: func(b *faultBackend) {
 				b.onCAS = func(_ context.Context, key string) {
 					if key == current {
@@ -55,7 +55,7 @@ func TestRotateDue_FailureBetweenPersistAndSettleCallsSourceOnce(t *testing.T) {
 			},
 		},
 		{
-			name: "version write fails and the claim lapses",
+			name: "commit fails and the claim lapses",
 			inject: func(b *faultBackend) {
 				b.onCAS = func(_ context.Context, key string) {
 					if key == current {

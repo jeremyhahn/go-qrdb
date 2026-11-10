@@ -134,7 +134,7 @@ func (e *RotationError) Unwrap() error { return e.Cause }
 // cause, replacing the inline "credentials: <op>: %w" error-wrapping idiom.
 type OperationError struct {
 	// Op names the operation that failed (e.g. "list barrier",
-	// "write current", "decode meta").
+	// "commit rotation", "decode meta").
 	Op string
 	// Cause is the underlying error.
 	Cause error

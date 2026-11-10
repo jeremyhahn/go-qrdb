@@ -276,7 +276,7 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 			return err
 		}
 	case StrategyBarrier:
-		if err := s.store.Put(ctx, credentialPrefix+name, value); err != nil {
+		if err := s.storeBarrier(ctx, name, value); err != nil {
 			return err
 		}
 	default:

@@ -267,7 +267,7 @@ than change the interface.
 | Rotation policy set or read for an unknown name | `ErrCredentialNotFound` | n/a |
 | Due rotation with no `RotationValueSource` configured | `*credentials.RotationError` wrapping `ErrNoRotationValueSource`; the scheduler logs it and the credential stays due | **yes** — no rotation, no claim |
 | `RotationValueSource` returns an error or a nil Buffer | `*credentials.RotationError` wrapping the cause (`ErrEmptyCredentialValue` for nil); the credential stays due | **yes** |
-| Claimed rotation fails after the source (current-value write, contended or failed version write, cancelled scheduler context) | `*credentials.RotationError` wrapping the cause; the claim is released and the credential stays due, so the next check retries, landing the staged value without calling the source again | **yes** — `NextRotation` does not move |
+| Claimed rotation fails after the source (failed or contended commit batch, cancelled scheduler context) | `*credentials.RotationError` wrapping the cause; the claim is released and the credential stays due, so the next check retries, landing the staged value without calling the source again | **yes** — `NextRotation` does not move |
 | Node crashes holding a rotation claim | the claim lapses after its five-minute lease; the credential is then due on every node | n/a |
 | Expired-version reaping or the history trim fails after a rotation landed | `*credentials.RotationError` wrapping the cause; the rotation is not counted, `NextRotation` has moved, and the record keeps a pending cleanup that every later check retries without calling the value source | **yes** — the trimmed versions stay until the cleanup lands |
 | Tenant on the shared system barrier | `*service.CapabilityUnsupportedError` (no dedicated barrier) | **yes**, never the node-wide store |
@@ -330,19 +330,27 @@ strategy's credentials and, for each one whose enabled policy is due:
    that has not expired at that moment;
 2. draws the new value from the `RotationValueSource`, under a deadline at the
    claim's own expiry, unless an earlier attempt left a staged value (below);
-3. rotates, keeping the previous value as history: it writes the previous
-   value under its version key, stages the new value under the next version's
-   staged key (`credential-staged/<e>/<N+1>`), and writes it as the current value;
-4. advances the version, ends the claim, records the claim as a pending
-   cleanup and moves `NextRotation` one interval past now, unless the policy
-   or its schedule changed meanwhile, all in one `CompareAndSwap` of the metadata record,
-   so no record shows the version advanced and the interval still open. If
+3. stages the new value: one guarded batch, refused unless the metadata record
+   is exactly as read, writes the value under the next version's staged key
+   (`credential-staged/<e>/<N+1>`) and the metadata record naming that version
+   in `staged`;
+4. commits the rotation in one guarded batch, refused unless the metadata
+   record and the current value are both exactly as read: it writes the
+   previous value under its version key, the new value as the current value,
+   and the metadata record, which advances the version, clears `staged`, ends
+   the claim, records the claim as a pending cleanup and moves `NextRotation`
+   one interval past now, unless the policy or its schedule changed meanwhile.
+   No record shows the version advanced and the interval still open, and no
+   reader sees the new value without its metadata. A refused batch is re-read
+   and re-applied, up to eight times, only while the fresh record still
+   carries this claim and still names this staged version; otherwise the
+   rotation ends with `ErrRotationClaimLost` having written nothing. If
    steps 2 to 4 failed it ends the claim instead and leaves `NextRotation`
    where it was, so the credential stays due. Ending a failed claim runs even
    after the scheduler's context is cancelled, under its own 30-second bound
    that starts once the rotation has returned; if that write fails too, the
    claim lapses;
-5. deletes the spent staged value, runs `GCExpiredVersions`, then prunes history to `RetainVersions - 1`
+5. deletes every staged value of a version up to the current one, runs `GCExpiredVersions`, then prunes history to `RetainVersions - 1`
    non-current versions, then clears the pending cleanup.
 
 The staged value is the persisted evidence of a value the source already
@@ -350,12 +358,24 @@ produced. It is kept under its own `credential-staged/<e>/<n>` key, apart from t
 `credential-versions/<e>/<n>` version records (`<e>` is the name in unpadded
 URL-safe base64), so the deletes that spend it (step 5 and the rotation's own
 post-commit delete) can never remove a version that a concurrent rotation
-retained under the same number. A claimant that finds one staged for the next
-version, left by an attempt that failed or crashed
-after step 2 and before step 4 landed, lands it from step 3 without calling the
-source again, so the source runs once per interval even across that failure.
-A manual rotation and a delete remove a staged value under the version they
-take or leave, so a stale one is never landed later.
+retained under the same number. A claimant whose metadata record names a
+staged version that is still the next version, left by an attempt that failed
+or crashed after step 3 and before step 4 landed, lands it from step 4 without
+calling the source again, so the source runs once per interval even across
+that failure. Only the version the record names is resumed: the staged keys
+are never probed, so a staged value the record does not name is never landed.
+
+Every writer of the current value commits through the same kind of batch. A
+manual rotation writes the retained version, the current value and the
+metadata (with `staged` cleared) in one batch guarded on the metadata record
+and the current value as read, and numbers its versions again from the fresh
+record when the batch is refused. `StoreCredential` and `SubmitCredential`
+write the current value in a batch guarded on the metadata record; when the
+record names a staged version the same batch clears `staged` and deletes the
+staged value. The stored value does not advance the version, the rotation
+stays due, and the next check calls the source again and retains the stored
+value as the previous version. A delete removes every staged value of the
+credential.
 
 A check that finds a pending cleanup on a credential that is not due, with no
 unexpired claim held by another caller, runs step 5 alone and does not call the
