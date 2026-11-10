@@ -238,10 +238,10 @@ func (s *CredentialService) RotateDue(ctx context.Context, now time.Time) (int, 
 // rotateIfDue carries out one credential's policy if it is due at now. It
 // reports whether this call rotated the credential.
 func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now time.Time) (bool, error) {
-	claim, policy, cleanup, err := s.claimRotation(ctx, name, now)
+	claim, cleanup, err := s.claimRotation(ctx, name, now)
 	if claim == nil {
 		if cleanup != "" {
-			err = errors.Join(err, s.cleanupRotation(ctx, name, cleanup, policy))
+			err = errors.Join(err, s.cleanupRotation(ctx, name, cleanup))
 		}
 		return false, err
 	}
@@ -268,7 +268,7 @@ func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now ti
 		}
 		return false, err
 	}
-	if err := s.cleanupRotation(ctx, name, claim.ID, policy); err != nil {
+	if err := s.cleanupRotation(ctx, name, claim.ID); err != nil {
 		return true, err
 	}
 	s.logger.Info("credential rotated on schedule",
@@ -278,11 +278,12 @@ func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now ti
 }
 
 // cleanupRotation carries out the retention of the completed scheduled
-// rotation id: it deletes the spent staged value, reaps expired versions, trims the history down to an
-// enabled policy's RetainVersions, and then clears the record's pending
+// rotation id: it deletes the spent staged value, reaps expired versions,
+// trims the history down to the RetainVersions of the policy as it stands at
+// the trim (pruneBarrierHistory), and then clears the record's pending
 // cleanup marker if it still names id. A failure leaves the marker, so the
 // next check retries the cleanup without invoking the value source.
-func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string, policy RotationPolicy) error {
+func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string) error {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
 		return err
@@ -298,10 +299,8 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if _, err := s.GCExpiredVersions(ctx, name); err != nil {
 		return err
 	}
-	if policy.Enabled {
-		if err := s.pruneBarrierHistory(ctx, name, policy.RetainVersions-1); err != nil {
-			return err
-		}
+	if err := s.pruneBarrierHistory(ctx, name); err != nil {
+		return err
 	}
 	return s.updateBarrierMeta(ctx, name, "finish cleanup", func(meta *credentialMeta) bool {
 		if meta.PendingCleanup != id {
@@ -314,29 +313,24 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 
 // claimRotation takes the rotation claim on name when its enabled policy is
 // due at now and no other caller holds an unexpired claim. It returns the
-// claim and the policy it was taken under, or a nil claim when this call
-// must not rotate. With a nil claim it also returns the record's pending
-// cleanup, the claim ID of a completed rotation whose retention still has
-// to run, and the policy to run it under; it returns none while another
+// claim, or a nil claim when this call must not rotate. With a nil claim it
+// also returns the record's pending cleanup, the claim ID of a completed
+// rotation whose retention still has to run; it returns none while another
 // caller holds an unexpired claim, whose rotation cleans up after itself.
 // An unexpired claim is judged, and a new claim's lease timed, at its
 // acquisition on the service clock, not at now.
-func (s *CredentialService) claimRotation(ctx context.Context, name string, now time.Time) (*rotationClaim, RotationPolicy, string, error) {
+func (s *CredentialService) claimRotation(ctx context.Context, name string, now time.Time) (*rotationClaim, string, error) {
 	var (
 		claim    *rotationClaim
-		policy   RotationPolicy
 		cleanup  string
 		noSource bool
 	)
 	err := s.updateBarrierMeta(ctx, name, "claim rotation", func(meta *credentialMeta) bool {
-		claim, policy, cleanup, noSource = nil, RotationPolicy{}, meta.PendingCleanup, false
+		claim, cleanup, noSource = nil, meta.PendingCleanup, false
 		// The lease is timed from its acquisition, not from the pass's
 		// now: one pass may have spent leases on earlier credentials.
 		acquired := s.now().UTC()
 		p := meta.Policy
-		if p != nil {
-			policy = *p
-		}
 		if p == nil || !p.Enabled || meta.NextRotation.After(now) {
 			return false
 		}
@@ -355,12 +349,12 @@ func (s *CredentialService) claimRotation(ctx context.Context, name string, now 
 		return true
 	})
 	if err != nil {
-		return nil, RotationPolicy{}, "", err
+		return nil, "", err
 	}
 	if noSource {
-		return nil, policy, cleanup, ErrNoRotationValueSource
+		return nil, cleanup, ErrNoRotationValueSource
 	}
-	return claim, policy, cleanup, nil
+	return claim, cleanup, nil
 }
 
 // rotateClaimed draws a value from the rotation source and makes it the
@@ -453,14 +447,22 @@ func (s *CredentialService) releaseRotation(ctx context.Context, name string, cl
 	})
 }
 
-// pruneBarrierHistory deletes all but the newest keep non-current versions.
-// History is appended in rotation order, so the newest are at its end.
-func (s *CredentialService) pruneBarrierHistory(ctx context.Context, name string, keep int) error {
+// pruneBarrierHistory deletes the non-current versions the policy no longer
+// retains: all but the newest RetainVersions-1. History is appended in
+// rotation order, so the newest are at its end. The policy is the one in the
+// record read here, with the history it trims, and not the one the rotation
+// was claimed under: an operator may have changed it while the value source
+// ran, and a policy disabled or removed since trims nothing.
+func (s *CredentialService) pruneBarrierHistory(ctx context.Context, name string) error {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
 		return err
 	}
-	excess := len(meta.History) - keep
+	p := meta.Policy
+	if p == nil || !p.Enabled {
+		return nil
+	}
+	excess := len(meta.History) - (p.RetainVersions - 1)
 	if excess <= 0 {
 		return nil
 	}

@@ -561,7 +561,7 @@ func TestRotateBarrier_ClaimReplacedTakesValueBack(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	ctx := t.Context()
 	setFaultPolicy(t, svc, "k", 3)
-	claim, _, _, err := svc.claimRotation(ctx, "k", rotationEpoch.Add(time.Hour))
+	claim, _, err := svc.claimRotation(ctx, "k", rotationEpoch.Add(time.Hour))
 	if err != nil || claim == nil {
 		t.Fatalf("claimRotation = %v, %v; want a claim", claim, err)
 	}
