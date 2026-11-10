@@ -206,7 +206,22 @@ func (s *CredentialService) ensureMigrated(ctx context.Context) error {
 	}
 	s.migrateMu.Lock()
 	defer s.migrateMu.Unlock()
-	if err := s.migrateLocked(ctx); err != nil {
+	if s.migrated {
+		return nil
+	}
+	// The retry holds the lock every credential operation takes first, and
+	// a caller such as the rotation scheduler sets no deadline: bound it,
+	// so a store that never answers cannot hold them all.
+	rctx := ctx
+	if s.rotationAttemptTimeout > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, s.rotationAttemptTimeout)
+		defer cancel()
+	}
+	if err := s.migrateLocked(rctx); err != nil {
+		if cerr := rctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+			err = errors.Join(cerr, err)
+		}
 		return &OperationError{Op: "migrate", Cause: err}
 	}
 	return nil
