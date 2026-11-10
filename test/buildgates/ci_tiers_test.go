@@ -144,7 +144,7 @@ const (
 )
 
 // scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
-// ci-template v1.27.0's nightly cron, the one scheduler under ruling 135,
+// ci-template v1.27.0's cron, weekly here (ciSchedule), the one scheduler under ruling 135,
 // restored under Company Agent ruling 216(1) (Software DS-3913); the owner
 // ruling of 2026-10-11 and m433 forbid host cron and timers, not this
 // trigger.

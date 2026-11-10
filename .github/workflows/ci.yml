@@ -66,12 +66,13 @@ on:
     # `workflow_dispatch`. test/buildgates/ci_tiers_test.go holds this line.
     types: [opened, synchronize, reopened]
   workflow_dispatch:                    # re-fire a whole workflow
-  # v1.23: main's full tier nightly as well as after every merge. Scheduled
-  # runs are on the default branch. The one scheduler (ruling 135, ruling
-  # 216(1)); test/buildgates/ci_tiers_test.go allows a `schedule:` here
-  # alone.
+  # v1.23: main's full tier after every merge and once a week, at 04:00 UTC
+  # on Sunday, the end of this project's night in the factory's rotation
+  # (#1349). Scheduled runs are on the default branch. The one scheduler
+  # (ruling 135, ruling 216(1)); test/buildgates/ci_tiers_test.go allows a
+  # `schedule:` here alone and holds it to this one cron.
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 4 * * 0'
 
 # v1.26.2 (ruling 145; go-qrdb's since DS-3465): on main the group is the
 # workflow, the event and the commit, so main runs never cancel each other and
@@ -489,7 +490,7 @@ jobs:
 
       # ci-template v1.30: vet-tags and the secure analyzer, on the nightly
       # schedule alone.
-      - name: make lint-sweeps (nightly schedule)
+      - name: make lint-sweeps (weekly schedule)
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && github.event_name == 'schedule' }}
         env:
           IN_IMAGE_NETWORK: bridge
