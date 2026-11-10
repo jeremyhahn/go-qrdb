@@ -15,6 +15,7 @@
 package tenantadmin
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -493,6 +494,193 @@ func TestKVStore_CreateRefusesANonAtomicStore(t *testing.T) {
 	var se *StoreError
 	if err := s.Create(context.Background(), "acme", &Pending{Username: "alice", Thumbprint: "t"}); !errors.As(err, &se) || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
 		t.Fatalf("Create over a non-atomic store = %v, want a StoreError wrapping ErrAtomicWriteUnsupported", err)
+	}
+}
+
+// TestAuditKVStore_RoundTripsAndDeletesTheReadRecord: a kept audit record
+// reads back byte for byte, a Delete of exactly what was read removes it, and
+// the tenant then has none.
+func TestAuditKVStore_RoundTripsAndDeletesTheReadRecord(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(kvstore.NewMemoryKVStore())
+	record := []byte(`{"action":"tenant.onboard"}`)
+
+	if err := s.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := s.Get(ctx, "acme")
+	if err != nil || !bytes.Equal(got, record) {
+		t.Fatalf("Get = %q, %v; want %q", got, err, record)
+	}
+	deleted, err := s.Delete(ctx, "acme", got)
+	if err != nil || !deleted {
+		t.Fatalf("Delete of the read record = %v, %v; want true, nil", deleted, err)
+	}
+	if got, err := s.Get(ctx, "acme"); err != nil || got != nil {
+		t.Fatalf("Get after Delete = %q, %v; want nil, nil", got, err)
+	}
+}
+
+// TestAuditKVStore_GetOfAnAbsentRecordIsNilNil: a tenant with no kept record
+// reads as none, not as an error.
+func TestAuditKVStore_GetOfAnAbsentRecordIsNilNil(t *testing.T) {
+	got, err := NewAuditKVStore(kvstore.NewMemoryKVStore()).Get(context.Background(), "acme")
+	if err != nil || got != nil {
+		t.Fatalf("Get of an absent record = %q, %v; want nil, nil", got, err)
+	}
+}
+
+// TestAuditKVStore_CreateNeverReplacesARecord: a second record for the same
+// tenant is refused and the first is kept.
+func TestAuditKVStore_CreateNeverReplacesARecord(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(kvstore.NewMemoryKVStore())
+	if err := s.Create(ctx, "acme", []byte("first")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var already *AlreadyPendingError
+	if err := s.Create(ctx, "acme", []byte("second")); !errors.As(err, &already) || already.TenantID != "acme" {
+		t.Fatalf("second Create = %v, want *AlreadyPendingError{acme}", err)
+	}
+	if got, _ := s.Get(ctx, "acme"); string(got) != "first" {
+		t.Fatalf("record after a refused Create = %q, want first", got)
+	}
+}
+
+// TestAuditKVStore_IsIndependentOfThePendingAdmin: the kept audit record and
+// the pending admin sit under different keys of one tenant's namespace, so
+// consuming one leaves the other.
+func TestAuditKVStore_IsIndependentOfThePendingAdmin(t *testing.T) {
+	ctx := context.Background()
+	store := kvstore.NewMemoryKVStore()
+	admins, audits := NewKVStore(store), NewAuditKVStore(store)
+	if err := admins.Create(ctx, "acme", &Pending{Username: "alice", Thumbprint: "abc"}); err != nil {
+		t.Fatalf("pending admin Create: %v", err)
+	}
+	if err := audits.Create(ctx, "acme", []byte("record")); err != nil {
+		t.Fatalf("audit Create: %v", err)
+	}
+	if deleted, err := audits.Delete(ctx, "acme", []byte("record")); err != nil || !deleted {
+		t.Fatalf("audit Delete = %v, %v; want true, nil", deleted, err)
+	}
+	if p, err := admins.Get(ctx, "acme"); err != nil || p == nil || p.Username != "alice" {
+		t.Fatalf("pending admin after the audit record's delete = %+v, %v; want alice kept", p, err)
+	}
+}
+
+// TestAuditKVStore_DeleteLeavesADifferentOrAbsentRecord: Delete removes only
+// the record it was given; one that differs, or none at all, deletes nothing.
+func TestAuditKVStore_DeleteLeavesADifferentOrAbsentRecord(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(kvstore.NewMemoryKVStore())
+
+	if deleted, err := s.Delete(ctx, "acme", []byte("record")); err != nil || deleted {
+		t.Fatalf("Delete with no record = %v, %v; want false, nil", deleted, err)
+	}
+	if err := s.Create(ctx, "acme", []byte("record")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if deleted, err := s.Delete(ctx, "acme", []byte("other")); err != nil || deleted {
+		t.Fatalf("Delete of a different record = %v, %v; want false, nil", deleted, err)
+	}
+	if got, _ := s.Get(ctx, "acme"); string(got) != "record" {
+		t.Fatalf("record after a non-matching Delete = %q, want it kept", got)
+	}
+}
+
+// TestAuditKVStore_RefusesAnEmptyRecord: an empty record is neither kept nor
+// used to delete one.
+func TestAuditKVStore_RefusesAnEmptyRecord(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(kvstore.NewMemoryKVStore())
+	if err := s.Create(ctx, "acme", []byte("record")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var incomplete *IncompleteError
+	if err := s.Create(ctx, "other", nil); !errors.As(err, &incomplete) {
+		t.Fatalf("Create of an empty record = %v, want *IncompleteError", err)
+	}
+	if got, _ := s.Get(ctx, "other"); got != nil {
+		t.Fatalf("an empty record was kept: %q", got)
+	}
+	if deleted, err := s.Delete(ctx, "acme", nil); !errors.As(err, &incomplete) || deleted {
+		t.Fatalf("Delete with an empty read = %v, %v; want false, *IncompleteError", deleted, err)
+	}
+	if got, _ := s.Get(ctx, "acme"); string(got) != "record" {
+		t.Fatalf("record after an empty-read Delete = %q, want it kept", got)
+	}
+}
+
+// TestAuditKVStore_RefusesAnInvalidTenantID: a tenant id that would nest
+// namespaces is refused by every operation.
+func TestAuditKVStore_RefusesAnInvalidTenantID(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(kvstore.NewMemoryKVStore())
+
+	var bad *InvalidTenantError
+	if err := s.Create(ctx, "acme/evil", []byte("record")); !errors.As(err, &bad) {
+		t.Fatalf("Create for a nesting tenant id = %v, want *InvalidTenantError", err)
+	}
+	if _, err := s.Get(ctx, "acme/evil"); !errors.As(err, &bad) {
+		t.Fatalf("Get for a nesting tenant id = %v, want *InvalidTenantError", err)
+	}
+	if _, err := s.Delete(ctx, "acme/evil", []byte("record")); !errors.As(err, &bad) {
+		t.Fatalf("Delete for a nesting tenant id = %v, want *InvalidTenantError", err)
+	}
+}
+
+// TestAuditKVStore_RefusesANonAtomicStore: without atomic writes a kept
+// record could be overwritten or deleted after a concurrent change, so both
+// writes are refused.
+func TestAuditKVStore_RefusesANonAtomicStore(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(nonAtomicKVStore{kvstore.NewMemoryKVStore()})
+
+	var se *StoreError
+	if err := s.Create(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "create" || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("Create over a non-atomic store = %v, want *StoreError{Op: create} wrapping ErrAtomicWriteUnsupported", err)
+	}
+	if _, err := s.Delete(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "delete" || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+		t.Fatalf("Delete over a non-atomic store = %v, want *StoreError{Op: delete} wrapping ErrAtomicWriteUnsupported", err)
+	}
+}
+
+// TestAuditKVStore_PropagatesStoreFailures: a failing write, read or delete
+// is reported as a StoreError naming the operation and wrapping the cause.
+func TestAuditKVStore_PropagatesStoreFailures(t *testing.T) {
+	ctx := context.Background()
+	putErr, getErr, deleteErr := errors.New("put boom"), errors.New("get boom"), errors.New("delete boom")
+	s := NewAuditKVStore(&faultingKVStore{inner: kvstore.NewMemoryKVStore(), putErr: putErr, getErr: getErr, deleteErr: deleteErr})
+
+	var se *StoreError
+	if err := s.Create(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "create" || !errors.Is(err, putErr) {
+		t.Fatalf("Create over a failing store = %v, want *StoreError{Op: create} wrapping %v", err, putErr)
+	}
+	if _, err := s.Get(ctx, "acme"); !errors.As(err, &se) || se.Op != "get" || !errors.Is(err, getErr) {
+		t.Fatalf("Get over a failing store = %v, want *StoreError{Op: get} wrapping %v", err, getErr)
+	}
+	if _, err := s.Delete(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "delete" || !errors.Is(err, deleteErr) {
+		t.Fatalf("Delete over a failing store = %v, want *StoreError{Op: delete} wrapping %v", err, deleteErr)
+	}
+}
+
+// TestAuditKVStore_PropagatesAScopeFailure: with no store to scope, every
+// operation reports the scope failure.
+func TestAuditKVStore_PropagatesAScopeFailure(t *testing.T) {
+	ctx := context.Background()
+	s := NewAuditKVStore(nil)
+
+	var se *StoreError
+	if err := s.Create(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "scope" {
+		t.Fatalf("Create over a nil store = %v, want *StoreError{Op: scope}", err)
+	}
+	if _, err := s.Get(ctx, "acme"); !errors.As(err, &se) || se.Op != "scope" {
+		t.Fatalf("Get over a nil store = %v, want *StoreError{Op: scope}", err)
+	}
+	if _, err := s.Delete(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "scope" {
+		t.Fatalf("Delete over a nil store = %v, want *StoreError{Op: scope}", err)
 	}
 }
 
