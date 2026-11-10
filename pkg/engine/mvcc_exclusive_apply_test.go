@@ -8,6 +8,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 )
 
 // newExclusiveApplyEngine returns an MVCCEngine over memory storage with lr
@@ -61,14 +62,17 @@ func TestRequiresExclusiveApply_SideStateBatchesAreExclusive(t *testing.T) {
 	revoke, rerr := protocol.EncodeLeaseRevoke(7)
 	auditAppend, aerr := protocol.EncodeAuditAppend("acme", tenantEvent("acme", "barrier", "unseal"))
 	auditPrune, perr := protocol.EncodeAuditPrune("acme", 1)
+	instanceAppend, ierr := protocol.EncodeVerifiableLogAuditAppend(vlog.AuditLogID("acme"), [][]byte{[]byte("e")})
 	cases := map[string]sm.Entry{
-		"index create": exclusiveApplyEntry(t, idxCreate, cerr),
-		"index drop":   exclusiveApplyEntry(t, idxDrop, derr),
-		"lease grant":  exclusiveApplyEntry(t, grant, gerr),
-		"lease revoke": exclusiveApplyEntry(t, revoke, rerr),
-		"audit append": exclusiveApplyEntry(t, auditAppend, aerr),
-		"audit prune":  exclusiveApplyEntry(t, auditPrune, perr),
-		"undecodable":  {Index: 1},
+		"index create":          exclusiveApplyEntry(t, idxCreate, cerr),
+		"index drop":            exclusiveApplyEntry(t, idxDrop, derr),
+		"lease grant":           exclusiveApplyEntry(t, grant, gerr),
+		"lease revoke":          exclusiveApplyEntry(t, revoke, rerr),
+		"audit append":          exclusiveApplyEntry(t, auditAppend, aerr),
+		"audit prune":           exclusiveApplyEntry(t, auditPrune, perr),
+		"undecodable":           {Index: 1},
+		"audit-instance append": exclusiveApplyEntry(t, instanceAppend, ierr),
+		"undecodable vlog":      {Index: 1, Cmd: []byte{protocol.OpVerifiableLog}},
 	}
 	for name, e := range cases {
 		if !eng.RequiresExclusiveApply([]sm.Entry{plain, e}) {

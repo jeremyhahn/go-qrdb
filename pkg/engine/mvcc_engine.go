@@ -458,14 +458,24 @@ func commandRequiresExclusiveApply(op byte, payload []byte) bool {
 	if _, ok := exclusiveApplyOps[op]; ok {
 		return true
 	}
-	if op != protocol.OpGuarded {
+	switch op {
+	case protocol.OpVerifiableLog:
+		// An audit-instance append advances the tenant chain's in-memory
+		// head before its batch publishes, as OpAuditAppend does.
+		subtype, _, _, err := protocol.DecodeVerifiableLogCommand(payload)
+		if err != nil {
+			return true
+		}
+		return subtype == protocol.VerifiableLogSubtypeAuditAppend
+	case protocol.OpGuarded:
+		_, inner, err := protocol.DecodeGuarded(payload)
+		if err != nil {
+			return true
+		}
+		return commandRequiresExclusiveApply(inner[0], inner[1:])
+	default:
 		return false
 	}
-	_, inner, err := protocol.DecodeGuarded(payload)
-	if err != nil {
-		return true
-	}
-	return commandRequiresExclusiveApply(inner[0], inner[1:])
 }
 
 // ApplyVectorIndexEffects applies effects to the engine's vector index
