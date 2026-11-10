@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -213,6 +214,42 @@ func TestTenantHomes_HomeGroup(t *testing.T) {
 		h := newTestTenantHomes(&fakeHomeServices{err: seal.ErrSealed}, &fakeHomeProvisioner{})
 		if _, _, err := h.HomeGroup(ctx, "vault"); !errors.Is(err, seal.ErrSealed) {
 			t.Fatalf("err = %v, want seal.ErrSealed", err)
+		}
+	})
+}
+
+// TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable pins what a transport
+// answers when the home group cannot be named: a retryable unavailable, as the
+// HomeStore path answers for the same causes, not an internal error.
+func TestTenantHomes_HomeGroup_RefusalsClassifyUnavailable(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("catching up", func(t *testing.T) {
+		bundle := homeBundle(func() error { return nil })
+		bundle.ShardID = 42
+		svcs := &fakeHomeServices{svcs: bundle, host: &stubHost{}, joining: map[uint64]bool{42: true}}
+		h := newTestTenantHomes(svcs, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		var catchingUp *TenantHomeCatchingUpError
+		if !errors.As(err, &catchingUp) || catchingUp.TenantID != "vault" {
+			t.Fatalf("err = %v, want *TenantHomeCatchingUpError for vault", err)
+		}
+	})
+
+	t.Run("factory error", func(t *testing.T) {
+		factoryErr := errors.New("home services not built")
+		h := newTestTenantHomes(&fakeHomeServices{err: factoryErr}, &fakeHomeProvisioner{})
+
+		_, _, err := h.HomeGroup(ctx, "vault")
+		if got := errclass.Classify(err); got != errclass.Unavailable {
+			t.Fatalf("Classify(%v) = %v, want Unavailable", err, got)
+		}
+		if !errors.Is(err, factoryErr) {
+			t.Fatalf("err = %v, want it to wrap the factory's error", err)
 		}
 	})
 }
