@@ -416,6 +416,52 @@ func TestResolveMigrationConflict_Import(t *testing.T) {
 	assert.Equal(t, []string{metaSuffix, versionPrefix + "1"}, ev.Attributes["dropped_records"])
 }
 
+// TestResolveMigrationConflict_ImportRetriedAfterCleanupFailure verifies an
+// import whose cleanup failed is not imported again: the retry creates no
+// version, leaves a credential rotated since in place, and only finishes
+// deleting the kept copy.
+func TestResolveMigrationConflict_ImportRetriedAfterCleanupFailure(t *testing.T) {
+	ctx := context.Background()
+	legacyA, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	legacyB := &faultyStore{Store: seal.NewMemoryBackend()}
+	writeLegacy(t, legacyA, "db", "v2", "v1", nil)
+	writeLegacy(t, legacyB, "db", "kept", "kept-old", nil)
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+	nodeB := newMigratingService(t, legacyB)
+	require.NoError(t, nodeB.BindStore(ctx, shared))
+	arm := func(op, key string) {
+		legacyB.mu.Lock()
+		defer legacyB.mu.Unlock()
+		legacyB.op, legacyB.key, legacyB.fired = op, key, false
+	}
+	requireUntouched := func(msg string) {
+		t.Helper()
+		meta, err := nodeB.loadBarrierMeta(ctx, "db")
+		require.NoError(t, err)
+		assert.Equal(t, uint64(4), meta.CurrentVersion, msg)
+		assert.Equal(t, "newer", retrieveString(t, nodeB, "db"), msg)
+	}
+
+	// The import commits, then the note that opens the cleanup fails.
+	arm("put", legacyMigrationNotePrefix+"db")
+	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+	assert.Equal(t, "kept", retrieveString(t, nodeB, "db"))
+	_, err := nodeB.rotateBarrier(ctx, "db", RotateOptions{NewValue: []byte("newer")})
+	require.NoError(t, err)
+
+	// The retry gets as far as deleting the kept copy, which fails.
+	arm("delete", legacyCredentialPrefix+"db")
+	require.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjected)
+	requireUntouched("a retried import must not import the kept copy again")
+
+	require.NoError(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	requireUntouched("finishing the cleanup must not import the kept copy again")
+	assert.Empty(t, legacyKeys(t, legacyB))
+	conflicts, err := nodeB.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+}
+
 // TestResolveMigrationConflict_Discard verifies discarding deletes the kept
 // copy, leaves the replicated record and audits every dropped record.
 func TestResolveMigrationConflict_Discard(t *testing.T) {
