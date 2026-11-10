@@ -906,11 +906,17 @@ func metaKey(name string) string {
 
 func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*credentialMeta, error) {
 	raw, err := s.store.Get(ctx, metaKey(name))
-	if err != nil {
+	if errors.Is(err, seal.ErrSecretNotFound) {
 		// Missing metadata is normal for legacy (untracked) entries
 		// and for credentials that have never been rotated. Return
 		// a zero-valued meta the caller can populate.
 		return &credentialMeta{}, nil
+	}
+	if err != nil {
+		// Any other failure is not absence: a caller deciding on an
+		// empty record would number a version, or invoke the rotation
+		// value source, over metadata it never read.
+		return nil, &OperationError{Op: "read meta", Cause: err}
 	}
 	var meta credentialMeta
 	if err := json.Unmarshal(raw, &meta); err != nil {
