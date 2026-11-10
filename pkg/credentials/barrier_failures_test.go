@@ -87,7 +87,7 @@ func TestBarrier_SealedWritesFailClosed(t *testing.T) {
 	}{
 		{
 			name: "rotate",
-			op:   "write current",
+			op:   "read meta",
 			run: func(svc *CredentialService) error {
 				_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("v2")})
 				return err
