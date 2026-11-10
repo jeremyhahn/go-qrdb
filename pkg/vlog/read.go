@@ -199,11 +199,29 @@ func Get(r storage.Reader, id LogID, from uint64, limit int) ([]Entry, error) {
 	if next >= end {
 		return entries, nil
 	}
-	prefix := entryPrefix(id)
-	it := r.NewIterator(&storage.IteratorOptions{LowerBound: entryKey(id, next), UpperBound: entryKey(id, end)})
+	// A named log's entry i is under its own prefix at i; the audit
+	// instance's is the linear chain's event at TreeStart+i. A log under
+	// the audit name whose descriptor lacks Audit predates the instance and
+	// keeps its own entries.
+	prefix, base := entryPrefix(id), uint64(0)
+	if IsAuditLog(id) {
+		desc, err := readDescriptor(r.Get, id)
+		if err != nil {
+			return nil, err
+		}
+		if desc.Audit {
+			start := EventRangeStart(id.TenantID, 0)
+			prefix, base = start[:len(start)-8], desc.TreeStart
+		}
+	}
+	bodyKey := func(index uint64) []byte {
+		return binary.BigEndian.AppendUint64(bytes.Clone(prefix), base+index)
+	}
+	it := r.NewIterator(&storage.IteratorOptions{LowerBound: bodyKey(next), UpperBound: bodyKey(end)})
 	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
-		index, idxOK := uint64Suffix(it.Key(), prefix)
-		if !idxOK || index != next {
+		seq, idxOK := uint64Suffix(it.Key(), prefix)
+		index := seq - base
+		if !idxOK || seq < base || index != next {
 			key := string(it.Key())
 			_ = it.Close()
 			return nil, &CorruptTableError{Key: key, Reason: "entry out of sequence"}
@@ -219,7 +237,7 @@ func Get(r storage.Reader, id LogID, from uint64, limit int) ([]Entry, error) {
 		return nil, &TableReadError{Err: err}
 	}
 	if next != end {
-		return nil, &CorruptTableError{Key: string(entryKey(id, next)), Reason: "missing entry"}
+		return nil, &CorruptTableError{Key: string(bodyKey(next)), Reason: "missing entry"}
 	}
 	return entries, nil
 }

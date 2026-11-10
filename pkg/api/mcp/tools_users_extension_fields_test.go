@@ -28,7 +28,7 @@ import (
 )
 
 // testFactorLister is a minimal, UNTAGGED user.FactorLister double, local to
-// this file rather than borrowed from tools_coverage_new_test.go's
+// this file rather than borrowed from mock_admin_services_test.go's
 // covMockUserAuthFactorSvc: that type lives behind a `codec_json && raft`
 // build constraint, narrower than this file's (none), and a helper's
 // constraint must be a superset of every caller's (AGENTS.md).

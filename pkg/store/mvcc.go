@@ -251,7 +251,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	// syncWrites=true for durability by default; noSync=true disables fsync
 	// (suitable for testing where fsync latency causes proposal timeouts).
 	syncWrites := !s.noSync
-	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir, syncwatch.WithClock(s.syncClock)))
+	s.storage = pebbleStorage.NewFromDB(db, syncWrites, pebbleSyncs(initialDir, syncwatch.WithClock(s.syncClock)), pebbleStorage.WithSealWatch(seals))
 
 	// Build engine options from pre-Open configuration.
 	var engineOpts []engine.MVCCOption
@@ -270,6 +270,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	if s.enableTimeSeries {
 		ts, tsErr := timeseries.New(s.storage)
 		if tsErr != nil {
+			seals.Close()
 			_ = db.Close()
 			s.db = nil
 			s.storage = nil
@@ -280,6 +281,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 
 	e, err := engine.NewMVCCEngine(s.storage, engineOpts...)
 	if err != nil {
+		seals.Close()
 		_ = db.Close()
 		s.db = nil
 		s.storage = nil
@@ -290,6 +292,7 @@ func (s *MVCCStateMachine) Open(_ context.Context, initialDir string, _ <-chan s
 	lastApplied, err := s.readLastApplied()
 	if err != nil {
 		_ = e.Close(context.Background())
+		seals.Close()
 		_ = db.Close()
 		s.db = nil
 		s.storage = nil
@@ -771,9 +774,21 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 		return &NotOpenError{}
 	}
 
+	// One quiesce lease spans the whole recovery, from the delete of the
+	// old data through the commit of its replacement: a seal either refuses
+	// recovery before anything is deleted or drains until it has finished.
+	release, err := admit(s.seals)
+	if err != nil {
+		return &SnapshotError{Op: "recover", Err: err}
+	}
+	defer release()
+
 	// Clear all existing data.
 	if err := s.clearAll(); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
+	}
+	if recoverClearedHook != nil {
+		recoverClearedHook()
 	}
 
 	var count uint32
@@ -781,7 +796,10 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
-	batch := s.storage.Batch()
+	// The replacement is written to Pebble directly: a storage batch admits
+	// again on commit, which a seal that closed the gate after the delete
+	// would refuse, and the recovery's lease is already held.
+	batch := s.db.NewBatch()
 	defer func() { _ = batch.Close() }()
 
 	for i := uint32(0); i < count; i++ {
@@ -809,12 +827,12 @@ func (s *MVCCStateMachine) RecoverFromSnapshot(_ context.Context, r io.Reader, s
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 
-		if err := batch.Set(key, val); err != nil {
+		if err := batch.Set(key, val, pebble.Sync); err != nil {
 			return &SnapshotError{Op: "recover", Err: err}
 		}
 	}
 
-	if err := batch.Commit(); err != nil {
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return &SnapshotError{Op: "recover", Err: err}
 	}
 
@@ -903,6 +921,7 @@ func (s *MVCCStateMachine) Close(ctx context.Context) error {
 		s.engine = nil
 	}
 
+	s.seals.Close()
 	err := s.db.Close()
 	s.db = nil
 	s.storage = nil
