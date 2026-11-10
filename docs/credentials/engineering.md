@@ -155,10 +155,27 @@ than change the interface.
   request field. A tenant on the shared system barrier is refused, not given
   the node-wide store or a prefix inside it. Names and values in one tenant are
   invisible to every other tenant and to the platform.
-- **Concurrent rotations of one name are not serialized.** Each reads the
-  current version and writes the next; the later write wins. This is a known
-  property, not a defect of tenancy; serializing them belongs to the row-lock
-  work.
+- **Concurrent writers of one name commit one at a time.** A `barrier`
+  rotation and a stored value each land in one guarded batch
+  (`PutAllIfAllUnchanged`) that applies only while the records it read are
+  unchanged; the writer whose batch is refused reads again, so no rotation
+  retains a value another writer already replaced and no two rotations take
+  the same version (see [Scheduled rotation](#scheduled-rotation)). The store
+  must offer that batch; one that does not is refused with
+  `ErrStoreNotAtomic`.
+- **A legacy key is read from its end.** The node-local legacy store appended
+  `#meta` and `#v<n>` to a credential's name, and a name may itself hold a
+  `#`. The migration reads a legacy key as the metadata or version record of
+  `<name>` only when it ends in exactly `#meta` or `#v<decimal>` and the
+  node's legacy store also holds `<name>`'s value (or its migration note, or
+  `<name>` is the conflict being resolved); every other key is the value of
+  the credential the whole key names. So `db#prod` is its own credential
+  whether or not `db` exists, and each migrates, conflicts and resolves under
+  its own name. A legacy name that ends in a record suffix of an existing
+  credential (`db#meta` beside `db`) was already one and the same record in
+  the legacy layout, and is read as that credential's record. The legacy copy
+  is deleted value last, so a record left by an interrupted delete still has
+  the value that makes it that credential's.
 - **`manual` values are never raw heap bytes.** They live in enclaves;
   a read opens the enclave into a fresh `*secure.Buffer`; the enclave is
   destroyed on delete and on a rotation with no grace period.

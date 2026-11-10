@@ -27,8 +27,9 @@ import (
 // legacyCredentialPrefix is the key prefix the barrier strategy kept its
 // records under in each node's own seal store, before the records moved to
 // the replicated store. Under it the metadata and version records are keyed
-// by the name followed by metaSuffix or versionPrefix+n; the replicated
-// store keys them under prefixes of their own (replicatedKey).
+// by the name followed by metaSuffix or versionPrefix+n (splitRecordKey);
+// the replicated store keys them under prefixes of their own
+// (replicatedKey).
 const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key prefix, not a credential
 
 // The migration records are keyed by credential name under prefixes of their
@@ -345,7 +346,17 @@ func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *le
 		}
 	}
 	for k := range c.record {
+		// The value goes last: while a metadata or version record is
+		// left, the value that makes it one of name's is too.
+		if k == "" {
+			continue
+		}
 		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name+k); err != nil {
+			return &OperationError{Op: "delete legacy record", Cause: err}
+		}
+	}
+	if _, ok := c.record[""]; ok {
+		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name); err != nil {
 			return &OperationError{Op: "delete legacy record", Cause: err}
 		}
 	}
@@ -355,16 +366,34 @@ func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *le
 	return nil
 }
 
-// loadLegacy reads the legacy store's records, grouped by name. A non-empty
-// only restricts the result to that name.
+// loadLegacy reads the legacy store's records, grouped by the name
+// splitRecordKey parses from each key. A non-empty only restricts the result
+// to that name. A name is held, so that keys ending in a record suffix
+// after it are its records, when the listing holds its value, when this
+// node's migration note names it (its deletion was interrupted), or when it
+// is the name asked for.
 func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[string]*legacyCopy, error) {
 	keys, err := s.legacy.List(ctx, legacyCredentialPrefix+only)
 	if err != nil {
 		return nil, &OperationError{Op: "list legacy records", Cause: err}
 	}
+	notes, err := s.legacy.List(ctx, legacyMigrationNotePrefix+only)
+	if err != nil {
+		return nil, &OperationError{Op: "list migration notes", Cause: err}
+	}
+	held := make(map[string]struct{}, len(keys)+len(notes)+1)
+	for _, key := range keys {
+		held[strings.TrimPrefix(key, legacyCredentialPrefix)] = struct{}{}
+	}
+	for _, key := range notes {
+		held[strings.TrimPrefix(key, legacyMigrationNotePrefix)] = struct{}{}
+	}
+	if only != "" {
+		held[only] = struct{}{}
+	}
 	copies := make(map[string]*legacyCopy)
 	for _, key := range keys {
-		name, suffix := splitRecordKey(strings.TrimPrefix(key, legacyCredentialPrefix))
+		name, suffix := splitRecordKey(strings.TrimPrefix(key, legacyCredentialPrefix), held)
 		if only != "" && name != only {
 			continue
 		}
@@ -378,10 +407,6 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 			return nil, &OperationError{Op: "read legacy record", Cause: err}
 		}
 		c.record[suffix] = value
-	}
-	notes, err := s.legacy.List(ctx, legacyMigrationNotePrefix+only)
-	if err != nil {
-		return nil, &OperationError{Op: "list migration notes", Cause: err}
 	}
 	for _, key := range notes {
 		name := strings.TrimPrefix(key, legacyMigrationNotePrefix)
@@ -402,72 +427,83 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 // migration claim.
 func (s *CredentialService) loadReplicated(ctx context.Context, name string) (credentialRecord, error) {
 	rec := credentialRecord{}
-	// The legacy layout groups under name every record whose key, cut at
-	// its first '#', is name. The values and metadata records of that
-	// group are found by prefix, and each one's versions by its own name.
-	suffixes := map[string]struct{}{}
+	// The value and the metadata record are keyed by the name itself; a
+	// listing by that prefix also returns longer names, which are other
+	// credentials.
 	for prefix, part := range map[string]string{credentialPrefix: "", MetaKeyPrefix: metaSuffix} {
 		keys, err := s.store.List(ctx, prefix+name)
 		if err != nil {
 			return nil, &OperationError{Op: "list replicated records", Cause: err}
 		}
 		for _, key := range keys {
-			got, suffix := splitRecordKey(strings.TrimPrefix(key, prefix))
-			if got != name {
+			if key != prefix+name {
 				continue
 			}
 			value, err := s.store.Get(ctx, key)
 			if err != nil {
 				return nil, &OperationError{Op: "read replicated record", Cause: err}
 			}
-			rec[suffix+part] = value
-			suffixes[suffix] = struct{}{}
+			rec[part] = value
 		}
 	}
-	for suffix := range suffixes {
-		prefix := VersionKeyPrefix + encodedName(name+suffix) + "/"
-		keys, err := s.store.List(ctx, prefix)
+	prefix := VersionKeyPrefix + encodedName(name) + "/"
+	keys, err := s.store.List(ctx, prefix)
+	if err != nil {
+		return nil, &OperationError{Op: "list replicated records", Cause: err}
+	}
+	for _, key := range keys {
+		value, err := s.store.Get(ctx, key)
 		if err != nil {
-			return nil, &OperationError{Op: "list replicated records", Cause: err}
+			return nil, &OperationError{Op: "read replicated record", Cause: err}
 		}
-		for _, key := range keys {
-			value, err := s.store.Get(ctx, key)
-			if err != nil {
-				return nil, &OperationError{Op: "read replicated record", Cause: err}
-			}
-			rec[suffix+versionPrefix+strings.TrimPrefix(key, prefix)] = value
-		}
+		rec[versionPrefix+strings.TrimPrefix(key, prefix)] = value
 	}
 	return rec, nil
 }
 
-// replicatedKey is the bound store's key for the legacy record name+suffix.
-// The legacy store appended its metadata and version suffixes to the name,
-// so the last one in the key says which record it is; anything else is the
-// value of a credential whose name holds a '#'.
+// replicatedKey is the bound store's key for the record of name that
+// splitRecordKey parsed suffix for: "" is the value, metaSuffix the
+// metadata, and versionPrefix+n version n.
 func replicatedKey(name, suffix string) string {
-	full := name + suffix
-	if suffix == "" {
-		return credentialPrefix + full
+	if suffix == metaSuffix {
+		return metaKey(name)
 	}
-	if base, ok := strings.CutSuffix(full, metaSuffix); ok && len(base) >= len(name) {
-		return metaKey(base)
-	}
-	if i := strings.LastIndex(full, versionPrefix); i >= len(name) {
-		if version, err := strconv.ParseUint(full[i+len(versionPrefix):], 10, 64); err == nil {
-			return versionKey(full[:i], version)
+	if n, ok := strings.CutPrefix(suffix, versionPrefix); ok {
+		if version, err := strconv.ParseUint(n, 10, 64); err == nil {
+			return versionKey(name, version)
 		}
 	}
-	return credentialPrefix + full
+	return credentialPrefix + name + suffix
 }
 
-// splitRecordKey splits a key relative to a record prefix into the name and
-// the suffix starting at its first '#'.
-func splitRecordKey(rest string) (name, suffix string) {
-	if i := strings.IndexByte(rest, '#'); i >= 0 {
-		return rest[:i], rest[i:]
+// splitRecordKey splits a key relative to the legacy prefix into the
+// credential name and the record's suffix. The legacy store appended
+// metaSuffix or versionPrefix+n to the name, and a name may itself hold a
+// '#', so the key is read from its end: it is a metadata or version record
+// of <name> only when it ends in exactly metaSuffix or versionPrefix and a
+// decimal version, and held, the keys of the same listing, holds <name>'s
+// value. Any other key is the value of the credential the whole key names.
+func splitRecordKey(rest string, held map[string]struct{}) (name, suffix string) {
+	base, ok := strings.CutSuffix(rest, metaSuffix)
+	if !ok {
+		i := strings.LastIndex(rest, versionPrefix)
+		if i < 0 {
+			return rest, ""
+		}
+		if _, err := strconv.ParseUint(rest[i+len(versionPrefix):], 10, 64); err != nil {
+			return rest, ""
+		}
+		base = rest[:i]
 	}
-	return rest, ""
+	if _, ok := held[base]; !ok {
+		return rest, ""
+	}
+	// base is a credential's value only when it is not itself a record of
+	// a shorter name.
+	if _, sub := splitRecordKey(base, held); sub != "" {
+		return rest, ""
+	}
+	return base, rest[len(base):]
 }
 
 // ListMigrationConflicts returns the unresolved migration conflicts on this
