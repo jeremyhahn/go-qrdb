@@ -13,7 +13,7 @@ import (
 	"github.com/quic-go/quic-go/http3"
 )
 
-// sessionID is the WebTransport Session ID
+// sessionID is the WebTransport Session ID.
 type sessionID uint64
 
 type http3Stream interface {
@@ -31,7 +31,7 @@ var (
 	_ http3Stream = &http3.RequestStream{}
 )
 
-// SessionState contains the state of a WebTransport session
+// SessionState contains the state of a WebTransport session.
 type SessionState struct {
 	// ConnectionState contains the QUIC connection state, including TLS handshake information
 	ConnectionState quic.ConnectionState
@@ -297,7 +297,7 @@ func (s *Session) queueCapsule(c capsule) {
 	}
 }
 
-// addIncomingStream adds a bidirectional stream that the remote peer opened
+// addIncomingStream adds a bidirectional stream that the remote peer opened.
 func (s *Session) addIncomingStream(qstr *quic.Stream, streamHeaderLen uint64) {
 	id := qstr.StreamID()
 	str := newStream(
@@ -319,7 +319,7 @@ func (s *Session) addIncomingStream(qstr *quic.Stream, streamHeaderLen uint64) {
 	}
 }
 
-// addIncomingUniStream adds a unidirectional stream that the remote peer opened
+// addIncomingUniStream adds a unidirectional stream that the remote peer opened.
 func (s *Session) addIncomingUniStream(qstr *quic.ReceiveStream, streamHeaderLen uint64) {
 	id := qstr.StreamID()
 	str := newReceiveStream(
@@ -540,7 +540,7 @@ func (s *Session) closeWithError(closeErr error, closeCapsule *closeSessionCapsu
 	return true
 }
 
-// SessionState returns the current state of the session
+// SessionState returns the current state of the session.
 func (s *Session) SessionState() SessionState {
 	return SessionState{
 		ConnectionState:     s.conn.ConnectionState(),

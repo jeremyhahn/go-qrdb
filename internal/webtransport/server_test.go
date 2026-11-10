@@ -107,7 +107,7 @@ func createStreamAndWrite(t *testing.T, conn *quic.Conn, sessionID uint64, data 
 }
 
 func TestServerClosesConnectionForInvalidSessionID(t *testing.T) {
-	s := webtransport.Server{H3: &http3.Server{TLSConfig: webtransport.TLSConf}}
+	s := webtransport.Server{H3: &http3.Server{TLSConfig: tlsConf}}
 	defer s.Close()
 
 	udpConn, err := net.ListenUDP("udp", nil)
@@ -125,7 +125,7 @@ func TestServerClosesConnectionForInvalidSessionID(t *testing.T) {
 			conn, err := quic.DialAddr(
 				context.Background(),
 				addr,
-				&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+				&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
 				&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 			)
 			require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestServerClosesConnectionForInvalidSessionID(t *testing.T) {
 
 func TestServerReorderedUpgradeRequest(t *testing.T) {
 	s := webtransport.Server{
-		H3: &http3.Server{TLSConfig: webtransport.TLSConf},
+		H3: &http3.Server{TLSConfig: tlsConf},
 	}
 	defer s.Close()
 	connChan := make(chan *webtransport.Session)
@@ -174,7 +174,7 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	cconn, err := quic.DialAddr(
 		context.Background(),
 		fmt.Sprintf("localhost:%d", port),
-		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+		&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
 		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	)
 	require.NoError(t, err)
@@ -190,10 +190,11 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 	str, err := conn.OpenRequestStream(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, str.SendRequestHeader(
-		webtransport.NewWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
+		newWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
 	))
 	rsp, err := str.ReadResponse()
 	require.NoError(t, err)
+	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	sconn := <-connChan
 	defer sconn.CloseWithError(0, "")
@@ -219,7 +220,7 @@ func TestServerReorderedUpgradeRequest(t *testing.T) {
 func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 	timeout := scaleDuration(100 * time.Millisecond)
 	s := webtransport.Server{
-		H3:                &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
+		H3:                &http3.Server{TLSConfig: tlsConf, EnableDatagrams: true},
 		ReorderingTimeout: timeout,
 	}
 	defer s.Close()
@@ -237,7 +238,7 @@ func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 	cconn, err := quic.DialAddr(
 		context.Background(),
 		fmt.Sprintf("localhost:%d", port),
-		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+		&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
 		&quic.Config{EnableDatagrams: true},
 	)
 	require.NoError(t, err)
@@ -260,10 +261,11 @@ func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 	requestStr, err := conn.OpenRequestStream(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, requestStr.SendRequestHeader(
-		webtransport.NewWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
+		newWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
 	))
 	rsp, err := requestStr.ReadResponse()
 	require.NoError(t, err)
+	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 	sconn := <-connChan
 	defer sconn.CloseWithError(0, "")
@@ -286,7 +288,7 @@ func TestServerReorderedUpgradeRequestTimeout(t *testing.T) {
 func TestServerSettingsCheck(t *testing.T) {
 	timeout := scaleDuration(150 * time.Millisecond)
 	s := webtransport.Server{
-		H3:                &http3.Server{TLSConfig: webtransport.TLSConf, EnableDatagrams: true},
+		H3:                &http3.Server{TLSConfig: tlsConf, EnableDatagrams: true},
 		ReorderingTimeout: timeout,
 	}
 	errChan := make(chan error, 1)
@@ -306,7 +308,7 @@ func TestServerSettingsCheck(t *testing.T) {
 	cconn, err := quic.DialAddr(
 		context.Background(),
 		fmt.Sprintf("localhost:%d", port),
-		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+		&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
 		&quic.Config{EnableDatagrams: true},
 	)
 	require.NoError(t, err)
@@ -315,17 +317,18 @@ func TestServerSettingsCheck(t *testing.T) {
 	requestStr, err := conn.OpenRequestStream(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, requestStr.SendRequestHeader(
-		webtransport.NewWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
+		newWebTransportRequest(t, fmt.Sprintf("https://localhost:%d/webtransport", port)),
 	))
 	rsp, err := requestStr.ReadResponse()
 	require.NoError(t, err)
+	defer rsp.Body.Close()
 	require.Equal(t, http.StatusNotImplemented, rsp.StatusCode)
 
 	require.ErrorContains(t, <-errChan, "webtransport: missing datagram support")
 }
 
 func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
-	s := webtransport.Server{H3: &http3.Server{TLSConfig: webtransport.TLSConf}}
+	s := webtransport.Server{H3: &http3.Server{TLSConfig: tlsConf}}
 	defer s.Close()
 
 	// The first session's handler runs until the test ends, so that session is
@@ -349,7 +352,7 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 	cconn, err := quic.DialAddr(
 		ctx,
 		fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port),
-		&tls.Config{RootCAs: webtransport.CertPool, NextProtos: []string{http3.NextProtoH3}},
+		&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
 		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	)
 	require.NoError(t, err)
@@ -361,14 +364,15 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 
 	first, err := conn.OpenRequestStream(ctx)
 	require.NoError(t, err)
-	require.NoError(t, first.SendRequestHeader(webtransport.NewWebTransportRequest(t, url)))
+	require.NoError(t, first.SendRequestHeader(newWebTransportRequest(t, url)))
 	rsp, err := first.ReadResponse()
 	require.NoError(t, err)
+	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
 	second, err := conn.OpenRequestStream(ctx)
 	require.NoError(t, err)
-	require.NoError(t, second.SendRequestHeader(webtransport.NewWebTransportRequest(t, url)))
+	require.NoError(t, second.SendRequestHeader(newWebTransportRequest(t, url)))
 	_, err = second.ReadResponse()
 	var streamErr *quic.StreamError
 	require.ErrorAs(t, err, &streamErr)
@@ -404,7 +408,7 @@ func TestServerConnectionStateChecks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := webtransport.Server{H3: &http3.Server{TLSConfig: webtransport.TLSConf}}
+			s := webtransport.Server{H3: &http3.Server{TLSConfig: tlsConf}}
 			defer s.Close()
 
 			serverConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
@@ -415,7 +419,7 @@ func TestServerConnectionStateChecks(t *testing.T) {
 			require.NoError(t, err)
 			defer clientConn.Close()
 
-			ln, err := quic.ListenEarly(serverConn, webtransport.TLSConf, &quic.Config{
+			ln, err := quic.ListenEarly(serverConn, tlsConf, &quic.Config{
 				EnableDatagrams:                  tt.enableDatagrams,
 				EnableStreamResetPartialDelivery: tt.enableStreamResetPartial,
 			})
@@ -427,7 +431,7 @@ func TestServerConnectionStateChecks(t *testing.T) {
 			_, err = quic.DialEarly(ctx, clientConn, ln.Addr(), &tls.Config{
 				ServerName: "localhost",
 				NextProtos: []string{http3.NextProtoH3},
-				RootCAs:    webtransport.CertPool,
+				RootCAs:    certPool,
 			}, &quic.Config{
 				EnableDatagrams:                  tt.enableDatagrams,
 				EnableStreamResetPartialDelivery: tt.enableStreamResetPartial,
@@ -450,7 +454,7 @@ func TestListenAndServeCloseClosesUDPConn(t *testing.T) {
 	addr := udpAddr.String()
 	require.NoError(t, udpConn.Close())
 
-	s := webtransport.Server{H3: &http3.Server{Addr: addr, TLSConfig: webtransport.TLSConf}}
+	s := webtransport.Server{H3: &http3.Server{Addr: addr, TLSConfig: tlsConf}}
 	webtransport.ConfigureHTTP3Server(s.H3)
 
 	serveErr := make(chan error, 1)
@@ -463,7 +467,7 @@ func TestListenAndServeCloseClosesUDPConn(t *testing.T) {
 			ctx,
 			addr,
 			&tls.Config{
-				RootCAs:    webtransport.CertPool,
+				RootCAs:    certPool,
 				ServerName: "localhost",
 				NextProtos: []string{http3.NextProtoH3},
 			},

@@ -48,7 +48,7 @@ func appendSettingsFrame(b []byte, values map[uint64]uint64) []byte {
 func TestClientInvalidResponseHandling(t *testing.T) {
 	ln, err := quic.ListenAddr(
 		"localhost:0",
-		webtransport.TLSConf,
+		tlsConf,
 		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
 	)
 	require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestClientInvalidResponseHandling(t *testing.T) {
 		}
 	}()
 
-	d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool}}
+	d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
 	_, _, err = d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
 	require.Error(t, err)
 	var sErr error
@@ -129,7 +129,7 @@ func TestClientConnChecksServerQUICSupportOnDial(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ln, err := quic.ListenAddr("localhost:0", webtransport.TLSConf, tt.config)
+			ln, err := quic.ListenAddr("localhost:0", tlsConf, tt.config)
 			require.NoError(t, err)
 			defer ln.Close()
 
@@ -137,7 +137,7 @@ func TestClientConnChecksServerQUICSupportOnDial(t *testing.T) {
 				t.Context(),
 				ln.Addr().String(),
 				&tls.Config{
-					RootCAs:    webtransport.CertPool,
+					RootCAs:    certPool,
 					ServerName: "localhost",
 					NextProtos: []string{http3.NextProtoH3},
 				},
@@ -159,7 +159,7 @@ func TestClientConnChecksServerQUICSupportOnDial(t *testing.T) {
 }
 
 func TestClientClosesConnectionForInvalidSessionID(t *testing.T) {
-	ln, err := quic.ListenAddr("localhost:0", webtransport.TLSConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	ln, err := quic.ListenAddr("localhost:0", tlsConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
 	require.NoError(t, err)
 	defer ln.Close()
 	addr := fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port)
@@ -170,7 +170,7 @@ func TestClientClosesConnectionForInvalidSessionID(t *testing.T) {
 	}{{"bidirectional", webTransportFrameType}, {"unidirectional", webTransportUniStreamType}} {
 		t.Run(tt.name, func(t *testing.T) {
 			go func() {
-				d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool}}
+				d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
 				_, _, _ = d.Dial(context.Background(), addr, nil)
 			}()
 
@@ -214,7 +214,7 @@ func TestClientClosesConnectionForInvalidSessionID(t *testing.T) {
 }
 
 func TestClientWaitForSettingsTimeout(t *testing.T) {
-	ln, err := quic.ListenAddr("localhost:0", webtransport.TLSConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+	ln, err := quic.ListenAddr("localhost:0", tlsConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
 	require.NoError(t, err)
 	defer ln.Close()
 
@@ -230,7 +230,7 @@ func TestClientWaitForSettingsTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	errChan := make(chan error)
 	go func() {
-		d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool}}
+		d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
 		_, _, err := d.Dial(ctx, fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
 		errChan <- err
 	}()
@@ -300,7 +300,7 @@ func TestClientInvalidSettingsHandling(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ln, err := quic.ListenAddr("localhost:0", webtransport.TLSConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
+			ln, err := quic.ListenAddr("localhost:0", tlsConf, &quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true})
 			require.NoError(t, err)
 			defer ln.Close()
 
@@ -324,7 +324,7 @@ func TestClientInvalidSettingsHandling(t *testing.T) {
 				connChan <- conn
 			}()
 
-			d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: webtransport.CertPool}}
+			d := webtransport.Transport{TLSClientConfig: &tls.Config{RootCAs: certPool}}
 			_, _, err = d.Dial(context.Background(), fmt.Sprintf("https://localhost:%d", ln.Addr().(*net.UDPAddr).Port), nil)
 			require.Error(t, err)
 			require.ErrorContains(t, err, tc.errorStr)

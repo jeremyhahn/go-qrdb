@@ -467,8 +467,12 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 
 	// Since quic-go v0.65.0, HTTPStream sends the response header only when
 	// WriteHeader came first, and WriteHeader after HTTPStream panics.
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		return nil, errors.New("webtransport: response writer does not expose the HTTP/3 stream")
+	}
 	w.WriteHeader(http.StatusOK)
-	str, err := w.(http3.HTTPStreamer).HTTPStream()
+	str, err := streamer.HTTPStream()
 	if err != nil {
 		// The 200 response was not sent, so no session exists: refuse it.
 		return nil, fmt.Errorf("webtransport: taking over the request stream: %w", err)

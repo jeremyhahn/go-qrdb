@@ -181,6 +181,7 @@ func TestCloseWithErrorTruncatesSendMessage(t *testing.T) {
 	require.NoError(t, reqStr.SendRequestHeader(NewWebTransportRequest(t, serverAddr)))
 	rsp, err := reqStr.ReadResponse()
 	require.NoError(t, err)
+	defer rsp.Body.Close()
 	require.Equal(t, http.StatusOK, rsp.StatusCode)
 
 	sess := newSession(context.Background(), 42, clientConn, reqStr, "", sessionFlowControl{})
