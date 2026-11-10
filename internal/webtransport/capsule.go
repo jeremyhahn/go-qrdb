@@ -42,13 +42,13 @@ func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 		case closeSessionCapsuleType:
 			capsule, err := parseCloseSessionCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return capsule, nil
 		case maxDataCapsuleType:
 			maxData, err := parseMaxDataCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return maxDataCapsule{MaximumData: maxData}, nil
 		case maxStreamDataCapsuleType:
@@ -56,19 +56,19 @@ func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 		case maxStreamsBidiCapsuleType:
 			maxStreams, err := parseMaxStreamsCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return maxStreamsBidiCapsule{MaximumStreams: maxStreams}, nil
 		case maxStreamsUniCapsuleType:
 			maxStreams, err := parseMaxStreamsCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return maxStreamsUniCapsule{MaximumStreams: maxStreams}, nil
 		case dataBlockedCapsuleType:
 			maxData, err := parseDataBlockedCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return dataBlockedCapsule{MaximumData: maxData}, nil
 		case streamDataBlockedCapsuleType:
@@ -76,13 +76,13 @@ func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 		case streamsBlockedBidiCapsuleType:
 			maxStreams, err := parseStreamsBlockedCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return streamsBlockedBidiCapsule{MaximumStreams: maxStreams}, nil
 		case streamsBlockedUniCapsuleType:
 			maxStreams, err := parseStreamsBlockedCapsule(capsuleReader)
 			if err != nil {
-				return nil, err
+				return nil, capsuleBodyError(err)
 			}
 			return streamsBlockedUniCapsule{MaximumStreams: maxStreams}, nil
 		default:
@@ -92,6 +92,17 @@ func parseNextCapsule(parser *http3.CapsuleParser) (capsule, error) {
 			}
 		}
 	}
+}
+
+// capsuleBodyError maps the io.EOF a capsule body parser returns when the
+// capsule's declared length is used up before its field to
+// io.ErrUnexpectedEOF. Only parser.Next reports the end of the stream, so a
+// short body is never read as a clean FIN. Every other error is unchanged.
+func capsuleBodyError(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
 }
 
 type closeSessionCapsule struct {

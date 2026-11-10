@@ -84,7 +84,8 @@ Return to the upstream module once a release fixes all six.
 9. **A clean CONNECT FIN is a remote close** (`session.go`). A FIN on the
    CONNECT stream closes the session like WT_CLOSE_SESSION with code 0 and an
    empty message, and the session answers with a FIN, not a reset. A FIN
-   inside a capsule is still H3_DATAGRAM_ERROR.
+   inside a capsule is still H3_DATAGRAM_ERROR. A known capsule whose body
+   ends before its field (`capsule.go`) is H3_DATAGRAM_ERROR too.
 10. **WT_CLOSE_SESSION messages are validated** (`capsule.go`,
     `session.go`). A message over 1024 bytes is rejected before its body is
     read, and one that is not UTF-8 after; either closes the session with
@@ -103,8 +104,9 @@ deadline; its waits now fit inside one deadline.
 `TestSendStreamStopWhileWriteSendsHeader` patch 6,
 `TestIncomingStreamsMapConcurrentAcceptors` patch 7,
 `TestSendStreamCancelWriteThenCloseSessionAbortsHeader` patch 8,
-`TestConnectStreamFINClosesSessionCleanly` and
-`TestConnectStreamFINInsideCapsuleIsAnError` patch 9, and
+`TestConnectStreamFINClosesSessionCleanly`,
+`TestConnectStreamFINInsideCapsuleIsAnError` and
+`TestConnectStreamShortCapsuleBodyIsAnError` patch 9, and
 `TestParseCloseSessionCapsuleRejectsMalformedMessage`,
 `TestParseCloseSessionCapsuleAcceptsLongestMessage` and
 `TestMalformedCloseSessionMessageClosesSessionWithMessageError` patch 10.
