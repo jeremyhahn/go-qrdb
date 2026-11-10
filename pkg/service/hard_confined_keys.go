@@ -14,7 +14,11 @@
 
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+)
 
 // hardConfinedPrefixes are "__sys:cluster_ca/" and "__sys:cert_ca/", the
 // sub-prefixes of the internal key namespace (see internal_keys.go) under
@@ -102,8 +106,13 @@ var hardConfinedMaterialPrefixes = []string{
 // kvSealBackend) reaches it through the node's own KV service, never through
 // the embedded decorators, and its self-scan rooted at this prefix stays
 // unfiltered (isHardConfinedKeyForScan).
+// credentials.MigrationClaimPrefix holds the migration claims: each names
+// the copy a credential's migration settled on and whether its import is
+// complete, so a Put through the embedded KV would redirect or replay a
+// migration.
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
+	credentials.MigrationClaimPrefix,
 }
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record
