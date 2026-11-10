@@ -270,6 +270,9 @@ func (s *CredentialService) emitAuditOutcome(ctx context.Context, action, name, 
 // For the manual strategy, the value is stored in-memory. For the barrier
 // strategy, the value is encrypted and stored via the StorageBarrier.
 func (s *CredentialService) StoreCredential(ctx context.Context, name string, value []byte) error {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return err
+	}
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -306,6 +309,9 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 // transport (see docs/credentials/architecture.md, "Protected-memory
 // boundary").
 func (s *CredentialService) RetrieveCredentialBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -347,6 +353,9 @@ func (s *CredentialService) SubmitCredential(ctx context.Context, name string, v
 // before removal. For the barrier strategy, the key is deleted from
 // the StorageBarrier.
 func (s *CredentialService) DeleteCredential(ctx context.Context, name string) error {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return err
+	}
 	if err := validateName(name); err != nil {
 		return err
 	}
