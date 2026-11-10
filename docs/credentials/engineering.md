@@ -377,13 +377,16 @@ in later picks it up on its next check.
 
 ## Persistence
 
-`barrier` credentials are system records under `__sys:credentials/` on the
-system shard's replicated KV, so every node reads the same value, policy and
+`barrier` credentials are system records under `__sys:credentials/` (the
+values) and its sibling prefixes `__sys:credential-meta/`,
+`__sys:credential-versions/` and `__sys:credential-staged/` on the system
+shard's replicated KV, so every node reads the same value, policy and
 version history; each node's system barrier encrypts them at rest. The
 embedded transport's KV, MVCC, batch, transaction and watch services confine
-the whole prefix (`pkg/service/hard_confined_keys.go`,
+each of those prefixes whole (`pkg/service/hard_confined_keys.go`,
 `hardConfinedWholePrefixes`): an embedded caller with KV permission cannot
-read or replace a record under it, and only the credential verbs reach it.
+read or replace a record under any of them, and only the credential verbs
+reach them.
 `manual` credentials are **not persisted at all** — they live only in memory
 for the life of the process, which is why a restart re-blocks retrieval until
 an operator submits again.
