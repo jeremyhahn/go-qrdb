@@ -27,12 +27,16 @@ import (
 // the replicated credentialPrefix. The key layout under it is the same.
 const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key prefix, not a credential
 
-// migrationSuffix marks a migration record. Under credentialPrefix it is the
-// claim naming the copy the first node to migrate wrote; under
-// legacyCredentialPrefix it is this node's note that its copy is settled and
-// its old records are being deleted. Names never contain '#'
-// (listBarrier skips every key that does), so it collides with no record.
-const migrationSuffix = "#migrated"
+// The migration records are keyed by credential name under prefixes of their
+// own: the claim naming the copy the first node to migrate wrote, in the
+// replicated store, and this node's note that its copy is settled and its old
+// records are being deleted, in its own seal store. A credential name may be
+// any non-blank string, '#' included, so every key under credentialPrefix or
+// legacyCredentialPrefix is a credential's; a key under neither is none.
+const (
+	migrationClaimPrefix      = "__sys:credential-migrations/"
+	legacyMigrationNotePrefix = "credential-migrations/"
+)
 
 // MigrationResolution is how an operator settles a migration conflict.
 type MigrationResolution string
@@ -54,7 +58,7 @@ func WithLegacyStore(st Store) Option {
 	return func(s *CredentialService) { s.legacy = st }
 }
 
-// migrationClaim is the record under credentialPrefix+name+migrationSuffix.
+// migrationClaim is the record under migrationClaimPrefix+name.
 // It holds the digests of the copy that became the replicated record, never
 // a value, so a later node can tell whether its copy is the same one and,
 // if not, which parts differ.
@@ -246,7 +250,7 @@ func (s *CredentialService) migrateOne(ctx context.Context, name string, c *lega
 // none. A replicated record written before any node migrated the name was
 // first, so the claim then names that record, complete.
 func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours migrationClaim) (migrationClaim, error) {
-	key := credentialPrefix + name + migrationSuffix
+	key := migrationClaimPrefix + name
 	if claim, ok := s.loadClaim(ctx, key); ok {
 		return claim, nil
 	}
@@ -319,7 +323,7 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 		return &OperationError{Op: "encode migration claim", Cause: err}
 	}
 	// A failed swap means another node holding the same copy completed it.
-	if _, err := s.store.CompareAndSwap(ctx, credentialPrefix+name+migrationSuffix, pending, done); err != nil {
+	if _, err := s.store.CompareAndSwap(ctx, migrationClaimPrefix+name, pending, done); err != nil {
 		return &OperationError{Op: "complete migration claim", Cause: err}
 	}
 	return nil
@@ -330,7 +334,7 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 // finishes the deletion instead of mistaking what is left for a different
 // copy.
 func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *legacyCopy) error {
-	note := legacyCredentialPrefix + name + migrationSuffix
+	note := legacyMigrationNotePrefix + name
 	if !c.settled {
 		if err := s.legacy.Put(ctx, note, []byte{1}); err != nil {
 			return &OperationError{Op: "write migration note", Cause: err}
@@ -365,15 +369,27 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 			c = &legacyCopy{record: credentialRecord{}}
 			copies[name] = c
 		}
-		if suffix == migrationSuffix {
-			c.settled = true
-			continue
-		}
 		value, err := s.legacy.Get(ctx, key)
 		if err != nil {
 			return nil, &OperationError{Op: "read legacy record", Cause: err}
 		}
 		c.record[suffix] = value
+	}
+	notes, err := s.legacy.List(ctx, legacyMigrationNotePrefix+only)
+	if err != nil {
+		return nil, &OperationError{Op: "list migration notes", Cause: err}
+	}
+	for _, key := range notes {
+		name := strings.TrimPrefix(key, legacyMigrationNotePrefix)
+		if only != "" && name != only {
+			continue
+		}
+		c := copies[name]
+		if c == nil {
+			c = &legacyCopy{record: credentialRecord{}}
+			copies[name] = c
+		}
+		c.settled = true
 	}
 	return copies, nil
 }
@@ -388,7 +404,7 @@ func (s *CredentialService) loadReplicated(ctx context.Context, name string) (cr
 	rec := credentialRecord{}
 	for _, key := range keys {
 		got, suffix := splitRecordKey(strings.TrimPrefix(key, credentialPrefix))
-		if got != name || suffix == migrationSuffix {
+		if got != name {
 			continue
 		}
 		value, err := s.store.Get(ctx, key)
