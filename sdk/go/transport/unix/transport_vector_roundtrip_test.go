@@ -717,3 +717,168 @@ func TestUnixRT_SearchSimilar_ServiceError(t *testing.T) {
 		t.Fatal("expected error from server")
 	}
 }
+
+func TestUnixRT_UpsertVector_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		upsertFn: func(_ context.Context, _ *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
+			return nil, errors.New("upsert failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.UpsertVector(context.Background(), &transport.UpsertVectorRequest{
+		Namespace: "ns",
+		ID:        1,
+		Vector:    []float32{0.1},
+		Metadata:  map[string]interface{}{"a": "b"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_CreateNamespace_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		createNSFn: func(_ context.Context, _ *service.CreateNamespaceRequest) (*service.CreateNamespaceResponse, error) {
+			return nil, errors.New("create namespace failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.CreateNamespace(context.Background(), &transport.CreateNamespaceRequest{
+		Namespace:   "ns",
+		Dimension:   128,
+		IndexConfig: map[string]string{"m": "16"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_BatchDeleteVectors_WithFailedIDs(t *testing.T) {
+	svc := &mockVectorSvc{
+		batchDeleteFn: func(_ context.Context, req *service.BatchDeleteVectorsRequest) (*service.BatchDeleteVectorsResponse, error) {
+			return &service.BatchDeleteVectorsResponse{
+				DeletedCount: len(req.IDs) - 1,
+				FailedIDs:    []uint64{99},
+				Success:      false,
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	resp, err := tr.BatchDeleteVectors(context.Background(), &transport.BatchDeleteVectorsRequest{
+		Namespace: "ns",
+		IDs:       []uint64{1, 2, 99},
+	})
+	if err != nil {
+		t.Fatalf("BatchDeleteVectors: %v", err)
+	}
+	if len(resp.FailedIDs) != 1 || resp.FailedIDs[0] != 99 {
+		t.Errorf("got FailedIDs=%v, want [99]", resp.FailedIDs)
+	}
+}
+
+func TestUnixRT_UpdateMetadata_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		updateMetaFn: func(_ context.Context, _ *service.UpdateVectorMetadataRequest) (*service.UpdateVectorMetadataResponse, error) {
+			return nil, errors.New("update metadata failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.UpdateMetadata(context.Background(), &transport.UpdateVectorMetadataRequest{
+		Namespace: "ns",
+		ID:        1,
+		Metadata:  map[string]interface{}{"k": "v"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_SearchByMetadata_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		searchByMetaFn: func(_ context.Context, _ *service.SearchByMetadataRequest) (*service.SearchByMetadataResponse, error) {
+			return nil, errors.New("search by metadata failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.SearchByMetadata(context.Background(), &transport.SearchByMetadataRequest{
+		Namespace: "ns",
+		Filters:   map[string]interface{}{"x": "y"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_HybridSearch_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		hybridSearchFn: func(_ context.Context, _ *service.HybridSearchRequest) (*service.HybridSearchResponse, error) {
+			return nil, errors.New("hybrid search failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.HybridSearch(context.Background(), &transport.HybridSearchRequest{
+		Namespace:      "ns",
+		MetadataFilter: map[string]interface{}{"x": "y"},
+	})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_SearchByID_ServiceError(t *testing.T) {
+	svc := &mockVectorSvc{
+		searchByIDFn: func(_ context.Context, _ *service.SearchByIDRequest) (*service.SearchByIDResponse, error) {
+			return nil, errors.New("search by id failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	_, err := tr.SearchByID(context.Background(), &transport.SearchByIDRequest{Namespace: "ns", ID: 1})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
+func TestUnixRT_GetCompactionProgress_Completed(t *testing.T) {
+	completedAt := int64(1_700_000_100)
+	svc := &mockVectorSvc{
+		compactProgFn: func(_ context.Context, _ *service.GetCompactionProgressRequest) (*service.GetCompactionProgressResponse, error) {
+			return &service.GetCompactionProgressResponse{
+				OperationID:     "comp-1",
+				InProgress:      false,
+				PercentComplete: 100.0,
+				StartedAt:       1_700_000_000,
+				CompletedAt:     &completedAt,
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	resp, err := tr.GetCompactionProgress(context.Background(), &transport.GetCompactionProgressRequest{
+		Namespace:   "ns",
+		OperationID: "comp-1",
+	})
+	if err != nil {
+		t.Fatalf("GetCompactionProgress: %v", err)
+	}
+	if resp.InProgress {
+		t.Error("expected InProgress=false")
+	}
+	if resp.CompletedAt == nil || *resp.CompletedAt != completedAt {
+		t.Errorf("got CompletedAt=%v, want %d", resp.CompletedAt, completedAt)
+	}
+}

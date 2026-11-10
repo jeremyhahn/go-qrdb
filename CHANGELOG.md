@@ -33,6 +33,27 @@ are not reconstructed here — their history is in the git log.
   legacy log already named `system/audit` is left as it was and stays
   appendable; that tenant's trail stays on the linear chain and keeps running. Before the gates, the trail is written
   exactly as before.
+- **A seal quiesces the encrypted stores before the key leaves memory**
+  (seal-quiesce). `StorageBarrier.Seal` now refuses new Pebble writes,
+  flushes and compactions on the barrier's encrypted stores with the typed
+  sealed error (`*pebble.SealedError` wrapping `ErrBarrierSealed`), waits up
+  to the new `seal.drain_timeout` (default `10s`, env
+  `QRDB_SEAL_DRAIN_TIMEOUT`, which bounds every barrier: system, tenant and
+  database, on `qrdbd` and SDK nodes alike) for the ones in flight, Raft
+  state-machine commits, whole snapshot recoveries and the encrypted vector
+  store's writes included, then seals. A tenant whose drain runs out during a node seal is still
+  brought back by the node unseal. When work outlasts the bound the barrier
+  still seals, and `Seal` returns a typed `*quiesce.DrainTimeoutError` naming
+  the stores still in flight, logged and audited (`seal`, phase `drain`); a
+  database seal so reported still marks the database sealed and ends its
+  streams. An expired drain reports that risk and does not remove it: the
+  admitted work is not cancelled, and once it resumes it can still race the
+  key wipe into the Pebble panic the seal watch describes. A store holds
+  one lock-free lease per operation; on the write-path benchmark
+  (`BenchmarkPebbleStorage_SetUnderEncfs`, `-count=6 -benchtime=2s`) a put
+  averages 615 ns with the lease and 611 ns without, about 4 ns per put. Pebble is used as released.
+  Opening a store holds its lease across Pebble's recovery (a closed gate
+  refuses it), and a vector namespace is created in one leased, atomic commit.
 - **A transaction branch can read** (#1211). A `get` or `range` op in a
   transaction's success or failure branch is answered inside the transaction:
   its `OpResponse` carries the key-values with their create and mod revision,
@@ -44,6 +65,17 @@ are not reconstructed here — their history is in the git log.
   whole (`feature.NotActiveError`, `UNAVAILABLE` / 503) until the cluster
   feature `transaction-reads` is active on every member. A branch that only
   reads does not advance the revision.
+  The encrypted file backend holds the same lease across its open-time
+  journal recovery and every write and journaled batch commit, and refuses
+  both on a closed gate with `*file.SealedError` (`quiesce.ErrSealing`).
+  A per-database barrier's `BarrierBackend` holds a lease on its database
+  barrier's gate for every mutation, so `SealDatabase` drains it, and refuses
+  on a closed gate with `*database.SealedError`. `quiesce.ErrSealing` and
+  `pebble.ErrBarrierSealed` classify as Unavailable (retryable) under every
+  service wrapper and count as sealed in `pkg/store` and the vector adapter.
+  Closing a store no longer takes its operations in flight out of the
+  drain: an unregistered lease refuses new work and stays in the drain set
+  until its last operation releases.
 - **The separation-of-duties posture is readable and its changes are
   audited** (#1128). Embedders read the posture a node resolved with
   `node.Node.StrictSeparation()`, and the resolver as

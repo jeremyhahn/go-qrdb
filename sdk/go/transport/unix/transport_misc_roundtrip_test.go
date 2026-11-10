@@ -478,6 +478,66 @@ func TestUnixRT_TSRichQuery(t *testing.T) {
 	}
 }
 
+func TestUnixRT_TSRichQuery_AggregatedAndGrouped(t *testing.T) {
+	aggValue := 99.9
+	groupAgg := 42.0
+	svc := &mockTimeSeriesSvc{
+		queryRichFn: func(_ context.Context, req *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
+			return &timeseries.QueryResult{
+				Metric:          req.Metric,
+				Tags:            map[string]string{"host": "h1"},
+				AggregatedValue: &aggValue,
+				GroupedResults: []*timeseries.GroupedResult{
+					{
+						Tags:            map[string]string{"region": "us-east"},
+						AggregatedValue: &groupAgg,
+					},
+					{
+						Tags: map[string]string{"region": "us-west"},
+					},
+				},
+			}, nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	resp, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
+		Metric:      "cpu",
+		Aggregation: transport.AggAvg,
+	})
+	if err != nil {
+		t.Fatalf("TSRichQuery: %v", err)
+	}
+	if resp.AggregatedValue == nil || *resp.AggregatedValue != 99.9 {
+		t.Errorf("got AggregatedValue=%v, want 99.9", resp.AggregatedValue)
+	}
+	if len(resp.GroupedResults) != 2 {
+		t.Fatalf("got %d grouped results, want 2", len(resp.GroupedResults))
+	}
+	if resp.GroupedResults[0].AggregatedValue == nil || *resp.GroupedResults[0].AggregatedValue != 42.0 {
+		t.Errorf("group[0] aggregation: %+v", resp.GroupedResults[0].AggregatedValue)
+	}
+	if resp.GroupedResults[1].AggregatedValue != nil {
+		t.Errorf("group[1] should have no aggregation, got %+v", resp.GroupedResults[1].AggregatedValue)
+	}
+}
+
+func TestUnixRT_TSRichQuery_ServiceError(t *testing.T) {
+	svc := &mockTimeSeriesSvc{
+		queryRichFn: func(_ context.Context, _ *timeseries.QueryRequest) (*timeseries.QueryResult, error) {
+			return nil, errors.New("query failed")
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	_, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{Metric: "cpu"})
+	if err == nil {
+		t.Fatal("expected error from server")
+	}
+}
+
 func TestUnixRT_TSDeleteSeries(t *testing.T) {
 	svc := &mockTimeSeriesSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))

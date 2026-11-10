@@ -24,7 +24,7 @@ import (
 // service.RAGServicer double.
 //
 // It carries NO build constraint on purpose. The double used to live in
-// tools_rag_test.go, which is `!integration`, while tools_coverage_extra_test.go
+// tools_rag_test.go, which is `!integration`, while tool_mapping_guard_test.go
 // consumes it under `codec_json && raft` -- a constraint that does not imply
 // `!integration`. Under BUILD_TAGS+integration the type vanished and the package
 // stopped typechecking (#203, the shape #178 first hit). A test helper's

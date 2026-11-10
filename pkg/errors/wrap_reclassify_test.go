@@ -123,6 +123,30 @@ func TestWrap_RetryableCodeSetsRetry(t *testing.T) {
 	}
 }
 
+// TestWrap_RetryFollowsTheCallersCode pins that an inner error's explicit
+// WithRetry(true) does not make a wrapper with a non-retryable code
+// retryable, and that the override survives on the inner error.
+func TestWrap_RetryFollowsTheCallersCode(t *testing.T) {
+	originalErr := New(ErrNotFound, "inner", "not found").WithRetry(true)
+
+	wrappedErr := Wrap(originalErr, ErrStorage, "outer")
+	if IsRetryable(wrappedErr) {
+		t.Error("the inner error's WithRetry(true) governed the wrapper's retryability")
+	}
+
+	var qe *QRDBError
+	if !As(wrappedErr, &qe) {
+		t.Fatal("As did not resolve the wrapper")
+	}
+	var inner *QRDBError
+	if !stderrors.As(qe.Unwrap(), &inner) {
+		t.Fatal("the wrapper does not unwrap to the inner QRDBError")
+	}
+	if !inner.Retry {
+		t.Error("the inner error's own override must survive")
+	}
+}
+
 // Context attached by a lower layer survives the wrap, and the wrapper does
 // NOT share the inner's map. The old implementation assigned de.Context
 // directly, so annotating either error mutated both.

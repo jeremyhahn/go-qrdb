@@ -547,6 +547,116 @@ func TestHandleCredentialGCExpired_ServiceError(t *testing.T) {
 	}
 }
 
+func TestHandleCredentialStore_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: []byte("v")})
+	_, err := srv.handleCredentialStore(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) || snc.Service != "credential" {
+		t.Fatalf("expected ServiceNotConfiguredError{credential}, got %T(%v)", err, err)
+	}
+}
+
+func TestHandleCredentialStore_UnmarshalError(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	_, err := srv.handleCredentialStore(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleCredentialStore_Success(t *testing.T) {
+	var gotName, gotValue string
+	mock := &mockCredentialService{
+		storeFn: func(_ context.Context, name string, value []byte) error {
+			gotName, gotValue = name, string(value)
+			return nil
+		},
+	}
+	srv := newCredentialTestServer(t, mock)
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "db-pass", Value: []byte("s3cret")})
+	resp, err := srv.handleCredentialStore(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("handleCredentialStore: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("expected nil response, got %q", resp)
+	}
+	if gotName != "db-pass" || gotValue != "s3cret" {
+		t.Fatalf("service got (%q, %q), want (db-pass, s3cret)", gotName, gotValue)
+	}
+}
+
+func TestHandleCredentialStore_ServiceError(t *testing.T) {
+	svcErr := &credentialTestError{msg: "store failed"}
+	mock := &mockCredentialService{
+		storeFn: func(context.Context, string, []byte) error { return svcErr },
+	}
+	srv := newCredentialTestServer(t, mock)
+	payload, _ := proto.Marshal(&pb.CredentialStoreRequest{Name: "k", Value: []byte("v")})
+	if _, err := srv.handleCredentialStore(context.Background(), payload); !errors.Is(err, svcErr) {
+		t.Fatalf("expected the service error, got %v", err)
+	}
+}
+
+func TestHandleCredentialRetrieve_NilService(t *testing.T) {
+	srv := NewServer(nil, nil, "localhost:0")
+	payload, _ := proto.Marshal(&pb.CredentialRetrieveRequest{Name: "k"})
+	_, err := srv.handleCredentialRetrieve(context.Background(), payload)
+	var snc *ServiceNotConfiguredError
+	if !errors.As(err, &snc) || snc.Service != "credential" {
+		t.Fatalf("expected ServiceNotConfiguredError{credential}, got %T(%v)", err, err)
+	}
+}
+
+func TestHandleCredentialRetrieve_UnmarshalError(t *testing.T) {
+	srv := newCredentialTestServer(t, &mockCredentialService{})
+	_, err := srv.handleCredentialRetrieve(context.Background(), []byte{0xff, 0xfe})
+	var ue *UnmarshalError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *UnmarshalError, got %T", err)
+	}
+}
+
+func TestHandleCredentialRetrieve_Success(t *testing.T) {
+	var gotName string
+	mock := &mockCredentialService{
+		retrieveFn: func(_ context.Context, name string) ([]byte, error) {
+			gotName = name
+			return []byte("s3cret"), nil
+		},
+	}
+	srv := newCredentialTestServer(t, mock)
+	payload, _ := proto.Marshal(&pb.CredentialRetrieveRequest{Name: "db-pass"})
+	resp, err := srv.handleCredentialRetrieve(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("handleCredentialRetrieve: %v", err)
+	}
+	if gotName != "db-pass" {
+		t.Fatalf("service got name %q, want db-pass", gotName)
+	}
+	var out pb.CredentialRetrieveResponse
+	if err := proto.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(out.GetValue()) != "s3cret" {
+		t.Fatalf("value = %q, want s3cret", out.GetValue())
+	}
+}
+
+func TestHandleCredentialRetrieve_ServiceError(t *testing.T) {
+	svcErr := &credentialTestError{msg: "retrieve failed"}
+	mock := &mockCredentialService{
+		retrieveFn: func(context.Context, string) ([]byte, error) { return nil, svcErr },
+	}
+	srv := newCredentialTestServer(t, mock)
+	payload, _ := proto.Marshal(&pb.CredentialRetrieveRequest{Name: "k"})
+	if _, err := srv.handleCredentialRetrieve(context.Background(), payload); !errors.Is(err, svcErr) {
+		t.Fatalf("expected the service error, got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch registration
 // ---------------------------------------------------------------------------
