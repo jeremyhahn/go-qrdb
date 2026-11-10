@@ -1947,6 +1947,18 @@ func issueCertFromCA(t *testing.T, notBefore, notAfter time.Time) ([]byte, *x509
 // issueNamedCertFromCA is issueCertFromCA for the user name.
 func issueNamedCertFromCA(t *testing.T, name string, notBefore, notAfter time.Time) ([]byte, *x509.CertPool) {
 	t.Helper()
+	return issueNamedLeafFromCA(t, name, notBefore, notAfter, x509.KeyUsageDigitalSignature, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth})
+}
+
+// issueProfilelessCertFromCA is issueNamedCertFromCA with a leaf that carries
+// neither a key usage nor an EKU: a certificate no TLS client login can use.
+func issueProfilelessCertFromCA(t *testing.T, name string, notBefore, notAfter time.Time) ([]byte, *x509.CertPool) {
+	t.Helper()
+	return issueNamedLeafFromCA(t, name, notBefore, notAfter, 0, nil)
+}
+
+func issueNamedLeafFromCA(t *testing.T, name string, notBefore, notAfter time.Time, keyUsage x509.KeyUsage, extKeyUsage []x509.ExtKeyUsage) ([]byte, *x509.CertPool) {
+	t.Helper()
 
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -1981,6 +1993,8 @@ func issueNamedCertFromCA(t *testing.T, name string, notBefore, notAfter time.Ti
 		URIs:         uris,
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
+		KeyUsage:     keyUsage,
+		ExtKeyUsage:  extKeyUsage,
 	}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
 	if err != nil {

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
@@ -222,7 +223,7 @@ func checkSystemSO(deps Dependencies) error {
 	if err != nil {
 		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 	}
-	if err := checkSOCertNamesUsername(so); err != nil {
+	if err := checkSOCertLogsInAsUsername(so); err != nil {
 		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 	}
 	// A generated admin key (Path A) is fresh and cannot be the SO's; only a
@@ -259,10 +260,12 @@ func spkiThumbprintOf(csrPEM, certPEM []byte) (string, error) {
 	return user.ComputeSPKIThumbprint(&x509.Certificate{RawSubjectPublicKeyInfo: csr.RawSubjectPublicKeyInfo}), nil
 }
 
-// checkSOCertNamesUsername refuses an SO certificate whose subject CN is not
-// the SO's username: MTLSAuthenticator logs a client in by its CN, so such
-// an SO could never authenticate. A signed CSR is issued for the username.
-func checkSOCertNamesUsername(so *SOConfig) error {
+// checkSOCertLogsInAsUsername refuses an SO certificate the SO could never
+// authenticate with: one whose subject CN is not the SO's username
+// (MTLSAuthenticator logs a client in by its CN), or one outside the
+// client-auth profile the ceremony holds --so-cert to. A signed CSR is issued
+// for the username, with that profile.
+func checkSOCertLogsInAsUsername(so *SOConfig) error {
 	if len(so.CertPEM) == 0 {
 		return nil
 	}
@@ -277,7 +280,7 @@ func checkSOCertNamesUsername(so *SOConfig) error {
 	if cert.Subject.CommonName != so.Username {
 		return fmt.Errorf("the certificate's subject CN %q is not the SO username %q", cert.Subject.CommonName, so.Username)
 	}
-	return nil
+	return ceremony.CheckClientAuthProfile(cert)
 }
 
 // enrollSystemSO enrols Dependencies.SO in tenantID, after the admin: the

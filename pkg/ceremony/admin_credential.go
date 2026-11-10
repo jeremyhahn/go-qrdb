@@ -457,18 +457,19 @@ func validateAdminCertProfile(cert *x509.Certificate) error {
 			}
 		}
 	}
-	if err := checkClientAuthProfile(cert); err != nil {
+	if err := CheckClientAuthProfile(cert); err != nil {
 		return &AdminCredentialRejectedError{Cause: err}
 	}
 	return nil
 }
 
-// checkClientAuthProfile refuses a certificate a TLS client login cannot
+// CheckClientAuthProfile refuses a certificate a TLS client login cannot
 // use: one whose KeyUsage lacks digital signature or whose ExtKeyUsage
 // names neither client authentication nor any usage. Every login
 // certificate the ceremony accepts -- the bootstrap admin's and the system
-// SO's -- is held to it.
-func checkClientAuthProfile(cert *x509.Certificate) error {
+// SO's -- is held to it, and first boot holds a presented system SO
+// certificate to it too.
+func CheckClientAuthProfile(cert *x509.Certificate) error {
 	if cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
 		return &ClientAuthProfileError{Reason: "certificate KeyUsage does not include digital signature"}
 	}

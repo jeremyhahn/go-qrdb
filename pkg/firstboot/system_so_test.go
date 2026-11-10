@@ -430,8 +430,7 @@ func TestInitialize_SystemSOPresentedCertMustNameTheSO(t *testing.T) {
 // profile the ceremony holds --so-cert to: the SO logs in by it.
 func TestInitialize_SystemSOPresentedCertHeldToClientAuthProfile(t *testing.T) {
 	h := newSOHarness(t, true)
-	// issueNamedCertFromCA's leaf carries neither a key usage nor an EKU.
-	certPEM, pool := issueNamedCertFromCA(t, h.deps.SO.Username, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	certPEM, pool := issueProfilelessCertFromCA(t, h.deps.SO.Username, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	h.deps.SO.CSRPEM = nil
 	h.deps.SO.CertPEM = certPEM
 	h.deps.AdminCertPool = pool

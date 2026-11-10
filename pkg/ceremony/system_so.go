@@ -179,7 +179,7 @@ func adoptSystemSOCert(opts *InitializeOptions, caBundlePEM []byte, trustDomain 
 	}
 	// The SO logs in by this certificate exactly as the admin does by
 	// its own, so it is held to the admin's client-auth profile.
-	if err := checkClientAuthProfile(cert); err != nil {
+	if err := CheckClientAuthProfile(cert); err != nil {
 		return nil, &SystemSORejectedError{Cause: err}
 	}
 	tenant, err := auth.TenantFromClientCert(cert, trustDomain)
