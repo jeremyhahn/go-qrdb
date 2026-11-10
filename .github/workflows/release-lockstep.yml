@@ -73,7 +73,11 @@ permissions:
 jobs:
   lockstep:
     name: Root and sdk/go tags in lockstep
-    runs-on: ubuntu-latest
+    # The scripts need git, make and a shell, and no Docker, so a push to main
+    # and a same-repository pull request run on the bigdisk pool (m2489);
+    # every other event, a tag push and a fork's pull request among them,
+    # stays on ubuntu-latest.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       # The check reads this clone's tags and the default checkout fetches none

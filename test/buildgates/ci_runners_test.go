@@ -89,8 +89,9 @@ var selfHostedWorkflows = map[string]bool{"code-review.yml": true}
 
 // bigdiskJobs are the Docker-free jobs that may carry bigdiskRunner (DS-8233),
 // by workflow and job. Each runs its make target natively on the pool, or, for
-// preflight and ci-gate (m2479), needs no toolchain at all; a job that needs
-// Docker stays on the hosted runner and is never listed here.
+// preflight and ci-gate (m2479), needs no toolchain at all; release-lockstep's
+// job (m2489) runs shell scripts over git. A job that needs Docker stays on
+// the hosted runner or the Docker pool and is never listed here.
 var bigdiskJobs = map[string]map[string]bool{
 	"ci.yml": {
 		"preflight":         true,
@@ -99,6 +100,7 @@ var bigdiskJobs = map[string]map[string]bool{
 		"coverage-fts":      true,
 		"ci-gate":           true,
 	},
+	"release-lockstep.yml": {"lockstep": true},
 }
 
 // dockerPoolJobs are the Docker jobs that may carry dockerPoolRunner (ruling
