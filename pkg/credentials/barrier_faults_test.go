@@ -169,9 +169,9 @@ func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 		fault func(*faultBackend)
 		op    string
 	}{
-		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionPrefix+"1") }, op: "write grace version"},
+		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionKey("k", 1)) }, op: "write grace version"},
 		// The metadata record is only ever written conditionally.
-		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaSuffix) }, op: "write meta"},
+		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaKey("k")) }, op: "write meta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, backend := newFaultBarrierService(t)

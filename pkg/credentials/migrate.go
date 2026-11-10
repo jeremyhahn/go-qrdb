@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -25,7 +26,9 @@ import (
 
 // legacyCredentialPrefix is the key prefix the barrier strategy kept its
 // records under in each node's own seal store, before the records moved to
-// the replicated credentialPrefix. The key layout under it is the same.
+// the replicated store. Under it the metadata and version records are keyed
+// by the name followed by metaSuffix or versionPrefix+n; the replicated
+// store keys them under prefixes of their own (replicatedKey).
 const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key prefix, not a credential
 
 // The migration records are keyed by credential name under prefixes of their
@@ -310,7 +313,7 @@ func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, r
 		suffixes = append(suffixes[1:], "")
 	}
 	for _, k := range suffixes {
-		if _, err := s.store.PutIfAbsent(ctx, credentialPrefix+name+k, rec[k]); err != nil {
+		if _, err := s.store.PutIfAbsent(ctx, replicatedKey(name, k), rec[k]); err != nil {
 			return &OperationError{Op: "write migrated record", Cause: err}
 		}
 	}
@@ -398,23 +401,64 @@ func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[st
 // loadReplicated reads the bound store's records for name, without its
 // migration claim.
 func (s *CredentialService) loadReplicated(ctx context.Context, name string) (credentialRecord, error) {
-	keys, err := s.store.List(ctx, credentialPrefix+name)
-	if err != nil {
-		return nil, &OperationError{Op: "list replicated records", Cause: err}
-	}
 	rec := credentialRecord{}
-	for _, key := range keys {
-		got, suffix := splitRecordKey(strings.TrimPrefix(key, credentialPrefix))
-		if got != name {
-			continue
-		}
-		value, err := s.store.Get(ctx, key)
+	// The legacy layout groups under name every record whose key, cut at
+	// its first '#', is name. The values and metadata records of that
+	// group are found by prefix, and each one's versions by its own name.
+	suffixes := map[string]struct{}{}
+	for prefix, part := range map[string]string{credentialPrefix: "", MetaKeyPrefix: metaSuffix} {
+		keys, err := s.store.List(ctx, prefix+name)
 		if err != nil {
-			return nil, &OperationError{Op: "read replicated record", Cause: err}
+			return nil, &OperationError{Op: "list replicated records", Cause: err}
 		}
-		rec[suffix] = value
+		for _, key := range keys {
+			got, suffix := splitRecordKey(strings.TrimPrefix(key, prefix))
+			if got != name {
+				continue
+			}
+			value, err := s.store.Get(ctx, key)
+			if err != nil {
+				return nil, &OperationError{Op: "read replicated record", Cause: err}
+			}
+			rec[suffix+part] = value
+			suffixes[suffix] = struct{}{}
+		}
+	}
+	for suffix := range suffixes {
+		prefix := VersionKeyPrefix + encodedName(name+suffix) + "/"
+		keys, err := s.store.List(ctx, prefix)
+		if err != nil {
+			return nil, &OperationError{Op: "list replicated records", Cause: err}
+		}
+		for _, key := range keys {
+			value, err := s.store.Get(ctx, key)
+			if err != nil {
+				return nil, &OperationError{Op: "read replicated record", Cause: err}
+			}
+			rec[suffix+versionPrefix+strings.TrimPrefix(key, prefix)] = value
+		}
 	}
 	return rec, nil
+}
+
+// replicatedKey is the bound store's key for the legacy record name+suffix.
+// The legacy store appended its metadata and version suffixes to the name,
+// so the last one in the key says which record it is; anything else is the
+// value of a credential whose name holds a '#'.
+func replicatedKey(name, suffix string) string {
+	full := name + suffix
+	if suffix == "" {
+		return credentialPrefix + full
+	}
+	if base, ok := strings.CutSuffix(full, metaSuffix); ok && len(base) >= len(name) {
+		return metaKey(base)
+	}
+	if i := strings.LastIndex(full, versionPrefix); i >= len(name) {
+		if version, err := strconv.ParseUint(full[i+len(versionPrefix):], 10, 64); err == nil {
+			return versionKey(full[:i], version)
+		}
+	}
+	return credentialPrefix + full
 }
 
 // splitRecordKey splits a key relative to a record prefix into the name and

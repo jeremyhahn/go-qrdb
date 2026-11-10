@@ -740,7 +740,7 @@ func TestRotateDue_UnreleasedClaimLapses(t *testing.T) {
 	due := rotationEpoch.Add(time.Hour)
 	source := svc.rotationSource
 	svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
-		arm(&backend.failCAS, metaSuffix)
+		arm(&backend.failCAS, metaKey("k"))
 		return source(ctx, name)
 	}
 
@@ -1140,7 +1140,7 @@ func TestRotateDue_HeldClaimDefersPendingCleanup(t *testing.T) {
 func TestRotateDue_ClaimFailureReported(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 2)
-	arm(&backend.failCAS, metaSuffix)
+	arm(&backend.failCAS, metaKey("k"))
 
 	n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
 	requireRotationOpError(t, err, "k", "claim rotation")
@@ -1299,7 +1299,7 @@ func TestRotateDue_PruneMetaWriteFailureReported(t *testing.T) {
 	// is after the rotation's own meta write.
 	backend.onDelete = func(key string) {
 		if strings.HasSuffix(key, versionKey("k", 1)) {
-			arm(&backend.failCAS, metaSuffix)
+			arm(&backend.failCAS, metaKey("k"))
 		}
 	}
 
@@ -1316,7 +1316,7 @@ func TestSetRotationPolicy_MetaUpdate(t *testing.T) {
 	t.Run("lost race retried", func(t *testing.T) {
 		svc, backend := newFaultRotationService(t)
 		setFaultPolicy(t, svc, "k", 2)
-		arm(&backend.loseCAS, metaSuffix)
+		arm(&backend.loseCAS, metaKey("k"))
 		backend.casLosses.Store(1)
 
 		if err := svc.SetRotationPolicy(t.Context(), "k", updated); err != nil {
@@ -1331,7 +1331,7 @@ func TestSetRotationPolicy_MetaUpdate(t *testing.T) {
 	t.Run("retries exhausted", func(t *testing.T) {
 		svc, backend := newFaultRotationService(t)
 		setFaultPolicy(t, svc, "k", 2)
-		arm(&backend.loseCAS, metaSuffix)
+		arm(&backend.loseCAS, metaKey("k"))
 		backend.casLosses.Store(rotationMetaRetries)
 
 		err := svc.SetRotationPolicy(t.Context(), "k", updated)
@@ -1344,7 +1344,7 @@ func TestSetRotationPolicy_MetaUpdate(t *testing.T) {
 	t.Run("write error", func(t *testing.T) {
 		svc, backend := newFaultRotationService(t)
 		setFaultPolicy(t, svc, "k", 2)
-		arm(&backend.failCAS, metaSuffix)
+		arm(&backend.failCAS, metaKey("k"))
 
 		err := svc.SetRotationPolicy(t.Context(), "k", updated)
 		var opErr *OperationError
