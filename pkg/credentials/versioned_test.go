@@ -963,7 +963,8 @@ func TestGCExpiredVersions_Barrier_NoopFresh(t *testing.T) {
 
 func TestVersionKey_Format(t *testing.T) {
 	got := versionKey("my-cred", 42)
-	want := credentialPrefix + "my-cred#v42"
+	// bXktY3JlZA is "my-cred" in unpadded URL-safe base64.
+	want := "__sys:credential-versions/bXktY3JlZA/42"
 	if got != want {
 		t.Fatalf("versionKey = %q, want %q", got, want)
 	}
@@ -971,7 +972,7 @@ func TestVersionKey_Format(t *testing.T) {
 
 func TestMetaKey_Format(t *testing.T) {
 	got := metaKey("my-cred")
-	want := credentialPrefix + "my-cred" + metaSuffix
+	want := "__sys:credential-meta/my-cred"
 	if got != want {
 		t.Fatalf("metaKey = %q, want %q", got, want)
 	}

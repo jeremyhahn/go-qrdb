@@ -23,6 +23,15 @@ import (
 
 const credentialPrefix = "__sys:credentials/" //nolint:gosec // G101: the system key prefix the records live under, not a credential
 
+// The prefixes a credential's other records live under, beside its value
+// (see the storage layout in versioned.go). The embedded KV, transaction and
+// watch surfaces refuse every key under them, as they do the value prefix.
+const (
+	MetaKeyPrefix    = "__sys:credential-meta/"
+	VersionKeyPrefix = "__sys:credential-versions/"
+	StagedKeyPrefix  = "__sys:credential-staged/"
+)
+
 // CredentialService manages named credentials using a configurable strategy.
 // The manual strategy stores credentials in-memory with blocking retrieval
 // semantics. The barrier strategy delegates to a seal.StorageBarrier for

@@ -10,6 +10,7 @@ package credentials
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,24 +30,32 @@ import (
 //
 // A versioned credential at logical name "<name>" is laid out as:
 //
-//	credentials/<name>           — the current value (always the latest)
-//	credentials/<name>#meta      — JSON metadata (current version + grace history)
-//	credentials/<name>#v<N>      — historical value for version N (kept while
-//	                                in grace period; deleted by GC after expiry)
+//	credentials/<name>              — the current value (always the latest)
+//	credential-meta/<name>          — JSON metadata (current version + grace history)
+//	credential-versions/<e>/<N>     — historical value for version N (kept while
+//	                                   in grace period; deleted by GC after expiry)
+//	credential-staged/<e>/<N>       — a scheduled rotation's staged value for
+//	                                   version N, apart from the version records
+//
+// <e> is the name in unpadded URL-safe base64 and <N> the decimal version.
+// A name may be any non-empty string, so no record is told apart by a
+// character in its key: each kind has its own prefix, the value and metadata
+// keys end in the whole name, and the encoded name holds no '/', so the one
+// '/' after it separates it from the version. A key therefore names exactly
+// one (kind, name, version), and no name can produce another record's key.
 //
 // The plain "credentials/<name>" entry is the existing key the
 // non-versioned API has always used. Credentials originally written
 // before rotation existed look like "<name> at v1 with no recorded
-// metadata"; the first Rotate call promotes them by writing #meta.
+// metadata"; the first Rotate call promotes them by writing the metadata.
 
+// metaSuffix and versionPrefix are the suffixes the node-local legacy store
+// kept the metadata and version records under, after the name. Only the
+// migration reads that layout; it also names a migrated record's parts by
+// them.
 const (
 	metaSuffix    = "#meta"
 	versionPrefix = "#v"
-	// stagedPrefix keys a scheduled rotation's staged value apart from
-	// the version records, so removing a spent staged value can never
-	// remove a retained version that a concurrent rotation wrote under
-	// the same number.
-	stagedPrefix = "#staged"
 )
 
 // =============================================================================
@@ -142,7 +151,7 @@ type RotateResult struct {
 	GraceUntil time.Time
 }
 
-// credentialMeta is the on-disk JSON layout for the #meta sidecar.
+// credentialMeta is the on-disk JSON layout for the metadata record.
 type credentialMeta struct {
 	// CurrentVersion is the monotonic version of the value at
 	// credentials/<name>.
@@ -535,13 +544,8 @@ func (s *CredentialService) listBarrier(ctx context.Context) ([]string, error) {
 	}
 	names := make([]string, 0, len(keys))
 	for _, k := range keys {
-		name := strings.TrimPrefix(k, credentialPrefix)
-		// Skip metadata + historical-version sidecars; only
-		// surface logical names.
-		if strings.Contains(name, "#") {
-			continue
-		}
-		names = append(names, name)
+		// Only values live under the prefix, so every key is a name.
+		names = append(names, strings.TrimPrefix(k, credentialPrefix))
 	}
 	sortStrings(names)
 	return names, nil
@@ -905,16 +909,25 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 // Barrier metadata helpers
 // =============================================================================
 
-func versionKey(name string, version uint64) string {
-	return credentialPrefix + name + versionPrefix + strconv.FormatUint(version, 10)
+// encodedName is name as the version and staged keys carry it: unpadded
+// URL-safe base64, which holds no '/'.
+func encodedName(name string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(name))
 }
 
+func versionKey(name string, version uint64) string {
+	return VersionKeyPrefix + encodedName(name) + "/" + strconv.FormatUint(version, 10)
+}
+
+// stagedKey keys a scheduled rotation's staged value apart from the version
+// records, so removing a spent staged value can never remove a retained
+// version that a concurrent rotation wrote under the same number.
 func stagedKey(name string, version uint64) string {
-	return credentialPrefix + name + stagedPrefix + strconv.FormatUint(version, 10)
+	return StagedKeyPrefix + encodedName(name) + "/" + strconv.FormatUint(version, 10)
 }
 
 func metaKey(name string) string {
-	return credentialPrefix + name + metaSuffix
+	return MetaKeyPrefix + name
 }
 
 func (s *CredentialService) loadBarrierMeta(ctx context.Context, name string) (*credentialMeta, error) {
@@ -970,14 +983,13 @@ func sortStrings(in []string) {
 // deleteBarrierStaged removes every staged rotation value of exactly the
 // named credential, whichever version it was staged for.
 func (s *CredentialService) deleteBarrierStaged(ctx context.Context, name string) error {
-	prefix := credentialPrefix + name + stagedPrefix
+	prefix := StagedKeyPrefix + encodedName(name) + "/"
 	keys, err := s.store.List(ctx, prefix)
 	if err != nil {
 		return &OperationError{Op: "list staged rotations", Cause: err}
 	}
 	for _, k := range keys {
-		// A staged key ends in its version; anything else under the
-		// prefix belongs to another name.
+		// A staged key ends in its version.
 		version, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 64)
 		if err != nil || k != stagedKey(name, version) {
 			continue

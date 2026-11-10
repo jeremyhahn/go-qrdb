@@ -127,7 +127,7 @@ is the contract for where bytes may leave it. The rules a contributor works to:
 | Strategy | Storage | Read semantics |
 |---|---|---|
 | `manual` | go-enclave sealed enclave (`secure.Secret`) | **blocks until an operator submits the value**; a read opens the enclave straight into a fresh `*secure.Buffer` |
-| `barrier` | system records under `__sys:credentials/` on the system shard's replicated KV, encrypted at rest by each node's system barrier | the default; unreadable while sealed |
+| `barrier` | system records under `__sys:credentials/` (values) and `__sys:credential-meta/`, `__sys:credential-versions/`, `__sys:credential-staged/` on the system shard's replicated KV, encrypted at rest by each node's system barrier | the default; unreadable while sealed |
 
 `CredentialStrategy(ctx)` reports the strategy of the caller's store: the
 configured one for the system tenant, always `barrier` for a tenant. A strategy that cannot
@@ -214,7 +214,7 @@ than change the interface.
   that long; `0` wipes it immediately.
 - **A credential rotates once per interval across the cluster, not once per
   node.** Every node runs the scheduler, and a due credential is claimed by a
-  `CompareAndSwap` on its `#meta` record that records a claim expiring one
+  `CompareAndSwap` on its metadata record that records a claim expiring one
   lease (five minutes) ahead. Only the claim holder calls the
   `RotationValueSource`, so a source with effects outside the store runs once
   per rotation; the others see the claim and do nothing.
@@ -224,14 +224,14 @@ than change the interface.
   lands. A failed rotation releases its claim, so the next check retries it; a
   claim whose holder crashed lapses after its lease, so the credential is due
   again on any node and after a restart.
-- **No writer of `#meta` overwrites another.** The policy, the claim, a
+- **No writer of the metadata record overwrites another.** The policy, the claim, a
   rotation's version fields and the history trim are each applied by a
   `CompareAndSwap` that re-reads the record on a conflict, so a policy disabled
   or changed concurrently with a scheduled rotation is kept.
 - **`retrieve-version 0` means the current version.**
 - **`delete` removes the credential and its non-current versions.** Under
-  `barrier` this means the current value, the `#meta` sidecar, and every
-  `#v<N>` history entry regardless of grace status — not just the ones GC
+  `barrier` this means the current value, the metadata record, and every
+  retained version record regardless of grace status — not just the ones GC
   would have reaped on its own. `DeleteCredential`'s barrier branch
   (`deleteBarrierAll`) shares the per-version deletion loop with `gcBarrier`
   (`deleteBarrierVersionKeys`) rather than duplicating it; `gcBarrier` filters
@@ -306,8 +306,8 @@ lands within one check period of its `NextRotation`.
 
 ## Scheduled rotation
 
-`SetRotationPolicy` validates the policy, stores it in the credential's `#meta`
-record, and schedules `NextRotation` one interval from now. A disabled policy
+`SetRotationPolicy` validates the policy, stores it in the credential's metadata
+record (`credential-meta/<name>`), and schedules `NextRotation` one interval from now. A disabled policy
 clears the schedule. Setting a policy emits a `rotation_policy` audit event.
 
 `qrdbd` starts a scheduler on every node (`pkg/server`,
@@ -322,7 +322,7 @@ sweep fails is reported as a `*CredentialTenantRotationError` naming it, and
 the sweep goes on to the next. In each store it walks the `barrier`
 strategy's credentials and, for each one whose enabled policy is due:
 
-1. claims the rotation with a `CompareAndSwap` on `#meta` (one Raft
+1. claims the rotation with a `CompareAndSwap` on the metadata record (one Raft
    transaction on the system shard, so exactly one node wins) that records a claim
    expiring one lease after the moment it is taken, read on the service clock
    for this credential rather than at the start of the pass (see
@@ -332,10 +332,10 @@ strategy's credentials and, for each one whose enabled policy is due:
    claim's own expiry, unless an earlier attempt left a staged value (below);
 3. rotates, keeping the previous value as history: it writes the previous
    value under its version key, stages the new value under the next version's
-   key (`<name>#v<N+1>`), and writes it as the current value;
+   staged key (`credential-staged/<e>/<N+1>`), and writes it as the current value;
 4. advances the version, ends the claim, records the claim as a pending
    cleanup and moves `NextRotation` one interval past now, unless the policy
-   or its schedule changed meanwhile, all in one `CompareAndSwap` of `#meta`,
+   or its schedule changed meanwhile, all in one `CompareAndSwap` of the metadata record,
    so no record shows the version advanced and the interval still open. If
    steps 2 to 4 failed it ends the claim instead and leaves `NextRotation`
    where it was, so the credential stays due. Ending a failed claim runs even
@@ -346,8 +346,9 @@ strategy's credentials and, for each one whose enabled policy is due:
    non-current versions, then clears the pending cleanup.
 
 The staged value is the persisted evidence of a value the source already
-produced. It is kept under its own `#staged<n>` key, apart from the `#v<n>`
-version records, so the deletes that spend it (step 5 and the rotation's own
+produced. It is kept under its own `credential-staged/<e>/<n>` key, apart from the
+`credential-versions/<e>/<n>` version records (`<e>` is the name in unpadded
+URL-safe base64), so the deletes that spend it (step 5 and the rotation's own
 post-commit delete) can never remove a version that a concurrent rotation
 retained under the same number. A claimant that finds one staged for the next
 version, left by an attempt that failed or crashed
@@ -389,7 +390,7 @@ an operator submits again.
 
 Version history carries the version number, the creation time and the
 expiry implied by the rotation's grace period. Under `barrier`, a rotation
-policy and its `NextRotation` live in the same `#meta` record, so they persist
+policy and its `NextRotation` live in the same metadata record, so they persist
 with the credential and are removed with it by `delete`.
 
 ## Test strategy

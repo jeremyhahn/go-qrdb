@@ -96,9 +96,7 @@ var hardConfinedMaterialPrefixes = []string{
 // which EVERY record is confined, not only a "material" one.
 // "__sys:credentials/" is the credential service's replicated store
 // (pkg/credentials, docs/credentials/architecture.md, "Storage"): each
-// record under it -- a current value, a retained version, the JSON metadata
-// carrying the rotation policy and grace history -- is either secret or
-// governs one, and is reached only through the credential verbs, which
+// record under it is a credential's current value, and is reached only through the credential verbs, which
 // authorize and audit every access. A point Get through the embedded KV
 // would read a value without credentials:retrieve and a Put would replace
 // one with no credential authorization or audit, so the whole prefix is
@@ -110,9 +108,16 @@ var hardConfinedMaterialPrefixes = []string{
 // the copy a credential's migration settled on and whether its import is
 // complete, so a Put through the embedded KV would redirect or replay a
 // migration.
+// credentials.MetaKeyPrefix, VersionKeyPrefix and StagedKeyPrefix hold a
+// credential's metadata, its retained versions and its staged rotation
+// values: former and future secret values, and the record that says which
+// version is current and when it rotates.
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
+	credentials.MetaKeyPrefix,
+	credentials.VersionKeyPrefix,
+	credentials.StagedKeyPrefix,
 }
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record

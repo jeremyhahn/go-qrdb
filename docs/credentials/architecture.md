@@ -32,8 +32,22 @@ interface.
 **A cluster has one credential store, not one per node.** The `barrier`
 strategy keeps every record (a credential's current value, its version
 history and its metadata record, which carries the rotation policy and the
-rotation claim) under the reserved `__sys:credentials/` prefix of the system
-shard's replicated KV. This follows the layered-stack rule: one cluster, one
+rotation claim) under reserved prefixes of the system shard's replicated KV,
+one per kind of record:
+
+| Record | Key |
+|--------|-----|
+| current value | `__sys:credentials/<name>` |
+| metadata | `__sys:credential-meta/<name>` |
+| retained version `<n>` | `__sys:credential-versions/<e>/<n>` |
+| staged rotation value for version `<n>` | `__sys:credential-staged/<e>/<n>` |
+
+`<e>` is the name in unpadded URL-safe base64 and `<n>` the decimal version.
+A name may be any non-empty string, so no record is told apart by a character
+in its key: the kind is the prefix, the value and metadata keys end in the
+whole name, and the encoded name holds no `/`, so the one `/` after it
+separates it from the version. A key names exactly one record of one
+credential, and no credential name can produce another record's key. This follows the layered-stack rule: one cluster, one
 datastore, and system-level records replicated on the system shard. A policy,
 a claim or a version written on one node is the same record on every node,
 once Raft has committed it.
@@ -48,10 +62,10 @@ layered over the records, and none is carried between nodes. This is the
 protection the system shard's other secret-bearing records already have, such
 as the DEK keyring of a prefix tenant ([../tenant-dek/](../tenant-dek/)).
 
-**The prefix is reached only through the credential verbs.** Every record
-under `__sys:credentials/` is a secret or governs one, so the embedded
-transport's KV, MVCC, batch, transaction and watch services confine the whole
-prefix, the way they confine a CA's private key material: a point read, write,
+**The prefixes are reached only through the credential verbs.** Every record
+under the four prefixes above is a secret or governs one, so the embedded
+transport's KV, MVCC, batch, transaction and watch services confine each
+prefix whole, the way they confine a CA's private key material: a point read, write,
 compare or watch on any record under it is refused with
 `HardConfinedKeyError`, and a broader scan or watch has the records filtered
 out. Reading a value takes `credentials:retrieve` and is audited; the raw KV
