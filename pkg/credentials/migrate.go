@@ -650,6 +650,8 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 		return map[string]any{"already_imported": true}, nil
 	}
 	if err != nil {
+		// Nothing was stored, so the copy made for the rotation is dropped.
+		secure.Wipe(imported)
 		return nil, err
 	}
 	return map[string]any{
