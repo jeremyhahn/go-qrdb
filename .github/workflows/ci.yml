@@ -1,8 +1,11 @@
 # ci-template: v1.34.1 — canonical CI for all first-party Go repos.
 # go-qrdb deviations from v1.34.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on GitHub-hosted ubuntu-latest (DS-7377); no self-hosted
-#     label, registry, cache volume, reaper or schedule guard remains
+#   - every job runs on GitHub-hosted ubuntu-latest (DS-7377), except the
+#     Docker-free jobs (preflight, coverage-merge, test-clusterproof,
+#     coverage-fts, ci-gate), which run on the self-hosted bigdisk pool for a
+#     push to main and a same-repository PR (DS-8233, m2479); no registry,
+#     cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - preflight's timeout is 15 minutes against the template's 10, because it
@@ -138,12 +141,16 @@ jobs:
   # go-objstore. A source check with grep, not a stage: it runs on the
   # runner's shell. v1.23: a lint-class check, so it stays on the PR tier.
   # CUSTOMIZE (go-qrdb, DS-3160): make check-public-releasable scans the whole
-  # tracked tree, docs included, so a docs-only PR runs these steps; the two
-  # code-only steps skip there.
+  # tracked tree, docs included, so a docs-only PR runs these steps; the
+  # code-only step skips there.
   preflight:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Preflight
-    runs-on: ubuntu-latest
+    # m2479: the entry job every other job waits on. git, grep and sh only;
+    # no Go, no Docker (the compose-target check, which runs the docker CLI,
+    # is a docker-build step). On the self-hosted bigdisk pool for a push to
+    # main and a same-repository PR; hosted otherwise, a fork's PR included.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
@@ -221,14 +228,6 @@ jobs:
           printf '%s\n' "$PUBLIC_RELEASE_PATTERNS" > "$RUNNER_TEMP/public-release-patterns"
           PUBLIC_RELEASE_PATTERNS_FILE="$RUNNER_TEMP/public-release-patterns" make check-public-releasable
           rm -f "$RUNNER_TEMP/public-release-patterns"
-
-      # CUSTOMIZE (go-qrdb): every compose service that names a build target
-      # names a stage its Dockerfile declares, with each overlay resolved by
-      # `docker compose config` (client-side, no daemon). The toolchain image
-      # carries no Docker CLI, so the check runs on the runner's.
-      - name: make check-compose-targets test-compose-targets
-        if: steps.diff.outputs.docs_only != 'true'
-        run: make check-compose-targets test-compose-targets
   # v1.21: every stage runs in the project's own devcontainer image and no
   # other (ci-standard.md §2, devcontainer.md §7). This job builds the images
   # once from build/docker/devcontainer/Dockerfile at this commit and hands
@@ -286,6 +285,16 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # CUSTOMIZE (go-qrdb): every compose service that names a build target
+      # names a stage its Dockerfile declares, with each overlay resolved by
+      # `docker compose config` (client-side, no daemon). The toolchain image
+      # carries no Docker CLI, so the check runs on the runner's. A docker-build
+      # step since m2479: preflight runs on the bigdisk pool, which has no
+      # Docker, and this job is hosted and runs on every event preflight does.
+      - name: make check-compose-targets test-compose-targets
+        if: needs.preflight.outputs.docs_only != 'true'
+        run: make check-compose-targets test-compose-targets
 
       # CUSTOMIZE (go-qrdb, DS-7377): the preinstalled SDKs no stage uses take
       # most of a hosted runner's disk; the two images and their tars need it.
@@ -874,9 +883,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           # The image's settings: its own Go only, modules from the public
-          # proxy only (no direct), cgo on for -race.
+          # proxy only (no direct), go.mod read-only, cgo on for -race.
           GOTOOLCHAIN: local
           GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=readonly
           CGO_ENABLED: "1"
         run: make coverage-merge GO_BUILD_TAGS="$GO_BUILD_TAGS" COVERAGE_THRESHOLD="$COVERAGE_THRESHOLD"
 
@@ -943,9 +953,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           # The image's settings: its own Go only, modules from the public
-          # proxy only (no direct), cgo on for -race.
+          # proxy only (no direct), go.mod read-only, cgo on for -race.
           GOTOOLCHAIN: local
           GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=readonly
           CGO_ENABLED: "1"
         run: make -k test-clusterproof GO_BUILD_TAGS="$GO_BUILD_TAGS"
 
@@ -1012,9 +1023,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         env:
           # The image's settings: its own Go only, modules from the public
-          # proxy only (no direct), cgo on for -race.
+          # proxy only (no direct), go.mod read-only, cgo on for -race.
           GOTOOLCHAIN: local
           GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=readonly
           CGO_ENABLED: "1"
         run: make -k coverage-fts GO_BUILD_TAGS="$GO_BUILD_TAGS"
 
@@ -1559,7 +1571,11 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    runs-on: ubuntu-latest
+    # m2479 (m2475 h): the gate reads the jobs' results only: no checkout, no
+    # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
+    # same-repository PR, so it never waits in the hosted queue; hosted
+    # otherwise.
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     if: ${{ always() }}
     # CUSTOMIZE: the repo's job list. Add every CUSTOMIZE job here AND as a
