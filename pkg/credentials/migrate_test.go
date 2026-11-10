@@ -480,6 +480,72 @@ func TestResolveMigrationConflict_Discard(t *testing.T) {
 	assert.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, "db", MigrationDiscard), ErrMigrationConflictNotFound)
 }
 
+// TestMigrateLegacy_NamesContainingHashKeepTheirConflicts verifies a legacy
+// credential whose name holds a '#' migrates, conflicts and resolves under
+// its own name: "db#prod" is not a record of "db", and "#lead" is not a
+// record of the empty name. A "db" with its own metadata and version beside
+// "db#prod" stays a second credential.
+func TestMigrateLegacy_NamesContainingHashKeepTheirConflicts(t *testing.T) {
+	ctx := context.Background()
+	for _, how := range []MigrationResolution{MigrationImport, MigrationDiscard} {
+		t.Run(string(how), func(t *testing.T) {
+			legacyA, legacyB, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+			for _, name := range []string{"db#prod", "#lead"} {
+				writeLegacy(t, legacyA, name, name+"-v2", name+"-v1", nil)
+				writeLegacy(t, legacyB, name, name+"-kept", name+"-kept-old", nil)
+			}
+			require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+			nodeB := newMigratingService(t, legacyB)
+			require.NoError(t, nodeB.BindStore(ctx, shared))
+
+			conflicts, err := nodeB.ListMigrationConflicts(ctx)
+			require.NoError(t, err)
+			names := make([]string, 0, len(conflicts))
+			for _, c := range conflicts {
+				names = append(names, c.Name)
+			}
+			sort.Strings(names)
+			require.Equal(t, []string{"#lead", "db#prod"}, names)
+
+			for _, name := range names {
+				require.NoError(t, nodeB.ResolveMigrationConflict(ctx, name, how))
+				want := name + "-v2"
+				if how == MigrationImport {
+					want = name + "-kept"
+					assert.Equal(t, name+"-v2", versionString(t, nodeB, name, 2), "the replaced version is retained")
+				}
+				assert.Equal(t, want, retrieveString(t, nodeB, name))
+				assert.Equal(t, name+"-v1", versionString(t, nodeB, name, 1))
+				assert.ErrorIs(t, nodeB.ResolveMigrationConflict(ctx, name, how), ErrMigrationConflictNotFound)
+			}
+			assert.Empty(t, legacyKeys(t, legacyB))
+			conflicts, err = nodeB.ListMigrationConflicts(ctx)
+			require.NoError(t, err)
+			assert.Empty(t, conflicts)
+		})
+	}
+
+	t.Run("a credential beside one whose name extends it", func(t *testing.T) {
+		legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+		writeLegacy(t, legacy, "db", "db-v2", "db-v1", nil)
+		writeLegacy(t, legacy, "db#prod", "prod-v2", "prod-v1", nil)
+		svc := newMigratingService(t, legacy)
+		require.NoError(t, svc.BindStore(ctx, shared))
+
+		conflicts, err := svc.ListMigrationConflicts(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, conflicts)
+		assert.Empty(t, legacyKeys(t, legacy))
+		names, err := svc.ListCredentials(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"db", "db#prod"}, names)
+		assert.Equal(t, "db-v2", retrieveString(t, svc, "db"))
+		assert.Equal(t, "db-v1", versionString(t, svc, "db", 1))
+		assert.Equal(t, "prod-v2", retrieveString(t, svc, "db#prod"))
+		assert.Equal(t, "prod-v1", versionString(t, svc, "db#prod", 1))
+	})
+}
+
 // TestResolveMigrationConflict_Refused verifies an invalid name, an unknown
 // resolution and a name with no conflict are refused and keep the copy.
 func TestResolveMigrationConflict_Refused(t *testing.T) {
