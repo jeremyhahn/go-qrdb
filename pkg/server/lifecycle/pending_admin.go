@@ -56,6 +56,7 @@ import (
 // that loses a race to another reports success.
 func (n *Node) completePendingTenantAdmin(log *slog.Logger) tenant.BarrierReadyHook {
 	return func(ctx context.Context, tenantID string, mode tenant.AdminCompletion) error {
+		n.emitPendingOnboardAudit(ctx, log, tenantID)
 		if (n.PendingAdmins == nil && n.PendingSOs == nil) || n.User == nil || n.Role == nil {
 			return nil
 		}
@@ -87,6 +88,23 @@ func (n *Node) completePendingTenantAdmin(log *slog.Logger) tenant.BarrierReadyH
 			return nil
 		}
 		return err
+	}
+}
+
+// emitPendingOnboardAudit files the tenant's kept onboarding record on its
+// own trail once the barrier is ready. Only the home-group leader appends
+// it, so the record lands once; a refused append leaves it kept for the
+// next init, unseal or status read and never fails the barrier operation.
+func (n *Node) emitPendingOnboardAudit(ctx context.Context, log *slog.Logger, tenantID string) {
+	if n.onboarding == nil || !(nodeHomeLeader{n: n}).LeadsHome(tenantID) {
+		return
+	}
+	if err := n.onboarding.EmitPendingOnboardAudit(ctx, tenantID); err != nil {
+		level := slog.LevelWarn
+		if errors.Is(err, tenant.ErrTenantSealed) {
+			level = slog.LevelDebug
+		}
+		log.Log(ctx, level, "tenant onboarding audit record not yet on the tenant's trail", "tenant", tenantID, "error", err)
 	}
 }
 

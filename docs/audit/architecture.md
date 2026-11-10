@@ -341,8 +341,9 @@ that cannot be opened stops the start. No composer is left without one.
 
 The barriers record on the same trail, not a second one: the system barrier,
 every tenant barrier and every database barrier, through the adapter
-`seal.NewComplianceAuditLogger`, keyed by the owning tenant and naming the
-barrier. A Shamir unseal therefore leaves the holders' submissions and the
+`seal.NewComplianceAuditLogger`, naming the barrier. The system barrier's and
+every tenant barrier's records are platform events, keyed by the system
+tenant; a database barrier's are keyed by the database's tenant. A Shamir unseal therefore leaves the holders' submissions and the
 barrier's `quorum-complete` and `unseal` side by side. **Each event has one
 emitter:** a submission and a rekey opening are the holder engine's records,
 and the barrier emits no copy. The list is in
@@ -476,12 +477,21 @@ What proposes `OpAuditAppend`, and how a caller reads back what it proposed:
 - `tenant.TenantService.ReplicatedAuditEnabled` — resolves that entitlement,
   with the system tenant handled separately (see "Platform events" below).
 - `service.SystemShardAuditResolver` — names the `(Host, shardID)` that
-  serves a tenant's chain. Every tenant that is not dedicated-isolation, and
-  an unregistered tenant id, resolves to the system shard; a
-  dedicated-isolation tenant (volume/raft) is refused with
-  `*service.DedicatedTenantAuditNotSupportedError` rather than silently
-  guessing, because that tenant's chain belongs on its own dedicated host,
-  which this resolver does not reach.
+  serves a tenant's chain. A shared-isolation tenant, and an unregistered
+  tenant id, resolves to the system shard. In cluster mode (once
+  `AttachTenantHomes` has wired the tenant home groups) a dedicated-isolation
+  tenant (volume/raft) resolves to its home group, and a barrier tenant
+  follows its audit route: a recorded fact (`__sys:audit/route/<tenant>`,
+  first writer wins) that is `system` when the tenant already has a chain on
+  the system shard or `verifiable-log-audit` is off, and `home` otherwise.
+  The route never changes after it is recorded and no record ever moves, so an
+  existing chain is never split. The route is picked before proposing; apply
+  is unchanged. A home-group write while `verifiable-log-audit` is not active
+  on every replica is refused as unavailable with
+  `*service.AuditHomeNotActiveError`. Without home groups (standalone) a
+  barrier tenant stays on the system shard and a dedicated-isolation tenant is
+  refused with `*service.DedicatedTenantAuditNotSupportedError` rather than
+  silently guessing.
 - `service.ReplicatedLogger` — the `audit.AuditLogger` that actually encodes
   and proposes `protocol.OpAuditAppend` from an ordinary `Emit` call (and
   answers `Query`/`VerifyTenantChain` by reading back through

@@ -763,6 +763,11 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// homeGroupRouters are the audit and log resolvers the node serves
+	// from; AttachTenantHomes attaches the tenant homes to each, so an
+	// isolated tenant's trail and logs apply in its home group.
+	homeGroupRouters []homeGroupRouter
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -825,6 +830,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, auditResolver)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
 		service.NewReplicatedLogger(auditResolver),
 		&nodeAuditEntitlementLookup{node: n},
@@ -1008,6 +1014,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// the database's. A build without the qrdb_vlog tag has no log service,
 	// which is not a boot failure.
 	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, logResolver)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
@@ -1923,18 +1930,19 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy),
 		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)))
 	onboardingDeps := service.TenantOnboardingDeps{
-		Tenants:     n.Tenant,
-		Users:       n.User,
-		Roles:       n.Role,
-		Certs:       n.CertProv,
-		Anchors:     n.TrustAnchors,
-		Pending:     n.PendingAdmins,
-		PendingSOs:  n.PendingSOs,
-		TrustDomain: infra.ClusterTrustDomain,
-		Logger:      log,
-		Audit:       infra.AuditLogger,
-		AuditPolicy: infra.AuditFailurePolicy,
-		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+		Tenants:      n.Tenant,
+		Users:        n.User,
+		Roles:        n.Role,
+		Certs:        n.CertProv,
+		Anchors:      n.TrustAnchors,
+		Pending:      n.PendingAdmins,
+		PendingSOs:   n.PendingSOs,
+		PendingAudit: tenantadmin.NewAuditKVStore(certStore),
+		TrustDomain:  infra.ClusterTrustDomain,
+		Logger:       log,
+		Audit:        infra.AuditLogger,
+		AuditPolicy:  infra.AuditFailurePolicy,
+		ClientTrust:  service.ClientTrustRefresherFunc(n.refreshClientTrust),
 
 		SeparationOfDuties: infra.SeparationOfDuties,
 	}

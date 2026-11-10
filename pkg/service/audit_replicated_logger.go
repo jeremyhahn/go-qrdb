@@ -66,8 +66,8 @@ func routingTenant(tenantID string) string {
 	return tenantID
 }
 
-// Emit implements audit.AuditLogger. It resolves ev's tenant to a shard,
-// refuses with *AuditFeatureNotActiveError before proposing when
+// Emit implements audit.AuditLogger. It resolves ev's tenant to a shard --
+// through ResolveAuditAppend when the resolver records routes -- refuses with *AuditFeatureNotActiveError before proposing when
 // featuregate.AuditAppend is not yet active there, and otherwise proposes
 // protocol.OpAuditAppend and reports whether the record is durable.
 //
@@ -77,7 +77,11 @@ func routingTenant(tenantID string) string {
 // pkg/audit.Chain.Append's doc comment).
 func (l *ReplicatedLogger) Emit(ctx context.Context, ev audit.AuditEvent) error {
 	target := routingTenant(ev.TenantID)
-	host, shardID, err := l.resolver.ResolveAuditShard(ctx, target)
+	resolve := l.resolver.ResolveAuditShard
+	if appends, ok := l.resolver.(AuditAppendResolver); ok {
+		resolve = appends.ResolveAuditAppend
+	}
+	host, shardID, err := resolve(ctx, target)
 	if err != nil {
 		return err
 	}

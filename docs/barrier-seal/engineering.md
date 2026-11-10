@@ -1375,6 +1375,11 @@ key.
   default), so its replicated writes are not cut short by the request's. A
   request that must not wait for the tenant's home group -- a Shamir barrier
   init -- makes one attempt instead (`CompletePendingTenantAdminOnce`).
+  Before that, the same hook first appends the tenant's kept onboarding audit
+  record (`TenantOnboardingService.EmitPendingOnboardAudit`). It does this only
+  on the home-group leader, and it deletes the kept record only after the
+  append succeeds. A refused append is logged and never fails the barrier
+  operation.
 - A tenant barrier's trust-on-first-init window admits the pending first
   admin's certificate while its record exists. The record is consumed when the
   admin's account is created, which a passphrase fan-out reaches before every
@@ -1869,8 +1874,8 @@ barrier and, through `seal.WithAuditTrail`, to every tenant barrier their
 registry builds; the database barrier manager
 (`database.WithBarrierAuditTrail`) to every database barrier; and the
 desktop's embedded server to both when its trail is enabled. Each record is
-keyed by the tenant that owns the barrier -- the system tenant for the system
-barrier, the tenant for a tenant barrier, the database's tenant for a
+keyed by the system tenant for the system barrier and for a tenant barrier
+(whose seal and unseal are platform events), the database's tenant for a
 database barrier -- and names the barrier in the attribute `barrier`
 (`system`, `tenant:<id>`, `database:<tenant>/<name>`). Only allow-listed
 details reach the trail (`domain`, `op`, `strategy`, `threshold`, `removed`,

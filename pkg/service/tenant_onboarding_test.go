@@ -38,8 +38,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -365,21 +368,163 @@ func TestOnboardTenant_EmitsAuditRecordOnSuccess(t *testing.T) {
 		t.Fatalf("OnboardTenant: %v", err)
 	}
 
-	ev := findEvent(ring.Snapshot(), ActionTenantOnboard)
-	if ev == nil {
-		t.Fatal("no tenant.onboard event recorded")
+	var platform, own []audit.AuditEvent
+	for _, ev := range ring.Snapshot() {
+		if ev.Action != ActionTenantOnboard {
+			continue
+		}
+		switch ev.TenantID {
+		case tenantid.System:
+			platform = append(platform, ev)
+		case "acme":
+			own = append(own, ev)
+		default:
+			t.Fatalf("tenant.onboard event on tenant %q, want system or acme: %+v", ev.TenantID, ev)
+		}
 	}
-	if ev.TenantID != "acme" || ev.Resource != "tenant" {
-		t.Fatalf("event = %+v, want TenantID=acme Resource=tenant", ev)
+	if len(platform) != 2 {
+		t.Fatalf("recorded %d platform tenant.onboard events, want the permitted record and its outcome", len(platform))
 	}
-	if ev.Outcome != audit.OutcomeSuccess {
-		t.Fatalf("event Outcome = %q, want success", ev.Outcome)
+	for i, want := range []string{audit.OutcomePermitted, audit.OutcomeSuccess} {
+		ev := platform[i]
+		if ev.Resource != "tenant:acme" || ev.Outcome != want {
+			t.Fatalf("platform event %d = %+v, want Resource=tenant:acme Outcome=%s", i, ev, want)
+		}
+		if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
+			t.Fatalf("platform event %d isolation_type = %v, want %q", i, ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+		}
+		// The platform trail holds no tenant username: the admin's identity
+		// stays on the tenant's own trail.
+		if _, ok := ev.Attributes["admin_username"]; ok {
+			t.Fatalf("platform event %d carries admin_username: %v", i, ev.Attributes)
+		}
+		for k, v := range ev.Attributes {
+			if v == "admin" {
+				t.Fatalf("platform event %d attribute %s names the tenant admin", i, k)
+			}
+		}
 	}
-	if ev.Attributes["admin_username"] != "admin" {
-		t.Fatalf("event admin_username = %v, want admin", ev.Attributes["admin_username"])
+	if len(own) != 1 || own[0].Outcome != audit.OutcomeSuccess || own[0].Resource != "tenant:acme" ||
+		own[0].Attributes["admin_username"] != "admin" {
+		t.Fatalf("tenant-trail tenant.onboard events = %+v, want one success naming admin_username=admin", own)
 	}
-	if ev.Attributes["isolation_type"] != string(tenant.IsolationPrefix) {
-		t.Fatalf("event isolation_type = %v, want %q", ev.Attributes["isolation_type"], tenant.IsolationPrefix)
+}
+
+// sealedTrailAudit is the audit trail of a node whose tenants' trails live in
+// their home groups: an event on the trail of a tenant whose barrier is
+// sealed is refused, as the home group's Services lookup refuses it, and is
+// never written.
+type sealedTrailAudit struct {
+	*audit.RingBuffer
+	barriers *seal.BarrierRegistry
+}
+
+func (a *sealedTrailAudit) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if !tenantid.IsSystem(ev.TenantID) {
+		status, err := a.barriers.TenantStatus(ev.TenantID)
+		if err != nil {
+			return &audit.WriteError{Backend: "home-group", Err: err}
+		}
+		if status.Sealed {
+			return &audit.WriteError{Backend: "home-group", Err: tenant.ErrTenantSealed}
+		}
+	}
+	return a.RingBuffer.Emit(ctx, ev)
+}
+
+func (a *sealedTrailAudit) onboardRecords(tenantID string) []audit.AuditEvent {
+	var out []audit.AuditEvent
+	for _, ev := range a.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == tenantID {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// A self-managed barrier tenant's trail is sealed when its onboarding
+// answers: the onboarding record naming its first admin waits beside the
+// pending admin and lands on the tenant's trail once, when the barrier is
+// first up, and never again on a later unseal.
+func TestOnboardTenant_SealedTenantTrailGetsItsOnboardingRecordAtUnseal(t *testing.T) {
+	ctx := context.Background()
+	log := slog.New(slog.DiscardHandler)
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("onboarding-system-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	system, err := seal.NewStorageBarrier(log, seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "system/root-key"}, strategy)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := system.Initialize(ctx, seal.Credentials{}); err != nil {
+		t.Fatalf("Initialize (system): %v", err)
+	}
+	reg, _, _ := sealtest.PooledRegistry(t, system)
+	// The barrier-ready hook is the node's (lifecycle completePendingTenantAdmin):
+	// it files the pending onboarding record once the barrier is up.
+	var svc *TenantOnboardingService
+	tenants, err := tenant.NewTenantService(seal.NewMemoryBackend(), reg, log,
+		tenant.WithBarrierReadyHook(func(ctx context.Context, tenantID string, _ tenant.AdminCompletion) error {
+			return svc.EmitPendingOnboardAudit(ctx, tenantID)
+		}))
+	if err != nil {
+		t.Fatalf("NewTenantService: %v", err)
+	}
+	deps := newOnboardingDeps(t)
+	deps.Tenants = tenants
+	identity := kvstore.NewMemoryKVStore()
+	deps.Pending = tenantadmin.NewKVStore(identity)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	trail := &sealedTrailAudit{RingBuffer: audit.NewRingBuffer(32), barriers: reg}
+	deps.Audit = trail
+	svc = NewTenantOnboardingService(deps)
+
+	_, csrPEM, err := certtest.NewCSR("irrelevant-csr-subject")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.OnboardTenant(ctx, &OnboardTenantRequest{
+		ID: "acme", AdminUsername: "admin", AdminCSRPEM: csrPEM,
+		IsolationType: tenant.IsolationBarrier, BarrierAutoUnseal: false,
+	}); err != nil {
+		t.Fatalf("OnboardTenant: %v", err)
+	}
+	onboardRecords := func(tenantID string) []audit.AuditEvent {
+		var out []audit.AuditEvent
+		for _, ev := range trail.Snapshot() {
+			if ev.Action == ActionTenantOnboard && ev.TenantID == tenantID {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+	if own := onboardRecords("acme"); len(own) != 0 {
+		t.Fatalf("sealed tenant trail took tenant.onboard events %+v", own)
+	}
+
+	passphrase := []byte("acme-barrier-passphrase")
+	if _, err := tenants.TenantBarrierInitWithStrategy(ctx, "acme", passphrase, 0, 0, seal.StrategyPassphrase, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy: %v", err)
+	}
+	// The tenant's own admin seals its barrier and unseals it again.
+	adminCtx := tenant.WithTenantID(ctx, "acme")
+	if err := tenants.TenantBarrierSeal(adminCtx, "acme"); err != nil {
+		t.Fatalf("TenantBarrierSeal: %v", err)
+	}
+	if err := tenants.TenantBarrierUnseal(adminCtx, "acme", passphrase); err != nil {
+		t.Fatalf("TenantBarrierUnseal: %v", err)
+	}
+
+	own := onboardRecords("acme")
+	if len(own) != 1 || own[0].Outcome != audit.OutcomeSuccess || own[0].Resource != "tenant:acme" ||
+		own[0].Attributes["admin_username"] != "admin" {
+		t.Fatalf("tenant-trail tenant.onboard events = %+v, want one success naming admin_username=admin", own)
+	}
+	for _, ev := range onboardRecords(tenantid.System) {
+		if _, ok := ev.Attributes["admin_username"]; ok {
+			t.Fatalf("platform tenant.onboard event names the admin: %+v", ev)
+		}
 	}
 }
 
@@ -458,6 +603,14 @@ func TestOnboardTenant_SettlesFailureFromProvisioning(t *testing.T) {
 	}
 	if ev.Outcome != audit.OutcomeFailure+":onboard-failed" {
 		t.Fatalf("event Outcome = %q, want %q", ev.Outcome, audit.OutcomeFailure+":onboard-failed")
+	}
+	for _, rec := range ring.Snapshot() {
+		if rec.TenantID != tenantid.System {
+			t.Fatalf("a failed onboarding filed on tenant %q's trail: %+v", rec.TenantID, rec)
+		}
+		if _, ok := rec.Attributes["admin_username"]; ok {
+			t.Fatalf("platform record carries admin_username: %+v", rec)
+		}
 	}
 }
 

@@ -210,3 +210,98 @@ func (s *KVStore) Delete(ctx context.Context, tenantID string, read *Pending) (b
 	}
 	return deleted, nil
 }
+
+// pendingAuditKey is the reserved key a tenant's pending onboarding audit
+// record lives under, beside pendingKey.
+const pendingAuditKey = "__sys:pending-audit"
+
+// AuditStore holds the record a tenant's onboarding files on the tenant's own
+// audit trail until that trail can take it. A dedicated tenant's trail lives
+// in its home group, which refuses a write while the tenant barrier is
+// sealed, so a self-managed tenant's record waits here, readable while the
+// barrier is sealed, and is deleted once it has been appended.
+type AuditStore interface {
+	// Create records tenantID's pending audit record only if the tenant has
+	// none, decided atomically against the replicated store
+	// (*AlreadyPendingError otherwise).
+	Create(ctx context.Context, tenantID string, record []byte) error
+
+	// Get returns tenantID's pending audit record, or nil when it has none.
+	Get(ctx context.Context, tenantID string) ([]byte, error)
+
+	// Delete removes tenantID's pending audit record only while it is still
+	// the record read, decided atomically; deleted=false with a nil error
+	// means another writer removed or replaced it first.
+	Delete(ctx context.Context, tenantID string, read []byte) (deleted bool, err error)
+}
+
+// AuditKVStore is the built-in AuditStore over the replicated system store.
+type AuditKVStore struct {
+	kv KVStore
+}
+
+// Compile-time interface check.
+var _ AuditStore = (*AuditKVStore)(nil)
+
+// NewAuditKVStore returns the built-in AuditStore over store, the replicated
+// system store NewKVStore takes: one record per tenant under
+// __sys:pending-audit in the tenant's identity namespace.
+func NewAuditKVStore(store kvstore.KVStore) *AuditKVStore {
+	return &AuditKVStore{kv: KVStore{store: store, key: pendingAuditKey}}
+}
+
+// Create implements AuditStore.
+func (s *AuditKVStore) Create(ctx context.Context, tenantID string, record []byte) error {
+	if len(record) == 0 {
+		return &IncompleteError{}
+	}
+	scoped, err := s.kv.scoped(tenantID)
+	if err != nil {
+		return err
+	}
+	atomic, ok := scoped.(kvstore.AtomicKVStore)
+	if !ok {
+		return &StoreError{Op: "create", Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	stored, err := atomic.PutIfAbsent(ctx, s.kv.key, record)
+	if err != nil {
+		return &StoreError{Op: "create", Err: err}
+	}
+	if !stored {
+		return &AlreadyPendingError{TenantID: tenantID}
+	}
+	return nil
+}
+
+// Get implements AuditStore.
+func (s *AuditKVStore) Get(ctx context.Context, tenantID string) ([]byte, error) {
+	scoped, err := s.kv.scoped(tenantID)
+	if err != nil {
+		return nil, err
+	}
+	value, err := scoped.Get(ctx, s.kv.key)
+	if err != nil {
+		return nil, &StoreError{Op: "get", Err: err}
+	}
+	return value, nil
+}
+
+// Delete implements AuditStore.
+func (s *AuditKVStore) Delete(ctx context.Context, tenantID string, read []byte) (bool, error) {
+	if len(read) == 0 {
+		return false, &IncompleteError{}
+	}
+	scoped, err := s.kv.scoped(tenantID)
+	if err != nil {
+		return false, err
+	}
+	atomic, ok := scoped.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, &StoreError{Op: "delete", Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	deleted, err := atomic.CompareAndDelete(ctx, s.kv.key, read)
+	if err != nil {
+		return false, &StoreError{Op: "delete", Err: err}
+	}
+	return deleted, nil
+}
