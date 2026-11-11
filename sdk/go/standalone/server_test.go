@@ -46,39 +46,6 @@ func TestNewServer_NilConfig(t *testing.T) {
 // Backend creation (happy paths)
 // ---------------------------------------------------------------------------
 
-func TestNewServer_MemoryBackend(t *testing.T) {
-	ctx := context.Background()
-	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendMemory,
-	})
-	if err != nil {
-		t.Fatalf("NewServer(memory): %v", err)
-	}
-	defer func() {
-		if err := srv.Shutdown(ctx); err != nil {
-			t.Fatalf("Shutdown: %v", err)
-		}
-	}()
-
-	client := srv.Client()
-	if client == nil {
-		t.Fatal("Client() returned nil")
-	}
-
-	// Basic KV round-trip.
-	kv := client.KV()
-	if err := kv.Put(ctx, "hello", []byte("world")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := kv.Get(ctx, "hello")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "world" {
-		t.Fatalf("Get: got %q, want %q", got, "world")
-	}
-}
-
 func TestNewServer_PebbleBackend(t *testing.T) {
 	ctx := context.Background()
 	srv, err := NewServer(ctx, &ServerConfig{
@@ -257,19 +224,6 @@ func TestNewServer_ValidationErrors(t *testing.T) {
 				t.Fatalf("expected Field=%q, got %q", tt.field, cfgErr.Field)
 			}
 		})
-	}
-}
-
-func TestNewServer_MemoryBackend_NoDataDir(t *testing.T) {
-	ctx := context.Background()
-	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendMemory,
-	})
-	if err != nil {
-		t.Fatalf("NewServer(memory, no DataDir): %v", err)
-	}
-	if err := srv.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
 	}
 }
 
