@@ -287,6 +287,20 @@ func TestBoundSpent_DeadlinePassedBeforeTimerFires(t *testing.T) {
 	}
 }
 
+// TestBoundSpent_DoneContext pins that a canceled or expired bound is spent.
+func TestBoundSpent_DoneContext(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+
+	for name, ctx := range map[string]context.Context{"canceled": canceled, "expired": expired} {
+		if !boundSpent(ctx) {
+			t.Errorf("%s: boundSpent = false, want true", name)
+		}
+	}
+}
+
 // TestBoundSpent_LiveBound pins that a bound with time left, or no bound at
 // all, is not spent: Connect records such an attempt's failure as the last.
 func TestBoundSpent_LiveBound(t *testing.T) {

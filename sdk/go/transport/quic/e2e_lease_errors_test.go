@@ -99,6 +99,20 @@ func TestE2E_LeaseKeepAlive_Expired(t *testing.T) {
 	}
 }
 
+func TestE2E_LeaseTimeToLive_NotFound(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	serverNotFound(srv, "lease.TimeToLive", "service: lease not found: 99")
+
+	_, err := tr.LeaseTimeToLive(context.Background(), 99)
+	var notFound *transport.LeaseNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("expected *transport.LeaseNotFoundError, got %T: %v", err, err)
+	}
+	if notFound.LeaseID != 99 {
+		t.Errorf("LeaseID: got %d, want 99", notFound.LeaseID)
+	}
+}
+
 func TestE2E_LeaseTimeToLive_Expired(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	serverNotFound(srv, "lease.TimeToLive", "service: lease expired: 99")

@@ -15,6 +15,7 @@
 package quic
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -154,6 +155,39 @@ func startDEKServer(t *testing.T) *Transport {
 		return svc.Retire(ctx, in.GetTenantId(), in.GetVersion())
 	}))
 	return tr
+}
+
+func TestQUICDEK_LifecycleOverTheWire(t *testing.T) {
+	tr := startDEKServer(t)
+	ctx := context.Background()
+	aad := []byte("path=db/password|v=1")
+
+	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
+	if err != nil || enc.Version != 1 {
+		t.Fatalf("encrypt = %+v, %v", enc, err)
+	}
+	st, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{})
+	if err != nil || st.CurrentVersion != 2 {
+		t.Fatalf("rotate = %+v, %v", st, err)
+	}
+	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || rw.ToVersion != 2 {
+		t.Fatalf("rewrap = %+v, %v", rw, err)
+	}
+	st, err = tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1})
+	if err != nil || st.Versions[0].RetiredAt == nil {
+		t.Fatalf("retire = %+v, %v", st, err)
+	}
+	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: rw.Ciphertext, AAD: aad})
+	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) || dec.Version != 2 {
+		t.Fatalf("decrypt = %+v, %v", dec, err)
+	}
+	if st, err = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); err != nil || len(st.Versions) != 2 {
+		t.Fatalf("status = %+v, %v", st, err)
+	}
+	if _, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: enc.Ciphertext, AAD: aad}); err == nil {
+		t.Fatal("a retired version must not decrypt")
+	}
 }
 
 func TestQUICDEK_NilRequests(t *testing.T) {

@@ -328,6 +328,16 @@ func TestE2E_IssueCert_HappyPath(t *testing.T) {
 	}
 }
 
+func TestE2E_IssueCert_ServerError(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("cert.Issue", func(_ []byte) (uint16, []byte) {
+		return wire.StatusError, []byte("ca unavailable")
+	})
+	if _, err := tr.IssueCert(context.Background(), &transport.IssueCertRequest{Username: "alice", CSRPEM: "csr"}); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
 func TestE2E_EnrollCert_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	gotReq := make(chan map[string]any, 1)

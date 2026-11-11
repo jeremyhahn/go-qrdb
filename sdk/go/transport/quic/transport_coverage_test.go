@@ -331,3 +331,25 @@ func TestQUICStripScheme(t *testing.T) {
 // ===========================================================================
 // errors.go — typed error formatting
 // ===========================================================================
+
+func TestQUICMarshalError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("boom")
+	e := &marshalError{Err: inner}
+	if e.Error() == "" {
+		t.Error("expected non-empty error message")
+	}
+	if !errors.Is(e, inner) {
+		t.Error("Unwrap chain broken")
+	}
+}
+
+func TestQUICUnmarshalError_ErrorAndUnwrap(t *testing.T) {
+	inner := errors.New("boom")
+	e := &unmarshalError{Err: inner}
+	if e.Error() == "" {
+		t.Error("expected non-empty error message")
+	}
+	if !errors.Is(e, inner) {
+		t.Error("Unwrap chain broken")
+	}
+}

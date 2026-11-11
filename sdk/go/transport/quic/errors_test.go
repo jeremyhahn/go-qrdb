@@ -32,11 +32,28 @@ func TestDialError_Error(t *testing.T) {
 	}
 }
 
+func TestDialError_ErrorDifferentMessage(t *testing.T) {
+	inner := errors.New("timeout after 5s")
+	err := &dialError{Err: inner}
+	expected := "quic transport: dial failed: timeout after 5s"
+	if got := err.Error(); got != expected {
+		t.Errorf("dialError.Error() = %q, want %q", got, expected)
+	}
+}
+
 func TestDialError_Unwrap(t *testing.T) {
 	inner := errors.New("connection refused")
 	err := &dialError{Err: inner}
 	if unwrapped := err.Unwrap(); unwrapped != inner {
 		t.Errorf("dialError.Unwrap() = %v, want %v", unwrapped, inner)
+	}
+}
+
+func TestDialError_UnwrapIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	err := &dialError{Err: sentinel}
+	if !errors.Is(err, sentinel) {
+		t.Error("errors.Is should find wrapped sentinel error")
 	}
 }
 
@@ -53,11 +70,28 @@ func TestStreamError_Error(t *testing.T) {
 	}
 }
 
+func TestStreamError_ErrorDifferentMessage(t *testing.T) {
+	inner := errors.New("connection closed")
+	err := &streamError{Err: inner}
+	expected := "quic transport: stream open failed: connection closed"
+	if got := err.Error(); got != expected {
+		t.Errorf("streamError.Error() = %q, want %q", got, expected)
+	}
+}
+
 func TestStreamError_Unwrap(t *testing.T) {
 	inner := errors.New("stream limit reached")
 	err := &streamError{Err: inner}
 	if unwrapped := err.Unwrap(); unwrapped != inner {
 		t.Errorf("streamError.Unwrap() = %v, want %v", unwrapped, inner)
+	}
+}
+
+func TestStreamError_UnwrapIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	err := &streamError{Err: sentinel}
+	if !errors.Is(err, sentinel) {
+		t.Error("errors.Is should find wrapped sentinel error")
 	}
 }
 
@@ -114,11 +148,28 @@ func TestMarshalError_Error(t *testing.T) {
 	}
 }
 
+func TestMarshalError_ErrorDifferentMessage(t *testing.T) {
+	inner := errors.New("invalid message type")
+	err := &marshalError{Err: inner}
+	expected := "quic: failed to marshal request: invalid message type"
+	if got := err.Error(); got != expected {
+		t.Errorf("marshalError.Error() = %q, want %q", got, expected)
+	}
+}
+
 func TestMarshalError_Unwrap(t *testing.T) {
 	inner := errors.New("proto: missing field")
 	err := &marshalError{Err: inner}
 	if unwrapped := err.Unwrap(); unwrapped != inner {
 		t.Errorf("marshalError.Unwrap() = %v, want %v", unwrapped, inner)
+	}
+}
+
+func TestMarshalError_UnwrapIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	err := &marshalError{Err: sentinel}
+	if !errors.Is(err, sentinel) {
+		t.Error("errors.Is should find wrapped sentinel error")
 	}
 }
 
@@ -135,11 +186,28 @@ func TestUnmarshalError_Error(t *testing.T) {
 	}
 }
 
+func TestUnmarshalError_ErrorDifferentMessage(t *testing.T) {
+	inner := errors.New("unexpected EOF")
+	err := &unmarshalError{Err: inner}
+	expected := "quic: failed to unmarshal response: unexpected EOF"
+	if got := err.Error(); got != expected {
+		t.Errorf("unmarshalError.Error() = %q, want %q", got, expected)
+	}
+}
+
 func TestUnmarshalError_Unwrap(t *testing.T) {
 	inner := errors.New("proto: invalid wire type")
 	err := &unmarshalError{Err: inner}
 	if unwrapped := err.Unwrap(); unwrapped != inner {
 		t.Errorf("unmarshalError.Unwrap() = %v, want %v", unwrapped, inner)
+	}
+}
+
+func TestUnmarshalError_UnwrapIs(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	err := &unmarshalError{Err: sentinel}
+	if !errors.Is(err, sentinel) {
+		t.Error("errors.Is should find wrapped sentinel error")
 	}
 }
 
