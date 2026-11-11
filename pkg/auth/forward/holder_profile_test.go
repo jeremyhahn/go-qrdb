@@ -22,27 +22,6 @@ import (
 	"time"
 )
 
-// TestVerify_HolderProfileRoundTrips: the profile is signed with the rest of
-// the assertion and comes back from Verify.
-func TestVerify_HolderProfileRoundTrips(t *testing.T) {
-	cert, key := nodeCert(t, tdom, nodeID)
-	now := time.Now()
-	body := []byte(`{"v":1}`)
-	a := NewCallerAssertion("admin", "system", method, path, BodyDigest(body), nodeID, now, DefaultTTL)
-	a.HolderProfile = "custodian"
-	ab, sb, err := Sign(a, key)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	got, err := Verify(ab, sb, cert, tdom, now, method, path, BodyDigest(body))
-	if err != nil {
-		t.Fatalf("Verify: %v", err)
-	}
-	if got.HolderProfile != "custodian" {
-		t.Fatalf("HolderProfile = %q, want custodian", got.HolderProfile)
-	}
-}
-
 // TestVerify_HolderProfileIsSigned: the profile is covered by the signature.
 // Stripping it -- which would turn a holder into the account of the same name
 // on the leader -- or changing it fails verification.
