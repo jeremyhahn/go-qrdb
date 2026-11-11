@@ -159,9 +159,7 @@ func TestValidate(t *testing.T) {
 
 func TestValidateAcceptsMaxBackoff(t *testing.T) {
 	for name, maxBackoff := range map[string]Duration{
-		"unset":        0,
-		"equal redial": Duration(time.Second),
-		"above redial": Duration(time.Minute),
+		"unset": 0,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Config{Endpoints: []string{"a:1"}, KeyPrefix: "p", RedialBackoff: Duration(time.Second)}

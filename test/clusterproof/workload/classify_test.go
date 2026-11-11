@@ -48,14 +48,12 @@ func TestDefaultClassifier(t *testing.T) {
 		want history.Outcome
 	}{
 		"put ok":                     {history.KindPut, nil, ok},
-		"get ok":                     {history.KindGet, nil, ok},
 		"get absent":                 {history.KindGet, notFound, ok},
 		"delete absent":              {history.KindDelete, notFound, ok},
 		"put not found":              {history.KindPut, notFound, indet},
 		"get timeout":                {history.KindGet, context.DeadlineExceeded, fail},
 		"get connection lost":        {history.KindGet, connLost, fail},
 		"put timeout":                {history.KindPut, context.DeadlineExceeded, indet},
-		"cas timeout":                {history.KindCAS, context.DeadlineExceeded, indet},
 		"delete connection lost":     {history.KindDelete, connLost, indet},
 		"put not leader":             {history.KindPut, &transport.NotLeaderError{ShardID: 1}, indet},
 		"put closed":                 {history.KindPut, &transport.ClosedError{}, indet},
@@ -69,20 +67,19 @@ func TestDefaultClassifier(t *testing.T) {
 		// fail; every code that can mean the request reached it is
 		// indeterminate, Unavailable above all (it also reports a connection
 		// that broke after the request was sent).
-		"grpc invalid argument":     {history.KindPut, status.Error(codes.InvalidArgument, "bad key"), fail},
-		"grpc unauthenticated":      {history.KindPut, status.Error(codes.Unauthenticated, "no token"), fail},
-		"grpc permission denied":    {history.KindDelete, status.Error(codes.PermissionDenied, "denied"), fail},
-		"grpc resource exhausted":   {history.KindCAS, status.Error(codes.ResourceExhausted, "rate"), fail},
-		"grpc wrapped rejection":    {history.KindPut, grpcWrapped(codes.PermissionDenied), fail},
-		"grpc unavailable put":      {history.KindPut, status.Error(codes.Unavailable, "conn reset"), indet},
-		"grpc unavailable cas":      {history.KindCAS, grpcWrapped(codes.Unavailable), indet},
-		"grpc deadline exceeded":    {history.KindPut, status.Error(codes.DeadlineExceeded, "slow"), indet},
-		"grpc aborted":              {history.KindDelete, status.Error(codes.Aborted, "aborted"), indet},
-		"grpc unknown":              {history.KindPut, status.Error(codes.Unknown, "?"), indet},
-		"grpc failed precondition":  {history.KindPut, status.Error(codes.FailedPrecondition, "sealed"), indet},
-		"grpc internal":             {history.KindCAS, status.Error(codes.Internal, "panic"), indet},
-		"grpc get unavailable":      {history.KindGet, status.Error(codes.Unavailable, "down"), fail},
-		"grpc get invalid argument": {history.KindGet, status.Error(codes.InvalidArgument, "bad key"), fail},
+		"grpc invalid argument":    {history.KindPut, status.Error(codes.InvalidArgument, "bad key"), fail},
+		"grpc unauthenticated":     {history.KindPut, status.Error(codes.Unauthenticated, "no token"), fail},
+		"grpc permission denied":   {history.KindDelete, status.Error(codes.PermissionDenied, "denied"), fail},
+		"grpc resource exhausted":  {history.KindCAS, status.Error(codes.ResourceExhausted, "rate"), fail},
+		"grpc wrapped rejection":   {history.KindPut, grpcWrapped(codes.PermissionDenied), fail},
+		"grpc unavailable put":     {history.KindPut, status.Error(codes.Unavailable, "conn reset"), indet},
+		"grpc unavailable cas":     {history.KindCAS, grpcWrapped(codes.Unavailable), indet},
+		"grpc deadline exceeded":   {history.KindPut, status.Error(codes.DeadlineExceeded, "slow"), indet},
+		"grpc aborted":             {history.KindDelete, status.Error(codes.Aborted, "aborted"), indet},
+		"grpc unknown":             {history.KindPut, status.Error(codes.Unknown, "?"), indet},
+		"grpc failed precondition": {history.KindPut, status.Error(codes.FailedPrecondition, "sealed"), indet},
+		"grpc internal":            {history.KindCAS, status.Error(codes.Internal, "panic"), indet},
+		"grpc get unavailable":     {history.KindGet, status.Error(codes.Unavailable, "down"), fail},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

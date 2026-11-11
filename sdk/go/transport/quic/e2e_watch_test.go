@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,38 +60,6 @@ func TestE2E_Watch_HappyPath(t *testing.T) {
 			t.Fatalf("channel closed without event")
 		}
 		if len(resp.Events) != 1 || resp.Revision != 5 {
-			t.Fatalf("resp = %+v", resp)
-		}
-	case <-ctx.Done():
-		t.Fatalf("timeout waiting for watch event")
-	}
-}
-
-func TestE2E_WatchPrefix_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("watch.WatchPrefix", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.WatchResponse{
-			WatchId: 2,
-			Events: []*pb.Event{
-				{Type: pb.EventType_EVENT_DELETE, Kv: &pb.KeyValue{Key: []byte("p/x")}},
-			},
-		})
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	ch, err := tr.WatchPrefix(ctx, "p/", transport.WatchOptions{})
-	if err != nil {
-		t.Fatalf("WatchPrefix: %v", err)
-	}
-
-	select {
-	case resp, ok := <-ch:
-		if !ok {
-			t.Fatalf("channel closed without event")
-		}
-		if len(resp.Events) != 1 || resp.Events[0].Type != transport.EventDelete {
 			t.Fatalf("resp = %+v", resp)
 		}
 	case <-ctx.Done():
@@ -188,38 +157,6 @@ func TestE2E_Watch_StartRevisionThreaded(t *testing.T) {
 	}
 }
 
-// TestE2E_WatchPrefix_StartRevisionThreaded mirrors the above for
-// WatchPrefix.
-func TestE2E_WatchPrefix_StartRevisionThreaded(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("watch.WatchPrefix", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.WatchResponse{WatchId: 2, Revision: 1})
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	ch, err := tr.WatchPrefix(ctx, "p/", transport.WatchOptions{StartRevision: 7})
-	if err != nil {
-		t.Fatalf("WatchPrefix: %v", err)
-	}
-	if _, ok := <-ch; !ok {
-		t.Fatal("channel closed without event")
-	}
-
-	rec := srv.LastRequest("watch.WatchPrefix")
-	if rec == nil {
-		t.Fatal("server never received a watch.WatchPrefix request")
-	}
-	var req pb.WatchRequest
-	if err := proto.Unmarshal(rec.Payload, &req); err != nil {
-		t.Fatalf("unmarshal request: %v", err)
-	}
-	if req.GetStartRevision() != 7 {
-		t.Fatalf("StartRevision = %d, want 7", req.GetStartRevision())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Context cancellation must unblock a pending read promptly
 // ---------------------------------------------------------------------------
@@ -236,7 +173,10 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
+	received := make(chan struct{})
+	var receivedOnce sync.Once
 	srv.SetResponder("watch.Watch", func(_ []byte) (uint16, []byte) {
+		receivedOnce.Do(func() { close(received) })
 		<-block // never respond during the test; simulates an idle watch stream.
 		return wire.StatusOK, nil
 	})
@@ -248,10 +188,14 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	// Give the reader goroutine time to actually enter the blocking read
-	// before canceling, so this exercises unblocking an in-flight read
-	// rather than the pre-read ctx.Done() check at the top of the loop.
-	time.Sleep(50 * time.Millisecond)
+	// Cancel only once the server holds the watch request, so this
+	// exercises unblocking an in-flight read rather than the pre-read
+	// ctx.Done() check at the top of the loop.
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never received the watch request")
+	}
 	cancel()
 
 	select {

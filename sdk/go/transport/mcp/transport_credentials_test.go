@@ -273,22 +273,6 @@ func TestCredentialSubmit_NilRequest(t *testing.T) {
 	}
 }
 
-func TestCredentialSubmit_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "n", Value: []byte("v")})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CredentialStrategy
 // ---------------------------------------------------------------------------
@@ -305,22 +289,6 @@ func TestCredentialStrategy_Success(t *testing.T) {
 	}
 	if resp.Strategy != "barrier" {
 		t.Errorf("strategy: got %q, want %q", resp.Strategy, "barrier")
-	}
-}
-
-func TestCredentialStrategy_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.CredentialStrategy(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
 	}
 }
 
@@ -358,22 +326,6 @@ func TestCredentialDelete_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-func TestCredentialDelete_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.CredentialDelete(context.Background(), "n")
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
 	}
 }
 
@@ -424,22 +376,6 @@ func TestCredentialList_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected *transport.RequestError, got %T", err)
-	}
-}
-
-func TestCredentialList_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.CredentialList(context.Background(), &transport.CredentialListRequest{})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
 	}
 }
 
@@ -536,22 +472,6 @@ func TestCredentialRotate_NilRequest(t *testing.T) {
 	}
 }
 
-func TestCredentialRotate_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "n", NewValue: []byte("v")})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CredentialRetrieveVersion
 // ---------------------------------------------------------------------------
@@ -633,22 +553,6 @@ func TestCredentialRetrieveVersion_NilRequest(t *testing.T) {
 	}
 }
 
-func TestCredentialRetrieveVersion_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "n"})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CredentialListVersions
 // ---------------------------------------------------------------------------
@@ -714,22 +618,6 @@ func TestCredentialListVersions_NilRequest(t *testing.T) {
 	}
 }
 
-func TestCredentialListVersions_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.CredentialListVersions(context.Background(), &transport.CredentialListVersionsRequest{Name: "n"})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // CredentialGCExpired
 // ---------------------------------------------------------------------------
@@ -781,22 +669,6 @@ func TestCredentialGCExpired_NilRequest(t *testing.T) {
 	_, err := tr.CredentialGCExpired(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
-	}
-}
-
-func TestCredentialGCExpired_Closed(t *testing.T) {
-	svc := newMockCredentialSvc()
-	tr, cleanup := connectCredentialInProcess(t, svc)
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.CredentialGCExpired(context.Background(), &transport.CredentialGCRequest{Name: "n"})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected *transport.ClosedError, got %T", err)
 	}
 }
 

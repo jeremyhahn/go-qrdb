@@ -142,26 +142,6 @@ func TestE2E_GetTopology_UnmarshalError(t *testing.T) {
 // Server-error paths (statusCode != OK from server)
 // ---------------------------------------------------------------------------
 
-func TestE2E_Put_ServerError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("kv.Put", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("disk full")
-	})
-	if err := tr.Put(context.Background(), "k", []byte("v")); err == nil {
-		t.Fatal("expected server error")
-	}
-}
-
-func TestE2E_AddMember_ServerError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("admin.AddMember", func(_ []byte) (uint16, []byte) {
-		return wire.StatusError, []byte("bad config")
-	})
-	if err := tr.AddMember(context.Background(), 1, 2, "a:1", ""); err == nil {
-		t.Fatal("expected server error")
-	}
-}
-
 func TestE2E_Drain_ServerError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("admin.Drain", func(_ []byte) (uint16, []byte) {

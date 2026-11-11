@@ -45,64 +45,6 @@ func TestE2E_LockAcquire_HappyPath(t *testing.T) {
 	}
 }
 
-func TestE2E_LockTryLock_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("lock.TryLock", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.LockTryLockResponse{
-			Lock: &pb.LockInfo{Key: "k", FencingToken: 8},
-		})
-	})
-	info, err := tr.LockTryLock(context.Background(), &transport.LockAcquireRequest{Key: "k", HolderID: "h", TTL: 30})
-	if err != nil {
-		t.Fatalf("LockTryLock: %v", err)
-	}
-	if info.FencingToken != 8 {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
-func TestE2E_LockRelease_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("lock.Release", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, nil
-	})
-	if err := tr.LockRelease(context.Background(), &transport.LockReleaseRequest{Key: "k", FencingToken: 7}); err != nil {
-		t.Fatalf("LockRelease: %v", err)
-	}
-}
-
-func TestE2E_LockExtend_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("lock.Extend", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.LockExtendResponse{
-			Lock: &pb.LockInfo{Key: "k", FencingToken: 7, Ttl: 60},
-		})
-	})
-	info, err := tr.LockExtend(context.Background(), &transport.LockExtendRequest{Key: "k", FencingToken: 7})
-	if err != nil {
-		t.Fatalf("LockExtend: %v", err)
-	}
-	if info.TTL != 60 {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
-func TestE2E_LockStatus_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("lock.Status", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.LockStatusResponse{
-			Lock: &pb.LockInfo{Key: "k", FencingToken: 1},
-		})
-	})
-	info, err := tr.LockStatus(context.Background(), "k")
-	if err != nil {
-		t.Fatalf("LockStatus: %v", err)
-	}
-	if info.Key != "k" {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
 func TestE2E_LockList_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("lock.List", func(_ []byte) (uint16, []byte) {

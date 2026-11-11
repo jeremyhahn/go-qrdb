@@ -60,6 +60,22 @@ func histogramCount(h prometheus.Histogram) uint64 {
 	return m.GetHistogram().GetSampleCount()
 }
 
+// constLabel returns the value of the named label on m, failing when absent.
+func constLabel(t *testing.T, m prometheus.Metric, name string) string {
+	t.Helper()
+	out := &dto.Metric{}
+	if err := m.Write(out); err != nil {
+		t.Fatal(err)
+	}
+	for _, lp := range out.GetLabel() {
+		if lp.GetName() == name {
+			return lp.GetValue()
+		}
+	}
+	t.Fatalf("label %q not set on metric", name)
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 // Counter
 // ---------------------------------------------------------------------------
@@ -400,10 +416,10 @@ func Test_HistogramVec_cacheHit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func Test_Registry_returnsCurrentRegistry(t *testing.T) {
-	freshRegistry(t)
-	reg := Registry()
-	if reg == nil {
-		t.Fatal("expected non-nil registry")
+	reg := prometheus.NewRegistry()
+	SetRegistry(reg)
+	if got := Registry(); got != reg {
+		t.Fatalf("Registry() = %p, want the registry passed to SetRegistry %p", got, reg)
 	}
 }
 
@@ -451,16 +467,6 @@ func Test_MustRegister_panicsOnDuplicate(t *testing.T) {
 	MustRegister(c)
 }
 
-func Test_Register_succeeds(t *testing.T) {
-	freshRegistry(t)
-	c := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "test", Subsystem: "r", Name: "ok_total", Help: "register test",
-	})
-	if err := Register(c); err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
 func Test_Register_returnsDuplicateError(t *testing.T) {
 	freshRegistry(t)
 	c := prometheus.NewCounter(prometheus.CounterOpts{
@@ -494,5 +500,67 @@ func Test_Unregister_returnsFalseForUnknown(t *testing.T) {
 	ok := Unregister(c)
 	if ok {
 		t.Fatal("expected Unregister to return false for unregistered collector")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CounterOpts / GaugeOpts / HistogramOpts with ConstLabels
+// ---------------------------------------------------------------------------
+
+func Test_Counter_withConstLabels(t *testing.T) {
+	freshRegistry(t)
+	c := NewCounter(CounterOpts{
+		Namespace:   "test",
+		Subsystem:   "cl",
+		Name:        "const_total",
+		Help:        "const labels test",
+		ConstLabels: prometheus.Labels{"env": "test"},
+	})
+	c.Inc()
+	got := counterValue(c.counter)
+	if got != 1 {
+		t.Fatalf("expected 1 with const labels, got %v", got)
+	}
+	if env := constLabel(t, c.counter, "env"); env != "test" {
+		t.Fatalf("const label env = %q, want %q", env, "test")
+	}
+}
+
+func Test_Gauge_withConstLabels(t *testing.T) {
+	freshRegistry(t)
+	g := NewGauge(GaugeOpts{
+		Namespace:   "test",
+		Subsystem:   "cl",
+		Name:        "const_val",
+		Help:        "const labels test",
+		ConstLabels: prometheus.Labels{"env": "test"},
+	})
+	g.Set(42)
+	got := gaugeValue(g.gauge)
+	if got != 42 {
+		t.Fatalf("expected 42 with const labels, got %v", got)
+	}
+	if env := constLabel(t, g.gauge, "env"); env != "test" {
+		t.Fatalf("const label env = %q, want %q", env, "test")
+	}
+}
+
+func Test_Histogram_withConstLabels(t *testing.T) {
+	freshRegistry(t)
+	h := NewHistogram(HistogramOpts{
+		Namespace:   "test",
+		Subsystem:   "cl",
+		Name:        "const_dur",
+		Help:        "const labels test",
+		ConstLabels: prometheus.Labels{"env": "test"},
+		Buckets:     []float64{1.0},
+	})
+	h.Observe(0.5)
+	got := histogramCount(h.histogram)
+	if got != 1 {
+		t.Fatalf("expected 1 with const labels, got %d", got)
+	}
+	if env := constLabel(t, h.histogram, "env"); env != "test" {
+		t.Fatalf("const label env = %q, want %q", env, "test")
 	}
 }

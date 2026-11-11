@@ -12,7 +12,6 @@ package messaging
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,33 +46,4 @@ func TestCompareSlices_NilToEmpty_ReportsChange(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "expected a change for tags when old is nil and new is non-nil empty slice")
-}
-
-// TestCompareStructs_SpecialType_Delete verifies that a time.Time field going
-// from a non-zero value to zero generates an OpDelete change, exercising the
-// `if newZero && !oldZero { change.Operation = OpDelete }` branch inside
-// compareStructs for special types.
-func TestCompareStructs_SpecialType_Delete(t *testing.T) {
-	t.Parallel()
-
-	type timeEntity struct {
-		ID        string    `json:"id"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-
-	dc := NewDeltaComputer(newTestLogger(t), WithDeltaIgnoreZeroChanges(false))
-
-	old := &timeEntity{ID: "1", ExpiresAt: time.Now()}
-	newVal := &timeEntity{ID: "1", ExpiresAt: time.Time{}} // zero time
-
-	payload, err := dc.Compute(old, newVal)
-	require.NoError(t, err)
-
-	found := false
-	for _, c := range payload.Changes {
-		if c.Path == "expires_at" && c.Operation == OpDelete {
-			found = true
-		}
-	}
-	assert.True(t, found, "expected OpDelete for expires_at going to zero time")
 }

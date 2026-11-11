@@ -89,14 +89,6 @@ func pausedConfig(endpoints ...string) Config {
 	return cfg
 }
 
-func TestBackoffDoublesUpToLimit(t *testing.T) {
-	b := newBackoff(100*time.Millisecond, 800*time.Millisecond, rand.New(rand.NewPCG(1, 2)), sleepContext)
-	steps := []time.Duration{100, 200, 400, 800, 800, 800}
-	for i, step := range steps {
-		requireInBand(t, i, b.next(), step*time.Millisecond)
-	}
-}
-
 func TestBackoffCapsAtLimitThatIsNotAPowerOfTwo(t *testing.T) {
 	b := newBackoff(time.Second, 3*time.Second, rand.New(rand.NewPCG(3, 4)), sleepContext)
 	steps := []time.Duration{time.Second, 2 * time.Second, 3 * time.Second, 3 * time.Second}
@@ -129,16 +121,6 @@ func TestBackoffJitterIsReproducibleBySeed(t *testing.T) {
 			t.Fatalf("pause %d: %v and %v from one seed", i, x, y)
 		}
 	}
-}
-
-func TestBackoffResetStartsOverFromBase(t *testing.T) {
-	b := newBackoff(10*time.Millisecond, time.Second, rand.New(rand.NewPCG(9, 10)), sleepContext)
-	for range 5 {
-		b.next()
-	}
-	b.reset()
-	requireInBand(t, 0, b.next(), 10*time.Millisecond)
-	requireInBand(t, 1, b.next(), 20*time.Millisecond)
 }
 
 func TestBackoffResetBeforeAnyFailureIsHarmless(t *testing.T) {

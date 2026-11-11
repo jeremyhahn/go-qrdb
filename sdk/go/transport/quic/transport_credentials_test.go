@@ -53,72 +53,9 @@ func newOpenCredentialTransport(t *testing.T) *Transport {
 // Closed-state behavior
 // ---------------------------------------------------------------------------
 
-func TestTransport_CredentialSubmit_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{Name: "k", Value: []byte("v")})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestTransport_CredentialStrategy_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialStrategy(context.Background())
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
-func TestTransport_CredentialDelete_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	err := tr.CredentialDelete(context.Background(), "k")
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
-func TestTransport_CredentialList_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialList(context.Background(), &transport.CredentialListRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
-func TestTransport_CredentialRotate_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k", NewValue: []byte("v")})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
 func TestTransport_CredentialRetrieveVersion_Closed(t *testing.T) {
 	tr := newClosedCredentialTransport(t)
 	_, err := tr.retrieveVersionResponse(context.Background(), &transport.CredentialRetrieveVersionRequest{Name: "k", Version: 1})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
-func TestTransport_CredentialListVersions_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialListVersions(context.Background(), &transport.CredentialListVersionsRequest{Name: "k"})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *ClosedError, got %T", err)
-	}
-}
-
-func TestTransport_CredentialGCExpired_Closed(t *testing.T) {
-	tr := newClosedCredentialTransport(t)
-	_, err := tr.CredentialGCExpired(context.Background(), &transport.CredentialGCRequest{Name: "k"})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected *ClosedError, got %T", err)

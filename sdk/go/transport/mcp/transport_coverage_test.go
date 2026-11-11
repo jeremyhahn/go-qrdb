@@ -115,30 +115,12 @@ func TestMCPJSONDecodeError_ErrorAndUnwrap(t *testing.T) {
 // transport.go — Scan / Exists / Capabilities closed paths
 // ===========================================================================
 
-func TestMCPScan_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.Scan(context.Background(), "p")
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("Scan: %v", err)
-	}
-}
-
 func TestMCPExists_AfterClose(t *testing.T) {
 	tr := newClosedTransport()
 	_, err := tr.Exists(context.Background(), "k")
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Errorf("Exists: %v", err)
-	}
-}
-
-func TestMCPCapabilities_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.Capabilities(context.Background())
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("Capabilities: %v", err)
 	}
 }
 

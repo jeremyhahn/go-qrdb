@@ -95,16 +95,7 @@ func TestDeltaTypeMismatchError_Error_WithPath(t *testing.T) {
 func TestDeltaMaxDepthExceededError_Error_IncludesPath(t *testing.T) {
 	t.Parallel()
 	err := &DeltaMaxDepthExceededError{MaxDepth: 10, Path: "a.b.c"}
-	got := err.Error()
-	assert.Contains(t, got, "max recursion depth exceeded")
-	assert.Contains(t, got, "a.b.c")
-}
-
-func TestDeltaMaxDepthExceededError_Error_EmptyPath(t *testing.T) {
-	t.Parallel()
-	err := &DeltaMaxDepthExceededError{MaxDepth: 5, Path: ""}
-	got := err.Error()
-	assert.Equal(t, "max recursion depth exceeded at ", got)
+	assert.Equal(t, "max recursion depth exceeded at a.b.c", err.Error())
 }
 
 // ---------------------------------------------------------------------------

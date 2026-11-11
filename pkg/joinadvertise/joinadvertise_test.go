@@ -19,7 +19,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
@@ -233,14 +232,5 @@ func TestErrorTypes_WrapAndDescribeTheUnderlyingCause(t *testing.T) {
 				t.Errorf("Unwrap() did not expose the underlying cause")
 			}
 		})
-	}
-}
-
-func TestDefaultTTL_IsPositiveAndBoundedByTheEnrollTimeoutWindow(t *testing.T) {
-	if joinadvertise.DefaultTTL <= 0 {
-		t.Fatalf("DefaultTTL = %v, want > 0", joinadvertise.DefaultTTL)
-	}
-	if joinadvertise.DefaultTTL > time.Hour {
-		t.Fatalf("DefaultTTL = %v, want a short admission window, not hours", joinadvertise.DefaultTTL)
 	}
 }

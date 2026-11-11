@@ -33,6 +33,48 @@ type malformedCall struct {
 // text, keyed by method name.
 func malformedCalls() map[string]malformedCall {
 	return map[string]malformedCall{
+		// Cluster, KV, transactions, credentials.
+		"Capabilities": {"qrdb_capabilities", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Capabilities(ctx)
+			return err
+		}},
+		"Status": {"qrdb_status", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Status(ctx)
+			return err
+		}},
+		"Health": {"qrdb_health", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Health(ctx)
+			return err
+		}},
+		"GetTopology": {"qrdb_topology", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.GetTopology(ctx)
+			return err
+		}},
+		"Peers": {"qrdb_peers", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Peers(ctx)
+			return err
+		}},
+		"List": {"qrdb_list", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.List(ctx, "p")
+			return err
+		}},
+		"Scan": {"qrdb_scan", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.Scan(ctx, "p")
+			return err
+		}},
+		"GetShardState": {"qrdb_shard_state", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.GetShardState(ctx, 1)
+			return err
+		}},
+		"ExecuteTransaction": {"qrdb_tx_execute", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.ExecuteTransaction(ctx, &transport.TransactionRequest{})
+			return err
+		}},
+		"CredentialStrategy": {"qrdb_credential_strategy", func(ctx context.Context, tr *Transport) error {
+			_, err := tr.CredentialStrategy(ctx)
+			return err
+		}},
+
 		// Audit.
 		"QueryAudit": {"qrdb_audit_query", func(ctx context.Context, tr *Transport) error {
 			_, err := tr.QueryAudit(ctx, transport.AuditFilter{})

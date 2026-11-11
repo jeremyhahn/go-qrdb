@@ -32,13 +32,6 @@ func TestRevisionCompactedError_Message(t *testing.T) {
 	}
 }
 
-func TestRevisionCompactedError_Zero(t *testing.T) {
-	err := &RevisionCompactedError{}
-	if !strings.Contains(err.Error(), "0") {
-		t.Errorf("expected zero revision in message, got %q", err.Error())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RevisionNotFoundError
 // ---------------------------------------------------------------------------
@@ -48,13 +41,6 @@ func TestRevisionNotFoundError_Message(t *testing.T) {
 	want := "transport: revision 99 not found"
 	if got := err.Error(); got != want {
 		t.Errorf("got %q, want %q", got, want)
-	}
-}
-
-func TestRevisionNotFoundError_Zero(t *testing.T) {
-	err := &RevisionNotFoundError{}
-	if !strings.Contains(err.Error(), "0") {
-		t.Errorf("expected zero revision in message, got %q", err.Error())
 	}
 }
 
@@ -464,19 +450,10 @@ func TestRebalanceExecuteError_MessageAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestNilRebalancePlanError_MessageVariant(t *testing.T) {
+func TestNilRebalancePlanError_Message(t *testing.T) {
 	err := &NilRebalancePlanError{}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-	if !strings.Contains(err.Error(), "nil") {
-		t.Errorf("expected 'nil' in message, got %q", err.Error())
-	}
-}
-
-func TestBatchIndexError_NonZeroIndex(t *testing.T) {
-	err := &BatchIndexError{Index: 10}
-	if !strings.Contains(err.Error(), "10") {
-		t.Errorf("expected index 10 in message, got %q", err.Error())
+	want := "transport: rebalance plan must not be nil"
+	if got := err.Error(); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }

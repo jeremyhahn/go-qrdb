@@ -19,6 +19,9 @@ package metrics
 import (
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // ---------------------------------------------------------------------------
@@ -65,11 +68,28 @@ func Test_NewCollector_customBuckets(t *testing.T) {
 		Subsystem:       "custom",
 		DurationBuckets: buckets,
 	})
-	if c == nil {
-		t.Fatal("expected non-nil Collector with custom buckets")
-	}
-	// Verify it works by recording a duration.
 	c.RecordRequestDuration("GET", "200", 50*time.Millisecond)
+	m := histogramVecMetric(t, c, "GET", "200")
+	got := m.GetHistogram().GetBucket()
+	if len(got) != len(buckets) {
+		t.Fatalf("expected %d buckets, got %d", len(buckets), len(got))
+	}
+	for i, b := range got {
+		if b.GetUpperBound() != buckets[i] {
+			t.Fatalf("bucket[%d] upper bound = %v, want %v", i, b.GetUpperBound(), buckets[i])
+		}
+	}
+}
+
+// histogramVecMetric returns the request-duration sample for method/status.
+func histogramVecMetric(t *testing.T, c *Collector, method, status string) *dto.Metric {
+	t.Helper()
+	m := &dto.Metric{}
+	obs := c.requestDuration.histogramVec.WithLabelValues(method, status)
+	if err := obs.(prometheus.Histogram).Write(m); err != nil {
+		t.Fatal(err)
+	}
+	return m
 }
 
 func Test_NewCollector_cacheHit(t *testing.T) {
@@ -100,7 +120,17 @@ func Test_RecordRequestDuration_records(t *testing.T) {
 	c := NewCollector(CollectorOpts{Namespace: "rrd", Subsystem: "test"})
 	c.RecordRequestDuration("GET", "200", 100*time.Millisecond)
 	c.RecordRequestDuration("GET", "200", 200*time.Millisecond)
-	// No panic = success; the histogram accepted both observations.
+	c.RecordRequestDuration("GET", "500", time.Second)
+	h := histogramVecMetric(t, c, "GET", "200").GetHistogram()
+	if h.GetSampleCount() != 2 {
+		t.Fatalf("GET/200 sample count = %d, want 2", h.GetSampleCount())
+	}
+	if want := (300 * time.Millisecond).Seconds(); h.GetSampleSum() < want-1e-9 || h.GetSampleSum() > want+1e-9 {
+		t.Fatalf("GET/200 sample sum = %v, want %v", h.GetSampleSum(), want)
+	}
+	if n := histogramVecMetric(t, c, "GET", "500").GetHistogram().GetSampleCount(); n != 1 {
+		t.Fatalf("GET/500 sample count = %d, want 1", n)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +143,12 @@ func Test_RecordRequest_increments(t *testing.T) {
 	c.RecordRequest("GET", "200")
 	c.RecordRequest("GET", "200")
 	c.RecordRequest("POST", "500")
-	// If underlying counter did not panic, requests were recorded.
+	if got := counterValue(c.requestRate.counterVec.WithLabelValues("GET", "200")); got != 2 {
+		t.Fatalf("GET/200 requests = %v, want 2", got)
+	}
+	if got := counterValue(c.requestRate.counterVec.WithLabelValues("POST", "500")); got != 1 {
+		t.Fatalf("POST/500 requests = %v, want 1", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -125,8 +160,14 @@ func Test_IncDecRequestsInFlight(t *testing.T) {
 	c := NewCollector(CollectorOpts{Namespace: "rif", Subsystem: "test"})
 	c.IncRequestsInFlight("GET")
 	c.IncRequestsInFlight("GET")
+	c.IncRequestsInFlight("POST")
 	c.DecRequestsInFlight("GET")
-	// Net in-flight = 1 (we only verify no panic).
+	if got := gaugeValue(c.requestsInFlight.gaugeVec.WithLabelValues("GET")); got != 1 {
+		t.Fatalf("GET in flight = %v, want 1", got)
+	}
+	if got := gaugeValue(c.requestsInFlight.gaugeVec.WithLabelValues("POST")); got != 1 {
+		t.Fatalf("POST in flight = %v, want 1", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +180,12 @@ func Test_RecordError_increments(t *testing.T) {
 	c.RecordError("timeout", "read")
 	c.RecordError("timeout", "read")
 	c.RecordError("not_found", "lookup")
+	if got := counterValue(c.errorRate.counterVec.WithLabelValues("timeout", "read")); got != 2 {
+		t.Fatalf("timeout/read errors = %v, want 2", got)
+	}
+	if got := counterValue(c.errorRate.counterVec.WithLabelValues("not_found", "lookup")); got != 1 {
+		t.Fatalf("not_found/lookup errors = %v, want 1", got)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -193,27 +240,36 @@ func Test_DecActiveConnections(t *testing.T) {
 // Timer
 // ---------------------------------------------------------------------------
 
-func Test_Timer_ObserveDuration_nilHistogram(t *testing.T) {
-	timer := NewTimer(nil)
+func Test_Timer_ObserveDuration_withHistogram(t *testing.T) {
+	freshRegistry(t)
+	h := NewHistogram(HistogramOpts{
+		Namespace: "timer", Subsystem: "test", Name: "dur", Help: "timer test",
+		Buckets: []float64{0.001, 0.01, 0.1, 1.0},
+	})
+	before := time.Now()
+	timer := NewTimer(h)
 	d := timer.ObserveDuration()
-	if d < 0 {
-		t.Fatalf("expected non-negative duration with nil histogram, got %v", d)
+	if d < 0 || d > time.Since(before) {
+		t.Fatalf("duration %v outside [0, %v]", d, time.Since(before))
+	}
+	m := &dto.Metric{}
+	if err := h.histogram.Write(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Fatalf("expected 1 observation after ObserveDuration, got %d", m.GetHistogram().GetSampleCount())
+	}
+	if m.GetHistogram().GetSampleSum() != d.Seconds() {
+		t.Fatalf("observed %v, want the returned duration %v", m.GetHistogram().GetSampleSum(), d.Seconds())
 	}
 }
 
-func Test_Timer_ObserveDuration_multipleCallsAccumulate(t *testing.T) {
-	freshRegistry(t)
-	h := NewHistogram(HistogramOpts{
-		Namespace: "timer", Subsystem: "multi", Name: "dur", Help: "multi observe",
-		Buckets: []float64{1.0},
-	})
-	t1 := NewTimer(h)
-	t1.ObserveDuration()
-	t2 := NewTimer(h)
-	t2.ObserveDuration()
-	got := histogramCount(h.histogram)
-	if got != 2 {
-		t.Fatalf("expected 2 observations from two timers, got %d", got)
+func Test_Timer_ObserveDuration_nilHistogram(t *testing.T) {
+	before := time.Now()
+	timer := NewTimer(nil)
+	d := timer.ObserveDuration()
+	if d < 0 || d > time.Since(before) {
+		t.Fatalf("duration %v outside [0, %v]", d, time.Since(before))
 	}
 }
 
@@ -224,13 +280,20 @@ func Test_Timer_ObserveDuration_multipleCallsAccumulate(t *testing.T) {
 func Test_RequestTimer_Done(t *testing.T) {
 	freshRegistry(t)
 	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "done"})
-	timer := c.StartRequestTimer("GET")
-	timer.Done("200")
-	if timer.status != "200" {
-		t.Fatalf("expected status '200', got %q", timer.status)
+	t1 := c.StartRequestTimer("GET")
+	_ = c.StartRequestTimer("GET")
+	if got := gaugeValue(c.requestsInFlight.gaugeVec.WithLabelValues("GET")); got != 2 {
+		t.Fatalf("in flight after two starts = %v, want 2", got)
 	}
-	if timer.method != "GET" {
-		t.Fatalf("expected method 'GET', got %q", timer.method)
+	t1.Done("200")
+	if got := gaugeValue(c.requestsInFlight.gaugeVec.WithLabelValues("GET")); got != 1 {
+		t.Fatalf("in flight after Done = %v, want 1", got)
+	}
+	if got := counterValue(c.requestRate.counterVec.WithLabelValues("GET", "200")); got != 1 {
+		t.Fatalf("GET/200 requests = %v, want 1", got)
+	}
+	if n := histogramVecMetric(t, c, "GET", "200").GetHistogram().GetSampleCount(); n != 1 {
+		t.Fatalf("GET/200 duration samples = %d, want 1", n)
 	}
 }
 
@@ -239,8 +302,14 @@ func Test_RequestTimer_DoneWithError(t *testing.T) {
 	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "err"})
 	timer := c.StartRequestTimer("PUT")
 	timer.DoneWithError("500", "internal_error")
-	if timer.status != "500" {
-		t.Fatalf("expected status '500', got %q", timer.status)
+	if got := counterValue(c.requestRate.counterVec.WithLabelValues("PUT", "500")); got != 1 {
+		t.Fatalf("PUT/500 requests = %v, want 1", got)
+	}
+	if got := counterValue(c.errorRate.counterVec.WithLabelValues("internal_error", "PUT")); got != 1 {
+		t.Fatalf("internal_error/PUT errors = %v, want 1", got)
+	}
+	if got := gaugeValue(c.requestsInFlight.gaugeVec.WithLabelValues("PUT")); got != 0 {
+		t.Fatalf("PUT in flight = %v, want 0", got)
 	}
 }
 

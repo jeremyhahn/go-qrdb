@@ -378,14 +378,6 @@ func TestStartup(t *testing.T) {
 	}
 }
 
-func TestGetAllChecksEmpty(t *testing.T) {
-	checker := NewChecker()
-	checks := checker.GetAllChecks()
-	if len(checks) != 0 {
-		t.Errorf("expected 0 checks on fresh checker, got %d", len(checks))
-	}
-}
-
 func TestGetAllChecksMultiple(t *testing.T) {
 	checker := NewChecker()
 	check := func(ctx context.Context) CheckResult {

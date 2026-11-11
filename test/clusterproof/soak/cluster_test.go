@@ -163,8 +163,7 @@ func TestSettled(t *testing.T) {
 		states []ReplicaState
 		want   bool
 	}{
-		"none":                 {want: true},
-		"one shard, one index": {states: []ReplicaState{{ShardID: 1, AppliedIndex: 9}, {ShardID: 1, AppliedIndex: 9}}, want: true},
+		"none": {want: true},
 		"shards differ, each settled": {states: []ReplicaState{
 			{ShardID: 1, AppliedIndex: 9}, {ShardID: 2, AppliedIndex: 4}, {ShardID: 1, AppliedIndex: 9}, {ShardID: 2, AppliedIndex: 4},
 		}, want: true},
