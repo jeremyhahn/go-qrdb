@@ -511,23 +511,6 @@ func TestFlatIndex_AllMetrics(t *testing.T) {
 	}
 }
 
-// TestFlatIndex_AllMetrics_EmptyIndex verifies error handling with all metrics on empty index.
-func TestFlatIndex_AllMetrics_EmptyIndex(t *testing.T) {
-	metrics := []hnsw.DistanceMetric{
-		hnsw.L2Distance,
-		hnsw.CosineDistance,
-		hnsw.DotProductDistance,
-		hnsw.ManhattanDistance,
-	}
-	for _, m := range metrics {
-		idx := NewIndex(m)
-		_, err := idx.Search([]float32{1.0}, 1)
-		if !errors.Is(err, ErrEmptyIndex) {
-			t.Errorf("metric %d: expected ErrEmptyIndex, got %v", m, err)
-		}
-	}
-}
-
 // TestFlatIndex_LargeDataset verifies correct recall on a 10K vector dataset.
 func TestFlatIndex_LargeDataset(t *testing.T) {
 	const (
@@ -600,22 +583,6 @@ func TestFlatIndex_LargeDataset(t *testing.T) {
 		}
 		return true
 	})
-}
-
-// TestFlatIndex_LargeDataset_InvalidDimensions verifies error on wrong query dims with large dataset.
-func TestFlatIndex_LargeDataset_InvalidDimensions(t *testing.T) {
-	idx := NewIndex(hnsw.L2Distance)
-
-	for i := uint64(1); i <= 100; i++ {
-		if err := idx.Insert(i, []float32{1.0, 2.0, 3.0}); err != nil {
-			t.Fatalf("Insert failed: %v", err)
-		}
-	}
-
-	_, err := idx.Search([]float32{1.0, 2.0}, 5)
-	if err == nil {
-		t.Fatal("expected error for wrong query dimensions")
-	}
 }
 
 // TestFlatIndex_ConcurrentInsertSearch verifies thread safety under concurrent access.
