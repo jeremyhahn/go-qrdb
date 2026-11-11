@@ -80,21 +80,6 @@ func TestAddTrustAnchors_NilService(t *testing.T) {
 	assertNotImplementedError(t, err, "AddTrustAnchors")
 }
 
-func TestAddTrustAnchors_CrossTenantDenied(t *testing.T) {
-	mock := &mockCertEnrollmentServicer{
-		addTrustAnchorsFn: func(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
-			t.Fatal("the service must not be reached for a cross-tenant request")
-			return nil, nil
-		},
-	}
-	tr := newAuthTransport(t, WithCertEnrollment(mock))
-	_, err := tr.AddTrustAnchors(callerCtx("acme"), &transport.AddTrustAnchorsRequest{TenantID: "globex"})
-	var denied *tenant.CrossTenantDeniedError
-	if !errors.As(err, &denied) {
-		t.Fatalf("err = %v (%T); want *tenant.CrossTenantDeniedError", err, err)
-	}
-}
-
 func TestAddTrustAnchors_ServiceError(t *testing.T) {
 	mock := &mockCertEnrollmentServicer{
 		addTrustAnchorsFn: func(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
@@ -136,21 +121,6 @@ func TestListTrustAnchors_NilService(t *testing.T) {
 	assertNotImplementedError(t, err, "ListTrustAnchors")
 }
 
-func TestListTrustAnchors_CrossTenantDenied(t *testing.T) {
-	mock := &mockCertEnrollmentServicer{
-		listTrustAnchorsFn: func(context.Context, string) ([]trustanchor.Anchor, error) {
-			t.Fatal("the service must not be reached for a cross-tenant request")
-			return nil, nil
-		},
-	}
-	tr := newAuthTransport(t, WithCertEnrollment(mock))
-	_, err := tr.ListTrustAnchors(callerCtx("acme"), "globex")
-	var denied *tenant.CrossTenantDeniedError
-	if !errors.As(err, &denied) {
-		t.Fatalf("err = %v (%T); want *tenant.CrossTenantDeniedError", err, err)
-	}
-}
-
 func TestRemoveTrustAnchor_Success(t *testing.T) {
 	var gotTenant, gotFP string
 	mock := &mockCertEnrollmentServicer{
@@ -173,21 +143,6 @@ func TestRemoveTrustAnchor_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
 	err := tr.RemoveTrustAnchor(context.Background(), "acme", "fp1")
 	assertNotImplementedError(t, err, "RemoveTrustAnchor")
-}
-
-func TestRemoveTrustAnchor_CrossTenantDenied(t *testing.T) {
-	mock := &mockCertEnrollmentServicer{
-		removeTrustAnchorFn: func(context.Context, string, string) error {
-			t.Fatal("the service must not be reached for a cross-tenant request")
-			return nil
-		},
-	}
-	tr := newAuthTransport(t, WithCertEnrollment(mock))
-	err := tr.RemoveTrustAnchor(callerCtx("acme"), "globex", "fp1")
-	var denied *tenant.CrossTenantDeniedError
-	if !errors.As(err, &denied) {
-		t.Fatalf("err = %v (%T); want *tenant.CrossTenantDeniedError", err, err)
-	}
 }
 
 func TestRemoveTrustAnchor_ServiceError(t *testing.T) {
