@@ -3337,29 +3337,6 @@ func TestDiskBackend_ClearStorage_CloseError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestConcurrentBackend_RecoverSnapshot_KeyDataReadError verifies that a
-// snapshot with key-length header but no key data returns a SnapshotError.
-func TestConcurrentBackend_RecoverSnapshot_KeyDataReadError2(t *testing.T) {
-	b := NewConcurrentBackend()
-
-	var buf bytes.Buffer
-	countBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(countBuf, 1)
-	buf.Write(countBuf)
-	lenBuf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(lenBuf, 10) // 10-byte key, no data
-	buf.Write(lenBuf)
-
-	stopper := make(chan struct{})
-	err := b.RecoverSnapshot(&buf, stopper)
-	if err == nil {
-		t.Fatal("expected SnapshotError for truncated key data in ConcurrentBackend")
-	}
-	var se *SnapshotError
-	if !stderrors.As(err, &se) {
-		t.Fatalf("expected SnapshotError, got %T: %v", err, err)
-	}
-}
-
 // TestConcurrentBackend_RecoverSnapshot_ValLenReadError verifies that a
 // snapshot missing the value-length header returns a SnapshotError.
 func TestConcurrentBackend_RecoverSnapshot_ValLenReadError2(t *testing.T) {
