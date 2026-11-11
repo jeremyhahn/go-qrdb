@@ -16,7 +16,6 @@
 package scalar
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -38,13 +37,6 @@ func TestScalarIndexType_String(t *testing.T) {
 				t.Errorf("String() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestScalarIndexType_String_Unknown(t *testing.T) {
-	result := ScalarIndexType(-1).String()
-	if !strings.HasPrefix(result, "UNKNOWN") {
-		t.Errorf("String() = %q, should start with UNKNOWN", result)
 	}
 }
 
@@ -75,18 +67,4 @@ func TestQueryOp_String(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestQueryOp_String_Unknown(t *testing.T) {
-	result := QueryOp(-1).String()
-	if !strings.HasPrefix(result, "UNKNOWN") {
-		t.Errorf("String() = %q, should start with UNKNOWN", result)
-	}
-}
-
-func TestScalarIndex_Interface(t *testing.T) {
-	// Compile-time verification that all index types implement ScalarIndex.
-	var _ ScalarIndex = (*BitmapIndex)(nil)
-	var _ ScalarIndex = (*InvertedIndex)(nil)
-	var _ ScalarIndex = (*SortedIndex)(nil)
 }

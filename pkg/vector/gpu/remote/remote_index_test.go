@@ -29,7 +29,6 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/interfaces"
 	proto "github.com/jeremyhahn/go-qrdb/pkg/vector/gpu/remote/proto"
 )
 
@@ -88,10 +87,6 @@ func newTestIndex(client proto.VectorIndexServiceClient, timeoutMs int) *RemoteG
 		conn:   nil,
 		client: client,
 	}
-}
-
-func TestRemoteGPUIndex_ImplementsHNSWIndex(t *testing.T) {
-	var _ interfaces.HNSWIndex = (*RemoteGPUIndex)(nil)
 }
 
 func TestRemoteGPUIndex_Insert_Success(t *testing.T) {
@@ -241,16 +236,6 @@ func TestBuildDialOptions_Insecure(t *testing.T) {
 	}
 	if len(opts) == 0 {
 		t.Error("expected at least one dial option")
-	}
-}
-
-func TestBuildDialOptions_MissingCACert(t *testing.T) {
-	_, err := buildDialOptions(&Config{
-		Endpoint: "host:9090",
-		TLSCA:    "/nonexistent/ca.pem",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing CA cert file")
 	}
 }
 

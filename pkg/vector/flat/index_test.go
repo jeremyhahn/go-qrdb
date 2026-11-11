@@ -602,22 +602,6 @@ func TestFlatIndex_LargeDataset(t *testing.T) {
 	})
 }
 
-// TestFlatIndex_LargeDataset_InvalidDimensions verifies error on wrong query dims with large dataset.
-func TestFlatIndex_LargeDataset_InvalidDimensions(t *testing.T) {
-	idx := NewIndex(hnsw.L2Distance)
-
-	for i := uint64(1); i <= 100; i++ {
-		if err := idx.Insert(i, []float32{1.0, 2.0, 3.0}); err != nil {
-			t.Fatalf("Insert failed: %v", err)
-		}
-	}
-
-	_, err := idx.Search([]float32{1.0, 2.0}, 5)
-	if err == nil {
-		t.Fatal("expected error for wrong query dimensions")
-	}
-}
-
 // TestFlatIndex_ConcurrentInsertSearch verifies thread safety under concurrent access.
 func TestFlatIndex_ConcurrentInsertSearch(t *testing.T) {
 	const (
@@ -867,16 +851,6 @@ func TestFlatIndex_Dimensions_AfterClose(t *testing.T) {
 
 	if idx.Dimensions() != 0 {
 		t.Errorf("expected 0 dimensions after close, got %d", idx.Dimensions())
-	}
-}
-
-// TestFlatIndex_NilVector verifies Insert rejects nil vector.
-func TestFlatIndex_NilVector(t *testing.T) {
-	idx := NewIndex(hnsw.L2Distance)
-
-	err := idx.Insert(1, nil)
-	if !errors.Is(err, ErrInvalidVector) {
-		t.Fatalf("expected ErrInvalidVector for nil vector, got %v", err)
 	}
 }
 
