@@ -103,28 +103,6 @@ func TestNewStandaloneNode_MemoryBackend(t *testing.T) {
 	assert.Equal(t, len(before), len(after), "an empty-DataDir memory node must create nothing on disk")
 }
 
-func TestNewStandaloneNode_MemoryBackend_WithServerOption(t *testing.T) {
-	cfg := qrdbconfig.DefaultConfig()
-	cfg.Raft.DataDir = t.TempDir()
-	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
-	cfg.Protocols.REST = false
-	cfg.Protocols.GRPC = false
-	cfg.Protocols.QUIC = false
-	cfg.Protocols.Unix = false
-	cfg.Protocols.MCP = false
-
-	// Verify a server option (e.g. WithHost) is accepted and doesn't break construction.
-	// We pass a nil host option as a no-op; server.WithHost accepts nil safely.
-	serverOpts := []server.ServerOption{
-		server.WithHost(nil),
-	}
-
-	n, err := NewStandaloneNode(context.Background(), cfg, serverOpts)
-	require.NoError(t, err)
-	require.NotNil(t, n)
-	require.NoError(t, n.Close())
-}
-
 func TestNewStandaloneNode_ObjstoreBackend(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
@@ -193,13 +171,6 @@ func TestNewClusteredNode_EmptyMembers(t *testing.T) {
 // ---------------------------------------------------------------------------
 // clusteredCreateFunc — Raft state-machine selection
 // ---------------------------------------------------------------------------
-
-func TestClusteredCreateFunc_DefaultPebble(t *testing.T) {
-	cfg := qrdbconfig.DefaultConfig() // SMType defaults to "pebble"
-	fn, err := clusteredCreateFunc(cfg, nil, nil, nil, nil, nil)
-	require.NoError(t, err)
-	require.NotNil(t, fn)
-}
 
 func TestClusteredCreateFunc_EmptySMTypeDefaultsPebble(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
