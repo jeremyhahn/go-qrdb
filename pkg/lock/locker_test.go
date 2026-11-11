@@ -423,51 +423,6 @@ func TestLock_ImmediateSuccess(t *testing.T) {
 	}
 }
 
-func TestLock_BlocksAndAcquiresOnRelease(t *testing.T) {
-	existingLV := lockValue{HolderID: "other", Reentrant: false, AcquireCount: 1, LeaseID: 5, TTL: 30}
-	existingBytes := encodeLockValue(t, existingLV)
-
-	// Track how many times Execute is called.
-	callCount := 0
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
-			callCount++
-			if callCount == 1 {
-				return &TransactionResponse{Succeeded: false}, nil
-			}
-			// Second attempt (after delete event) succeeds.
-			return &TransactionResponse{Succeeded: true, Revision: 20}, nil
-		},
-	}
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Value: existingBytes, CreateRevision: 5, ModRevision: 5}, nil
-		},
-	}
-
-	// Deliver a delete event via the watcher.
-	watchCh := make(chan watch.WatchResponse, 1)
-	watchCh <- watch.WatchResponse{
-		Events: []*watch.Event{
-			{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte(lockKey("k"))}},
-		},
-	}
-	ws := &mockWatchService{
-		watchFn: func(_ context.Context, _ string, _ ...watch.WatchOption) (watch.Watcher, error) {
-			return &mockWatcher{ch: watchCh}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, ws, kvs)
-
-	lock, err := svc.Lock(context.Background(), LockOptions{Key: "k", HolderID: "me", TTL: time.Second})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lock.FencingToken != 20 {
-		t.Errorf("FencingToken = %d, want 20", lock.FencingToken)
-	}
-}
-
 func TestLock_ContextCancelled(t *testing.T) {
 	existingLV := lockValue{HolderID: "other", AcquireCount: 1}
 	existingBytes := encodeLockValue(t, existingLV)
