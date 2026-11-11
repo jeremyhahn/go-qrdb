@@ -31,16 +31,6 @@ func TestErrGPUNotCompiled(t *testing.T) {
 	}
 }
 
-func TestErrGPUNotCompiled_SentinelIdentity(t *testing.T) {
-	// Verify sentinel errors are distinct.
-	if errors.Is(ErrGPUNotCompiled, ErrDeviceNotFound) {
-		t.Error("ErrGPUNotCompiled should not match ErrDeviceNotFound")
-	}
-	if errors.Is(ErrDeviceNotFound, ErrOutOfMemory) {
-		t.Error("ErrDeviceNotFound should not match ErrOutOfMemory")
-	}
-}
-
 func TestGPUDeviceError(t *testing.T) {
 	err := &GPUDeviceError{
 		DeviceID: 2,

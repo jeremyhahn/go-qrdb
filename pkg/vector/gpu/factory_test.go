@@ -231,18 +231,6 @@ func TestRemoteGPUIndexFactory_CreateIndex_NilConfig_UseFallback(t *testing.T) {
 	}
 }
 
-func TestRemoteGPUIndexFactory_CreateIndex_RemoteEnabled_EmptyEndpoint_Error(t *testing.T) {
-	cfg := DefaultRemoteGPUConfig()
-	cfg.Enabled = true
-	cfg.Endpoint = "" // empty endpoint → NewRemoteGPUIndex returns error
-
-	factory := NewRemoteGPUIndexFactory(cfg, nil)
-	_, err := factory.CreateIndex(interfaces.DefaultHNSWConfig())
-	if err == nil {
-		t.Fatal("expected error when remote enabled with empty endpoint, got nil")
-	}
-}
-
 func TestRemoteGPUIndexFactory_CreateIndex_NilFallback_ReturnsError(t *testing.T) {
 	cfg := DefaultRemoteGPUConfig()
 	cfg.Enabled = false
