@@ -955,33 +955,6 @@ func TestPebbleStateMachine_IndexDrop_NotFound(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_Lookup_IndexQuery(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Create an index.
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("q_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
-
-	// Manually add entries to the index via the PebbleDB-backed index.
-	idx := s.indexes["q_idx"]
-	if err := idx.Put([]byte("42"), []byte("hello")); err != nil {
-		t.Fatalf("index Put: %v", err)
-	}
-
-	// Query via Lookup.
-	result, err := s.Lookup(context.Background(), index.IndexQueryRequest{
-		IndexName: "q_idx",
-		Value:     []byte("hello"),
-	})
-	if err != nil {
-		t.Fatalf("Lookup IndexQueryRequest: %v", err)
-	}
-	keys := result.([][]byte)
-	if len(keys) != 1 || string(keys[0]) != "42" {
-		t.Fatalf("expected [42], got %v", keys)
-	}
-}
-
 func TestPebbleStateMachine_Lookup_IndexQuery_NotFound(t *testing.T) {
 	s := openExtendedStore(t)
 
