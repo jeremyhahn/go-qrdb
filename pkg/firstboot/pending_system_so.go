@@ -58,10 +58,11 @@ func WriteIssuedSystemSOIfAny(ctx context.Context, core *ceremony.CeremonyServic
 	if core == nil || store == nil {
 		return nil
 	}
-	so, err := core.PendingSystemSO(ctx)
-	if err != nil || so == nil {
-		return err
-	}
+	// The replicated store's record is read first: once it holds the SO
+	// (or the consumed marker) the barrier's copy is never read. That copy
+	// is sealed under the barrier key of the boot that issued it, which an
+	// encryption migration replaces, so reading it on a later restart
+	// fails to decrypt although the replicated record already settles it.
 	recorded, err := readPendingSystemSO(ctx, store)
 	if err != nil {
 		return err
@@ -73,6 +74,10 @@ func WriteIssuedSystemSOIfAny(ctx context.Context, core *ceremony.CeremonyServic
 	}
 	if len(recorded) > 0 {
 		return nil
+	}
+	so, err := core.PendingSystemSO(ctx)
+	if err != nil || so == nil {
+		return err
 	}
 	record, err := json.Marshal(pendingSystemSO{
 		Username: so.Username, CertPEM: so.CertPEM, ChainPEM: so.ChainPEM, PoolPEM: so.PoolPEM, PINRecord: so.PINRecord,

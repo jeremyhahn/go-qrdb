@@ -19,6 +19,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,6 +356,56 @@ func TestWriteIssuedSystemSOIfAny_SurvivesACrashAfterInitialize(t *testing.T) {
 	require.NoError(t, pins.VerifySOPIN(ctx, tenantid.System, []byte("test-so-pin")))
 
 	// Once consumed, the next start forgets the barrier's copy.
+	require.NoError(t, ClearPendingSystemSO(ctx, store))
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, restarted, store, nil))
+	left, err := ceremonyCoreOver(t, backend).PendingSystemSO(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, left, "the consumed SO's record is gone from the barrier")
+}
+
+// An encryption migration re-keys the barrier, so the barrier's copy of the
+// SO, sealed by the boot that issued it, no longer decrypts. Once the
+// replicated store holds the SO (or its consumed marker), a restart must
+// settle on that record and never read the barrier's copy.
+func TestWriteIssuedSystemSOIfAny_ReplicatedRecordWinsOverAnUndecryptableBarrierCopy(t *testing.T) {
+	ctx := context.Background()
+	backend := seal.NewMemoryBackend()
+	first := ceremonyCoreOver(t, backend)
+	ca, _ := ceremonytest.NewCA(t, "test-ca")
+	first.SetPINBackend(pintest.NewBackend(t))
+	_, err := first.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+		SOUsername: "secofficer", SOCSRPEM: testCSR(t),
+	})
+	require.NoError(t, err)
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, first, store, nil))
+	recorded, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, recorded)
+
+	// The barrier's copy no longer decrypts.
+	keys, err := backend.List(ctx, "")
+	require.NoError(t, err)
+	corrupted := 0
+	for _, key := range keys {
+		if strings.Contains(key, "pending-system-so") {
+			require.NoError(t, backend.Put(ctx, key, []byte("sealed under a retired key")))
+			corrupted++
+		}
+	}
+	require.Equal(t, 1, corrupted, "the barrier holds the SO's copy")
+	restarted := ceremonyCoreOver(t, backend)
+	_, err = restarted.PendingSystemSO(ctx)
+	require.Error(t, err, "the barrier's copy is unreadable")
+
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, restarted, store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	assert.Equal(t, recorded.CertPEM, so.CertPEM)
+
+	// Consumed: the restart forgets the barrier's copy without reading it.
 	require.NoError(t, ClearPendingSystemSO(ctx, store))
 	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, restarted, store, nil))
 	left, err := ceremonyCoreOver(t, backend).PendingSystemSO(ctx)
