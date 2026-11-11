@@ -31,7 +31,7 @@ import (
 const stdinProviderRaceChildEnv = "QRDB_SECURE_STDINPROVIDER_RACE_CHILD"
 
 // delayedByteReader returns one byte per Read call, closing started and
-// sleeping hold before returning the FIRST byte -- a controllable stand-in
+// blocking on release before returning the FIRST byte -- a controllable stand-in
 // for an operator who has started typing but not yet finished, without
 // needing a package-level test seam the way the sealing-side races do:
 // StdinProvider already accepts an injected io.Reader for exactly this
@@ -40,7 +40,7 @@ type delayedByteReader struct {
 	bytes   []byte
 	i       int
 	started chan struct{}
-	hold    time.Duration
+	release chan struct{}
 }
 
 func (r *delayedByteReader) Read(p []byte) (int, error) {
@@ -49,7 +49,7 @@ func (r *delayedByteReader) Read(p []byte) (int, error) {
 	}
 	if r.i == 0 {
 		close(r.started)
-		time.Sleep(r.hold)
+		<-r.release
 	}
 	p[0] = r.bytes[r.i]
 	r.i++
@@ -69,8 +69,8 @@ func (r *delayedByteReader) Read(p []byte) (int, error) {
 //
 // go-enclave v0.7.0-alpha changed WipeAll from a TryLock sweep that SKIPS a
 // held enclave to one that WAITS for its borrow to end before reclaiming it.
-// The race this test drives WipeAll with a context bounded well short of the
-// read's hold, exactly as a real shutdown sweep is given a deadline (see
+// This test drives WipeAll with a bounded context while the read holds its
+// borrow until that WipeAll returns, exactly as a real shutdown sweep is given a deadline (see
 // go-enclave's WipeAll doc and cmd/qrdbd/start.go's recordSecureMemoryWipe):
 // the wait times out before scratch's borrow ends, so WipeAll leaves scratch
 // mapped and counted rather than destroying it once the read finishes --
@@ -112,7 +112,7 @@ func runStdinProviderRaceChild() {
 	}
 
 	want := "s3cr3t-passphrase"
-	// wipeWait bounds the race's WipeAll call well short of hold, so the wait
+	// wipeWait bounds the race's WipeAll call, so the wait
 	// for scratch's borrow times out while the read is still in flight --
 	// go-enclave v0.7.0-alpha's WipeAll waits for a held enclave's borrow
 	// rather than skipping it, so an unbounded (or generously long) context
@@ -122,10 +122,9 @@ func runStdinProviderRaceChild() {
 	reader := &delayedByteReader{
 		bytes:   []byte(want + "\n"),
 		started: make(chan struct{}),
-		// Far longer than wipeWait, so the race's WipeAll call reliably times
-		// out waiting for scratch's borrow while the read is still inside it,
-		// rather than by coincidentally winning a tight race.
-		hold: 200 * time.Millisecond,
+		// Closed once the bounded WipeAll has returned, so its wait for
+		// scratch's borrow times out while the read is still inside it.
+		release: make(chan struct{}),
 	}
 	provider := NewStdinProviderFromReader(reader)
 
@@ -145,6 +144,7 @@ func runStdinProviderRaceChild() {
 	wipeCtx, cancel := context.WithTimeout(context.Background(), wipeWait)
 	defer cancel()
 	remaining, wipeErr := enclave.WipeAll(wipeCtx)
+	close(reader.release)
 	// A context that ends while scratch's borrow is still held is not an
 	// error (go-enclave's WipeAll doc): it is exactly the "left mapped and
 	// counted" outcome this race means to force.
