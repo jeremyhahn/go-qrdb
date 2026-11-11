@@ -16,13 +16,9 @@
 
 // batch_import_cli_test.go exercises the `qrdb batch import` and
 // `qrdb batch import-formats` CLI surface (cmd/qrdb/batch.go) end-to-end
-// against a real, freshly-spawned qrdbd node. TestCLI_BatchImport_CSV,
-// TestCLI_BatchImport_CSV_Unix, TestCLI_BatchImport_Stdin, and
-// TestCLI_BatchImportFormats_ListsSupportedFormats below predate the
-// multi-protocol harness and only ever drove REST (plus a dedicated
-// Unix-only parity check); TestBatchImport_CLI_PerProtocol closes that
-// gap by exercising both commands over all five CLI-selectable transports
-// (REST, gRPC, QUIC, MCP, Unix) against one shared multiProtoNode.
+// against a real qrdbd node: TestBatchImport_CLI_PerProtocol exercises
+// both commands over all five CLI-selectable transports (REST, gRPC, QUIC,
+// MCP, Unix) against one shared multiProtoNode.
 package integration_test
 
 import (
