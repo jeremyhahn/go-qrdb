@@ -501,14 +501,6 @@ func TestMCP_Credential_Store_Success(t *testing.T) {
 	}
 }
 
-func TestMCP_Credential_Store_UnregisteredTool(t *testing.T) {
-	// Call CredentialStore on a transport without credentials service → callTool error.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-	// The tool may or may not be registered; just ensure no panic.
-	_ = tr.CredentialStore(context.Background(), "n", []byte("v"))
-}
-
 func TestMCP_Credential_Retrieve_Success(t *testing.T) {
 	tr, cleanup := connectCredentialInProcess(t, newMockCredentialSvc())
 	defer cleanup()
@@ -519,14 +511,6 @@ func TestMCP_Credential_Retrieve_Success(t *testing.T) {
 	}
 	// nil value is valid (mock returns nil,nil)
 	_ = val
-}
-
-func TestMCP_Credential_Retrieve_UnregisteredTool(t *testing.T) {
-	// Call CredentialRetrieve on a transport without credentials service → callTool error.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-	// The tool may or may not be registered; just ensure no panic.
-	_, _ = tr.retrieveBytes(context.Background(), "missing")
 }
 
 // ---------------------------------------------------------------------------

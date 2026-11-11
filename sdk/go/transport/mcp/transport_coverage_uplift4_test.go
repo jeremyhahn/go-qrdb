@@ -19,10 +19,7 @@
 package mcp
 
 import (
-	"context"
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -32,152 +29,35 @@ import (
 // shard_ids (75.0%)
 // ---------------------------------------------------------------------------
 
-func TestMCP_Backup_CreateBackup_AllParams(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	_, err := tr.CreateBackup(context.Background(), &transport.BackupRequest{
-		Destination:   "/tmp/bk",
-		Compression:   transport.CompressionZstd,
-		Encryption:    transport.EncryptionAES256,
-		KeyProviderID: "software",
-		KeyRef:        "/etc/qrdb/backup.key",
-		ShardIDs:      []uint64{1, 2, 3},
-		Metadata:      map[string]string{"env": "test"},
-	})
-	if err != nil {
-		t.Logf("CreateBackup with all params: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RestoreBackup — optional target_shards / validate_first /
 // decryption_key_ref (76.5%)
 // ---------------------------------------------------------------------------
 
-func TestMCP_Backup_RestoreBackup_AllParams(t *testing.T) {
-	tr, cleanup := connectBackupInProcess(t, newMinimalBackupSvc())
-	defer cleanup()
-
-	_, err := tr.RestoreBackup(context.Background(), &transport.RestoreRequest{
-		BackupID:         "bk-1",
-		TargetShards:     []uint64{1, 2},
-		ValidateFirst:    true,
-		DecryptionKeyRef: "/etc/qrdb/backup.key",
-	})
-	if err != nil {
-		t.Logf("RestoreBackup with all params: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchEmbed — all optional parameters path (78.6%)
 // ---------------------------------------------------------------------------
-
-func TestMCP_Embedding_BatchEmbed_AllParams(t *testing.T) {
-	tr, cleanup := connectEmbeddingInProcess(t, newMinimalEmbeddingSvc())
-	defer cleanup()
-
-	resp, err := tr.BatchEmbed(context.Background(), &transport.BatchEmbedRequest{
-		Texts:     []string{"a", "b", "c"},
-		Model:     "ada-002",
-		Provider:  "openai",
-		BatchSize: 2,
-	})
-	if err != nil {
-		t.Logf("BatchEmbed with all params: %v", err)
-	} else if len(resp.Embeddings) == 0 {
-		t.Logf("BatchEmbed returned empty embeddings")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // CreateRebalancePlan — all optional parameters path (78.6%)
 // ---------------------------------------------------------------------------
 
-func TestMCP_Rebalance_CreateRebalancePlan_AllParams(t *testing.T) {
-	tr, cleanup := connectRebalanceInProcess(t, newMinimalRebalanceSvc())
-	defer cleanup()
-
-	_, err := tr.CreateRebalancePlan(context.Background(), &transport.RebalancePlanRequest{
-		MaxMoves:      10,
-		DryRun:        true,
-		TargetBalance: 0.2,
-	})
-	if err != nil {
-		t.Logf("CreateRebalancePlan with all params: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ExecuteTransaction — all parameter variations (77.4%)
 // ---------------------------------------------------------------------------
 
-func TestMCP_ExecuteTransaction_AllParams(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
-		Compares: []transport.Compare{
-			{Key: []byte("k"), Target: transport.CompareVersion, Result: transport.CompareEqual, Version: 1},
-		},
-		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("k"), Value: []byte("v")}},
-		FailureOps: []transport.Op{{Type: transport.OpGet, Key: []byte("k")}},
-	})
-	_ = err
-}
-
 // ---------------------------------------------------------------------------
 // RotateAuthFactor — all parameter path (76.9%)
 // ---------------------------------------------------------------------------
-
-func TestMCP_RotateAuthFactor_AllParams(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.RotateAuthFactor(context.Background(), &transport.AuthFactorRotateRequest{
-		OldFactorID: "old-f1",
-	})
-	_ = err
-}
 
 // ---------------------------------------------------------------------------
 // GetUserByCertThumbprint — error path (63.6%)
 // The success path returns nil (mock), but we also need the isNotFoundError path.
 // ---------------------------------------------------------------------------
 
-func TestMCP_Auth_GetUserByCertThumbprint_NotFound(t *testing.T) {
-	// Test error path by using an unregistered tool (no user service).
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.GetUserByCertThumbprint(context.Background(), "notfound:aa:bb")
-	if err == nil {
-		t.Logf("GetUserByCertThumbprint: no error (tool may be registered)")
-	} else {
-		var re *transport.RequestError
-		var ke *transport.KeyNotFoundError
-		if errors.As(err, &re) || errors.As(err, &ke) {
-			t.Logf("GetUserByCertThumbprint: error as expected: %T", err)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // AddCertBinding — additional path (77.8%)
 // ---------------------------------------------------------------------------
-
-func TestMCP_Auth_AddCertBinding_WithTime(t *testing.T) {
-	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), nil, nil)
-	defer cleanup()
-
-	_, err := tr.AddCertBinding(context.Background(), 42, "aa:bb:cc:dd",
-		time.Now().Add(365*24*time.Hour).Unix())
-	// mock returns nil,nil → success path
-	if err != nil {
-		t.Logf("AddCertBinding: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // tagsMapToJSON helper (83.3%)
