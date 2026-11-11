@@ -974,7 +974,7 @@ func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor
 		grpcpkg.DatabaseScopeUnaryInterceptor,
 	}
 	if p.authMW != nil {
-		unaryInterceptors = append(unaryInterceptors, p.authMW.UnaryInterceptor())
+		unaryInterceptors = append(unaryInterceptors, grpcpkg.PublicRateLimitUnaryInterceptor(p.authMW), p.authMW.UnaryInterceptor())
 	}
 	// The SO gate installs whenever there is one, auth middleware or not:
 	// with nothing to authenticate the caller there is no SO to admit, so it
