@@ -5,13 +5,6 @@ package interfaces
 import "testing"
 
 func TestDefaultHNSWConfig(t *testing.T) {
-	t.Run("ReturnsNonNil", func(t *testing.T) {
-		cfg := DefaultHNSWConfig()
-		if cfg == nil {
-			t.Fatal("DefaultHNSWConfig returned nil")
-		}
-	})
-
 	t.Run("HasExpectedDefaults", func(t *testing.T) {
 		cfg := DefaultHNSWConfig()
 		if cfg.M != 16 {
