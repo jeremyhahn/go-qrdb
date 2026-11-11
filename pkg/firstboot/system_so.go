@@ -196,10 +196,16 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 	if err := so.Validate(); err != nil {
 		return err
 	}
-	if strings.EqualFold(so.Username, adminUsername) {
+	// The SO must be a separate identity only under strict separation
+	// (SPEC row 124); in the standard posture the bootstrap admin may hold
+	// SO, which enrollment grants it as a role on the admin's own account.
+	soIsAdmin := strings.EqualFold(so.Username, adminUsername)
+	if soIsAdmin && deps.SeparationOfDuties {
 		return &SOMatchesAdminError{Field: "username"}
 	}
 	switch {
+	case soIsAdmin && !implementsUserUpdater(deps.Users):
+		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
 	case deps.SOPINs == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.SOPINs to commit its PIN"}
 	case (so.PIN == nil || !so.PIN.IsAlive()) && !implementsPINRecordSetter(deps.SOPINs):
@@ -227,11 +233,59 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 	if len(deps.AdminCSRPEM) == 0 && len(deps.AdminCertPEM) == 0 {
 		return nil
 	}
+	// Strict separation needs the SO's key distinct from the admin's. In the
+	// standard posture only the admin enrolled as SO may share it: one key
+	// binds to one account, so two accounts cannot hold it.
 	adminKey, err := spkiThumbprintOf(deps.AdminCSRPEM, deps.AdminCertPEM)
-	if err == nil && adminKey == soKey {
+	if err == nil && adminKey == soKey && (deps.SeparationOfDuties || !soIsAdmin) {
 		return &SOMatchesAdminError{Field: "key"}
 	}
 	return nil
+}
+
+// userUpdater is the user surface's update verb, through which a
+// standard-posture first boot grants the bootstrap admin the SO role.
+type userUpdater interface {
+	UpdateUser(ctx context.Context, req *user.UpdateUserRequest) (*user.User, error)
+}
+
+// implementsUserUpdater reports whether users can grant a role to an
+// existing account.
+func implementsUserUpdater(users UserCreator) bool {
+	_, ok := users.(userUpdater)
+	return ok
+}
+
+// grantAdminSORole adds soRoleID to the bootstrap admin's account, the
+// standard-posture enrollment of the admin as the system SO.
+func grantAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, soRoleID string) (*user.User, error) {
+	updater, ok := deps.Users.(userUpdater)
+	if !ok {
+		return nil, &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to grant the bootstrap admin the SO role"}
+	}
+	roleIDs := append(slices.Clone(admin.RoleIDs), soRoleID)
+	updated, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: admin.ID, RoleIDs: roleIDs})
+	if err != nil {
+		return nil, &SystemSOEnrollmentError{Op: "account", Cause: err}
+	}
+	if updated == nil {
+		return nil, &SystemSOEnrollmentError{Op: "account", Cause: errors.New("the user surface granted the SO role without returning the account")}
+	}
+	deps.Logger.Info("first-boot: bootstrap admin enrolled as the system SO",
+		slog.String("tenant", admin.TenantID),
+		slog.Uint64("user_id", admin.ID),
+	)
+	return updated, nil
+}
+
+// certBound reports whether u holds a binding for thumbprint.
+func certBound(u *user.User, thumbprint string) bool {
+	for _, b := range u.CertBindings {
+		if b.Thumbprint == thumbprint {
+			return true
+		}
+	}
+	return false
 }
 
 func implementsPINRecordSetter(pins SOPINSetter) bool {
@@ -295,7 +349,14 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	result.SOCreated = created
 	result.SOUserID = soUser.ID
 
-	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil {
+	// The SO's key must be bound to its account: an account that already
+	// holds another live binding (the bootstrap admin enrolled as SO under a
+	// key of its own) still needs the SO's.
+	soKey, err := spkiThumbprintOf(so.CSRPEM, so.CertPEM)
+	if err != nil {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	}
+	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil || !certBound(soUser, soKey) {
 		certPEM, err := issueSOCert(ctx, deps, tenantID)
 		if err != nil {
 			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
@@ -416,6 +477,16 @@ func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*u
 		}
 		existing, lookupErr := users.GetUserByUsername(ctx, tenantID, so.Username)
 		if lookupErr == nil && existing != nil {
+			if !deps.SeparationOfDuties && strings.EqualFold(so.Username, adminUsername) &&
+				existing.TenantID == tenantID && slices.Contains(existing.RoleIDs, adminRoleID) &&
+				!slices.Contains(existing.RoleIDs, soRoleID) &&
+				existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal() {
+				updated, err := grantAdminSORole(ctx, deps, existing, soRoleID)
+				if err != nil {
+					return nil, false, err
+				}
+				return updated, false, nil
+			}
 			if existing.TenantID != tenantID ||
 				!slices.Contains(existing.RoleIDs, soRoleID) ||
 				(deps.SeparationOfDuties && slices.Contains(existing.RoleIDs, adminRoleID)) ||

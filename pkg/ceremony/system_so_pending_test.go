@@ -414,7 +414,7 @@ func TestSystemSO_PINlessSOAndNonPEMCertificate(t *testing.T) {
 	err := validateSystemSOInputs(newMockCA(t), testTrustDomain, &InitializeOptions{
 		SOUsername: "secofficer",
 		SOCSRPEM:   soCSR,
-	}, nil)
+	}, nil, false)
 	var rejected *SystemSORejectedError
 	require.ErrorAs(t, err, &rejected)
 	assert.Contains(t, err.Error(), "SOPin")

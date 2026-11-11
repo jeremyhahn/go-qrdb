@@ -282,9 +282,7 @@ func TestInitialize_SystemSO_Refusals(t *testing.T) {
 		reason string
 		want   func(error) bool
 	}{
-		"no username": {opts: InitializeOptions{SOCSRPEM: soCSR}, reason: "needs SOUsername"},
-		"admin's username": {opts: InitializeOptions{SOUsername: "Admin", SOCSRPEM: soCSR},
-			reason: "cannot be the bootstrap admin"},
+		"no username":   {opts: InitializeOptions{SOCSRPEM: soCSR}, reason: "needs SOUsername"},
 		"no credential": {opts: InitializeOptions{SOUsername: "so"}, reason: "needs SOCSRPEM or SOCertPEM"},
 		"both credentials": {opts: InitializeOptions{SOUsername: "so", SOCSRPEM: soCSR, SOCertPEM: untrusted},
 			reason: "mutually exclusive"},
@@ -331,6 +329,48 @@ func TestInitialize_SystemSO_Refusals(t *testing.T) {
 			assert.Nil(t, svc.LastIssuedSystemSO())
 		})
 	}
+}
+
+// TestInitialize_SystemSO_AdminAsSOIsStrictOnlyRefusal proves the
+// distinct-identity rule is strict-only (SPEC row 124): a standard-posture
+// ceremony may name the bootstrap admin, under the admin's own key, as the
+// system SO, and strict separation refuses the same request before anything
+// is committed.
+func TestInitialize_SystemSO_AdminAsSOIsStrictOnlyRefusal(t *testing.T) {
+	ca := newMockCA(t)
+	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+	opts := func() *InitializeOptions {
+		return &InitializeOptions{
+			SOPin:       "test-so-pin",
+			UserPin:     "test-user-pin",
+			AdminCSRPEM: adminCSR,
+			SOUsername:  "Admin",
+			SOCSRPEM:    adminCSR,
+		}
+	}
+
+	standard := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	standard.SetPINBackend(pintest.NewBackend(t))
+	_, err := standard.Initialize(context.Background(), ca, opts())
+	require.NoError(t, err, "the standard posture lets the admin hold SO")
+	issued := standard.LastIssuedSystemSO()
+	require.NotNil(t, issued, "the admin is recorded as the system SO for first boot")
+	assert.Equal(t, "Admin", issued.Username)
+
+	barrier := testBarrier(t)
+	strict := newTestCeremonyService(t, defaultConfig(), barrier)
+	pins := pintest.NewBackend(t)
+	strict.SetPINBackend(pins)
+	strict.SetSeparationOfDuties(true)
+	_, err = strict.Initialize(context.Background(), ca, opts())
+	var rejected *SystemSORejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, err.Error(), "cannot be the bootstrap admin")
+	assert.False(t, pins.IsInitialized(), "the PINs must stay uncommitted")
+	initialized, err := barrier.Initialized(context.Background())
+	require.NoError(t, err)
+	assert.False(t, initialized, "the barrier must stay uninitialised")
+	assert.Nil(t, strict.LastIssuedSystemSO())
 }
 
 // nilCA marks a case that runs the ceremony with no CA at all.

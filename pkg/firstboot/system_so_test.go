@@ -54,6 +54,19 @@ type soUsers struct {
 	creates map[string]int
 }
 
+// UpdateUser replaces the role set, the one field a standard-posture first
+// boot writes when it enrolls the bootstrap admin as the system SO.
+func (u *soUsers) UpdateUser(_ context.Context, req *user.UpdateUserRequest) (*user.User, error) {
+	existing := u.byID(req.ID)
+	if existing == nil {
+		return nil, errors.New("no such user")
+	}
+	if req.RoleIDs != nil {
+		existing.RoleIDs = append([]string(nil), req.RoleIDs...)
+	}
+	return existing, nil
+}
+
 func newSOUsers() *soUsers {
 	return &soUsers{byName: map[string]*user.User{}, creates: map[string]int{}}
 }
@@ -792,6 +805,49 @@ func TestInitialize_StandardEnrolsAnOptionalSO(t *testing.T) {
 	}
 	if !result.SOCreated || h.users.byName["officer"] == nil {
 		t.Fatalf("standard boot with an SO did not enrol it: %+v", result)
+	}
+}
+
+// TestInitialize_StandardEnrolsTheAdminAsSO proves the distinct-identity
+// rule is strict-only (SPEC row 124): a standard-posture first boot that
+// names the bootstrap admin, under the admin's own key, as the system SO
+// grants the admin's account the SO role instead of refusing it, and strict
+// separation still refuses the same request before any account is written.
+func TestInitialize_StandardEnrolsTheAdminAsSO(t *testing.T) {
+	soRoleID := role.SystemRoleID(tenantid.System, role.RoleNameSO)
+	adminRoleID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
+
+	h := newSOHarness(t, false)
+	h.deps.SO.Username = adminUsername
+	h.deps.AdminCSRPEM = h.deps.SO.CSRPEM
+	result, err := Initialize(context.Background(), h.deps)
+	if err != nil {
+		t.Fatalf("standard Initialize with the admin as SO: %v", err)
+	}
+	admin := h.users.byName[adminUsername]
+	if admin == nil {
+		t.Fatal("no bootstrap admin")
+	}
+	if !slices.Contains(admin.RoleIDs, adminRoleID) || !slices.Contains(admin.RoleIDs, soRoleID) {
+		t.Fatalf("admin roles = %v, want Admin and SO", admin.RoleIDs)
+	}
+	if result.SOCreated || result.SOUserID != admin.ID {
+		t.Fatalf("result = %+v, want the admin (id %d) enrolled as SO without a new account", result, admin.ID)
+	}
+	if h.users.creates[adminUsername] < 1 || len(h.users.byName) != 1 {
+		t.Fatalf("accounts = %v, want only the bootstrap admin", h.users.byName)
+	}
+
+	strict := newSOHarness(t, true)
+	strict.deps.SO.Username = adminUsername
+	strict.deps.AdminCSRPEM = strict.deps.SO.CSRPEM
+	_, err = Initialize(context.Background(), strict.deps)
+	var matches *SOMatchesAdminError
+	if !errors.As(err, &matches) || matches.Field != "username" {
+		t.Fatalf("strict Initialize with the admin as SO = %v, want *SOMatchesAdminError{username}", err)
+	}
+	if len(strict.users.creates) != 0 {
+		t.Fatalf("users created before the strict refusal: %v", strict.users.creates)
 	}
 }
 

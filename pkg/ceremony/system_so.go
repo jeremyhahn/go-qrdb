@@ -75,7 +75,7 @@ func systemSORequested(opts *InitializeOptions) bool {
 // a username that is not the admin's, a CA for the CSR path, a parseable
 // CSR or a presented certificate that verifies, and a PIN to hash. Options
 // that name no system SO pass in either posture: the SO is optional.
-func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte) error {
+func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeOptions, caBundlePEM []byte, strict bool) error {
 	if !systemSORequested(opts) {
 		// The system SO is optional in both postures (SPEC row 124).
 		return nil
@@ -83,8 +83,10 @@ func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeO
 	switch {
 	case strings.TrimSpace(opts.SOUsername) == "":
 		return &SystemSORejectedError{Cause: errors.New("a system SO certificate input needs SOUsername")}
-	case strings.EqualFold(opts.SOUsername, adminUsername):
-		return &SystemSORejectedError{Cause: errors.New("the system SO cannot be the bootstrap admin")}
+	case strict && strings.EqualFold(opts.SOUsername, adminUsername):
+		// Only strict separation needs the SO distinct from the admin
+		// (SPEC row 124); the standard posture lets the admin hold SO.
+		return &SystemSORejectedError{Cause: errors.New("the system SO cannot be the bootstrap admin under strict separation of duties")}
 	case len(opts.SOCSRPEM) > 0 && len(opts.SOCertPEM) > 0:
 		return &SystemSORejectedError{Cause: errors.New("SOCSRPEM and SOCertPEM are mutually exclusive")}
 	case len(opts.SOCSRPEM) == 0 && len(opts.SOCertPEM) == 0:
@@ -122,9 +124,12 @@ func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeO
 		soKey = csr.RawSubjectPublicKeyInfo
 	}
 	// A generated admin key is fresh and cannot be the SO's; only a key the
-	// operator supplies for the admin can collide. Refused here, before
-	// the PINs, the barrier or any certificate is committed.
-	if adminKey := suppliedAdminKey(opts); adminKey != nil && bytes.Equal(adminKey, soKey) {
+	// operator supplies for the admin can collide. Strict separation refuses
+	// a shared key; the standard posture allows it only for the admin
+	// enrolled as SO, since one key binds to one account. Refused here,
+	// before the PINs, the barrier or any certificate is committed.
+	soIsAdmin := strings.EqualFold(opts.SOUsername, adminUsername)
+	if adminKey := suppliedAdminKey(opts); adminKey != nil && bytes.Equal(adminKey, soKey) && (strict || !soIsAdmin) {
 		return &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
 	}
 	return nil
