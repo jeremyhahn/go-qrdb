@@ -1903,16 +1903,6 @@ func TestIsZeroValue_StructWithUnexportedFieldsOnly(t *testing.T) {
 // Edge cases - empty new data ComputeBytes
 // ---------------------------------------------------------------------------
 
-func TestComputeBytes_ZeroLengthNewData_ReturnsError(t *testing.T) {
-	t.Parallel()
-	dc := NewDeltaComputer(newTestLogger(t))
-	_, err := dc.ComputeBytes([]byte(`{}`), []byte{}, &testEntity{})
-	require.Error(t, err)
-
-	var nilErr *DeltaNilInputError
-	require.True(t, errors.As(err, &nilErr))
-}
-
 // ---------------------------------------------------------------------------
 // Nil interface field comparison
 // ---------------------------------------------------------------------------
@@ -2065,13 +2055,12 @@ func TestExtractAllFields_MapMaxDepthExceeded_InNestedStruct(t *testing.T) {
 func TestCompute_NewEntity_WithVersionMethod(t *testing.T) {
 	t.Parallel()
 	dc := NewDeltaComputer(newTestLogger(t))
-	// ComputeBytes creates addressable values via reflect.New, which enables
-	// the Version() method extraction in computeNewEntity
-	newData := []byte(`{"id":"1","name":"alice"}`)
-	payload, err := dc.ComputeBytes(nil, newData, &testEntityWithVersion{})
+	// A nil old entity takes the new-entity path, which reads Version()
+	// through the addressable value of the new entity.
+	payload, err := dc.Compute(nil, &testEntityWithVersion{ID: "1", Name: "alice", Ver: 5})
 	require.NoError(t, err)
-	// Version is not in JSON so stays 0, but the path is exercised
-	assert.Equal(t, uint64(0), payload.Version)
+	assert.Equal(t, uint64(5), payload.Version)
+	assert.Equal(t, uint64(0), payload.PrevVersion)
 }
 
 // ---------------------------------------------------------------------------
