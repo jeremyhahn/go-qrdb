@@ -76,9 +76,12 @@ func systemSORequested(opts *InitializeOptions) bool {
 // no system SO are refused too.
 func validateSystemSOInputs(ca CeremonyCA, trustDomain string, strict bool, opts *InitializeOptions, caBundlePEM []byte) error {
 	if !systemSORequested(opts) {
-		// Under strict separation first boot refuses to run without a
+		// Under strict separation the ceremony refuses to run without a
 		// system SO, and an initialized node cannot gain one: refuse here,
-		// before anything is committed, so the operator can retry.
+		// before anything is committed, so the operator can retry. First
+		// boot does not reach this refusal when the boot carries neither a
+		// system SO nor an admin credential: it defers the system SO, and
+		// this ceremony is the first step that still refuses without one.
 		if strict {
 			return &SystemSORejectedError{Cause: errors.New("strict separation of duties requires a system SO: SOUsername with SOCSRPEM or SOCertPEM")}
 		}

@@ -165,7 +165,9 @@ the daemon does, and boots strict without asking for a new one.
 strict separation of duties and was initialized without `--so-username`.
 First boot refuses before any write (`*firstboot.SystemSORequiredError`),
 because no principal could ever manage roles. Name the system SO with the
-flags above when you run `qrdb init`.
+flags above when you run `qrdb init`. A strict boot that carries neither a
+system SO nor an admin credential does not refuse: it defers the SO, and the
+`qrdb init` ceremony still refuses without one.
 
 **"ceremony: system SO rejected".** The SO flags named the admin's username
 or key, no SO PIN, a CSR that does not parse, a certificate that does not
