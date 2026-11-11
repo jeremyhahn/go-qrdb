@@ -56,7 +56,10 @@ are not reconstructed here — their history is in the git log.
   `memory` only; on every other provider, which go-objstore gives no
   conditional create to claim a namespace with, it is refused with
   `storage.ExclusiveUnsupportedError`, and guarded verbs fall back to the new
-  `storage.Guarded` (in-process exclusion).
+  `storage.Guarded` (in-process exclusion). `Engine.Close`, `Engine.Destroy` and
+  a failed `objstore.New` release the engine's data and journal providers (the
+  local provider's `os.Root` and lifecycle goroutine), and a dropped database
+  leaves the server's dedicated-store service cache (#1404).
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's

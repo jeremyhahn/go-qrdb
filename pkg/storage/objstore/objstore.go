@@ -136,6 +136,49 @@ type Engine struct {
 	beforeEnterWrite func()
 }
 
+// closeProviders releases the providers behind the engine's store and
+// journal (an os.Root, a lifecycle goroutine). It runs on Close and again on
+// Destroy: a drop destroys a closed engine, and a provider that reopens on
+// use (go-objstore's local reopens its root) is released again after it.
+func (e *Engine) closeProviders() error {
+	return closeStores(e.store, e.journal)
+}
+
+// closeStores releases each distinct provider in stores. A provider that
+// holds no resources (one without a Close method) is left as it is.
+func closeStores(stores ...objcommon.Storage) error {
+	var errs []error
+	seen := make(map[objcommon.Storage]struct{}, len(stores))
+	for _, s := range stores {
+		if s == nil {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		errs = append(errs, closeStore(s))
+	}
+	return errors.Join(errs...)
+}
+
+// closeStore releases one provider, whichever Close signature it has.
+func closeStore(s objcommon.Storage) error {
+	switch c := s.(type) {
+	case interface{ Close() error }:
+		return c.Close()
+	case interface{ Close() }:
+		c.Close()
+	}
+	return nil
+}
+
+// Close releases the provider the prefixed store wraps: the embedded
+// objcommon.Storage interface does not promote the provider's own Close.
+func (p *prefixedStore) Close() error {
+	return closeStore(p.Storage)
+}
+
 // New constructs an objstore-backed engine for the given go-objstore provider.
 // Providers are resolved through go-objstore's factory: "local" and "memory" are
 // always available, while cloud providers ("s3", "gcs", "azure", "glacier",
@@ -196,14 +239,41 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, err
 	}
-	store, err := resolved.creator(settings, creds)
+	// Every provider the open creates is recorded, so a failed open releases
+	// each one, and a successful open releases any it created but does not
+	// keep (openStores replaces a store rooted at a symlink).
+	var created []objcommon.Storage
+	create := func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
+		s, err := resolved.creator(settings, creds)
+		if err == nil {
+			created = append(created, s)
+		}
+		return s, err
+	}
+	opened := false
+	defer func() {
+		if !opened {
+			_ = closeStores(created...)
+		}
+	}()
+	store, err := create(settings, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
-	store, journal, dataDir, err := openStores(provider, resolved.creator, settings, store, creds)
+	store, journal, dataDir, err := openStores(provider, create, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
+	var dropped []objcommon.Storage
+	for _, s := range created {
+		if s != store && s != journal {
+			dropped = append(dropped, s)
+		}
+	}
+	if err := closeStores(dropped...); err != nil {
+		return nil, err
+	}
+	created = []objcommon.Storage{store, journal}
 	if dataDir != "" {
 		// One namespace has one identity: the data names, the journal and
 		// the owner lock all derive from the prefix with its symlinks
@@ -229,6 +299,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		} else {
 			journal = withPrefix(journal, o.prefix)
 		}
+		created = []objcommon.Storage{store, journal}
 		// openStores looked for a legacy in-tree journal at the store's
 		// root; one inside this database's namespace is refused as well.
 		if _, walked := walkedRoots[provider]; walked {
@@ -262,6 +333,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		_ = e.releaseOwnership()
 		return nil, err
 	}
+	opened = true
 	return e, nil
 }
 
@@ -683,7 +755,7 @@ func (e *Engine) Close() error {
 	defer e.journalMu.Unlock()
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
-	return e.releaseOwnership()
+	return errors.Join(e.releaseOwnership(), e.closeProviders())
 }
 
 // takeOwnership takes the namespace's owner lock at ownerPath without
@@ -742,6 +814,9 @@ func (e *Engine) Destroy() error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 	e.closed.Store(true)
+	// The providers are released last, after the owner lock, on every path,
+	// whether or not the destroy completed.
+	defer func() { _ = e.closeProviders() }()
 	if e.ownerPath != "" && e.owner == nil {
 		if err := e.takeOwnership(); err != nil {
 			return err
