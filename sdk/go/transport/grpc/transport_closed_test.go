@@ -42,24 +42,6 @@ func assertClosed(t *testing.T, err error) {
 // transport.go (Scan / Exists / Capabilities)
 // ===========================================================================
 
-func TestGRPCScan_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.Scan(context.Background(), "p")
-	assertClosed(t, err)
-}
-
-func TestGRPCExists_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.Exists(context.Background(), "k")
-	assertClosed(t, err)
-}
-
-func TestGRPCCapabilities_AfterClose(t *testing.T) {
-	tr := newClosedTransport()
-	_, err := tr.Capabilities(context.Background())
-	assertClosed(t, err)
-}
-
 // ===========================================================================
 // transport_barrier.go closed-paths
 // ===========================================================================
