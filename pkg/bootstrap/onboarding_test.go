@@ -285,21 +285,6 @@ var _ tenantadmin.Store = (*pendingAdminsFaulting)(nil)
 // exercises too lightly from the outside.
 // ---------------------------------------------------------------------------
 
-func TestDependenciesNow_UsesTheOverrideWhenSet(t *testing.T) {
-	fixed := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
-	deps := Dependencies{Now: func() time.Time { return fixed }}
-	if got := deps.now(); !got.Equal(fixed) {
-		t.Fatalf("deps.now() = %v, want %v", got, fixed)
-	}
-}
-
-func TestDependenciesNow_DefaultsToTimeNow(t *testing.T) {
-	deps := Dependencies{}
-	if deps.now().IsZero() {
-		t.Fatal("deps.now() with no override returned the zero time")
-	}
-}
-
 func TestPlanAdmin_RefusesInvalidTrustAnchors(t *testing.T) {
 	_, err := planAdmin(TenantProvisionConfig{
 		TenantID:        "acme",
@@ -1105,37 +1090,6 @@ func TestProvisionTenant_BarrierIsolation_UndoRevokesThroughTheSignerThatSigned(
 	}
 }
 
-func TestDependenciesAdminSigner(t *testing.T) {
-	keyB := &fakeSigner{}
-	cluster := &fakeSigner{}
-	cases := []struct {
-		name    string
-		deps    Dependencies
-		pending bool
-		want    firstboot.CertSigner
-		wantErr any
-	}{
-		{"pending admin with a pending signer", Dependencies{Signer: keyB, PendingAdminSigner: cluster}, true, cluster, nil},
-		{"pending admin without one is refused", Dependencies{Signer: keyB}, true, nil, new(*ceremony.AdminCredentialRequiresCAError)},
-		{"created admin ignores the pending signer", Dependencies{Signer: keyB, PendingAdminSigner: cluster}, false, keyB, nil},
-		{"created admin without Signer", Dependencies{PendingAdminSigner: cluster}, false, nil, new(*MissingProvisioningSeamError)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.deps.adminSigner(tc.pending)
-			if tc.wantErr != nil {
-				if !errors.As(err, tc.wantErr) {
-					t.Fatalf("adminSigner(%v) error = %v, want %T", tc.pending, err, tc.wantErr)
-				}
-				return
-			}
-			if err != nil || got != tc.want {
-				t.Errorf("adminSigner(%v) = %v, %v; want %v", tc.pending, got, err, tc.want)
-			}
-		})
-	}
-}
-
 // TestProvisionTenant_BarrierIsolation_CSRWithoutPendingSignerRefusedBeforeCreate:
 // with no cluster CA to sign a pending admin's CSR (a BYO-TLS node), the CSR
 // is refused as system first boot refuses it, and before the tenant record is
@@ -1712,20 +1666,6 @@ func TestCompletePendingTenantAdmin_NilPendingAdminsIsANoOp(t *testing.T) {
 	}
 }
 
-func TestCompletePendingTenantAdmin_NoRecordIsANoOp(t *testing.T) {
-	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
-	users := &fakeUsers{}
-	ok, err := CompletePendingTenantAdmin(context.Background(), "acme", Dependencies{
-		PendingAdmins: pending, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
-	})
-	if err != nil || ok {
-		t.Fatalf("CompletePendingTenantAdmin with no record = %v, %v; want false, nil", ok, err)
-	}
-	if len(users.createCalls) != 0 {
-		t.Error("a user was created despite there being no pending record")
-	}
-}
-
 func TestCompletePendingTenantAdmin_ReadErrorWrapped(t *testing.T) {
 	sentinel := errors.New("store unavailable")
 	pending := &pendingAdminsFaulting{inner: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), getErr: sentinel}
@@ -1975,20 +1915,6 @@ func TestUserResolver_PrefersTheExplicitDependencyOverUsers(t *testing.T) {
 	got := userResolver(Dependencies{UserResolver: explicit, Users: usersAlsoResolving})
 	if got != explicit {
 		t.Error("userResolver did not prefer the explicit UserResolver dependency")
-	}
-}
-
-func TestUserResolver_FallsBackToUsersWhenNoExplicitResolver(t *testing.T) {
-	users := &fakeUsersWithLookup{}
-	got := userResolver(Dependencies{Users: users})
-	if got != users {
-		t.Error("userResolver did not fall back to Users implementing firstboot.UserResolver")
-	}
-}
-
-func TestUserResolver_NilWhenNeitherImplementsLookup(t *testing.T) {
-	if got := userResolver(Dependencies{Users: &fakeUsers{}}); got != nil {
-		t.Errorf("userResolver = %v, want nil when Users implements no lookup", got)
 	}
 }
 

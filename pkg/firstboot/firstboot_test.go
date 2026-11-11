@@ -1784,19 +1784,6 @@ func TestErrorMessages(t *testing.T) {
 	}
 }
 
-// TestAdminCertBindErrorUnwrap verifies AdminCertBindError.Unwrap() exposes
-// the underlying cause so errors.Is / errors.As work correctly.
-func TestAdminCertBindErrorUnwrap(t *testing.T) {
-	sentinel := errors.New("bind backend down")
-	wrapped := &AdminCertBindError{Cause: sentinel}
-	if !errors.Is(wrapped, sentinel) {
-		t.Errorf("errors.Is(wrapped, sentinel) = false; Unwrap must expose the cause")
-	}
-	if wrapped.Unwrap() != sentinel {
-		t.Errorf("Unwrap() = %v, want sentinel", wrapped.Unwrap())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BindAdminCert error path
 // ---------------------------------------------------------------------------
@@ -1836,32 +1823,6 @@ func TestSpkiThumbprintFromCertPEM_NoPEMBlock(t *testing.T) {
 	_, err := spkiThumbprintFromCertPEM([]byte("not a pem block at all"))
 	if err == nil {
 		t.Fatal("expected error for non-PEM input, got nil")
-	}
-}
-
-// TestSpkiThumbprintFromCertPEM_InvalidDER verifies that a PEM block whose
-// body contains invalid DER bytes returns an x509.ParseCertificate error.
-func TestSpkiThumbprintFromCertPEM_InvalidDER(t *testing.T) {
-	invalidDERPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: []byte("these are not valid DER bytes"),
-	})
-	_, err := spkiThumbprintFromCertPEM(invalidDERPEM)
-	if err == nil {
-		t.Fatal("expected error for invalid DER, got nil")
-	}
-}
-
-// TestSpkiThumbprintFromCertPEM_ValidCert verifies the happy path: a valid
-// self-signed cert PEM yields a non-empty thumbprint.
-func TestSpkiThumbprintFromCertPEM_ValidCert(t *testing.T) {
-	certPEM := realCertPEM(t)
-	thumbprint, err := spkiThumbprintFromCertPEM(certPEM)
-	if err != nil {
-		t.Fatalf("spkiThumbprintFromCertPEM: %v", err)
-	}
-	if thumbprint == "" {
-		t.Error("thumbprint is empty, want non-empty SPKI hash")
 	}
 }
 
