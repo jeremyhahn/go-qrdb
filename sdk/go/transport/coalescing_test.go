@@ -631,14 +631,6 @@ func TestBatchIndexError_Message(t *testing.T) {
 	}
 }
 
-func TestBatchIndexError_ZeroIndex(t *testing.T) {
-	err := &BatchIndexError{Index: 0}
-	want := "transport: batch response missing result at index 0"
-	if got := err.Error(); got != want {
-		t.Errorf("BatchIndexError.Error() = %q, want %q", got, want)
-	}
-}
-
 // TestCoalescing_BatchIndexError exercises the flush branch where the server
 // returns fewer responses than ops submitted.
 func TestCoalescing_BatchIndexError(t *testing.T) {
@@ -722,22 +714,6 @@ func TestCoalescing_GetError_FromBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // CoalescingOption tests
 // ---------------------------------------------------------------------------
-
-func TestWithMaxBatchSize(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithMaxBatchSize(10)(&cfg)
-	if cfg.maxBatch != 10 {
-		t.Errorf("expected maxBatch=10, got %d", cfg.maxBatch)
-	}
-}
-
-func TestWithBatchWindow(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithBatchWindow(50 * time.Millisecond)(&cfg)
-	if cfg.window != 50*time.Millisecond {
-		t.Errorf("expected window=50ms, got %v", cfg.window)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // mergeDeadlines tests

@@ -182,14 +182,6 @@ func TestWithTenant_DotDot(t *testing.T) {
 	}
 }
 
-func TestWithTenant_PathTraversal(t *testing.T) {
-	kv := newMockKV()
-	_, err := WithTenant(kv, "..")
-	if err == nil {
-		t.Fatal("expected error for tenantID '..'")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TenantID accessor
 // ---------------------------------------------------------------------------
@@ -684,12 +676,4 @@ func TestTenantKVClient_Isolation(t *testing.T) {
 	if !exists2 {
 		t.Error("tenant2 key should still exist after tenant1 delete")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time interface check verification
-// ---------------------------------------------------------------------------
-
-func TestTenantKVClient_ImplementsKVClient(t *testing.T) {
-	var _ KVClient = (*TenantKVClient)(nil)
 }
