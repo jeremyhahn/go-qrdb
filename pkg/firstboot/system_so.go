@@ -327,6 +327,14 @@ func checkSOCertLogsInAsUsername(so *SOConfig) error {
 	if err != nil {
 		return err
 	}
+	// auth.HolderProfile classifies a certificate as a custody identity
+	// that RBAC refuses every permission: an SO bound to one could perform
+	// none of the operations reserved for it. The ceremony refuses it on
+	// its adoption path; a certificate supplied directly to first boot is
+	// refused here, before any enrollment state is written.
+	if profile, ok := auth.HolderProfile(cert); ok {
+		return &ceremony.SystemSOHolderCertError{Profile: profile}
+	}
 	if cert.Subject.CommonName != so.Username {
 		return fmt.Errorf("the certificate's subject CN %q is not the SO username %q", cert.Subject.CommonName, so.Username)
 	}

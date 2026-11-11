@@ -480,6 +480,45 @@ func TestInitialize_SystemSOPresentedCertHeldToClientAuthProfile(t *testing.T) {
 	}
 }
 
+// TestInitialize_SystemSODirectHolderCertRefused proves a certificate
+// supplied directly in Dependencies.SO is held to the same holder-profile
+// refusal as the ceremony's adoption path: an OU=[system,custodian]
+// certificate classifies as a custody identity RBAC refuses every
+// permission, so it is refused before any account, binding or PIN is written.
+func TestInitialize_SystemSODirectHolderCertRefused(t *testing.T) {
+	h := newSOHarness(t, true)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(7),
+		Subject:      pkix.Name{CommonName: h.deps.SO.Username, OrganizationalUnit: []string{tenantid.System, "custodian"}},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	h.deps.SO.CSRPEM = nil
+	h.deps.SO.CertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	h.deps.AdminCertPool = x509.NewCertPool()
+	_, err = Initialize(context.Background(), h.deps)
+	var holderErr *ceremony.SystemSOHolderCertError
+	if !errors.As(err, &holderErr) {
+		t.Fatalf("Initialize: %v, want *ceremony.SystemSOHolderCertError", err)
+	}
+	if len(h.users.creates) != 0 || len(h.binder.calls) != 0 {
+		t.Fatalf("an account was created or bound: %v, %v", h.users.creates, h.binder.calls)
+	}
+	if pins, ok := h.deps.SOPINs.(*soPINs); ok && len(pins.pins) != 0 {
+		t.Fatalf("an SO PIN was committed: %v", pins.pins)
+	}
+}
+
 func TestInitialize_SystemSOPINCommitFailureOnFreshSO(t *testing.T) {
 	h := newSOHarness(t, true)
 	h.pins.pins[tenantid.System] = "someone else's"
