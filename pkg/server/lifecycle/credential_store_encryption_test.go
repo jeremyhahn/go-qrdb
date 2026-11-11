@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -79,6 +81,72 @@ func TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane(t *testing.T)
 	}
 	if !bytes.Equal(got, fresh) {
 		t.Fatalf("new credential in the barrier = %q, want %q", got, fresh)
+	}
+}
+
+// TestBuildServices_MemoryBackendKeepsCredentialsAcrossARestart: a memory
+// data plane keeps nothing across a restart, so a seal-enabled memory node
+// binds the durable seal barrier as its credential store. A credential and
+// its version history written before a restart are there after it, when the
+// lifecycle is rebuilt over the same seal store.
+func TestBuildServices_MemoryBackendKeepsCredentialsAcrossARestart(t *testing.T) {
+	ctx := context.Background()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	build := func(svc *credentials.CredentialService) *lifecycle.Node {
+		t.Helper()
+		host := newLocalHost()
+		t.Cleanup(func() { _ = host.Close() })
+		hub := watch.NewHub()
+		t.Cleanup(hub.Close)
+		node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+			Host:              host,
+			WatchHub:          hub,
+			DataDir:           t.TempDir(),
+			Backend:           database.BackendMemory,
+			SealBarrier:       barrier,
+			BarrierRegistry:   registry,
+			CredentialCoreSvc: svc,
+		})
+		if err != nil {
+			t.Fatalf("BuildServices on a memory data plane: %v", err)
+		}
+		return node
+	}
+
+	node := build(credSvc)
+	if err := credSvc.StoreCredential(ctx, "db-password", []byte("v1-secret")); err != nil {
+		t.Fatalf("StoreCredential: %v", err)
+	}
+	if _, err := credSvc.RotateCredential(ctx, "db-password", credentials.RotateOptions{NewValue: []byte("v2-secret"), GracePeriod: time.Hour}); err != nil {
+		t.Fatalf("RotateCredential: %v", err)
+	}
+	if err := node.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// The restart: a new credential service over the same seal store.
+	restarted, err := credentials.NewCredentialService(
+		&credentials.Config{Strategy: credentials.StrategyBarrier}, barrier, slog.Default())
+	if err != nil {
+		t.Fatalf("NewCredentialService: %v", err)
+	}
+	node = build(restarted)
+	defer func() { _ = node.Stop(ctx) }()
+
+	versions, err := restarted.ListCredentialVersions(ctx, "db-password")
+	if err != nil {
+		t.Fatalf("ListCredentialVersions after the restart: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("versions after the restart = %d, want 2 (%+v)", len(versions), versions)
+	}
+	names, err := restarted.ListCredentials(ctx)
+	if err != nil {
+		t.Fatalf("ListCredentials after the restart: %v", err)
+	}
+	if !slices.Contains(names, "db-password") {
+		t.Fatalf("credentials after the restart = %v, want db-password", names)
 	}
 }
 
