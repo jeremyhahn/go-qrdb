@@ -57,19 +57,6 @@ func (r *replicaOpens) opened() []string {
 	return append([]string(nil), r.dirs...)
 }
 
-func TestWithReplicaStorageFactory_SetsTheOption(t *testing.T) {
-	var o nodeOptions
-	ro := &replicaOpens{}
-	WithReplicaStorageFactory(ro.open)(&o)
-	require.NotNil(t, o.replicaStorageFactory)
-	_, err := o.replicaStorageFactory(1, 1, "d", nil)
-	require.NoError(t, err)
-	require.Equal(t, []string{"d"}, ro.opened())
-
-	WithReplicaStorageFactory(nil)(&o)
-	require.Nil(t, o.replicaStorageFactory, "a nil factory keeps raft.sm_storage")
-}
-
 // fsOpens is a composer's replica storage factory that does its I/O under the
 // data-plane file system it is handed: it writes a sentinel through that FS
 // into the replica directory and records the FS.

@@ -334,6 +334,9 @@ func TestListAuthFactors_reportsTheFactorSetVersion(t *testing.T) {
 	if resp.FactorSetVersion != 5 {
 		t.Fatalf("FactorSetVersion = %d, want 5", resp.FactorSetVersion)
 	}
+	if resp.Total != 1 {
+		t.Errorf("total: %d", resp.Total)
+	}
 }
 
 // TestRotateAuthFactor_refusesAnAddCondition pins that a rotation naming an
@@ -365,20 +368,6 @@ func TestRotateAuthFactor_refusesAnAddCondition(t *testing.T) {
 // ---------------------------------------------------------------------------
 // ListAuthFactors
 // ---------------------------------------------------------------------------
-
-func TestListAuthFactors_Success(t *testing.T) {
-	svc := newMockUserAuthFactorSvc()
-	tr, cleanup := connectUserAuthFactorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.ListAuthFactors(context.Background(), &transport.AuthFactorListRequest{UserID: 42})
-	if err != nil {
-		t.Fatalf("ListAuthFactors: %v", err)
-	}
-	if resp.Total != 1 {
-		t.Errorf("total: %d", resp.Total)
-	}
-}
 
 func TestListAuthFactors_ServiceError(t *testing.T) {
 	svc := newMockUserAuthFactorSvc()

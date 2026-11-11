@@ -572,18 +572,6 @@ func TestTenantBarrierStatus_NilRequest(t *testing.T) {
 	}
 }
 
-func TestTenantBarrierStatus_Closed(t *testing.T) {
-	svc := newMockTenantSvc()
-	tr, cleanup := connectTenantInProcess(t, svc)
-	cleanup()
-
-	_, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T", err)
-	}
-}
-
 func (m *mockTenantSvc) CheckBarrierMode(_ context.Context, _ string, _ seal.StrategyID) error {
 	return nil
 }

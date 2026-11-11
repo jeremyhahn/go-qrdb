@@ -1906,17 +1906,6 @@ func listerOf(ids ...string) TenantLister {
 	return TenantListerFunc(func(context.Context) ([]string, error) { return ids, nil })
 }
 
-func TestTenantListerFunc_AdaptsFunction(t *testing.T) {
-	f := TenantListerFunc(func(context.Context) ([]string, error) { return []string{"x", "y"}, nil })
-	ids, err := f.TenantIDs(context.Background())
-	if err != nil {
-		t.Fatalf("TenantIDs: %v", err)
-	}
-	if len(ids) != 2 || ids[0] != "x" || ids[1] != "y" {
-		t.Fatalf("TenantIDs = %v, want [x y]", ids)
-	}
-}
-
 // TestPool_VerifyIssuer_TenantAnchorAccepted proves a tenant's own registered
 // anchor, present anywhere in the chain above the leaf, admits that tenant --
 // with no Key B provider and no cluster CA configured at all.

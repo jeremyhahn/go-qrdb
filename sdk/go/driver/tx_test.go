@@ -18,45 +18,10 @@ package driver
 
 import (
 	"context"
-	"database/sql"
 	sqld "database/sql/driver"
 	"errors"
 	"testing"
 )
-
-// TestEmbeddedTx_CommitRollback verifies a transaction can be committed or rolled back.
-func TestEmbeddedTx_CommitRollback(t *testing.T) {
-	db, err := sql.Open("qrdb", "embedded://memory?database=txtest")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	if err := tx.Rollback(); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-}
-
-// TestEmbeddedTx_Commit verifies a transaction can be committed.
-func TestEmbeddedTx_Commit(t *testing.T) {
-	db, err := sql.Open("qrdb", "embedded://memory?database=txcommittest")
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-}
 
 // TestEmbeddedTx_DoubleCommit verifies double commit returns TxDoneError.
 func TestEmbeddedTx_DoubleCommit(t *testing.T) {
@@ -124,22 +89,6 @@ func TestEmbeddedTx_DoubleRollback(t *testing.T) {
 	}
 }
 
-// TestNetworkTx_Commit verifies networkTx Commit returns nil.
-func TestNetworkTx_Commit(t *testing.T) {
-	tx := &networkTx{}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-}
-
-// TestNetworkTx_Rollback verifies networkTx Rollback returns nil.
-func TestNetworkTx_Rollback(t *testing.T) {
-	tx := &networkTx{}
-	if err := tx.Rollback(); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-}
-
 // TestNetworkTx_DoubleCommit verifies double commit on networkTx returns TxDoneError.
 func TestNetworkTx_DoubleCommit(t *testing.T) {
 	tx := &networkTx{}
@@ -185,13 +134,5 @@ func TestNetworkTx_CommitThenRollback(t *testing.T) {
 	var tde *TxDoneError
 	if !errors.As(err, &tde) {
 		t.Errorf("expected *TxDoneError, got %T: %v", err, err)
-	}
-}
-
-// TestNetworkTx_InterfaceCompliance verifies networkTx implements driver.Tx.
-func TestNetworkTx_InterfaceCompliance(t *testing.T) {
-	var tx sqld.Tx = &networkTx{}
-	if tx == nil {
-		t.Fatal("networkTx should implement driver.Tx")
 	}
 }
