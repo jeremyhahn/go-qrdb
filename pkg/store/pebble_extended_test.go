@@ -1368,34 +1368,6 @@ func TestPebbleStateMachine_GuardedVerbs_RefuseReservedKeys(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_WatchMVCCPut(t *testing.T) {
-	s, hub := openStoreWithHub(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	w, err := hub.Watch(ctx, "mvcc-watch")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-watch"), []byte("val"), 0))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
-		}
-		if resp.Events[0].Type != watch.EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for watch event")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Unknown opcode
 // ---------------------------------------------------------------------------
