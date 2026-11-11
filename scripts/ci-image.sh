@@ -34,6 +34,10 @@
 # write). The login lives in a private DOCKER_CONFIG deleted on exit, and no
 # credential value is ever printed: an empty name fails naming the variable.
 # A pushed image is tagged <content-hash>-main, one tag per content hash.
+# A refused push is tried again, up to CI_REGISTRY_ATTEMPTS times in all
+# (default 3), waiting CI_REGISTRY_BACKOFF seconds (default 10) times the
+# number of the failed attempt, so one registry 5xx on one blob upload does
+# not fail the job; a push refused every time does. The login is not retried.
 set -euo pipefail
 
 readonly registry=ghcr.io
@@ -127,9 +131,18 @@ push() {
 	owner=$(registry_owner)
 	local repo=$registry/$owner/$name
 	local target=$repo:${image##*:}-main
+	local attempts=${CI_REGISTRY_ATTEMPTS:-3} backoff=${CI_REGISTRY_BACKOFF:-10} n=1
+	[[ $attempts =~ ^[1-9][0-9]{0,2}$ ]] || die "CI_REGISTRY_ATTEMPTS must be a positive integer (at most 999), the number of push attempts"
+	[[ $backoff =~ ^(0|[1-9][0-9]{0,3})$ ]] || die "CI_REGISTRY_BACKOFF must be a non-negative integer of seconds (at most 9999)"
 	login "$owner"
 	docker tag "$image" "$target" || die "cannot tag $image as $target"
-	docker push "$target" >&2 || die "GHCR refused the push of $target"
+	# Only the push is retried: a refused login is a credential fault.
+	until docker push "$target" >&2; do
+		[ "$n" -lt "$attempts" ] || die "GHCR refused the push of $target after $attempts attempts"
+		echo "ci-image: push of $target failed (attempt $n of $attempts); retrying in $((n * backoff))s" >&2
+		sleep $((n * backoff))
+		n=$((n + 1))
+	done
 	local digest="" d
 	while IFS= read -r d; do
 		case $d in "$repo@"*) digest=$d ;; esac

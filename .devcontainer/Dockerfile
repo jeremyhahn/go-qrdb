@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Go 1.27.3 (the latest release) is required: go-enclave declares `go 1.27.x`
+# Go 1.27.4 (the latest release) is required: go-enclave declares `go 1.27.x`
 # and go-quicraft consumes it, and the official golang images pin
 # GOTOOLCHAIN=local so an older base cannot satisfy that requirement (and
 # cannot auto-upgrade). This must stay >= the highest `go` directive across
@@ -25,7 +25,7 @@
 ARG TRIVY_IMAGE=ghcr.io/aquasecurity/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa
 FROM ${TRIVY_IMAGE} AS trivy
 
-FROM golang:1.27.3-bookworm AS toolchain
+FROM golang:1.27.4-bookworm AS toolchain
 
 # Fleet dev-cache passthrough (handbook software/conventions/devops.md §2a).
 # Unset, empty or unreachable means no proxy -- identical to the behaviour
