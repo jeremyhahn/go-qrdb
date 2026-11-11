@@ -30,8 +30,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
@@ -411,40 +409,6 @@ func TestNode_Close_NilSvcNode(t *testing.T) {
 // ---------------------------------------------------------------------------
 // NodeOption
 // ---------------------------------------------------------------------------
-
-func TestWithSealPassphrase(t *testing.T) {
-	o := &nodeOptions{}
-	pass := []byte("secret")
-	WithSealPassphrase(pass)(o)
-	assert.Equal(t, pass, o.sealPassphrase)
-}
-
-func TestWithLogger(t *testing.T) {
-	o := &nodeOptions{}
-	// nil logger is accepted without panic (node construction uses slog.Default fallback)
-	WithLogger(nil)(o)
-	assert.Nil(t, o.logger)
-}
-
-func TestWithRaftMTLS_NilIsAccepted(t *testing.T) {
-	o := &nodeOptions{}
-	WithRaftMTLS(nil)(o)
-	assert.Nil(t, o.raftMTLS)
-}
-
-func TestWithRaftMTLS_SetsConfig(t *testing.T) {
-	mtls := &quicraftconfig.MTLSConfig{
-		CACert: []byte("ca-pem"),
-		Cert:   []byte("cert-pem"),
-		Key:    []byte("key-pem"),
-	}
-	o := &nodeOptions{}
-	WithRaftMTLS(mtls)(o)
-	require.NotNil(t, o.raftMTLS)
-	assert.Equal(t, []byte("ca-pem"), o.raftMTLS.CACert)
-	assert.Equal(t, []byte("cert-pem"), o.raftMTLS.Cert)
-	assert.Equal(t, []byte("key-pem"), o.raftMTLS.Key)
-}
 
 func TestNodeOptions_RecordTheirSeams(t *testing.T) {
 	var o nodeOptions
