@@ -254,15 +254,16 @@ owning layer and registering it at startup, with no change to this package.
 | `encrypted://` | go-trusted-platform  | a value decrypted via the platform barrier    |
 | `idevid://`    | go-trusted-platform  | a value bound to the device IDevID            |
 
-`credential://<name>` resolves through the credential store. Use
-`NewTenantScopedCredentialRetrieve` to route a lookup to the per-tenant store
-when the request carries a tenant ID, and to the system store otherwise; a
-system-scope request with no system store configured fails closed with
-`ErrNilSystemCredentialService`. A tenant with no dedicated barrier, one on
-the shared system barrier, fails with `seal.ErrTenantNotFound` and never
-falls back to the system store, which is the same refusal the
-`CredentialServicer` makes ([architecture.md](architecture.md), "Tenant
-stores").
+`credential://<name>` resolves through the credential store.
+`CredentialResolverFromServicer` builds the resolver over a
+`service.CredentialServicer`, which resolves the store from the tenant in the
+lookup's context: the system tenant, and a context with no tenant, gets the
+system store; any other tenant gets its per-tenant store, whose store of
+record is the tenant's replicated home store. The tenant barrier is read once,
+as the migration source of records under the old layout. A tenant with no
+dedicated barrier, one on the shared system barrier, is refused with
+`CapabilityUnsupportedError` and never falls back to the system store
+([architecture.md](architecture.md#tenant-stores)).
 
 The resolver's retriever (`CredentialRetriever` / `CredentialRetrieveFunc`)
 returns a protected-memory `*secure.Buffer`, not a `[]byte`. `Resolve` hands the
