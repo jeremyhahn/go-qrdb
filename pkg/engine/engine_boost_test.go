@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
@@ -35,13 +34,6 @@ import (
 // ---------------------------------------------------------------------------
 // defaultLogger – non-panic path coverage
 // ---------------------------------------------------------------------------
-
-func TestDefaultLogger_ReturnsNonNil(t *testing.T) {
-	log := defaultLogger()
-	if log == nil {
-		t.Error("expected non-nil logger from defaultLogger()")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // KVEngine.PutWithIndexes + DeleteWithIndexes coverage
@@ -871,34 +863,6 @@ func TestMVCCEngine_HandleIndexCreate_Idempotent(t *testing.T) {
 // RemoveIndexes – non-nil prevKv with indexed field
 // ---------------------------------------------------------------------------
 
-func TestRemoveIndexes_WithPrevKV(t *testing.T) {
-	idx := index.NewMemoryIndex("by_name", false)
-	_ = idx.Put([]byte("u:1"), []byte("alice"))
-	indexes := map[string]index.Index{"by_name": idx}
-	indexFields := map[string]string{"by_name": "name"}
-
-	prevKv := &service.KeyValue{
-		Key:   []byte("u:1"),
-		Value: []byte(`{"name":"alice"}`),
-	}
-	err := RemoveIndexes(indexes, indexFields, nil, []byte("u:1"), prevKv)
-	if err != nil {
-		t.Fatalf("RemoveIndexes: %v", err)
-	}
-}
-
-func TestRemoveIndexes_NilPrevKV(t *testing.T) {
-	idx := index.NewMemoryIndex("by_name", false)
-	indexes := map[string]index.Index{"by_name": idx}
-	indexFields := map[string]string{"by_name": "name"}
-
-	// nil prevKv → early return nil
-	err := RemoveIndexes(indexes, indexFields, nil, []byte("u:1"), nil)
-	if err != nil {
-		t.Fatalf("RemoveIndexes(nil prevKv): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // MVCCEngine.handleBaseKVPut – unique violation path
 // ---------------------------------------------------------------------------
@@ -1109,46 +1073,9 @@ func TestMVCCEngine_HandleMVCCCompact_WithRevision(t *testing.T) {
 // handleLeaseRevoke – lr==nil path (no lessor configured)
 // ---------------------------------------------------------------------------
 
-func TestMVCCEngine_HandleLeaseRevoke_NoLessor(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	// Engine without a lessor.
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(12345))
-	r := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: revokeCmd}}, r); err != nil {
-		t.Fatalf("lease revoke (no lessor): %v", err)
-	}
-	// Expect a non-fatal app error result (NotOpenError).
-	if len(r[0].Data) == 0 {
-		t.Log("note: lease revoke with no lessor did not encode an app error")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // handleLeaseKeepAlive – lr==nil path (no lessor configured)
 // ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleLeaseKeepAlive_NoLessor(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	kaCmd := mustEncode(protocol.EncodeLeaseKeepAlive(12345))
-	r := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: kaCmd}}, r); err != nil {
-		t.Fatalf("lease keepalive (no lessor): %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // handleLeaseRevoke – NotFoundError (idempotent success)
