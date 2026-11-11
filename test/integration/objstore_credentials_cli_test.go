@@ -18,22 +18,23 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
-	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -188,6 +189,15 @@ func startObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.
 // the admin the ceremony bound.
 func startObjstoreCredentialNodeConn(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf, []string) {
 	t.Helper()
+	cmd, out, _, _, conn := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
+	return cmd, out, conn
+}
+
+// spawnObjstoreCredentialNode is startObjstoreCredentialNodeConn that also
+// returns the CA and the REST port a caller needs to wait until the unsealed
+// node serves.
+func spawnObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf, *testCA, int, []string) {
+	t.Helper()
 	ca := generateTestCA(t)
 	restPort := allocateTCPPorts(t, 1)[0]
 	args := append([]string{
@@ -203,7 +213,37 @@ func startObjstoreCredentialNodeConn(t *testing.T, bin, cfg, dataDir string) (*e
 	cmd := spawnNode(t, bin, args, out)
 	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
 	certPath, keyPath := initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
-	return cmd, out, restConnArgs(ca, certPath, keyPath, restPort)
+	return cmd, out, ca, restPort, restConnArgs(ca, certPath, keyPath, restPort)
+}
+
+// objstoreCredentialNodeServes waits until the unsealed node answers its
+// health check and reports true, or false if the node exits first.
+func objstoreCredentialNodeServes(t *testing.T, cmd *exec.Cmd, ca *testCA, port int, timeout time.Duration) bool {
+	t.Helper()
+	daemon := spawnedDaemon(t, cmd)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exited := make(chan error, 1)
+	go func() { exited <- daemon.WaitContext(ctx) }()
+
+	url := adminURL(port, "/health")
+	client := qrdbdharness.HTTPSClient(ca.Pool, nil, 5*time.Second)
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
+		if resp, err := client.Get(url); err == nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return true
+			}
+		}
+		select {
+		case <-exited:
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatalf("node on admin port %d neither answered %s nor exited in %v\n%s", port, url, timeout, daemon.Tail())
+	return false
 }
 
 // assertObjstoreCredentialsNotEchoed fails the test when any credential in
@@ -294,6 +334,24 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	secret := randomObjstoreCredential(t)
 	const bucket, region = "qrdb-credentials", "us-east-1"
 	stub := newS3Stub(t, bucket, region, key, secret)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("S3 requests: %v", stub.requestList())
+		}
+	})
+
+	// The bucket starts as a store the product itself formatted: the same
+	// binary boots once on the local provider, which takes no credential,
+	// and the objects it left are loaded into the stub under their keys.
+	// Whether that boot ends serving or exits, the tree is what the product
+	// wrote.
+	localCfg := writeObjstoreModeConfig(t, "")
+	localBucket := filepath.Join(filepath.Dir(localCfg), "bucket")
+	localCmd, localOut, localCA, localPort, _ := spawnObjstoreCredentialNode(t, bin, localCfg, t.TempDir())
+	if objstoreCredentialNodeServes(t, localCmd, localCA, localPort, 90*time.Second) {
+		stopNode(t, localCmd, 30*time.Second)
+	}
+
 	// The configuration loader lowercases settings keys, so the provider
 	// never sees forcePathStyle and addresses the bucket virtual-hosted, as
 	// <bucket>.<endpoint host>. The endpoint names a host that never
@@ -317,16 +375,21 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
 	dataDir := t.TempDir()
 
-	// The MVCC store reads its revision and node compaction floor when it
-	// opens; both are seeded at revision 0, a fresh database.
-	seeded := stub.seedFormattedStore(t, map[string][]byte{
-		string(mvcc.RevisionKey()):            mvcc.EncodeRevision(0),
-		string(mvcc.NodeCompactionFloorKey()): mvcc.EncodeRevision(0),
-		lease.TablePrefix + "seq":             make([]byte, 8),
-	})
+	seeded := stub.seedFromDir(t, localBucket)
+	if len(seeded) == 0 {
+		t.Fatalf("the local-provider boot wrote no object under %s:\n%s", localBucket, localOut)
+	}
 
-	cmd, out, conn := startObjstoreCredentialNodeConn(t, bin, cfg, dataDir)
+	cmd, out, ca, restPort, conn := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
+	// Whatever the node did before the test ends, on a passing path or a
+	// failing one, it left neither credential behind.
+	defer func() {
+		stopNode(t, cmd, 30*time.Second)
+		assertObjstoreCredentialsNotEchoed(t, map[string]string{"key": key, "secret": secret},
+			out.String(), []string{dataDir, cfgDir}, stub.objectBodies())
+	}()
 	stub.awaitSignedRequest(t, 60*time.Second, out)
+	waitForAdminAfterUnseal(t, ca.Pool, cmd, restPort)
 	cli := buildCLIBinary(t)
 	const kvKey, kvValue = "objstore-credentials-key", "objstore-credentials-value"
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...),
@@ -353,9 +416,10 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	if stub.verifiedCount() == 0 {
 		t.Fatal("no request reached the S3 stub signed with the generated credentials")
 	}
+	if !slices.ContainsFunc(stub.requestList(), func(r string) bool { return strings.HasPrefix(r, http.MethodPut+" ") }) {
+		t.Errorf("no signed PUT reached the S3 stub; requests: %v", stub.requestList())
+	}
 	if failures := stub.failureList(); len(failures) != 0 {
 		t.Errorf("S3 stub refused or could not serve requests:\n%s\nnode output:\n%s", strings.Join(failures, "\n"), out)
 	}
-	assertObjstoreCredentialsNotEchoed(t, map[string]string{"key": key, "secret": secret},
-		out.String(), []string{dataDir, cfgDir}, stub.objectBodies())
 }
