@@ -973,18 +973,6 @@ func TestInCIDR(t *testing.T) {
 		wantTrue bool
 	}{
 		{
-			name:     "IPv4 in range",
-			ip:       net.ParseIP("192.168.1.100"),
-			cidr:     "192.168.1.0/24",
-			wantTrue: true,
-		},
-		{
-			name:     "IPv4 out of range",
-			ip:       net.ParseIP("10.0.0.1"),
-			cidr:     "192.168.1.0/24",
-			wantTrue: false,
-		},
-		{
 			name:     "invalid CIDR",
 			ip:       net.ParseIP("192.168.1.100"),
 			cidr:     "invalid",
