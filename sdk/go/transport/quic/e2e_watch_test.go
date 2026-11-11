@@ -184,11 +184,17 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 	// pre-read ctx.Done() check at the top of the loop.
 	reading := make(chan struct{})
 	var readingOnce sync.Once
-	hook := func() { readingOnce.Do(func() { close(reading) }) }
+	ctx, cancel := context.WithCancel(context.Background())
+	// Only this watch's reader trips the barrier: a reader left over from
+	// an earlier watch passes its own context and is ignored.
+	hook := func(readerCtx context.Context) {
+		if readerCtx != ctx {
+			return
+		}
+		readingOnce.Do(func() { close(reading) })
+	}
 	beforeWatchRead.Store(&hook)
 	t.Cleanup(func() { beforeWatchRead.Store(nil) })
-
-	ctx, cancel := context.WithCancel(context.Background())
 
 	ch, err := tr.Watch(ctx, "k", transport.WatchOptions{})
 	if err != nil {
