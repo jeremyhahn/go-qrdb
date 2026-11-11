@@ -308,31 +308,6 @@ func TestReconciler_AwaitsCredentialWithoutCountingAttempts(t *testing.T) {
 	}
 }
 
-// TestReconciler_AtTargetAcksWithoutCredential proves an owner whose barrier
-// is already at the target acks complete without asking for a credential or
-// recycling again, and releases any credential it held.
-func TestReconciler_AtTargetAcksWithoutCredential(t *testing.T) {
-	ctx := context.Background()
-	s := NewStore(newMemKV())
-	seedMigration(t, s, 1, []string{"n1"})
-	rec := &recordingRecycler{atTarget: true}
-	src := &staticSource{err: ErrCredentialAwaited}
-	r := NewReconciler(s, "n1", rec, src, nil, nil)
-
-	if n, err := r.ReconcileOnce(ctx); err != nil || n != 1 {
-		t.Fatalf("ReconcileOnce = %d, %v; want 1, nil", n, err)
-	}
-	if src.asked != 0 || rec.count() != 0 {
-		t.Fatalf("asked %d times, recycled %d times; an owner at the target needs neither", src.asked, rec.count())
-	}
-	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != seal.PhaseComplete || st.Generation != 1 {
-		t.Fatalf("status = %+v, want gen1 complete", st)
-	}
-	if len(src.released) != 1 || src.released[0] != 1 {
-		t.Fatalf("released = %v, want [1]", src.released)
-	}
-}
-
 // TestReconciler_AwaitingOwnerAcksOnceAtTarget proves the SYSTEM-scope reboot
 // case: the recycle reached the target but its ack and the held credential
 // were lost, so the owner was left awaiting a credential. Once its barrier
@@ -599,25 +574,6 @@ func TestReconciler_AcknowledgesAtTargetWithoutACredential(t *testing.T) {
 		t.Fatalf("released = %v, want [1]", src.released)
 	}
 	requireComplete(t, ctx, s, true, "the only owner acknowledged")
-}
-
-// TestReconciler_NotAtTargetStillWaitsForItsCredential proves the at-target
-// check does not let an owner that has not recycled acknowledge: without its
-// credential it waits, and nothing is acknowledged.
-func TestReconciler_NotAtTargetStillWaitsForItsCredential(t *testing.T) {
-	ctx := context.Background()
-	s := NewStore(newMemKV())
-	seedMigration(t, s, 1, []string{"n1"})
-	rec := &recordingRecycler{}
-	r := NewReconciler(s, "n1", rec, &staticSource{err: ErrCredentialAwaited}, nil, nil)
-
-	if n, err := r.ReconcileOnce(ctx); err != nil || n != 0 {
-		t.Fatalf("ReconcileOnce = %d, %v; want 0, nil", n, err)
-	}
-	if st, _ := s.GetNodeStatus(ctx, tid, db, "n1"); st == nil || st.Phase != PhaseAwaitingCredential {
-		t.Fatalf("status = %+v, want awaiting-credential", st)
-	}
-	requireComplete(t, ctx, s, false, "the owner has not recycled")
 }
 
 // TestReconciler_CopyingCheckpoint_CarriesPriorAttempts pins the L1 fix: the
