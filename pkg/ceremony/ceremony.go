@@ -684,7 +684,9 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 	s.lastAdminCertPEM = adminCertPEM
 	s.lastAdminSource = adminSource
-	s.lastSystemSO = systemSO
+	// s.lastSystemSO is published only once the SO record is durable
+	// (below): PendingSystemSO answers from it, and a cached SO whose
+	// write failed would hide the missing record from a retry.
 	if systemSO != nil {
 		result.SOCertPEM = systemSO.CertPEM
 		s.logger.Info("ceremony: system SO credential issued", slog.String("username", systemSO.Username))
@@ -713,6 +715,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			s.mu.Unlock()
 			return nil, err
 		}
+		s.lastSystemSO = systemSO
 		s.becomeOperationalLocked(ctx)
 		s.mu.Unlock()
 		result.State = StateOperational
@@ -796,6 +799,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, err
 	}
+	s.lastSystemSO = systemSO
 	s.state = StateEnrolling
 	s.mu.Unlock()
 	result.ShareCount = params.ShareCount

@@ -64,6 +64,22 @@ func TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetry(t *testing.T)
 	assert.Equal(t, "secofficer", pending.Username)
 }
 
+// The service whose SO record write failed must not report the SO as
+// pending from its own memory: without a restart, the wrapper would take
+// the retry for an admin reissue and the SO record would never be written.
+func TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetryWithoutRestart(t *testing.T) {
+	ctx := context.Background()
+	f := newShamirSOPersistFault(t)
+	composed := service.NewCeremonyServiceWithAdminRebind(service.NewCeremonyService(f.failed), f.failed, nil, nil, nil)
+	_, err := composed.CeremonyInitialize(ctx, f.ca, serviceInitOptions(f.options()))
+	require.NoError(t, err, "the retry persists the SO")
+
+	pending, err := f.reopen().PendingSystemSO(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pending, "first boot is handed the SO")
+	assert.Equal(t, "secofficer", pending.Username)
+}
+
 // serviceInitOptions carries the core options onto the service surface the
 // composed ceremony serves.
 func serviceInitOptions(o *ceremony.InitializeOptions) *service.CeremonyInitializeOptions {
@@ -147,6 +163,9 @@ func newRebindHolder(t *testing.T, username string) *rebindHolder {
 // barrier is unsealed and it holds no SO record, the state a retried
 // Initialize must repair.
 type shamirSOPersistFault struct {
+	// failed is the service whose Initialize hit the write fault, still
+	// running; service is the one restarted over the same storage.
+	failed  *ceremony.CeremonyService
 	service *ceremony.CeremonyService
 	ca      *ceremony.LocalCA
 	// options returns the ceremony's original options, the ones a retry
@@ -255,6 +274,7 @@ func newShamirSOPersistFault(t *testing.T) *shamirSOPersistFault {
 	require.False(t, b2.IsSealed())
 
 	return &shamirSOPersistFault{
+		failed:  svc,
 		service: svc2,
 		ca:      ca,
 		options: opts,
