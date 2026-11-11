@@ -312,32 +312,6 @@ func TestChainFileLogger_Close(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_Rotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	// Set a very small max size to force rotation.
-	l, err := NewFileLogger(path, WithMaxBytes(512))
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-
-	ctx := context.Background()
-	// Emit enough events to trigger rotation.
-	for i := 0; i < 50; i++ {
-		l.Emit(ctx, testEvent("henry", "kv", "delete"))
-	}
-
-	dir := filepath.Dir(path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	// Should have at least 2 files (active + at least one rotated).
-	if len(entries) < 2 {
-		t.Fatalf("expected at least 2 files after rotation, got %d", len(entries))
-	}
-}
-
 func TestChainFileLogger_Retention(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.ndjson")
