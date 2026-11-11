@@ -94,10 +94,9 @@ are not reconstructed here — their history is in the git log.
   PIN only as its `auth.HashSOPIN` hash. `qrdbd` and `sdk/go/node` record the
   SO in the replicated store (`firstboot.PendingSystemSOKey`), and first boot
   enrols it with the system `so` role alone, idempotently, through
-  `firstboot.Dependencies.SO` / `SOEnrolled` / `SOPINs`. **Strict separation
-  of duties refuses to boot without a system SO**, before any write, with
-  `*firstboot.SystemSORequiredError`; under it the system SO alone runs role
-  create and both role reconciles. The standard posture keeps the SO optional.
+  `firstboot.Dependencies.SO` / `SOPINs`. The SO is optional in both
+  postures; under strict separation of duties the system SO alone runs role
+  create and the built-in role reconciles.
   A malformed SO, a presented certificate whose subject CN is not the SO
   username, or an SO that is the admin by username or key (compared from the
   supplied CSRs or certificates before anything is provisioned), is
@@ -255,7 +254,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
-- **A strict first boot with no system SO and no admin credential defers the SO** instead of refusing with `*firstboot.SystemSORequiredError`; the ceremony still refuses without one (`*ceremony.SystemSORejectedError`), and a boot that carries an admin credential still requires the SO (#1129).
+- **The SO is optional in both postures (SPEC row 124).** First boot, the `qrdb init` ceremony and tenant create no longer refuse a strict request that names no SO; a strict node or tenant without one refuses only the SO-exclusive operations, and every check on an SO that is given still applies. `firstboot.SystemSORequiredError`, `bootstrap.TenantSORequiredError`, `firstboot.Dependencies.SOEnrolled`, `bootstrap.SystemConfig.SOEnrolled` and `firstboot.RecognizeEnrolledSystemSO` are removed (go-qrdb#1129).
 - **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
   (#1128), shared by tenant create and the system SO:
   `bootstrap.IncompleteTenantSOError` is now `firstboot.IncompleteSOError`,

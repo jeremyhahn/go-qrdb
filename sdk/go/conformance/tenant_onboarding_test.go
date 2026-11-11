@@ -284,9 +284,9 @@ func (c *onboardingCell) onboardWithCSR(t *testing.T, tenantID, admin string) (c
 }
 
 // withTenantSO names a security officer, ciso, with a CSR of their own and a
-// PIN on req: strict separation of duties (forced under FIPS 140-3) refuses a
-// tenant create without one (pkg/bootstrap TenantSORequiredError), and a
-// distinct SO is valid in the standard posture too.
+// PIN on req, so the tenant can run its SO-exclusive operations under strict
+// separation of duties (forced under FIPS 140-3); the SO is optional and a
+// distinct SO is valid in both postures.
 func withTenantSO(t *testing.T, req *transport.CreateTenantRequest) *transport.CreateTenantRequest {
 	t.Helper()
 	_, soCSR, err := certtest.NewCSR("ciso")

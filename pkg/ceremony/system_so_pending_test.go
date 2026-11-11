@@ -411,7 +411,7 @@ func TestInitialize_SystemSO_ServerOnlyCertificateRefused(t *testing.T) {
 // that is not PEM parses to nothing.
 func TestSystemSO_PINlessSOAndNonPEMCertificate(t *testing.T) {
 	soCSR, _ := generateCSRPEM(t, "ignored-too")
-	err := validateSystemSOInputs(newMockCA(t), testTrustDomain, true, &InitializeOptions{
+	err := validateSystemSOInputs(newMockCA(t), testTrustDomain, &InitializeOptions{
 		SOUsername: "secofficer",
 		SOCSRPEM:   soCSR,
 	}, nil)

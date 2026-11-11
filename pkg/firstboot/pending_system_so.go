@@ -117,8 +117,7 @@ func PendingSystemSO(ctx context.Context, store PendingAdminCertStore) (*SOConfi
 }
 
 // SystemSOConsumed reports whether the pending system SO record is
-// consumed: an earlier first boot enrolled the SO it named
-// (Dependencies.SOEnrolled). A store that cannot read it now reports false.
+// consumed: an earlier first boot enrolled the SO it named. A store that cannot read it now reports false.
 func SystemSOConsumed(ctx context.Context, store PendingAdminCertStore) bool {
 	if store == nil {
 		return false
@@ -217,66 +216,6 @@ func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertS
 		return false, err
 	}
 	return true, nil
-}
-
-// SystemSOLister lists a tenant's accounts. user.UserServicer implements it.
-type SystemSOLister interface {
-	ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
-}
-
-// RecognizeEnrolledSystemSO records the consumed marker for a system SO
-// enrolled before the marker existed. A cluster upgraded into strict
-// separation of duties carries no marker and no pending record, yet may
-// already hold its SO: an account in the system tenant, other than the
-// bootstrap admin adminID, with the so role and a live certificate binding,
-// plus a committed system SO PIN. When the persisted accounts and the PIN
-// store show one, the marker is written and true returned, so a strict
-// start treats the SO as enrolled instead of refusing it. A pending record
-// is first boot's to enrol and is left alone; with no such SO nothing is
-// written and false returned. Nil store, users or pins can verify nothing.
-func RecognizeEnrolledSystemSO(ctx context.Context, store PendingAdminCertStore, users SystemSOLister, pins SOPINChecker, adminID uint64) (bool, error) {
-	if store == nil || users == nil || pins == nil {
-		return false, nil
-	}
-	raw, err := readPendingSystemSO(ctx, store)
-	if err != nil {
-		return false, err
-	}
-	if bytes.Equal(raw, pendingAdminCertConsumedMarker) {
-		return true, nil
-	}
-	if len(raw) != 0 {
-		return false, nil
-	}
-	tenantID := tenantid.System
-	committed, err := pins.SOPINCommitted(ctx, tenantID)
-	if err != nil || !committed {
-		return false, err
-	}
-	soRole := role.SystemRoleID(tenantID, role.RoleNameSO)
-	now := time.Now().UTC()
-	for page := 1; ; page++ {
-		resp, err := users.ListUsers(ctx, &user.ListUsersRequest{TenantID: tenantID, Page: page})
-		if err != nil {
-			return false, &SystemSOEnrollmentError{Op: "list accounts", Cause: err}
-		}
-		if resp == nil {
-			return false, nil
-		}
-		for _, u := range resp.Users {
-			if u == nil || u.ID == adminID || u.TenantID != tenantID ||
-				!slices.Contains(u.RoleIDs, soRole) || user.AdminLoginBlocker(u, now) != "" {
-				continue
-			}
-			if err := store.Put(ctx, PendingSystemSOKey, pendingAdminCertConsumedMarker); err != nil {
-				return false, &PendingAdminCertStoreError{Op: "record enrolled system SO", Cause: err}
-			}
-			return true, nil
-		}
-		if !resp.HasMore || len(resp.Users) == 0 {
-			return false, nil
-		}
-	}
 }
 
 // readPendingSystemSO reads the pending system SO record. Only not-found

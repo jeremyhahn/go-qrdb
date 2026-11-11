@@ -481,7 +481,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
-	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, s.separationOfDuties(), opts, caBundle); err != nil {
+	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
 

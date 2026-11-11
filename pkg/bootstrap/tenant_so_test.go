@@ -264,21 +264,23 @@ func TestPlanSO_NoSOPlansNothing(t *testing.T) {
 	}
 }
 
-// TestProvisionTenant_StrictRequiresAnSO proves a strict tenant provision with
-// no SO is refused before anything is written, and one with an SO succeeds.
-func TestProvisionTenant_StrictRequiresAnSO(t *testing.T) {
+// TestProvisionTenant_StrictSOIsOptional covers SPEC row 124: under strict
+// separation a tenant create without an SO succeeds with the admin alone,
+// and one with an SO still enrols it.
+func TestProvisionTenant_StrictSOIsOptional(t *testing.T) {
 	tenants := &fakeTenants{}
 	users := &fakeCertBindingUsers{}
-	_, err := provisionWithSO(t, nil, users, Dependencies{Tenants: tenants, SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
-	if !errAs[*TenantSORequiredError](err) {
-		t.Fatalf("err = %v (%T), want *TenantSORequiredError", err, err)
+	result, err := provisionWithSO(t, nil, users, Dependencies{Tenants: tenants, SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
+	if err != nil {
+		t.Fatalf("ProvisionTenant(strict, no SO): %v, want success", err)
 	}
-	if len(tenants.createCalls) != 0 || len(users.createCalls) != 0 {
-		t.Fatalf("tenant creates = %d, user creates = %d; want nothing written", len(tenants.createCalls), len(users.createCalls))
+	if len(tenants.createCalls) != 1 || len(users.createCalls) != 1 || result.SOUsername != "" || result.SOUserID != 0 {
+		t.Fatalf("tenant creates = %d, user creates = %d, SO = %q; want the tenant and its admin alone",
+			len(tenants.createCalls), len(users.createCalls), result.SOUsername)
 	}
 
 	users = &fakeCertBindingUsers{}
-	result, err := provisionWithSO(t, soConfig(t), users, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
+	result, err = provisionWithSO(t, soConfig(t), users, Dependencies{SOPINs: &fakeSOPINs{}, SeparationOfDuties: true})
 	if err != nil {
 		t.Fatalf("ProvisionTenant with an SO: %v", err)
 	}

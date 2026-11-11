@@ -32,7 +32,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -256,11 +255,10 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 	}
 }
 
-// TestSeparationPosture_EmbeddedStrictRequiresSO boots an embedded node
-// under strict separation with no system SO and an admin credential to
-// issue: first boot refuses it, typed, before any write (#1128). With no
-// admin credential either it defers the SO instead (#1129).
-func TestSeparationPosture_EmbeddedStrictRequiresSO(t *testing.T) {
+// TestSeparationPosture_EmbeddedStrictBootsWithoutSO boots an embedded node
+// under strict separation with no system SO: first boot succeeds and enrols
+// none, since the SO is optional in both postures (SPEC row 124).
+func TestSeparationPosture_EmbeddedStrictBootsWithoutSO(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}}
@@ -273,16 +271,15 @@ func TestSeparationPosture_EmbeddedStrictRequiresSO(t *testing.T) {
 	}
 	defer func() { _ = n.Close() }()
 	svcs := n.Services()
-	_, err = n.FirstBoot(context.Background(), firstboot.Dependencies{
+	result, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler), SeparationOfDuties: true,
-		// An admin credential to issue: without one a strict boot defers
-		// the SO instead of refusing (go-qrdb#1129).
-		AdminCSRPEM: []byte("admin CSR"),
 	})
-	var required *firstboot.SystemSORequiredError
-	if !errors.As(err, &required) {
-		t.Fatalf("strict first boot without an SO = %v, want *firstboot.SystemSORequiredError", err)
+	if err != nil {
+		t.Fatalf("strict first boot without an SO = %v, want success", err)
+	}
+	if result.SOCreated {
+		t.Fatal("strict first boot enrolled an SO it was not given")
 	}
 }
 
@@ -456,8 +453,6 @@ func startPostureNode(t *testing.T, dataDir string, separation, enrollSO bool) (
 	if separation {
 		if enrollSO {
 			postureSO(t, cfg.Auth.EffectiveClusterTrustDomain(), n, &deps)
-		} else {
-			deps.SOEnrolled = true
 		}
 	}
 	result, err := n.FirstBoot(context.Background(), deps)

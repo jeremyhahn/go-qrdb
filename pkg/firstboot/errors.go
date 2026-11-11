@@ -16,7 +16,6 @@ package firstboot
 
 import (
 	"strconv"
-	"strings"
 )
 
 // MissingTenantsError is returned when Initialize is called without a
@@ -270,25 +269,6 @@ func (e *AdminLookupError) Error() string {
 // Unwrap returns the underlying cause.
 func (e *AdminLookupError) Unwrap() error {
 	return e.Cause
-}
-
-// SystemSORequiredError is Initialize's refusal, before any write, to boot a
-// strict-separation deployment without a system Security Officer. Under
-// strict separation of duties role create and the built-in reconcile run
-// only as a separate SO, and the assignment gate keeps the system admin from
-// creating one, so a deployment that booted without an SO could never
-// manage its roles. Missing names the inputs to supply. A strict boot that
-// carries no admin credential either (no CA, admin CSR or admin certificate)
-// is not refused: it defers the system SO to the ceremony, which refuses
-// without one (ceremony.SystemSORejectedError).
-type SystemSORequiredError struct {
-	Missing []string
-}
-
-// Error names the missing inputs.
-func (e *SystemSORequiredError) Error() string {
-	return "firstboot: strict separation of duties requires a system SO, so role create and the built-in reconcile have a principal to run as; supply " +
-		strings.Join(e.Missing, ", ")
 }
 
 // IncompleteSOError is returned when an SO (tenant create's or first

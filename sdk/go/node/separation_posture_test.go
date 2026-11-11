@@ -16,8 +16,8 @@ package node
 
 import (
 	"context"
-	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -25,7 +25,9 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // newPostureNode starts a standalone node under the given
@@ -58,12 +60,11 @@ func postureEvents(t *testing.T, trail audit.AuditLogger) []audit.AuditEvent {
 func runPostureFirstBoot(t *testing.T, n *Node) {
 	t.Helper()
 	svcs := n.Services()
-	// SOEnrolled stands in for the ceremony's consumed system SO record: a
-	// strict node refuses a first boot with no SO at all, and this test is
-	// about the posture record, not the SO's enrolment.
+	// No system SO: it is optional in both postures (SPEC row 124), and this
+	// test is about the posture record, not the SO's enrolment.
 	if _, err := n.FirstBoot(context.Background(), firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
-		Logger: slog.New(slog.DiscardHandler), SOEnrolled: true,
+		Logger: slog.New(slog.DiscardHandler),
 	}); err != nil {
 		t.Fatalf("FirstBoot: %v", err)
 	}
@@ -71,24 +72,29 @@ func runPostureFirstBoot(t *testing.T, n *Node) {
 
 // TestNode_FirstBoot_StrictNodeOverridesARelaxedCaller proves a strict node's
 // posture wins over a Dependencies literal that leaves SeparationOfDuties
-// false: first boot with no system SO is still refused, on both entry points.
+// false: first boot with no system SO succeeds (the SO is optional, SPEC row
+// 124) and, strict, grants the bootstrap admin no Owner role.
 func TestNode_FirstBoot_StrictNodeOverridesARelaxedCaller(t *testing.T) {
+	ctx := context.Background()
 	n := newPostureNode(t, true, audit.NewRingBuffer(64))
 	svcs := n.Services()
 	deps := firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
-		// An admin credential to issue: without one a strict boot defers
-		// the SO instead of refusing (go-qrdb#1129).
-		AdminCSRPEM: []byte("admin CSR"),
 	}
-	var required *firstboot.SystemSORequiredError
-	if _, err := n.FirstBoot(context.Background(), deps); !errors.As(err, &required) {
-		t.Fatalf("FirstBoot on a strict node with no SO: err = %v, want *firstboot.SystemSORequiredError", err)
+	result, err := n.FirstBoot(ctx, deps)
+	if err != nil {
+		t.Fatalf("FirstBoot on a strict node with no SO: %v, want success", err)
 	}
-	store := PendingAdminCertStore(svcs.KV)
-	if _, err := n.FirstBootWithCeremony(context.Background(), store, nil, 0, deps); !errors.As(err, &required) {
-		t.Fatalf("FirstBootWithCeremony on a strict node with no SO: err = %v, want *firstboot.SystemSORequiredError", err)
+	if result.SOCreated {
+		t.Fatal("FirstBoot enrolled an SO it was not given")
+	}
+	admin, err := n.UserService().GetUserByUsername(ctx, tenantid.System, "admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(admin): %v", err)
+	}
+	if owner := role.SystemRoleID(tenantid.System, role.RoleNameOwner); slices.Contains(admin.RoleIDs, owner) {
+		t.Fatalf("admin roles = %v, want no %s on a strict node", admin.RoleIDs, owner)
 	}
 }
 

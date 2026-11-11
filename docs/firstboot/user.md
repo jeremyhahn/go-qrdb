@@ -152,22 +152,11 @@ When it chains to `--admin-cert-pool`, first boot stores that pool as system
 tenant trust anchors and refreshes the server's client trust before it binds
 the SO, so the SO can log in over mTLS. First boot creates the SO's account in
 the system tenant with only the `so` role, binds its certificate and records
-`--so-pin` as its PIN. Re-running first boot never creates a second SO. In the
-standard posture the SO is optional.
-
-An embedded node upgraded from a version that recorded no SO marker
-recognises an SO it already has (a live binding and a committed SO PIN), as
-the daemon does, and boots strict without asking for a new one.
+`--so-pin` as its PIN. Re-running first boot never creates a second SO. The SO is optional in both
+postures: a strict node booted without one starts and serves, and refuses
+only role create and the built-in role reconciles until an SO is enrolled.
 
 ## Troubleshooting
-
-**"strict separation of duties requires a system SO".** The server runs
-strict separation of duties and was initialized without `--so-username`.
-First boot refuses before any write (`*firstboot.SystemSORequiredError`),
-because no principal could ever manage roles. Name the system SO with the
-flags above when you run `qrdb init`. A strict boot that carries neither a
-system SO nor an admin credential does not refuse: it defers the SO, and the
-`qrdb init` ceremony still refuses without one.
 
 **"ceremony: system SO rejected".** The SO flags named the admin's username
 or key, no SO PIN, a CSR that does not parse, a certificate that does not

@@ -808,10 +808,10 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 }
 
 // A cluster first booted in standard mode, with no system SO, and
-// restarted after auth.separation_of_duties is enabled must not take the
-// bound-admin fast path: Phase 3 refuses a strict boot with no enrolled
-// SO. Once the SO is enrolled, a strict restart fast-paths again.
-func TestRunFirstBoot_StrictRestartRequiresAnEnrolledSO(t *testing.T) {
+// restarted after auth.separation_of_duties is enabled takes the
+// bound-admin fast path: the system SO is optional in both postures (SPEC
+// row 124), so strict mode does not send the boot back through Phase 3.
+func TestRunFirstBoot_StrictRestartWithoutAnSOFastPaths(t *testing.T) {
 	certPEM, _ := selfSignedAdminCertPEM(t)
 
 	var admin *user.User
@@ -846,69 +846,10 @@ func TestRunFirstBoot_StrictRestartRequiresAnEnrolledSO(t *testing.T) {
 	require.NotEmpty(t, admin.CertBindings)
 	require.NoError(t, firstboot.ClearPendingAdminCert(ctx, pendingStore))
 
-	// Boot 2, strict: the bound admin alone does not satisfy strict mode.
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
-	var required *firstboot.SystemSORequiredError
-	require.ErrorAs(t, err, &required)
-
-	// The SO is enrolled: an earlier first boot consumed its pending record.
-	require.NoError(t, pendingStore.Put(ctx, firstboot.PendingSystemSOKey, []byte(`{"username":"officer"}`)))
-	require.NoError(t, firstboot.ClearPendingSystemSO(ctx, pendingStore))
-
-	// Boot 3, strict: the fast path, one admin lookup and nothing else.
+	// Boot 2, strict, no SO: the fast path, one admin lookup and nothing else.
 	lookups = 0
 	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
 	require.Equal(t, 1, lookups)
-}
-
-// committedSOPINs is an SO PIN store that already holds a committed PIN,
-// as a cluster enrolled before the pending-SO marker existed does.
-type committedSOPINs struct{ committed bool }
-
-func (p *committedSOPINs) SetSOPIN(context.Context, string, []byte) error {
-	return auth.ErrSOPINAlreadySet
-}
-
-func (p *committedSOPINs) SOPINCommitted(context.Context, string) (bool, error) {
-	return p.committed, nil
-}
-
-func (p *committedSOPINs) SOPINRecordMatches(context.Context, string, string) (bool, error) {
-	return false, nil
-}
-
-// A cluster whose SO was enrolled before the consumed marker existed has
-// a separate SO account, a live binding and a committed PIN, but no
-// marker. A strict start recognises that enrolment, writes the marker and
-// takes the fast path; without the committed PIN it is still refused.
-func TestRunFirstBoot_StrictStartRecognisesAPreMarkerSO(t *testing.T) {
-	certPEM, _ := selfSignedAdminCertPEM(t)
-	live := []user.CertBinding{{Thumbprint: "sha256:admin", NotAfter: time.Now().Add(365 * 24 * time.Hour)}}
-	admin := &user.User{ID: 9001, Username: "admin", TenantID: tenantid.System, System: true, Lifecycle: user.LifecycleActive, CertBindings: live}
-	officer := &user.User{
-		ID: 9002, Username: "officer", TenantID: tenantid.System, Lifecycle: user.LifecycleActive,
-		RoleIDs:      []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)},
-		CertBindings: []user.CertBinding{{Thumbprint: "sha256:officer", NotAfter: time.Now().Add(365 * 24 * time.Hour)}},
-	}
-	userSvc := &mockUserServicer{
-		getUserByUsernameFn: func(context.Context, string, string) (*user.User, error) { return admin, nil },
-		listUsersFn: func(context.Context, *user.ListUsersRequest) (*user.ListUsersResponse, error) {
-			return &user.ListUsersResponse{Users: []*user.User{admin, officer}, Total: 2}, nil
-		},
-	}
-	node := &mockRaftNode{}
-	pendingStore := newMockKVStore(make(map[string][]byte))
-	ctx := context.Background()
-
-	pins := &committedSOPINs{}
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, pins, soTrustSeams{})
-	var required *firstboot.SystemSORequiredError
-	require.ErrorAs(t, err, &required, "an SO account with no committed PIN is not an enrolled SO")
-	require.False(t, firstboot.SystemSOConsumed(ctx, pendingStore))
-
-	pins.committed = true
-	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, pins, soTrustSeams{}))
-	require.True(t, firstboot.SystemSOConsumed(ctx, pendingStore), "the recognised enrolment writes the consumed marker")
 }
 
 // TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted

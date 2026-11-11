@@ -293,16 +293,12 @@ type SystemConfig struct {
 	AdminCertPool *x509.CertPool
 
 	// SO is the system Security Officer, forwarded to first-boot with
-	// Dependencies.SOPINs. Required when SeparationOfDuties is set. go-qrdb's
+	// Dependencies.SOPINs. Optional in both postures. go-qrdb's
 	// own compositions pass the certificate the ceremony issued or adopted
 	// for it (SO.CertPEM, validated against AdminCertPool), as for the
 	// admin. See firstboot.Dependencies.SO. The caller keeps SO.PIN and
 	// destroys it.
 	SO *firstboot.SOConfig
-
-	// SOEnrolled forwards firstboot.Dependencies.SOEnrolled: an earlier
-	// first boot enrolled the system SO, so strict needs no SO again.
-	SOEnrolled bool
 }
 
 // SystemResult reports what BootstrapSystem did: the system barrier strategy
@@ -424,7 +420,6 @@ func BootstrapSystem(ctx context.Context, cfg SystemConfig, deps Dependencies) (
 		SeparationOfDuties: cfg.SeparationOfDuties,
 		MTLSBindingPolicy:  cfg.MTLSBindingPolicy,
 		SO:                 cfg.SO,
-		SOEnrolled:         cfg.SOEnrolled,
 		SOPINs:             deps.SOPINs,
 		TrustAnchors:       deps.SOTrustAnchors,
 		ClientTrust:        deps.SOClientTrust,

@@ -1067,7 +1067,6 @@ var onboardingRules = []rule{
 	as(&firstboot.SOMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.SOPartlyMatchesAdminError{}, InvalidArgument),
 	// A strict tenant named with no SO at all is the request's fault too.
-	as(&bootstrap.TenantSORequiredError{}, InvalidArgument),
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad
 	// credential presented by an unauthenticated caller, whatever the reason.

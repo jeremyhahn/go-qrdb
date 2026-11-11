@@ -225,38 +225,35 @@ func TestInitialize_SystemSO_Optional(t *testing.T) {
 	assert.Nil(t, svc.LastIssuedSystemSO())
 }
 
-// TestInitialize_SystemSO_RequiredWhenStrict proves a strict node refuses a
-// ceremony that names no system SO before anything is committed: the same
-// service then initializes once the SO inputs are given.
-func TestInitialize_SystemSO_RequiredWhenStrict(t *testing.T) {
-	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
-	svc.SetSeparationOfDuties(true)
-	ca := newMockCA(t)
+// TestInitialize_SystemSO_StrictAdminCSRWithoutSO proves a strict ceremony
+// that signs the admin's CSR and names no system SO initializes (the SO is
+// optional, SPEC row 124), while one that names an SO still issues it.
+func TestInitialize_SystemSO_StrictAdminCSRWithoutSO(t *testing.T) {
 	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
 
-	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	svc.SetSeparationOfDuties(true)
+	_, err := svc.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminCSRPEM: adminCSR,
 	})
-	var rejected *SystemSORejectedError
-	require.ErrorAs(t, err, &rejected)
-	assert.Contains(t, err.Error(), "requires a system SO")
+	require.NoError(t, err)
 	assert.Nil(t, svc.LastIssuedSystemSO())
 
+	withSO := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	withSO.SetSeparationOfDuties(true)
 	soCSR, _ := generateCSRPEM(t, "ignored-too")
-	result, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+	result, err := withSO.Initialize(context.Background(), newMockCA(t), &InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminCSRPEM: adminCSR,
 		SOUsername: "secofficer", SOCSRPEM: soCSR,
 	})
-	require.NoError(t, err, "the refused ceremony must have committed nothing")
+	require.NoError(t, err)
 	assert.NotEmpty(t, result.SOCertPEM)
 }
 
-// After a strict first boot that deferred its system SO (no SO and no admin
-// credential, go-qrdb#1129), the ceremony is the first point an SO's
-// authority is needed: the ceremony that issues the admin's credential
-// (here generated, the path a boot with none takes) and names no SO is still
-// refused before it commits anything.
-func TestInitialize_SystemSO_RequiredWhenStrictAfterADeferredFirstBoot(t *testing.T) {
+// The system SO is optional in both postures (SPEC row 124): a strict
+// ceremony that names no SO initializes the barrier and issues the admin's
+// credential, and issues no SO.
+func TestInitialize_SystemSO_OptionalWhenStrict(t *testing.T) {
 	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 	svc.SetSeparationOfDuties(true)
 	ca := newMockCA(t)
@@ -264,9 +261,7 @@ func TestInitialize_SystemSO_RequiredWhenStrictAfterADeferredFirstBoot(t *testin
 	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
 		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
 	})
-	var rejected *SystemSORejectedError
-	require.ErrorAs(t, err, &rejected)
-	assert.Contains(t, err.Error(), "requires a system SO")
+	require.NoError(t, err)
 	assert.Nil(t, svc.LastIssuedSystemSO())
 }
 

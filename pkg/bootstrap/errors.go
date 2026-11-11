@@ -160,18 +160,6 @@ func (e *PendingAdminUnresolvableError) Error() string {
 	return "bootstrap: cannot resolve pending tenant admin " + e.Username + "@" + e.TenantID + ": " + e.Reason
 }
 
-// TenantSORequiredError is tenant provisioning's refusal, before any write,
-// to create a tenant under strict separation of duties without a tenant SO.
-// Under strict separation the tenant admin cannot manage the tenant's roles
-// and the assignment gate keeps it from enrolling an SO afterwards, so a
-// tenant provisioned without one could never manage its roles.
-type TenantSORequiredError struct{}
-
-// Error implements error.
-func (e *TenantSORequiredError) Error() string {
-	return "bootstrap: strict separation of duties requires a tenant SO; supply its username, CSR or certificate, and PIN"
-}
-
 // TenantRecordCreationError wraps errors that occur while creating the tenant
 // record during ProvisionTenant.
 type TenantRecordCreationError struct {

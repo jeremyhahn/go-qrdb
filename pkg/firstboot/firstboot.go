@@ -273,23 +273,15 @@ type Dependencies struct {
 	// against AdminCertPool (CertPEM) and bound through Binder, and its PIN
 	// committed through SOPINs.
 	//
-	// Under SeparationOfDuties it is required: the strict gates run role
-	// create and the built-in reconcile only as a separate SO, so a
-	// deployment without one could never manage its roles, and Initialize
-	// refuses with *SystemSORequiredError before any write. Optional under
-	// the standard posture. The SO never shares the admin's username or key
+	// Optional in both postures (SPEC row 124): a deployment booted
+	// without one refuses only the SO-exclusive operations, which carry
+	// their own gates. The SO never shares the admin's username or key
 	// (*SOMatchesAdminError), in either posture: first boot never folds the
 	// SO into the immutable system admin.
 	//
 	// Initialize opens SO.PIN only to commit it and never destroys it, so a
 	// caller that retries Initialize keeps it; the caller destroys it.
 	SO *SOConfig
-
-	// SOEnrolled reports that an earlier first boot already enrolled the
-	// system SO -- the composer read the ceremony's pending SO record as
-	// consumed (SystemSOConsumed). A strict boot with no SO is then a
-	// re-run, not a deployment without one, and is not refused.
-	SOEnrolled bool
 
 	// SOPINs commits the system SO's PIN. Required when SO is set.
 	SOPINs SOPINSetter

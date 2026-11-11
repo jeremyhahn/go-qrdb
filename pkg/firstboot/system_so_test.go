@@ -239,35 +239,35 @@ func newSOHarness(t *testing.T, strict bool) *soHarness {
 	return h
 }
 
-func TestInitialize_StrictWithoutSORefusesBeforeAnyWrite(t *testing.T) {
+// TestInitialize_StrictWithoutSOBootsWithAnAdminCredential covers SPEC row
+// 124 (owner item 247 (a)): the system SO is optional under strict
+// separation too, so a boot that carries an admin credential (a CSR to sign)
+// and no SO completes and enrols the admin alone.
+func TestInitialize_StrictWithoutSOBootsWithAnAdminCredential(t *testing.T) {
 	h := newSOHarness(t, true)
 	h.deps.SO = nil
-	// The boot carries an admin credential (a CSR to sign), so the SO it
-	// lacks is required now, not deferred.
 	h.deps.AdminCSRPEM = testCSR(t)
-	_, err := Initialize(context.Background(), h.deps)
-	var required *SystemSORequiredError
-	if !errors.As(err, &required) {
-		t.Fatalf("Initialize(strict, no SO) = %v, want *SystemSORequiredError", err)
+	result, err := Initialize(context.Background(), h.deps)
+	if err != nil {
+		t.Fatalf("Initialize(strict, admin CSR, no SO) = %v, want success", err)
 	}
-	if !slices.Equal(required.Missing, systemSOInputs) || !strings.Contains(err.Error(), "so_pin") {
-		t.Fatalf("Missing = %v (%q), want every SO input named", required.Missing, err)
+	if result.SOCreated || result.SOUserID != 0 || len(h.pins.pins) != 0 {
+		t.Fatalf("result = %+v (PINs %v), want no SO enrolled", result, h.pins.pins)
 	}
-	if len(h.users.creates) != 0 {
-		t.Fatalf("users created before the refusal: %v", h.users.creates)
+	if len(h.users.creates) != 1 || h.users.byName["officer"] != nil {
+		t.Fatalf("creates = %v, want the admin alone", h.users.creates)
 	}
 }
 
-// TestInitialize_StrictWithoutSOOrAdminCredentialDefersTheSO covers the
-// owner's ruling (item 247 (a)): a strict boot that carries neither a system
-// SO nor an admin credential completes, creates the admin alone and records
-// nothing that grants SO authority. The ceremony refuses later without an SO.
-func TestInitialize_StrictWithoutSOOrAdminCredentialDefersTheSO(t *testing.T) {
+// TestInitialize_StrictWithoutSOOrAdminCredentialBoots: a strict boot that
+// carries neither a system SO nor an admin credential completes, creates the
+// admin alone and records nothing that grants SO authority.
+func TestInitialize_StrictWithoutSOOrAdminCredentialBoots(t *testing.T) {
 	h := newSOHarness(t, true)
 	h.deps.SO = nil
 	result, err := Initialize(context.Background(), h.deps)
 	if err != nil {
-		t.Fatalf("Initialize(strict, no SO, no admin credential) = %v, want the SO deferred", err)
+		t.Fatalf("Initialize(strict, no SO, no admin credential) = %v, want success", err)
 	}
 	if result.SOCreated || result.SOUserID != 0 || result.SOCertPEM != nil || result.SOCertThumbprint != "" {
 		t.Fatalf("result = %+v, want no SO enrolled", result)
@@ -280,8 +280,8 @@ func TestInitialize_StrictWithoutSOOrAdminCredentialDefersTheSO(t *testing.T) {
 	}
 }
 
-// Only a boot with no SO input at all defers: a partial SO, with no admin
-// credential either, is still refused as incomplete before any write.
+// An SO that is given is still checked: a partial SO, with no admin
+// credential either, is refused as incomplete before any write.
 func TestInitialize_StrictPartialSOWithoutAdminCredentialIsIncomplete(t *testing.T) {
 	h := newSOHarness(t, true)
 	h.deps.SO.PIN = nil
@@ -289,36 +289,6 @@ func TestInitialize_StrictPartialSOWithoutAdminCredentialIsIncomplete(t *testing
 	var incomplete *IncompleteSOError
 	if !errors.As(err, &incomplete) || len(h.users.creates) != 0 {
 		t.Fatalf("Initialize(strict, partial SO) = %v (creates %v), want *IncompleteSOError before any write", err, h.users.creates)
-	}
-}
-
-// An admin that already exists with a bound certificate is an admin
-// credential: a strict restart without an SO is refused, not deferred.
-func TestInitialize_StrictRestartWithABoundAdminStillRequiresTheSO(t *testing.T) {
-	h := newSOHarness(t, true)
-	h.deps.SO = nil
-	h.users.byName[adminUsername] = &user.User{
-		ID: 9001, Username: adminUsername, TenantID: tenantid.System, System: true,
-		CertBindings: []user.CertBinding{{Thumbprint: "sha256:admin", NotAfter: time.Now().Add(time.Hour)}},
-	}
-	_, err := Initialize(context.Background(), h.deps)
-	var required *SystemSORequiredError
-	if !errors.As(err, &required) || len(h.users.creates) != 0 {
-		t.Fatalf("Initialize(strict restart, bound admin, no SO) = %v (creates %v), want *SystemSORequiredError", err, h.users.creates)
-	}
-}
-
-// A strict re-run after an earlier first boot enrolled the SO (its pending
-// record consumed) needs no SO again and enrols none.
-func TestInitialize_StrictReRunAfterSOEnrolled(t *testing.T) {
-	h := newSOHarness(t, true)
-	h.deps.SO = nil
-	h.deps.SOEnrolled = true
-	if _, err := Initialize(context.Background(), h.deps); err != nil {
-		t.Fatalf("Initialize(strict, SO enrolled earlier) = %v", err)
-	}
-	if len(h.users.creates) != 1 {
-		t.Fatalf("creates = %v, want the admin alone", h.users.creates)
 	}
 }
 
@@ -866,7 +836,6 @@ func TestInitialize_SystemSOPINRecordNeedsARecordSeam(t *testing.T) {
 func TestSystemSOErrorMessages(t *testing.T) {
 	cause := errors.New("boom")
 	for _, err := range []error{
-		&SystemSORequiredError{Missing: systemSOInputs},
 		&IncompleteSOError{Field: "so_pin"},
 		&ConflictingSOCredentialError{},
 		&SOMatchesAdminError{Field: "key"},

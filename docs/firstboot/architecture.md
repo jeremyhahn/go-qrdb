@@ -286,24 +286,21 @@ username or key is `*firstboot.SOMatchesAdminError`. An SO with no PIN seam
 wired is `*firstboot.MissingSOSeamError`. These helpers moved here from
 `pkg/bootstrap`'s tenant SO; tenant create uses the same ones.
 
-**Strict separation requires the SO.** With `SeparationOfDuties` set, no
-`SO`, and `SOEnrolled` false, `Initialize` refuses before any write with
-`*firstboot.SystemSORequiredError`. Role create and the built-in reconciles
-run only as a separate SO, and the assignment gate keeps the system admin
-from becoming one, so a strict deployment without an SO could never manage
-its roles. The standard posture keeps the SO optional. The node's strict
-posture always wins: the ceremony (`CeremonyService.SetSeparationOfDuties`)
-refuses options naming no SO, or an SO username no SPIFFE ID can carry, with
-`*ceremony.SystemSORejectedError` before any write; every sealed-window
-composition (`qrdbd` and the embedded node) carries the posture, so a strict
-deployment is refused at the sealed-window ceremony, before any write. The
-embedded node ORs `Node.StrictSeparation()` into the caller's
-`Dependencies`, tenant create refuses a tenant with no SO with
-`*bootstrap.TenantSORequiredError`, and the pending SO record is consumed
-only once `firstboot.ClearPendingSystemSOIfEnrolled` finds the SO's account
-and committed PIN. A strict deployment already initialized without an SO has
-no recovery path: it is refused at every boot, and before RC the answer is to
-re-initialize it.
+**The SO is optional in both postures (SPEC row 124).** With or without
+`SeparationOfDuties`, `Initialize` boots a node given no `SO`; every check on
+an SO that is given still applies. A strict node with no SO refuses only the
+SO-exclusive operations (role create and the built-in reconciles run only as
+a separate SO, and the assignment gate keeps the system admin from becoming
+one), so it boots and serves but cannot manage its roles until an SO is
+enrolled. The node's strict posture always wins: the ceremony
+(`CeremonyService.SetSeparationOfDuties`) refuses an SO username no SPIFFE ID
+can carry with `*ceremony.SystemSORejectedError` before any write, and every
+sealed-window composition (`qrdbd` and the embedded node) carries the
+posture. The embedded node ORs `Node.StrictSeparation()` into the caller's
+`Dependencies`, tenant create takes an optional SO in both postures, and the
+pending SO record is consumed only once
+`firstboot.ClearPendingSystemSOIfEnrolled` finds the SO's account and
+committed PIN.
 
 **The ceremony issues the SO; first boot enrols it.**
 `ceremony.InitializeOptions` carries `SOUsername` with exactly one of
@@ -324,11 +321,9 @@ refuses consumption.
 They write it before the pending admin certificate. Both records are on one
 Raft shard, so first boot's bounded wait for the admin's record covers the
 SO's too. First boot reads the record (`firstboot.PendingSystemSO`), and the
-composer then marks it consumed (`firstboot.ClearPendingSystemSO`). A later
-boot reads the consumed marker (`firstboot.SystemSOConsumed`) as
-`SOEnrolled`, so a strict restart is not refused. The embedded
-`node.FirstBoot` takes `SO` and `SOEnrolled` from its caller's
-`firstboot.Dependencies` verbatim.
+composer then marks it consumed (`firstboot.ClearPendingSystemSO`). The embedded
+`node.FirstBoot` takes `SO` from its caller's `firstboot.Dependencies`
+verbatim.
 
 An adopted SO certificate keeps the trust pool that validated it: the
 ceremony records the anchors it verified `SOCertPEM` against
@@ -337,10 +332,8 @@ record's `PoolPEM`, and first boot verifies the certificate against those
 anchors alone, not its own admin pool, so an SO certificate from an external
 issuer survives the handoff and no other issuer gains trust. A signed SO
 certificate carries no pool. `qrdbd`'s restart fast path for a bound admin
-is taken under strict separation of duties only once the SO is enrolled
-(the record consumed): a cluster first booted in standard mode with no SO
-and restarted strict reaches the full first boot, which refuses it with
-`*firstboot.SystemSORequiredError`. An enrolment retry that finds the SO's
+is taken in either posture unless a pending SO is still to enrol, which
+sends the boot back through the full first boot. An enrolment retry that finds the SO's
 PIN already committed succeeds only when that PIN proves to be its own:
 the live PIN verifies (`SOPINVerifier`, `auth.SOAuthenticator.VerifySOPIN`)
 or the committed record is its record (`SOPINRecordMatcher`,
@@ -357,14 +350,6 @@ record's certificate, and the committed SO PIN is the record's
 only to other certificates, keeps the record and returns
 `*firstboot.SystemSOUnverifiedError`; an account not yet bound keeps it
 quietly, as enrolment binds after it commits the PIN.
-
-A strict cluster whose SO was enrolled before the consumed marker existed has
-neither marker nor record. On a strict start with a bound admin, `qrdbd`
-calls `firstboot.RecognizeEnrolledSystemSO`, which reads the persisted
-accounts and the PIN store: a system-tenant account other than the admin,
-with the so role and a live certificate binding, plus a committed system SO
-PIN, is that SO, and the marker is written. Only a cluster with no such SO
-reaches the full first boot and its `*firstboot.SystemSORequiredError`.
 
 ## Startup sequence
 

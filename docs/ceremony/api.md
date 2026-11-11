@@ -108,8 +108,8 @@ certificate the SO already holds, verified against `admin_cert_pool_pem`, or
 the ceremony's own CA bundle when that is empty, through `so_chain_pem`'s
 intermediates). The SO's PIN is `so_pin`. The ceremony keeps it only as its
 `auth.HashSOPIN` hash, and that hash is what reaches first boot. The SO is
-optional as a whole, but a server running strict separation of duties
-refuses to boot without one (`*firstboot.SystemSORequiredError`, see
+optional as a whole, in both postures; a strict server booted without one
+refuses only the SO-exclusive operations (see
 [../firstboot/architecture.md](../firstboot/architecture.md#the-system-security-officer)).
 A username without a certificate input (or the reverse), both inputs, the
 admin's username or key, no `so_pin`, a CSR that does not parse, or a

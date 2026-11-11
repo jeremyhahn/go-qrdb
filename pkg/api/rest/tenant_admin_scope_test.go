@@ -403,3 +403,20 @@ func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 		}
 	}
 }
+
+// TestStrictTenantWithoutSO_RefusesSOExclusiveOps covers SPEC row 124: a
+// tenant may be created, or a node first booted, under strict separation
+// with no SO, and then only the operations that need an SO are refused.
+// The tenant's sole principal is its admin, no SO is enrolled, and the
+// SO-exclusive role create and built-in reconcile answer 403.
+func TestStrictTenantWithoutSO_RefusesSOExclusiveOps(t *testing.T) {
+	srv, _ := bindingServer(t, authtest.BindingTenantAdmin(), authmw.WithStrictSeparation(true))
+	for _, op := range []struct{ path, body string }{
+		{"/roles", `{"name":"reviewer","tenant_id":"` + authtest.BindingTenant + `","permissions":["kv:get"]}`},
+		{"/roles/reconcile", `{"tenant_id":"` + authtest.BindingTenant + `"}`},
+	} {
+		if rec := serve(srv, http.MethodPost, op.path, op.body); rec.Code != http.StatusForbidden {
+			t.Fatalf("POST %s with no SO enrolled = %d, want 403: %s", op.path, rec.Code, rec.Body.String())
+		}
+	}
+}
