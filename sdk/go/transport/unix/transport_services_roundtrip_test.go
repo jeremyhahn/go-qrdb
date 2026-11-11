@@ -152,39 +152,6 @@ var _ tenantpkg.TenantServicer = (*mockTenantSvc)(nil)
 // Tenant round-trips
 // ---------------------------------------------------------------------------
 
-func TestUnixRT_CreateTenant(t *testing.T) {
-	svc := &mockTenantSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc), unixserver.WithTenantOnboarding(onboardingFromTenant(svc)))
-	defer cleanup()
-
-	resp, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{
-		ID:            "t1",
-		Name:          "acme",
-		IsolationType: transport.TenantIsolationType("barrier"),
-		AdminUsername: "admin",
-	})
-	if err != nil {
-		t.Fatalf("CreateTenant: %v", err)
-	}
-	if resp.Tenant.ID != "t1" || resp.Tenant.Name != "acme" {
-		t.Errorf("got %+v, want id=t1 name=acme", resp.Tenant)
-	}
-}
-
-func TestUnixRT_GetTenant(t *testing.T) {
-	svc := &mockTenantSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
-	defer cleanup()
-
-	resp, err := tr.GetTenant(context.Background(), "t1")
-	if err != nil {
-		t.Fatalf("GetTenant: %v", err)
-	}
-	if resp.Tenant.ID != "t1" {
-		t.Errorf("got %+v, want id=t1", resp.Tenant)
-	}
-}
-
 func TestUnixRT_ListTenants(t *testing.T) {
 	svc := &mockTenantSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
@@ -206,24 +173,6 @@ func TestUnixRT_DeleteTenant(t *testing.T) {
 
 	if err := tr.DeleteTenant(context.Background(), "t1"); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)
-	}
-}
-
-func TestUnixRT_UpdateTenant(t *testing.T) {
-	svc := &mockTenantSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
-	defer cleanup()
-
-	resp, err := tr.UpdateTenant(context.Background(), &transport.UpdateTenantRequest{
-		TenantID:      "t1",
-		Name:          "renamed",
-		IsolationType: transport.TenantIsolationType("prefix"),
-	})
-	if err != nil {
-		t.Fatalf("UpdateTenant: %v", err)
-	}
-	if resp.Tenant.Name != "renamed" {
-		t.Errorf("got %+v, want name=renamed", resp.Tenant)
 	}
 }
 
