@@ -325,8 +325,8 @@ func TestHandler_NoPeerCert_SkipsRevocationCheck(t *testing.T) {
 	rec := httptest.NewRecorder()
 	recv.Handler()(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("no peer cert: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("no peer cert: status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 	if authority.lookups.Load() != 0 {
 		t.Errorf("revocation lookups = %d, want 0 (no certificate to ask about)", authority.lookups.Load())

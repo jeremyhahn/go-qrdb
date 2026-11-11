@@ -33,7 +33,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"sync/atomic"
 
 	"github.com/jeremyhahn/go-enclave"
 
@@ -69,7 +68,6 @@ type Receiver struct {
 	caPool            *x509.CertPool
 	deliveryCertPEM   []byte
 	logger            *slog.Logger
-	downgradeLogged   atomic.Bool
 
 	// revocation refuses a peer whose certificate has been revoked. This
 	// route is on the REST public allowlist, so it never runs the
@@ -109,10 +107,10 @@ var modeHandlers = map[keydelivery.Mode]modeImporter{
 	keydelivery.ModeSelfManaged: importSelfManaged,
 }
 
-// NewReceiver constructs a Receiver bound to this follower node. caPool may be
-// nil when the cluster runs without mutual TLS (dev mode); in that case the
-// HPKE recipient-binding and placement gate are the sole authZ mechanisms and
-// a SECURITY-DOWNGRADE warning is logged on the first unauthenticated request.
+// NewReceiver constructs a Receiver bound to this follower node. caPool is the
+// cluster CA every sender's node certificate must chain to; a Receiver built
+// with a nil caPool (a cluster without mutual TLS) refuses every delivery,
+// because HPKE base mode authenticates no sender.
 //
 // revocation is REQUIRED as a parameter and may be nil as a value. Nil means
 // revocation is not enforced here — the posture of a node with no certificate
@@ -172,8 +170,9 @@ func NewReceiver(
 // Handler returns an http.HandlerFunc for POST /v1/cluster/keydelivery.
 // It enforces the following in order:
 //
-//	a. Peer-cert chain verification against the cluster CA (when cert is
-//	   present); node SPIFFE SAN checked if present (best-effort); and the
+//	a. A client certificate is required (401 without one); it must chain to
+//	   the cluster CA (401) and carry a node SPIFFE SAN (401 without one, 403
+//	   for a malformed SAN or another trust domain); and the
 //	   certificate refused if it has been REVOKED (401) or if its revocation
 //	   status cannot be read (503) — see revocationRefusal.
 //	b. JSON-decode the keydelivery.Envelope (400 on malformed body).
@@ -190,7 +189,18 @@ func (r *Receiver) Handler() http.HandlerFunc {
 		ctx := req.Context()
 
 		// --- a: Peer-cert auth -------------------------------------------
-		if req.TLS != nil && len(req.TLS.PeerCertificates) > 0 {
+		// Only a cluster node delivers keys. HPKE base mode binds the
+		// envelope to this node's key but authenticates no sender, so the
+		// sender is authenticated here: a client certificate that chains to
+		// the cluster CA and names a node. The route is on the REST public
+		// allowlist, so a refusal answers as the unauthenticated 401 the
+		// authenticator chain would.
+		if req.TLS == nil || len(req.TLS.PeerCertificates) == 0 {
+			writeJSONError(w, http.StatusUnauthorized, "node client certificate required")
+			r.logger.Warn("clusterkeys: key delivery refused: no client certificate")
+			return
+		}
+		{
 			leaf := req.TLS.PeerCertificates[0]
 			if err := r.verifyCert(leaf); err != nil {
 				writeJSONError(w, http.StatusUnauthorized, "client certificate verification failed")
@@ -198,7 +208,13 @@ func (r *Receiver) Handler() http.HandlerFunc {
 					slog.String("error", err.Error()))
 				return
 			}
-			if err := r.checkNodeSAN(leaf); err != nil {
+			if err := r.checkNodeSAN(leaf); errors.Is(err, spiffe.ErrNoNodeSPIFFEID) {
+				// A certificate the cluster CA issued that names no node
+				// (an operator's or a tenant's) is not a node's.
+				writeJSONError(w, http.StatusUnauthorized, "node client certificate required")
+				r.logger.Warn("clusterkeys: key delivery refused: client certificate names no node")
+				return
+			} else if err != nil {
 				writeJSONError(w, http.StatusForbidden, "node identity mismatch")
 				r.logger.Warn("clusterkeys: node SAN mismatch",
 					slog.String("self", r.selfNodeID),
@@ -220,15 +236,11 @@ func (r *Receiver) Handler() http.HandlerFunc {
 					slog.String("error", rerr.Error()))
 				return
 			}
-		} else if r.downgradeLogged.CompareAndSwap(false, true) {
-			// No peer cert — SECURITY-DOWNGRADE: logged once.
-			r.logger.Warn("clusterkeys: SECURITY-DOWNGRADE: no peer certificate present; " +
-				"authorization relies on HPKE recipient-binding and placement gate only")
 		}
 
 		// --- b: decode envelope ------------------------------------------
-		// Bound the body: the endpoint is RBAC-exempt and (in no-mTLS mode)
-		// unauthenticated before this point, so an unbounded body is an OOM
+		// Bound the body: the endpoint is RBAC-exempt, so an unbounded body
+		// from even an authenticated peer is an OOM
 		// DoS vector. A delivery is a 32-byte key plus HPKE overhead or a small
 		// sealed blob — maxEnvelopeBytes is generous.
 		req.Body = http.MaxBytesReader(w, req.Body, maxEnvelopeBytes)
@@ -311,12 +323,11 @@ func (r *Receiver) NodeKeyHandler() http.HandlerFunc {
 	}
 }
 
-// verifyCert checks that cert chains to the cluster CA pool. When no CA pool
-// is configured (caPool == nil), the check is skipped and the caller relies
-// on HPKE recipient-binding and the placement gate.
+// verifyCert checks that cert chains to the cluster CA pool for client
+// authentication. With no CA pool configured it fails with ErrNoClusterCA.
 func (r *Receiver) verifyCert(cert *x509.Certificate) error {
 	if r.caPool == nil {
-		return nil
+		return ErrNoClusterCA
 	}
 	opts := x509.VerifyOptions{
 		Roots:     r.caPool,
@@ -332,16 +343,10 @@ func (r *Receiver) verifyCert(cert *x509.Certificate) error {
 // will always differ from r.selfNodeID. The HPKE recipient-binding and the
 // placement gate already enforce that only the correct target node can consume
 // the envelope; this check adds defence-in-depth by ensuring the sender is at
-// minimum a cluster peer (holds a CA-signed cert with a node SAN). When no
-// node SAN is present (ErrNoNodeSPIFFEID) the check is skipped for backward
-// compat with certs predating node-SAN issuance; HPKE + placement still hold.
+// minimum a cluster peer (holds a CA-signed cert with a node SAN). A certificate
+// with no node SAN fails with spiffe.ErrNoNodeSPIFFEID: it is not a node's.
 func (r *Receiver) checkNodeSAN(cert *x509.Certificate) error {
 	_, err := spiffe.NodeFromCert(cert, r.pinnedTrustDomain)
-	if errors.Is(err, spiffe.ErrNoNodeSPIFFEID) {
-		return nil // no node SAN — best-effort, proceed
-	}
-	// Any other error means the SAN is present but malformed or wrong trust
-	// domain. Return the error so the delivery is rejected.
 	return err
 }
 
