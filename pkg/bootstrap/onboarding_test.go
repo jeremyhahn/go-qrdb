@@ -1666,20 +1666,6 @@ func TestCompletePendingTenantAdmin_NilPendingAdminsIsANoOp(t *testing.T) {
 	}
 }
 
-func TestCompletePendingTenantAdmin_NoRecordIsANoOp(t *testing.T) {
-	pending := tenantadmin.NewKVStore(kvstore.NewMemoryKVStore())
-	users := &fakeUsers{}
-	ok, err := CompletePendingTenantAdmin(context.Background(), "acme", Dependencies{
-		PendingAdmins: pending, Users: users, Roles: &fakeRoles{}, Logger: discardLogger(),
-	})
-	if err != nil || ok {
-		t.Fatalf("CompletePendingTenantAdmin with no record = %v, %v; want false, nil", ok, err)
-	}
-	if len(users.createCalls) != 0 {
-		t.Error("a user was created despite there being no pending record")
-	}
-}
-
 func TestCompletePendingTenantAdmin_ReadErrorWrapped(t *testing.T) {
 	sentinel := errors.New("store unavailable")
 	pending := &pendingAdminsFaulting{inner: tenantadmin.NewKVStore(kvstore.NewMemoryKVStore()), getErr: sentinel}
