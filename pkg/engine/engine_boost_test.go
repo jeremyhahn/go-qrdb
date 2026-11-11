@@ -55,6 +55,26 @@ func TestKVEngine_DeleteWithIndexes_NoIndexes(t *testing.T) {
 	}
 }
 
+func TestKVEngine_Update_PutAndDelete(t *testing.T) {
+	stg := memory.NewStorage()
+	defer func() { _ = stg.Close() }()
+	eng := NewKVEngine(stg)
+
+	put, _ := kv.EncodePut([]byte("key1"), []byte("val1"))
+	del, _ := kv.EncodeDelete([]byte("key1"))
+	entries := []sm.Entry{
+		{Index: 1, Cmd: put},
+		{Index: 2, Cmd: del},
+	}
+	results := make([]sm.Result, 2)
+	if err := eng.Update(context.Background(), entries, results); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if results[0].Value == 0 {
+		t.Error("expected non-zero result value for put")
+	}
+}
+
 func TestKVEngine_PutWithIndexes_WithJSONAndIndex(t *testing.T) {
 	stg := memory.NewStorage()
 	defer func() { _ = stg.Close() }()
