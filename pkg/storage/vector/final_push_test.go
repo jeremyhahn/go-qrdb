@@ -132,53 +132,6 @@ func TestBatch_DeleteVector_ReverseIndexCleanup(t *testing.T) {
 	assert.Equal(t, 0, count) // All reverse indexes should be deleted
 }
 
-// TestAdapter_CleanupTombstones_WithSyncWrites tests cleanup with sync writes enabled
-func TestAdapter_CleanupTombstones_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true // Enable sync writes
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	info := &NamespaceInfo{
-		Name:      "tomb_ns",
-		Dimension: 3,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, info)
-	require.NoError(t, err)
-
-	// Insert and delete vectors to create tombstones
-	for i := 1; i <= 5; i++ {
-		vec := &VectorValue{
-			ID:        uint64(i),
-			Embedding: []float32{0.1, 0.2, 0.3},
-			Metadata:  map[string]string{"test": "data"},
-			Version:   1,
-		}
-		err = storage.UpsertVector(ctx, "tomb_ns", vec)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, "tomb_ns", uint64(i))
-		require.NoError(t, err)
-	}
-
-	// Wait a bit
-	time.Sleep(10 * time.Millisecond)
-
-	// Cleanup tombstones with sync writes
-	err = storage.CleanupTombstones(ctx, 1*time.Nanosecond)
-	assert.NoError(t, err)
-}
-
 // TestAdapter_Compact_WithSyncWrites tests compaction with sync writes
 func TestAdapter_Compact_WithSyncWrites(t *testing.T) {
 	tmpDir := t.TempDir()

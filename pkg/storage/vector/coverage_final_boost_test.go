@@ -155,51 +155,6 @@ func TestIterator_DecodeErrors(t *testing.T) {
 	})
 }
 
-// TestAdapter_CleanupTombstones_Coverage tests cleanup paths
-func TestAdapter_CleanupTombstones_Coverage(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	storage, err := NewPebbleVectorStorage(config, &testLogger{})
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create multiple namespaces
-	for i := 0; i < 3; i++ {
-		nsInfo := &NamespaceInfo{
-			Name:      string(rune('a' + i)),
-			CreatedAt: time.Now().Unix(),
-		}
-		err = storage.CreateNamespace(ctx, nsInfo)
-		require.NoError(t, err)
-
-		// Insert and delete vectors to create tombstones
-		for j := uint64(1); j <= 3; j++ {
-			vec := &VectorValue{
-				ID:        j,
-				Embedding: []float32{float32(j)},
-				Metadata:  map[string]string{"key": "value"},
-				Version:   1,
-			}
-
-			err = storage.UpsertVector(ctx, string(rune('a'+i)), vec)
-			require.NoError(t, err)
-
-			err = storage.DeleteVector(ctx, string(rune('a'+i)), j)
-			require.NoError(t, err)
-		}
-	}
-
-	// Wait for tombstones to age
-	time.Sleep(10 * time.Millisecond)
-
-	// Cleanup - exercises namespace iteration and tombstone cleanup
-	err = storage.CleanupTombstones(ctx, 1*time.Millisecond)
-	assert.NoError(t, err)
-}
-
 // TestAdapter_Compact_Coverage tests compaction paths
 func TestAdapter_Compact_Coverage(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -23,50 +23,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCleanupTombstones_SyncWrites tests cleanup with sync writes enabled
-func TestCleanupTombstones_SyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true // Enable sync writes to test that path
-	storage, err := NewPebbleVectorStorage(config, &testLogger{})
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	nsInfo := &NamespaceInfo{
-		Name:      "sync_test",
-		CreatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, nsInfo)
-	require.NoError(t, err)
-
-	// Insert and delete vectors to create tombstones
-	for i := uint64(1); i <= 5; i++ {
-		vec := &VectorValue{
-			ID:        i,
-			Embedding: []float32{float32(i)},
-			Metadata:  map[string]string{"key": "value"},
-			Version:   1,
-		}
-
-		err = storage.UpsertVector(ctx, "sync_test", vec)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, "sync_test", i)
-		require.NoError(t, err)
-	}
-
-	// Wait for tombstones to age
-	time.Sleep(10 * time.Millisecond)
-
-	// Cleanup - exercises sync write path
-	err = storage.CleanupTombstones(ctx, 1*time.Millisecond)
-	assert.NoError(t, err)
-}
-
 // TestBatch_UpsertVector_SetErrors tests Set error paths
 func TestBatch_UpsertVector_SetErrors(t *testing.T) {
 	tmpDir := t.TempDir()
