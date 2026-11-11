@@ -257,8 +257,9 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 }
 
 // TestSeparationPosture_EmbeddedStrictRequiresSO boots an embedded node
-// under strict separation with no system SO: first boot refuses it, typed,
-// before any write (#1128).
+// under strict separation with no system SO and an admin credential to
+// issue: first boot refuses it, typed, before any write (#1128). With no
+// admin credential either it defers the SO instead (#1129).
 func TestSeparationPosture_EmbeddedStrictRequiresSO(t *testing.T) {
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
@@ -275,6 +276,9 @@ func TestSeparationPosture_EmbeddedStrictRequiresSO(t *testing.T) {
 	_, err = n.FirstBoot(context.Background(), firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler), SeparationOfDuties: true,
+		// An admin credential to issue: without one a strict boot defers
+		// the SO instead of refusing (go-qrdb#1129).
+		AdminCSRPEM: []byte("admin CSR"),
 	})
 	var required *firstboot.SystemSORequiredError
 	if !errors.As(err, &required) {

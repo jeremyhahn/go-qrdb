@@ -78,6 +78,9 @@ func TestNode_FirstBoot_StrictNodeOverridesARelaxedCaller(t *testing.T) {
 	deps := firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
+		// An admin credential to issue: without one a strict boot defers
+		// the SO instead of refusing (go-qrdb#1129).
+		AdminCSRPEM: []byte("admin CSR"),
 	}
 	var required *firstboot.SystemSORequiredError
 	if _, err := n.FirstBoot(context.Background(), deps); !errors.As(err, &required) {
