@@ -237,22 +237,29 @@ the SPI.
 system tenant's.** `service.CredentialService` resolves the store from the
 caller's tenant on every call. The system tenant, and a caller with no tenant,
 gets the node-wide store. A tenant with a dedicated barrier gets a
-`barrier`-strategy store over that barrier, built by
-`credentials.CredentialService.ForBarrier`, which shares the node-wide store's
-audit logger. So a tenant's credential operations land in the same audit trail.
+`barrier`-strategy store over **the tenant's replicated home store**, which is
+the store of record: on a cluster a Raft group of the tenant's own, so a
+policy, value or rotation claim written through one node is the same record on
+every node. The store is built by `credentials.CredentialService.ForTenant`,
+which shares the node-wide store's audit logger. **The tenant barrier is read
+once, as the migration source:** records it holds under the old
+`credentials/` layout move into the home store (`MigrateLegacy`) before the
+first verb is served, once per barrier, and a failed migration refuses the
+verb. So a tenant's credential operations land in the same audit trail.
 The `credentials:*` permissions are tenant self-scope
 (`pkg/permission/self_scope.go`): a tenant administrator can grant them inside
 the tenant, and a grant never reaches another tenant's store or the platform's.
 A list returns the caller's tenant's names only, and a name may exist in many
 tenants with different values.
 
-A tenant's store is refused, never substituted, in three cases:
+A tenant's store is refused, never substituted, in four cases:
 
 | Tenant | Result |
 |---|---|
 | On the shared system barrier (`prefix` isolation) | `CapabilityUnsupportedError`: the tenant has no dedicated barrier to keep a credential store under |
 | With a dedicated barrier that is sealed | `BarrierSealedError` |
 | On a node with no barrier registry bound | `CapabilityUnsupportedError`: tenant credential stores are not bound |
+| On a node whose tenant home stores are not attached yet | `CapabilityUnsupportedError`: tenant home stores are not attached; the node-local barrier is never used as the store instead |
 
 **A tenant on the shared barrier is refused rather than given a key prefix
 inside the system store.** The system barrier has no per-tenant key namespace
