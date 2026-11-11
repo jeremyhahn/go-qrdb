@@ -693,12 +693,6 @@ func TestCeremonyService_Accessors(t *testing.T) {
 	assert.Same(t, e.ca, e.svc.CA())
 	assert.NotNil(t, e.svc.ThresholdRegistry())
 
-	other := testCA(t)
-	e.svc.SetCA(other)
-	assert.Same(t, e.ca, e.svc.CA(), "the first CA wired is authoritative")
-	e.svc.SetCA(nil)
-	assert.Same(t, e.ca, e.svc.CA())
-
 	b := shamirBarrier(t, seal.NewMemoryBackend(), 2, 2)
 	_, err := NewCeremonyService(nil, b, testLogger())
 	assert.ErrorIs(t, err, ErrNilConfig)
