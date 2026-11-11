@@ -19,13 +19,18 @@ package integration_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +39,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 )
 
 // s3Stub is an in-memory S3 endpoint, path-style or virtual-hosted (as the
@@ -122,6 +129,69 @@ func (s *s3Stub) objectBodies() map[string][]byte {
 		out[k] = append([]byte(nil), v...)
 	}
 	return out
+}
+
+// The commit journal pkg/storage/objstore keeps beside an S3 store's data:
+// journalName, its image journalMagic followed by records and a big-endian
+// CRC-32C of everything before it (journal.go). The local provider keeps its
+// journal in a sibling tree and clears it after every commit, so it cannot
+// be copied from a local store like the rest of the layout; these copies of
+// the unexported constants are checked by the node itself, which fails to
+// open a store whose journal it cannot read.
+const (
+	objstoreJournalName  = "qrdb-objstore-journal"
+	objstoreJournalMagic = "QRDBOJ1\x00"
+)
+
+// seedFormattedStore stores the objects of a formatted objstore store that
+// holds values, plus a commit journal with no records, so an opening engine
+// finds its format, the values, and nothing pending to recover. The layout
+// is the objstore engine's own: the values are written through a local
+// engine and its tree is copied object by object. It returns the names it
+// seeded.
+func (s *s3Stub) seedFormattedStore(t *testing.T, values map[string][]byte) []string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "bucket")
+	e, err := objstore.New("local", map[string]string{"path": root})
+	if err != nil {
+		t.Fatalf("seed: open a local objstore engine: %v", err)
+	}
+	for k, v := range values {
+		if err := e.Set([]byte(k), v); err != nil {
+			t.Fatalf("seed: set %q: %v", k, err)
+		}
+	}
+	if err := e.Close(); err != nil {
+		t.Fatalf("seed: close the local objstore engine: %v", err)
+	}
+	seeded := map[string][]byte{}
+	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		seeded[filepath.ToSlash(rel)] = body
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed: copy the local objstore tree: %v", err)
+	}
+	journal := []byte(objstoreJournalMagic)
+	seeded[objstoreJournalName] = binary.BigEndian.AppendUint32(journal, crc32.Checksum(journal, crc32.MakeTable(crc32.Castagnoli)))
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	names := make([]string, 0, len(seeded))
+	for name, body := range seeded {
+		s.objects[name] = body
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (s *s3Stub) fail(w http.ResponseWriter, status int, code, format string, args ...any) {
