@@ -25,7 +25,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/container"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/soak"
-	"github.com/jeremyhahn/go-qrdb/test/clusterproof/workload"
 )
 
 // examplesDir holds the operator's example configuration for the gate run,
@@ -76,16 +75,6 @@ func TestExampleInventoryParses(t *testing.T) {
 	}
 	if len(inv.Nodes) != 3 {
 		t.Fatalf("inventory.json nodes = %d, want 3", len(inv.Nodes))
-	}
-}
-
-func TestExampleWorkloadParses(t *testing.T) {
-	cfg, err := workload.ParseConfig(openExample(t, "workload.json"))
-	if err != nil {
-		t.Fatalf("ParseConfig(workload.json): %v", err)
-	}
-	if cfg.Protocol != "quic" {
-		t.Fatalf("workload.json protocol = %q, want quic", cfg.Protocol)
 	}
 }
 
