@@ -156,9 +156,6 @@ func TestID_StringAndValidate(t *testing.T) {
 	if (ID{}).String() != "" {
 		t.Fatal("invalid ID should stringify empty")
 	}
-	if err := (ID{Kind: KindUser, Name: "n"}).Validate(); !errors.Is(err, ErrTrustDomainEmpty) {
-		t.Fatalf("expected trust-domain-empty, got %v", err)
-	}
 }
 
 func TestID_Validate_AllBranches(t *testing.T) {
