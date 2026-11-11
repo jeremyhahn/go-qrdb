@@ -757,6 +757,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
+  reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
+  (2026-11-02). Every Go version pin moves to 1.27.4: the `go` directive of
+  all nine modules, `GO_VERSION` in the ci, release, nightly and batch
+  workflows (nightly and batch from 1.27.2), `scripts/tool-pins.sh`
+  `GO_IMAGE` (`golang:1.27.4-alpine3.24`, new index digest), the
+  `golang:1.27.4-bookworm` bases of the root, devcontainer and three
+  performance Dockerfiles, the GPU devcontainer's `GO_VERSION`, and the stub
+  `go.mod` directives the two Dockerfiles write.
+
 - **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
   `UpdateRole` are refused when the role would carry a permission the caller
   does not hold in the role's tenant, and assigning a custom role is refused

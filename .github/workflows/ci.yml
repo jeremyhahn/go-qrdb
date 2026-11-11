@@ -102,10 +102,10 @@ env:
   GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
   # DS-8233 (bigdisk): Go for the jobs that run natively on the self-hosted
   # pool (coverage-merge, test-clusterproof, coverage-fts). The toolchain
-  # image's Go: scripts/tool-pins.sh GO_IMAGE=golang:1.27.3-alpine3.24, which
+  # image's Go: scripts/tool-pins.sh GO_IMAGE=golang:1.27.4-alpine3.24, which
   # build/docker/devcontainer/Dockerfile takes as ARG GO_IMAGE. Keep the two
   # equal; an exact patch release, never "stable".
-  GO_VERSION: '1.27.3'
+  GO_VERSION: '1.27.4'
   # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
   # (push to main, schedule, workflow_dispatch on main), and a PR labelled
   # ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:` cannot read
