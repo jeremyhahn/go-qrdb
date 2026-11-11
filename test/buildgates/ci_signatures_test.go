@@ -118,7 +118,7 @@ func newSigFixture(t *testing.T) *sigFixture {
 
 func (f *sigFixture) run(dir, name string, args ...string) string {
 	f.t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec G204 -- name and args are this file's own fixture git and ssh-keygen commands
 	cmd.Dir = dir
 	cmd.Env = f.env
 	out, err := cmd.CombinedOutput()
@@ -324,6 +324,24 @@ func TestCISignatures(t *testing.T) {
 			want: "committed as GitHub but not verified (verified=false reason=unsigned committer=someone)",
 		},
 		{
+			name: "API says verified but the committer is not web-flow",
+			setup: func(f *sigFixture) sigRun {
+				base := sigBase(f)
+				head := f.commit(ghNR, "", "verified elsewhere", map[string]string{"a.txt": "1"})
+				return sigRun{base: base, head: head, api: map[string]string{head: webFlowJSON(true, "someone")}}
+			},
+			want: "committed as GitHub but not verified (verified=true reason=valid committer=someone)",
+		},
+		{
+			name: "web-flow committer but the API says unverified",
+			setup: func(f *sigFixture) sigRun {
+				base := sigBase(f)
+				head := f.commit(ghNR, "", "unverified web-flow", map[string]string{"a.txt": "1"})
+				return sigRun{base: base, head: head, api: map[string]string{head: webFlowJSON(false, "web-flow")}}
+			},
+			want: "committed as GitHub but not verified (verified=false reason=unsigned committer=web-flow)",
+		},
+		{
 			name: "API failure fails closed",
 			setup: func(f *sigFixture) sigRun {
 				base := sigBase(f)
@@ -355,7 +373,7 @@ func TestCISignatures(t *testing.T) {
 				t.Fatal(err)
 			}
 			// GitHub runs a run: step with no shell: key as bash -e {0}.
-			cmd := exec.Command("bash", "--noprofile", "--norc", "-e", scriptPath)
+			cmd := exec.Command("bash", "--noprofile", "--norc", "-e", scriptPath) // #nosec G204 -- the script is ci.yml's own signatures step, written to this test's temp dir
 			cmd.Dir = f.dir
 			cmd.Env = append(append([]string{}, f.env...),
 				"RUNNER_TEMP="+filepath.Join(f.root, "runner"),
