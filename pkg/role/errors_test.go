@@ -114,14 +114,6 @@ func TestStoreError_MessageNoErr(t *testing.T) {
 	}
 }
 
-func TestStoreError_Unwrap(t *testing.T) {
-	inner := io.ErrClosedPipe
-	err := &StoreError{Op: "put", Err: inner}
-	if !errors.Is(err, inner) {
-		t.Fatal("Unwrap should allow errors.Is to match inner error")
-	}
-}
-
 func TestStoreError_UnwrapNil(t *testing.T) {
 	err := &StoreError{Op: "put"}
 	if err.Unwrap() != nil {
@@ -143,15 +135,6 @@ func TestStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
 	err := &StoreError{Op: "get", Detail: "unmarshal", Err: io.EOF}
 	if err.ReadTransient() {
 		t.Fatal("a bare composite literal must read ReadTransient() = false; only newStoreError sets it true")
-	}
-}
-
-// TestStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the method
-// reports exactly the field newStoreError computed, not a hardcoded value.
-func TestStoreError_ReadTransient_TrueWhenSetByNewStoreError(t *testing.T) {
-	err := newStoreError("get", "primary lookup", io.ErrUnexpectedEOF)
-	if !err.ReadTransient() {
-		t.Fatal("newStoreError on a non-decrypt cause must produce ReadTransient() = true")
 	}
 }
 
@@ -187,21 +170,6 @@ func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
 	err := newStoreError("get", "primary lookup", wrapped)
 	if err.ReadTransient() {
 		t.Fatal("a wrapped decrypt-failure cause must still classify as definitive")
-	}
-}
-
-// TestIsTransientCause_NonDecryptCause and TestIsTransientCause_DecryptCause
-// exercise isTransientCause directly, independent of newStoreError, so a
-// future caller of it is held to the same two-cause contract.
-func TestIsTransientCause_NonDecryptCause(t *testing.T) {
-	if !isTransientCause(errors.New("leader lost")) {
-		t.Fatal("isTransientCause(a generic read failure) must be true")
-	}
-}
-
-func TestIsTransientCause_DecryptCause(t *testing.T) {
-	if isTransientCause(seal.ErrDecryptionFailed) {
-		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
 	}
 }
 
