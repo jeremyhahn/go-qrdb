@@ -16,6 +16,7 @@ package firstboot
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"testing"
 
@@ -190,4 +191,42 @@ func TestClearPendingSystemSOIfEnrolled_PINCheckerFaults(t *testing.T) {
 			assert.False(t, SystemSOConsumed(ctx, store))
 		})
 	}
+}
+
+func TestSOCertParsing_RejectsUnreadableInput(t *testing.T) {
+	notPEM := []byte("not pem")
+	badCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})
+	badCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("garbage")})
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{"cert check: no PEM block", func() error {
+			return checkSOCertLogsInAsUsername(&SOConfig{Username: "so", CertPEM: notPEM})
+		}},
+		{"cert check: bad DER", func() error {
+			return checkSOCertLogsInAsUsername(&SOConfig{Username: "so", CertPEM: badCert})
+		}},
+		{"thumbprint: no CSR block", func() error {
+			_, err := spkiThumbprintOf(notPEM, nil)
+			return err
+		}},
+		{"thumbprint: bad CSR DER", func() error {
+			_, err := spkiThumbprintOf(badCSR, nil)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Error(t, tt.run())
+		})
+	}
+	require.NoError(t, checkSOCertLogsInAsUsername(&SOConfig{Username: "so"}), "no certificate has nothing to check")
+}
+
+func TestIssueSOCert_RejectsAnUnusableTrustPool(t *testing.T) {
+	deps := Dependencies{SO: &SOConfig{Username: "so", CertPEM: []byte("cert"), PoolPEM: []byte("not a pool")}}
+	_, err := issueSOCert(context.Background(), deps, tenantid.System)
+	var rejected *AdminCertRejectedError
+	require.ErrorAs(t, err, &rejected)
 }
