@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
@@ -416,6 +417,31 @@ func TestCredentialService_RotateDueRotatesATenantsCredential(t *testing.T) {
 	got, err := f.svc.CredentialRotationPolicy(f.globex, "db-pass")
 	require.NoError(t, err)
 	assert.False(t, got.Policy.Enabled, "acme's policy reached globex's store")
+}
+
+// TestCredentialService_RotateDueAuditsTheTenant pins Codex P1-c on #1410:
+// the scheduler runs with no identity, so the rotation's audit event must
+// take its tenant from the tenant the scheduler binds, not come out empty
+// and land in the system trail.
+func TestCredentialService_RotateDueAuditsTheTenant(t *testing.T) {
+	trail := audit.NewRingBuffer(0)
+	f := newTenantCredentialFixture(t, credentials.WithAuditLogger(trail), credentials.WithRotationValueSource(
+		func(ctx context.Context, _ string) (*secure.Buffer, error) {
+			return secure.NewBufferFromBytes([]byte(tenant.FromContext(ctx) + "-rotated"))
+		}))
+	require.NoError(t, f.svc.CredentialStore(f.acme, "db-pass", []byte("acme-secret")))
+	policy := credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 1}
+	require.NoError(t, f.svc.CredentialSetRotationPolicy(f.acme, "db-pass", policy))
+	before := len(trail.Snapshot())
+
+	rotated, err := f.svc.(*CredentialService).CredentialRotateDue(context.Background(), time.Now().Add(2*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, 1, rotated)
+	events := trail.Snapshot()[before:]
+	require.NotEmpty(t, events, "the scheduled rotation emitted no audit event")
+	for _, ev := range events {
+		assert.Equal(t, "acme", ev.TenantID, "scheduled %s of %s audited without acme's tenant", ev.Action, ev.Resource)
+	}
 }
 
 // A sealed tenant's store is skipped, not reported: its policies fall due at
