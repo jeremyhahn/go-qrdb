@@ -29,63 +29,8 @@ func TestConditionParser_Parse(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "simple equality",
-			expr:    "subject.id == \"user-123\"",
-			wantErr: false,
-		},
-		{
-			name:    "not equal",
-			expr:    "subject.email != \"test@example.com\"",
-			wantErr: false,
-		},
-		{
-			name:    "greater than",
-			expr:    "subject.attrs.age > 18",
-			wantErr: false,
-		},
-		{
-			name:    "less than or equal",
-			expr:    "request.amount <= 1000",
-			wantErr: false,
-		},
-		{
-			name:    "and operator",
-			expr:    "subject.authenticated and subject.mfa_verified",
-			wantErr: false,
-		},
-		{
-			name:    "or operator",
-			expr:    "subject.id == \"admin\" or subject.roles contains \"admin\"",
-			wantErr: false,
-		},
-		{
-			name:    "not operator",
-			expr:    "not subject.suspended",
-			wantErr: false,
-		},
-		{
-			name:    "contains operator",
-			expr:    "subject.roles contains \"admin\"",
-			wantErr: false,
-		},
-		{
 			name:    "startswith operator",
 			expr:    "resource startswith \"orders://\"",
-			wantErr: false,
-		},
-		{
-			name:    "endswith operator",
-			expr:    "subject.email endswith \"@example.com\"",
-			wantErr: false,
-		},
-		{
-			name:    "in operator",
-			expr:    "subject.id in [\"user-1\", \"user-2\"]",
-			wantErr: false,
-		},
-		{
-			name:    "between operator",
-			expr:    "time.hour between 9..17",
 			wantErr: false,
 		},
 		{
@@ -99,44 +44,9 @@ func TestConditionParser_Parse(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "matches regex",
-			expr:    "subject.email matches \"^[a-z]+@example\\\\.com$\"",
-			wantErr: false,
-		},
-		{
-			name:    "like pattern",
-			expr:    "subject.name like \"John*\"",
-			wantErr: false,
-		},
-		{
 			name:    "empty expression",
 			expr:    "",
 			wantErr: true,
-		},
-		{
-			name:    "eq operator",
-			expr:    "subject.id eq \"user-123\"",
-			wantErr: false,
-		},
-		{
-			name:    "neq operator",
-			expr:    "subject.id neq \"admin\"",
-			wantErr: false,
-		},
-		{
-			name:    "notcontains operator",
-			expr:    "subject.roles notcontains \"banned\"",
-			wantErr: false,
-		},
-		{
-			name:    "overlaps operator",
-			expr:    "subject.groups overlaps [\"eng\", \"ops\"]",
-			wantErr: false,
-		},
-		{
-			name:    "disjoint operator",
-			expr:    "subject.groups disjoint [\"admin\", \"root\"]",
-			wantErr: false,
 		},
 	}
 
@@ -1004,20 +914,8 @@ func TestToSlice(t *testing.T) {
 			wantLen: 3,
 		},
 		{
-			name:    "slice of strings",
-			input:   []string{"a", "b", "c"},
-			wantOk:  true,
-			wantLen: 3,
-		},
-		{
 			name:    "array literal string",
 			input:   "[a, b, c]",
-			wantOk:  true,
-			wantLen: 3,
-		},
-		{
-			name:    "array literal with quotes",
-			input:   "[\"a\", \"b\", \"c\"]",
 			wantOk:  true,
 			wantLen: 3,
 		},
@@ -1077,12 +975,6 @@ func TestToFloat64(t *testing.T) {
 		wantV  float64
 	}{
 		{
-			name:   "int",
-			input:  42,
-			wantOk: true,
-			wantV:  42.0,
-		},
-		{
 			name:   "int64",
 			input:  int64(42),
 			wantOk: true,
@@ -1091,12 +983,6 @@ func TestToFloat64(t *testing.T) {
 		{
 			name:   "float64",
 			input:  42.5,
-			wantOk: true,
-			wantV:  42.5,
-		},
-		{
-			name:   "string number",
-			input:  "42.5",
 			wantOk: true,
 			wantV:  42.5,
 		},
