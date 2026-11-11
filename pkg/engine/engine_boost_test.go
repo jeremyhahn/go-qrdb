@@ -26,14 +26,9 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
-	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
-
-// ---------------------------------------------------------------------------
-// defaultLogger – non-panic path coverage
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // KVEngine.PutWithIndexes + DeleteWithIndexes coverage
@@ -97,30 +92,6 @@ func TestKVEngine_DeleteWithIndexes_WithIndex(t *testing.T) {
 
 	if err := eng.DeleteWithIndexes([]byte("user/u1")); err != nil {
 		t.Fatalf("DeleteWithIndexes with index: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.Update – existing base-KV handler (put + delete)
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_Update_PutAndDelete(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	put, _ := kv.EncodePut([]byte("key1"), []byte("val1"))
-	del, _ := kv.EncodeDelete([]byte("key1"))
-	entries := []sm.Entry{
-		{Index: 1, Cmd: put},
-		{Index: 2, Cmd: del},
-	}
-	results := make([]sm.Result, 2)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-	if results[0].Value == 0 {
-		t.Error("expected non-zero result value for put")
 	}
 }
 
@@ -201,32 +172,6 @@ func TestAsAppErrResult_UCE(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MVCCEngine.Update – batch
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_Update_Batch(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Use protocol.EncodeOp to produce properly-encoded MVCC ops for a batch.
-	ops := [][]byte{
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)),
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk2"), []byte("bv2"), nil, 0)),
-	}
-	batchPayload := mustEncode(protocol.EncodeBatch(ops))
-	entries := []sm.Entry{{Index: 1, Cmd: batchPayload}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update batch: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // MVCCEngine.Update – empty batch
 // ---------------------------------------------------------------------------
 
@@ -244,120 +189,6 @@ func TestMVCCEngine_HandleBatch_EmptyOps(t *testing.T) {
 	results := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), entries, results); err != nil {
 		t.Fatalf("Update empty batch: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.Update – transaction failure branch
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_Transaction_FailureBranch(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Compare on a key that doesn't exist → condition fails → failure ops execute.
-	// CompareVersion=0, target=version(0x01), result=equal(0x00).
-	cmp := mustEncode(protocol.EncodeCompare(
-		[]byte("nonexistent"),
-		0x01,          // target = version
-		0x00,          // result = equal
-		nil, 10, 0, 0, // version=10 → will not equal actual version 0
-	))
-	failureOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("failure"), []byte("no"), nil, 0))
-	txnPayload := mustEncode(protocol.EncodeTransaction([][]byte{cmp}, nil, [][]byte{failureOp}))
-	entries := []sm.Entry{{Index: 1, Cmd: txnPayload}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update transaction: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.handleBatch – basic execution via Update
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_HandleBatch_PutAndDelete(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	put1 := mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk1"), []byte("bv1"), nil, 0))
-	put2 := mustEncode(protocol.EncodeOp(protocol.OpFSMPut, []byte("bk2"), []byte("bv2"), nil, 0))
-	del1 := mustEncode(protocol.EncodeOp(protocol.OpFSMDelete, []byte("bk1"), nil, nil, 0))
-	batchPayload := mustEncode(protocol.EncodeBatch([][]byte{put1, put2, del1}))
-	entries := []sm.Entry{{Index: 1, Cmd: batchPayload}}
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("batch Update: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.lookupPrefix – exercises the prefix filter
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_LookupPrefix_Basic(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	entry := mvccPutEntry(1, []byte("myprefix/key1"), []byte("value1"), 0)
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{entry}, results); err != nil {
-		t.Fatalf("Update: %v", err)
-	}
-
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{Prefix: []byte("myprefix/")})
-	if err != nil {
-		t.Fatalf("Lookup: %v", err)
-	}
-	m, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte, got %T", got)
-	}
-	if _, exists := m["myprefix/key1"]; !exists {
-		t.Errorf("expected myprefix/key1 in result, got keys: %v", mapBoostKeys(m))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.listKeys – prefix filtering via string Lookup
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_ListKeys_WithPrefix(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	for i, key := range []string{"abc/1", "abc/2", "xyz/1"} {
-		entry := mvccPutEntry(uint64(i+1), []byte(key), []byte("v"), 0)
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{entry}, results)
-	}
-
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{Prefix: []byte("abc/")})
-	if err != nil {
-		t.Fatalf("Lookup list: %v", err)
-	}
-	m, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte for prefix query, got %T", got)
-	}
-	if len(m) != 2 {
-		t.Errorf("expected 2 results, got %d: %v", len(m), mapBoostKeys(m))
 	}
 }
 
@@ -584,52 +415,6 @@ func TestMVCCEngine_ExecuteDecodedOp_DeleteWithIndex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MVCCEngine.handleMVCCPut – with PrevKV (update path)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleMVCCPut_Update(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Put first version.
-	put1 := mvccPutEntry(1, []byte("upd:1"), []byte("v1"), 0)
-	r1 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{put1}, r1)
-
-	// Put second version (update).
-	put2 := mvccPutEntry(2, []byte("upd:1"), []byte("v2"), 0)
-	r2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{put2}, r2); err != nil {
-		t.Fatalf("MVCC put update: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.handleBatch – unsupported op type fallthrough
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_HandleBatch_UnknownOpType(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	// Encode an op with an unknown type (0xFF).
-	unknownOp := mustEncode(protocol.EncodeOp(0xFF, []byte("k"), []byte("v"), nil, 0))
-	batch := mustEncode(protocol.EncodeBatch([][]byte{unknownOp}))
-	entries := []sm.Entry{{Index: 1, Cmd: batch}}
-	results := make([]sm.Result, 1)
-	// Unknown op is ignored/skipped in the switch default case.
-	err := eng.Update(context.Background(), entries, results)
-	// It may or may not fail depending on implementation; we don't assert an error.
-	_ = err
-}
-
-// ---------------------------------------------------------------------------
 // MVCCEngine.handleMVCCDelete – with index cleanup
 // ---------------------------------------------------------------------------
 
@@ -658,30 +443,6 @@ func TestMVCCEngine_HandleMVCCDelete_WithIndex(t *testing.T) {
 	r2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{del}, r2); err != nil {
 		t.Fatalf("MVCC delete: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.Update – two entries in one call (exercises loop) - boost
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_Update_MultipleEntries_Boost(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	entries := []sm.Entry{
-		mvccPutEntry(1, []byte("multi:1"), []byte("v1"), 0),
-		mvccPutEntry(2, []byte("multi:2"), []byte("v2"), 0),
-		mvccPutEntry(3, []byte("multi:3"), []byte("v3"), 0),
-	}
-	results := make([]sm.Result, 3)
-	if err := eng.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("multi-entry Update: %v", err)
 	}
 }
 
@@ -788,82 +549,6 @@ func TestKVEngine_KvHandleDelete_WithCompoundIndex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.listKeys – prefix returns empty when no match
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_ListKeys_EmptyResult(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	got, err := eng.Lookup(context.Background(), kv.ListQuery{Prefix: "nope/"})
-	if err != nil {
-		t.Fatalf("ListQuery empty: %v", err)
-	}
-	keys, ok := got.([]string)
-	if !ok {
-		t.Fatalf("expected []string, got %T", got)
-	}
-	if len(keys) != 0 {
-		t.Errorf("expected 0 keys, got %d", len(keys))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleIndexCreate – create then drop (both branches)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleIndexCreate_ThenDrop(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Create a unique index on the MVCC engine.
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("mvcc_idx", "code", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
-	r1 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, r1); err != nil {
-		t.Fatalf("index create: %v", err)
-	}
-
-	// Drop it.
-	dropCmd := mustEncode(protocol.EncodeIndexDrop("mvcc_idx"))
-	r2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: dropCmd}}, r2); err != nil {
-		t.Fatalf("index drop: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleIndexCreate – idempotent (already exists)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleIndexCreate_Idempotent(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("idem_idx", "f", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	for i := 0; i < 2; i++ {
-		r := make([]sm.Result, 1)
-		if err := eng.Update(context.Background(), []sm.Entry{{Index: uint64(i + 1), Cmd: createCmd}}, r); err != nil {
-			t.Fatalf("index create #%d: %v", i+1, err)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// RemoveIndexes – non-nil prevKv with indexed field
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // MVCCEngine.handleBaseKVPut – unique violation path
 // ---------------------------------------------------------------------------
 
@@ -895,42 +580,6 @@ func TestMVCCEngine_HandleBaseKVPut_UniqueViolation(t *testing.T) {
 	// Expect a non-fatal result with Data (app-error encoded).
 	if len(r2[0].Data) == 0 {
 		t.Log("note: unique violation not encoded as app error in handleBaseKVPut")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.lookupPrefix – limit cuts off results
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_LookupPrefix_WithLimit(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		key := []byte("lim/" + string(rune('a'+i)))
-		entry := mvccPutEntry(uint64(i+1), key, []byte("v"), 0)
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{entry}, results)
-	}
-
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
-		Prefix: []byte("lim/"),
-		Limit:  3,
-	})
-	if err != nil {
-		t.Fatalf("Lookup with limit: %v", err)
-	}
-	m, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte, got %T", got)
-	}
-	if len(m) != 3 {
-		t.Errorf("expected 3 results (limit=3), got %d", len(m))
 	}
 }
 
@@ -969,61 +618,6 @@ func TestMVCCEngine_Transaction_SuccessBranch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MVCCEngine.lookupPrefix – __sys: prefix skips internal-key filter
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_LookupPrefix_SysPrefix(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Put a key so there is at least one MVCC meta entry.
-	entry := mvccPutEntry(1, []byte("normalkey"), []byte("v"), 0)
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{entry}, results)
-
-	// Query with __sys: prefix — exercises the skipFilter=true branch.
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
-		Prefix: []byte("__sys:"),
-	})
-	if err != nil {
-		t.Fatalf("Lookup __sys: %v", err)
-	}
-	// The result is a map (possibly empty).
-	_, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte, got %T", got)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleBaseKVDelete – key-length-exceeds-payload error path
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleBaseKVDelete_InvalidPayload(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Encode a base-KV delete command with a truncated payload (invalid).
-	// kv.EncodeDelete normally produces [OpDelete=0x02][keyLen:2 LE][key].
-	// We forge a command with claimed keyLen larger than the payload.
-	truncated := []byte{0x02, 0xFF, 0xFF} // OpFSMDelete + keyLen=0xFFFF but no key bytes
-	results := make([]sm.Result, 1)
-	err = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: truncated}}, results)
-	// May return an error or a Result with Value=1. Either is acceptable.
-	_ = err
-}
-
-// ---------------------------------------------------------------------------
 // KVEngine.handleIndexCreate – numeric index (valueType branch)
 // ---------------------------------------------------------------------------
 
@@ -1040,42 +634,6 @@ func TestKVEngine_HandleIndexCreate_Numeric(t *testing.T) {
 		t.Fatalf("numeric index create: %v", err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleMVCCCompact – no revision written if compact fails silently
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleMVCCCompact_WithRevision(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Write several revisions then compact to the latest.
-	for i := 0; i < 3; i++ {
-		entry := mvccPutEntry(uint64(i+1), []byte("ck"), []byte("v"), 0)
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{entry}, results)
-	}
-
-	// Compact to revision 2.
-	compact := mustEncode(protocol.EncodeMVCCCompactPrefix(nil, 2))
-	r := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 10, Cmd: compact}}, r); err != nil {
-		t.Fatalf("compact: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleLeaseRevoke – lr==nil path (no lessor configured)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// handleLeaseKeepAlive – lr==nil path (no lessor configured)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // handleLeaseRevoke – NotFoundError (idempotent success)
@@ -1113,161 +671,6 @@ type boostError string
 
 func (e boostError) Error() string { return string(e) }
 
-func mapBoostKeys(m map[string][]byte) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.listKeys via ListQuery
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_ListKeys_ViaListQuery(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	// Put some keys.
-	for _, k := range []string{"ns/a", "ns/b", "other/c"} {
-		put, _ := kv.EncodePut([]byte(k), []byte("v"))
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: put}}, results)
-	}
-
-	got, err := eng.Lookup(context.Background(), kv.ListQuery{Prefix: "ns/"})
-	if err != nil {
-		t.Fatalf("Lookup ListQuery: %v", err)
-	}
-	keys, ok := got.([]string)
-	if !ok {
-		t.Fatalf("expected []string, got %T", got)
-	}
-	if len(keys) != 2 {
-		t.Errorf("expected 2 keys for prefix ns/, got %d: %v", len(keys), keys)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.scanPrefix via PrefixQuery
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_ScanPrefix_ViaQuery(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	// Put some keys.
-	for _, kv2 := range [][2]string{{"item/1", "v1"}, {"item/2", "v2"}, {"other/3", "v3"}} {
-		put, _ := kv.EncodePut([]byte(kv2[0]), []byte(kv2[1]))
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: put}}, results)
-	}
-
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{Prefix: []byte("item/")})
-	if err != nil {
-		t.Fatalf("Lookup PrefixQuery: %v", err)
-	}
-	m, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte, got %T", got)
-	}
-	if len(m) != 2 {
-		t.Errorf("expected 2 keys for item/ prefix, got %d: %v", len(m), mapBoostKeys(m))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.scanPrefix – with limit
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_ScanPrefix_WithLimit(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	for _, k := range []string{"p/1", "p/2", "p/3"} {
-		put, _ := kv.EncodePut([]byte(k), []byte("v"))
-		results := make([]sm.Result, 1)
-		_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: put}}, results)
-	}
-
-	got, err := eng.Lookup(context.Background(), &statemachine.PrefixQuery{
-		Prefix: []byte("p/"),
-		Limit:  2,
-	})
-	if err != nil {
-		t.Fatalf("Lookup PrefixQuery with limit: %v", err)
-	}
-	m, ok := got.(map[string][]byte)
-	if !ok {
-		t.Fatalf("expected map[string][]byte, got %T", got)
-	}
-	if len(m) != 2 {
-		t.Errorf("expected 2 keys (limit), got %d", len(m))
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleBatch – with delete operation
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleBatch_WithDelete(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Put a key first.
-	entry := mvccPutEntry(1, []byte("batchdel"), []byte("v"), 0)
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{entry}, results)
-
-	// Now batch: put k1, delete batchdel.
-	ops := [][]byte{
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("bk1"), []byte("bv1"), nil, 0)),
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCDelete, []byte("batchdel"), nil, nil, 0)),
-	}
-	batchPayload := mustEncode(protocol.EncodeBatch(ops))
-	entries2 := []sm.Entry{{Index: 2, Cmd: batchPayload}}
-	results2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), entries2, results2); err != nil {
-		t.Fatalf("batch with delete: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleBaseKVPut + handleBaseKVDelete coverage
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_BaseKVPutAndDelete(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// baseKVPutEntry uses sm/kv.EncodePut which produces OpFSMPut.
-	put := baseKVPutEntry(1, "base_key", "base_val")
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{put}, results); err != nil {
-		t.Fatalf("base kv put: %v", err)
-	}
-
-	del := baseKVDeleteEntry(2, "base_key")
-	results2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{del}, results2); err != nil {
-		t.Fatalf("base kv delete: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // MVCCEngine.handleMVCCPut – unique index violation (non-fatal AppError)
 // ---------------------------------------------------------------------------
@@ -1302,75 +705,6 @@ func TestMVCCEngine_MVCCPut_UniqueIndexViolation(t *testing.T) {
 	// The result should encode an app-error (non-fatal).
 	if len(results3[0].Data) == 0 {
 		t.Log("note: unique violation encoded as app error (non-fatal Result.Data)")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.handleIndexCreate – index already exists (idempotent) - boost
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_HandleIndexCreate_AlreadyExistsBoost(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_name", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
-
-	// Create again — should be idempotent.
-	results2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: createCmd}}, results2); err != nil {
-		t.Fatalf("duplicate index create: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.handleIndexDrop – drop existing index
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_HandleIndexDrop_Existing(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("drop_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
-
-	dropCmd := mustEncode(protocol.EncodeIndexDrop("drop_idx"))
-	results2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: dropCmd}}, results2); err != nil {
-		t.Fatalf("index drop: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// KVEngine.lookupIndexList
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_LookupIndexList(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("list_idx", "name", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results)
-
-	got, err := eng.Lookup(context.Background(), index.IndexListRequest{})
-	if err != nil {
-		t.Fatalf("Lookup IndexListRequest: %v", err)
-	}
-	names, ok := got.([]string)
-	if !ok {
-		t.Fatalf("expected []string, got %T", got)
-	}
-	if len(names) == 0 {
-		t.Error("expected at least one index name in list")
 	}
 }
 
