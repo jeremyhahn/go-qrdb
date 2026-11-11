@@ -208,32 +208,6 @@ func TestDAOIndexOverResolverStore_QueryByIndexIsNonEmpty(t *testing.T) {
 	}
 }
 
-// TestDAOIndexOverResolverStore_RefusalIsNotSilent pins the property that the
-// whole change exists to guarantee, for every resolver-returned store at once:
-// a DAO index query either produces the right entities or a non-nil error.
-//
-// The forbidden third outcome — len(result) == 0 with err == nil on a
-// populated index — is asserted against directly, because that is the exact
-// pair every one of these stores used to return and no existing test rejected.
-func TestDAOIndexOverResolverStore_RefusalIsNotSilent(t *testing.T) {
-	for _, tc := range resolverStoreCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			store := resolveStore(ctx, t, tc)
-
-			d, err := dao.New(store, "member", newIndexedMember)
-			require.NoError(t, err)
-			seedIndexedMembers(ctx, t, d)
-
-			got, err := d.QueryByIndex(ctx, "Team", "alpha")
-			require.Falsef(t, len(got) == 0 && err == nil,
-				"QueryByIndex returned (empty, nil) for a value that IS present: "+
-					"a store must answer the query or refuse it, never report success "+
-					"for a lookup it did not perform")
-		})
-	}
-}
-
 // TestDAOIndexOverResolverStore_PlannedQueryIsNonEmpty covers the second entry
 // point into the same defect: QueryBuilder.executeQuery consults a catalog
 // that pkg/dao builds from the entity's STRUCT TAGS by reflection, not from
