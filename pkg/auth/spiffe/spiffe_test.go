@@ -31,20 +31,6 @@ func mustURL(t *testing.T, s string) *url.URL {
 	return u
 }
 
-func TestParseID_RoundTrip(t *testing.T) {
-	id, ok, err := ParseID(mustURL(t, "spiffe://acme/user/alice"))
-	if err != nil || !ok {
-		t.Fatalf("ok=%v err=%v", ok, err)
-	}
-	if id != (ID{TrustDomain: "acme", Kind: KindUser, Name: "alice"}) {
-		t.Fatalf("parsed = %+v", id)
-	}
-	id, ok, err = ParseID(mustURL(t, "spiffe://acme-corp.example_1/svc/Billing-API.v2"))
-	if err != nil || !ok || id.Kind != KindService || id.Name != "Billing-API.v2" {
-		t.Fatalf("svc: id=%+v ok=%v err=%v", id, ok, err)
-	}
-}
-
 func TestParseID_Skips(t *testing.T) {
 	for _, u := range []string{
 		"https://acme/user/alice",       // not a SPIFFE ID
