@@ -194,8 +194,9 @@ ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
 environment variable, which the steps it gates and `ci-gate` read; a job-level
 `if:` cannot read the environment, so each full-tier job repeats the
 expression. The nightly tier's condition is a scheduled run or a
-`workflow_dispatch`, and ci.yml carries the template's nightly `schedule:`
-(cron `0 4 * * *`): `soak` loops the `clustering` integration suite, a fresh
+`workflow_dispatch`, and ci.yml carries one weekly `schedule:` (cron
+`0 4 * * 0`, early Sunday UTC, this project's night in the factory's rotation,
+#1349): `soak` loops the `clustering` integration suite, a fresh
 stack each iteration, for 30 minutes and fails on the first red iteration.
 
 `ci-gate` is the one required check in every tier. It fails on any result
@@ -311,7 +312,8 @@ since the full tier's `make security` in `image` runs it already
 (ci-template v1.30). `make lint-sweeps`, `make vet-tags` and
 `make secure-analyzer` over every `SUPPORTED_TAG_SETS` combination, is the
 longest stage (about 45 minutes), so the `lint` job runs it on `ci.yml`'s
-nightly `schedule:` event alone, cron `0 4 * * *`, never on a pull request, a
+weekly `schedule:` event alone, cron `0 4 * * 0` (early Sunday UTC, this
+project's night in the factory's rotation, #1349), never on a pull request, a
 push or a dispatch (ci-template v1.30; the template's `nightly.yml` home for it
 would need a second schedule trigger, which ruling 216(1) forbids).
 Every job carries a `timeout-minutes` of at most 350, sized from four times
@@ -359,8 +361,9 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 `cancel-in-progress` expression spares `main`.
 `test/buildgates/ci_tiers_test.go` holds both values.
 
-`ci.yml` runs on ci-template v1.27.0's nightly `schedule:` (cron
-`0 4 * * *`), which selects the full and nightly tiers on main, soak included.
+`ci.yml` runs on ci-template v1.27.0's `schedule:` trigger, here a weekly
+scheduled run (cron `0 4 * * 0`, early Sunday UTC, this project's night in the
+factory's rotation, #1349), which selects the full and nightly tiers on main, soak included.
 It was restored under Company Agent ruling 216(1) (Software's typed order
 DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
 scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid

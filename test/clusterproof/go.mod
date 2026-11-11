@@ -13,7 +13,7 @@
 // harness proves the working tree rather than a published version of it.
 module github.com/jeremyhahn/go-qrdb/test/clusterproof
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/anishathalye/porcupine v1.3.1

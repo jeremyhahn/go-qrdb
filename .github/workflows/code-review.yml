@@ -1151,7 +1151,7 @@ jobs:
                 die "GET $1 did not answer a list"
               [[ $n =~ ^[0-9]+$ ]] || die "GET $1 page $page gave no count"
               [ "$n" -gt 0 ] || break
-              all=$(jq -c --argjson a "$all" '$a + .' <<<"$got")
+              all=$(printf '%s\n%s\n' "$all" "$got" | jq -cs add)
               page=$((page + 1))
             done
             printf '%s\n' "$all"
@@ -3289,7 +3289,7 @@ jobs:
                 die "GET $1 did not answer a list"
               [[ $n =~ ^[0-9]+$ ]] || die "GET $1 gave no count"
               [ "$n" -gt 0 ] || break
-              all=$(jq -c --argjson a "$all" '$a + .' <<<"$got") || exit 1
+              all=$(printf '%s\n%s\n' "$all" "$got" | jq -cs add) || exit 1
               page=$((page + 1))
             done
             printf '%s\n' "$all"

@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/sdk/go
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
