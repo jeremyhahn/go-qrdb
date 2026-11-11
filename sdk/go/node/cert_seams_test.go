@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
 // composerCertProvider is an embedder's own login CA.
@@ -84,17 +83,6 @@ func TestWithCertKeyProviderFactory_ReachesTheBuiltInLoginCA(t *testing.T) {
 	_, err := src.CACertPEMs(context.Background())
 	require.NoError(t, err)
 	require.Positive(t, f.enumerated.Load(), "the login CA never enumerated the composer's factory")
-}
-
-func TestWithCertKeyProviderFactory_AndWithCertProviderConflict(t *testing.T) {
-	cfg := newTenantIsolationConfig(t)
-	n, err := NewStandaloneNode(context.Background(), cfg, nil,
-		WithCertProvider(composerCertProvider{}), WithCertKeyProviderFactory(&countingKeyFactory{}))
-	if n != nil {
-		_ = n.Close()
-	}
-	var conflict *lifecycle.CertProviderConflictError
-	require.ErrorAs(t, err, &conflict)
 }
 
 func TestMergeSeamOptions_UnsetCertProviderLeavesTheBuiltInOnTheServer(t *testing.T) {

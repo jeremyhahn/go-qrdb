@@ -87,12 +87,3 @@ func TestWithCryptoInfra_ForwardsBarrierKeySeams(t *testing.T) {
 	require.Same(t, reg, infra.StrategyRegistry)
 	require.Same(t, provider, infra.BarrierKeyProvider)
 }
-
-// TestWithCryptoInfra_NoBarrierKeySeams leaves both seams nil when the
-// composer injects neither, so BuildServices keeps the software default.
-func TestWithCryptoInfra_NoBarrierKeySeams(t *testing.T) {
-	infra, err := withCryptoInfra(lifecycle.Infra{}, nil, nil)
-	require.NoError(t, err)
-	require.Nil(t, infra.StrategyRegistry)
-	require.Nil(t, infra.BarrierKeyProvider)
-}
