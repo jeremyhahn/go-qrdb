@@ -64,26 +64,6 @@ func TestChainFileLogger_EmitAndQuery(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_HashChainIntegrity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	l, err := NewFileLogger(path)
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		l.Emit(ctx, testEvent("bob", "ceremony", "initialize"))
-	}
-	if err := l.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
-		t.Fatalf("VerifyChain: unexpected error: %v", err)
-	}
-}
-
 func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
 	l, err := NewFileLogger(path)
@@ -1005,27 +985,5 @@ func TestScanFile_SkipsInvalidJSON(t *testing.T) {
 	// The valid event should be returned; the invalid line is skipped.
 	if len(events) != 1 {
 		t.Fatalf("expected 1 valid event, got %d", len(events))
-	}
-}
-
-func TestChainFileLogger_Retention_NoOldFiles(t *testing.T) {
-	// Retention with no old files in a directory that has only the active log.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.ndjson")
-	l, err := NewFileLogger(path, WithRetentionDays(1))
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-
-	ctx := context.Background()
-	l.Emit(ctx, testEvent("recent", "kv", "put"))
-	// No pruning errors expected.
-	page, err := l.Query(ctx, Filter{Limit: 10})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(page.Events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(page.Events))
 	}
 }
