@@ -96,10 +96,12 @@ reconciled independently, the system tenant first. A sealed tenant is skipped
 with reason `sealed`, a tenant that refuses the call with reason `refused`. A
 tenant that fails is reported in `failed` and the pass continues, so the call
 itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
-which only the system tenant's built-in Admin and SO roles hold. A caller bound
-to any other tenant is refused with 403 / `PermissionDenied`. Under strict
-separation of duties both reconciles run only as the system SO, which first
-boot enrols, and the system Admin is refused with 403 / `PermissionDenied`. A node without a tenant service
+which only the system tenant's built-in Admin role holds, in both separation
+postures. A caller bound to any other tenant, and the system SO, is refused
+with 403 / `PermissionDenied`. Under strict separation of duties the
+single-tenant reconcile runs only as an SO, and the system Admin is refused it
+with 403 / `PermissionDenied`; the all-tenants reconcile stays the system
+Admin's. A node without a tenant service
 answers 501 / `Unimplemented`, and its MCP server does not list the tool. QUIC
 carries the request and response as protobuf
 (`ReconcileBuiltInRolesAllTenantsResponse`).

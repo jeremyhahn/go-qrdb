@@ -211,8 +211,10 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 
 // TestSeparationPosture_CLI_SystemSO_PerProtocol drives the system SO a
 // strict node's ceremony enrolled (#1128) over every transport: it creates
-// a system role and runs the system tenant's and the all-tenants built-in
-// role reconcile, each of which strict separation refuses the system Admin.
+// a system role and runs the system tenant's built-in role reconcile, each
+// of which strict separation refuses the system Admin, and proves the
+// all-tenants reconcile (roles:reconcile_all) Admin-only: the system Admin
+// runs it and the system SO is refused.
 func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 	t.Parallel()
 	n := startStrictSeparationNode(t)
@@ -223,34 +225,46 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 		t.Run(proto.name, func(t *testing.T) {
 			pt := createPostureTenant(t, n, proto, "sso", false)
 			soConn := tenantCLIArgsForProto(n, proto, n.systemSOCert, n.systemSOKey)
-			ops := func(caller string) map[string][]string {
-				return map[string][]string{
-					"roles create": {"roles", "create", "--name", pt.id + "-" + caller + "-sysauditor",
-						"--permissions", "audit:read", "--tenant-id", "system"},
-					// The per-tenant reconcile is the caller's own tenant's;
-					// the all-tenants pass reaches pt's.
-					"roles reconcile --tenant":      {"roles", "reconcile", "--tenant", "system"},
-					"roles reconcile --all-tenants": {"roles", "reconcile", "--all-tenants"},
-				}
-			}
-			for name, args := range ops("admin") {
-				out, err := runCLIProto(t, n, proto, args...)
+			denied := func(caller, name, out string, err error) {
+				t.Helper()
 				if err == nil {
-					t.Fatalf("[%s] strict separation: %s ran as the system Admin: %s", proto.name, name, out)
+					t.Fatalf("[%s] strict separation: %s ran as the system %s: %s", proto.name, name, caller, out)
 				}
 				lower := strings.ToLower(out)
 				if !strings.Contains(lower, "separation of duties") &&
 					!strings.Contains(lower, "so role required") &&
 					!strings.Contains(lower, "permission denied") &&
 					!strings.Contains(lower, "forbidden") {
-					t.Fatalf("[%s] %s as the system Admin must be refused as a permission denial, got: %s", proto.name, name, out)
+					t.Fatalf("[%s] %s as the system %s must be refused as a permission denial, got: %s", proto.name, name, caller, out)
 				}
+			}
+			ops := func(caller string) map[string][]string {
+				return map[string][]string{
+					"roles create": {"roles", "create", "--name", pt.id + "-" + caller + "-sysauditor",
+						"--permissions", "audit:read", "--tenant-id", "system"},
+					// The per-tenant reconcile is the caller's own tenant's.
+					"roles reconcile --tenant": {"roles", "reconcile", "--tenant", "system"},
+				}
+			}
+			for name, args := range ops("admin") {
+				out, err := runCLIProto(t, n, proto, args...)
+				denied("Admin", name, out, err)
 			}
 			for name, args := range ops("so") {
 				if out, err := runQRDB(t, n.cli, soConn, args...); err != nil {
 					t.Fatalf("[%s] %s as the system SO: %v\noutput: %s", proto.name, name, err, out)
 				}
 			}
+
+			// roles:reconcile_all is Admin-only in both postures
+			// (docs/SPEC.md): the all-tenants pass, which reaches pt's,
+			// runs as the system Admin and is refused the system SO.
+			allTenants := []string{"roles", "reconcile", "--all-tenants"}
+			if out, err := runCLIProto(t, n, proto, allTenants...); err != nil {
+				t.Fatalf("[%s] roles reconcile --all-tenants as the system Admin: %v\noutput: %s", proto.name, err, out)
+			}
+			out, err := runQRDB(t, n.cli, soConn, allTenants...)
+			denied("SO", "roles reconcile --all-tenants", out, err)
 		})
 	}
 }
