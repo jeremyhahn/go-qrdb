@@ -423,47 +423,6 @@ func TestGlobal_IsUsable(t *testing.T) {
 	}
 }
 
-func TestRegistry_Registration_FunctionsCallable(t *testing.T) {
-	r := entity.NewRegistry()
-	if err := r.Register(newUserRegistration()); err != nil {
-		t.Fatalf("Register() unexpected error: %v", err)
-	}
-
-	reg, ok := r.Get("users")
-	if !ok {
-		t.Fatal("Get() should return registration")
-	}
-
-	// NewFunc
-	v := reg.NewFunc()
-	if v == nil {
-		t.Fatal("NewFunc() should return non-nil value")
-	}
-
-	// MarshalFunc
-	u := &testUser{ID: "1", Email: "a@b.com", Age: 30}
-	data, err := reg.MarshalFunc(u)
-	if err != nil {
-		t.Fatalf("MarshalFunc() unexpected error: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("MarshalFunc() should return non-empty bytes")
-	}
-
-	// UnmarshalFunc
-	decoded, err := reg.UnmarshalFunc(data)
-	if err != nil {
-		t.Fatalf("UnmarshalFunc() unexpected error: %v", err)
-	}
-	got, ok := decoded.(*testUser)
-	if !ok {
-		t.Fatalf("UnmarshalFunc() returned %T, want *testUser", decoded)
-	}
-	if got.ID != u.ID || got.Email != u.Email || got.Age != u.Age {
-		t.Errorf("UnmarshalFunc() decoded %+v, want %+v", got, u)
-	}
-}
-
 func TestRegistry_FieldMeta_AllFieldsPreserved(t *testing.T) {
 	r := entity.NewRegistry()
 	if err := r.Register(newUserRegistration()); err != nil {

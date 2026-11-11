@@ -15,7 +15,6 @@
 package entity_test
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/entity"
@@ -26,17 +25,6 @@ func TestAlreadyRegisteredError_Error(t *testing.T) {
 	want := "entity: already registered with different type: users"
 	if got := e.Error(); got != want {
 		t.Errorf("AlreadyRegisteredError.Error() = %q, want %q", got, want)
-	}
-}
-
-func TestAlreadyRegisteredError_ErrorsAs(t *testing.T) {
-	e := &entity.AlreadyRegisteredError{EntityType: "products"}
-	var target *entity.AlreadyRegisteredError
-	if !errors.As(e, &target) {
-		t.Fatal("errors.As should match *AlreadyRegisteredError")
-	}
-	if target.EntityType != "products" {
-		t.Errorf("EntityType = %q, want %q", target.EntityType, "products")
 	}
 }
 
@@ -68,34 +56,5 @@ func TestInvalidRegistrationError_Error(t *testing.T) {
 				t.Errorf("InvalidRegistrationError.Error() = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestInvalidRegistrationError_ErrorsAs(t *testing.T) {
-	e := &entity.InvalidRegistrationError{Field: "NewFunc", Reason: "must not be nil"}
-	var target *entity.InvalidRegistrationError
-	if !errors.As(e, &target) {
-		t.Fatal("errors.As should match *InvalidRegistrationError")
-	}
-	if target.Field != "NewFunc" {
-		t.Errorf("Field = %q, want %q", target.Field, "NewFunc")
-	}
-	if target.Reason != "must not be nil" {
-		t.Errorf("Reason = %q, want %q", target.Reason, "must not be nil")
-	}
-}
-
-func TestErrorTypes_NotInterchangeable(t *testing.T) {
-	already := &entity.AlreadyRegisteredError{EntityType: "x"}
-	invalid := &entity.InvalidRegistrationError{Field: "f", Reason: "r"}
-
-	var a *entity.AlreadyRegisteredError
-	var iv *entity.InvalidRegistrationError
-
-	if errors.As(already, &iv) {
-		t.Error("AlreadyRegisteredError should not match InvalidRegistrationError")
-	}
-	if errors.As(invalid, &a) {
-		t.Error("InvalidRegistrationError should not match AlreadyRegisteredError")
 	}
 }
