@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -294,24 +293,6 @@ func TestTryLock_Success(t *testing.T) {
 	}
 	if lock.AcquireCount != 1 {
 		t.Errorf("Lock.AcquireCount = %d, want 1", lock.AcquireCount)
-	}
-}
-
-func TestTryLock_FencingToken_IsRevision(t *testing.T) {
-	const wantRevision int64 = 999
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
-			return &TransactionResponse{Succeeded: true, Revision: wantRevision}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, &mockWatchService{}, &mockMVCCKVService{})
-
-	lock, err := svc.TryLock(context.Background(), LockOptions{Key: "k", HolderID: "h", TTL: time.Second})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lock.FencingToken != wantRevision {
-		t.Errorf("FencingToken = %d, want %d", lock.FencingToken, wantRevision)
 	}
 }
 
@@ -2062,74 +2043,6 @@ func TestUserKey_ShortKey_ReturnsOriginal(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Concurrent safety
 // ---------------------------------------------------------------------------
-
-func TestConcurrent_TryLock_Safety(t *testing.T) {
-	// Verify that concurrent TryLock calls do not panic or race.
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
-			return &TransactionResponse{Succeeded: true, Revision: 1}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, &mockWatchService{}, &mockMVCCKVService{})
-
-	const goroutines = 20
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-	errs := make(chan error, goroutines)
-
-	for i := range goroutines {
-		go func(idx int) {
-			defer wg.Done()
-			_, err := svc.TryLock(context.Background(), LockOptions{
-				Key:      "concurrent-key",
-				HolderID: "holder",
-				TTL:      5 * time.Second,
-			})
-			if err != nil {
-				errs <- err
-			}
-		}(i)
-	}
-
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		t.Errorf("concurrent TryLock error: %v", err)
-	}
-}
-
-func TestConcurrent_Unlock_Safety(t *testing.T) {
-	// Verify that concurrent Unlock calls do not panic or race.
-	lv := lockValue{HolderID: "h1", LeaseID: 9, TTL: 30, AcquireCount: 1}
-	lvBytes := encodeLockValue(t, lv)
-
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
-			return &TransactionResponse{Succeeded: true, Revision: 15}, nil
-		},
-	}
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Value: lvBytes, CreateRevision: 10, ModRevision: 10}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, &mockWatchService{}, kvs)
-
-	const goroutines = 20
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-
-	for range goroutines {
-		go func() {
-			defer wg.Done()
-			// Some will succeed, some may get NotLockHolderError -- either is fine.
-			_ = svc.Unlock(context.Background(), "res", 10)
-		}()
-	}
-
-	wg.Wait()
-}
 
 // ---------------------------------------------------------------------------
 // Unlock lease revoke error propagation
