@@ -13,6 +13,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **CI verifies commit signatures.** A Signatures job from ci-template
+  v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
+  and CI Gate requires it.
+
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
