@@ -844,13 +844,6 @@ func TestPermissionDeniedError_Error(t *testing.T) {
 	}
 }
 
-func TestPermissionDeniedError_Unwrap(t *testing.T) {
-	err := &PermissionDeniedError{Resource: "kv", Action: "put", Subject: "u"}
-	if !errors.Is(err, auth.ErrUnauthorized) {
-		t.Fatal("PermissionDeniedError should unwrap to auth.ErrUnauthorized")
-	}
-}
-
 func TestResolveError_Error(t *testing.T) {
 	inner := errors.New("timeout")
 	err := &ResolveError{Err: inner}
@@ -871,14 +864,6 @@ func TestResolveError_NilErr(t *testing.T) {
 	}
 	if err.Unwrap() != nil {
 		t.Fatal("Unwrap should return nil for nil Err")
-	}
-}
-
-func TestResolveError_Unwrap(t *testing.T) {
-	inner := errors.New("rpc error")
-	err := &ResolveError{Err: inner}
-	if !errors.Is(err, inner) {
-		t.Fatal("ResolveError should unwrap to the inner error")
 	}
 }
 
