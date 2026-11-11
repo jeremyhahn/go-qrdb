@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -229,4 +230,66 @@ func TestMigrateLegacy_SettleClaimFaults(t *testing.T) {
 			assert.Len(t, legacyKeys(t, legacy), 3)
 		})
 	}
+}
+
+// While the legacy copy cannot be migrated, every verb is refused with the
+// migration's failure, so none reads or writes a store that may still lack
+// the legacy records; once the legacy store answers, each verb works.
+func TestMigrateLegacy_FailingMigrationRefusesEveryVerb(t *testing.T) {
+	ctx := context.Background()
+	legacy := &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	writeLegacy(t, legacy.MemoryBackend, "db", "v2", "v1", nil)
+	arm(&legacy.failList, legacyCredentialPrefix)
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, seal.NewMemoryBackend()))
+
+	verbs := map[string]func() error{
+		"list": func() error { _, err := svc.ListCredentials(ctx); return err },
+		"rotate": func() error {
+			_, err := svc.RotateCredential(ctx, "db", RotateOptions{NewValue: []byte("v3")})
+			return err
+		},
+		"version":      func() error { _, err := svc.RetrieveCredentialVersionBuffer(ctx, "db", 1); return err },
+		"versions":     func() error { _, err := svc.ListCredentialVersions(ctx, "db"); return err },
+		"gc":           func() error { _, err := svc.GCExpiredVersions(ctx, "db"); return err },
+		"store":        func() error { return svc.StoreCredential(ctx, "db", []byte("v3")) },
+		"delete":       func() error { return svc.DeleteCredential(ctx, "db") },
+		"set policy":   func() error { return svc.SetRotationPolicy(ctx, "db", *testPolicy) },
+		"policy":       func() error { _, err := svc.RotationPolicy(ctx, "db"); return err },
+		"nextRotation": func() error { _, err := svc.NextRotation(ctx, "db"); return err },
+	}
+	for name, verb := range verbs {
+		err := verb()
+		requireOperationError(t, err, "migrate")
+		assert.ErrorIs(t, err, errInjectedFault, name)
+	}
+	assert.Len(t, legacyKeys(t, legacy.MemoryBackend), 3, "the legacy copy is kept")
+
+	disarmAll(legacy)
+	names, err := svc.ListCredentials(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"db"}, names)
+	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+	require.NoError(t, svc.SetRotationPolicy(ctx, "db", *testPolicy))
+	got, err := svc.RotationPolicy(ctx, "db")
+	require.NoError(t, err)
+	assert.Equal(t, *testPolicy, got)
+}
+
+// A migration retried under a caller's context that has ended reports the
+// context's error beside the storage failure it met.
+func TestEnsureMigrated_EndedContextJoinedToFailure(t *testing.T) {
+	legacy := &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	writeLegacy(t, legacy.MemoryBackend, "db", "v2", "v1", nil)
+	arm(&legacy.failList, legacyCredentialPrefix)
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(context.Background(), seal.NewMemoryBackend()))
+	svc.rotationAttemptTimeout = time.Minute
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := svc.ListCredentials(ctx)
+	requireOperationError(t, err, "migrate")
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.ErrorIs(t, err, errInjectedFault)
 }
