@@ -15,6 +15,9 @@
 //     main and a same-repository pull request, ubuntu-latest otherwise;
 //   - one of those jobs has a container, a service or a Docker step the
 //     pool could reach, or its workflow triggers on pull_request_target;
+//   - ci.yml's bigdiskJob, the one other job that may leave the hosted
+//     runner, names anything but bigdiskRunsOn (Company Agent m2396), leaves
+//     a credential in its checkout or runs an apt install on the pool;
 //   - an `if:` still splits on github.server_url, outside the jobs that speak
 //     the Gitea API (giteaOnlyJobs) and batch.yml, whose splits are left to
 //     their owner;
@@ -52,7 +55,7 @@ const (
 	// bigdiskLabel is the self-hosted pool's label (DS-8233): no Docker
 	// daemon, so only a job that needs none may reach it.
 	bigdiskLabel = "bigdisk"
-	// bigdiskRunner is the one other runs-on, and only a bigdiskJobs job may
+	// bigdiskRunner is the bigdiskJobs runs-on, and only a bigdiskJobs job may
 	// carry it, character for character: the pool for a push to main and for
 	// a pull request whose head is this repository, the hosted runner for
 	// everything else (a fork's pull request never reaches the pool).
@@ -60,6 +63,13 @@ const (
 	// hostedStepTerm is the conjunct a Docker step of a bigdiskJobs job
 	// carries in its `if:`, so the step never runs on the pool.
 	hostedStepTerm = "runner.environment == 'github-hosted'"
+	// bigdiskJob is the one ci.yml job that may leave the hosted runner: it
+	// uses no Docker, so the owner moved it to the returned worker node
+	// (Company Agent m2396, 2026-11-10).
+	bigdiskJob = "test-typescript"
+	// bigdiskRunsOn is bigdiskJob's runs-on: the bigdisk runner on a push and
+	// on a pull_request from this repository, ubuntu-latest on anything else.
+	bigdiskRunsOn = `${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}`
 	// ciPublishExpr is when a run publishes: a push to main, and nothing else.
 	ciPublishExpr = "${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}"
 	// cachePublishTerm is the conjunct every cache save's `if:` carries.
@@ -79,15 +89,25 @@ const (
 var selfHostedWorkflows = map[string]bool{"code-review.yml": true}
 
 // bigdiskJobs are the Docker-free jobs that may carry bigdiskRunner (DS-8233),
-// by workflow and job. Each runs its make target natively on the pool; a job
-// that needs Docker stays on the hosted runner and is never listed here.
+// by workflow and job. Each runs its make target natively on the pool, or, for
+// preflight and ci-gate (m2479), needs no toolchain at all; a job that needs
+// Docker stays on the hosted runner and is never listed here.
 var bigdiskJobs = map[string]map[string]bool{
-	"ci.yml": {"coverage-merge": true, "test-clusterproof": true, "coverage-fts": true},
+	"ci.yml": {
+		"preflight":         true,
+		"coverage-merge":    true,
+		"test-clusterproof": true,
+		"coverage-fts":      true,
+		"ci-gate":           true,
+	},
 }
 
-// dockerStep matches a step that needs a Docker daemon: the docker CLI, a
-// docker/* action, or the toolchain-image wrapper.
-var dockerStep = regexp.MustCompile(`\bdocker\b|in-toolchain-image\.sh`)
+// dockerStep matches a step that needs Docker: the docker or docker-compose
+// CLI, a docker/* action, a make target named docker-*, or the image wrappers
+// (scripts/in-toolchain-image.sh, scripts/ci-image.sh). A job name such as
+// docker-build, which ci-gate reads the result of, is not a Docker use, so
+// the CLI matches only as a command word.
+var dockerStep = regexp.MustCompile(`(^|[^\w.-])docker(-compose)?(\s|$)|(^|[^\w.-])docker/|\bmake\b[^\n]*[\s'"]docker-|in-toolchain-image\.sh|ci-image\.sh`)
 
 // giteaOnlyJobs speak the Gitea API (its issue queue, its merge endpoint) and
 // so do not run on github.com: the server_url guard is what keeps them off.
@@ -121,6 +141,7 @@ type runnerStep struct {
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
 	Env  map[string]string `yaml:"env"`
+	With map[string]string `yaml:"with"`
 }
 
 type runnerJob struct {
@@ -199,6 +220,7 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 	for _, name := range names {
 		job := wf.Jobs[name]
 		jobs++
+		bigdisk := file == "ci.yml" && name == bigdiskJob
 		switch {
 		case job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == hostedRunner:
 		case allowed[name] && job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == bigdiskRunner:
@@ -207,6 +229,12 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 			}
 		case allowed[name]:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" or exactly the DS-8233 expression (bigdiskRunner)")
+		case bigdisk && job.RunsOn.Kind == yaml.ScalarNode && job.RunsOn.Value == bigdiskRunsOn:
+			for _, p := range bigdiskProblems(job, wf) {
+				add("job " + name + " may run on the self-hosted pool (m2396), and " + p)
+			}
+		case bigdisk:
+			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner+" or bigdiskRunsOn")
 		default:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner)
 		}
@@ -502,6 +530,177 @@ func TestRunnerProblems_Exemptions(t *testing.T) {
 	}
 }
 
+// TestRunnerProblems_BigdiskJob holds the bigdisk exception to its one job in
+// its one workflow, and to its one expression, character for character.
+func TestRunnerProblems_BigdiskJob(t *testing.T) {
+	withJob := func(job, runsOn string) string {
+		return strings.Replace(runnerFixture, "  legs:\n", "  "+job+":\n    runs-on: "+runsOn+"\n    timeout-minutes: 30\n    steps:\n      - run: make "+job+"\n  legs:\n", 1)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, bigdiskRunsOn))); len(p) != 0 {
+		t.Errorf("ci.yml's %s may run on bigdiskRunsOn, got %v", bigdiskJob, p)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, hostedRunner))); len(p) != 0 {
+		t.Errorf("ci.yml's %s may run on %s, got %v", bigdiskJob, hostedRunner, p)
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob("test-sdk", bigdiskRunsOn))); len(p) == 0 {
+		t.Error("bigdiskRunsOn on another ci.yml job passed; the exception is " + bigdiskJob + "'s alone")
+	}
+	if p, _ := runnerProblems("nightly.yml", []byte(withJob(bigdiskJob, bigdiskRunsOn))); len(p) == 0 {
+		t.Error("bigdiskRunsOn in nightly.yml passed; the exception is ci.yml's alone")
+	}
+	if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, "bigdisk"))); len(p) == 0 {
+		t.Error("the bare bigdisk label on " + bigdiskJob + " passed")
+	}
+	for i := range len(bigdiskRunsOn) {
+		c := byte('x')
+		if bigdiskRunsOn[i] == c {
+			c = 'y'
+		}
+		changed := bigdiskRunsOn[:i] + string(c) + bigdiskRunsOn[i+1:]
+		if p, _ := runnerProblems("ci.yml", []byte(withJob(bigdiskJob, changed))); len(p) == 0 {
+			t.Errorf("%s's runs-on %q, one character off bigdiskRunsOn, passed", bigdiskJob, changed)
+		}
+	}
+}
+
+// bigdiskStepProblems reports what in bigdiskJob's steps is unsafe on a
+// runner that outlives the job and forbids sudo: a checkout that leaves the
+// workflow token in the checkout's git config, and a `make test-typescript`
+// that does not clear PLAYWRIGHT_INSTALL_FLAGS off the hosted runner (the
+// Makefile's default, `--with-deps`, installs apt packages through sudo).
+func bigdiskStepProblems(job runnerJob) []string {
+	var problems []string
+	guarded := false
+	for i, s := range job.Steps {
+		if strings.HasPrefix(s.Uses, "actions/checkout@") && s.With["persist-credentials"] != "false" {
+			problems = append(problems, bigdiskJob+": step "+strconv.Itoa(i)+" checks out without persist-credentials: false; the token stays in the checkout's git config")
+		}
+		if runsGuardedMake(s.Run) {
+			guarded = true
+		}
+	}
+	if !guarded {
+		problems = append(problems, bigdiskJob+": no step runs make "+bigdiskJob+" with PLAYWRIGHT_INSTALL_FLAGS cleared when RUNNER_ENVIRONMENT is not github-hosted")
+	}
+	return problems
+}
+
+// runnerGuard is the approved block that clears PLAYWRIGHT_INSTALL_FLAGS off
+// the hosted runner, line for line after each line's leading whitespace.
+var runnerGuard = []string{
+	`if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then`,
+	`export PLAYWRIGHT_INSTALL_FLAGS=`,
+	`fi`,
+}
+
+// runsGuardedMake reports whether script holds runnerGuard as consecutive
+// lines and, on a later line, `make test-typescript`.
+func runsGuardedMake(script string) bool {
+	lines := strings.Split(script, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimLeft(lines[i], " \t")
+	}
+	for i := 0; i+len(runnerGuard) <= len(lines); i++ {
+		if !slices.Equal(lines[i:i+len(runnerGuard)], runnerGuard) {
+			continue
+		}
+		for _, l := range lines[i+len(runnerGuard):] {
+			if l == "make "+bigdiskJob {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// makeRecipe returns the recipe lines of target in a Makefile's text.
+func makeRecipe(makefile, target string) []string {
+	var recipe []string
+	in := false
+	for _, line := range strings.Split(makefile, "\n") {
+		switch {
+		case strings.HasPrefix(line, target+":"):
+			in = true
+		case in && strings.HasPrefix(line, "\t"):
+			recipe = append(recipe, line)
+		case in:
+			return recipe
+		}
+	}
+	return recipe
+}
+
+func TestCIBigdiskJobLeavesNoCredentialAndRunsNoApt(t *testing.T) {
+	var wf struct {
+		Jobs map[string]runnerJob `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(workflowFiles(t)["ci.yml"], &wf); err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	job, ok := wf.Jobs[bigdiskJob]
+	if !ok {
+		t.Fatalf("ci.yml has no job %s", bigdiskJob)
+	}
+	for _, p := range bigdiskStepProblems(job) {
+		t.Error(p)
+	}
+
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "Makefile"))
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	recipe := makeRecipe(string(b), bigdiskJob)
+	if len(recipe) == 0 {
+		t.Fatalf("Makefile has no recipe for %s", bigdiskJob)
+	}
+	const install = "npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium"
+	installs := false
+	for _, line := range recipe {
+		if strings.Contains(line, "--with-deps") {
+			t.Errorf("Makefile's %s recipe holds --with-deps outside PLAYWRIGHT_INSTALL_FLAGS: %q", bigdiskJob, line)
+		}
+		if strings.Contains(line, install) {
+			installs = true
+		}
+	}
+	if !installs {
+		t.Errorf("Makefile's %s recipe has no line %q", bigdiskJob, install)
+	}
+}
+
+func TestBigdiskStepProblems_CanFail(t *testing.T) {
+	const guard = "          if [ \"${RUNNER_ENVIRONMENT:-}\" != github-hosted ]; then\n            export PLAYWRIGHT_INSTALL_FLAGS=\n          fi\n"
+	const checkout = "      - uses: actions/checkout@0000000000000000000000000000000000000000\n"
+	const safe = "        with:\n          persist-credentials: false\n"
+	guarded := "      - run: |\n" + guard + "          make " + bigdiskJob + "\n"
+	cases := []struct {
+		name  string
+		steps string
+		want  bool
+	}{
+		{"valid", checkout + safe + guarded, false},
+		{"checkout with no with", checkout + guarded, true},
+		{"checkout with persist-credentials: true", checkout + "        with:\n          persist-credentials: true\n" + guarded, true},
+		{"checkout with another with key only", checkout + "        with:\n          fetch-depth: 0\n" + guarded, true},
+		{"make without the guard", checkout + safe + "      - run: make " + bigdiskJob + "\n", true},
+		{"guard in another step", checkout + safe + "      - run: |\n" + guard + "      - run: make " + bigdiskJob + "\n", true},
+		{"no make step", checkout + safe, true},
+		{"the comparison reversed", checkout + safe + "      - run: |\n" + strings.Replace(guard, " != ", " = ", 1) + "          make " + bigdiskJob + "\n", true},
+		{"the flag set but not exported", checkout + safe + "      - run: |\n" + strings.Replace(guard, "export ", "", 1) + "          make " + bigdiskJob + "\n", true},
+		{"make before the guard", checkout + safe + "      - run: |\n          make " + bigdiskJob + "\n" + guard, true},
+	}
+	for _, tc := range cases {
+		var job runnerJob
+		if err := yaml.Unmarshal([]byte("steps:\n"+tc.steps), &job); err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		p := bigdiskStepProblems(job)
+		if got := len(p) != 0; got != tc.want {
+			t.Errorf("%s: problems %v, want a problem: %v", tc.name, p, tc.want)
+		}
+	}
+}
+
 // bigdiskFixture is a workflow with one bigdiskJobs job as DS-8233 shapes it:
 // the exact expression, its Docker step gated to the hosted runner and its
 // native step to the pool, beside an ordinary hosted job.
@@ -537,6 +736,12 @@ func TestRunnerProblems_BigdiskJobs(t *testing.T) {
 	if p, _ := runnerProblems("ci.yml", []byte(hosted)); len(p) != 0 {
 		t.Errorf("a listed job may stay on the hosted runner, got %v", p)
 	}
+	// ci-gate on the pool (m2479) names docker-build as a job whose result it
+	// reads; that is not a Docker use.
+	gate := strings.Replace(bigdiskFixture, "        run: make coverage-fts", "        run: |\n          check docker-build \"$RESULT_DOCKER_BUILD\" pr\n          echo \"needs.docker-build.result\"", 1)
+	if p, _ := runnerProblems("ci.yml", []byte(gate)); len(p) != 0 {
+		t.Errorf("a step that only names the docker-build job may run on the pool, got %v", p)
+	}
 	const runsOn = "    runs-on: " + bigdiskRunner
 	const dockerLoad = "      - if: runner.environment == 'github-hosted'\n        run: docker load -i toolchain.tar"
 	cases := map[string]struct {
@@ -556,6 +761,10 @@ func TestRunnerProblems_BigdiskJobs(t *testing.T) {
 		"a Docker step, pool only":    {"ci.yml", dockerLoad, "      - if: runner.environment == 'self-hosted'\n        run: docker load -i toolchain.tar", "a step that needs Docker"},
 		"the image wrapper":           {"ci.yml", "        run: make coverage-fts", "        run: scripts/in-toolchain-image.sh \"$IMAGE\" \"make coverage-fts\"", "a step that needs Docker"},
 		"a docker action":             {"ci.yml", "        run: make coverage-fts", "        uses: docker/login-action@0000000000000000000000000000000000000000 # v4", "a step that needs Docker"},
+		"a docker make target":        {"ci.yml", "        run: make coverage-fts", "        run: make docker-build", "a step that needs Docker"},
+		"docker compose":              {"ci.yml", "        run: make coverage-fts", "        run: (cd stack && docker compose config)", "a step that needs Docker"},
+		"the docker-compose CLI":      {"ci.yml", "        run: make coverage-fts", "        run: docker-compose up -d", "a step that needs Docker"},
+		"the image loader":            {"ci.yml", "        run: make coverage-fts", "        run: scripts/ci-image.sh load \"$DIR\" \"$IMAGE\" \"$ID\"", "a step that needs Docker"},
 		"a container":                 {"ci.yml", "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    container: golang:1.27.3\n", "has a container:"},
 		"a service":                   {"ci.yml", "    timeout-minutes: 20\n", "    timeout-minutes: 20\n    services:\n      db:\n        image: postgres:18\n", "has services:"},
 		"pull_request_target":         {"ci.yml", "  pull_request:\n", "  pull_request_target:\n", "triggers on pull_request_target"},
