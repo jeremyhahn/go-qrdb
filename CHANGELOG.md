@@ -13,6 +13,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`node.WithCredentialRotationValueSource`.** An embedded SDK node can now supply the `RotationValueSource` scheduled credential rotations draw from (re-exported as `sdk.RotationValueSource`); scheduled rotations and retention GC are audited under the tenant they act for (#1201).
+- **REST credential names may contain `/` or `%`.** The Go SDK's REST transport escapes `%` and `/` in a name before path-escaping it, and the `/v1/credentials/{name}/...` handlers unescape that segment, so such a name is no longer a 404 behind the canonical-path guard; a segment that does not unescape is a 400 (#1201).
+
+- **A named credential rotates on a schedule, once per interval across the cluster** (#1200): a rotation policy (`enabled`, `interval`, `retain_versions`) is set and read over REST (`PUT`/`GET /v1/credentials/{name}/rotation-policy`), gRPC and Unix (`CredentialSetRotationPolicy`/`CredentialRotationPolicy`), QUIC, MCP, the embedded transport and `qrdb credential rotation-policy set|get`, under `credentials:rotate`. An invalid policy, or any policy under the `manual` strategy, is refused with invalid-argument. Every node checks every `seal.credential_rotation_check_period` (default `1m`), and a compare-and-swap on the credential's metadata lets exactly one node rotate each interval. New values come from a `credentials.WithRotationValueSource` the embedder supplies; `qrdbd` ships none, and without one a due rotation fails with `ErrNoRotationValueSource`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -217,6 +221,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Tenant credentials are stored in the tenant's replicated home store.** The home store is a tenant's credential store of record, so a policy, value or rotation claim written through one node is the same record on every node; the tenant barrier is the one-time migration source of records under the old layout (#1201).
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
@@ -745,6 +750,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
+- **Named credentials are never stored in an unencrypted data plane** (#1201): with seal enabled, a standalone node whose backend is `objstore` (which does not encrypt at rest) and whose credential strategy is `barrier` now binds the system seal barrier, which encrypts every record, as the credential store instead of the data plane (the `manual` strategy writes nothing to the data plane and starts on any backend). A legacy `<name>#meta` value with data after its JSON document now migrates as a credential under its full name, not as `<name>`'s metadata.
 - **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
   reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
   (2026-11-02). Every Go version pin moves to 1.27.4: the `go` directive of

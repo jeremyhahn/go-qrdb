@@ -172,6 +172,31 @@ func (m *covMockCredentialSvc) CredentialGCExpired(ctx context.Context, name str
 	return 3, nil
 }
 
+func (m *covMockCredentialSvc) CredentialSetRotationPolicy(_ context.Context, name string, _ credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (m *covMockCredentialSvc) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *covMockCredentialSvc) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *covMockCredentialSvc) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Mock: LockServicer
 // ---------------------------------------------------------------------------

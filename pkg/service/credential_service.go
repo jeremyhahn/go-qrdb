@@ -17,7 +17,10 @@ package service
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -79,6 +82,69 @@ type CredentialServicer interface {
 	// CredentialGCExpired reaps any historical versions of name whose
 	// grace period has elapsed. Returns the count reaped.
 	CredentialGCExpired(ctx context.Context, name string) (int, error)
+
+	// CredentialSetRotationPolicy stores name's scheduled-rotation policy.
+	// An invalid policy, or any policy under the manual strategy, is
+	// *credentials.InvalidRotationPolicyError; an unknown name is
+	// credentials.ErrCredentialNotFound.
+	CredentialSetRotationPolicy(ctx context.Context, name string, policy credentials.RotationPolicy) error
+
+	// CredentialRotationPolicy returns name's rotation policy and when it
+	// next falls due. An unknown name is credentials.ErrCredentialNotFound.
+	CredentialRotationPolicy(ctx context.Context, name string) (*CredentialRotationPolicyStatus, error)
+
+	// CredentialMigrationConflicts lists, sorted by name, the credentials
+	// whose node-local copy in the old credentials/ layout differs from
+	// the replicated record another node migrated first. Each entry names
+	// the parts that differ, never a value.
+	CredentialMigrationConflicts(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error)
+
+	// CredentialResolveMigrationConflict settles one conflict: import
+	// rotates the node-local current value in as a new version of the
+	// replicated record, discard keeps the replicated record as it is.
+	// Either way the node-local records are deleted. A name with no
+	// conflict is credentials.ErrMigrationConflictNotFound; any other
+	// resolution is credentials.ErrInvalidMigrationResolution.
+	CredentialResolveMigrationConflict(ctx context.Context, name string, how credentials.MigrationResolution) error
+}
+
+// CredentialRotationPolicyStatus is a credential's rotation policy and its
+// schedule. NextRotation is zero when the policy is unset or disabled.
+type CredentialRotationPolicyStatus struct {
+	Policy       credentials.RotationPolicy
+	NextRotation time.Time
+}
+
+// WireInterval is the policy's interval in its wire form, a Go duration
+// string.
+func (s *CredentialRotationPolicyStatus) WireInterval() string {
+	return s.Policy.Interval.String()
+}
+
+// WireNextRotation is the next scheduled rotation in its wire form, an
+// RFC 3339 time in UTC, or "" when none is scheduled.
+func (s *CredentialRotationPolicyStatus) WireNextRotation() string {
+	if s.NextRotation.IsZero() {
+		return ""
+	}
+	return s.NextRotation.UTC().Format(time.RFC3339)
+}
+
+// CredentialRotationPolicyFromWire builds a rotation policy from its wire
+// form, in which the interval is a Go duration string. An empty interval is
+// zero, which only a disabled policy accepts. An interval that does not
+// parse is refused with *credentials.InvalidRotationPolicyError, the error
+// every transport reports as an invalid argument.
+func CredentialRotationPolicyFromWire(enabled bool, interval string, retainVersions int) (credentials.RotationPolicy, error) {
+	var d time.Duration
+	if interval != "" {
+		parsed, err := time.ParseDuration(interval)
+		if err != nil {
+			return credentials.RotationPolicy{}, &credentials.InvalidRotationPolicyError{Reason: "interval " + strconv.Quote(interval) + " is not a duration"}
+		}
+		d = parsed
+	}
+	return credentials.RotationPolicy{Enabled: enabled, Interval: d, RetainVersions: retainVersions}, nil
 }
 
 // CredentialTenantBarriers looks up a tenant's barrier. It is the seam through
@@ -86,6 +152,9 @@ type CredentialServicer interface {
 // *seal.BarrierRegistry satisfies it.
 type CredentialTenantBarriers interface {
 	GetTenant(tenantID string) (*seal.TenantBarrier, error)
+	// ListTenants returns the ID of every tenant with a barrier of its
+	// own, the stores the rotation scheduler visits.
+	ListTenants() []string
 }
 
 // CredentialServiceOption configures a CredentialService.
@@ -111,6 +180,7 @@ func WithCredentialTenantBarriers(tenants CredentialTenantBarriers) CredentialSe
 type CredentialService struct {
 	creds   *credentials.CredentialService
 	tenants CredentialTenantBarriers
+	homes   atomic.Pointer[homeSourceBox]
 }
 
 // Compile-time interface check.
@@ -160,7 +230,42 @@ func (s *CredentialService) store(ctx context.Context) (*credentials.CredentialS
 	if tb.IsSealed() {
 		return nil, &BarrierSealedError{TenantID: tenantID}
 	}
-	return s.creds.ForBarrier(tb.Barrier())
+	box := s.homes.Load()
+	if box == nil {
+		// The barrier is node-local: a store kept under it would hold a
+		// different policy, value and claim on every node.
+		return nil, &CapabilityUnsupportedError{
+			Message: "credentials: tenant home stores are not attached on this node",
+		}
+	}
+	kv, err := box.source.HomeStore(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	home, err := credentials.NewKVStore(kv)
+	if err != nil {
+		return nil, err
+	}
+	return s.creds.ForTenant(ctx, home, tb.Barrier())
+}
+
+// homeSourceBox lets an interface value sit behind an atomic.Pointer.
+type homeSourceBox struct{ source tenant.HomeStoreSource }
+
+// SetTenantHomes attaches the source of isolated tenants' home stores, where
+// a tenant caller's named credentials live: on a cluster a Raft group of the
+// tenant's own, so a policy, value or claim written through one node is the
+// same record on every node. The source is attached after the service is
+// built, because the stores that host the homes start later; until then, or
+// after a nil src detaches it, a tenant caller is refused with a
+// CapabilityUnsupportedError. It is safe to call concurrently with the
+// credential verbs.
+func (s *CredentialService) SetTenantHomes(src tenant.HomeStoreSource) {
+	if src == nil {
+		s.homes.Store(nil)
+		return
+	}
+	s.homes.Store(&homeSourceBox{source: src})
 }
 
 // CredentialWireValue copies a retrieved credential out of protected memory
@@ -281,3 +386,105 @@ func (s *CredentialService) CredentialGCExpired(ctx context.Context, name string
 	}
 	return c.GCExpiredVersions(ctx, name)
 }
+
+// CredentialSetRotationPolicy stores name's scheduled-rotation policy.
+func (s *CredentialService) CredentialSetRotationPolicy(ctx context.Context, name string, policy credentials.RotationPolicy) error {
+	c, err := s.store(ctx)
+	if err != nil {
+		return err
+	}
+	return c.SetRotationPolicy(ctx, name, policy)
+}
+
+// CredentialRotationPolicy returns name's rotation policy and its schedule.
+func (s *CredentialService) CredentialRotationPolicy(ctx context.Context, name string) (*CredentialRotationPolicyStatus, error) {
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	policy, err := c.RotationPolicy(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	next, err := c.NextRotation(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &CredentialRotationPolicyStatus{Policy: policy, NextRotation: next}, nil
+}
+
+// CredentialMigrationConflicts implements CredentialServicer.
+func (s *CredentialService) CredentialMigrationConflicts(ctx context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	c, err := s.store(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.ListMigrationConflicts(ctx)
+}
+
+// CredentialResolveMigrationConflict implements CredentialServicer.
+func (s *CredentialService) CredentialResolveMigrationConflict(ctx context.Context, name string, how credentials.MigrationResolution) error {
+	c, err := s.store(ctx)
+	if err != nil {
+		return err
+	}
+	return c.ResolveMigrationConflict(ctx, name, how)
+}
+
+// CredentialRotateDue carries out every rotation policy due at now, in the
+// system store and in the store of every tenant whose barrier is unsealed,
+// each under that tenant's context, and returns how many credentials it
+// rotated. A sealed tenant is skipped; its policies fall due at the first
+// check after it is unsealed. A tenant whose rotations fail is reported as a
+// *CredentialTenantRotationError and the sweep goes on. It is not a transport
+// verb: the server's rotation scheduler calls it on its own period.
+func (s *CredentialService) CredentialRotateDue(ctx context.Context, now time.Time) (int, error) {
+	rotated, err := s.creds.RotateDue(ctx, now)
+	if s.tenants == nil {
+		return rotated, err
+	}
+	errs := []error{err}
+	ids := s.tenants.ListTenants()
+	slices.Sort(ids)
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if tenantid.IsSystem(id) {
+			continue
+		}
+		tctx := tenant.WithTenantID(ctx, id)
+		c, err := s.store(tctx)
+		var sealed *BarrierSealedError
+		var unbound *CapabilityUnsupportedError
+		if errors.As(err, &sealed) || errors.As(err, &unbound) {
+			// A sealed barrier's store cannot be read until it is
+			// unsealed, and its policies fall due at the first check
+			// after that; a tenant removed since the listing has none.
+			continue
+		}
+		if err == nil {
+			var n int
+			n, err = c.RotateDue(tctx, now)
+			rotated += n
+		}
+		if err != nil {
+			errs = append(errs, &CredentialTenantRotationError{TenantID: id, Cause: err})
+		}
+	}
+	return rotated, errors.Join(errs...)
+}
+
+// CredentialTenantRotationError reports the scheduled rotations of one
+// tenant's credential store that CredentialRotateDue could not carry out.
+type CredentialTenantRotationError struct {
+	TenantID string
+	Cause    error
+}
+
+func (e *CredentialTenantRotationError) Error() string {
+	return "credentials: scheduled rotation for tenant " + strconv.Quote(e.TenantID) + ": " + e.Cause.Error()
+}
+
+func (e *CredentialTenantRotationError) Unwrap() error { return e.Cause }

@@ -14,7 +14,11 @@
 
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+)
 
 // hardConfinedPrefixes are "__sys:cluster_ca/" and "__sys:cert_ca/", the
 // sub-prefixes of the internal key namespace (see internal_keys.go) under
@@ -78,9 +82,42 @@ import "strings"
 // requires its at-rest protection to match Key A's, but nothing had
 // extended this embedded-transport guard to its prefix, so an embedded
 // caller could read a tenant's login CA private key directly by name.
-var hardConfinedPrefixes = []string{
+var hardConfinedPrefixes = append(append([]string(nil), hardConfinedMaterialPrefixes...), hardConfinedWholePrefixes...)
+
+// hardConfinedMaterialPrefixes are the CA prefixes of hardConfinedPrefixes,
+// under which only the "material" record is confined (see the doc comment
+// above).
+var hardConfinedMaterialPrefixes = []string{
 	InternalKeyPrefixSystem + "cluster_ca/",
 	InternalKeyPrefixSystem + "cert_ca/",
+}
+
+// hardConfinedWholePrefixes are the prefixes of hardConfinedPrefixes under
+// which EVERY record is confined, not only a "material" one.
+// "__sys:credentials/" is the credential service's replicated store
+// (pkg/credentials, docs/credentials/architecture.md, "Storage"): each
+// record under it is a credential's current value, and is reached only through the credential verbs, which
+// authorize and audit every access. A point Get through the embedded KV
+// would read a value without credentials:retrieve and a Put would replace
+// one with no credential authorization or audit, so the whole prefix is
+// refused. The credential service's own store (pkg/server/lifecycle's
+// kvSealBackend) reaches it through the node's own KV service, never through
+// the embedded decorators, and its self-scan rooted at this prefix stays
+// unfiltered (isHardConfinedKeyForScan).
+// credentials.MigrationClaimPrefix holds the migration claims: each names
+// the copy a credential's migration settled on and whether its import is
+// complete, so a Put through the embedded KV would redirect or replay a
+// migration.
+// credentials.MetaKeyPrefix, VersionKeyPrefix and StagedKeyPrefix hold a
+// credential's metadata, its retained versions and its staged rotation
+// values: former and future secret values, and the record that says which
+// version is current and when it rotates.
+var hardConfinedWholePrefixes = []string{
+	InternalKeyPrefixSystem + "credentials/",
+	credentials.MigrationClaimPrefix,
+	credentials.MetaKeyPrefix,
+	credentials.VersionKeyPrefix,
+	credentials.StagedKeyPrefix,
 }
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record
@@ -122,10 +159,27 @@ var hardConfinedPrefixesLabel = strings.Join(hardConfinedPrefixes, " or ")
 // never its "certificate" sibling, which is public (see this file's own
 // doc comment above).
 func isHardConfinedKey(key string) bool {
+	return isHardConfinedMaterial(key) || isUnderHardConfinedWholePrefix(key)
+}
+
+// isHardConfinedMaterial reports whether key is a CA's own "material"
+// record under one of hardConfinedMaterialPrefixes.
+func isHardConfinedMaterial(key string) bool {
 	if !strings.HasSuffix(key, hardConfinedMaterialSuffix) {
 		return false
 	}
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedMaterialPrefixes {
+		if strings.HasPrefix(key, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnderHardConfinedWholePrefix reports whether key lies under one of
+// hardConfinedWholePrefixes, every record of which is confined.
+func isUnderHardConfinedWholePrefix(key string) bool {
+	for _, p := range hardConfinedWholePrefixes {
 		if strings.HasPrefix(key, p) {
 			return true
 		}
@@ -225,7 +279,8 @@ func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 // enumeration whose own query root was scanPrefix. Every "material"
 // record is always stripped (isHardConfinedKey, unconditionally -- a
 // scan never has a legitimate reason to see a CA's private key). A
-// "certificate" record is stripped TOO, but ONLY when scanPrefix is
+// "certificate" record, like every record under hardConfinedWholePrefixes,
+// is stripped TOO, but ONLY when scanPrefix is
 // broader than (an ancestor of) the confined CA root key belongs to --
 // "__sys:" itself, or any other sweep wider than the CA subsystem's own
 // namespace -- never when scanPrefix is at or below that root, which is
@@ -236,7 +291,7 @@ func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 // (it is public data; see this file's own doc comment above
 // hardConfinedPrefixes).
 func isHardConfinedKeyForScan(key, scanPrefix string) bool {
-	if isHardConfinedKey(key) {
+	if isHardConfinedMaterial(key) {
 		return true
 	}
 	for _, p := range hardConfinedPrefixes {

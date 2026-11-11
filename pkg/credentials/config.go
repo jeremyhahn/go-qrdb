@@ -8,6 +8,8 @@
 
 package credentials
 
+import "time"
+
 const (
 	// StrategyManual stores credentials in-memory with blocking retrieval
 	// until a credential is submitted.
@@ -28,4 +30,35 @@ type Config struct {
 	// Strategy selects the credential storage strategy.
 	// Valid values are "manual" and "barrier".
 	Strategy string
+
+	// RotationCheckPeriod is how often the server's rotation scheduler
+	// runs CredentialService.RotateDue. Zero means
+	// DefaultRotationCheckPeriod; a negative period is refused by
+	// Validate.
+	RotationCheckPeriod time.Duration
+}
+
+// DefaultRotationCheckPeriod is the rotation scheduler's period when
+// Config.RotationCheckPeriod is unset.
+const DefaultRotationCheckPeriod = time.Minute
+
+// Validate refuses an unknown strategy and a negative rotation check
+// period.
+func (c *Config) Validate() error {
+	if c.Strategy != "" && !validStrategies[c.Strategy] {
+		return ErrInvalidStrategy
+	}
+	if c.RotationCheckPeriod < 0 {
+		return ErrInvalidRotationCheckPeriod
+	}
+	return nil
+}
+
+// EffectiveRotationCheckPeriod returns RotationCheckPeriod, or
+// DefaultRotationCheckPeriod when it is unset.
+func (c *Config) EffectiveRotationCheckPeriod() time.Duration {
+	if c == nil || c.RotationCheckPeriod == 0 {
+		return DefaultRotationCheckPeriod
+	}
+	return c.RotationCheckPeriod
 }

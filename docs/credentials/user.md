@@ -1,6 +1,6 @@
 # Credentials — User Guide
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-27
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-01
 > Conflicts with this document are defects. Fix them here first.
 
 Named secrets the engine itself needs, with version history and a rotation
@@ -24,7 +24,7 @@ qrdb credential strategy
 
 | Strategy | What it means for you |
 |---|---|
-| `barrier` (the default) | values are encrypted and stored; they survive restarts; they are unreadable while the barrier is sealed |
+| `barrier` (the default) | values are encrypted and stored once for the whole cluster, so any node returns the same value, policy and versions; they survive restarts; they are unreadable while the barrier is sealed |
 | `manual` | values live only in memory; **a read blocks until somebody submits the value**; a restart means submitting again |
 
 ## First run
@@ -61,6 +61,27 @@ the old one is gone.
 qrdb credential rotate smtp-password --value "$NEW"
 ```
 
+**Rotate on a schedule.** Give the credential a rotation policy and the
+cluster rotates it for you, once per interval — not once per node:
+
+```bash
+qrdb credential rotation-policy set smtp-password --enabled --interval 720h --retain-versions 3
+qrdb credential rotation-policy get smtp-password
+```
+
+`get` shows `enabled`, `interval`, `retain-versions` and the next scheduled
+rotation. `--retain-versions 3` keeps the current value and two predecessors;
+older versions are pruned after each scheduled rotation. Run
+`rotation-policy set <name>` with no flags to stop scheduled rotation. Each
+node checks for due credentials every `seal.credential_rotation_check_period`
+(default `1m`), so a rotation lands within one check period of its due time.
+Setting or reading a policy needs the `credentials:rotate` permission.
+
+The new value comes from a rotation value source that the application embedding
+qrdb supplies. **`qrdbd` ships none**: on a stock daemon you can set a policy,
+but every due rotation fails and is logged until a source is wired in. Keep
+rotating by hand there.
+
 **Look at the history.**
 
 ```bash
@@ -92,6 +113,33 @@ starting system:
 ```bash
 qrdb credential submit ceremony-seed --value "$SEED"
 ```
+
+**Settle what the upgrade could not merge.** Older releases kept a copy of
+each credential on every node. On its first start after the upgrade, each
+node moves its copies into the cluster's one store: the first node to move a
+credential wins, and a later node whose copy is identical just drops its own.
+A node whose copy differs keeps it and reports a migration conflict (a
+warning in its log and a failed `migrate` audit event). Ask each node in turn:
+
+```bash
+qrdb credential migration-conflicts list
+```
+
+Each line names a credential and which parts of the node's copy differ from
+the cluster's: the current value, the version history or the rotation policy.
+For each one, decide which value is right, then on that node either import
+the node's value as the credential's new version (the cluster's value stays
+as the previous version) or discard the node's copy:
+
+```bash
+qrdb credential migration-conflicts resolve smtp-password --resolution import
+qrdb credential migration-conflicts resolve api-token --resolution discard
+```
+
+Either way the node's old copy is deleted, so the conflict is gone from the
+list. Importing carries over only the current value; the node's old version
+history and policy are dropped, and the audit event names what was dropped.
+Listing needs `credentials:list`; resolving needs `credentials:rotate`.
 
 ## Credentials in a tenant
 
@@ -134,6 +182,24 @@ an inline value to a field that is not protected; a protected field refuses it.
 submitted the value. Run `qrdb credential submit <name> --value ...` from
 another session. It blocks rather than returning empty on purpose — an empty
 value would let the boot continue with no credential at all.
+
+**`rotation-policy set` is refused with invalid argument.** An enabled policy
+needs a positive `--interval` written as a duration (`720h`, not `30d`) and
+`--retain-versions` of at least 1. The `manual` strategy refuses every policy:
+the server cannot mint a value an officer has to submit.
+
+**A scheduled rotation never happens.** The server log shows
+`credential rotation scheduler: rotation failed` with
+`credentials: no rotation value source configured`. The server has no rotation
+value source; `qrdbd` ships none. Rotate by hand with `qrdb credential rotate`.
+Until a rotation succeeds, the credential stays due and is retried every check
+period.
+
+**`migration-conflicts list` shows nothing on a node that logged a
+conflict.** You are talking to a different node: the list is per node. Point
+the CLI at the node that logged it. If the node's own store was still sealed
+when it started, the migration ran again on the first credential operation or
+list call after that.
 
 **Everything fails with a barrier error.** The `barrier` strategy needs the
 barrier unsealed. See [../barrier-seal/user.md](../barrier-seal/user.md).

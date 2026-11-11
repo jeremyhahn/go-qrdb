@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -26,23 +27,59 @@ import (
 // key.
 var errInjectedFault = errors.New("credentials test: injected storage fault")
 
-// faultBackend is an in-memory seal.StorageBackend whose Put and Delete fail
-// for the one key suffix they are armed with, so a test can fail a single
-// step of a multi-key barrier operation while every other step succeeds.
+// faultBackend is an in-memory seal.StorageBackend whose Put, Delete, List
+// and CompareAndSwap fail for the one key suffix they are armed with, so a
+// test can fail a single step of a multi-key barrier operation while every
+// other step succeeds. A CompareAndSwap on the loseCAS suffix also reports
+// a lost race, without writing, while casLosses is above zero.
 type faultBackend struct {
 	*seal.MemoryBackend
+	failGet    atomic.Pointer[string]
 	failPut    atomic.Pointer[string]
 	failDelete atomic.Pointer[string]
+	failList   atomic.Pointer[string]
+	failCAS    atomic.Pointer[string]
+	loseCAS    atomic.Pointer[string]
+	casLosses  atomic.Int32
+	// onDelete, when set before the operation under test, runs after each
+	// successful Delete with the deleted key.
+	onDelete func(key string)
+	// onPut, when set before the operation under test, runs after each
+	// successful Put with the written key.
+	onPut func(key string)
+	// onCAS, when set before the operation under test, runs before each
+	// CompareAndSwap that is not failed or lost, with its context and key.
+	onCAS func(ctx context.Context, key string)
+	// onGet, when set before the operation under test, runs after each
+	// Get that is not failed, with its context and key.
+	onGet func(ctx context.Context, key string)
 }
 
 var _ seal.StorageBackend = (*faultBackend)(nil)
 
 // Put fails with errInjectedFault when key ends with the armed Put suffix.
+func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	if s := f.failGet.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return nil, errInjectedFault
+	}
+	value, err := f.MemoryBackend.Get(ctx, key)
+	if f.onGet != nil {
+		f.onGet(ctx, key)
+	}
+	return value, err
+}
+
 func (f *faultBackend) Put(ctx context.Context, key string, data []byte) error {
 	if s := f.failPut.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return errInjectedFault
 	}
-	return f.MemoryBackend.Put(ctx, key, data)
+	if err := f.MemoryBackend.Put(ctx, key, data); err != nil {
+		return err
+	}
+	if f.onPut != nil {
+		f.onPut(key)
+	}
+	return nil
 }
 
 // Delete fails with errInjectedFault when key ends with the armed Delete
@@ -51,7 +88,82 @@ func (f *faultBackend) Delete(ctx context.Context, key string) error {
 	if s := f.failDelete.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return errInjectedFault
 	}
-	return f.MemoryBackend.Delete(ctx, key)
+	if err := f.MemoryBackend.Delete(ctx, key); err != nil {
+		return err
+	}
+	if f.onDelete != nil {
+		f.onDelete(key)
+	}
+	return nil
+}
+
+// List fails with errInjectedFault when prefix ends with the armed List
+// suffix.
+func (f *faultBackend) List(ctx context.Context, prefix string) ([]string, error) {
+	if s := f.failList.Load(); s != nil && strings.HasSuffix(prefix, *s) {
+		return nil, errInjectedFault
+	}
+	return f.MemoryBackend.List(ctx, prefix)
+}
+
+// CompareAndSwap fails with errInjectedFault when key ends with the armed
+// CompareAndSwap suffix, and reports a lost race, without writing, when key
+// ends with the loseCAS suffix and a loss is still owed.
+func (f *faultBackend) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if s := f.failCAS.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return false, errInjectedFault
+	}
+	if s := f.loseCAS.Load(); s != nil && strings.HasSuffix(key, *s) && f.casLosses.Add(-1) >= 0 {
+		return false, nil
+	}
+	if f.onCAS != nil {
+		f.onCAS(ctx, key)
+	}
+	return f.MemoryBackend.CompareAndSwap(ctx, key, expected, next)
+}
+
+// PutIfAbsent fails like CompareAndSwap: both are the conditional writes.
+func (f *faultBackend) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if s := f.failCAS.Load(); s != nil && strings.HasSuffix(key, *s) {
+		return false, errInjectedFault
+	}
+	return f.MemoryBackend.PutIfAbsent(ctx, key, data)
+}
+
+// PutAllIfAllUnchanged is one conditional write of several keys, all or
+// nothing. It fails with errInjectedFault, having written nothing, when a
+// written key ends with the armed Put or CompareAndSwap suffix, and reports
+// a refused batch, without writing, when one ends with the loseCAS suffix
+// and a loss is still owed. onCAS runs first, before the batch is decided,
+// once for each written key, and onPut after it applied.
+func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if f.onCAS != nil {
+		for _, w := range writes {
+			f.onCAS(ctx, w.Key)
+		}
+	}
+	for _, w := range writes {
+		for _, p := range []*atomic.Pointer[string]{&f.failPut, &f.failCAS} {
+			if s := p.Load(); s != nil && strings.HasSuffix(w.Key, *s) {
+				return false, errInjectedFault
+			}
+		}
+	}
+	for _, w := range writes {
+		if s := f.loseCAS.Load(); s != nil && strings.HasSuffix(w.Key, *s) && f.casLosses.Add(-1) >= 0 {
+			return false, nil
+		}
+	}
+	applied, err := f.MemoryBackend.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil || !applied {
+		return applied, err
+	}
+	if f.onPut != nil {
+		for _, w := range writes {
+			f.onPut(w.Key)
+		}
+	}
+	return true, nil
 }
 
 // newFaultBarrierService builds a barrier-strategy service over a
@@ -85,26 +197,37 @@ func arm(p *atomic.Pointer[string], suffix string) {
 	p.Store(&suffix)
 }
 
-// TestBarrierFault_RotateWriteFailures: each write a barrier rotation makes
-// surfaces its own typed failure carrying the storage cause.
+// TestBarrierFault_RotateWriteFailures: a barrier rotation writes the
+// retained version, the current value and the metadata in one commit, and a
+// failure of any of them surfaces as that commit's typed failure carrying
+// the storage cause, with nothing written.
 func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
-		name   string
-		suffix string
-		op     string
+		name  string
+		fault func(*faultBackend)
+		op    string
 	}{
-		{name: "grace version", suffix: versionPrefix + "1", op: "write grace version"},
-		{name: "meta", suffix: metaSuffix, op: "write meta"},
+		{name: "grace version", fault: func(b *faultBackend) { arm(&b.failPut, versionKey("k", 1)) }, op: "commit rotation"},
+		{name: "current", fault: func(b *faultBackend) { arm(&b.failPut, credentialPrefix+"k") }, op: "commit rotation"},
+		{name: "meta", fault: func(b *faultBackend) { arm(&b.failCAS, metaKey("k")) }, op: "commit rotation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, backend := newFaultBarrierService(t)
 			require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
-			arm(&backend.failPut, tc.suffix)
+			tc.fault(backend)
 
 			_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("v2"), GracePeriod: time.Hour})
 			requireOperationError(t, err, tc.op)
 			assert.ErrorIs(t, err, errInjectedFault)
+
+			got, err := svc.store.Get(ctx, credentialPrefix+"k")
+			require.NoError(t, err)
+			assert.Equal(t, "v1", string(got), "a failed commit leaves the current value")
+			_, err = svc.store.Get(ctx, versionKey("k", 1))
+			assert.ErrorIs(t, err, seal.ErrSecretNotFound, "a failed commit retains no version")
+			_, err = svc.store.Get(ctx, metaKey("k"))
+			assert.ErrorIs(t, err, seal.ErrSecretNotFound, "a failed commit writes no metadata")
 		})
 	}
 }

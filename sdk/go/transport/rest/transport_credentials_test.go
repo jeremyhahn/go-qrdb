@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,6 +65,17 @@ type credentialsServer struct {
 	gcName     atomic.Value // string
 	gcResp     atomic.Value // *transport.CredentialGCResponse
 	gcFailCode atomic.Int64
+
+	// rotation policy
+	policyName     atomic.Value // string
+	policyBody     atomic.Value // transport.CredentialSetRotationPolicyRequest
+	policyResp     atomic.Value // *transport.CredentialRotationPolicyResponse
+	policyFailCode atomic.Int64
+
+	// migration conflicts
+	migrationFailCode atomic.Int64
+	resolveName       atomic.Value // string
+	resolveBody       atomic.Value // transport.CredentialResolveMigrationConflictRequest
 }
 
 func (s *credentialsServer) handler() http.Handler {
@@ -101,6 +113,63 @@ func (s *credentialsServer) handler() http.Handler {
 			}
 			out := &transport.CredentialRotateResponse{Name: name, PreviousVersion: 0, NewVersion: 1}
 			if v, ok := s.rotateResp.Load().(*transport.CredentialRotateResponse); ok && v != nil {
+				out = v
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(out)
+
+		case r.URL.Path == "/v1/credentials/migration-conflicts" && r.Method == http.MethodGet:
+			if code := s.migrationFailCode.Load(); code != 0 {
+				http.Error(w, "fail", int(code))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&transport.CredentialMigrationConflictsResponse{
+				Conflicts: []transport.CredentialMigrationConflict{{Name: "db", Value: true, Policy: true}},
+			})
+
+		case strings.HasSuffix(r.URL.Path, "/migration-resolve") && r.Method == http.MethodPost:
+			// The server routes on the once-decoded path and then unescapes
+			// the one name segment, as handleCredentialByPath does.
+			name, err := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/credentials/"), "/migration-resolve"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			s.resolveName.Store(name)
+			var body transport.CredentialResolveMigrationConflictRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			s.resolveBody.Store(body)
+			if code := s.migrationFailCode.Load(); code != 0 {
+				http.Error(w, "credentials: no migration conflict", int(code))
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+
+		case strings.HasSuffix(r.URL.Path, "/rotation-policy"):
+			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/credentials/"), "/rotation-policy")
+			s.policyName.Store(name)
+			if r.Method == http.MethodPut {
+				var body transport.CredentialSetRotationPolicyRequest
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				s.policyBody.Store(body)
+			}
+			if code := s.policyFailCode.Load(); code != 0 {
+				http.Error(w, "credentials: invalid rotation policy: interval must be positive", int(code))
+				return
+			}
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			out := &transport.CredentialRotationPolicyResponse{Name: name}
+			if v, ok := s.policyResp.Load().(*transport.CredentialRotationPolicyResponse); ok && v != nil {
 				out = v
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -316,6 +385,205 @@ func TestCredentialRotate_AfterClose(t *testing.T) {
 	rt, _ := newCredentialsTestTransport(t)
 	_ = rt.Close()
 	_, err := rt.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "k"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %v", err)
+	}
+}
+
+func TestCredentialSetRotationPolicy_Success(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+
+	err := rt.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name:           "apikey",
+		Enabled:        true,
+		Interval:       "24h0m0s",
+		RetainVersions: 3,
+	})
+	if err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	if v, _ := srv.policyName.Load().(string); v != "apikey" {
+		t.Errorf("server saw name = %q", v)
+	}
+	body, _ := srv.policyBody.Load().(transport.CredentialSetRotationPolicyRequest)
+	if !body.Enabled || body.Interval != "24h0m0s" || body.RetainVersions != 3 {
+		t.Errorf("body = %+v", body)
+	}
+}
+
+func TestCredentialSetRotationPolicy_InvalidPolicy(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	srv.policyFailCode.Store(int64(http.StatusBadRequest))
+
+	err := rt.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name:    "apikey",
+		Enabled: true,
+	})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T (%v)", err, err)
+	}
+	if reqErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", reqErr.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestCredentialSetRotationPolicy_NilRequestAndEmptyName(t *testing.T) {
+	rt, _ := newCredentialsTestTransport(t)
+	if err := rt.CredentialSetRotationPolicy(context.Background(), nil); err == nil {
+		t.Error("expected error for nil request")
+	}
+	err := rt.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{})
+	if err == nil || !strings.Contains(err.Error(), "credential name must not be empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestCredentialSetRotationPolicy_AfterClose(t *testing.T) {
+	rt, _ := newCredentialsTestTransport(t)
+	_ = rt.Close()
+	err := rt.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{Name: "k"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %v", err)
+	}
+}
+
+func TestCredentialRotationPolicy_Success(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	srv.policyResp.Store(&transport.CredentialRotationPolicyResponse{
+		Name:           "apikey",
+		Enabled:        true,
+		Interval:       "1h0m0s",
+		RetainVersions: 2,
+		NextRotation:   "2026-10-29T12:00:00Z",
+	})
+
+	resp, err := rt.CredentialRotationPolicy(context.Background(), "apikey")
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if v, _ := srv.policyName.Load().(string); v != "apikey" {
+		t.Errorf("server saw name = %q", v)
+	}
+	if !resp.Enabled || resp.Interval != "1h0m0s" || resp.RetainVersions != 2 || resp.NextRotation != "2026-10-29T12:00:00Z" {
+		t.Errorf("resp = %+v", resp)
+	}
+}
+
+func TestCredentialRotationPolicy_ServerError(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	srv.policyFailCode.Store(int64(http.StatusNotFound))
+
+	_, err := rt.CredentialRotationPolicy(context.Background(), "missing")
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T (%v)", err, err)
+	}
+	if reqErr.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d", reqErr.StatusCode)
+	}
+}
+
+func TestCredentialRotationPolicy_EmptyNameAndAfterClose(t *testing.T) {
+	rt, _ := newCredentialsTestTransport(t)
+	if _, err := rt.CredentialRotationPolicy(context.Background(), ""); err == nil {
+		t.Error("expected error for empty name")
+	}
+	_ = rt.Close()
+	_, err := rt.CredentialRotationPolicy(context.Background(), "k")
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %v", err)
+	}
+}
+
+func TestCredentialMigrationConflicts_Success(t *testing.T) {
+	rt, _ := newCredentialsTestTransport(t)
+	resp, err := rt.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	want := transport.CredentialMigrationConflict{Name: "db", Value: true, Policy: true}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want {
+		t.Errorf("resp = %+v", resp)
+	}
+}
+
+func TestCredentialMigrationConflicts_ServerErrorAndAfterClose(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	srv.migrationFailCode.Store(int64(http.StatusForbidden))
+	_, err := rt.CredentialMigrationConflicts(context.Background())
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 *transport.RequestError, got %v", err)
+	}
+	_ = rt.Close()
+	_, err = rt.CredentialMigrationConflicts(context.Background())
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %v", err)
+	}
+}
+
+func TestCredentialResolveMigrationConflict_Success(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	req := &transport.CredentialResolveMigrationConflictRequest{Name: "db/main", Resolution: "import"}
+	if err := rt.CredentialResolveMigrationConflict(context.Background(), req); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+	if v, _ := srv.resolveName.Load().(string); v != "db/main" {
+		t.Errorf("server saw name = %q", v)
+	}
+	if body, _ := srv.resolveBody.Load().(transport.CredentialResolveMigrationConflictRequest); body.Resolution != "import" {
+		t.Errorf("server saw body = %+v", body)
+	}
+}
+
+// TestCredentialPathSegment_StaysOneSegmentAfterOneDecode pins the wire form:
+// after the server decodes the path once, the name is still one segment that
+// unescapes back to the name.
+func TestCredentialPathSegment_StaysOneSegmentAfterOneDecode(t *testing.T) {
+	for name, wire := range map[string]string{
+		"plain":   "plain",
+		"db/main": "db%252Fmain",
+		"a%b":     "a%2525b",
+		"a b/%2F": "a%20b%252F%25252F",
+	} {
+		if got := credentialPathSegment(name); got != wire {
+			t.Errorf("credentialPathSegment(%q) = %q, want %q", name, got, wire)
+		}
+		decoded, err := url.PathUnescape(wire)
+		if err != nil || strings.Contains(decoded, "/") {
+			t.Fatalf("decoded segment %q (err %v) is not one segment", decoded, err)
+		}
+		back, err := url.PathUnescape(decoded)
+		if err != nil || back != name {
+			t.Errorf("round trip of %q = %q (err %v)", name, back, err)
+		}
+	}
+}
+
+func TestCredentialResolveMigrationConflict_Refused(t *testing.T) {
+	rt, srv := newCredentialsTestTransport(t)
+	if err := rt.CredentialResolveMigrationConflict(context.Background(), nil); err == nil {
+		t.Error("expected error for nil request")
+	}
+	if err := rt.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Resolution: "import"}); err == nil {
+		t.Error("expected error for empty name")
+	}
+	srv.migrationFailCode.Store(int64(http.StatusNotFound))
+	err := rt.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"})
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) || reqErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 *transport.RequestError, got %v", err)
+	}
+	_ = rt.Close()
+	err = rt.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"})
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected *transport.ClosedError, got %v", err)
