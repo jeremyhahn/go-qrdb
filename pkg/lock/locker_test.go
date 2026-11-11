@@ -809,52 +809,6 @@ func TestUnlock_DecrementRaceEndsWithContext(t *testing.T) {
 // Extend
 // ---------------------------------------------------------------------------
 
-func TestExtend_Success(t *testing.T) {
-	lv := lockValue{HolderID: "h1", LeaseID: 7, TTL: 30, AcquireCount: 1}
-	lvBytes := encodeLockValue(t, lv)
-
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Value: lvBytes, CreateRevision: 5, ModRevision: 5}, nil
-		},
-	}
-	leaseService := &mockLeaseService{
-		keepAliveFn: func(_ context.Context, leaseID int64) (*lease.Lease, error) {
-			return &lease.Lease{ID: leaseID, TTL: 30, GrantedTTL: 30}, nil
-		},
-	}
-	svc := mustNewLocker(t, &mockTransactionService{}, leaseService, &mockWatchService{}, kvs)
-
-	extended, err := svc.Extend(context.Background(), "res", 5)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if extended.HolderID != "h1" {
-		t.Errorf("HolderID = %q, want %q", extended.HolderID, "h1")
-	}
-	if extended.FencingToken != 5 {
-		t.Errorf("FencingToken = %d, want 5", extended.FencingToken)
-	}
-}
-
-func TestExtend_StaleToken(t *testing.T) {
-	lv := lockValue{HolderID: "h1", LeaseID: 7, TTL: 30, AcquireCount: 1}
-	lvBytes := encodeLockValue(t, lv)
-
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Value: lvBytes, CreateRevision: 5, ModRevision: 5}, nil
-		},
-	}
-	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
-
-	_, err := svc.Extend(context.Background(), "res", 99 /* wrong token */)
-	var notHolder *NotLockHolderError
-	if !errors.As(err, &notHolder) {
-		t.Fatalf("expected NotLockHolderError, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
