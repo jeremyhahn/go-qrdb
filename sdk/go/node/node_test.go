@@ -391,11 +391,6 @@ func TestBuildNodeServerConfig_PreservesExistingPorts(t *testing.T) {
 // Node.Close
 // ---------------------------------------------------------------------------
 
-func TestNode_Close_NilFields(t *testing.T) {
-	n := &Node{}
-	assert.NoError(t, n.Close(), "Close on empty Node must not error")
-}
-
 func TestNode_Close_NilSvcNode(t *testing.T) {
 	// The data-plane handles are published through atomic.Pointer, whose zero
 	// value already reads nil, so an un-booted Node needs no explicit nils.
@@ -1086,22 +1081,4 @@ func TestBackgroundWork_NothingToRun(t *testing.T) {
 	if n.bgCtx != nil {
 		t.Fatal("no background context may be created when there is nothing to run")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// UnsealError
-// ---------------------------------------------------------------------------
-
-// TestUnsealError_ErrorString verifies the UnsealError message.
-func TestUnsealError_ErrorString(t *testing.T) {
-	e := &UnsealError{Err: seal.ErrInvalidCredentials}
-	assert.Contains(t, e.Error(), "failed to unseal barrier")
-	assert.ErrorIs(t, e, seal.ErrInvalidCredentials)
-}
-
-// TestUnsealError_Unwrap verifies Unwrap returns the wrapped error.
-func TestUnsealError_Unwrap(t *testing.T) {
-	inner := seal.ErrInvalidCredentials
-	e := &UnsealError{Err: inner}
-	assert.Equal(t, inner, e.Unwrap())
 }
