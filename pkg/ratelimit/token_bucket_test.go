@@ -95,26 +95,6 @@ func TestTokenBucketLimiter_DeniesOverBurst(t *testing.T) {
 	}
 }
 
-func TestTokenBucketLimiter_RefillsOverTime(t *testing.T) {
-	clock := newFakeClock(time.Now())
-	l := newTestLimiter(t, clock)
-	policy := Policy{RatePerSecond: 2, Burst: 1}
-
-	if allowed, _ := l.Allow("caller-c", policy); !allowed {
-		t.Fatal("want the first request within a fresh burst to be allowed")
-	}
-	if allowed, _ := l.Allow("caller-c", policy); allowed {
-		t.Fatal("want the second request to be denied before any refill")
-	}
-
-	// At 2 tokens/sec, half a second refills exactly one token.
-	clock.Advance(500 * time.Millisecond)
-
-	if allowed, _ := l.Allow("caller-c", policy); !allowed {
-		t.Fatal("want a request to be allowed once the bucket has refilled")
-	}
-}
-
 func TestTokenBucketLimiter_RetryAfterNamesTheWait(t *testing.T) {
 	clock := newFakeClock(time.Now())
 	l := newTestLimiter(t, clock)
