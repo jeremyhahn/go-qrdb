@@ -27,8 +27,8 @@
 // This file deliberately does NOT duplicate database_barrier_cli_test.go's
 // deep dedicated-store barrier lifecycle proof (plaintext-never-on-disk,
 // restart survival, etc.) -- that semantic depth is already covered on REST.
-// TestDatabaseBarrier_CLI_PerProtocol here only proves the same lifecycle is
-// reachable and correct over every OTHER transport too.
+// The same lifecycle over every transport is proven by
+// TestCLI_DatabaseBarrier_PassphraseLifecycle_AllTransports.
 package integration_test
 
 import (
