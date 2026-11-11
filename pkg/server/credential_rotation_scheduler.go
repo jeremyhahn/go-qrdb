@@ -34,6 +34,11 @@ type credentialRotationScheduler struct {
 	now     func() time.Time
 	logger  *slog.Logger
 
+	// sealed is the node's seal-state probe, the one its transports gate
+	// on; a pass is skipped while it reports sealed. Nil means the node has
+	// no seal, so every pass runs.
+	sealed SealedWindowProbe
+
 	// ticks, when non-nil, replaces the period ticker as run's pass
 	// trigger, so a test drives each pass with one send.
 	ticks <-chan time.Time
@@ -70,6 +75,13 @@ func (r *credentialRotationScheduler) passOnce(ctx context.Context) int {
 	}
 	defer r.running.Store(false)
 
+	// A sealed node serves no credential request on any transport, so it
+	// claims, rotates and commits nothing either.
+	if r.sealed != nil && r.sealed.IsSealed() {
+		r.logger.Debug("credential rotation scheduler: node sealed, pass skipped")
+		return 0
+	}
+
 	rotated, err := r.rotator.CredentialRotateDue(ctx, r.now())
 	if err != nil {
 		r.logger.Warn("credential rotation scheduler: rotation failed",
@@ -96,16 +108,7 @@ func (s *Server) startCredentialRotationScheduler() {
 	if !ok {
 		return
 	}
-	period := s.opts.credentialRotationPeriod
-	if period <= 0 {
-		period = credentials.DefaultRotationCheckPeriod
-	}
-	scheduler := &credentialRotationScheduler{
-		rotator: rotator,
-		period:  period,
-		now:     time.Now,
-		logger:  s.logger,
-	}
+	scheduler := s.newCredentialRotationScheduler(rotator)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.credentialRotationCancel = cancel
 	s.wg.Add(1)
@@ -113,6 +116,38 @@ func (s *Server) startCredentialRotationScheduler() {
 		defer s.wg.Done()
 		scheduler.run(ctx)
 	}()
+}
+
+// newCredentialRotationScheduler builds the scheduler startCredentialRotationScheduler
+// runs: at the resolved period, gated on the seal probe the node's
+// transports are given.
+func (s *Server) newCredentialRotationScheduler(rotator credentialRotator) *credentialRotationScheduler {
+	return &credentialRotationScheduler{
+		rotator: rotator,
+		period:  s.credentialRotationPeriod(),
+		now:     time.Now,
+		logger:  s.logger,
+		sealed:  s.opts.sealedWindowProbe,
+	}
+}
+
+// credentialRotationPeriod resolves how often the rotation scheduler runs:
+// WithCredentialRotationPeriod when given, else the server configuration's
+// seal.credential_rotation_check_period, so every entry point that builds a
+// Server from a configuration (qrdbd and the embedded SDK node) honours it,
+// else credentials.DefaultRotationCheckPeriod.
+func (s *Server) credentialRotationPeriod() time.Duration {
+	if s.opts.credentialRotationPeriod > 0 {
+		return s.opts.credentialRotationPeriod
+	}
+	if s.config != nil {
+		// Load validates the period, so an error here means a hand-built
+		// configuration; the default stands in for it.
+		if period, err := s.config.Seal.CredentialRotationCheckPeriodDuration(); err == nil {
+			return period
+		}
+	}
+	return credentials.DefaultRotationCheckPeriod
 }
 
 // stopCredentialRotationScheduler stops the scheduler started by
