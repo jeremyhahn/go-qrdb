@@ -330,6 +330,12 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
 | Objstore credential handle unreadable inside go-objstore | refused at open (`objstore.CredentialUnavailableError`) naming the files | **yes** |
 | Objstore opened on a non-empty store without its format marker, or with another version | refused at open (`objstore.FormatMarkerMissingError`, `objstore.FormatVersionMismatchError`) | **yes** |
 | Objstore `local` store holding a commit journal inside its data tree (the journal belongs in the sibling `<path>.journal` tree, derived from the physical root: absolute, cleaned and with every symlink resolved, so a symlink and its target open one data tree and one journal) | refused at open (`objstore.InTreeJournalError`); not recovered, restore from a backup | **yes** |
+| Objstore `local` namespace reopened through another root/prefix split of the same directory (its journal is looked for under the other root) | refused at open (`objstore.NamespaceSplitError`); reopen it as created | **yes** |
+| Objstore prefix whose namespace directory would take an enclosing namespace's record, format marker, journal or owner-lock name (`ns/k/61_/` beside `ns/`) | refused at open, before anything is created (`objstore.NamespaceCollisionError`) | **yes** |
+| Objstore `local` prefix that is a symlink alias of another namespace's directory | opened as that one namespace: data, journal and owner lock derive from the symlink-resolved prefix, so a second alias is refused while the first is open (`objstore.NamespaceOwnedError`) and either alias replays its journal | **yes** |
+| Objstore `local` prefix that resolves outside the provider root | refused at open (`objstore.NamespaceOutsideRootError`) | **yes** |
+| Objstore `local` namespace opened while another engine, in any process, has it open | refused at open (`objstore.NamespaceOwnedError`); a `Destroy` retried on a closed engine is refused the same way and deletes nothing | **yes** |
+| `Exclusive` on an objstore engine whose provider cannot exclude a second opener (all but `local` and `memory`) | refused before `fn` runs (`storage.ExclusiveUnsupportedError`); the standalone backend's guarded verbs fall back to `storage.Guarded` (in-process exclusion) | **yes** |
 | Objstore hashed record truncated, malformed, or holding a key other than its name's | refused on read and listing (`objstore.RecordCorruptError`, `objstore.KeyMismatchError`) | **yes** |
 | Non-pebble `sm_storage` with a state machine that carries its own storage (anything but `disk`, `fast`) | rejected (`SMStorageNotApplicableError`) | **yes** |
 | A multi-key transaction or batch whose commit fails | nothing applied, on disk or to readers (`Backend.ApplyAtomic`) | **yes** |
@@ -405,9 +411,13 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   `uvarint(len(key)) || key || value` record that every read verifies. Every
   key up to the global key-length cap (`protocol.MaxClientKeyLength`, 65,535
   bytes), whatever its bytes, round-trips on every provider. `New` refuses a
-  non-empty store lacking the `qrdb-objstore-format` marker for version `2`
+  non-empty store lacking the `qrdb-objstore-format` marker for version `3`
   (`FormatMarkerMissingError`, `FormatVersionMismatchError`), so a store
-  written in any other layout is refused, not misread.
+  written in any other layout is refused, not misread. The marker records the
+  naming limit (`3\nname-limit=<n>\n`) and a reopen adopts it, refusing one
+  that no longer fits beneath its prefix (`NameLimitError`). `Destroy`
+  deletes only the engine's journal, marker and canonical `k/`/`h/` record
+  names, so an engine nested beneath its prefix keeps every object.
   There is no migration. See
   [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
   A batch commits through a single journal object (publish, apply, clear;
@@ -421,7 +431,17 @@ Cloud object-storage backends come from go-objstore and are build-tag gated:
   and writes under one lock, so a commit cannot fail between that check and
   that write; `Set` and `Delete` still run concurrently with each other. While
   the provider still cannot apply the journal, that next write fails and the
-  journal stays.
+  journal stays. A `local` engine owns its namespace from `New` to `Close`
+  through a non-blocking OS lock in the sibling `<path>.owner` tree
+  (`filelock.File.TryLock`), so it keeps `Exclusive`, as `memory` does; on any
+  other provider `Exclusive` returns `storage.ExclusiveUnsupportedError` and
+  `Guarded` gives in-process exclusion. A `local` reopen under another
+  root/prefix split is refused (`NamespaceSplitError`). A `local` prefix is
+  resolved through its symlinks once at open (`canonicalPrefix`), and data,
+  journal and owner lock all use the result, so aliases are one namespace; a
+  prefix that would make a directory of an enclosing namespace's object is
+  refused by `validObjectPrefix` (`NamespaceCollisionError`). See
+  [architecture.md](architecture.md#the-objstore-engine-encoded-object-names).
 - **Pebble engine**: an LSM store; the production default.
 - **Memory engine**: nothing survives the process.
 
@@ -599,7 +619,7 @@ non-replicated binding, is decided with OS-7.
 | Condition | Behavior | Fails closed? |
 |---|---|---|
 | `provider` is `glacier` or `azurearchive` | `ArchiveTierUnsupportedError` at construction | **yes** |
-| Store written in the encoded-name layout (`qrdb-objstore-format` version `2`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
+| Store written in the encoded-name layout (`qrdb-objstore-format` version `3`) | refused at open with the typed format error; no migration (OS-5) | **yes** |
 | Barrier sealed, no working encryptor, `WithRemote` configured | refused at open, matching `SMStorageUnencryptedError`'s precedent | **yes** |
 | A second instance attempts to open an already-owned `CreatorID`/prefix | refused — Pebble's own manifest/lock detects the conflict | **yes** |
 | go-objstore `ReadObject` for an object this instance did not write (prefix violated) | not expected to occur (OS-3); if it does, a corruption-class error, not silently served | **yes** |

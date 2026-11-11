@@ -11,10 +11,10 @@ an engine; none of them expose the engine itself.
 
 What is observable over the wire is a database's configured backend, through
 [../databases/api.md](../databases/api.md): `DatabaseInfo.Backend`
-(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A per-database
-`objstore` backend passes config validation but is refused when the database
-opens (`database.InvalidBackendError`); `objstore` serves only as the
-standalone node's `storage.backend`.
+(`pebble | memory | file | raft | objstore`) and `DatabaseInfo.DataDir`. A
+standalone node opens a per-database `objstore` backend on its
+`storage.objstore` provider, under the database's own object prefix; a
+Raft-mode node refuses one (`database.ObjstoreRaftModeError`).
 
 ### Optional `GuardedStorage`
 

@@ -21,6 +21,42 @@ are not reconstructed here — their history is in the git log.
   credential, the adapter holds no plaintext copy, and both handles are
   destroyed when the open returns, on success and on every error path.
   qrdbd never echoes either value or writes it under its data directory.
+- **`objstore.WithObjectPrefix` namespaces an engine's objects on a shared
+  provider** (#1424). The prefix must be relative, end in `/`, have no empty,
+  `.` or `..` segment and no backslash, and leave room for every name the
+  engine writes (`objstore.ObjectPrefixError` otherwise); keys are named
+  within the provider limit less the prefix, so every object name fits. A
+  legacy in-tree journal inside the prefix refuses the open, and dropping an
+  objstore database deletes the engine's own objects in its namespace through
+  `Engine.Destroy` (the `ObjstoreOpener` returns the reclaim), or fails the drop;
+  a standalone node (`qrdbd` and the Go SDK node) now opens and serves every
+  `backend: objstore` database on its `storage.objstore` provider, under
+  `databases/<name>/` or `tenants/<sha256(tenant)>/databases/<name>/`, and a
+  Raft-mode node refuses one with `database.ObjstoreRaftModeError`;
+  a barrier-enabled database is reclaimed too, an interrupted drop can be
+  retried, and a write racing a drop is refused. Guarded verbs on an objstore
+  database (`PutIfAbsent`, `CompareAndSwap`, `CompareAndDelete`) resolve a
+  pending journal before comparing. The format marker is now version 3 and
+  records the naming limit (`3\nname-limit=<n>\n`), so objects reopen intact
+  under another spelling of their namespace (a limit that no longer fits is
+  refused with `objstore.NameLimitError`, a version 2 marker with
+  `FormatVersionMismatchError`), and `Destroy` deletes only its journal,
+  marker and canonical record names, leaving a database nested beneath its
+  prefix intact. On `local`, whose journal sits in the sibling `.journal` tree
+  of the root it was opened with, a reopen through another root/prefix split
+  is refused (`objstore.NamespaceSplitError`) rather than missing an
+  interrupted batch, and a namespace has one owner: a second open, in any
+  process, is refused (`objstore.NamespaceOwnedError`) under an OS lock in
+  the sibling `.owner` tree. A `local` prefix is resolved through its
+  symlinks at open, so aliases of one directory share one owner and one
+  journal (one resolving outside the root is refused with
+  `objstore.NamespaceOutsideRootError`), and a prefix whose directory would
+  take an enclosing namespace's record or control-file name is refused with
+  `objstore.NamespaceCollisionError`. `storage.Exclusive` is kept on `local` and
+  `memory` only; on every other provider, which go-objstore gives no
+  conditional create to claim a namespace with, it is refused with
+  `storage.ExclusiveUnsupportedError`, and guarded verbs fall back to the new
+  `storage.Guarded` (in-process exclusion).
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's

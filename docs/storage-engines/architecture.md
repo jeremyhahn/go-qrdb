@@ -304,14 +304,79 @@ not a record — for example, a provider's in-flight temporary file — and
 every listing skips it.
 
 **Existing data.** `New` writes a format marker object
-(`qrdb-objstore-format`, version `2`) into an empty store, and refuses to
+(`qrdb-objstore-format`, version `3`) into an empty store, and refuses to
 open a store that is not empty and has no marker (`FormatMarkerMissingError`)
-or that carries another version (`FormatVersionMismatchError`). A store
+or that carries another version or a malformed body
+(`FormatVersionMismatchError`). The marker's body is the version, then the
+store's naming limit — the longest object name it writes, 1,024 bytes less
+the length of the object prefix it was created under — as
+`3\nname-limit=<n>\n`. A reopen adopts the recorded limit, so the same
+objects reached through another spelling of their namespace (another root
+plus a shorter or longer prefix) split keys between direct and hashed names
+exactly as they were written; a recorded limit whose names no longer fit
+beneath the reopening prefix is refused (`NameLimitError`). On `local`, whose
+commit journal sits in the sibling `<path>.journal` tree named after the root
+it was opened with, another spelling would look for the journal elsewhere and
+miss an interrupted batch. Two spellings of one directory always differ in
+prefix length, so a `local` reopen whose limit differs from the recorded one
+is refused (`NamespaceSplitError`, naming both prefix lengths) and the store
+must be reopened as it was created. A canonical journal location was rejected:
+for a nested namespace it would fall inside its parent's walked tree. Objects under a
+nested engine's namespace (a directory holding its own marker) do not make a
+store non-empty. A store
 written with verbatim object names has no marker, so it is refused at open,
 not read with its keys silently missing. There is no migration code: move
 the data by reading it out through the binary that wrote it and writing it
 in through this one, or start the store empty. The store must be dedicated to the engine:
 any object the engine did not write makes an unmarked store non-empty.
+`Destroy` removes only what the engine owns: its journal, its marker, and
+the canonical record names under `k/` and `h/`. A nested engine's names
+always carry a non-hex letter in their first segment, so none is ever a
+canonical record name, and an engine at `ns/child/` or `ns/k/` keeps every
+object when the one at `ns/` is destroyed.
+
+**A namespace never takes an enclosing namespace's object name.** Any run of
+a prefix's leading segments may itself be a namespace, so a prefix is refused
+(`NamespaceCollisionError`, before anything is created) when the rest of it
+below such a run spells an object that namespace owns: a canonical record
+name starting at a `k` or `h` segment (`ns/k/61_/` would make a directory of
+the record for key `a` under `ns/`), or a segment naming the format marker,
+the journal or the owner lock. Record names are judged at the widest naming
+limit, which accepts every name a narrower one does. A namespace in an
+enclosing one's directories (`ns/k/`, `ns/k/61/`, `ns/child/`) is accepted,
+and the layout of every store is unchanged.
+
+**One identity per `local` namespace.** On `local` the prefix is resolved
+once at open, below the physical root: every symlink along the part of the
+path that exists is resolved and the rest kept as written. The data names,
+the journal and the owner lock all derive from that one canonical prefix, so
+two aliases of one directory (`aa/` and `bb/` both linking to `cc/`, of any
+length) are one namespace with one owner and one journal. A prefix that
+resolves outside the root is refused (`NamespaceOutsideRootError`), and a
+canonical prefix is validated like a written one.
+
+**One owner per namespace, and `Exclusive`.** `storage.Exclusive` promises
+that no other writer, in this process or another, interleaves with `fn`. An
+engine can keep that promise only where one engine owns the namespace, and
+go-objstore offers no conditional create to claim it with, so each provider
+takes the option it can:
+
+- **`local`** takes a non-blocking advisory OS lock (`pkg/util/filelock`,
+  `flock(2)` / `LockFileEx`) on `qrdb-objstore-owner` under the prefix in the
+  sibling `<path>.owner` tree at open, and holds it until `Close` or
+  `Destroy`. A second open of the namespace, in any process, is refused
+  (`NamespaceOwnedError`); a nested namespace is its own. The kernel drops the
+  lock with the process, so a crash leaves no stale owner. A `Destroy` retried
+  on a closed engine takes the lock back first and deletes nothing while
+  another engine owns the namespace.
+- **`memory`** is private to the engine that opened it, so it has one owner.
+- **Every other provider** (`s3`, `gcs`, `azure`, and any registered one)
+  cannot exclude a second opener, so `Exclusive` is refused before running
+  `fn` (`storage.ExclusiveUnsupportedError`). The engine instead offers
+  `storage.Guarded`, which settles a pending journal and holds the engine's
+  write lock: in-process exclusion only. The standalone backend runs its
+  guarded verbs under `Exclusive`, falls back to `Guarded` when `Exclusive`
+  is unsupported, and to its own mutex alone when neither applies.
 
 ### Alternatives rejected
 
@@ -443,10 +508,11 @@ the model itself:
 - **It is outside the barrier.** A standalone `objstore` store starts with
   one WARN and an `unencryptedAtRest` capability entry naming the gap; the
   barrier's encrypting file system does not reach a provider's objects.
-- **It is refused where a database needs it.** A per-database `objstore`
-  backend is refused when the database opens
-  (`database.InvalidBackendError`), and `objstore` is refused as a Raft hot
-  apply path.
+- **It is refused under Raft.** A standalone node opens a per-database
+  `objstore` backend on its `storage.objstore` provider, each database under
+  its own object prefix; a Raft-mode node refuses one
+  (`database.ObjstoreRaftModeError`), because `objstore` is refused as a Raft
+  hot apply path.
 
 ### Direction this design proposes
 
@@ -647,7 +713,7 @@ Pebble's object-naming code (`remoteObjectName`) never takes a qrdb key as
 input, so the direct and hashed key encodings, the per-name length limits
 they work within, and the hashed records' key verification all go away with
 the one-object-per-key engine; nothing replaces them. A store written in the
-encoded-name layout (format marker `qrdb-objstore-format`, version `2`) is a
+encoded-name layout (format marker `qrdb-objstore-format`, version `3`) is a
 different on-disk format from an LSM store. The shipped engine already
 refuses a foreign layout at open rather than misread it, and ships no
 migration code.

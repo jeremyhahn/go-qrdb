@@ -14,6 +14,12 @@
 
 package objstore
 
+import (
+	"strconv"
+
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
+)
+
 // UnsupportedProviderError indicates the requested go-objstore provider is not
 // registered in this build. Cloud providers are compiled in only when
 // go-objstore's matching build tag is set (e.g. -tags awss3 for "s3").
@@ -58,6 +64,63 @@ type FormatVersionMismatchError struct {
 func (e *FormatVersionMismatchError) Error() string {
 	return "objstore: store format version " + e.Found + " does not match this build's " + e.Want +
 		" — there is no migration between object layouts"
+}
+
+// NameLimitError is returned by New when the store's format marker records a
+// naming limit longer than the object prefix leaves room for: names written
+// to that limit would no longer fit within objcommon.MaxKeyLength beneath
+// this prefix, so some keys could neither be read nor listed.
+type NameLimitError struct {
+	// Persisted is the naming limit the store's marker records.
+	Persisted int
+	// Max is the longest naming limit this object prefix allows.
+	Max int
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *NameLimitError) Error() string {
+	return "objstore: store naming limit " + strconv.Itoa(e.Persisted) + " exceeds the " +
+		strconv.Itoa(e.Max) + " this object prefix allows"
+}
+
+// NamespaceSplitError is returned by New when a provider that keeps its commit
+// journal in a sibling tree named after its root (see walkedRoots) reopens a
+// namespace through a different split of root and object prefix than the one
+// that created it. The journal of such a spelling is looked for elsewhere, so
+// an interrupted batch would go unrecovered; the namespace must be reopened
+// with the root and prefix it was created with. The split is told apart by the
+// naming limit the format marker records, which is objcommon.MaxKeyLength less
+// the creating prefix's length: two spellings of one directory differ in
+// prefix length.
+type NamespaceSplitError struct {
+	// Provider is the provider name the open used.
+	Provider string
+	// Persisted is the naming limit the store's marker records.
+	Persisted int
+	// Limit is the naming limit this open's object prefix gives.
+	Limit int
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *NamespaceSplitError) Error() string {
+	return "objstore: provider " + strconv.Quote(e.Provider) + " namespace was created with an object prefix of " +
+		strconv.Itoa(objcommon.MaxKeyLength-e.Persisted) + " bytes, and this open reaches it with one of " +
+		strconv.Itoa(objcommon.MaxKeyLength-e.Limit) + "; reopen it with the root and prefix it was created with, where its commit journal is"
+}
+
+// NamespaceOwnedError is returned by New when another open engine, in this
+// process or another, owns the namespace, and by Destroy on a closed engine
+// whose namespace another engine has opened since. One engine at a time owns
+// a namespace, so the exclusion Exclusive promises holds against every other
+// writer.
+type NamespaceOwnedError struct {
+	// Provider is the provider name the open used.
+	Provider string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *NamespaceOwnedError) Error() string {
+	return "objstore: provider " + strconv.Quote(e.Provider) + " namespace is open in another engine; close it first"
 }
 
 // RecordCorruptError reports that the record stored under a hashed object

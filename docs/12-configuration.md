@@ -479,7 +479,7 @@ Configures the underlying storage backend.
 | `max_open_files` | int    | `0`      | no       | Maximum number of open files for PebbleDB         |
 | `volume_pools`   | []VolumePoolConfig | `[]` | no | Map of this node's local mounts to catalog pool names; see [volume-pools](volume-pools/user.md#2-map-it-on-each-node) |
 | `allow_degraded_volume_boot` | bool | `false` | no | Start even when a `volume_pools` entry fails to open, skipping only that pool's databases (`--allow-degraded-volume-boot`) |
-| `objstore`       | ObjstoreConfig | — | no | Object-storage backend settings, used when a backend is `objstore`; see [storage-engines](storage-engines/engineering.md#configuration) |
+| `objstore`       | ObjstoreConfig | — | no | Object-storage backend settings, used when a backend is `objstore`. They also serve every `backend: objstore` database of a standalone node, each under `databases/<name>/`, or `tenants/<sha256(tenant)>/databases/<name>/` for a tenant's database; a Raft-mode node refuses such a database with `database.ObjstoreRaftModeError`. See [storage-engines](storage-engines/engineering.md#configuration) |
 
 **Validation rules:**
 
@@ -489,6 +489,9 @@ Configures the underlying storage backend.
 - `objstore.settings` must not carry a credential (`secret_key`, `access_key_id`, `account_key`, `sas_token`, `session_token` and their spellings): the provider credential is referenced by file under `objstore.credentials`.
 - `objstore.settings` and `volume_pools[].options` keys pass to the provider exactly as written (go-objstore's `forcePathStyle` stays camelCase); two keys in one map that differ only in case are refused.
 - `objstore.credentials.key_file` requires `objstore.credentials.secret_file`.
+- An `objstore` store opens only with a format-3 `qrdb-objstore-format` marker (`3\nname-limit=<n>\n`) or empty, when the marker is written; the recorded naming limit must fit beneath the database's object prefix (`objstore.NameLimitError` otherwise), and a version-2 or malformed marker is refused (`objstore.FormatVersionMismatchError`). Dropping a database removes only its own objects.
+- A `local` objstore namespace has one owner: a second open while it is open, in any process, is refused (`objstore.NamespaceOwnedError`), and a reopen through another split of `path` and object prefix that reaches the same directory is refused (`objstore.NamespaceSplitError`). The owner locks live in the sibling `<path>.owner` tree, beside `<path>.journal`. A `local` prefix is resolved through its symlinks at open, so two aliases of one directory are one namespace, and one that resolves outside `path` is refused (`objstore.NamespaceOutsideRootError`).
+- An object prefix is refused (`objstore.NamespaceCollisionError`) when its directory would take the name of an object of a namespace enclosing it: a record name (`ns/k/61_/` beside `ns/`) or the `qrdb-objstore-format`, `qrdb-objstore-journal` or `qrdb-objstore-owner` name.
 
 **`storage.objstore.credentials`** (optional; omit both to use the provider's default credential chain):
 
