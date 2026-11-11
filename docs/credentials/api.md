@@ -25,6 +25,14 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List migration conflicts | `GET /v1/credentials/migration-conflicts` | `CredentialMigrationConflicts` | `credential.MigrationConflicts` | `qrdb_credential_migration_conflicts` | `CredentialMigrationConflicts` | `credentials:list` |
 | Resolve a migration conflict | `POST /v1/credentials/{name}/migration-resolve` | `CredentialResolveMigrationConflict` | `credential.ResolveMigrationConflict` | `qrdb_credential_resolve_migration_conflict` | `CredentialResolveMigrationConflict` | `credentials:rotate` |
 
+**A `{name}` holding `/` or `%` is escaped twice in a REST path.** The server
+routes and authorizes on the once-decoded path, so `{name}` must still be one
+segment after that decode: escape `%` as `%25` and `/` as `%2F`, then
+percent-encode the result as a path segment. `db/main` travels as
+`db%252Fmain` and `a%b` as `a%2525b`; the server unescapes the segment once
+more to get the name, and answers 400 when that fails. The Go SDK's REST
+transport does this for you; the other transports carry the name unchanged.
+
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.
 
