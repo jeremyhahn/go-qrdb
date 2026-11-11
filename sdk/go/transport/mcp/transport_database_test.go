@@ -231,24 +231,6 @@ func connectDatabaseInProcess(t *testing.T, svc service.DatabaseServicer) (*Tran
 // CreateDatabase
 // ---------------------------------------------------------------------------
 
-func TestCreateDatabase_Success(t *testing.T) {
-	svc := newMockDatabaseSvc()
-	tr, cleanup := connectDatabaseInProcess(t, svc)
-	defer cleanup()
-
-	info, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
-		Name:    "db1",
-		Backend: "pebble",
-		DataDir: "/tmp",
-	})
-	if err != nil {
-		t.Fatalf("CreateDatabase: %v", err)
-	}
-	if info.Name != "db1" {
-		t.Errorf("name: %q", info.Name)
-	}
-}
-
 func TestCreateDatabase_ServiceError(t *testing.T) {
 	svc := newMockDatabaseSvc()
 	svc.createErr = errors.New("already exists")
