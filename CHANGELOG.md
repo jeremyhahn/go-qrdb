@@ -218,6 +218,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **Tenant credentials are stored in the tenant's replicated home store.** The home store is a tenant's credential store of record, so a policy, value or rotation claim written through one node is the same record on every node; the tenant barrier is the one-time migration source of records under the old layout (#1201).
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
