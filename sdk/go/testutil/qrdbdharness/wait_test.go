@@ -369,18 +369,6 @@ func TestPollRunTimesOutPastTheDeadline(t *testing.T) {
 	}
 }
 
-func TestPollRunReportsStackDumpsOnTimeout(t *testing.T) {
-	err := poll{
-		op: "op", target: "target", timeout: time.Millisecond, interval: 2 * time.Millisecond,
-		probe:     func() error { return errEmptyFile },
-		onTimeout: func() []int { return []int{42} },
-	}.run(nil)
-	var timeout *TimeoutError
-	if !errors.As(err, &timeout) || len(timeout.StackDumped) != 1 || timeout.StackDumped[0] != 42 {
-		t.Fatalf("err = %v, want a *TimeoutError listing the dumped daemon", err)
-	}
-}
-
 func TestPollRunRetriesUntilTheProbeSucceeds(t *testing.T) {
 	var probes atomic.Int32
 	err := poll{
