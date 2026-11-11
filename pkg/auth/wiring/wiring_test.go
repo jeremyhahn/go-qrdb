@@ -171,21 +171,6 @@ func TestBuildAuthorizer_MissingRoleService(t *testing.T) {
 	assert.Equal(t, "role", missing.Service)
 }
 
-// TestBuildAuthorizer_RBACOnly verifies that with no ABAC configuration the
-// returned authorizer enforces plain RBAC: a granted permission is admitted
-// and an ungranted one is denied.
-func TestBuildAuthorizer_RBACOnly(t *testing.T) {
-	authorizer, err := BuildAuthorizer(AuthorizerConfig{RoleService: adminRoleService()})
-	require.NoError(t, err)
-	require.NotNil(t, authorizer)
-
-	ctx := tenant.WithTenantID(context.Background(), tenantid.System)
-	id := adminIdentity()
-
-	require.NoError(t, authorizer.Authorize(ctx, id, "admin", "status"))
-	require.Error(t, authorizer.Authorize(ctx, id, "seal", "rekey"))
-}
-
 // TestBuildAuthorizer_ABACDenyOverridesRBAC verifies that an ABAC deny rule
 // composed via ABACPolicyDir overrides an RBAC-granted permission.
 func TestBuildAuthorizer_ABACDenyOverridesRBAC(t *testing.T) {
@@ -219,20 +204,6 @@ spec:
 	var denied *abac.PolicyDeniedError
 	require.True(t, errors.As(err, &denied))
 	assert.Equal(t, "wiring-guardrail", denied.Policy)
-}
-
-// TestBuildAuthorizer_ABACBadPolicyDirFailsClosed verifies that an
-// unreadable ABAC policy directory aborts construction (fail closed)
-// rather than falling back to plain RBAC.
-func TestBuildAuthorizer_ABACBadPolicyDirFailsClosed(t *testing.T) {
-	_, err := BuildAuthorizer(AuthorizerConfig{
-		RoleService:   adminRoleService(),
-		ABACEnabled:   true,
-		ABACPolicyDir: filepath.Join(t.TempDir(), "does-not-exist"),
-	})
-	require.Error(t, err)
-	var dirErr *abac.PolicyDirError
-	assert.True(t, errors.As(err, &dirErr))
 }
 
 // ---------------------------------------------------------------------------

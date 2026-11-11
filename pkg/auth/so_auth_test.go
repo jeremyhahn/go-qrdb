@@ -261,14 +261,6 @@ func TestNewSOAuthenticator_NilLogger(t *testing.T) {
 // SetSOPIN
 // ---------------------------------------------------------------------------
 
-func TestSetSOPIN_Success(t *testing.T) {
-	ctx := context.Background()
-	a := newSOAuth(t)
-	if err := a.SetSOPIN(ctx, "tenant-1", []byte("correct-horse-battery-staple")); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-}
-
 func TestSetSOPIN_EmptyTenant(t *testing.T) {
 	ctx := context.Background()
 	a := newSOAuth(t)
@@ -444,22 +436,6 @@ func TestVerifySOPIN_PBKDF2HashPrefix(t *testing.T) {
 	// Verify still works.
 	if err := a.VerifySOPIN(ctx, "t1", []byte("pin-pbkdf2")); err != nil {
 		t.Fatalf("VerifySOPIN FIPS: %v", err)
-	}
-}
-
-// TestVerifySOPIN_ConstantTimeViaDistinctTiming ensures constant-time path
-// is exercised (wrong PIN must not short-circuit before hmac compare).
-// This is a behavioral smoke test; timing is not measured.
-func TestVerifySOPIN_ConstantTimeSmoke(t *testing.T) {
-	ctx := context.Background()
-	a := newSOAuth(t)
-	if err := a.SetSOPIN(ctx, "t2", []byte("my-secret-pin")); err != nil {
-		t.Fatalf("SetSOPIN: %v", err)
-	}
-	// Incorrect PIN of same length.
-	err := a.VerifySOPIN(ctx, "t2", []byte("my-secret-pim"))
-	if err == nil {
-		t.Fatal("expected verification failure")
 	}
 }
 

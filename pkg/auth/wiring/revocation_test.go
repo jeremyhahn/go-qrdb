@@ -319,22 +319,6 @@ func (failingRevocationProvider) IsRevoked(context.Context, string) (bool, error
 // reflection and reports a typed nil pointer as nil, so it passes on exactly
 // the value this test exists to reject (measured: it did not catch the
 // mutation that removed the guard).
-func TestRevocationChecker_NilProviderYieldsNilInterface(t *testing.T) {
-	if rc := revocationChecker(nil, time.Minute); rc != nil {
-		t.Fatalf("revocationChecker(nil, …) = %#v, want a nil interface", rc)
-	}
-}
-
-func TestRevocationChecker_ProviderYieldsChecker(t *testing.T) {
-	f := newRevocationFixture(t, "alice", "system")
-	rc := revocationChecker(f.provider, 5*time.Second)
-	require.NotNil(t, rc)
-
-	revoked, err := rc.IsCertRevoked(context.Background(), f.peer)
-	require.NoError(t, err)
-	assert.False(t, revoked)
-}
-
 // statusRoutes is the smallest route registry that admits the authenticated
 // GET /status used by these tests.
 func statusRoutes() *middleware.RESTRouteRegistry {

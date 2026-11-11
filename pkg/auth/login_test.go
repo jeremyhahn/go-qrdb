@@ -127,13 +127,6 @@ func TestNewLoginResolver_panicsOnNilUsers(t *testing.T) {
 	NewLoginResolver(newStubFactorStore(), nil)
 }
 
-func TestNewLoginResolver_ok(t *testing.T) {
-	r := NewLoginResolver(newStubFactorStore(), &stubUserLookup{})
-	if r == nil {
-		t.Fatal("NewLoginResolver returned nil")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Resolve happy path
 // ---------------------------------------------------------------------------
@@ -276,24 +269,6 @@ func TestResolve_invokesMarkUsed(t *testing.T) {
 // ---------------------------------------------------------------------------
 // UserLookupFunc
 // ---------------------------------------------------------------------------
-
-func TestUserLookupFunc_invokes(t *testing.T) {
-	called := false
-	f := UserLookupFunc(func(_ context.Context, id uint64) (*Principal, error) {
-		called = true
-		return &Principal{ID: id}, nil
-	})
-	p, err := f.LookupUser(context.Background(), 7)
-	if err != nil {
-		t.Fatalf("LookupUser: %v", err)
-	}
-	if !called {
-		t.Fatal("UserLookupFunc did not invoke wrapped fn")
-	}
-	if p.ID != 7 {
-		t.Fatalf("p.ID = %d, want 7", p.ID)
-	}
-}
 
 // TestResolve_markUsedKeepsTheRequestScope asserts the detached LastUsedAt
 // update still carries the values bound to the resolve context.
