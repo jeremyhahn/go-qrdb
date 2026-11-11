@@ -713,6 +713,36 @@ func TestMigrateLegacy_NamesEndingInRecordSuffixesAreCredentials(t *testing.T) {
 	})
 }
 
+// TestMigrateLegacy_MetaWithTrailingDataIsACredential proves a legacy
+// "<name>#meta" value that only begins with a metadata document is migrated
+// as a credential under its full name, never as <name>'s metadata.
+func TestMigrateLegacy_MetaWithTrailingDataIsACredential(t *testing.T) {
+	ctx := context.Background()
+	for _, value := range []string{`{"current_version":1}secret`, `{"current_version":1}{"current_version":2}`} {
+		t.Run(value, func(t *testing.T) {
+			legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+			own := map[string]string{"foo": "foo-value", "foo#meta": value}
+			for name, v := range own {
+				require.NoError(t, legacy.Put(ctx, legacyCredentialPrefix+name, []byte(v)))
+			}
+			svc := newMigratingService(t, legacy)
+			require.NoError(t, svc.BindStore(ctx, shared))
+
+			names, err := svc.ListCredentials(ctx)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"foo", "foo#meta"}, names)
+			for name, v := range own {
+				assert.Equal(t, v, retrieveString(t, svc, name), name)
+			}
+			meta, err := svc.loadBarrierMeta(ctx, "foo")
+			require.NoError(t, err)
+			assert.Zero(t, meta.CurrentVersion)
+			assert.Empty(t, meta.History)
+			assert.Empty(t, legacyKeys(t, legacy))
+		})
+	}
+}
+
 // putIfAbsentHookStore calls onPutIfAbsent after each PutIfAbsent the store
 // beneath has answered, so a test can place another writer between a
 // migration's claim and what the migration does next.
