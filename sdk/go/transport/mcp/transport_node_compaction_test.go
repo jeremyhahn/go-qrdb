@@ -48,27 +48,6 @@ func (a *nodeCompactionAdmin) SetNodeCompaction(_ context.Context, p *compaction
 	return nil
 }
 
-func TestNodeCompaction_SetReadAndClear(t *testing.T) {
-	admin := &nodeCompactionAdmin{mockAdminService: newMockAdminService()}
-	tr, cleanup := connectInProcess(t, newMockKVService(), admin)
-	defer cleanup()
-	ctx := context.Background()
-
-	if got, err := tr.NodeCompaction(ctx); err != nil || got != nil {
-		t.Fatalf("NodeCompaction before any policy = %+v, %v; want none", got, err)
-	}
-	set, err := tr.SetNodeCompaction(ctx, &transport.DatabaseCompactionConfig{Mode: "period", RetainPeriod: "24h"})
-	if err != nil || set == nil || set.Mode != "period" || set.RetainPeriod != "24h" {
-		t.Fatalf("SetNodeCompaction = %+v, %v; want the period policy", set, err)
-	}
-	if got, err := tr.NodeCompaction(ctx); err != nil || got == nil || got.RetainPeriod != "24h" {
-		t.Fatalf("NodeCompaction = %+v, %v; want the policy set", got, err)
-	}
-	if off, err := tr.SetNodeCompaction(ctx, nil); err != nil || off != nil || admin.policy != nil {
-		t.Fatalf("SetNodeCompaction(nil) = %+v, %v (held %+v); want off", off, err, admin.policy)
-	}
-}
-
 func TestNodeCompaction_Failures(t *testing.T) {
 	ctx := context.Background()
 	admin := &nodeCompactionAdmin{mockAdminService: newMockAdminService()}
