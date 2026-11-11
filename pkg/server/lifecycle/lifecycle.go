@@ -1627,13 +1627,16 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
-// credentialStoreEncryptsAtRest reports whether the data plane of a node
-// whose primary engine is backend keeps the credential records encrypted at
-// rest. Pebble and file write through the barrier's at-rest Encryptor, and
-// memory keeps nothing at rest; an objstore backend writes the bytes it is
-// given to its bucket unencrypted.
-func credentialStoreEncryptsAtRest(backend database.BackendType) bool {
-	return backend != database.BackendObjstore
+// credentialStoreOnDataPlane reports whether the data plane of a node whose
+// primary engine is backend can hold the credential records: it must keep
+// them encrypted at rest and across a restart. Pebble and file write through
+// the barrier's at-rest Encryptor to disk. An objstore backend writes the
+// bytes it is given to its bucket unencrypted, and a memory backend keeps
+// nothing across a restart, so binding either would lose a credential's
+// confidentiality or the credential itself (legacy migration deletes the
+// barrier originals once copied).
+func credentialStoreOnDataPlane(backend database.BackendType) bool {
+	return backend != database.BackendObjstore && backend != database.BackendMemory
 }
 
 // buildSealServices constructs the security services that depend on the
@@ -1648,16 +1651,18 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// the same record on every node.
 		//
 		// The records are written to the data plane as they are, so the
-		// data plane must encrypt at rest. A standalone objstore backend
-		// does not, so on it the system seal barrier, which encrypts every
-		// record it stores, is bound as the credential store instead.
+		// data plane must encrypt at rest and survive a restart. A
+		// standalone objstore backend does not encrypt and a memory backend
+		// does not persist, so on either the system seal barrier, which
+		// encrypts every record it stores on its own durable store, is
+		// bound as the credential store instead.
 		//
 		// The manual strategy keeps its credentials in protected memory
 		// and writes nothing to the data plane, so it binds no store and
 		// starts on any backend.
 		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
 			var credStore credentials.Store = kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
-			if !credentialStoreEncryptsAtRest(infra.Backend) {
+			if !credentialStoreOnDataPlane(infra.Backend) {
 				if infra.SealBarrier == nil {
 					return &NilSealBarrierError{}
 				}
