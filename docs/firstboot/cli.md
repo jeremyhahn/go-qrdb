@@ -67,7 +67,12 @@ FIPS 140-3 mode) the system SO is required.** Role create and the built-in
 role reconciles run only as a separate SO, and the system admin can never be
 given the `so` role. A deployment that booted without an SO could therefore
 never manage its roles. First boot refuses it, before any write, with
-`*firstboot.SystemSORequiredError`, and `qrdbd start` exits. The standard
+`*firstboot.SystemSORequiredError`, and `qrdbd start` exits. A boot that
+carries neither a system SO nor an admin credential (no admin certificate,
+CSR or CA to issue one, and no admin already bound) defers the SO instead:
+first boot completes and grants no SO authority, and the `qrdb init`
+ceremony, the first step that needs an SO, still refuses without one
+(`*ceremony.SystemSORejectedError`). The standard
 posture keeps the SO optional. Enrolment is idempotent across restarts: once
 the SO is enrolled its pending record is marked consumed, and a later strict
 boot counts it as present.

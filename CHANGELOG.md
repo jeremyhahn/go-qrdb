@@ -255,6 +255,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **A strict first boot with no system SO and no admin credential defers the SO** instead of refusing with `*firstboot.SystemSORequiredError`; the ceremony still refuses without one (`*ceremony.SystemSORejectedError`), and a boot that carries an admin credential still requires the SO (#1129).
 - **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
   (#1128), shared by tenant create and the system SO:
   `bootstrap.IncompleteTenantSOError` is now `firstboot.IncompleteSOError`,
