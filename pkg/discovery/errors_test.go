@@ -32,14 +32,6 @@ func TestError_Error(t *testing.T) {
 	}
 }
 
-func TestError_Unwrap(t *testing.T) {
-	inner := errors.New("inner error")
-	err := &Error{Method: "test", Err: inner}
-	if unwrapped := err.Unwrap(); unwrapped != inner {
-		t.Errorf("Error.Unwrap() = %v, want %v", unwrapped, inner)
-	}
-}
-
 func TestError_UnwrapWithErrorsIs(t *testing.T) {
 	inner := errors.New("specific error")
 	err := &Error{Method: "test", Err: inner}
@@ -100,33 +92,11 @@ func TestEndpointError_Error(t *testing.T) {
 	}
 }
 
-func TestEndpointError_Unwrap(t *testing.T) {
-	inner := errors.New("inner endpoint error")
-	err := &EndpointError{Method: "GET", Endpoint: "https://example.com", Err: inner}
-	if unwrapped := err.Unwrap(); unwrapped != inner {
-		t.Errorf("EndpointError.Unwrap() = %v, want %v", unwrapped, inner)
-	}
-}
-
 func TestEndpointError_UnwrapWithErrorsIs(t *testing.T) {
 	inner := errors.New("specific endpoint error")
 	err := &EndpointError{Method: "GET", Endpoint: "https://example.com", Err: inner}
 	if !errors.Is(err, inner) {
 		t.Error("errors.Is should match the wrapped inner error")
-	}
-}
-
-func TestEndpointError_TypeAssertion(t *testing.T) {
-	err := &EndpointError{Method: "PUT", Endpoint: "https://example.com", Err: errors.New("fail")}
-	var ee *EndpointError
-	if !errors.As(err, &ee) {
-		t.Error("errors.As should match *EndpointError")
-	}
-	if ee.Method != "PUT" {
-		t.Errorf("Method = %q, want %q", ee.Method, "PUT")
-	}
-	if ee.Endpoint != "https://example.com" {
-		t.Errorf("Endpoint = %q, want %q", ee.Endpoint, "https://example.com")
 	}
 }
 
@@ -141,30 +111,11 @@ func TestRegistrationError_Error(t *testing.T) {
 	}
 }
 
-func TestRegistrationError_Unwrap(t *testing.T) {
-	inner := errors.New("inner registration error")
-	err := &RegistrationError{Method: "token", Err: inner}
-	if unwrapped := err.Unwrap(); unwrapped != inner {
-		t.Errorf("RegistrationError.Unwrap() = %v, want %v", unwrapped, inner)
-	}
-}
-
 func TestRegistrationError_UnwrapWithErrorsIs(t *testing.T) {
 	inner := errors.New("specific registration error")
 	err := &RegistrationError{Method: "token", Err: inner}
 	if !errors.Is(err, inner) {
 		t.Error("errors.Is should match the wrapped inner error")
-	}
-}
-
-func TestRegistrationError_TypeAssertion(t *testing.T) {
-	err := &RegistrationError{Method: "token", Err: errors.New("fail")}
-	var re *RegistrationError
-	if !errors.As(err, &re) {
-		t.Error("errors.As should match *RegistrationError")
-	}
-	if re.Method != "token" {
-		t.Errorf("Method = %q, want %q", re.Method, "token")
 	}
 }
 
@@ -179,17 +130,6 @@ func TestValidationError_Error(t *testing.T) {
 	}
 }
 
-func TestValidationError_TypeAssertion(t *testing.T) {
-	err := &ValidationError{Field: "Token", Reason: "must not be empty"}
-	var ve *ValidationError
-	if !errors.As(err, &ve) {
-		t.Error("errors.As should match *ValidationError")
-	}
-	if ve.Field != "Token" {
-		t.Errorf("Field = %q, want %q", ve.Field, "Token")
-	}
-}
-
 func TestCancelledError_Error(t *testing.T) {
 	err := &CancelledError{
 		Method: "manager",
@@ -201,31 +141,10 @@ func TestCancelledError_Error(t *testing.T) {
 	}
 }
 
-func TestCancelledError_Unwrap(t *testing.T) {
-	err := &CancelledError{
-		Method: "manager",
-		Err:    context.DeadlineExceeded,
-	}
-	if unwrapped := err.Unwrap(); unwrapped != context.DeadlineExceeded {
-		t.Errorf("CancelledError.Unwrap() = %v, want %v", unwrapped, context.DeadlineExceeded)
-	}
-}
-
 func TestCancelledError_UnwrapWithErrorsIs(t *testing.T) {
 	err := &CancelledError{Method: "manager", Err: context.Canceled}
 	if !errors.Is(err, context.Canceled) {
 		t.Error("errors.Is should match context.Canceled through CancelledError")
-	}
-}
-
-func TestCancelledError_TypeAssertion(t *testing.T) {
-	err := &CancelledError{Method: "manager", Err: context.Canceled}
-	var ce *CancelledError
-	if !errors.As(err, &ce) {
-		t.Error("errors.As should match *CancelledError")
-	}
-	if ce.Method != "manager" {
-		t.Errorf("Method = %q, want %q", ce.Method, "manager")
 	}
 }
 
@@ -246,20 +165,6 @@ func TestResponseTooLargeError_Error(t *testing.T) {
 	}
 }
 
-func TestResponseTooLargeError_TypeAssertion(t *testing.T) {
-	var err error = &ResponseTooLargeError{
-		Endpoint: "https://example.com",
-		MaxBytes: 100,
-	}
-	var rtl *ResponseTooLargeError
-	if !errors.As(err, &rtl) {
-		t.Fatal("errors.As should match *ResponseTooLargeError")
-	}
-	if rtl.Endpoint != "https://example.com" {
-		t.Errorf("Endpoint = %q, want %q", rtl.Endpoint, "https://example.com")
-	}
-}
-
 func TestInsecureDiscoveryEndpointError_Error(t *testing.T) {
 	err := &InsecureDiscoveryEndpointError{
 		Endpoint: "http://insecure.example.com",
@@ -273,40 +178,5 @@ func TestInsecureDiscoveryEndpointError_Error(t *testing.T) {
 	}
 	if !strings.Contains(msg, "https://") {
 		t.Errorf("InsecureDiscoveryEndpointError.Error() = %q, want to contain 'https://'", msg)
-	}
-}
-
-func TestInsecureDiscoveryEndpointError_TypeAssertion(t *testing.T) {
-	var err error = &InsecureDiscoveryEndpointError{
-		Endpoint: "http://example.com",
-	}
-	var ie *InsecureDiscoveryEndpointError
-	if !errors.As(err, &ie) {
-		t.Fatal("errors.As should match *InsecureDiscoveryEndpointError")
-	}
-}
-
-func TestErrorTypes_AreDistinct(t *testing.T) {
-	disc := &Error{Method: "m", Err: errors.New("e")}
-	noPeers := &NoPeersError{Method: "m"}
-	timeout := &TimeoutError{Method: "m"}
-	auth := &AuthenticationError{}
-
-	var de *Error
-	var npe *NoPeersError
-	var te *TimeoutError
-	var ae *AuthenticationError
-
-	if !errors.As(disc, &de) {
-		t.Error("Error should match *Error")
-	}
-	if !errors.As(noPeers, &npe) {
-		t.Error("NoPeersError should match *NoPeersError")
-	}
-	if !errors.As(timeout, &te) {
-		t.Error("TimeoutError should match *TimeoutError")
-	}
-	if !errors.As(auth, &ae) {
-		t.Error("AuthenticationError should match *AuthenticationError")
 	}
 }

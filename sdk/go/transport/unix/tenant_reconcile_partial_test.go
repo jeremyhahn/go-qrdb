@@ -25,23 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// onboardingFromTenant is a TenantOnboardingServicer that delegates straight
-// to svc.CreateTenant, so a test exercising CreateTenant's refusals against a
-// hand-built tenant.TenantServicer double does not need to assemble the
-// production onboarding service's full dependency graph (users, roles,
-// certs, trust anchors).
-func onboardingFromTenant(svc tenant.TenantServicer) *mockCertOnboardingSvc {
-	return &mockCertOnboardingSvc{
-		onboardFn: func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
-			info, err := svc.CreateTenant(ctx, req.ID, req.Name, req.IsolationType)
-			if err != nil {
-				return nil, err
-			}
-			return &service.OnboardTenantResult{Tenant: info}, nil
-		},
-	}
-}
-
 // mockCertOnboardingSvc implements service.TenantOnboardingServicer.
 type mockCertOnboardingSvc struct {
 	onboardFn func(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error)

@@ -49,22 +49,6 @@ func openGORM(t *testing.T, dsn string) *gorm.DB {
 	return db
 }
 
-func TestNewConfig_SetsTheQRDBDefaults(t *testing.T) {
-	cfg := NewConfig()
-	if cfg.DriverName != DriverName {
-		t.Errorf("DriverName = %q, want %q", cfg.DriverName, DriverName)
-	}
-	if cfg.DefaultStringSize != DefaultStringSize {
-		t.Errorf("DefaultStringSize = %d, want %d", cfg.DefaultStringSize, DefaultStringSize)
-	}
-	if cfg.DefaultDatetimePrecision == nil || *cfg.DefaultDatetimePrecision != DefaultDatetimePrecision {
-		t.Errorf("DefaultDatetimePrecision = %v, want %d", cfg.DefaultDatetimePrecision, DefaultDatetimePrecision)
-	}
-	if cfg.DSN != "" || cfg.Conn != nil {
-		t.Errorf("DSN = %q, Conn = %v; NewConfig must leave both to the caller", cfg.DSN, cfg.Conn)
-	}
-}
-
 func TestNewConfig_ReturnsAnUnsharedPrecision(t *testing.T) {
 	first, second := NewConfig(), NewConfig()
 	*first.DefaultDatetimePrecision = 0

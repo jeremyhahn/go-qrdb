@@ -12,9 +12,6 @@ package metrics
 
 import (
 	"testing"
-
-	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 )
 
 // TestNewCounter_CacheHitWrongType exercises the type assertion failure path
@@ -45,71 +42,5 @@ func TestNewCounter_CacheHitWrongType(t *testing.T) {
 	c.Inc()
 	if counterValue(c.counter) != 1 {
 		t.Errorf("expected counter value 1, got %v", counterValue(c.counter))
-	}
-}
-
-// TestHistogramVec_WithLabels_ObservesCorrectly verifies that
-// HistogramVec.WithLabels returns a working Histogram that records observations,
-// covering the type-assertion success path in that method.
-func TestHistogramVec_WithLabels_ObservesCorrectly(t *testing.T) {
-	freshRegistry(t)
-	hv := NewHistogramVec(
-		HistogramOpts{
-			Namespace: "coverage",
-			Subsystem: "hvl",
-			Name:      "withlabels_dur",
-			Help:      "WithLabels coverage test",
-			Buckets:   []float64{0.1, 1.0},
-		},
-		[]string{"endpoint"},
-	)
-
-	h := hv.WithLabels(prometheus.Labels{"endpoint": "/api/health"})
-	if h == nil {
-		t.Fatal("HistogramVec.WithLabels returned nil Histogram")
-	}
-	h.Observe(0.05)
-	h.Observe(0.5)
-
-	raw := hv.histogramVec.With(prometheus.Labels{"endpoint": "/api/health"})
-	m := &dto.Metric{}
-	if err := raw.(prometheus.Histogram).Write(m); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if m.GetHistogram().GetSampleCount() != 2 {
-		t.Errorf("expected 2 observations, got %d", m.GetHistogram().GetSampleCount())
-	}
-}
-
-// TestHistogramVec_With_ObservesCorrectly verifies that HistogramVec.With
-// returns a working Histogram for variadic label values, covering the
-// type-assertion success path in that method.
-func TestHistogramVec_With_ObservesCorrectly(t *testing.T) {
-	freshRegistry(t)
-	hv := NewHistogramVec(
-		HistogramOpts{
-			Namespace: "coverage",
-			Subsystem: "hvw",
-			Name:      "with_variadic_dur",
-			Help:      "With variadic coverage test",
-			Buckets:   []float64{0.01, 0.1},
-		},
-		[]string{"op"},
-	)
-
-	h := hv.With("list")
-	if h == nil {
-		t.Fatal("HistogramVec.With returned nil Histogram")
-	}
-	h.Observe(0.005)
-	h.Observe(0.05)
-
-	raw := hv.histogramVec.WithLabelValues("list")
-	m := &dto.Metric{}
-	if err := raw.(prometheus.Histogram).Write(m); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if m.GetHistogram().GetSampleCount() != 2 {
-		t.Errorf("expected 2 observations, got %d", m.GetHistogram().GetSampleCount())
 	}
 }

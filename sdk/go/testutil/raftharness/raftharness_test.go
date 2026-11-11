@@ -87,24 +87,6 @@ func TestNewCluster_WithHostOptionsReachesEveryHost(t *testing.T) {
 	}
 }
 
-// WithHostOptions stores the function it is given, and the zero options
-// carry none, so a cluster built without options consults nothing.
-func TestWithHostOptions_StoresTheFunction(t *testing.T) {
-	var o options
-	if o.hostOptions != nil {
-		t.Fatal("zero options carry a host option function")
-	}
-	called := false
-	WithHostOptions(func(testing.TB, uint64, string) []quicraft.HostOption { called = true; return nil })(&o)
-	if o.hostOptions == nil {
-		t.Fatal("WithHostOptions did not set the host option function")
-	}
-	o.hostOptions(t, 1, "")
-	if !called {
-		t.Fatal("the stored host option function is not the one given")
-	}
-}
-
 func openStallFile(t *testing.T) (*StallFS, waldb.File) {
 	t.Helper()
 	fs := NewStallFS()

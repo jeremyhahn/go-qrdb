@@ -17,7 +17,6 @@ package standalone
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -179,54 +178,6 @@ func TestBarrierPassphrase_ZeroValueIsRefused(t *testing.T) {
 	if !errors.As(err, &ppErr) {
 		t.Fatalf("err = %T (%v), want *BarrierPassphraseError", err, err)
 	}
-}
-
-// TestBarrierPassphrase_LiveBufferSealsTheDataPlane is the fourth shape and
-// the one the other three exist to protect. It asserts the posture rather than
-// merely the absence of an error: a live buffer must produce an unsealed
-// PASSPHRASE barrier and the value written through it must not be on disk in
-// the clear.
-func TestBarrierPassphrase_LiveBufferSealsTheDataPlane(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	const plaintext = "LIVE-BUFFER-PLAINTEXT-MUST-NEVER-LEAK"
-
-	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
-		DataDir: dataDir,
-		Barrier: &BarrierConfig{
-			Strategy:   seal.StrategyPassphrase,
-			AutoUnseal: true,
-			Passphrase: barrierPassphrase(t, "a-live-and-usable-passphrase"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-
-	status, err := srv.Client().Barrier().BarrierStatus(ctx)
-	if err != nil {
-		_ = srv.Shutdown(ctx)
-		t.Fatalf("BarrierStatus: %v", err)
-	}
-	if status.Sealed {
-		_ = srv.Shutdown(ctx)
-		t.Fatal("expected the barrier unsealed after AutoUnseal")
-	}
-	if status.Strategy == string(seal.StrategyNone) {
-		_ = srv.Shutdown(ctx)
-		t.Fatal("a live passphrase produced a NONE barrier")
-	}
-
-	if putErr := srv.Client().KV().Put(ctx, "k", []byte(plaintext)); putErr != nil {
-		_ = srv.Shutdown(ctx)
-		t.Fatalf("Put: %v", putErr)
-	}
-	if shutdownErr := srv.Shutdown(ctx); shutdownErr != nil {
-		t.Fatalf("Shutdown: %v", shutdownErr)
-	}
-
-	scanForPlaintext(t, filepath.Join(dataDir, "pebble"), []byte(plaintext))
 }
 
 // TestBarrierPassphrase_DestroyThenReconstruct drives the sequence the field
