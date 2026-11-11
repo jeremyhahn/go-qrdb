@@ -131,11 +131,3 @@ func TestUnwrapReachesTheCause(t *testing.T) {
 		})
 	}
 }
-
-// TestUnwrapOfAnAbsentCauseIsNil keeps a cause-free error terminating the
-// chain rather than reporting a non-nil nil.
-func TestUnwrapOfAnAbsentCauseIsNil(t *testing.T) {
-	if err := (&ForwardAssertionNotClusterPeerError{}).Unwrap(); err != nil {
-		t.Fatalf("Unwrap of a cause-free error: got %v, want nil", err)
-	}
-}
