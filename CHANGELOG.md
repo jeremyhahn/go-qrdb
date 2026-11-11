@@ -225,6 +225,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **go-objstore v0.9.1-alpha → v0.9.1-alpha.0.20261111054905-aed613658de5**
+  (go-objstore #231, #1404): an S3 GET of a missing object returns
+  `ErrKeyNotFound` and a missing bucket `ErrBucketNotFound`, so the
+  objstore backend's journal recovery sees an absent object as absent.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
