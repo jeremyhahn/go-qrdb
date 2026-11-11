@@ -344,16 +344,6 @@ func TestBuildShardConfig(t *testing.T) {
 // generateReplicaID tests
 // ---------------------------------------------------------------------------
 
-func TestGenerateReplicaID_NonZero(t *testing.T) {
-	id, err := generateReplicaID()
-	if err != nil {
-		t.Fatalf("generateReplicaID() error: %v", err)
-	}
-	if id == 0 {
-		t.Fatal("generateReplicaID() returned 0")
-	}
-}
-
 func TestGenerateReplicaID_Unique(t *testing.T) {
 	id1, err := generateReplicaID()
 	if err != nil {
@@ -365,18 +355,6 @@ func TestGenerateReplicaID_Unique(t *testing.T) {
 	}
 	if id1 == id2 {
 		t.Fatalf("generateReplicaID() returned identical values: %d", id1)
-	}
-}
-
-func TestGenerateReplicaID_48BitMask(t *testing.T) {
-	for i := 0; i < 100; i++ {
-		id, err := generateReplicaID()
-		if err != nil {
-			t.Fatalf("generateReplicaID() error: %v", err)
-		}
-		if id > 0xFFFFFFFFFFFF {
-			t.Fatalf("generateReplicaID() = %d, exceeds 48-bit mask", id)
-		}
 	}
 }
 

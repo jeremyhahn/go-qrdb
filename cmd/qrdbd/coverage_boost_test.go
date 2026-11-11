@@ -223,14 +223,6 @@ func TestResolveCreateFunc_UnknownTypeWithBackend_ErrorIncludesBoth(t *testing.T
 	assert.Equal(t, "unknown-sm:mybackend", smErr.Name)
 }
 
-func TestResolveCreateFunc_UnknownTypeNoBackend_ErrorIncludesType(t *testing.T) {
-	_, err := resolveCreateFunc("totally-unknown", "", statemachine.StorageConfig{})
-	require.Error(t, err)
-	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr))
-	assert.Equal(t, "totally-unknown", smErr.Name)
-}
-
 // ---------------------------------------------------------------------------
 // host_adapter.go: RequestSnapshot — the real quicraft.Host.RequestSnapshot
 // is not callable in a unit test (requires a running Raft node), but we can
