@@ -717,7 +717,7 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 	credDir := t.TempDir()
 	adminCertPath := filepath.Join(credDir, "admin-cert.pem")
 	adminKeyPath := filepath.Join(credDir, "admin-key.pem")
-	var caPath string
+	var caPath, founderInit string
 	// bringUp runs node i's `qrdb init` in its sealed window, which is
 	// REST-only and unauthenticated (see startSelfIssuedCAMultiProtocolNode).
 	// The founder generates the bootstrap admin credential; every other node
@@ -726,12 +726,12 @@ func startSelfIssuedCAMultiProtocolCluster(t *testing.T) [3]*multiProtoNode {
 		connArgs := []string{"--server", listeners[i].adminURL(), "--transport", "rest", "--ca-file", caPath, "--timeout", "20s"}
 		pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
 		if i == 0 {
-			bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, adminCertPath, adminKeyPath, "",
+			founderInit = bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, adminCertPath, adminKeyPath, "",
 				"--barrier-strategy", "none")
 			return
 		}
 		bootAdminIdentityVia(t, cli, connArgs, soPin, userPin, filepath.Join(t.TempDir(), "admin-cert.pem"), "", "",
-			"--admin-cert", adminCertPath, "--barrier-strategy", "none")
+			append([]string{"--admin-cert", adminCertPath, "--barrier-strategy", "none"}, systemSOCertArgs(t, founderInit)...)...)
 	}
 
 	// A one-peer static founder runs without a Raft transport and grows only
