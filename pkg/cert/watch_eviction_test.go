@@ -723,19 +723,23 @@ func TestReestablishWatch_CtxDoneAfterFailedAttempt(t *testing.T) {
 // gives up because ctx itself ended -- the only condition under which
 // reestablishWatch returns an error at all.
 func TestSuperviseWatch_ReturnsWhenReestablishFails(t *testing.T) {
-	old := watchReestablishBackoff
-	watchReestablishBackoff = 200 * time.Millisecond
-	t.Cleanup(func() { watchReestablishBackoff = old })
-
 	ws := newFakeWatchService()
 	p, _, _ := newTestProvider(WithWatchService(ws))
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	// The backoff wait cancels ctx and never fires, so reestablishWatch
+	// is the one to observe ctx canceled, during its backoff wait.
+	oldWait := watchReestablishWait
+	watchReestablishWait = func(time.Duration) <-chan time.Time {
+		cancel()
+		return nil
+	}
+	t.Cleanup(func() { watchReestablishWait = oldWait })
 
 	// A stub consume that returns immediately, simulating the watched
 	// channel closing, without ctx being done yet -- so superviseWatch
-	// proceeds past its OWN ctx.Err() check and into reestablishWatch,
-	// which is then the one to observe ctx canceled, during its backoff
-	// wait.
+	// proceeds past its OWN ctx.Err() check and into reestablishWatch.
 	consumeStub := func(context.Context, watch.Watcher) {}
 
 	done := make(chan struct{})
@@ -743,9 +747,6 @@ func TestSuperviseWatch_ReturnsWhenReestablishFails(t *testing.T) {
 		p.superviseWatch(ctx, "test label", "test/prefix", nil, newFakeWatcher(), consumeStub)
 		close(done)
 	}()
-
-	time.Sleep(20 * time.Millisecond)
-	cancel()
 
 	select {
 	case <-done:
@@ -781,7 +782,10 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeCertCADeletes_IgnoresNonMa
 		{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte(prefixCertCA + materialRecordSuffix)}},
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	// The events channel is unbuffered and the consumer handles a whole
+	// response before it receives the next, so this second send
+	// completing proves the batch above was processed.
+	certCAWatcher.deliverBatch(t, nil)
 	p.mu.RLock()
 	_, stillCached := p.perTenant["acme"]
 	p.mu.RUnlock()
@@ -827,7 +831,9 @@ func TestDefaultCertProvider_WatchForDeletions_ConsumeTombstonePuts_IgnoresNonMa
 		{Type: watch.EventPut, Kv: &kv.KeyValue{Key: []byte(tenant.TombstonePrefix)}},
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	// Unbuffered channel, one response at a time: this send completing
+	// proves the batch above was processed.
+	tombstoneWatcher.deliverBatch(t, nil)
 	p.mu.RLock()
 	_, stillCached := p.perTenant["acme"]
 	p.mu.RUnlock()
