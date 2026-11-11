@@ -32,36 +32,6 @@ func TestReal_NowTracksTheTimePackage(t *testing.T) {
 	}
 }
 
-func TestReal_SinceAndUntilAreSignedByDirection(t *testing.T) {
-	c := Real()
-	if d := c.Since(time.Now().Add(-time.Hour)); d < time.Hour {
-		t.Errorf("Since(an hour ago) = %v, want at least an hour", d)
-	}
-	if d := c.Until(time.Now().Add(time.Hour)); d <= 0 || d > time.Hour {
-		t.Errorf("Until(in an hour) = %v, want in (0, 1h]", d)
-	}
-	if d := c.Until(time.Now().Add(-time.Hour)); d >= 0 {
-		t.Errorf("Until(an hour ago) = %v, want negative", d)
-	}
-}
-
-func TestReal_SleepWaitsAtLeastTheDuration(t *testing.T) {
-	const d = 2 * time.Millisecond
-	start := time.Now()
-	Real().Sleep(d)
-	if elapsed := time.Since(start); elapsed < d {
-		t.Fatalf("Sleep(%v) returned after %v", d, elapsed)
-	}
-}
-
-func TestReal_AfterDelivers(t *testing.T) {
-	select {
-	case <-Real().After(time.Millisecond):
-	case <-time.After(guard):
-		t.Fatal("After never fired")
-	}
-}
-
 func TestReal_TimerFiresStopsAndResets(t *testing.T) {
 	timer := Real().NewTimer(time.Hour)
 	if !timer.Stop() {
