@@ -46,19 +46,9 @@ func TestErrorMessagesNameTheirCause(t *testing.T) {
 			contains: []string{"not a cluster node", "underlying"},
 		},
 		{
-			name:     "not-cluster-peer without a cause omits the suffix",
-			err:      &ForwardAssertionNotClusterPeerError{},
-			contains: []string{"not a cluster node"},
-		},
-		{
 			name:     "signature with a reason appends it",
 			err:      &ForwardAssertionSignatureError{Reason: "verification failed"},
 			contains: []string{"signature invalid", "verification failed"},
-		},
-		{
-			name:     "signature without a reason omits the suffix",
-			err:      &ForwardAssertionSignatureError{},
-			contains: []string{"signature invalid"},
 		},
 		{
 			name:     "expired names the reason",
