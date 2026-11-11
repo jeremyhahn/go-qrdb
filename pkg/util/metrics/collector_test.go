@@ -264,6 +264,43 @@ func Test_Timer_ObserveDuration_withHistogram(t *testing.T) {
 	}
 }
 
+// Test_Timer_ObserveDuration_backdatedStart pins the elapsed time from
+// below without sleeping: the timer's start is moved a known span into the
+// past, so a correct ObserveDuration must return and record at least that
+// span. An ObserveDuration that records and returns zero fails here, which
+// the [0, elapsed] bound above cannot catch.
+func Test_Timer_ObserveDuration_backdatedStart(t *testing.T) {
+	freshRegistry(t)
+	h := NewHistogram(HistogramOpts{
+		Namespace: "timer", Subsystem: "test", Name: "backdated", Help: "timer backdated test",
+		Buckets: []float64{0.001, 0.01, 0.1, 1.0},
+	})
+	const backdate = time.Hour
+	timer := NewTimer(h)
+	start := time.Now().Add(-backdate)
+	timer.start = start
+	d := timer.ObserveDuration()
+	if d < backdate {
+		t.Fatalf("duration %v, want at least the backdated span %v", d, backdate)
+	}
+	if limit := time.Since(start); d > limit {
+		t.Fatalf("duration %v exceeds the time since the backdated start %v", d, limit)
+	}
+	m := &dto.Metric{}
+	if err := h.histogram.Write(m); err != nil {
+		t.Fatal(err)
+	}
+	if m.GetHistogram().GetSampleCount() != 1 {
+		t.Fatalf("expected 1 observation after ObserveDuration, got %d", m.GetHistogram().GetSampleCount())
+	}
+	if sum := m.GetHistogram().GetSampleSum(); sum < backdate.Seconds() {
+		t.Fatalf("observed sum %v s, want at least the backdated span %v s", sum, backdate.Seconds())
+	}
+	if m.GetHistogram().GetSampleSum() != d.Seconds() {
+		t.Fatalf("observed %v, want the returned duration %v", m.GetHistogram().GetSampleSum(), d.Seconds())
+	}
+}
+
 func Test_Timer_ObserveDuration_nilHistogram(t *testing.T) {
 	before := time.Now()
 	timer := NewTimer(nil)
