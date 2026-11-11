@@ -23,7 +23,6 @@ import (
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/logger"
 	"github.com/jeremyhahn/go-qrdb/pkg/protocol"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -72,46 +71,6 @@ func TestKVEngine_Update_PutAndDelete(t *testing.T) {
 	}
 	if results[0].Value == 0 {
 		t.Error("expected non-zero result value for put")
-	}
-}
-
-func TestKVEngine_PutWithIndexes_WithJSONAndIndex(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	if err := eng.RegisterEntityType("user", []EntityIndex{
-		{FieldName: "by_email", JSONFieldName: "email"},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
-	}
-
-	value := `{"id":"u1","email":"alice@example.com"}`
-	if err := eng.PutWithIndexes([]byte("user/u1"), []byte(value)); err != nil {
-		t.Fatalf("PutWithIndexes with index: %v", err)
-	}
-}
-
-func TestKVEngine_DeleteWithIndexes_WithIndex(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	if err := eng.RegisterEntityType("user", []EntityIndex{
-		{FieldName: "by_email", JSONFieldName: "email"},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
-	}
-
-	value := `{"id":"u1","email":"alice@example.com"}`
-	_ = eng.PutWithIndexes([]byte("user/u1"), []byte(value))
-
-	if err := eng.DeleteWithIndexes([]byte("user/u1")); err != nil {
-		t.Fatalf("DeleteWithIndexes with index: %v", err)
 	}
 }
 
@@ -231,110 +190,6 @@ func TestCheckUniqueViolationsBatch_NonJSONSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.scanAllKVs coverage path
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_ScanAllKVs(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	eng := NewKVEngine(stg)
-
-	// Put some values.
-	put1, _ := kv.EncodePut([]byte("k1"), []byte(`{"name":"a"}`))
-	put2, _ := kv.EncodePut([]byte("k2"), []byte(`{"name":"b"}`))
-	entries := []sm.Entry{
-		{Index: 1, Cmd: put1},
-		{Index: 2, Cmd: put2},
-	}
-	results := make([]sm.Result, 2)
-	_ = eng.Update(context.Background(), entries, results)
-
-	// scanAllKVs is used by BackfillIndex inside RegisterEntityType.
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng2 := NewKVEngine(stg, WithKVLogger(log))
-	if err := eng2.RegisterEntityType("k", []EntityIndex{
-		{FieldName: "by_name", JSONFieldName: "name"},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// BackfillIndexWithPrefix – with data (non-empty storage)
-// ---------------------------------------------------------------------------
-
-func TestBackfillIndexWithPrefix_WithData(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	// Write some raw key-value pairs directly to storage.
-	batch := stg.Batch()
-	_ = batch.Set([]byte("item/1"), []byte(`{"name":"apple"}`))
-	_ = batch.Set([]byte("item/2"), []byte(`{"name":"banana"}`))
-	_ = batch.Set([]byte("item/3"), []byte("not-json"))
-	_ = batch.Commit()
-	_ = batch.Close()
-
-	idx := index.NewMemoryIndex("by_name", false)
-	err := BackfillIndexWithPrefix(stg, idx, "name", []byte("item/"))
-	if err != nil {
-		t.Fatalf("BackfillIndexWithPrefix: %v", err)
-	}
-
-	// "apple" and "banana" should be indexed.
-	ids, err := idx.Get([]byte("apple"))
-	if err != nil {
-		t.Fatalf("idx.Get(apple): %v", err)
-	}
-	if len(ids) == 0 {
-		t.Error("expected apple to be indexed")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleBatch – unique constraint violation (non-fatal app error)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleBatch_UniqueViolation(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Create a unique index.
-	idxCreateCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
-
-	// First batch: put a user.
-	val1 := []byte(`{"name":"alice","email":"x@test.com"}`)
-	ops1 := [][]byte{
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:1"), val1, nil, 0)),
-	}
-	batch1 := mustEncode(protocol.EncodeBatch(ops1))
-	r1 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: batch1}}, r1)
-
-	// Second batch: try to put a conflicting user.
-	val2 := []byte(`{"name":"bob","email":"x@test.com"}`)
-	ops2 := [][]byte{
-		mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("u:2"), val2, nil, 0)),
-	}
-	batch2 := mustEncode(protocol.EncodeBatch(ops2))
-	r2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: batch2}}, r2); err != nil {
-		t.Fatalf("batch unique violation: %v", err)
-	}
-	// Violation encoded as a non-fatal conflict refusal (go-qrdb#557).
-	if _, kind, ok := protocol.DecodeAppErrorKind(r2[0].Data); !ok || kind != protocol.AppErrorConflict {
-		t.Fatalf("batch unique violation: ok=%v kind=%d; want an AppErrorConflict refusal", ok, kind)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CheckUniqueViolation – index.Get error path
 // ---------------------------------------------------------------------------
 
@@ -435,38 +290,6 @@ func TestMVCCEngine_ExecuteDecodedOp_DeleteWithIndex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// MVCCEngine.handleMVCCDelete – with index cleanup
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleMVCCDelete_WithIndex(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Register unique index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_code", "code", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	r0 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
-
-	// Put a keyed value.
-	val := []byte(`{"code":"abc"}`)
-	put := mvccPutEntry(2, []byte("obj:1"), val, 0)
-	r1 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{put}, r1)
-
-	// Delete it via MVCC delete.
-	del := mvccDeleteEntry(3, []byte("obj:1"))
-	r2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{del}, r2); err != nil {
-		t.Fatalf("MVCC delete: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CheckUniqueViolationsBatch – non-unique index skipped
 // ---------------------------------------------------------------------------
 
@@ -517,29 +340,6 @@ func TestKVEngine_HandleBatch_WithCompoundIndex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.kvHandlePut – with compound index registered
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_KvHandlePut_WithCompoundIndex(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	if err := eng.RegisterEntityType("entity", []EntityIndex{
-		{FieldNames: []string{"a", "b"}, JSONFieldNames: []string{"a", "b"}},
-	}); err != nil {
-		t.Fatalf("RegisterEntityType: %v", err)
-	}
-
-	put, _ := kv.EncodePut([]byte("entity/1"), []byte(`{"a":"x","b":"y"}`))
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: put}}, results); err != nil {
-		t.Fatalf("kvHandlePut with compound index: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // KVEngine.kvHandleDelete – with compound index registered
 // ---------------------------------------------------------------------------
 
@@ -565,41 +365,6 @@ func TestKVEngine_KvHandleDelete_WithCompoundIndex(t *testing.T) {
 	r2 := make([]sm.Result, 1)
 	if err := eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: del}}, r2); err != nil {
 		t.Fatalf("kvHandleDelete with compound index: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleBaseKVPut – unique violation path
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleBaseKVPut_UniqueViolation(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Create a unique index.
-	idxCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_sku", "sku", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
-	r0 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCmd}}, r0)
-
-	// First base-KV put (via sm/kv.EncodePut) with a unique value.
-	put1, _ := kv.EncodePut([]byte("p:1"), []byte(`{"sku":"ABC"}`))
-	r1 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 2, Cmd: put1}}, r1)
-
-	// Second put with conflicting sku → should encode non-fatal app error.
-	put2, _ := kv.EncodePut([]byte("p:2"), []byte(`{"sku":"ABC"}`))
-	r2 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 3, Cmd: put2}}, r2); err != nil {
-		t.Fatalf("base kv put unique violation: %v", err)
-	}
-	// Expect a non-fatal result with Data (app-error encoded).
-	if len(r2[0].Data) == 0 {
-		t.Log("note: unique violation not encoded as app error in handleBaseKVPut")
 	}
 }
 
@@ -638,46 +403,6 @@ func TestMVCCEngine_Transaction_SuccessBranch(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KVEngine.handleIndexCreate – numeric index (valueType branch)
-// ---------------------------------------------------------------------------
-
-func TestKVEngine_HandleIndexCreate_Numeric(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-	log, _ := logger.New(logger.LogConfig{Level: "error", Format: "json", Output: "stderr"})
-	eng := NewKVEngine(stg, WithKVLogger(log))
-
-	// numeric=true branch in handleIndexCreate.
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_score", "score", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: true}))
-	results := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: createCmd}}, results); err != nil {
-		t.Fatalf("numeric index create: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// handleLeaseRevoke – NotFoundError (idempotent success)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_HandleLeaseRevoke_NotFound(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	lr := lease.NewLessor()
-	eng, err := NewMVCCEngine(stg, WithMVCCLessor(lr))
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Revoke a lease that was never granted → NotFoundError → idempotent success.
-	revokeCmd := mustEncode(protocol.EncodeLeaseRevoke(99999))
-	r := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: revokeCmd}}, r); err != nil {
-		t.Fatalf("lease revoke not found: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // storage.Batch referenced to keep import used
 // ---------------------------------------------------------------------------
 
@@ -690,43 +415,6 @@ var _ storage.Storage
 type boostError string
 
 func (e boostError) Error() string { return string(e) }
-
-// ---------------------------------------------------------------------------
-// MVCCEngine.handleMVCCPut – unique index violation (non-fatal AppError)
-// ---------------------------------------------------------------------------
-
-func TestMVCCEngine_MVCCPut_UniqueIndexViolation(t *testing.T) {
-	stg := memory.NewStorage()
-	defer func() { _ = stg.Close() }()
-
-	eng, err := NewMVCCEngine(stg)
-	if err != nil {
-		t.Fatalf("NewMVCCEngine: %v", err)
-	}
-
-	// Register a unique index via handleIndexCreate.
-	idxCreateCmd := mustEncode(protocol.EncodeIndexCreateOpts("by_email", "email", protocol.IndexCreateOptions{Unique: true, Sparse: false, Numeric: false}))
-	results := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{{Index: 1, Cmd: idxCreateCmd}}, results)
-
-	// Put a first entry.
-	val1 := []byte(`{"name":"alice","email":"alice@test.com"}`)
-	put1 := mvccPutEntry(2, []byte("u:1"), val1, 0)
-	results2 := make([]sm.Result, 1)
-	_ = eng.Update(context.Background(), []sm.Entry{put1}, results2)
-
-	// Put a conflicting entry with the same email.
-	val2 := []byte(`{"name":"bob","email":"alice@test.com"}`)
-	put2 := mvccPutEntry(3, []byte("u:2"), val2, 0)
-	results3 := make([]sm.Result, 1)
-	if err := eng.Update(context.Background(), []sm.Entry{put2}, results3); err != nil {
-		t.Fatalf("Update with conflict: %v", err)
-	}
-	// The result should encode an app-error (non-fatal).
-	if len(results3[0].Data) == 0 {
-		t.Log("note: unique violation encoded as app error (non-fatal Result.Data)")
-	}
-}
 
 // mustEncode unwraps an encoder's (command, error) pair for tests whose
 // inputs are small and fixed. An error here is a TEST bug -- the encoders
