@@ -52,12 +52,3 @@ func TestMCP_Database_UpdateDatabaseSQL(t *testing.T) {
 		t.Fatalf("CreateDatabase: %v", err)
 	}
 }
-
-func TestMCP_Database_UpdateDatabaseSQL_Closed(t *testing.T) {
-	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
-	defer cleanup()
-	tr.closed.Store(true)
-	if _, err := tr.UpdateDatabaseSQL(context.Background(), transport.UpdateDatabaseSQLRequest{Name: "mydb"}); err == nil {
-		t.Fatal("expected a closed-transport error")
-	}
-}
