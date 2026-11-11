@@ -261,3 +261,43 @@ func TestRotateDue_UnusableStagedValueAsksTheSource(t *testing.T) {
 		})
 	}
 }
+
+// A cleanup clears the pending marker only when it still names that
+// cleanup: one that cannot read the metadata fails and keeps the marker for
+// the next check, and one whose marker was replaced by a later rotation's
+// leaves that rotation's marker in place.
+func TestCleanupRotation_MarkerKeptUnlessNamed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		marker string
+		fault  func(*faultBackend)
+		cause  error
+	}{
+		{name: "metadata unreadable", marker: "c1", fault: func(b *faultBackend) { arm(&b.failGet, metaKey("k")) }, cause: errInjectedFault},
+		{name: "marker names a later cleanup", marker: "later"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, backend := newFaultRotationService(t)
+			setFaultPolicy(t, svc, "k", 3)
+			require.NoError(t, svc.updateBarrierMeta(ctx, "k", "mark", func(m *credentialMeta) bool {
+				m.PendingCleanup = tc.marker
+				return true
+			}))
+			if tc.fault != nil {
+				tc.fault(backend)
+			}
+
+			err := svc.cleanupRotation(ctx, "k", "c1")
+			if tc.cause != nil {
+				require.ErrorIs(t, err, tc.cause)
+			} else {
+				require.NoError(t, err)
+			}
+			disarmAll(backend)
+			meta, err := svc.loadBarrierMeta(ctx, "k")
+			require.NoError(t, err)
+			assert.Equal(t, tc.marker, meta.PendingCleanup)
+		})
+	}
+}
