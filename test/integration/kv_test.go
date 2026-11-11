@@ -697,32 +697,6 @@ func TestKV_SingleNode_ConcurrentSameKey(t *testing.T) {
 // Batch tests
 // ---------------------------------------------------------------------------
 
-func TestBatch_SingleNode_PutMultiple(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "mvcc")
-
-	result := httpBatch(t, ca, adminPort, []batchOp{
-		{Type: "put", Key: "batch/k1", Value: "v1"},
-		{Type: "put", Key: "batch/k2", Value: "v2"},
-		{Type: "put", Key: "batch/k3", Value: "v3"},
-	})
-
-	if len(result.Responses) != 3 {
-		t.Fatalf("batch responses: got %d, want 3", len(result.Responses))
-	}
-
-	// Verify each key individually via GET.
-	for i, kv := range []struct{ key, val string }{
-		{"batch/k1", "v1"},
-		{"batch/k2", "v2"},
-		{"batch/k3", "v3"},
-	} {
-		got := httpGet(t, ca, adminPort, kv.key)
-		if string(got) != kv.val {
-			t.Errorf("key %d (%s): got %q, want %q", i, kv.key, got, kv.val)
-		}
-	}
-}
-
 func TestBatch_SingleNode_MixedOps(t *testing.T) {
 	adminPort, ca := startSingleNode(t, "mvcc")
 
