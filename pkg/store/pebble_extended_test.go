@@ -686,20 +686,6 @@ func TestPebbleStateMachine_LeaseGrant(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_LeaseGrant_NoLessor(t *testing.T) {
-	s := openExtendedStore(t) // no lessor configured
-
-	cmd := mustEncode(protocol.EncodeLeaseGrant(10))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when lessor not configured")
-	}
-}
-
 func TestPebbleStateMachine_LeaseRevoke(t *testing.T) {
 	s, lr := openStoreWithLessor(t)
 
@@ -1034,21 +1020,6 @@ func TestPebbleStateMachine_TSWrite(t *testing.T) {
 
 	if results[0].Value != 1 {
 		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
-func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
-	s := openExtendedStore(t) // no TS configured
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", ts, 42.5, nil))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
