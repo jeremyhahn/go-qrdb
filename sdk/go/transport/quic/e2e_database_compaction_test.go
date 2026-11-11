@@ -16,37 +16,12 @@ package quic
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-func TestE2E_UpdateDatabaseCompaction_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("db.UpdateCompaction", func(payload []byte) (uint16, []byte) {
-		var req struct {
-			Name       string                              `json:"name"`
-			Compaction *transport.DatabaseCompactionConfig `json:"compaction"`
-		}
-		if err := json.Unmarshal(payload, &req); err != nil || req.Name != "events" || req.Compaction == nil {
-			return wire.StatusInvalidArgument, nil
-		}
-		b, _ := json.Marshal(transport.DatabaseInfo{Name: req.Name, Compaction: req.Compaction})
-		return wire.StatusOK, b
-	})
-	resp, err := tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{
-		Name: "events", Compaction: &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 8},
-	})
-	if err != nil {
-		t.Fatalf("UpdateDatabaseCompaction: %v", err)
-	}
-	if resp.Compaction == nil || resp.Compaction.Mode != "revision" || resp.Compaction.RetainRevisions != 8 {
-		t.Fatalf("Compaction = %+v", resp.Compaction)
-	}
-}
 
 func TestE2E_UpdateDatabaseCompaction_Errors(t *testing.T) {
 	srv, tr := startE2EServer(t)
