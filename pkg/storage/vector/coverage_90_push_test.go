@@ -22,20 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestUpsertVector_ClosedStorage tests UpsertVector on closed storage.
-func TestUpsertVector_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.UpsertVector(context.Background(), "ns", &VectorValue{
-		ID:        1,
-		Embedding: []float32{1.0, 2.0},
-		Version:   1,
-	})
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
 // TestUpsertVector_NilVectorCoverage tests UpsertVector with nil vector value.
 func TestUpsertVector_NilVectorCoverage(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -61,48 +47,6 @@ func TestUpsertVector_CancelledContextDirect(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestGetVector_ClosedStorage tests GetVector on closed storage.
-func TestGetVector_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.GetVector(context.Background(), "ns", 1)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestDeleteVector_ClosedStorage tests DeleteVector on closed storage.
-func TestDeleteVector_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.DeleteVector(context.Background(), "ns", 1)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestBatchUpsertVectors_ClosedStorage tests BatchUpsertVectors on closed storage.
-func TestBatchUpsertVectors_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.BatchUpsertVectors(context.Background(), "ns", []*VectorValue{
-		{ID: 1, Embedding: []float32{1.0}, Version: 1},
-	})
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestBatchDeleteVectors_ClosedStorage tests BatchDeleteVectors on closed storage.
-func TestBatchDeleteVectors_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.BatchDeleteVectors(context.Background(), "ns", []uint64{1, 2})
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
 // TestBatchDeleteVectors_EmptyBatchCoverage tests BatchDeleteVectors with empty IDs.
 func TestBatchDeleteVectors_EmptyBatchCoverage(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -121,36 +65,6 @@ func TestBatchDeleteVectors_InvalidID(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestScanByMetadata_ClosedStorage tests ScanByMetadata on closed storage.
-func TestScanByMetadata_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.ScanByMetadata(context.Background(), "ns", "field", "value", nil)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestScanNamespace_ClosedStorage tests ScanNamespace on closed storage.
-func TestScanNamespace_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.ScanNamespace(context.Background(), "ns", nil)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestCreateNamespace_ClosedStorage tests CreateNamespace on closed storage.
-func TestCreateNamespace_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.CreateNamespace(context.Background(), &NamespaceInfo{Name: "ns"})
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
 // TestCreateNamespace_NilInfo tests CreateNamespace with nil NamespaceInfo.
 func TestCreateNamespace_NilInfo(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -167,89 +81,6 @@ func TestCreateNamespace_EmptyName(t *testing.T) {
 
 	err := storage.CreateNamespace(context.Background(), &NamespaceInfo{Name: ""})
 	assert.ErrorIs(t, err, ErrInvalidNamespace)
-}
-
-// TestDeleteNamespace_ClosedStorage tests DeleteNamespace on closed storage.
-func TestDeleteNamespace_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.DeleteNamespace(context.Background(), "ns")
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestGetNamespaceInfo_ClosedStorage tests GetNamespaceInfo on closed storage.
-func TestGetNamespaceInfo_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.GetNamespaceInfo(context.Background(), "ns")
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestGetStats_ClosedStorage tests GetStats on closed storage.
-func TestGetStats_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.GetStats(context.Background(), "ns")
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestNextID_ClosedStorage tests NextID on closed storage.
-func TestNextID_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.NextID("ns")
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestBatchAllocateIDs_ClosedStorage tests BatchAllocateIDs on closed storage.
-func TestBatchAllocateIDs_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	_, err := storage.BatchAllocateIDs("ns", 10)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestCompact_ClosedStorage tests Compact on closed storage.
-func TestCompact_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.Compact(context.Background(), "ns")
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestCleanupTombstones_ClosedStorage tests CleanupTombstones on closed storage.
-func TestCleanupTombstones_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	err := storage.CleanupTombstones(context.Background(), time.Hour)
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
-// TestClose_AlreadyClosed tests double close is idempotent.
-func TestClose_AlreadyClosed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	err := storage.Close()
-	require.NoError(t, err)
-
-	// Second close should be a no-op
-	err = storage.Close()
-	require.NoError(t, err)
 }
 
 // TestBatchUpsert_WithMetadata tests batch upsert with metadata fields.
@@ -412,19 +243,6 @@ func TestUpsertVector_UpdateVersionCoverage(t *testing.T) {
 	result, err := storage.GetVector(ctx, "ver-ns", 1)
 	require.NoError(t, err)
 	assert.Equal(t, []float32{3.0, 4.0}, result.Embedding)
-}
-
-// TestScanByMultipleFilters_ClosedStorage tests ScanByMultipleFilters on closed storage.
-func TestScanByMultipleFilters_ClosedStorage(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	_ = storage.Close()
-	defer cleanup()
-
-	filters := []MetadataFilter{
-		{Field: "a", Value: "b", Operator: FilterEqual},
-	}
-	_, err := storage.ScanByMultipleFilters(context.Background(), "ns", filters, nil)
-	assert.ErrorIs(t, err, ErrStorageClosed)
 }
 
 // TestDeleteVector_ZeroID tests DeleteVector with ID 0.

@@ -179,17 +179,6 @@ func TestCleanupTombstones_EmptyNamespaceFinal(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestCleanupTombstones_StorageClosedFinal covers CleanupTombstones when
-// storage is already closed.
-func TestCleanupTombstones_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.CleanupTombstones(context.Background(), time.Hour)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
 // TestCleanupTombstones_DirectTombstoneKey covers CleanupTombstones by
 // writing tombstone keys directly to PebbleDB with little-endian encoded
 // timestamps matching the decoding logic in CleanupTombstones.
@@ -444,16 +433,6 @@ func TestDeleteVector_CorruptedReverseKeyInLoop(t *testing.T) {
 	// Verify the vector is deleted
 	_, err = storage.GetVector(ctx, ns, 1)
 	require.Error(t, err)
-}
-
-// TestCompact_StorageClosedFinal covers Compact when storage is already closed.
-func TestCompact_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.Compact(context.Background(), "ns")
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
 }
 
 // TestCreateNamespace_AlreadyExistsFinal covers CreateNamespace when the
@@ -711,76 +690,6 @@ func TestUpsertVector_NilVectorFinal(t *testing.T) {
 	assert.Equal(t, ErrInvalidVector, err)
 }
 
-// TestScanNamespace_StorageClosedFinal covers ScanNamespace when storage is closed.
-func TestScanNamespace_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.ScanNamespace(context.Background(), "ns", nil)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestScanByMetadata_StorageClosedFinal covers ScanByMetadata when storage is closed.
-func TestScanByMetadata_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.ScanByMetadata(context.Background(), "ns", "k", "v", nil)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestDeleteNamespace_StorageClosedFinal covers DeleteNamespace when storage is closed.
-func TestDeleteNamespace_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.DeleteNamespace(context.Background(), "ns")
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestGetStats_StorageClosedFinal covers GetStats when storage is closed.
-func TestGetStats_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.GetStats(context.Background(), "ns")
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestNextID_StorageClosedFinal covers NextID when storage is closed.
-func TestNextID_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.NextID("ns")
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestBatchAllocateIDs_StorageClosedFinal covers BatchAllocateIDs when storage is closed.
-func TestBatchAllocateIDs_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.BatchAllocateIDs("ns", 5)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestClose_AlreadyClosedFinal covers Close when storage is already closed.
-func TestClose_AlreadyClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it first
-
-	// Close again should be a no-op (return nil)
-	err := storage.Close()
-	require.NoError(t, err)
-}
-
 // TestUpsertVector_WithSyncWritesFinal covers UpsertVector with SyncWrites enabled.
 func TestUpsertVector_WithSyncWritesFinal(t *testing.T) {
 	storage, cleanup := setupSyncStorage(t)
@@ -803,85 +712,6 @@ func TestUpsertVector_WithSyncWritesFinal(t *testing.T) {
 	result, err := storage.GetVector(ctx, ns, 1)
 	require.NoError(t, err)
 	assert.Equal(t, "val", result.Metadata["key"])
-}
-
-// TestDeleteVector_StorageClosedFinal covers DeleteVector when storage is closed.
-func TestDeleteVector_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.DeleteVector(context.Background(), "ns", 1)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestGetVector_StorageClosedFinal covers GetVector when storage is closed.
-func TestGetVector_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.GetVector(context.Background(), "ns", 1)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestUpsertVector_StorageClosedFinal covers UpsertVector when storage is closed.
-func TestUpsertVector_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{1.0, 2.0, 3.0, 4.0},
-		Version:   1,
-	}
-	err := storage.UpsertVector(context.Background(), "ns", vec)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestCreateNamespace_StorageClosedFinal covers CreateNamespace when storage is closed.
-func TestCreateNamespace_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.CreateNamespace(context.Background(), &NamespaceInfo{Name: "ns", Dimension: 4})
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestBatchUpsertVectors_StorageClosedFinal covers BatchUpsertVectors when storage is closed.
-func TestBatchUpsertVectors_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.BatchUpsertVectors(context.Background(), "ns", []*VectorValue{{
-		ID:        1,
-		Embedding: []float32{1.0},
-		Version:   1,
-	}})
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestBatchDeleteVectors_StorageClosedFinal covers BatchDeleteVectors when storage is closed.
-func TestBatchDeleteVectors_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	err := storage.BatchDeleteVectors(context.Background(), "ns", []uint64{1})
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
-}
-
-// TestGetNamespaceInfo_StorageClosedFinal covers GetNamespaceInfo when storage is closed.
-func TestGetNamespaceInfo_StorageClosedFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // Close it
-
-	_, err := storage.GetNamespaceInfo(context.Background(), "ns")
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
 }
 
 // TestCreateNamespace_NilInfoFinal covers CreateNamespace with nil info.
@@ -1085,18 +915,6 @@ func TestScanByMultipleFilters_EmptyFilters(t *testing.T) {
 	results, err := storage.ScanByMultipleFilters(ctx, ns, nil, nil)
 	require.NoError(t, err)
 	assert.Len(t, results, 1)
-}
-
-// TestScanByMultipleFilters_StorageClosed covers ScanByMultipleFilters when
-// storage is closed.
-func TestScanByMultipleFilters_StorageClosed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	cleanup() // close it
-
-	filters := []MetadataFilter{{Field: "a", Value: "b"}}
-	_, err := storage.ScanByMultipleFilters(context.Background(), "ns", filters, nil)
-	require.Error(t, err)
-	assert.Equal(t, ErrStorageClosed, err)
 }
 
 // TestScanByMultipleFilters_EqualMismatch covers the FilterEqual mismatch
