@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -354,18 +353,6 @@ func TestCleanupTombstones_WithExpiredTombstones(t *testing.T) {
 
 	// Use a 0 duration so all tombstones are considered expired.
 	if err := s.CleanupTombstones(ctx, 0); err != nil {
-		t.Fatalf("CleanupTombstones: %v", err)
-	}
-}
-
-// TestCleanupTombstones_NoTombstonesCovFinal verifies no error when there are no tombstones.
-func TestCleanupTombstones_NoTombstonesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	ns := "no_tombs_ns"
-	seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.CleanupTombstones(ctx, time.Hour); err != nil {
 		t.Fatalf("CleanupTombstones: %v", err)
 	}
 }

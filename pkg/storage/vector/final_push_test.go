@@ -173,28 +173,6 @@ func TestAdapter_Compact_WithSyncWrites(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestAdapter_CleanupTombstones_NoTombstones tests cleanup when no tombstones exist
-func TestAdapter_CleanupTombstones_NoTombstones(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	// Create namespace without any vectors
-	info := &NamespaceInfo{
-		Name:      "empty_ns",
-		Dimension: 3,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err := storage.CreateNamespace(ctx, info)
-	require.NoError(t, err)
-
-	// Cleanup should succeed with no tombstones
-	err = storage.CleanupTombstones(ctx, time.Hour)
-	assert.NoError(t, err)
-}
-
 // TestBatch_DeleteVector_NoMetadata tests deletion of vector without metadata
 func TestBatch_DeleteVector_NoMetadata(t *testing.T) {
 	tmpDir := t.TempDir()

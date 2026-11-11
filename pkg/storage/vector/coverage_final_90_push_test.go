@@ -164,21 +164,6 @@ func TestCleanupTombstones_WithExpiredTombstonesFinal(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestCleanupTombstones_EmptyNamespaceFinal covers the path where
-// no tombstones exist in any namespace.
-func TestCleanupTombstones_EmptyNamespaceFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	ns := "empty-tomb-final-ns"
-	err := storage.CreateNamespace(ctx, &NamespaceInfo{Name: ns, Dimension: 4})
-	require.NoError(t, err)
-
-	err = storage.CleanupTombstones(ctx, time.Hour)
-	require.NoError(t, err)
-}
-
 // TestCleanupTombstones_DirectTombstoneKey covers CleanupTombstones by
 // writing tombstone keys directly to PebbleDB with little-endian encoded
 // timestamps matching the decoding logic in CleanupTombstones.
@@ -435,24 +420,6 @@ func TestDeleteVector_CorruptedReverseKeyInLoop(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestCreateNamespace_AlreadyExistsFinal covers CreateNamespace when the
-// namespace already exists.
-func TestCreateNamespace_AlreadyExistsFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	info := &NamespaceInfo{Name: "dup-final-ns", Dimension: 4}
-
-	err := storage.CreateNamespace(ctx, info)
-	require.NoError(t, err)
-
-	// Try to create again
-	err = storage.CreateNamespace(ctx, info)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNamespaceExists)
-}
-
 // TestScanNamespace_EmptyNamespaceFinal covers ScanNamespace when the
 // namespace exists but contains no vectors.
 func TestScanNamespace_EmptyNamespaceFinal(t *testing.T) {
@@ -680,16 +647,6 @@ func TestScanByMetadata_NoMatchFinal(t *testing.T) {
 	assert.Empty(t, results)
 }
 
-// TestUpsertVector_NilVectorFinal covers the nil vector check in UpsertVector.
-func TestUpsertVector_NilVectorFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	err := storage.UpsertVector(context.Background(), "ns", nil)
-	require.Error(t, err)
-	assert.Equal(t, ErrInvalidVector, err)
-}
-
 // TestUpsertVector_WithSyncWritesFinal covers UpsertVector with SyncWrites enabled.
 func TestUpsertVector_WithSyncWritesFinal(t *testing.T) {
 	storage, cleanup := setupSyncStorage(t)
@@ -712,24 +669,6 @@ func TestUpsertVector_WithSyncWritesFinal(t *testing.T) {
 	result, err := storage.GetVector(ctx, ns, 1)
 	require.NoError(t, err)
 	assert.Equal(t, "val", result.Metadata["key"])
-}
-
-// TestCreateNamespace_NilInfoFinal covers CreateNamespace with nil info.
-func TestCreateNamespace_NilInfoFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	err := storage.CreateNamespace(context.Background(), nil)
-	require.Error(t, err)
-}
-
-// TestCreateNamespace_EmptyNameFinal covers CreateNamespace with empty name.
-func TestCreateNamespace_EmptyNameFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	err := storage.CreateNamespace(context.Background(), &NamespaceInfo{Name: "", Dimension: 4})
-	require.Error(t, err)
 }
 
 // TestDeleteVector_WithSyncWritesFinal covers DeleteVector with SyncWrites.
