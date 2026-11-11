@@ -20,9 +20,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// TestSeekToLast_WithUpperBound_ExactMatch exercises the SeekToLast branch
-// where an upper bound is set and the seek lands exactly on the bound,
-// requiring a Prev() step to find the last valid entry.
 // TestSeekToLast_WithUpperBound_BeyondAllKeys exercises the branch where
 // Seek goes past the end, so Last() is used for the candidate.
 func TestSeekToLast_WithUpperBound_BeyondAllKeys(t *testing.T) {
@@ -70,10 +67,6 @@ func TestSeekToLast_BelowLowerBound(t *testing.T) {
 	}
 }
 
-// TestSeekToLast_ClosedIterator verifies that SeekToLast on a closed iterator
-// returns false immediately.
-// TestSeekToLast_NoUpperBound verifies SeekToLast without any bounds
-// returns the largest key in the store.
 // TestSeekToLast_UpperBoundBeforeAllKeys exercises the case where UpperBound
 // is before all keys so the candidate from Last() is also above UpperBound.
 func TestSeekToLast_UpperBoundBeforeAllKeys(t *testing.T) {

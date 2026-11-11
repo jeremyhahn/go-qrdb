@@ -96,8 +96,6 @@ func TestCompareAndSwap_ClosedStore(t *testing.T) {
 	}
 }
 
-// SeekToLast with an upper bound above every key lands on the last key; with a
-// lower bound above it the iterator is empty.
 // A batch committed after its store closed refuses with the closed error.
 func TestBatchCommit_AfterClose(t *testing.T) {
 	s := memory.NewStorage()
