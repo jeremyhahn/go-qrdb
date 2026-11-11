@@ -282,6 +282,184 @@ func retrieveRaw(t *testing.T, st Store, key string) string {
 	return string(value)
 }
 
+// A derived service whose migration fails is not returned, and the barrier
+// is not recorded as migrated: the next derivation migrates it.
+func TestForTenant_FailedMigrationIsRetried(t *testing.T) {
+	ctx := context.Background()
+	legacy := newLegacyBarrier(t)
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	home := &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	parent := newUnboundServiceWith(t)
+	arm(&home.failList, credentialPrefix+"db")
+
+	derived, err := parent.ForTenant(ctx, home, legacy)
+	require.ErrorIs(t, err, errInjectedFault)
+	assert.Nil(t, derived)
+	disarmAll(home)
+
+	derived, err = parent.ForTenant(ctx, home, legacy)
+	require.NoError(t, err)
+	assert.Equal(t, "v2", retrieveString(t, derived, "db"))
+}
+
+// A barrier migrated without conflict is not migrated again: a later
+// derivation does not read the legacy store.
+func TestForTenant_MigratedBarrierIsNotReread(t *testing.T) {
+	ctx := context.Background()
+	legacy := newLegacyBarrier(t)
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	home := &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	parent := newUnboundServiceWith(t)
+	_, err := parent.ForTenant(ctx, home, legacy)
+	require.NoError(t, err)
+
+	arm(&home.failList, credentialPrefix+"db")
+	derived, err := parent.ForTenant(ctx, home, legacy)
+	require.NoError(t, err, "a migrated barrier is not migrated again")
+	disarmAll(home)
+	assert.Equal(t, "v2", retrieveString(t, derived, "db"))
+}
+
+// A service built without a logger cannot derive one.
+func TestForTenant_ParentWithoutLogger(t *testing.T) {
+	derived, err := (&CredentialService{}).ForTenant(context.Background(), newHomeStore(t), newLegacyBarrier(t))
+	assert.ErrorIs(t, err, ErrNilLogger)
+	assert.Nil(t, derived)
+}
+
+// A legacy key is a record of a credential only when its suffix is a
+// version number or a usable metadata record of a held name that is not
+// itself a record. Every other key is a credential of its own and migrates
+// under its full name, beside a live credential whose name extends one.
+func TestMigrateLegacy_OddRecordNamesMigrateAsCredentials(t *testing.T) {
+	ctx := context.Background()
+	legacy := seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	own := map[string]string{
+		"db#vx":       "not a version",      // suffix is not a number
+		"orphan#meta": "no orphan value",    // no value for the base name
+		"db#v1#meta":  "record of a record", // base is a version record
+		"e":           "plain",              // its metadata is empty
+		"e#meta":      "{}",
+	}
+	for name, value := range own {
+		require.NoError(t, legacy.Put(ctx, legacyCredentialPrefix+name, []byte(value)))
+	}
+	shared := seal.NewMemoryBackend()
+	live := newUnboundService(t)
+	require.NoError(t, live.BindStore(ctx, shared))
+	require.NoError(t, live.StoreCredential(ctx, "db2", []byte("live")))
+
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+	assert.Empty(t, legacyKeys(t, legacy), "every copy is migrated")
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+	assert.Equal(t, "live", retrieveString(t, svc, "db2"))
+	for name, value := range own {
+		assert.Equal(t, value, retrieveString(t, svc, name), name)
+	}
+}
+
+// twoConflictNode returns a node whose copies of "db" and "db2" both
+// conflict with the replicated values another node migrated, with its
+// legacy and replicated stores open to faults.
+func twoConflictNode(t *testing.T) (svc *CredentialService, legacy, shared *faultBackend) {
+	t.Helper()
+	ctx := context.Background()
+	legacyA := seal.NewMemoryBackend()
+	legacy = &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	shared = &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	for _, name := range []string{"db", "db2"} {
+		writeLegacy(t, legacyA, name, "v2", "v1", nil)
+		writeLegacy(t, legacy.MemoryBackend, name, "kept", "kept-old", nil)
+	}
+	require.NoError(t, newMigratingService(t, legacyA).BindStore(ctx, shared))
+	svc = newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+	requireConflicts(t, svc, "db", "db2")
+	return svc, legacy, shared
+}
+
+func requireConflicts(t *testing.T, svc *CredentialService, names ...string) {
+	t.Helper()
+	conflicts, err := svc.ListMigrationConflicts(context.Background())
+	require.NoError(t, err)
+	got := make([]string, 0, len(conflicts))
+	for _, c := range conflicts {
+		got = append(got, c.Name)
+	}
+	require.Equal(t, names, got)
+}
+
+// Resolving one conflict touches only that name's copy: the copy and the
+// migration note of a name it prefixes are kept, and so is its conflict.
+func TestResolveMigrationConflict_LeavesOtherNames(t *testing.T) {
+	ctx := context.Background()
+	svc, legacy, _ := twoConflictNode(t)
+	note := legacyMigrationNotePrefix + "db2"
+	require.NoError(t, legacy.MemoryBackend.Put(ctx, note, []byte("{}")))
+
+	require.NoError(t, svc.ResolveMigrationConflict(ctx, "db", MigrationDiscard))
+	requireConflicts(t, svc, "db2")
+	assert.Equal(t, []string{
+		note,
+		legacyCredentialPrefix + "db2",
+		legacyCredentialPrefix + "db2" + metaSuffix,
+		legacyCredentialPrefix + "db2" + versionPrefix + "1",
+	}, legacyKeys(t, legacy.MemoryBackend))
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+}
+
+// A resolve whose copy has gone since the migration reports the conflict
+// as not found and drops it.
+func TestResolveMigrationConflict_CopyGone(t *testing.T) {
+	ctx := context.Background()
+	svc, legacy, _ := twoConflictNode(t)
+	for _, suffix := range []string{"", metaSuffix, versionPrefix + "1"} {
+		require.NoError(t, legacy.MemoryBackend.Delete(ctx, legacyCredentialPrefix+"db"+suffix))
+	}
+
+	err := svc.ResolveMigrationConflict(ctx, "db", MigrationImport)
+	require.ErrorIs(t, err, ErrMigrationConflictNotFound)
+	requireConflicts(t, svc, "db2")
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+}
+
+// A resolve that cannot read the copy, or cannot read the replicated
+// metadata it imports over, fails with the cause and keeps the conflict,
+// the copy and the replicated value; once the fault clears it resolves.
+func TestResolveMigrationConflict_ReadFaults(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fault func(legacy, shared *faultBackend)
+	}{
+		{name: "copy unreadable", fault: func(l, _ *faultBackend) { arm(&l.failList, legacyCredentialPrefix+"db") }},
+		{name: "replicated metadata unreadable", fault: func(_, s *faultBackend) { arm(&s.failGet, metaKey("db")) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, legacy, shared := twoConflictNode(t)
+			tc.fault(legacy, shared)
+
+			err := svc.ResolveMigrationConflict(ctx, "db", MigrationImport)
+			require.ErrorIs(t, err, errInjectedFault)
+			disarmAll(legacy)
+			disarmAll(shared)
+			requireConflicts(t, svc, "db", "db2")
+			assert.Len(t, legacyKeys(t, legacy.MemoryBackend), 6)
+			assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+
+			require.NoError(t, svc.ResolveMigrationConflict(ctx, "db", MigrationImport))
+			requireConflicts(t, svc, "db2")
+			assert.Equal(t, "kept", retrieveString(t, svc, "db"))
+		})
+	}
+}
+
 // While the legacy copy cannot be migrated, every verb is refused with the
 // migration's failure, so none reads or writes a store that may still lack
 // the legacy records; once the legacy store answers, each verb works.
@@ -313,6 +491,12 @@ func TestMigrateLegacy_FailingMigrationRefusesEveryVerb(t *testing.T) {
 		requireOperationError(t, err, "migrate")
 		assert.ErrorIs(t, err, errInjectedFault, name)
 	}
+	// The conflict verbs are the migration's own surface and report its
+	// failure as it is.
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	assert.ErrorIs(t, err, errInjectedFault)
+	assert.Nil(t, conflicts)
+	assert.ErrorIs(t, svc.ResolveMigrationConflict(ctx, "db", MigrationImport), errInjectedFault)
 	assert.Len(t, legacyKeys(t, legacy.MemoryBackend), 3, "the legacy copy is kept")
 
 	disarmAll(legacy)

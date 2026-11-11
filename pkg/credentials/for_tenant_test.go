@@ -137,3 +137,19 @@ func TestNewKVStore_MissingKeyIsSecretNotFound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []byte("v"), got)
 }
+
+// A read that fails is reported as that failure, not as a missing key, so a
+// caller never takes an unreadable record for an absent one.
+func TestNewKVStore_FailedReadIsNotSecretNotFound(t *testing.T) {
+	kv := kvstoretest.NewGuardedMemoryStore()
+	store, err := NewKVStore(kv)
+	require.NoError(t, err)
+	require.NoError(t, kv.Put(context.Background(), "present", []byte("v")))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := store.Get(ctx, "present")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, seal.ErrSecretNotFound)
+	assert.Nil(t, got)
+}
