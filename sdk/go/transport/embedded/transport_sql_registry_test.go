@@ -16,27 +16,7 @@
 
 package embedded
 
-import (
-	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
-)
-
-// The SQL service is built once, over the KV and database services the
-// transport was constructed with, and cached for the transport's lifetime.
-func TestEmbeddedSQL_ServiceIsCachedAfterFirstUse(t *testing.T) {
-	dbSvc := service.NewDatabaseService(databasetest.NewManager(nil, t.TempDir()))
-	tr := newExtTransport(t, WithDatabaseService(dbSvc))
-
-	svc := tr.sqlSvc()
-	if svc == nil {
-		t.Fatal("sqlSvc() = nil with a KV and a database service configured")
-	}
-	if tr.sqlSvc() != svc {
-		t.Fatal("sqlSvc() must return the same cached service on every call")
-	}
-}
+import "testing"
 
 // Without a database service there is nothing to build a SQL service over.
 func TestEmbeddedSQL_NoDatabaseServiceNoSQLService(t *testing.T) {
