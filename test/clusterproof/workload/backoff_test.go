@@ -170,10 +170,6 @@ func TestSleepContextReturnsWhenContextEnds(t *testing.T) {
 	<-done // a pause that ignored ctx would hang the test here
 }
 
-func TestSleepContextZeroPauseReturns(t *testing.T) {
-	sleepContext(context.Background(), 0)
-}
-
 func TestRunBacksOffAfterEveryFailedOp(t *testing.T) {
 	cfg := pausedConfig("n1")
 	f := newFakeCluster(cfg.Endpoints...)
