@@ -310,25 +310,6 @@ func connectVectorInProcess(t *testing.T, svc service.VectorServicer) (*Transpor
 // CreateNamespace / DeleteNamespace / ListNamespaces / GetNamespaceInfo
 // ---------------------------------------------------------------------------
 
-func TestCreateNamespace_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.CreateNamespace(context.Background(), &transport.CreateNamespaceRequest{
-		Namespace:      "ns1",
-		Dimension:      128,
-		DistanceMetric: "L2",
-		IndexType:      "HNSW",
-	})
-	if err != nil {
-		t.Fatalf("CreateNamespace: %v", err)
-	}
-	if resp.Namespace != "ns1" {
-		t.Errorf("namespace: %q", resp.Namespace)
-	}
-}
-
 func TestCreateNamespace_ServiceError(t *testing.T) {
 	svc := newMockVectorSvc()
 	svc.createNSErr = errors.New("already exists")
@@ -471,24 +452,6 @@ func TestGetNamespaceInfo_UnknownDistanceMetricRefused(t *testing.T) {
 // UpsertVector / GetVector / DeleteVector
 // ---------------------------------------------------------------------------
 
-func TestUpsertVector_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.UpsertVector(context.Background(), &transport.UpsertVectorRequest{
-		Namespace: "ns1",
-		ID:        42,
-		Vector:    []float32{0.1, 0.2, 0.3},
-	})
-	if err != nil {
-		t.Fatalf("UpsertVector: %v", err)
-	}
-	if resp.ID != 42 {
-		t.Errorf("id: %d", resp.ID)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchUpsert / BatchDeleteVectors / ListVectors
 // ---------------------------------------------------------------------------
@@ -548,24 +511,6 @@ func TestListVectors_Success(t *testing.T) {
 // SearchSimilar / SearchByMetadata / HybridSearch
 // ---------------------------------------------------------------------------
 
-func TestSearchSimilar_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.SearchSimilar(context.Background(), &transport.SearchSimilarRequest{
-		Namespace:   "ns1",
-		QueryVector: []float32{0.1, 0.2},
-		K:           10,
-	})
-	if err != nil {
-		t.Fatalf("SearchSimilar: %v", err)
-	}
-	if len(resp.Results) != 1 {
-		t.Errorf("results: %d", len(resp.Results))
-	}
-}
-
 func TestSearchByMetadata_Success(t *testing.T) {
 	svc := newMockVectorSvc()
 	tr, cleanup := connectVectorInProcess(t, svc)
@@ -577,25 +522,6 @@ func TestSearchByMetadata_Success(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("SearchByMetadata: %v", err)
-	}
-	if len(resp.Results) != 1 {
-		t.Errorf("results: %d", len(resp.Results))
-	}
-}
-
-func TestHybridSearch_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.HybridSearch(context.Background(), &transport.HybridSearchRequest{
-		Namespace:      "ns1",
-		QueryVector:    []float32{0.1},
-		K:              10,
-		MetadataFilter: map[string]interface{}{"k": "v"},
-	})
-	if err != nil {
-		t.Fatalf("HybridSearch: %v", err)
 	}
 	if len(resp.Results) != 1 {
 		t.Errorf("results: %d", len(resp.Results))
@@ -1000,7 +926,7 @@ func TestUpsertVector_WithMetadataAndShardID(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.UpsertVector(context.Background(), &transport.UpsertVectorRequest{
+	resp, err := tr.UpsertVector(context.Background(), &transport.UpsertVectorRequest{
 		Namespace: "ns1",
 		ID:        42,
 		Vector:    []float32{0.1},
@@ -1009,6 +935,9 @@ func TestUpsertVector_WithMetadataAndShardID(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("UpsertVector: %v", err)
+	}
+	if resp.ID != 42 {
+		t.Errorf("id: %d", resp.ID)
 	}
 }
 
@@ -1053,7 +982,7 @@ func TestCreateNamespace_WithMetadata(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.CreateNamespace(context.Background(), &transport.CreateNamespaceRequest{
+	resp, err := tr.CreateNamespace(context.Background(), &transport.CreateNamespaceRequest{
 		Namespace:      "ns1",
 		Dimension:      128,
 		DistanceMetric: "L2",
@@ -1065,6 +994,9 @@ func TestCreateNamespace_WithMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateNamespace: %v", err)
 	}
+	if resp.Namespace != "ns1" {
+		t.Errorf("namespace: %q", resp.Namespace)
+	}
 }
 
 func TestSearchSimilar_WithFilters(t *testing.T) {
@@ -1072,7 +1004,7 @@ func TestSearchSimilar_WithFilters(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.SearchSimilar(context.Background(), &transport.SearchSimilarRequest{
+	resp, err := tr.SearchSimilar(context.Background(), &transport.SearchSimilarRequest{
 		Namespace:       "ns1",
 		QueryVector:     []float32{0.1, 0.2},
 		K:               10,
@@ -1085,6 +1017,9 @@ func TestSearchSimilar_WithFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchSimilar: %v", err)
 	}
+	if len(resp.Results) != 1 {
+		t.Errorf("results: %d", len(resp.Results))
+	}
 }
 
 func TestHybridSearch_WithReranking(t *testing.T) {
@@ -1092,7 +1027,7 @@ func TestHybridSearch_WithReranking(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.HybridSearch(context.Background(), &transport.HybridSearchRequest{
+	resp, err := tr.HybridSearch(context.Background(), &transport.HybridSearchRequest{
 		Namespace:          "ns1",
 		QueryVector:        []float32{0.1},
 		K:                  10,
@@ -1106,6 +1041,9 @@ func TestHybridSearch_WithReranking(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("HybridSearch: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("results: %d", len(resp.Results))
 	}
 }
 
