@@ -39,15 +39,21 @@ type CredentialServicer interface {
 implementation. It resolves the caller's tenant's store on every call and then
 passes through to that `credentials.CredentialService`. The system tenant's
 store is the node-wide service, bound to the one replicated store on the
-system shard (see "One store per cluster"). A tenant's store is built over its dedicated
-barrier with `credentials.CredentialService.ForBarrier`, which refuses a nil
-barrier with `ErrNilBarrier` and shares the parent's logger, audit logger,
+system shard (see "One store per cluster"). A tenant's store is built over its replicated
+home store with `credentials.CredentialService.ForTenant(ctx, home, legacy)`,
+which refuses a nil home store with `ErrNilStore` and a nil barrier with
+`ErrNilBarrier`, first migrates the records the tenant barrier holds under the
+old `credentials/` layout into the home store (`MigrateLegacy`, once per
+barrier), and shares the parent's logger, audit logger,
 rotation value source and clock, so a tenant's scheduled rotations draw from
 the same source as the system store's.
 `service.WithCredentialTenantBarriers(registry)` binds the
 `seal.BarrierRegistry` the tenant barriers come from. The node's lifecycle
 passes it whenever the node has a registry; without it, every tenant call is
-refused. The embedded transport is handed the same `CredentialServicer` as
+refused. The lifecycle also attaches the source of tenant home stores with
+`SetTenantHomes` (`attachHomeSource` in `pkg/server/lifecycle/tenant_home.go`)
+once the stores that host the homes have started; until then a tenant call is
+refused with `CapabilityUnsupportedError`. The embedded transport is handed the same `CredentialServicer` as
 the network transports (`embedded.WithCredentialService`).
 
 Its
@@ -150,8 +156,10 @@ than change the interface.
   node-local store.
 - **`pkg/credentials` is the only secret-bearing store in qrdb.** There is no
   `secrets` or `kms` package.
-- **A tenant's credentials live under the tenant's own barrier, never in the
-  system store.** The store is resolved from the caller's tenant, never from a
+- **A tenant's credentials live in the tenant's replicated home store, never
+  in the system store.** The home store is the store of record; the tenant
+  barrier on a node is read once, as the migration source of records under the
+  old layout. The store is resolved from the caller's tenant, never from a
   request field. A tenant on the shared system barrier is refused, not given
   the node-wide store or a prefix inside it. Names and values in one tenant are
   invisible to every other tenant and to the platform.
@@ -478,7 +486,8 @@ with the credential and are removed with it by `delete`.
   platform's; a principal without the grants refused; and a shared-barrier
   tenant refused for want of a dedicated barrier. The CLI covers REST, gRPC,
   QUIC, MCP and Unix, and the SDK client covers embedded. Unit tests cover
-  the service's store resolution, `ForBarrier`, and the lifecycle option that
+  the service's store resolution, `ForTenant` and its one-time migration from
+  the tenant barrier, and the lifecycle option that
   binds the registry.
 - **Fail-closed tests** for the protected-config-field rule and for an
   unresolvable reference at boot.
