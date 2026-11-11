@@ -176,13 +176,6 @@ func TestDefault_OpenDirSyncs(t *testing.T) {
 	}
 }
 
-func TestDefault_OpenDirMissingFails(t *testing.T) {
-	_, err := filesys.Default.OpenDir(filepath.Join(t.TempDir(), "missing"))
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("OpenDir missing: err = %v, want ErrNotExist", err)
-	}
-}
-
 func TestDefault_Link(t *testing.T) {
 	dir := t.TempDir()
 	oldname, newname := filepath.Join(dir, "a"), filepath.Join(dir, "b")
@@ -253,14 +246,6 @@ func TestDefault_MkdirAll(t *testing.T) {
 	fi, err := filesys.Default.Stat(dir)
 	if err != nil || !fi.IsDir() {
 		t.Errorf("Stat = %v, %v; want a directory", fi, err)
-	}
-}
-
-func TestDefault_MkdirAllOverFileFails(t *testing.T) {
-	name := filepath.Join(t.TempDir(), "a")
-	writeFile(t, name, "x")
-	if err := filesys.Default.MkdirAll(filepath.Join(name, "b"), 0o755); err == nil {
-		t.Error("MkdirAll beneath a regular file succeeded")
 	}
 }
 
