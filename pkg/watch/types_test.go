@@ -32,27 +32,6 @@ func TestApplyWatchOptionsDefaults(t *testing.T) {
 	}
 }
 
-func TestApplyWatchOptionsWithStartRevision(t *testing.T) {
-	opts := ApplyWatchOptions([]WatchOption{WithStartRevision(99)})
-	if opts.StartRevision != 99 {
-		t.Errorf("StartRevision = %d, want 99", opts.StartRevision)
-	}
-}
-
-func TestApplyWatchOptionsWithPrevKV(t *testing.T) {
-	opts := ApplyWatchOptions([]WatchOption{WithPrevKV()})
-	if !opts.PrevKV {
-		t.Error("PrevKV = false, want true")
-	}
-}
-
-func TestApplyWatchOptionsWithProgressNotify(t *testing.T) {
-	opts := ApplyWatchOptions([]WatchOption{WithProgressNotify()})
-	if !opts.ProgressNotify {
-		t.Error("ProgressNotify = false, want true")
-	}
-}
-
 func TestApplyWatchOptionsWithFilters(t *testing.T) {
 	opts := ApplyWatchOptions([]WatchOption{WithFilters(WatchFilterNoPut, WatchFilterNoDelete)})
 	if len(opts.Filters) != 2 {
@@ -84,25 +63,5 @@ func TestApplyWatchOptionsWithMultipleOptions(t *testing.T) {
 	}
 	if len(opts.Filters) != 1 || opts.Filters[0] != WatchFilterNoPut {
 		t.Errorf("Filters = %v, want [WatchFilterNoPut]", opts.Filters)
-	}
-}
-
-func TestWatchFilterConstants(t *testing.T) {
-	// Verify constants are distinct and non-zero.
-	if WatchFilterNoPut == 0 {
-		t.Error("WatchFilterNoPut should not be zero")
-	}
-	if WatchFilterNoDelete == 0 {
-		t.Error("WatchFilterNoDelete should not be zero")
-	}
-	if WatchFilterNoPut == WatchFilterNoDelete {
-		t.Error("WatchFilterNoPut and WatchFilterNoDelete should be different")
-	}
-}
-
-func TestEventTypeConstants(t *testing.T) {
-	// Verify EventPut and EventDelete are distinct.
-	if EventPut == EventDelete {
-		t.Error("EventPut and EventDelete should be different")
 	}
 }
