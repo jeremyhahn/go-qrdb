@@ -13,6 +13,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`node.WithCredentialRotationValueSource`.** An embedded SDK node can now supply the `RotationValueSource` scheduled credential rotations draw from (re-exported as `sdk.RotationValueSource`); scheduled rotations and retention GC are audited under the tenant they act for (#1201).
+
 - **A named credential rotates on a schedule, once per interval across the cluster** (#1200): a rotation policy (`enabled`, `interval`, `retain_versions`) is set and read over REST (`PUT`/`GET /v1/credentials/{name}/rotation-policy`), gRPC and Unix (`CredentialSetRotationPolicy`/`CredentialRotationPolicy`), QUIC, MCP, the embedded transport and `qrdb credential rotation-policy set|get`, under `credentials:rotate`. An invalid policy, or any policy under the `manual` strategy, is refused with invalid-argument. Every node checks every `seal.credential_rotation_check_period` (default `1m`), and a compare-and-swap on the credential's metadata lets exactly one node rotate each interval. New values come from a `credentials.WithRotationValueSource` the embedder supplies; `qrdbd` ships none, and without one a due rotation fails with `ErrNoRotationValueSource`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a

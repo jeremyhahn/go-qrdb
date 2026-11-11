@@ -29,6 +29,20 @@ type RotateOptions = credentials.RotateOptions
 // RotateResult holds the result of a credential rotation.
 type RotateResult = credentials.RotateResult
 
+// RotationValueSource produces the new value of a scheduled credential
+// rotation. Supply one to an embedded node with
+// node.WithCredentialRotationValueSource, or to a versioned credential
+// service with WithCredentialRotationValueSource.
+type RotationValueSource = credentials.RotationValueSource
+
+// ErrNoRotationValueSource is the cause a due rotation reports when no
+// RotationValueSource is configured.
+var ErrNoRotationValueSource = credentials.ErrNoRotationValueSource
+
+// WithCredentialRotationValueSource sets the source a
+// VersionedCredentialService draws scheduled rotation values from.
+var WithCredentialRotationValueSource = credentials.WithRotationValueSource
+
 // ---------------------------------------------------------------------------
 // Credential configuration
 // ---------------------------------------------------------------------------

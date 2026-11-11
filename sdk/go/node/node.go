@@ -311,6 +311,15 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithCredentialRotationValueSource supplies the source the credential
+// core draws new values from when a rotation policy falls due. go-qrdb
+// generates no credential values: without this option every due rotation
+// reports credentials.ErrNoRotationValueSource. The source runs with the
+// owning tenant bound on its context (tenant.FromContext).
+func WithCredentialRotationValueSource(src credentials.RotationValueSource) NodeOption {
+	return func(o *nodeOptions) { o.credentialRotation = src }
+}
+
 // WithHeadSignerProvider replaces the software head-signing key of every
 // verifiable log with a composer's vlog.HeadSignerProvider, typically one
 // that keeps the key on a device or in a KMS and never exports it.
@@ -457,6 +466,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
+	credentialRotation      credentials.RotationValueSource
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
@@ -3594,9 +3604,12 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// replicated KV once it exists, so every node keeps the same records
 	// (docs/credentials/architecture.md, "Storage"); until then it fails
 	// closed.
+	credOpts := []credentials.Option{credentials.WithLegacyStore(barrier)}
+	if nOpts != nil && nOpts.credentialRotation != nil {
+		credOpts = append(credOpts, credentials.WithRotationValueSource(nOpts.credentialRotation))
+	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, nil, log,
-		credentials.WithLegacyStore(barrier))
+		&credentials.Config{Strategy: credStrategy}, nil, log, credOpts...)
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}
