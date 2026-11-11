@@ -750,11 +750,15 @@ build-frontend: build-sdk install-frontend
 # no backend). The real-backend and DOM tiers need a live qrdbd and run
 # through test-e2e. `npm ci`, not `npm install`: the lockfiles are what is
 # tested. CI=true selects Playwright's CI settings (forbidOnly, retries).
+# PLAYWRIGHT_INSTALL_FLAGS: `--with-deps` also installs Chromium's system
+# libraries through apt and sudo. A caller whose machine already carries them
+# and forbids sudo (CI's self-hosted runner) sets it empty.
+PLAYWRIGHT_INSTALL_FLAGS ?= --with-deps
 .PHONY: test-typescript
 test-typescript: ## TypeScript SDK typecheck, tests and build; desktop frontend svelte-check and mocked Playwright
 	cd sdk/typescript && npm ci && npx tsc --noEmit -p . && npm test && npm run build
 	cd cmd/qrdb/frontend && npm ci && npm run check && npm run build
-	cd cmd/qrdb/frontend && npx playwright install --with-deps chromium
+	cd cmd/qrdb/frontend && npx playwright install $(PLAYWRIGHT_INSTALL_FLAGS) chromium
 	cd cmd/qrdb/frontend && CI=true npx playwright test --workers=2
 
 .PHONY: dev-gui
