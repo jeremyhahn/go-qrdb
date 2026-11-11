@@ -750,7 +750,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Security
 
-- **Named credentials are never stored in an unencrypted data plane** (#1201): with seal enabled, a standalone node whose backend is `objstore` (which does not encrypt at rest) and whose credential strategy is `barrier` now fails to start with `UnencryptedCredentialStoreError` instead of binding it as the credential store (the `manual` strategy writes nothing to the data plane and starts on any backend); its legacy barrier-encrypted credentials are left untouched. A legacy `<name>#meta` value with data after its JSON document now migrates as a credential under its full name, not as `<name>`'s metadata.
+- **Named credentials are never stored in an unencrypted data plane** (#1201): with seal enabled, a standalone node whose backend is `objstore` (which does not encrypt at rest) and whose credential strategy is `barrier` now binds the system seal barrier, which encrypts every record, as the credential store instead of the data plane (the `manual` strategy writes nothing to the data plane and starts on any backend). A legacy `<name>#meta` value with data after its JSON document now migrates as a credential under its full name, not as `<name>`'s metadata.
 - **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
   reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
   (2026-11-02). Every Go version pin moves to 1.27.4: the `go` directive of

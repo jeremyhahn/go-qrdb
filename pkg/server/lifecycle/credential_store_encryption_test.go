@@ -17,7 +17,6 @@ package lifecycle_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"log/slog"
 	"testing"
 
@@ -27,11 +26,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
 )
 
-// TestBuildServices_RefusesAnUnencryptedCredentialStore proves a node whose
-// data plane does not encrypt at rest (a standalone objstore backend) refuses
-// to bind it as the credential store, and leaves the barrier-encrypted legacy
-// credentials where they are: none is migrated or deleted.
-func TestBuildServices_RefusesAnUnencryptedCredentialStore(t *testing.T) {
+// TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane proves a
+// node whose data plane does not encrypt at rest (a standalone objstore
+// backend) boots with the system seal barrier, which encrypts, bound as the
+// credential store: its legacy records are kept and new credentials are
+// written through the barrier.
+func TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane(t *testing.T) {
 	ctx := context.Background()
 	host := newLocalHost()
 	defer func() { _ = host.Close() }()
@@ -54,24 +54,31 @@ func TestBuildServices_RefusesAnUnencryptedCredentialStore(t *testing.T) {
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
 	})
-	if err == nil {
-		_ = node.Stop(ctx)
-		t.Fatal("BuildServices bound an objstore data plane as the credential store")
+	if err != nil {
+		t.Fatalf("BuildServices on an objstore data plane: %v", err)
 	}
-	var refused *lifecycle.UnencryptedCredentialStoreError
-	if !errors.As(err, &refused) {
-		t.Fatalf("BuildServices error = %v, want *UnencryptedCredentialStoreError", err)
-	}
-	if refused.Backend != database.BackendObjstore {
-		t.Fatalf("refused backend = %q, want %q", refused.Backend, database.BackendObjstore)
-	}
+	defer func() { _ = node.Stop(ctx) }()
 
+	// The legacy record is still in the barrier: binding it lost nothing.
 	got, err := barrier.Get(ctx, legacyKey)
 	if err != nil {
-		t.Fatalf("legacy credential after the refusal: %v", err)
+		t.Fatalf("legacy credential after the bind: %v", err)
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("legacy credential = %q, want %q", got, want)
+	}
+
+	// A new credential is stored by the barrier, which encrypts it.
+	fresh := []byte("fresh-secret")
+	if err := credSvc.StoreCredential(ctx, "api-key", fresh); err != nil {
+		t.Fatalf("StoreCredential: %v", err)
+	}
+	got, err = barrier.Get(ctx, "__sys:credentials/api-key")
+	if err != nil {
+		t.Fatalf("barrier.Get new credential: %v", err)
+	}
+	if !bytes.Equal(got, fresh) {
+		t.Fatalf("new credential in the barrier = %q, want %q", got, fresh)
 	}
 }
 
