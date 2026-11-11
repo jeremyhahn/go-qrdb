@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -52,6 +53,10 @@ func TestBoundStore_UnboundFailsClosed(t *testing.T) {
 		},
 		"compare-and-swap": func() error {
 			_, err := b.CompareAndSwap(ctx, "k", []byte("a"), []byte("b"))
+			return err
+		},
+		"put-all-if-all-unchanged": func() error {
+			_, err := b.PutAllIfAllUnchanged(ctx, nil, []kvstore.KV{{Key: "k", Value: []byte("v")}})
 			return err
 		},
 	} {
