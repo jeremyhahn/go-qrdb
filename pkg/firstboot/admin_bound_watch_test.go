@@ -570,17 +570,10 @@ func TestWatchForAdminBound_TransientLookupFailureRetries(t *testing.T) {
 	go func() { done <- WatchForAdminBound(ctx, lookup, hub, notifier) }()
 
 	// A watch without the fix ends (returns the transient error) on the
-	// very first failed lookup; assert it has NOT ended well before the
-	// 3 retries (50ms, 100ms, 200ms backoff) could possibly have run out.
-	select {
-	case err := <-done:
-		t.Fatalf("WatchForAdminBound ended early on a transient lookup failure instead of retrying: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-
-	// The retries exhaust well within this wait; the lookup then succeeds,
-	// the watch registers, and the bind below must be observed exactly as
-	// the real-hub evidence test proves for a lookup that never failed.
+	// very first failed lookup, so it never registers a watcher and the
+	// wait below fails. With the fix the retries succeed, the watch
+	// registers, and the bind below must be observed exactly as the
+	// real-hub evidence test proves for a lookup that never failed.
 	deadline := time.Now().Add(5 * time.Second)
 	for hub.WatchCount() == 0 {
 		if time.Now().After(deadline) {
