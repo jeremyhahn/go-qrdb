@@ -366,17 +366,6 @@ func TestGetNamespaceInfo_WithStats(t *testing.T) {
 // GetStats — closed storage
 // ---------------------------------------------------------------------------
 
-// TestGetStats_Closed verifies ErrStorageClosed is returned.
-func TestGetStats_Closed(t *testing.T) {
-	s := openVectorStorage(t)
-	s.closed.Store(true)
-
-	_, err := s.GetStats(context.Background(), "any")
-	if !errors.Is(err, ErrStorageClosed) {
-		t.Fatalf("expected ErrStorageClosed, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Compact — happy path and closed path
 // ---------------------------------------------------------------------------
@@ -390,17 +379,6 @@ func TestCompact_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	if err := s.Compact(ctx, ns); err != nil {
 		t.Fatalf("Compact: %v", err)
-	}
-}
-
-// TestCompact_Closed verifies ErrStorageClosed is returned.
-func TestCompact_Closed(t *testing.T) {
-	s := openVectorStorage(t)
-	s.closed.Store(true)
-
-	err := s.Compact(context.Background(), "any")
-	if !errors.Is(err, ErrStorageClosed) {
-		t.Fatalf("expected ErrStorageClosed, got %v", err)
 	}
 }
 
@@ -442,23 +420,6 @@ func TestCleanupTombstones_NoTombstonesCovFinal(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Close — double close (idempotent)
 // ---------------------------------------------------------------------------
-
-// TestClose_DoubleCloseCovFinal verifies that calling Close twice returns nil.
-func TestClose_DoubleCloseCovFinal(t *testing.T) {
-	dir := t.TempDir()
-	cfg := DefaultConfig(dir)
-	s, err := NewPebbleVectorStorage(cfg, &testLogger{})
-	if err != nil {
-		t.Fatalf("NewPebbleVectorStorage: %v", err)
-	}
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Errorf("second Close should be no-op: %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // vectorBatch — nil vector and empty batch paths

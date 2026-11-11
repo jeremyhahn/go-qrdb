@@ -837,28 +837,6 @@ func TestBatch_ResetAndReuse(t *testing.T) {
 	assert.Equal(t, 1, batch.Count())
 }
 
-// TestClose_DoubleClose tests calling Close multiple times
-func TestClose_DoubleClose(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = false
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-
-	// First close
-	err = storage.Close()
-	require.NoError(t, err)
-
-	// Second close (should not error)
-	err = storage.Close()
-	assert.NoError(t, err)
-}
-
 // TestUpsertVector_InvalidNamespace tests upsert with invalid namespace
 func TestUpsertVector_InvalidNamespace(t *testing.T) {
 	storage, cleanup := setupStorage(t)

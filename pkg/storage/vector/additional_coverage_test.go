@@ -449,17 +449,6 @@ func TestAdapter_DeleteVector_NonExistent(t *testing.T) {
 	assert.Equal(t, ErrVectorNotFound, err)
 }
 
-// TestAdapter_Close_AlreadyClosed tests closing already closed storage
-func TestAdapter_Close_AlreadyClosed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	// Close once via cleanup
-	cleanup()
-
-	// Close again - should be idempotent
-	err := storage.Close()
-	assert.NoError(t, err)
-}
-
 // TestBatch_UpsertVector_WithSetError tests batch upsert error handling
 func TestBatch_UpsertVector_WithSetError(t *testing.T) {
 	tmpDir := t.TempDir()

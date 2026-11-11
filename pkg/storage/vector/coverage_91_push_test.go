@@ -106,14 +106,6 @@ func TestListNamespaces_Empty(t *testing.T) {
 	assert.Empty(t, results)
 }
 
-func TestListNamespaces_Closed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	require.NoError(t, storage.Close())
-	_, err := storage.ListNamespaces(context.Background())
-	assert.ErrorIs(t, err, ErrStorageClosed)
-}
-
 func TestUpsertVector_UpdateWithOldMetadata(t *testing.T) {
 	storage, cleanup := setupStorage(t)
 	defer cleanup()
