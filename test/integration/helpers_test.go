@@ -289,6 +289,9 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 		// (and, for a foreign issuer, --admin-cert-pool) in extraArgs.
 		args = append(args, "--admin-generate")
 	}
+	if !slices.Contains(extraArgs, "--so-username") {
+		args = append(args, systemSOArgs(t)...)
+	}
 	args = append(args, extraArgs...)
 
 	// Retry transient failures in the narrow window around the barrier
@@ -331,6 +334,44 @@ func bootAdminIdentityVia(t *testing.T, cli string, connArgs []string, soPin, us
 		}
 	}
 	return out
+}
+
+// systemSOUsername is the system SO every bootAdminIdentity ceremony enrols.
+const systemSOUsername = "system-so"
+
+// systemSOArgs returns the `qrdb init` flags naming a system SO: a username
+// and a CSR over a fresh key. A daemon under FIPS 140-3 runs separation of
+// duties strict, which refuses a ceremony with no system SO; standard mode
+// accepts one, so the fixture always sends it.
+func systemSOArgs(t *testing.T) []string {
+	t.Helper()
+	csrPath := filepath.Join(t.TempDir(), "system-so-csr.pem")
+	if err := os.WriteFile(csrPath, []byte(systemSOCSRPEM(t)), 0o600); err != nil {
+		t.Fatalf("systemSOArgs: write CSR: %v", err)
+	}
+	return []string{"--so-username", systemSOUsername, "--so-csr", csrPath}
+}
+
+// systemSOFields returns the POST /v1/ceremony/initialize fields naming a
+// system SO, for the fixtures that run the ceremony over REST.
+func systemSOFields(t *testing.T) map[string]any {
+	t.Helper()
+	return map[string]any{"so_username": systemSOUsername, "so_csr_pem": systemSOCSRPEM(t)}
+}
+
+// systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,
+// a key that is never the admin's.
+func systemSOCSRPEM(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: generate key: %v", err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: systemSOUsername}}, key)
+	if err != nil {
+		t.Fatalf("systemSOCSRPEM: create CSR: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 }
 
 // generateAdminCSR generates an ECDSA P-256 key pair and a self-signed CSR
@@ -2616,6 +2657,11 @@ func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase str
 		// etc.). A bare string marshals as plain JSON text instead, which
 		// is not valid base64 and the decoder rejects.
 		"secret": []byte(passphrase),
+	}
+	if _, named := extra["so_username"]; !named {
+		for k, v := range systemSOFields(t) {
+			fields[k] = v
+		}
 	}
 	for k, v := range extra {
 		fields[k] = v
