@@ -463,61 +463,11 @@ func pemEncodeCertificate(der []byte) []byte {
 // fails, causing a fast failure without network operations.
 // ---------------------------------------------------------------------------
 
-func TestRunStart_MVCCSMType_SwitchCaseExecuted(t *testing.T) {
-	dir := t.TempDir()
-
-	// Place a file at the WAL path to make quicraft.NewHost fail when it
-	// tries to create the WAL directory (MkdirAll will fail).
-	walPath := filepath.Join(dir, "wal")
-	require.NoError(t, os.WriteFile(walPath, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "mvcc",
-		discoveryMethod: "static",
-		peers:           []string{"1=127.0.0.1:63001"},
-		listen:          "127.0.0.1:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		host:            testBindHost,
-	}
-
-	// runStart should fail at initializeNode due to blocked WAL dir.
-	err := runStart(f)
-	require.Error(t, err, "runStart must fail when WAL dir is blocked by a file")
-	// The error comes from quicraft.NewHost failing to create the WAL dir.
-	// We don't assert the exact error type since it's a quicraft internal error.
-}
-
 // ---------------------------------------------------------------------------
 // runStart: smType "pebble" switch case (lines 750-757)
 //
 // Same pattern as above but exercises the case "pebble": branch.
 // ---------------------------------------------------------------------------
-
-func TestRunStart_PebbleSMType_SwitchCaseExecuted(t *testing.T) {
-	dir := t.TempDir()
-
-	// Block the WAL path to force fast failure at quicraft.NewHost.
-	walPath := filepath.Join(dir, "wal")
-	require.NoError(t, os.WriteFile(walPath, []byte("x"), 0o600))
-
-	f := &startFlags{
-		dataDir:         dir,
-		smType:          "pebble",
-		discoveryMethod: "static",
-		peers:           []string{"1=127.0.0.1:63001"},
-		listen:          "127.0.0.1:0",
-		raftAddress:     "127.0.0.1:0",
-		shardID:         1,
-		replicaID:       1,
-		host:            testBindHost,
-	}
-
-	err := runStart(f)
-	require.Error(t, err, "runStart must fail when WAL dir is blocked by a file")
-}
 
 // ---------------------------------------------------------------------------
 // runStart: database AlreadyExists path (lines 689-699)

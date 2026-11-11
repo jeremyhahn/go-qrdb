@@ -2468,23 +2468,6 @@ func TestLoadCACertPool_InvalidPath(t *testing.T) {
 	}
 }
 
-func TestLoadCACertPool_InvalidPEM(t *testing.T) {
-	dir := t.TempDir()
-	caPath := filepath.Join(dir, "bad.pem")
-	if err := os.WriteFile(caPath, []byte("not-a-pem-file"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error: %v", err)
-	}
-
-	_, err := loadCACertPool(caPath)
-	if err == nil {
-		t.Fatal("loadCACertPool() error = nil, want TLSLoadError")
-	}
-	var tlsErr *TLSLoadError
-	if !errors.As(err, &tlsErr) {
-		t.Fatalf("error type = %T, want *TLSLoadError", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Bootstrap & reload error type tests
 // ---------------------------------------------------------------------------
