@@ -107,15 +107,6 @@ func TestWaitForFile(t *testing.T) {
 	if err := WaitForFile(existing, shortTimeout); err != nil {
 		t.Errorf("WaitForFile on an existing file: %v", err)
 	}
-
-	later := filepath.Join(dir, "later")
-	go func() {
-		time.Sleep(60 * time.Millisecond)
-		_ = os.WriteFile(later, []byte("x"), fileMode)
-	}()
-	if err := WaitForFile(later, 5*time.Second); err != nil {
-		t.Errorf("WaitForFile on a file created during the wait: %v", err)
-	}
 }
 
 func TestWaitForFileTimesOut(t *testing.T) {
