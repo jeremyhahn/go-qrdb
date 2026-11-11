@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
@@ -374,6 +375,61 @@ func TestAttachLocalTenantHomes_AttachesToEveryServedResolver(t *testing.T) {
 	}
 	if served.src != router.src {
 		t.Fatalf("served resolver's source = %v, want the node resolver's %v", served.src, router.src)
+	}
+}
+
+// TestAttachLocalTenantHomes_CredentialStoreServesConditionalWrites proves
+// a standalone node's tenant home store is a credential store of record:
+// credentials.NewKVStore accepts it (no ErrStoreNotAtomic), and the
+// PutIfAbsent and CompareAndSwap a rotation claim needs are decided once,
+// a conflicting write reporting false.
+func TestAttachLocalTenantHomes_CredentialStoreServesConditionalWrites(t *testing.T) {
+	ctx := context.Background()
+	reg := newHomeRegistry(t)
+	strategy, err := seal.NewSoftwareStrategy(ctx, []byte("acme-passphrase"))
+	if err != nil {
+		t.Fatalf("NewSoftwareStrategy: %v", err)
+	}
+	tb, err := reg.RegisterTenant(ctx, "acme", seal.NewMemoryBackend(), seal.BarrierConfig{}, strategy)
+	if err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
+	}
+	if err := tb.Barrier().Initialize(ctx, seal.MustCredentials(ctx, []byte("acme-passphrase"))); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	router := &homeRouterResolver{}
+	if !AttachLocalTenantHomes(&Node{StoreResolver: router}, reg, nil) {
+		t.Fatal("AttachLocalTenantHomes = false, want true")
+	}
+	homes, ok := router.src.(*tenant.LocalHomes)
+	if !ok {
+		t.Fatalf("attached source = %T, want *tenant.LocalHomes", router.src)
+	}
+	kv, err := homes.HomeStore(ctx, "acme")
+	if err != nil {
+		t.Fatalf("HomeStore: %v", err)
+	}
+	store, err := credentials.NewKVStore(kv)
+	if err != nil {
+		t.Fatalf("credentials.NewKVStore(standalone home store): %v", err)
+	}
+
+	const key = "rotation/claim"
+	if put, err := store.PutIfAbsent(ctx, key, []byte("v1")); err != nil || !put {
+		t.Fatalf("PutIfAbsent(absent) = %v, %v; want true, nil", put, err)
+	}
+	if put, err := store.PutIfAbsent(ctx, key, []byte("other")); err != nil || put {
+		t.Fatalf("PutIfAbsent(present) = %v, %v; want false, nil", put, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, key, []byte("stale"), []byte("v2")); err != nil || swapped {
+		t.Fatalf("CompareAndSwap(conflicting) = %v, %v; want false, nil", swapped, err)
+	}
+	if swapped, err := store.CompareAndSwap(ctx, key, []byte("v1"), []byte("v2")); err != nil || !swapped {
+		t.Fatalf("CompareAndSwap(matching) = %v, %v; want true, nil", swapped, err)
+	}
+	got, err := store.Get(ctx, key)
+	if err != nil || string(got) != "v2" {
+		t.Fatalf("Get = %q, %v; want \"v2\", nil", got, err)
 	}
 }
 
