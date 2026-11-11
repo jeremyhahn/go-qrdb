@@ -35,6 +35,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // soUpgradeSigner signs a CSR as a system-tenant client certificate under
@@ -63,6 +64,38 @@ func newSOUpgradeSigner(t *testing.T) *soUpgradeSigner {
 	cert, err := x509.ParseCertificate(der)
 	require.NoError(t, err)
 	return &soUpgradeSigner{t: t, cert: cert, key: key}
+}
+
+// withSystemSO returns deps naming a separate system SO, enrolled from a CSR
+// the test signer signs. Strict separation of duties -- forced under FIPS
+// 140-3 -- refuses a first boot with no system SO, so the first-boot
+// fixtures name one; the standard posture accepts it as well.
+func withSystemSO(t *testing.T, deps firstboot.Dependencies) firstboot.Dependencies {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "system-so"},
+	}, key)
+	require.NoError(t, err)
+	pin, err := secure.NewSecret(context.Background(), []byte("so-pin-246810"))
+	require.NoError(t, err)
+	deps.Signer = newSOUpgradeSigner(t)
+	if deps.SOPINs == nil {
+		deps.SOPINs, err = auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), slog.New(slog.DiscardHandler))
+		require.NoError(t, err)
+	}
+	if deps.Binder == nil {
+		users, ok := deps.Users.(user.UserServicer)
+		require.True(t, ok, "the SO binder enrols into the first boot's own user store")
+		deps.Binder = firstboot.UserCertBinder{Users: users}
+	}
+	deps.SO = &firstboot.SOConfig{
+		Username: "system-so",
+		CSRPEM:   pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}),
+		PIN:      pin,
+	}
+	return deps
 }
 
 func (s *soUpgradeSigner) SignAdminCSR(_ context.Context, tenantID, subject string, csrPEM []byte) ([]byte, error) {
