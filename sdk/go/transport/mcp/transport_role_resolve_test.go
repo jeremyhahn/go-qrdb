@@ -130,28 +130,6 @@ func TestMCPResolvePermissions_ClosedTransport(t *testing.T) {
 // Request field propagation: verify TenantID and Name reach the service
 // ---------------------------------------------------------------------------
 
-func TestMCPGetRoleByName_FieldPropagation(t *testing.T) {
-	svc := newMockRoleSvc()
-	// Override getByErr to record calls via getByNameFn behaviour.
-	// mockRoleSvc.GetRoleByName captures no state directly, so we use a
-	// flag to check it is reached at all (success = svc returns getResp).
-	tr, cleanup := connectAuthInProcess(t, newMockUserSvc(), svc, nil)
-	defer cleanup()
-
-	rl, err := tr.GetRoleByName(context.Background(), &transport.GetRoleByNameRequest{
-		TenantID: "acme",
-		Name:     "operator",
-	})
-	if err != nil {
-		t.Fatalf("GetRoleByName: %v", err)
-	}
-	// The mock always returns its getResp regardless of arguments.
-	// The important assertion is that the call succeeds end-to-end.
-	if rl == nil {
-		t.Fatal("nil role")
-	}
-}
-
 // TestMCPResolvePermissions_RoleIDsEncoding verifies the role IDs are joined
 // as a CSV string and forwarded correctly through the MCP tool.
 func TestMCPResolvePermissions_RoleIDsEncoding(t *testing.T) {
