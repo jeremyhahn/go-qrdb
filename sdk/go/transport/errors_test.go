@@ -450,12 +450,10 @@ func TestRebalanceExecuteError_MessageAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestNilRebalancePlanError_MessageVariant(t *testing.T) {
+func TestNilRebalancePlanError_Message(t *testing.T) {
 	err := &NilRebalancePlanError{}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-	if !strings.Contains(err.Error(), "nil") {
-		t.Errorf("expected 'nil' in message, got %q", err.Error())
+	want := "transport: rebalance plan must not be nil"
+	if got := err.Error(); got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
