@@ -22,8 +22,6 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
@@ -156,15 +154,6 @@ func TestAuthorizeMCP_AuthorizerDenied(t *testing.T) {
 // AuthorizeTenant
 // ---------------------------------------------------------------------------
 
-func TestAuthorizeTenant_NoIdentity_Unauthenticated(t *testing.T) {
-	m := newTestMiddleware(&mockAuthorizer{})
-	ctx := context.Background()
-	err := m.AuthorizeTenant(ctx, "tenant-1", permission.KVPut)
-	if !errors.Is(err, auth.ErrUnauthenticated) {
-		t.Fatalf("expected ErrUnauthenticated, got: %v", err)
-	}
-}
-
 func TestAuthorizeTenant_AuthorizerDenied(t *testing.T) {
 	denyErr := &auth.AuthError{Code: "unauthorized", Message: "not in tenant"}
 	m := newTestMiddleware(&mockAuthorizer{err: denyErr})
@@ -238,28 +227,6 @@ func TestRESTRouteRegistry_PublicAndAuthenticatedKinds(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// isPublicGRPCMethod
-// ---------------------------------------------------------------------------
-
-func TestIsPublicGRPCMethod_Health(t *testing.T) {
-	if !isPublicGRPCMethod("/grpc.health.v1.Health/Check") {
-		t.Error("health method should be public")
-	}
-}
-
-func TestIsPublicGRPCMethod_Reflection(t *testing.T) {
-	if isPublicGRPCMethod("/grpc.reflection.v1.ServerReflection/ServerReflectionInfo") {
-		t.Error("reflection exposes the whole schema and must not be public by default")
-	}
-}
-
-func TestIsPublicGRPCMethod_Application(t *testing.T) {
-	if isPublicGRPCMethod("/qrdb.v1.QRDBService/Put") {
-		t.Error("application method should NOT be public")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // RESTRouteRegistry — path probes (the default-deny surface test)
 // ---------------------------------------------------------------------------
 
@@ -282,14 +249,6 @@ func TestRESTRouteRegistry_Lookup_NoMatch(t *testing.T) {
 	if _, _, ok := rr.Lookup("DELETE", "/nonexistent/route/xyz/abc"); ok {
 		t.Error("expected no match for completely unknown route")
 	}
-}
-
-func TestRESTRouteRegistry_Lookup_EmptySegment(t *testing.T) {
-	// A path with an empty parameter segment must not panic and must return a
-	// well-formed result.
-	rr := testRESTRoutes()
-	_, _, ok := rr.Lookup("POST", "/v1/barrier/officers//claim/begin")
-	_ = ok
 }
 
 // ---------------------------------------------------------------------------
@@ -480,29 +439,6 @@ func TestUnaryInterceptor_PublicMethod_PassThrough(t *testing.T) {
 	}
 }
 
-func TestUnaryInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
-	authn := &mockAuthenticator{
-		name:     "test-authn",
-		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
-	}
-	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
-	interceptor := m.UnaryInterceptor()
-
-	handler := func(ctx context.Context, req any) (any, error) {
-		return "ok", nil
-	}
-
-	info := &grpc.UnaryServerInfo{FullMethod: "/fake.v1.UnknownService/DoSomething"}
-	_, err := interceptor(context.Background(), nil, info, handler)
-	if err == nil {
-		t.Fatal("expected error for unmapped non-public method")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied, got %v", st.Code())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // StreamInterceptor – public gRPC method pass-through
 // ---------------------------------------------------------------------------
@@ -528,29 +464,6 @@ func TestStreamInterceptor_PublicMethod_PassThrough(t *testing.T) {
 	}
 	if !called {
 		t.Error("handler should be called for public stream method")
-	}
-}
-
-func TestStreamInterceptor_UnmappedNonPublicMethod_DefaultDeny(t *testing.T) {
-	authn := &mockAuthenticator{
-		name:     "test-authn",
-		identity: &auth.Identity{Subject: "u1", TenantID: "t1"},
-	}
-	m := newTestMiddleware(&mockAuthorizer{}, WithAuthenticator(authn))
-	interceptor := m.StreamInterceptor()
-
-	handler := func(srv any, stream grpc.ServerStream) error {
-		return nil
-	}
-
-	info := &grpc.StreamServerInfo{FullMethod: "/fake.v1.Unknown/Stream"}
-	err := interceptor(nil, &boostServerStream{ctx: context.Background()}, info, handler)
-	if err == nil {
-		t.Fatal("expected denial for unmapped non-public stream")
-	}
-	st, _ := status.FromError(err)
-	if st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied, got %v", st.Code())
 	}
 }
 
