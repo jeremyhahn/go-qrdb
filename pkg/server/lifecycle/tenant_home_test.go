@@ -402,3 +402,87 @@ func TestAttachLocalTenantHomes_Refuses(t *testing.T) {
 		})
 	}
 }
+
+// recordingCredentials is a credential service that records the home
+// source it is given; every verb is the embedded (nil) servicer's.
+type recordingCredentials struct {
+	service.CredentialServicer
+	src   tenant.HomeStoreSource
+	calls int
+}
+
+func (r *recordingCredentials) SetTenantHomes(src tenant.HomeStoreSource) {
+	r.src = src
+	r.calls++
+}
+
+// homeSourceStub is a home source distinguishable by identity.
+type homeSourceStub struct{ id int }
+
+func (*homeSourceStub) HomeStore(context.Context, string) (kvstore.KVStore, error) {
+	return nil, errors.New("not served")
+}
+
+func (*homeSourceStub) EnsureHome(context.Context, string) error { return nil }
+
+func TestAttachHomeSource_AttachesResolversAndCredentials(t *testing.T) {
+	router := &homeRouterResolver{}
+	served := &homeRouterResolver{}
+	creds := &recordingCredentials{}
+	n := &Node{StoreResolver: router, Credential: creds}
+	src := &homeSourceStub{id: 1}
+
+	// A served resolver that cannot route homes, and an absent one, are
+	// skipped rather than refused.
+	if !attachHomeSource(n, src, []tenant.StoreResolver{served, plainResolver{}, nil}) {
+		t.Fatal("attachHomeSource = false, want true")
+	}
+	if router.src != src || served.src != src {
+		t.Fatalf("resolver sources = %v, %v, want %v", router.src, served.src, src)
+	}
+	// A tenant's credentials are kept in its home store, so the credential
+	// service is bound to the same source as the resolvers.
+	if creds.src != src || creds.calls != 1 {
+		t.Fatalf("credential source = %v after %d calls, want %v after 1", creds.src, creds.calls, src)
+	}
+
+	// A restart attaches the new source in place of the old one everywhere.
+	next := &homeSourceStub{id: 2}
+	if !attachHomeSource(n, next, []tenant.StoreResolver{served}) {
+		t.Fatal("re-attach = false, want true")
+	}
+	if router.src != next || served.src != next || creds.src != next {
+		t.Fatalf("after re-attach sources = %v, %v, %v, want %v", router.src, served.src, creds.src, next)
+	}
+}
+
+func TestAttachHomeSource_CredentialServiceWithoutHomesIsSkipped(t *testing.T) {
+	router := &homeRouterResolver{}
+	src := &homeSourceStub{id: 1}
+	for _, creds := range []service.CredentialServicer{nil, struct{ service.CredentialServicer }{}} {
+		n := &Node{StoreResolver: router, Credential: creds}
+		if !attachHomeSource(n, src, nil) {
+			t.Fatalf("attachHomeSource with credential %T = false, want true", creds)
+		}
+		if router.src != src {
+			t.Fatalf("resolver source = %v, want %v", router.src, src)
+		}
+	}
+}
+
+func TestAttachHomeSource_RefusesWithoutARoutingResolver(t *testing.T) {
+	for _, resolver := range []tenant.StoreResolver{plainResolver{}, nil} {
+		served := &homeRouterResolver{}
+		creds := &recordingCredentials{}
+		n := &Node{StoreResolver: resolver, Credential: creds}
+		if attachHomeSource(n, &homeSourceStub{id: 1}, []tenant.StoreResolver{served}) {
+			t.Fatalf("attachHomeSource with resolver %T = true, want false", resolver)
+		}
+		// A refused attach binds nothing: neither a served resolver nor the
+		// credential service, which would otherwise serve tenant stores the
+		// node's resolver cannot route.
+		if served.src != nil || creds.calls != 0 {
+			t.Fatalf("refused attach bound served=%v credentials=%d calls", served.src, creds.calls)
+		}
+	}
+}
