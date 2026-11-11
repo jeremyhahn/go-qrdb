@@ -1418,6 +1418,17 @@ func testBarrierShamirLifecycleOverProtocol(t *testing.T, proto multiProtocol) {
 		t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
 	}
 
+	key := "barrier-cli-shamir-" + proto.name
+	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
+		"kv", "put", key, "shamir-value")...); err != nil {
+		t.Fatalf("[%s] kv put after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
+	}
+	if stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...), "kv", "get", key)...); err != nil {
+		t.Fatalf("[%s] kv get after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
+	} else if !strings.Contains(stdout, "shamir-value") {
+		t.Fatalf("[%s] kv get after shamir unseal: expected surviving value, got: %s", proto.name, stdout)
+	}
+
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, flags...),
 		"barrier", "rekey", "--threshold", strconv.Itoa(threshold), "--so-pin", sealNodeSOPIN)...); err != nil {
 		t.Fatalf("[%s] barrier rekey: %v\nstderr: %s", proto.name, err, stderr)
