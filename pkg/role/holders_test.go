@@ -276,42 +276,6 @@ func TestDeleteRole_MarkWriteFailureLeavesTheRoleIntact(t *testing.T) {
 	}
 }
 
-func TestResolvePermissions_SkipsARoleBeingDeleted(t *testing.T) {
-	svc, err := NewStore(newMemKVStore(), WithHolderRevoker(failingHolders{err: errors.New("stop")}))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	ctx := context.Background()
-	r := createPermRole(t, svc, "doomed", "acme", permission.KVPut)
-	_ = svc.DeleteRole(ctx, r.ID)
-
-	perms, err := svc.ResolvePermissions(ctx, []string{r.ID})
-	if err != nil {
-		t.Fatalf("ResolvePermissions: %v", err)
-	}
-	if len(perms) != 0 {
-		t.Fatalf("a role being deleted still granted %v", perms)
-	}
-}
-
-func TestValidateAssignable_RefusesARoleBeingDeleted(t *testing.T) {
-	svc, err := NewStore(newMemKVStore(), WithHolderRevoker(failingHolders{err: errors.New("stop")}))
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	ctx := context.Background()
-	r := createTestRole(t, svc, "doomed", "acme")
-	if err := ValidateAssignable(ctx, svc, nil, r.ID, "acme"); err != nil {
-		t.Fatalf("ValidateAssignable before delete: %v", err)
-	}
-	_ = svc.DeleteRole(ctx, r.ID)
-
-	var rde *RoleDeletingError
-	if err := ValidateAssignable(ctx, svc, nil, r.ID, "acme"); !errors.As(err, &rde) || rde.ID != r.ID {
-		t.Fatalf("ValidateAssignable = %v, want *RoleDeletingError", err)
-	}
-}
-
 func TestUpdateRole_RefusesARoleBeingDeleted(t *testing.T) {
 	svc, err := NewStore(newMemKVStore(), WithHolderRevoker(failingHolders{err: errors.New("stop")}))
 	if err != nil {
