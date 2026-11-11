@@ -696,17 +696,6 @@ func TestEmbeddedSealStore_Status_Closed(t *testing.T) {
 	}
 }
 
-func TestEmbeddedSealStore_WithOptionAssigns(t *testing.T) {
-	// We can not construct a real *seal.SealStore without heavy
-	// dependencies. Verify the option is invocable with nil and the
-	// pointer is stored. Closed/nil paths above already cover nil.
-	opt := WithSealStore(nil)
-	tr := newExtTransport(t, opt)
-	if tr.sealStoreSvc != nil {
-		t.Errorf("sealStoreSvc = %v, want nil", tr.sealStoreSvc)
-	}
-}
-
 // ===========================================================================
 // CustodianGroup transport (was 0%)
 // ===========================================================================
