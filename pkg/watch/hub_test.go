@@ -206,11 +206,19 @@ func TestHub_NotifyPut_NonMatchingWatcher(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("keyB"), Value: []byte("v")}
 	h.NotifyPut([]byte("keyB"), kvVal, nil)
 
+	// Barrier: a matching event sent after the non-matching one. A watcher's
+	// events are delivered in notify order (TestHub_EventDeliveryOrder), so if
+	// the first event received is the barrier, "keyB" was dropped.
+	barrier := &kv.KeyValue{Key: []byte("keyA"), Value: []byte("barrier")}
+	h.NotifyPut([]byte("keyA"), barrier, nil)
+
 	select {
 	case resp := <-w.Events():
-		t.Fatalf("should not have received events, got %d", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// No event received as expected.
+		if len(resp.Events) != 1 || !bytes.Equal(resp.Events[0].Kv.Key, []byte("keyA")) {
+			t.Fatalf("should not have received events for keyB, got %+v", resp.Events)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the barrier event")
 	}
 }
 
@@ -359,14 +367,9 @@ func TestHub_WatchFilter_NoPut(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("filtered"), Value: []byte("v")}
 	h.NotifyPut([]byte("filtered"), kvVal, nil)
 
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("should not have received put events with NoPut filter, got %d events", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// Put filtered as expected.
-	}
-
-	// Delete should still be received.
+	// Delete should still be received. It is also the barrier: events reach a
+	// watcher in notify order, so if the first event is the delete, the put
+	// was filtered.
 	h.NotifyDelete([]byte("filtered"), kvVal, nil)
 
 	select {
@@ -375,7 +378,7 @@ func TestHub_WatchFilter_NoPut(t *testing.T) {
 			t.Fatalf("expected 1 event, got %d", len(resp.Events))
 		}
 		if resp.Events[0].Type != EventDelete {
-			t.Fatalf("expected EventDelete, got %d", resp.Events[0].Type)
+			t.Fatalf("should not have received put events with NoPut filter, got event type %d", resp.Events[0].Type)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delete event")
@@ -392,14 +395,9 @@ func TestHub_WatchFilter_NoDelete(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("filtered2")}
 	h.NotifyDelete([]byte("filtered2"), kvVal, nil)
 
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("should not have received delete events with NoDelete filter, got %d events", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// Delete filtered as expected.
-	}
-
-	// Put should still be received.
+	// Put should still be received. It is also the barrier: events reach a
+	// watcher in notify order, so if the first event is the put, the delete
+	// was filtered.
 	kvVal = &kv.KeyValue{Key: []byte("filtered2"), Value: []byte("v")}
 	h.NotifyPut([]byte("filtered2"), kvVal, nil)
 
@@ -409,7 +407,7 @@ func TestHub_WatchFilter_NoDelete(t *testing.T) {
 			t.Fatalf("expected 1 event, got %d", len(resp.Events))
 		}
 		if resp.Events[0].Type != EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
+			t.Fatalf("should not have received delete events with NoDelete filter, got event type %d", resp.Events[0].Type)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for put event")
