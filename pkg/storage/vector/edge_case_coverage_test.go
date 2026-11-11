@@ -272,48 +272,6 @@ func TestCleanupTombstones_WithShortKey(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestCleanupTombstones_WithSyncWrites tests tombstone cleanup with sync writes
-func TestCleanupTombstones_WithSyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-	ns := "vectors"
-	nsInfo := &NamespaceInfo{
-		Name:      ns,
-		Dimension: 128,
-		CreatedAt: time.Now().Unix(),
-	}
-	require.NoError(t, storage.CreateNamespace(ctx, nsInfo))
-
-	// Insert and delete vectors
-	for i := uint64(1); i <= 3; i++ {
-		vec := &VectorValue{
-			ID:        i,
-			Embedding: make([]float32, 128),
-			Version:   1,
-		}
-		err := storage.UpsertVector(ctx, ns, vec)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, ns, i)
-		require.NoError(t, err)
-	}
-
-	// Clean up tombstones with sync writes
-	err = storage.CleanupTombstones(ctx, 0)
-	assert.NoError(t, err)
-}
-
 // TestScanByMetadata_NoResults tests scanning with no matching results
 func TestScanByMetadata_NoResults(t *testing.T) {
 	storage, cleanup := setupStorage(t)

@@ -135,35 +135,6 @@ func TestCleanupTombstones_WithExpiredTombstonesSyncWrites(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestCleanupTombstones_WithExpiredTombstonesFinal covers the tombstone
-// cleanup path where tombstones exist and are older than the cutoff.
-func TestCleanupTombstones_WithExpiredTombstonesFinal(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	ns := "tombstone-cleanup-final-ns"
-	err := storage.CreateNamespace(ctx, &NamespaceInfo{Name: ns, Dimension: 4})
-	require.NoError(t, err)
-
-	// Insert then delete a vector to create tombstones
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{1.0, 2.0, 3.0, 4.0},
-		Version:   1,
-	}
-	err = storage.UpsertVector(ctx, ns, vec)
-	require.NoError(t, err)
-
-	err = storage.DeleteVector(ctx, ns, 1)
-	require.NoError(t, err)
-
-	// Use negative duration so cutoffTime is in the future, ensuring
-	// the tombstone timestamp < cutoffTime and the batch commits.
-	err = storage.CleanupTombstones(ctx, -time.Hour)
-	require.NoError(t, err)
-}
-
 // TestCleanupTombstones_DirectTombstoneKey covers CleanupTombstones by
 // writing tombstone keys directly to PebbleDB with little-endian encoded
 // timestamps matching the decoding logic in CleanupTombstones.
