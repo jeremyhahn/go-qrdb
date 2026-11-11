@@ -18,8 +18,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -70,5 +72,48 @@ func TestBuildServices_RefusesAnUnencryptedCredentialStore(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("legacy credential = %q, want %q", got, want)
+	}
+}
+
+// TestBuildServices_ManualStrategyStartsOnObjstore proves the refusal is the
+// barrier strategy's: manual credentials stay in protected memory and write
+// nothing to the data plane, so a seal-enabled objstore node configured with
+// credential_strategy: manual builds and serves credentials.
+func TestBuildServices_ManualStrategyStartsOnObjstore(t *testing.T) {
+	ctx := context.Background()
+	host := newLocalHost()
+	defer func() { _ = host.Close() }()
+	hub := watch.NewHub()
+	defer hub.Close()
+	barrier, registry, _ := newTestBarrier(t)
+	credSvc, err := credentials.NewCredentialService(
+		&credentials.Config{Strategy: credentials.StrategyManual}, barrier, slog.Default())
+	if err != nil {
+		t.Fatalf("NewCredentialService: %v", err)
+	}
+
+	node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+		Host:              host,
+		WatchHub:          hub,
+		DataDir:           t.TempDir(),
+		Backend:           database.BackendObjstore,
+		SealBarrier:       barrier,
+		BarrierRegistry:   registry,
+		CredentialCoreSvc: credSvc,
+	})
+	if err != nil {
+		t.Fatalf("BuildServices (manual strategy, objstore): %v", err)
+	}
+	defer func() { _ = node.Stop(ctx) }()
+	if node.Credential == nil {
+		t.Fatal("BuildServices built no credential service")
+	}
+
+	want := []byte("manual-secret")
+	if err := credSvc.StoreCredential(ctx, "db-password", want); err != nil {
+		t.Fatalf("StoreCredential: %v", err)
+	}
+	if _, err := barrier.Get(ctx, "credentials/db-password"); err == nil {
+		t.Fatal("the manual strategy wrote a credential to the barrier")
 	}
 }
