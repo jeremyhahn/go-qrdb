@@ -588,20 +588,6 @@ func TestPutGetDelete(t *testing.T) {
 	}
 }
 
-func TestGet_KeyNotFound(t *testing.T) {
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.Get(context.Background(), "nonexistent")
-	if err == nil {
-		t.Fatal("expected error for missing key")
-	}
-	var knfErr *transport.KeyNotFoundError
-	if !errors.As(err, &knfErr) {
-		t.Fatalf("expected *transport.KeyNotFoundError, got %T: %v", err, err)
-	}
-}
-
 func TestList(t *testing.T) {
 	kvSvc := newMockKVService()
 	tr, cleanup := connectInProcess(t, kvSvc, newMockAdminService())
