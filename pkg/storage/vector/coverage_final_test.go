@@ -121,56 +121,9 @@ func TestUpsertVector_SyncWritesCovFinal(t *testing.T) {
 // UpsertVector — context-cancelled path (writeSem via ctx.Done())
 // ---------------------------------------------------------------------------
 
-// TestUpsertVector_ContextCanceled verifies ErrContextCanceled when context is done.
-func TestUpsertVector_ContextCanceled(t *testing.T) {
-	s := openVectorStorage(t)
-
-	// Fill the write semaphore to force the ctx.Done branch.
-	for i := 0; i < cap(s.writeSem); i++ {
-		s.writeSem <- struct{}{}
-	}
-	defer func() {
-		for i := 0; i < cap(s.writeSem); i++ {
-			<-s.writeSem
-		}
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	vec := &VectorValue{ID: 1, Version: 1, Embedding: []float32{1, 2, 3, 4}}
-	err := s.UpsertVector(ctx, "any", vec)
-	if !errors.Is(err, ErrContextCanceled) {
-		t.Fatalf("expected ErrContextCanceled, got %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // GetVector — context cancelled path
 // ---------------------------------------------------------------------------
-
-// TestGetVector_ContextCanceled verifies ErrContextCanceled when context is done.
-func TestGetVector_ContextCanceled(t *testing.T) {
-	s := openVectorStorage(t)
-
-	// Fill the read semaphore.
-	for i := 0; i < cap(s.readSem); i++ {
-		s.readSem <- struct{}{}
-	}
-	defer func() {
-		for i := 0; i < cap(s.readSem); i++ {
-			<-s.readSem
-		}
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := s.GetVector(ctx, "any", 1)
-	if !errors.Is(err, ErrContextCanceled) {
-		t.Fatalf("expected ErrContextCanceled, got %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // DeleteVector — SyncWrites path

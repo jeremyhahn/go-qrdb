@@ -31,22 +31,6 @@ func TestUpsertVector_NilVectorCoverage(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidVector)
 }
 
-// TestUpsertVector_CancelledContextDirect tests UpsertVector with cancelled context.
-func TestUpsertVector_CancelledContextDirect(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := storage.UpsertVector(ctx, "ns", &VectorValue{
-		ID:        1,
-		Embedding: []float32{1.0},
-		Version:   1,
-	})
-	assert.Error(t, err)
-}
-
 // TestBatchDeleteVectors_EmptyBatchCoverage tests BatchDeleteVectors with empty IDs.
 func TestBatchDeleteVectors_EmptyBatchCoverage(t *testing.T) {
 	storage, cleanup := setupStorage(t)

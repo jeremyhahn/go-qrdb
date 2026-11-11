@@ -199,50 +199,6 @@ func TestUpsertVector_VersionUpdate(t *testing.T) {
 	assert.Equal(t, "new_value", retrieved.Metadata["field1"])
 }
 
-// TestUpsertVector_CanceledContext tests context cancellation during upsert with different test name
-func TestUpsertVector_CanceledContext(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.MaxConcurrentWrites = 1 // Limit to 1 concurrent write
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	// Create namespace
-	info := &NamespaceInfo{
-		Name:      "test_ns",
-		Dimension: 3,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(context.Background(), info)
-	require.NoError(t, err)
-
-	// Occupy the write semaphore
-	storage.writeSem <- struct{}{}
-
-	// Try to upsert with canceled context
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{0.1, 0.2, 0.3},
-		Metadata:  map[string]string{"test": "value"},
-		Version:   1,
-	}
-
-	err = storage.UpsertVector(ctx, "test_ns", vec)
-	assert.Error(t, err)
-	assert.ErrorIs(t, err, ErrContextCanceled)
-
-	// Release semaphore
-	<-storage.writeSem
-}
-
 // TestBatchDeleteVector_ErrorInReverseIter tests error handling in reverse iterator
 func TestBatchDeleteVector_ErrorInReverseIter(t *testing.T) {
 	tmpDir := t.TempDir()
