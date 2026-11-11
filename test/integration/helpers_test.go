@@ -352,6 +352,35 @@ func systemSOArgs(t *testing.T) []string {
 	return []string{"--so-username", systemSOUsername, "--so-csr", csrPath}
 }
 
+// systemSOCertArgs returns the `qrdb init` flags naming the system SO by the
+// certificate a founder's ceremony issued it (initOut is that founder's
+// `qrdb --output json init` reply, as bootAdminIdentityVia returns it). A
+// node that joined the founder's cluster holds no CeremonyCA key, so it
+// refuses an SO CSR; it binds the founder's SO certificate the way it binds
+// the founder's admin certificate (--admin-cert).
+func systemSOCertArgs(t *testing.T, initOut string) []string {
+	t.Helper()
+	var reply struct {
+		SOCertPEM string `json:"so_cert_pem"`
+	}
+	// The --admin-generate path prints its warning ahead of the JSON reply.
+	body := initOut
+	if i := strings.Index(body, "{"); i >= 0 {
+		body = body[i:]
+	}
+	if err := json.Unmarshal([]byte(body), &reply); err != nil {
+		t.Fatalf("systemSOCertArgs: decode init reply: %v\noutput: %s", err, initOut)
+	}
+	if reply.SOCertPEM == "" {
+		t.Fatalf("systemSOCertArgs: the founder's init reply carries no SO certificate\noutput: %s", initOut)
+	}
+	certPath := filepath.Join(t.TempDir(), "system-so-cert.pem")
+	if err := os.WriteFile(certPath, []byte(reply.SOCertPEM), 0o600); err != nil {
+		t.Fatalf("systemSOCertArgs: write certificate: %v", err)
+	}
+	return []string{"--so-username", systemSOUsername, "--so-cert", certPath}
+}
+
 // systemSOFields returns the POST /v1/ceremony/initialize fields naming a
 // system SO, for the fixtures that run the ceremony over REST: a certificate
 // issued under ca, the node's own CA. These fixtures bring their own TLS (and
