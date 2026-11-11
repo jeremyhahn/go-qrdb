@@ -364,6 +364,20 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	if err != nil {
 		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
 	}
+	// The PIN is committed, or proven ours, before any trust anchor or
+	// binding: a run with someone else's PIN must leave no SO credential.
+	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
+		// An SO an earlier run created may have committed its PIN before
+		// that run stopped; a PIN already set on a brand-new SO is not ours.
+		// On a retry the committed PIN is ours only once it proves to be:
+		// an earlier run may have failed on someone else's.
+		if created || !errors.Is(err, auth.ErrSOPINAlreadySet) {
+			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: err}
+		}
+		if ownErr := committedSOPINIsOurs(ctx, deps.SOPINs, tenantID, so); ownErr != nil {
+			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: errors.Join(err, ownErr)}
+		}
+	}
 	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil || !certBound(soUser, soKey) {
 		certPEM, err := issueSOCert(ctx, deps, tenantID)
 		if err != nil {
@@ -387,21 +401,6 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			slog.String("tenant", tenantID),
 			slog.Uint64("user_id", soUser.ID),
 		)
-	}
-
-	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
-		// An SO an earlier run created may have committed its PIN before
-		// that run stopped; a PIN already set on a brand-new SO is not ours.
-		// On a retry the committed PIN is ours only once it proves to be:
-		// an earlier run may have failed on someone else's.
-		if !created && errors.Is(err, auth.ErrSOPINAlreadySet) {
-			ownErr := committedSOPINIsOurs(ctx, deps.SOPINs, tenantID, so)
-			if ownErr == nil {
-				return nil
-			}
-			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: errors.Join(err, ownErr)}
-		}
-		return &SystemSOEnrollmentError{Op: "PIN commit", Cause: err}
 	}
 	return nil
 }

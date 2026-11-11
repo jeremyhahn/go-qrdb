@@ -824,6 +824,74 @@ func TestInitialize_AdoptedSystemSOAnchorsReachRuntimeTrust(t *testing.T) {
 	}
 }
 
+// recordingAnchors records every bundle first boot installs.
+type recordingAnchors struct{ added [][]byte }
+
+func (r *recordingAnchors) Add(_ context.Context, _ string, bundlePEM []byte) ([]trustanchor.Anchor, error) {
+	r.added = append(r.added, bundlePEM)
+	return nil, nil
+}
+
+// A retry for an enrolled SO that presents a fresh key under someone
+// else's PIN fails, and leaves neither a binding for that key nor its
+// trust anchors behind: the PIN is proven before anything is installed.
+func TestInitialize_SystemSOWrongPINRetryInstallsNothing(t *testing.T) {
+	ctx := context.Background()
+	t.Run("csr", func(t *testing.T) {
+		h := newSOHarness(t, true)
+		if _, err := Initialize(ctx, h.deps); err != nil {
+			t.Fatalf("first boot: %v", err)
+		}
+		so := h.users.byName["officer"]
+		before := slices.Clone(so.CertBindings)
+		wrong, err := secure.NewSecret(ctx, []byte("not-the-so-pin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(wrong.Destroy)
+		h.deps.SO = &SOConfig{Username: "officer", CSRPEM: testCSR(t), PIN: wrong}
+		var e *SystemSOEnrollmentError
+		if _, err := Initialize(ctx, h.deps); !errors.As(err, &e) || e.Op != "PIN commit" {
+			t.Fatalf("retry with a wrong PIN = %v, want a PIN commit failure", err)
+		}
+		if !slices.Equal(so.CertBindings, before) {
+			t.Fatalf("bindings after a rejected retry = %+v, want %+v", so.CertBindings, before)
+		}
+	})
+	t.Run("adopted", func(t *testing.T) {
+		so, _, caBundle := adoptedSystemSOHandoff(t)
+		anchors := &recordingAnchors{}
+		h := newSOHarness(t, true)
+		h.deps.SO = so
+		h.deps.SOPINs = &recordPINs{records: map[string]string{}}
+		h.deps.AdminCertPool = AdminCertPoolFromCABundle(caBundle)
+		h.deps.TrustDomain = presentedTrustDomain
+		h.deps.TrustAnchors = anchors
+		h.deps.ClientTrust = ClientTrustRefreshFunc(func(context.Context) error { return nil })
+		if _, err := Initialize(ctx, h.deps); err != nil {
+			t.Fatalf("first boot: %v", err)
+		}
+		account := h.users.byName["secofficer"]
+		before := slices.Clone(account.CertBindings)
+		installed := len(anchors.added)
+
+		retry := *so
+		retry.CertPEM, retry.PoolPEM = externalSOCert(t, "secofficer", "Other Root")
+		retry.PINRecord = "someone else's"
+		h.deps.SO = &retry
+		var e *SystemSOEnrollmentError
+		if _, err := Initialize(ctx, h.deps); !errors.As(err, &e) || e.Op != "PIN commit" {
+			t.Fatalf("retry with a wrong PIN = %v, want a PIN commit failure", err)
+		}
+		if !slices.Equal(account.CertBindings, before) {
+			t.Fatalf("bindings after a rejected retry = %+v, want %+v", account.CertBindings, before)
+		}
+		if len(anchors.added) != installed {
+			t.Fatalf("a rejected retry installed trust anchors: %d bundles, want %d", len(anchors.added), installed)
+		}
+	})
+}
+
 func TestInitialize_StandardWithoutSOBootsAsBefore(t *testing.T) {
 	h := newSOHarness(t, false)
 	h.deps.SO = nil
