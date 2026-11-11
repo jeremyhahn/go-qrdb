@@ -130,7 +130,7 @@ func registerGovernanceDuties() {
 		// Role and permission administration.
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
-		RolesUnassign, PermissionsList, RolesReconcileAll,
+		RolesUnassign, PermissionsList,
 		// User administration.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,

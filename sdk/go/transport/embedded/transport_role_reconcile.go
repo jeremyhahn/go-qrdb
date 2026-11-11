@@ -19,7 +19,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -75,9 +74,6 @@ func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*trans
 		return nil, &NilServiceError{Service: "TenantServicer"}
 	}
 	if err := t.authorizeTenantSelf(ctx, permission.RolesReconcileAll); err != nil {
-		return nil, err
-	}
-	if err := t.authMW.AuthorizeSOExclusive(ctx, tenantid.System, "reconcile built-in roles in every tenant"); err != nil {
 		return nil, err
 	}
 

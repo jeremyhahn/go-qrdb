@@ -21,10 +21,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -85,50 +83,5 @@ func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-// TestSOExclusive_ReconcileAllTenants proves ReconcileBuiltInRolesAllTenants
-// is SO-exclusive under strict separation: the system Admin, which holds
-// roles:reconcile_all, is refused, and so is a system SO still holding admin;
-// a separate system SO runs it. In the standard posture the system Admin
-// runs it as before.
-func TestSOExclusive_ReconcileAllTenants(t *testing.T) {
-	admin := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
-	so := role.SystemRoleID(tenantid.System, role.RoleNameSO)
-	callers := []struct {
-		name    string
-		roleIDs []string
-		strict  bool
-		want    codes.Code
-	}{
-		{name: "system admin, strict", roleIDs: []string{admin}, strict: true, want: codes.PermissionDenied},
-		{name: "SO holding admin, strict", roleIDs: []string{admin, so}, strict: true, want: codes.PermissionDenied},
-		{name: "separate SO, strict", roleIDs: []string{so}, strict: true, want: codes.OK},
-		{name: "system admin, standard", roleIDs: []string{admin}, want: codes.OK},
-	}
-	for _, c := range callers {
-		t.Run(c.name, func(t *testing.T) {
-			users := authtest.NewBindingUsers()
-			ctx := tenant.WithTenantID(context.Background(), tenantid.System)
-			if _, err := users.UpdateUser(ctx, &user.UpdateUserRequest{ID: authtest.SystemUserID, RoleIDs: c.roleIDs}); err != nil {
-				t.Fatalf("seed caller: %v", err)
-			}
-			roles := authtest.BindingRoles(t)
-			caller := &auth.Identity{Subject: "operator", TenantID: tenantid.System}
-			mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
-				authmw.WithAuthenticator(authtest.NewFixedAuthenticator(caller)),
-				authmw.WithUserService(users), authmw.WithStrictSeparation(c.strict))
-			srv := &qrdbServiceServer{userSvc: users, roleSvc: roles, authMW: mw,
-				tenantSvc: liveGRPCTenants(t, authtest.BindingTenant)}
-			handler := func(ctx context.Context, _ any) (any, error) {
-				return srv.ReconcileBuiltInRolesAllTenants(ctx, &emptypb.Empty{})
-			}
-			info := &grpc.UnaryServerInfo{FullMethod: pb.QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName}
-			_, err := mw.UnaryInterceptor()(context.Background(), &emptypb.Empty{}, info, handler)
-			if got := status.Code(err); got != c.want {
-				t.Fatalf("code = %v, want %v: %v", got, c.want, err)
-			}
-		})
 	}
 }

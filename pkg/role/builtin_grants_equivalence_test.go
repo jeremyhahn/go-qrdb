@@ -55,7 +55,7 @@ var goldenSOPermissions = []permission.Permission{
 	permission.TrustAnchorsAdd, permission.TrustAnchorsList, permission.TrustAnchorsRemove,
 	permission.RolesCreate, permission.RolesRead, permission.RolesUpdate,
 	permission.RolesDelete, permission.RolesList, permission.RolesAssign,
-	permission.RolesUnassign, permission.PermissionsList, permission.RolesReconcileAll,
+	permission.RolesUnassign, permission.PermissionsList,
 	permission.UsersCreate, permission.UsersRead, permission.UsersUpdate,
 	permission.UsersDelete, permission.UsersList, permission.UsersEnable,
 	permission.UsersDisable, permission.UsersSuspend, permission.UsersUnsuspend,

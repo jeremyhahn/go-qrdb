@@ -25,7 +25,6 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -147,12 +146,12 @@ func handleRoleReconcile(roleSvc role.RoleServicer, authMW *authmw.AuthMiddlewar
 // roleReconcileAllTools returns the all-tenant built-in role reconcile tool.
 // It is a family of its own because it needs the tenant service, which the
 // other role tools do not.
-func roleReconcileAllTools(roleSvc role.RoleServicer, tenants role.TenantLister, authMW *authmw.AuthMiddleware) []serverTool {
+func roleReconcileAllTools(roleSvc role.RoleServicer, tenants role.TenantLister) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolRoleReconcileAllTenants(),
 			Perm:    permission.RolesReconcileAll,
-			Handler: handleRoleReconcileAllTenants(roleSvc, tenants, authMW),
+			Handler: handleRoleReconcileAllTenants(roleSvc, tenants),
 		},
 	}
 }
@@ -166,13 +165,9 @@ func toolRoleReconcileAllTenants() mcp.Tool {
 }
 
 // handleRoleReconcileAllTenants returns a tool handler that delegates to
-// role.ReconcileAllTenants. Under strict separation it runs only as a
-// separate system-tenant SO, as the single-tenant reconcile does.
-func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
+// role.ReconcileAllTenants.
+func handleRoleReconcileAllTenants(roleSvc role.RoleServicer, tenants role.TenantLister) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		if err := authMW.AuthorizeSOExclusive(ctx, tenantid.System, "reconcile built-in roles in every tenant"); err != nil {
-			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
-		}
 		report, err := role.ReconcileAllTenants(ctx, roleSvc, tenants)
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_role_reconcile_builtin_all_tenants", Err: err}
