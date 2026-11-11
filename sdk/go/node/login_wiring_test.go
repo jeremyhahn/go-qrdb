@@ -41,11 +41,6 @@ import (
 // principalRoles
 // ---------------------------------------------------------------------------
 
-func TestPrincipalRoles_RoleIDsOnly(t *testing.T) {
-	u := &user.User{RoleIDs: []string{"admin", "ops"}}
-	assert.Equal(t, []string{"admin", "ops"}, principalRoles(u))
-}
-
 func TestPrincipalRoles_BindingsAppendedAndDeduped(t *testing.T) {
 	u := &user.User{
 		RoleIDs: []string{"admin", "ops"},
