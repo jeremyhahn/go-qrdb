@@ -713,6 +713,15 @@ are not reconstructed here — their history is in the git log.
 
 ### Dependencies
 
+- `golang.org/x/sys` v0.49.0 → v0.50.0 in the root module and
+  `test/clusterproof`, with the indirect requirement in `sdk/go` and
+  `sdk/go/gorm/conformance` following it; `deps-check` reported it behind its
+  latest release, inside the 7-day adoption window.
+- `google.golang.org/genproto/googleapis/rpc` v0.0.0-20261026165753-2ffab32bce7e
+  → v0.0.0-20261104224025-d1e00e9f33ab in the root module and `sdk/go`, with
+  the indirect requirement in `sdk/go/gorm/conformance` and
+  `test/clusterproof` following it; `deps-check` reported it behind its latest
+  release, inside the 7-day adoption window.
 - `github.com/quic-go/quic-go` v0.64.1 → v0.65.0 in the root module, `sdk/go`
   and `test/performance/qrdb`, with the indirect requirement in
   `sdk/go/gorm/conformance` and `test/clusterproof` following it; `deps-check`
@@ -736,6 +745,16 @@ are not reconstructed here — their history is in the git log.
   root, `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof` modules.
 
 ### Security
+
+- **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
+  reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
+  (2026-11-02). Every Go version pin moves to 1.27.4: the `go` directive of
+  all nine modules, `GO_VERSION` in the ci, release, nightly and batch
+  workflows (nightly and batch from 1.27.2), `scripts/tool-pins.sh`
+  `GO_IMAGE` (`golang:1.27.4-alpine3.24`, new index digest), the
+  `golang:1.27.4-bookworm` bases of the root, devcontainer and three
+  performance Dockerfiles, the GPU devcontainer's `GO_VERSION`, and the stub
+  `go.mod` directives the two Dockerfiles write.
 
 - **A grantor may grant only permissions it holds** (#1278). `CreateRole` and
   `UpdateRole` are refused when the role would carry a permission the caller

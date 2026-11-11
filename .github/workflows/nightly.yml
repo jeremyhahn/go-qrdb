@@ -51,11 +51,11 @@ permissions:
   security-events: write
 
 env:
-  # Kept in lockstep with ci.yml, including the reason: Go 1.27.2 is the latest
+  # Kept in lockstep with ci.yml, including the reason: Go 1.27.4 is the latest
   # release (never pin below latest), and the 1.27 floor is forced by
   # go-enclave's `go` directive through go-quicraft (#540). setup-go 'stable' is
   # prohibited as a spec.
-  GO_VERSION: "1.27.2"
+  GO_VERSION: "1.27.4"
   # Builds never resolve through a workspace: first-party modules come from
   # Gitea tags (conventions/dependency-resolution.md §2). The runner injects
   # GOPRIVATE and the tokenised git rewrite for github.com/jeremyhahn/* itself —
