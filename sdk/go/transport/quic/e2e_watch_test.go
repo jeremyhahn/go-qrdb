@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,7 +173,10 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
+	received := make(chan struct{})
+	var receivedOnce sync.Once
 	srv.SetResponder("watch.Watch", func(_ []byte) (uint16, []byte) {
+		receivedOnce.Do(func() { close(received) })
 		<-block // never respond during the test; simulates an idle watch stream.
 		return wire.StatusOK, nil
 	})
@@ -184,10 +188,14 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	// Give the reader goroutine time to actually enter the blocking read
-	// before canceling, so this exercises unblocking an in-flight read
-	// rather than the pre-read ctx.Done() check at the top of the loop.
-	time.Sleep(50 * time.Millisecond)
+	// Cancel only once the server holds the watch request, so this
+	// exercises unblocking an in-flight read rather than the pre-read
+	// ctx.Done() check at the top of the loop.
+	select {
+	case <-received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never received the watch request")
+	}
 	cancel()
 
 	select {
