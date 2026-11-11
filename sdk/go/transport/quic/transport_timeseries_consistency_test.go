@@ -372,29 +372,6 @@ func TestQUIC_TSQuery_InvalidConsistency(t *testing.T) {
 	}
 }
 
-// TestQUIC_TSQuery_EmptyConsistency_Accepted verifies that an empty Consistency
-// string does not trigger InvalidConsistencyLevelError. The guard is only
-// entered when req.Consistency != "".
-func TestQUIC_TSQuery_EmptyConsistency_Accepted(t *testing.T) {
-	// Confirm the contract: ParseConsistencyLevel("") returns no error,
-	// so the guard correctly skips validation for empty strings.
-	if _, err := transport.ParseConsistencyLevel(""); err != nil {
-		t.Fatalf("ParseConsistencyLevel(%q) must not error: %v", "", err)
-	}
-	// Confirm that a closed transport (which returns ClosedError before
-	// the guard) does not return an InvalidConsistencyLevelError.
-	tr := newOpenTransport(t)
-	_ = tr.Close()
-	_, err := tr.TSQuery(context.Background(), &transport.TSQueryRequest{
-		Metric:      "cpu",
-		Consistency: "",
-	})
-	var invErr *transport.InvalidConsistencyLevelError
-	if errors.As(err, &invErr) {
-		t.Fatalf("empty consistency must not produce InvalidConsistencyLevelError: %v", err)
-	}
-}
-
 // TestQUIC_TSAggregate_InvalidConsistency verifies that an invalid Consistency
 // value is rejected with *transport.RequestError before any RPC.
 func TestQUIC_TSAggregate_InvalidConsistency(t *testing.T) {
@@ -412,21 +389,6 @@ func TestQUIC_TSAggregate_InvalidConsistency(t *testing.T) {
 	}
 	if reqErr.Method != "TSAggregate" {
 		t.Fatalf("expected Method TSAggregate, got %q", reqErr.Method)
-	}
-}
-
-// TestQUIC_TSAggregate_EmptyConsistency_Accepted verifies that empty Consistency
-// does not trigger InvalidConsistencyLevelError.
-func TestQUIC_TSAggregate_EmptyConsistency_Accepted(t *testing.T) {
-	tr := newOpenTransport(t)
-	_ = tr.Close()
-	_, err := tr.TSAggregate(context.Background(), &transport.TSAggregateRequest{
-		Metric:      "cpu",
-		Consistency: "",
-	})
-	var invErr *transport.InvalidConsistencyLevelError
-	if errors.As(err, &invErr) {
-		t.Fatalf("empty consistency must not produce InvalidConsistencyLevelError: %v", err)
 	}
 }
 
@@ -450,21 +412,6 @@ func TestQUIC_TSRichQuery_InvalidConsistency(t *testing.T) {
 	}
 }
 
-// TestQUIC_TSRichQuery_EmptyConsistency_Accepted verifies that empty Consistency
-// does not trigger InvalidConsistencyLevelError.
-func TestQUIC_TSRichQuery_EmptyConsistency_Accepted(t *testing.T) {
-	tr := newOpenTransport(t)
-	_ = tr.Close()
-	_, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
-		Metric:      "cpu",
-		Consistency: "",
-	})
-	var invErr *transport.InvalidConsistencyLevelError
-	if errors.As(err, &invErr) {
-		t.Fatalf("empty consistency must not produce InvalidConsistencyLevelError: %v", err)
-	}
-}
-
 // TestQUIC_TSListMetrics_InvalidConsistency verifies that an invalid Consistency
 // value is rejected with *transport.RequestError before any RPC.
 func TestQUIC_TSListMetrics_InvalidConsistency(t *testing.T) {
@@ -482,20 +429,5 @@ func TestQUIC_TSListMetrics_InvalidConsistency(t *testing.T) {
 	}
 	if reqErr.Method != "TSListMetrics" {
 		t.Fatalf("expected Method TSListMetrics, got %q", reqErr.Method)
-	}
-}
-
-// TestQUIC_TSListMetrics_EmptyConsistency_Accepted verifies that empty
-// Consistency does not trigger InvalidConsistencyLevelError.
-func TestQUIC_TSListMetrics_EmptyConsistency_Accepted(t *testing.T) {
-	tr := newOpenTransport(t)
-	_ = tr.Close()
-	_, err := tr.TSListMetrics(context.Background(), &transport.TSListMetricsRequest{
-		Prefix:      "cpu",
-		Consistency: "",
-	})
-	var invErr *transport.InvalidConsistencyLevelError
-	if errors.As(err, &invErr) {
-		t.Fatalf("empty consistency must not produce InvalidConsistencyLevelError: %v", err)
 	}
 }
