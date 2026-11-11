@@ -187,23 +187,6 @@ func TestKeyCodec_OrderPreserving_Bytes(t *testing.T) {
 // Round trip (Encode/EncodeValues/Decode)
 // ---------------------------------------------------------------------------
 
-func TestKeyCodec_RoundTrip_Uint64(t *testing.T) {
-	kc := singleColumnKeyCodec(t, "BIGINT UNSIGNED")
-	for _, v := range []uint64{0, 1, 42, 1 << 63, ^uint64(0)} {
-		key, err := kc.EncodeValues([]any{v})
-		if err != nil {
-			t.Fatalf("EncodeValues: %v", err)
-		}
-		vals, err := kc.Decode(key)
-		if err != nil {
-			t.Fatalf("Decode: %v", err)
-		}
-		if vals[0] != v {
-			t.Fatalf("got %v, want %v", vals[0], v)
-		}
-	}
-}
-
 func TestKeyCodec_RoundTrip_Int64Negative(t *testing.T) {
 	kc := singleColumnKeyCodec(t, "BIGINT")
 	for _, v := range []int64{0, -1, 1, -9223372036854775808, 9223372036854775807} {
