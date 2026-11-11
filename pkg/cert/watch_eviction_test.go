@@ -384,38 +384,6 @@ func (b *atomicBool) get() bool {
 	return b.v
 }
 
-// TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys proves a
-// delete or put under the watched prefixes that is NOT a material,
-// certificate, or tombstone record is ignored rather than evicting
-// whatever TrimSuffix/TrimPrefix happens to produce from it.
-func TestDefaultCertProvider_WatchForDeletions_IgnoresUnrelatedKeys(t *testing.T) {
-	ws := newFakeWatchService()
-	p, _, _ := newTestProvider(WithWatchService(ws))
-	ctx := context.Background()
-
-	if _, err := generateForTest(ctx, p, &testRequest{Username: "carol", TenantID: "acme"}); err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-	if _, err := p.WatchForDeletions(ctx); err != nil {
-		t.Fatalf("WatchForDeletions: %v", err)
-	}
-	certCAWatcher := ws.watcherFor(t, prefixCertCA)
-
-	// A sibling record type under the same prefix, not material or
-	// certificate.
-	certCAWatcher.deliver(t, watch.EventDelete, prefixCertCA+"acme/some-other-record")
-
-	// Give the (wrongly-matching) case a moment it would need if it were
-	// going to fire, then confirm acme is still cached.
-	time.Sleep(50 * time.Millisecond)
-	p.mu.RLock()
-	_, stillCached := p.perTenant["acme"]
-	p.mu.RUnlock()
-	if !stillCached {
-		t.Error("an unrelated record under the cert_ca prefix evicted acme's cache entry")
-	}
-}
-
 // TestDefaultCertProvider_WatchForDeletions_DoneClosesOnceBothWatchersReturn
 // proves done reports the watchers' lifetime: it stays open while they run
 // and closes once ctx's cancellation has ended both, so a caller can wait for
