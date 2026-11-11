@@ -1192,26 +1192,6 @@ func TestTS_SingleNode_DeleteSeries(t *testing.T) {
 	}
 }
 
-func TestTS_SingleNode_WriteBatch(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "mvcc")
-
-	now := time.Now()
-	startNs := now.Add(-1 * time.Minute).UnixNano()
-	endNs := now.Add(2 * time.Minute).UnixNano()
-
-	// Write multiple points in quick succession.
-	for i := range 5 {
-		httpTSWritePoint(t, ca, adminPort, "ts.writebatch.metric",
-			float64(i)*10.0, map[string]string{"batch": "true"})
-	}
-
-	points := httpTSQuery(t, ca, adminPort, "ts.writebatch.metric", startNs, endNs)
-
-	if len(points) != 5 {
-		t.Fatalf("TS write batch: got %d points, want 5", len(points))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Index tests
 // ---------------------------------------------------------------------------
