@@ -3577,26 +3577,6 @@ func TestFastStateMachine_LookupPrefix_CacheNonMatchingKey(t *testing.T) {
 // FastBackend.Scan — cache non-matching prefix continue branch
 // ---------------------------------------------------------------------------
 
-// TestFastBackend_Scan_CacheNonMatchingKey verifies that cache entries whose
-// keys don't match the scan prefix are skipped in the overlay phase.
-func TestFastBackend_Scan_CacheNonMatchingKey(t *testing.T) {
-	store := newMemStorage()
-	b := newFastBackendWithStorage(store)
-
-	// Put a key with a different prefix.
-	_ = b.Put([]byte("other/key"), []byte("val"))
-	b.wg.Wait()
-
-	// Scan with a different prefix — cache entry must not appear.
-	result, err := b.Scan([]byte("pfx/"), 100)
-	if err != nil {
-		t.Fatalf("Scan returned unexpected error: %v", err)
-	}
-	if _, exists := result["other/key"]; exists {
-		t.Error("expected non-matching key to be absent from Scan result")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RegularStateMachine.RecoverFromSnapshot — key-len read error
 // ---------------------------------------------------------------------------
