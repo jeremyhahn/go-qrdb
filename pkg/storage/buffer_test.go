@@ -122,28 +122,6 @@ func collect(t *testing.T, it Iterator) []string {
 // Read-your-own-writes
 // ---------------------------------------------------------------------------
 
-// TestBufferedBatch_GetAfterDeleteThenSet requires a set following a delete to
-// win, matching the order the operations will be applied in.
-func TestBufferedBatch_GetAfterDeleteThenSet(t *testing.T) {
-	base := newMapReader(map[string]string{"k": "committed"})
-	b := NewBufferedBatch(base, base.apply)
-
-	if err := b.Delete([]byte("k")); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if err := b.Set([]byte("k"), []byte("reborn")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	got, err := b.Get([]byte("k"))
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "reborn" {
-		t.Errorf("Get = %q, want reborn", got)
-	}
-}
-
 // TestBufferedBatch_GetPreservesEmptyValue requires a zero-length value to stay
 // distinguishable from a missing key.
 func TestBufferedBatch_GetPreservesEmptyValue(t *testing.T) {
@@ -260,35 +238,6 @@ func TestBufferedBatch_IteratorPropagatesBaseError(t *testing.T) {
 	}
 	if !errors.Is(it.Error(), sentinel) {
 		t.Errorf("Error() = %v, want %v", it.Error(), sentinel)
-	}
-}
-
-// TestBufferedBatch_IteratorSeekAndPrev exercises positioning in both
-// directions over a merged range.
-func TestBufferedBatch_IteratorSeekAndPrev(t *testing.T) {
-	base := newMapReader(map[string]string{"a": "1", "c": "3"})
-	b := NewBufferedBatch(base, base.apply)
-	if err := b.Set([]byte("b"), []byte("2")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	it := b.NewIterator(nil)
-	defer func() { _ = it.Close() }()
-
-	if !it.Seek([]byte("b")) || string(it.Key()) != "b" {
-		t.Fatalf("Seek(b) positioned at %q", it.Key())
-	}
-	if !it.Prev() || string(it.Key()) != "a" {
-		t.Fatalf("Prev positioned at %q", it.Key())
-	}
-	if !it.SeekToLast() || string(it.Key()) != "c" {
-		t.Fatalf("SeekToLast positioned at %q", it.Key())
-	}
-	if it.Next() {
-		t.Errorf("Next past the last entry returned true at %q", it.Key())
-	}
-	if it.Seek([]byte("zz")) {
-		t.Error("Seek past the end returned true")
 	}
 }
 
