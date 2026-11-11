@@ -534,7 +534,8 @@ func TestBuiltinToolCatalogue_CoversFullyWiredServer(t *testing.T) {
 func TestToolMappingGuard_PermissionsRegistered(t *testing.T) {
 	srv := newFullyWiredGuardServer(t)
 	for tool, perm := range srv.toolPerms.Entries() {
-		if perm == permission.IdentityGated {
+		// IdentityGated and Public are sentinels, deliberately unregistered.
+		if perm == permission.IdentityGated || perm == permission.Public {
 			continue
 		}
 		if !permission.IsRegistered(perm) {
