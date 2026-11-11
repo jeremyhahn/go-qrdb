@@ -127,8 +127,11 @@ func validateSystemSOInputs(ca CeremonyCA, trustDomain string, opts *InitializeO
 	// operator supplies for the admin can collide. Strict separation refuses
 	// a shared key; the standard posture allows it only for the admin
 	// enrolled as SO, since one key binds to one account. Refused here,
-	// before the PINs, the barrier or any certificate is committed.
-	soIsAdmin := strings.EqualFold(opts.SOUsername, adminUsername)
+	// before the PINs, the barrier or any certificate is committed. The
+	// user store keys usernames case-sensitively, so only the exact name
+	// enrols the admin as SO: "Admin" is a separate account the shared key
+	// could never bind to.
+	soIsAdmin := opts.SOUsername == adminUsername
 	if adminKey := suppliedAdminKey(opts); adminKey != nil && bytes.Equal(adminKey, soKey) && (strict || !soIsAdmin) {
 		return &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
 	}

@@ -339,30 +339,30 @@ func TestInitialize_SystemSO_Refusals(t *testing.T) {
 func TestInitialize_SystemSO_AdminAsSOIsStrictOnlyRefusal(t *testing.T) {
 	ca := newMockCA(t)
 	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
-	opts := func() *InitializeOptions {
+	opts := func(soUsername string) *InitializeOptions {
 		return &InitializeOptions{
 			SOPin:       "test-so-pin",
 			UserPin:     "test-user-pin",
 			AdminCSRPEM: adminCSR,
-			SOUsername:  "Admin",
+			SOUsername:  soUsername,
 			SOCSRPEM:    adminCSR,
 		}
 	}
 
 	standard := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
 	standard.SetPINBackend(pintest.NewBackend(t))
-	_, err := standard.Initialize(context.Background(), ca, opts())
+	_, err := standard.Initialize(context.Background(), ca, opts("admin"))
 	require.NoError(t, err, "the standard posture lets the admin hold SO")
 	issued := standard.LastIssuedSystemSO()
 	require.NotNil(t, issued, "the admin is recorded as the system SO for first boot")
-	assert.Equal(t, "Admin", issued.Username)
+	assert.Equal(t, "admin", issued.Username)
 
 	barrier := testBarrier(t)
 	strict := newTestCeremonyService(t, defaultConfig(), barrier)
 	pins := pintest.NewBackend(t)
 	strict.SetPINBackend(pins)
 	strict.SetSeparationOfDuties(true)
-	_, err = strict.Initialize(context.Background(), ca, opts())
+	_, err = strict.Initialize(context.Background(), ca, opts("Admin"))
 	var rejected *SystemSORejectedError
 	require.ErrorAs(t, err, &rejected)
 	assert.Contains(t, err.Error(), "cannot be the bootstrap admin")
@@ -371,6 +371,34 @@ func TestInitialize_SystemSO_AdminAsSOIsStrictOnlyRefusal(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, initialized, "the barrier must stay uninitialised")
 	assert.Nil(t, strict.LastIssuedSystemSO())
+}
+
+// The user store keys usernames case-sensitively, so "Admin" is an account
+// apart from the bootstrap admin "admin": sharing the admin's key with it
+// could never bind at first boot, and is refused before anything commits.
+func TestInitialize_SystemSO_SharedKeyNeedsExactAdminUsername(t *testing.T) {
+	ca := newMockCA(t)
+	adminCSR, _ := generateCSRPEM(t, "ignored-cn")
+
+	barrier := testBarrier(t)
+	svc := newTestCeremonyService(t, defaultConfig(), barrier)
+	pins := pintest.NewBackend(t)
+	svc.SetPINBackend(pins)
+	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+		SOPin:       "test-so-pin",
+		UserPin:     "test-user-pin",
+		AdminCSRPEM: adminCSR,
+		SOUsername:  "Admin",
+		SOCSRPEM:    adminCSR,
+	})
+	var rejected *SystemSORejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, err.Error(), "key is the bootstrap admin's")
+	assert.False(t, pins.IsInitialized(), "the PINs must stay uncommitted")
+	initialized, err := barrier.Initialized(context.Background())
+	require.NoError(t, err)
+	assert.False(t, initialized, "the barrier must stay uninitialised")
+	assert.Nil(t, svc.LastIssuedSystemSO())
 }
 
 // nilCA marks a case that runs the ceremony with no CA at all.
