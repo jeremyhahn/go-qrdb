@@ -489,40 +489,6 @@ func TestUpsertVector_Success(t *testing.T) {
 	}
 }
 
-func TestGetVector_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.GetVector(context.Background(), &transport.GetVectorRequest{
-		Namespace: "ns1",
-		ID:        42,
-	})
-	if err != nil {
-		t.Fatalf("GetVector: %v", err)
-	}
-	if !resp.Found {
-		t.Error("expected found=true")
-	}
-}
-
-func TestDeleteVector_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{
-		Namespace: "ns1",
-		ID:        42,
-	})
-	if err != nil {
-		t.Fatalf("DeleteVector: %v", err)
-	}
-	if !resp.Success {
-		t.Error("expected success")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchUpsert / BatchDeleteVectors / ListVectors
 // ---------------------------------------------------------------------------
@@ -679,20 +645,6 @@ func TestUpdateMetadata_Success(t *testing.T) {
 // ---------------------------------------------------------------------------
 // RebuildIndex / GetRebuildProgress / GetIndexStats
 // ---------------------------------------------------------------------------
-
-func TestRebuildIndex_Success(t *testing.T) {
-	svc := newMockVectorSvc()
-	tr, cleanup := connectVectorInProcess(t, svc)
-	defer cleanup()
-
-	resp, err := tr.RebuildIndex(context.Background(), &transport.RebuildIndexRequest{Namespace: "ns1"})
-	if err != nil {
-		t.Fatalf("RebuildIndex: %v", err)
-	}
-	if resp.JobID == "" {
-		t.Error("expected non-empty job id")
-	}
-}
 
 func TestGetRebuildProgress_Success(t *testing.T) {
 	svc := newMockVectorSvc()
@@ -1065,13 +1017,16 @@ func TestGetVector_WithShardID(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.GetVector(context.Background(), &transport.GetVectorRequest{
+	resp, err := tr.GetVector(context.Background(), &transport.GetVectorRequest{
 		Namespace: "ns1",
 		ID:        42,
 		ShardID:   7,
 	})
 	if err != nil {
 		t.Fatalf("GetVector: %v", err)
+	}
+	if !resp.Found {
+		t.Error("expected found=true")
 	}
 }
 
@@ -1080,13 +1035,16 @@ func TestDeleteVector_WithShardID(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{
+	resp, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{
 		Namespace: "ns1",
 		ID:        42,
 		ShardID:   7,
 	})
 	if err != nil {
 		t.Fatalf("DeleteVector: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success")
 	}
 }
 
@@ -1190,11 +1148,14 @@ func TestRebuildIndex_WithConfig(t *testing.T) {
 	tr, cleanup := connectVectorInProcess(t, svc)
 	defer cleanup()
 
-	_, err := tr.RebuildIndex(context.Background(), &transport.RebuildIndexRequest{
+	resp, err := tr.RebuildIndex(context.Background(), &transport.RebuildIndexRequest{
 		Namespace:   "ns1",
 		IndexConfig: map[string]string{"M": "32"},
 	})
 	if err != nil {
 		t.Fatalf("RebuildIndex: %v", err)
+	}
+	if resp.JobID == "" {
+		t.Error("expected non-empty job id")
 	}
 }
