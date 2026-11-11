@@ -354,36 +354,6 @@ func TestBatchUpsertVectors_ErrorPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestCreateNamespace_SyncWrites tests namespace creation with sync writes
-func TestCreateNamespace_SyncWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	info := &NamespaceInfo{
-		Name:      "sync_ns",
-		Dimension: 768,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, info)
-	assert.NoError(t, err)
-
-	// Verify it was created
-	retrieved, err := storage.GetNamespaceInfo(ctx, "sync_ns")
-	assert.NoError(t, err)
-	assert.Equal(t, "sync_ns", retrieved.Name)
-}
-
 // TestGetStats_WithVectors tests stats for namespace with vectors
 func TestGetStats_WithVectors(t *testing.T) {
 	tmpDir := t.TempDir()

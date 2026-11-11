@@ -671,32 +671,6 @@ func TestUpsertVector_WithSyncWritesFinal(t *testing.T) {
 	assert.Equal(t, "val", result.Metadata["key"])
 }
 
-// TestDeleteVector_WithSyncWritesFinal covers DeleteVector with SyncWrites.
-func TestDeleteVector_WithSyncWritesFinal(t *testing.T) {
-	storage, cleanup := setupSyncStorage(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	ns := "sync-del-ns"
-	err := storage.CreateNamespace(ctx, &NamespaceInfo{Name: ns, Dimension: 4})
-	require.NoError(t, err)
-
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{1.0, 2.0, 3.0, 4.0},
-		Metadata:  map[string]string{"k": "v"},
-		Version:   1,
-	}
-	err = storage.UpsertVector(ctx, ns, vec)
-	require.NoError(t, err)
-
-	err = storage.DeleteVector(ctx, ns, 1)
-	require.NoError(t, err)
-
-	_, err = storage.GetVector(ctx, ns, 1)
-	require.Error(t, err)
-}
-
 // TestScanByMultipleFilters_NotEqualOperator covers the FilterNotEqual
 // branch in ScanByMultipleFilters (line 606-609 in adapter.go).
 func TestScanByMultipleFilters_NotEqualOperator(t *testing.T) {

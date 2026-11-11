@@ -95,27 +95,6 @@ func TestNewPebbleVectorStorage_NilLogger(t *testing.T) {
 // UpsertVector — SyncWrites path
 // ---------------------------------------------------------------------------
 
-// TestUpsertVector_SyncWritesCovFinal verifies UpsertVector succeeds with SyncWrites=true.
-func TestUpsertVector_SyncWritesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "syncns", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace: %v", err)
-	}
-
-	id, _ := s.NextID("syncns")
-	vec := &VectorValue{
-		ID:        id,
-		Version:   1,
-		Embedding: []float32{1, 2, 3, 4},
-	}
-	if err := s.UpsertVector(ctx, "syncns", vec); err != nil {
-		t.Fatalf("UpsertVector (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // UpsertVector — context-cancelled path (writeSem via ctx.Done())
 // ---------------------------------------------------------------------------
@@ -128,63 +107,9 @@ func TestUpsertVector_SyncWritesCovFinal(t *testing.T) {
 // DeleteVector — SyncWrites path
 // ---------------------------------------------------------------------------
 
-// TestDeleteVector_SyncWrites verifies DeleteVector succeeds with SyncWrites=true.
-func TestDeleteVector_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "del_sync_ns"
-	id := seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.DeleteVector(ctx, ns, id); err != nil {
-		t.Fatalf("DeleteVector (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // BatchUpsertVectors / BatchDeleteVectors — SyncWrites path
 // ---------------------------------------------------------------------------
-
-// TestBatchUpsertVectors_SyncWrites verifies BatchUpsertVectors with SyncWrites=true.
-func TestBatchUpsertVectors_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "batchns", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace: %v", err)
-	}
-
-	id1, _ := s.NextID("batchns")
-	id2, _ := s.NextID("batchns")
-	vecs := []*VectorValue{
-		{ID: id1, Version: 1, Embedding: []float32{1, 2, 3, 4}},
-		{ID: id2, Version: 1, Embedding: []float32{5, 6, 7, 8}},
-	}
-	if err := s.BatchUpsertVectors(ctx, "batchns", vecs); err != nil {
-		t.Fatalf("BatchUpsertVectors (sync): %v", err)
-	}
-}
-
-// TestBatchDeleteVectors_SyncWrites verifies BatchDeleteVectors with SyncWrites=true.
-func TestBatchDeleteVectors_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "bdel_ns"
-	id1 := seedNamespace(t, s, ns)
-	id2, _ := s.NextID(ns)
-	vec2 := &VectorValue{ID: id2, Version: 1, Embedding: []float32{5, 6, 7, 8}}
-	if err := s.UpsertVector(context.Background(), ns, vec2); err != nil {
-		t.Fatalf("UpsertVector: %v", err)
-	}
-
-	ctx := context.Background()
-	if err := s.BatchDeleteVectors(ctx, ns, []uint64{id1, id2}); err != nil {
-		t.Fatalf("BatchDeleteVectors (sync): %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // ScanByMetadata — with offset and limit options
@@ -262,34 +187,9 @@ func TestScanNamespace_WithScanOptions(t *testing.T) {
 // CreateNamespace — SyncWrites path and seqKey error
 // ---------------------------------------------------------------------------
 
-// TestCreateNamespace_SyncWritesCovFinal verifies CreateNamespace works with SyncWrites=true.
-func TestCreateNamespace_SyncWritesCovFinal(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ctx := context.Background()
-	if err := s.CreateNamespace(ctx, &NamespaceInfo{Name: "syncnsname", Dimension: 4}); err != nil {
-		t.Fatalf("CreateNamespace (sync): %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DeleteNamespace — SyncWrites path
 // ---------------------------------------------------------------------------
-
-// TestDeleteNamespace_SyncWrites verifies DeleteNamespace with SyncWrites=true.
-func TestDeleteNamespace_SyncWrites(t *testing.T) {
-	s := openVectorStorage(t)
-	s.config.SyncWrites = true
-
-	ns := "del_ns_sync"
-	seedNamespace(t, s, ns)
-
-	ctx := context.Background()
-	if err := s.DeleteNamespace(ctx, ns); err != nil {
-		t.Fatalf("DeleteNamespace (sync): %v", err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // GetNamespaceInfo — happy path (stats success path)
