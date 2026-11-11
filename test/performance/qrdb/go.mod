@@ -1,6 +1,6 @@
 module github.com/jeremyhahn/go-qrdb/test/performance/qrdb
 
-go 1.27.3
+go 1.27.4
 
 require (
 	// go-qrdb: held at v0.7.0-alpha. ./Dockerfile, the only build of this

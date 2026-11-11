@@ -20,7 +20,8 @@ mkdir -p "$D/bin"
 # The stub's daemon: $s/id is the ID the image under test has once loaded or
 # built ($STUB_ID), and $s/loaded-id the ID `docker load` gives it
 # ($STUB_LOAD_ID, default the saved one). STUB_NO_DIGEST makes a push report
-# no repo digest. The login's password is read from stdin and recorded apart
+# no repo digest. STUB_PUSH_FAILS makes the first that many pushes fail with a
+# registry 500, counted in $s/push-tries. The login's password is read from stdin and recorded apart
 # from the argv log, so a test can tell it never reached a command line.
 cat > "$D/bin/docker" <<'STUB'
 #!/usr/bin/env bash
@@ -39,7 +40,14 @@ case $1 in
   load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
-  push) printf '%s\n' "${2%:*}" > "$s/pushed" ;;
+  push)
+    n=$(($(cat "$s/push-tries" 2>/dev/null || echo 0) + 1))
+    printf '%s\n' "$n" > "$s/push-tries"
+    if [ "$n" -le "${STUB_PUSH_FAILS:-0}" ]; then
+      echo 'received unexpected HTTP status: 500 Internal Server Error' >&2
+      exit 1
+    fi
+    printf '%s\n' "${2%:*}" > "$s/pushed" ;;
   *) exit 1 ;;
 esac
 STUB
@@ -139,7 +147,38 @@ if [ "$rc" = 1 ] && grep -q 'reported no digest' "$D/err" && [ ! -s "$D/out" ]; 
   ok "a push with no digest fails"
 else bad "a push with no digest fails (rc=$rc)"; cat "$D/err"; fi
 
-# 10-12. check-ref accepts a digest reference under the owner in GHCR only.
+# 10. A push the registry refuses once succeeds on the next attempt. No retry
+# test sleeps: each sets CI_REGISTRY_BACKOFF=0.
+reset
+run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=1 CI_REGISTRY_BACKOFF=0
+if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$want" ] &&
+  [ "$(grep -c '^push ' "$D/state/calls")" = 2 ] && grep -q 'attempt 1 of 3' "$D/err"; then
+  ok "a push the registry refuses once succeeds on the next attempt"
+else bad "a push the registry refuses once succeeds on the next attempt (rc=$rc)"; cat "$D/err"; fi
+
+# 11. A push refused on every attempt fails after the last.
+reset
+run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=9 CI_REGISTRY_BACKOFF=0
+if [ "$rc" = 1 ] && grep -q 'GHCR refused the push of' "$D/err" &&
+  [ "$(grep -c '^push ' "$D/state/calls")" = 3 ] && [ ! -s "$D/out" ]; then
+  ok "a push refused on every attempt fails after the last"
+else bad "a push refused on every attempt fails after the last (rc=$rc)"; cat "$D/err"; fi
+
+# 12. A malformed attempt count or backoff is refused before the login and
+# the push.
+knobs=ok
+for kv in CI_REGISTRY_ATTEMPTS=0 CI_REGISTRY_BACKOFF=soon; do
+  reset
+  run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t "$kv"
+  if [ "$rc" != 1 ] || ! grep -q "${kv%%=*}" "$D/err" || called '^push ' || called '^login '; then
+    knobs="$kv rc=$rc"
+    cat "$D/err"
+  fi
+done
+if [ "$knobs" = ok ]; then ok "a malformed attempt count or backoff is refused before the push"
+else bad "a malformed attempt count or backoff is refused before the push ($knobs)"; fi
+
+# 13-15. check-ref accepts a digest reference under the owner in GHCR only.
 hex=$(printf 'c%.0s' $(seq 64))
 reset
 run check-ref "ghcr.io/example-org/go-qrdb-toolchain@sha256:$hex"

@@ -2,10 +2,12 @@
 # go-qrdb deviations from v1.34.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on GitHub-hosted ubuntu-latest (DS-7377), except the
-#     Docker-free jobs (preflight, coverage-merge, test-clusterproof,
-#     coverage-fts, ci-gate), which run on the self-hosted bigdisk pool for a
-#     push to main and a same-repository PR (DS-8233, m2479); no registry,
-#     cache volume, reaper or schedule guard remains
+#     Docker-free jobs, which run on the self-hosted bigdisk pool: preflight,
+#     coverage-merge, test-clusterproof, coverage-fts and ci-gate for a push
+#     to main and a same-repository PR (DS-8233, m2479), and test-typescript
+#     for any push and a same-repository PR (Company Agent m2396), where it
+#     leaves no credential in its checkout and installs no apt package; no
+#     registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - preflight's timeout is 15 minutes against the template's 10, because it
@@ -66,12 +68,13 @@ on:
     # `workflow_dispatch`. test/buildgates/ci_tiers_test.go holds this line.
     types: [opened, synchronize, reopened]
   workflow_dispatch:                    # re-fire a whole workflow
-  # v1.23: main's full tier nightly as well as after every merge. Scheduled
-  # runs are on the default branch. The one scheduler (ruling 135, ruling
-  # 216(1)); test/buildgates/ci_tiers_test.go allows a `schedule:` here
-  # alone.
+  # v1.23: main's full tier after every merge and once a week, at 04:00 UTC
+  # on Sunday, the end of this project's night in the factory's rotation
+  # (#1349). Scheduled runs are on the default branch. The one scheduler
+  # (ruling 135, ruling 216(1)); test/buildgates/ci_tiers_test.go allows a
+  # `schedule:` here alone and holds it to this one cron.
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 4 * * 0'
 
 # v1.26.2 (ruling 145; go-qrdb's since DS-3465): on main the group is the
 # workflow, the event and the commit, so main runs never cancel each other and
@@ -99,10 +102,10 @@ env:
   GO_BUILD_TAGS: "codec_json raft qrdb_ts qrdb_vector qrdb_vlog qrdb_sql qrdb_mysql qrdb_pgsql qrdb_etcd qrdb_embedded codec_msgpack codec_yaml codec_bson codec_protobuf"
   # DS-8233 (bigdisk): Go for the jobs that run natively on the self-hosted
   # pool (coverage-merge, test-clusterproof, coverage-fts). The toolchain
-  # image's Go: scripts/tool-pins.sh GO_IMAGE=golang:1.27.3-alpine3.24, which
+  # image's Go: scripts/tool-pins.sh GO_IMAGE=golang:1.27.4-alpine3.24, which
   # build/docker/devcontainer/Dockerfile takes as ARG GO_IMAGE. Keep the two
   # equal; an exact patch release, never "stable".
-  GO_VERSION: '1.27.3'
+  GO_VERSION: '1.27.4'
   # v1.23: the full tier (ci-standard.md §8). Every event but pull_request
   # (push to main, schedule, workflow_dispatch on main), and a PR labelled
   # ci:full. Steps read it as env.CI_FULL_TIER; a job-level `if:` cannot read
@@ -489,7 +492,7 @@ jobs:
 
       # ci-template v1.30: vet-tags and the secure analyzer, on the nightly
       # schedule alone.
-      - name: make lint-sweeps (nightly schedule)
+      - name: make lint-sweeps (weekly schedule)
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && github.event_name == 'schedule' }}
         env:
           IN_IMAGE_NETWORK: bridge
@@ -1466,12 +1469,17 @@ jobs:
   # (DS-3160). It needs docker-build only for the code-tier `if:` (v1.29.2).
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 30
     steps:
+      # No credential is left in the checkout: nothing after it fetches or
+      # pushes, and off the hosted runner the workspace outlives the job
+      # (InfoSec W-4 Q1).
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       # Mask the forge credentials before any other step (see docker-build):
       # npm, curl and make all run here with them in the environment.
@@ -1488,8 +1496,15 @@ jobs:
         with:
           node-version: "22"
 
+      # `--with-deps` installs apt packages through sudo. Only the hosted
+      # runner allows that; anywhere else the runner image carries Chromium's
+      # libraries and the job installs the browser alone (InfoSec W-4 Q2).
       - name: TypeScript SDK and desktop frontend
-        run: make test-typescript
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+            export PLAYWRIGHT_INSTALL_FLAGS=
+          fi
+          make test-typescript
 
   # Soak (v1.23, owner item 101): one feature's suite, SOAK_FEATURE, looped in
   # the integration image until SOAK_MINUTES have passed, each iteration its

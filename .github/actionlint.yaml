@@ -45,6 +45,10 @@
 # does not list it yet, so adopting v5.5 without it took `Lint` red (the v2
 # failure mode above).
 #
+# CUSTOMIZE (go-qrdb, 2026-11-10, Company Agent m2396): `self-hosted`, `linux`,
+# `x64` and `bigdisk`, the labels of the returned worker node, which ci.yml's
+# test-typescript job runs on for push and same-repository pull_request.
+#
 # Verify against the fleet, not against this comment:
 #   curl -sH "Authorization: token $TOK" \
 #     "$GITEA/api/v1/admin/actions/runners" \
@@ -59,3 +63,7 @@ self-hosted-runner:
     - claude
     - code-review
     - qwen
+    - self-hosted
+    - linux
+    - x64
+    - bigdisk
