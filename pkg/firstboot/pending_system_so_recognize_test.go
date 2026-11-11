@@ -17,6 +17,7 @@ package firstboot
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"testing"
 	"time"
 
@@ -276,4 +277,37 @@ func TestClearPendingSystemSOIfEnrolled_ClearFaultIsReturned(t *testing.T) {
 	require.ErrorAs(t, err, &storeErr)
 	assert.Equal(t, "clear system SO", storeErr.Op)
 	assert.False(t, cleared)
+}
+
+func (f *fakeSOPINs) SetSOPIN(context.Context, string, []byte) error { return nil }
+
+// setOnlySOPINs commits a PIN but can neither verify nor compare one.
+type setOnlySOPINs struct{}
+
+func (setOnlySOPINs) SetSOPIN(context.Context, string, []byte) error { return nil }
+
+func TestCommittedSOPINIsOurs_RecordComparison(t *testing.T) {
+	ctx := context.Background()
+	so := &SOConfig{Username: "so", PINRecord: "record"}
+
+	var seamErr *MissingSOSeamError
+	require.ErrorAs(t, committedSOPINIsOurs(ctx, setOnlySOPINs{}, tenantid.System, so), &seamErr)
+	assert.Contains(t, seamErr.Seam, "SOPINRecordMatcher")
+
+	err := committedSOPINIsOurs(ctx, &fakeSOPINs{matchesErr: errStoreFault}, tenantid.System, so)
+	require.ErrorIs(t, err, errStoreFault)
+}
+
+func TestSpkiThumbprintOf_UnparseableCSR(t *testing.T) {
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("not DER")})
+	_, err := spkiThumbprintOf(csrPEM, nil)
+	require.Error(t, err)
+}
+
+func TestCheckSOCertLogsInAsUsername_UnreadableCertificate(t *testing.T) {
+	err := checkSOCertLogsInAsUsername(&SOConfig{Username: "so", CertPEM: []byte("not PEM")})
+	require.ErrorContains(t, err, "no CERTIFICATE block")
+
+	bad := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("not DER")})
+	require.Error(t, checkSOCertLogsInAsUsername(&SOConfig{Username: "so", CertPEM: bad}))
 }
