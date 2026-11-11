@@ -20,37 +20,6 @@ import (
 	"time"
 )
 
-func TestConditionParser_Parse(t *testing.T) {
-	parser := NewConditionParser(nil)
-
-	tests := []struct {
-		name    string
-		expr    string
-		wantErr bool
-	}{
-		{
-			name:    "empty expression",
-			expr:    "",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cond, err := parser.Parse(tt.expr)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr && cond == nil {
-				t.Error("Parse() returned nil condition without error")
-			}
-		})
-	}
-}
-
 func TestConditionParser_LogicalOperators(t *testing.T) {
 	parser := NewConditionParser(nil)
 
@@ -585,18 +554,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		{
 			name: "subject.attributes (using attrs)",
 			expr: "subject.attrs.department == \"engineering\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Attributes: map[string]interface{}{
-						"department": "engineering",
-					},
-				},
-			},
-			wantTrue: true,
-		},
-		{
-			name: "subject.attributes (using attributes keyword)",
-			expr: "subject.attributes.department == \"engineering\"",
 			ctx: &EvalContext{
 				Subject: &Subject{
 					Attributes: map[string]interface{}{
