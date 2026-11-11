@@ -255,12 +255,12 @@ func (c *onboardingCell) onboardWithCSR(t *testing.T, tenantID, admin string) (c
 	if err != nil {
 		t.Fatalf("new CSR: %v", err)
 	}
-	resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+	resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), withTenantSO(t, &transport.CreateTenantRequest{
 		ID:            tenantID,
 		Name:          tenantID,
 		AdminUsername: admin,
 		AdminCSRPEM:   string(csrPEM),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("%s: create tenant %s with an admin CSR: %v", c.tk, tenantID, err)
 	}
@@ -281,6 +281,20 @@ func (c *onboardingCell) onboardWithCSR(t *testing.T, tenantID, admin string) (c
 		t.Fatalf("%s: the issued certificate does not carry the CSR's key: %v", c.tk, err)
 	}
 	return []byte(resp.Admin.CertPEM), keyPEM
+}
+
+// withTenantSO names a security officer, ciso, with a CSR of their own and a
+// PIN on req: strict separation of duties (forced under FIPS 140-3) refuses a
+// tenant create without one (pkg/bootstrap TenantSORequiredError), and a
+// distinct SO is valid in the standard posture too.
+func withTenantSO(t *testing.T, req *transport.CreateTenantRequest) *transport.CreateTenantRequest {
+	t.Helper()
+	_, soCSR, err := certtest.NewCSR("ciso")
+	if err != nil {
+		t.Fatalf("SO CSR: %v", err)
+	}
+	req.SOUsername, req.SOCSRPEM, req.SOPin = "ciso", string(soCSR), "ciso-pin-1234"
+	return req
 }
 
 // TestTenantOnboarding_CSRAdminLogsInUnderRequired is the release blocker this
@@ -385,12 +399,12 @@ func TestTenantOnboarding_BYOCAdminUnderRegisteredAnchor(t *testing.T) {
 			// the node trusts it.
 			c.assertLoginRefused(t, adminKP.CertPEM, adminKP.KeyPEM, "globex", "no tenant has registered the external CA")
 
-			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), withTenantSO(t, &transport.CreateTenantRequest{
 				ID: "globex", Name: "Globex",
 				AdminUsername:   "gina",
 				AdminCertPEM:    string(adminKP.CertPEM),
 				TrustAnchorsPEM: string(ext.CertPEM),
-			})
+			}))
 			if err != nil {
 				t.Fatalf("%s: create tenant with a BYO admin certificate: %v", tk, err)
 			}
@@ -429,10 +443,10 @@ func TestTenantOnboarding_AnchorCannotVouchAcrossTenants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("issue gina: %v", err)
 			}
-			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), withTenantSO(t, &transport.CreateTenantRequest{
 				ID: "globex", Name: "Globex", AdminUsername: "gina",
 				AdminCertPEM: string(ginaKP.CertPEM), TrustAnchorsPEM: string(ext.CertPEM),
-			}); err != nil {
+			})); err != nil {
 				t.Fatalf("%s: create globex: %v", tk, err)
 			}
 
@@ -500,9 +514,9 @@ func TestTenantOnboarding_RefusedCreateLeavesNoTenant(t *testing.T) {
 				t.Fatalf("issue: %v", err)
 			}
 			// A BYO certificate with no anchor that vouches for it.
-			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+			if _, err := c.operator.Tenants().CreateTenant(boundedCtx(t), withTenantSO(t, &transport.CreateTenantRequest{
 				ID: "acme", Name: "acme", AdminUsername: "alice", AdminCertPEM: string(kp.CertPEM),
-			}); err == nil {
+			})); err == nil {
 				t.Fatalf("%s: a tenant was created with an admin certificate nothing vouches for", tk)
 			}
 			if _, err := c.n.Services().Tenant.GetTenant(boundedCtx(t), "acme"); err == nil {
@@ -532,12 +546,12 @@ func TestTenantOnboarding_DedicatedTenantAdminInitializesItsBarrier(t *testing.T
 			if err != nil {
 				t.Fatalf("new CSR: %v", err)
 			}
-			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), &transport.CreateTenantRequest{
+			resp, err := c.operator.Tenants().CreateTenant(boundedCtx(t), withTenantSO(t, &transport.CreateTenantRequest{
 				ID: "vault", Name: "Vault",
 				IsolationType: transport.TenantIsolationBarrier,
 				AdminUsername: "vera",
 				AdminCSRPEM:   string(csrPEM),
-			})
+			}))
 			if err != nil {
 				t.Fatalf("%s: create a barrier-isolated tenant with an admin CSR: %v", tk, err)
 			}

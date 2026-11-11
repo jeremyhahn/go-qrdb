@@ -37,6 +37,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest"
+	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
@@ -622,13 +623,21 @@ func (e *holderE2E) enrolAndInitialize() {
 			Designated:    req.Designated,
 		})
 	}
+	// Strict separation of duties (forced under FIPS 140-3) refuses a
+	// ceremony without a system SO distinct from the admin.
+	_, soCSR, err := certtest.NewCSR("ciso")
+	if err != nil {
+		e.t.Fatalf("system SO CSR: %v", err)
+	}
 	opts, err := holderwire.CeremonyInitFrom(&transport.CeremonyInitializeRequest{
-		SOPin:     e2eSOPIN,
-		UserPin:   e2eUserPIN,
-		Threshold: e2eThreshold,
-		Policy:    string(seal.FactorPolicyDesignated),
-		Officers:  officers,
-		Hostname:  "127.0.0.1",
+		SOUsername: "ciso",
+		SOCSRPEM:   string(soCSR),
+		SOPin:      e2eSOPIN,
+		UserPin:    e2eUserPIN,
+		Threshold:  e2eThreshold,
+		Policy:     string(seal.FactorPolicyDesignated),
+		Officers:   officers,
+		Hostname:   "127.0.0.1",
 		// AdminGenerate is the dev/test/evaluation-only admin-credential
 		// path (go-qrdb#548): this scenario tests share-holder custody,
 		// not admin-credential issuance, so the simplest valid selection
