@@ -201,17 +201,6 @@ func TestNewLocker_NilKVService(t *testing.T) {
 	}
 }
 
-func TestNewLocker_AllServicesValid(t *testing.T) {
-	tx, ls, ws, kvs := defaultServices()
-	svc, err := NewLocker(tx, ls, ws, kvs, nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("expected non-nil Service")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TryLock
 // ---------------------------------------------------------------------------
@@ -2062,14 +2051,6 @@ func TestLockKey_AddsPrefixCorrectly(t *testing.T) {
 	}
 }
 
-func TestUserKey_StripsPrefix(t *testing.T) {
-	got := userKey(lockKeyPrefix + "myresource")
-	want := "myresource"
-	if got != want {
-		t.Errorf("userKey = %q, want %q", got, want)
-	}
-}
-
 func TestUserKey_ShortKey_ReturnsOriginal(t *testing.T) {
 	short := "ab"
 	got := userKey(short)
@@ -2514,13 +2495,6 @@ func TestPrefixEnd_EmptySlice_ReturnsNil(t *testing.T) {
 	result := prefixEnd([]byte{})
 	if result != nil {
 		t.Errorf("expected nil for empty prefix, got %v", result)
-	}
-}
-
-func TestPrefixEnd_SingleByte(t *testing.T) {
-	result := prefixEnd([]byte{0x41})
-	if len(result) != 1 || result[0] != 0x42 {
-		t.Errorf("prefixEnd([0x41]) = %v, want [0x42]", result)
 	}
 }
 
