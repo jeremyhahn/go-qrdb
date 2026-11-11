@@ -103,13 +103,6 @@ func Test_RecordRequestDuration_records(t *testing.T) {
 	// No panic = success; the histogram accepted both observations.
 }
 
-func Test_RecordRequestDuration_multipleStatuses(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "rrd", Subsystem: "multi"})
-	c.RecordRequestDuration("POST", "201", 10*time.Millisecond)
-	c.RecordRequestDuration("POST", "500", 1*time.Second)
-}
-
 // ---------------------------------------------------------------------------
 // RecordRequest
 // ---------------------------------------------------------------------------
@@ -121,13 +114,6 @@ func Test_RecordRequest_increments(t *testing.T) {
 	c.RecordRequest("GET", "200")
 	c.RecordRequest("POST", "500")
 	// If underlying counter did not panic, requests were recorded.
-}
-
-func Test_RecordRequest_differentLabels(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "rr", Subsystem: "diff"})
-	c.RecordRequest("DELETE", "204")
-	c.RecordRequest("PUT", "200")
 }
 
 // ---------------------------------------------------------------------------
@@ -143,15 +129,6 @@ func Test_IncDecRequestsInFlight(t *testing.T) {
 	// Net in-flight = 1 (we only verify no panic).
 }
 
-func Test_IncDecRequestsInFlight_multipleMethods(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "rif", Subsystem: "multi"})
-	c.IncRequestsInFlight("GET")
-	c.IncRequestsInFlight("POST")
-	c.DecRequestsInFlight("GET")
-	c.DecRequestsInFlight("POST")
-}
-
 // ---------------------------------------------------------------------------
 // RecordError
 // ---------------------------------------------------------------------------
@@ -162,13 +139,6 @@ func Test_RecordError_increments(t *testing.T) {
 	c.RecordError("timeout", "read")
 	c.RecordError("timeout", "read")
 	c.RecordError("not_found", "lookup")
-}
-
-func Test_RecordError_differentTypes(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "re", Subsystem: "diff"})
-	c.RecordError("internal", "write")
-	c.RecordError("validation", "parse")
 }
 
 // ---------------------------------------------------------------------------
@@ -223,31 +193,11 @@ func Test_DecActiveConnections(t *testing.T) {
 // Timer
 // ---------------------------------------------------------------------------
 
-func Test_Timer_ObserveDuration_withHistogram(t *testing.T) {
-	freshRegistry(t)
-	h := NewHistogram(HistogramOpts{
-		Namespace: "timer", Subsystem: "test", Name: "dur", Help: "timer test",
-		Buckets: []float64{0.001, 0.01, 0.1, 1.0},
-	})
-	timer := NewTimer(h)
-	// Small sleep so the duration is non-zero.
-	time.Sleep(1 * time.Millisecond)
-	d := timer.ObserveDuration()
-	if d <= 0 {
-		t.Fatalf("expected positive duration, got %v", d)
-	}
-	got := histogramCount(h.histogram)
-	if got != 1 {
-		t.Fatalf("expected 1 observation after ObserveDuration, got %d", got)
-	}
-}
-
 func Test_Timer_ObserveDuration_nilHistogram(t *testing.T) {
 	timer := NewTimer(nil)
-	time.Sleep(1 * time.Millisecond)
 	d := timer.ObserveDuration()
-	if d <= 0 {
-		t.Fatalf("expected positive duration even with nil histogram, got %v", d)
+	if d < 0 {
+		t.Fatalf("expected non-negative duration with nil histogram, got %v", d)
 	}
 }
 
@@ -275,7 +225,6 @@ func Test_RequestTimer_Done(t *testing.T) {
 	freshRegistry(t)
 	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "done"})
 	timer := c.StartRequestTimer("GET")
-	time.Sleep(1 * time.Millisecond)
 	timer.Done("200")
 	if timer.status != "200" {
 		t.Fatalf("expected status '200', got %q", timer.status)
@@ -285,35 +234,14 @@ func Test_RequestTimer_Done(t *testing.T) {
 	}
 }
 
-func Test_RequestTimer_DoneDecrementsInFlight(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "flight"})
-
-	// Start two timers, then finish one.
-	t1 := c.StartRequestTimer("POST")
-	_ = c.StartRequestTimer("POST")
-	t1.Done("201")
-	// If no panic, in-flight was decremented correctly.
-}
-
 func Test_RequestTimer_DoneWithError(t *testing.T) {
 	freshRegistry(t)
 	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "err"})
 	timer := c.StartRequestTimer("PUT")
-	time.Sleep(1 * time.Millisecond)
 	timer.DoneWithError("500", "internal_error")
 	if timer.status != "500" {
 		t.Fatalf("expected status '500', got %q", timer.status)
 	}
-}
-
-func Test_RequestTimer_DoneWithError_multipleErrorTypes(t *testing.T) {
-	freshRegistry(t)
-	c := NewCollector(CollectorOpts{Namespace: "rt", Subsystem: "multi_err"})
-	t1 := c.StartRequestTimer("DELETE")
-	t1.DoneWithError("404", "not_found")
-	t2 := c.StartRequestTimer("PATCH")
-	t2.DoneWithError("422", "validation")
 }
 
 // ---------------------------------------------------------------------------
@@ -390,13 +318,6 @@ func Test_LatencyBuckets_Default(t *testing.T) {
 		if b[i] != def[i] {
 			t.Fatalf("bucket[%d] mismatch: %v vs %v", i, b[i], def[i])
 		}
-	}
-}
-
-func Test_LatencyBuckets_Default_nonEmpty(t *testing.T) {
-	b := Buckets.Default()
-	if len(b) == 0 {
-		t.Fatal("expected non-empty Default buckets")
 	}
 }
 

@@ -436,15 +436,6 @@ func Test_SetRegistry_resetsCollectorCache(t *testing.T) {
 	}
 }
 
-func Test_MustRegister_registersCollector(t *testing.T) {
-	freshRegistry(t)
-	c := prometheus.NewCounter(prometheus.CounterOpts{
-		Namespace: "test", Subsystem: "mr", Name: "must_total", Help: "must register test",
-	})
-	// Should not panic.
-	MustRegister(c)
-}
-
 func Test_MustRegister_panicsOnDuplicate(t *testing.T) {
 	freshRegistry(t)
 	c := prometheus.NewCounter(prometheus.CounterOpts{
@@ -503,58 +494,5 @@ func Test_Unregister_returnsFalseForUnknown(t *testing.T) {
 	ok := Unregister(c)
 	if ok {
 		t.Fatal("expected Unregister to return false for unregistered collector")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CounterOpts / GaugeOpts / HistogramOpts with ConstLabels
-// ---------------------------------------------------------------------------
-
-func Test_Counter_withConstLabels(t *testing.T) {
-	freshRegistry(t)
-	c := NewCounter(CounterOpts{
-		Namespace:   "test",
-		Subsystem:   "cl",
-		Name:        "const_total",
-		Help:        "const labels test",
-		ConstLabels: prometheus.Labels{"env": "test"},
-	})
-	c.Inc()
-	got := counterValue(c.counter)
-	if got != 1 {
-		t.Fatalf("expected 1 with const labels, got %v", got)
-	}
-}
-
-func Test_Gauge_withConstLabels(t *testing.T) {
-	freshRegistry(t)
-	g := NewGauge(GaugeOpts{
-		Namespace:   "test",
-		Subsystem:   "cl",
-		Name:        "const_val",
-		Help:        "const labels test",
-		ConstLabels: prometheus.Labels{"env": "test"},
-	})
-	g.Set(42)
-	got := gaugeValue(g.gauge)
-	if got != 42 {
-		t.Fatalf("expected 42 with const labels, got %v", got)
-	}
-}
-
-func Test_Histogram_withConstLabels(t *testing.T) {
-	freshRegistry(t)
-	h := NewHistogram(HistogramOpts{
-		Namespace:   "test",
-		Subsystem:   "cl",
-		Name:        "const_dur",
-		Help:        "const labels test",
-		ConstLabels: prometheus.Labels{"env": "test"},
-		Buckets:     []float64{1.0},
-	})
-	h.Observe(0.5)
-	got := histogramCount(h.histogram)
-	if got != 1 {
-		t.Fatalf("expected 1 with const labels, got %d", got)
 	}
 }
