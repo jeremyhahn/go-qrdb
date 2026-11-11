@@ -251,6 +251,25 @@ func TestInitialize_SystemSO_RequiredWhenStrict(t *testing.T) {
 	assert.NotEmpty(t, result.SOCertPEM)
 }
 
+// After a strict first boot that deferred its system SO (no SO and no admin
+// credential, go-qrdb#1129), the ceremony is the first point an SO's
+// authority is needed: the ceremony that issues the admin's credential
+// (here generated, the path a boot with none takes) and names no SO is still
+// refused before it commits anything.
+func TestInitialize_SystemSO_RequiredWhenStrictAfterADeferredFirstBoot(t *testing.T) {
+	svc := newTestCeremonyService(t, defaultConfig(), testBarrier(t))
+	svc.SetSeparationOfDuties(true)
+	ca := newMockCA(t)
+
+	_, err := svc.Initialize(context.Background(), ca, &InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+	})
+	var rejected *SystemSORejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, err.Error(), "requires a system SO")
+	assert.Nil(t, svc.LastIssuedSystemSO())
+}
+
 // Every malformed system SO request is refused with a typed error before
 // the ceremony writes anything, so the same service initializes cleanly
 // afterwards.

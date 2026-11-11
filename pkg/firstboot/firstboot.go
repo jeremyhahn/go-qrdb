@@ -355,7 +355,7 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	if err := checkBindingPosture(ctx, deps); err != nil {
 		return nil, err
 	}
-	if err := checkSystemSO(deps); err != nil {
+	if err := checkSystemSO(ctx, deps); err != nil {
 		return nil, err
 	}
 

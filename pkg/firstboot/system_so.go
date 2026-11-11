@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -189,12 +190,22 @@ var systemSOInputs = []string{"so_username", "so_csr_pem or so_cert_pem", "so_pi
 // any write: a strict deployment without an SO, an SO given in part, an SO
 // that is the admin by username or key, and an SO whose enrolment seams are
 // not wired are each refused here rather than half-way through first boot.
-func checkSystemSO(deps Dependencies) error {
+func checkSystemSO(ctx context.Context, deps Dependencies) error {
 	so := deps.SO
 	if so == nil {
 		if deps.SeparationOfDuties && !deps.SOEnrolled {
-			return &SystemSORequiredError{Missing: systemSOInputs}
+			carries, err := carriesAdminCredential(ctx, deps)
+			if err != nil {
+				return err
+			}
+			if carries {
+				return &SystemSORequiredError{Missing: systemSOInputs}
+			}
 		}
+		// A strict boot that carries neither an SO nor an admin credential
+		// defers the system SO: nothing is granted that an SO would have to
+		// counterbalance yet, and the ceremony still refuses without one
+		// (ceremony.SystemSORejectedError), the first point an SO acts.
 		return nil
 	}
 	if err := so.Validate(); err != nil {
@@ -236,6 +247,32 @@ func checkSystemSO(deps Dependencies) error {
 		return &SOMatchesAdminError{Field: "key"}
 	}
 	return nil
+}
+
+// carriesAdminCredential reports whether this first boot issues or adopts
+// an admin credential: a CA to generate one (Path A), a CSR to sign
+// (Path B), a presented certificate (Path C), or an admin that already
+// exists with a bound certificate (a restart). A strict boot without one
+// defers the system SO instead of refusing with *SystemSORequiredError. A
+// lookup that fails other than "not found" is returned, so a transient read
+// fault is retried by the caller rather than read as "no credential".
+func carriesAdminCredential(ctx context.Context, deps Dependencies) (bool, error) {
+	if deps.CA != nil || len(deps.AdminCSRPEM) > 0 || len(deps.AdminCertPEM) > 0 {
+		return true, nil
+	}
+	resolver := userResolver(deps)
+	if resolver == nil {
+		return false, nil
+	}
+	admin, err := resolver.GetUserByUsername(ctx, tenantid.System, adminUsername)
+	var notFound *user.UserNotFoundError
+	switch {
+	case errors.As(err, &notFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return admin != nil && len(admin.CertBindings) > 0, nil
 }
 
 func implementsPINRecordSetter(pins SOPINSetter) bool {

@@ -277,7 +277,10 @@ func (e *AdminLookupError) Unwrap() error {
 // strict separation of duties role create and the built-in reconcile run
 // only as a separate SO, and the assignment gate keeps the system admin from
 // creating one, so a deployment that booted without an SO could never
-// manage its roles. Missing names the inputs to supply.
+// manage its roles. Missing names the inputs to supply. A strict boot that
+// carries no admin credential either (no CA, admin CSR or admin certificate)
+// is not refused: it defers the system SO to the ceremony, which refuses
+// without one (ceremony.SystemSORejectedError).
 type SystemSORequiredError struct {
 	Missing []string
 }
