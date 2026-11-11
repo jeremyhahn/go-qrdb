@@ -30,6 +30,78 @@ import (
 // KV: kv.Put / kv.Get / kv.Delete / kv.List / kv.Scan / Exists
 // ---------------------------------------------------------------------------
 
+func TestE2E_Put_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Put", func(req []byte) (uint16, []byte) {
+		var r pb.PutRequest
+		if err := proto.Unmarshal(req, &r); err != nil {
+			return wire.StatusError, []byte(err.Error())
+		}
+		if r.GetKey() != "k" || string(r.GetValue()) != "v" {
+			return wire.StatusError, []byte("bad args")
+		}
+		return wire.StatusOK, nil
+	})
+	if err := tr.Put(context.Background(), "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+}
+
+func TestE2E_Get_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Get", func(req []byte) (uint16, []byte) {
+		var r pb.GetRequest
+		if err := proto.Unmarshal(req, &r); err != nil {
+			return wire.StatusError, []byte(err.Error())
+		}
+		return wire.StatusOK, mustMarshal(&pb.GetResponse{Value: []byte("hello")})
+	})
+	v, err := tr.Get(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(v) != "hello" {
+		t.Fatalf("value = %q, want hello", string(v))
+	}
+}
+
+// TestE2E_Get_KeyNotFound. The double answers wire.StatusNotFound because that
+// is what a real server answers for service.KeyNotFoundError since
+// go-qrdb#437; before it, the wire had no not-found status, this double
+// returned StatusError, and the client recovered absence by finding the words
+// "key not found" in the message. Both halves of that arrangement are gone.
+func TestE2E_Get_KeyNotFound(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Get", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, []byte("service: key not found: missing")
+	})
+	_, err := tr.Get(context.Background(), "missing")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var knf *transport.KeyNotFoundError
+	if !errorAs(err, &knf) {
+		t.Fatalf("expected *KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestE2E_Delete_HappyPath(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Delete", func(req []byte) (uint16, []byte) {
+		var r pb.DeleteRequest
+		if err := proto.Unmarshal(req, &r); err != nil {
+			return wire.StatusError, []byte(err.Error())
+		}
+		if r.GetKey() != "k" {
+			return wire.StatusError, []byte("bad key")
+		}
+		return wire.StatusOK, nil
+	})
+	if err := tr.Delete(context.Background(), "k"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
 func TestE2E_List_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("kv.List", func(req []byte) (uint16, []byte) {
@@ -61,6 +133,31 @@ func TestE2E_Scan_HappyPath(t *testing.T) {
 	}
 	if len(pairs) != 2 || string(pairs["a"]) != "1" {
 		t.Fatalf("pairs = %v", pairs)
+	}
+}
+
+func TestE2E_Exists_True(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Get", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, mustMarshal(&pb.GetResponse{Value: []byte("x")})
+	})
+	ok, err := tr.Exists(context.Background(), "k")
+	if err != nil || !ok {
+		t.Fatalf("Exists = %v, %v, want true, nil", ok, err)
+	}
+}
+
+// TestE2E_Exists_False: Exists is absence-or-error, so it turns on exactly the
+// classification go-qrdb#437 made possible. The double sends the frame a real
+// server sends.
+func TestE2E_Exists_False(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("kv.Get", func(_ []byte) (uint16, []byte) {
+		return wire.StatusNotFound, []byte("service: key not found: k")
+	})
+	ok, err := tr.Exists(context.Background(), "k")
+	if err != nil || ok {
+		t.Fatalf("Exists = %v, %v, want false, nil", ok, err)
 	}
 }
 
