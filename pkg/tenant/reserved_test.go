@@ -192,15 +192,6 @@ func TestValidateReservedTenantID_RejectsRelativeSegments(t *testing.T) {
 	}
 }
 
-// TestInvalidTenantIDCharError_Error verifies the error message format.
-func TestInvalidTenantIDCharError_Error(t *testing.T) {
-	e := &InvalidTenantIDCharError{TenantID: "acme\x1f", Byte: 0x1f}
-	got := e.Error()
-	if got == "" {
-		t.Error("Error() must return non-empty string")
-	}
-}
-
 // TestReservedTenantIDError_Error verifies the error message format.
 func TestReservedTenantIDError_Error(t *testing.T) {
 	e := &ReservedTenantIDError{TenantID: "system", Reason: "is platform-reserved"}

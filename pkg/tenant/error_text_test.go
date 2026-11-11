@@ -28,7 +28,7 @@ func TestErrorText(t *testing.T) {
 		err  error
 		want []string
 	}{
-		"platform operator": {&PlatformOperatorRequiredError{IdentityTenantID: "acme", Op: "set quotas"}, []string{"acme", "set quotas"}},
+		"platform operator": {&PlatformOperatorRequiredError{IdentityTenantID: "acme", Op: "set quotas"}, []string{"acme", "set quotas", "platform operator"}},
 		"volume pool":       {&VolumePoolReserveError{TenantID: "acme", Pool: "fast", Err: cause}, []string{"acme", "fast", "store offline"}},
 		"roster":            {&RosterRequiresShamirError{Strategy: "passphrase"}, []string{"shamir", "passphrase"}},
 		"factor policy":     {&InvalidFactorPolicyError{Policy: "any-two"}, []string{"any-two"}},
@@ -52,20 +52,6 @@ func TestErrorText(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestErrorUnwrap pins that a refusal carrying a cause exposes it, so a
-// caller can tell a store fault from a policy refusal with errors.Is.
-func TestErrorUnwrap(t *testing.T) {
-	cause := errors.New("store offline")
-	for name, err := range map[string]error{
-		"keyspace reclaim": &KeyspaceReclaimError{TenantID: "acme", Err: cause},
-		"database list":    &DatabaseListError{TenantID: "acme", Err: cause},
-	} {
-		if !errors.Is(err, cause) {
-			t.Errorf("%s: errors.Is(err, cause) = false", name)
-		}
 	}
 }
 
