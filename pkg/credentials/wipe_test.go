@@ -137,9 +137,9 @@ func TestMigrateLegacy_WipesTheLegacyValuesItRead(t *testing.T) {
 	assert.Empty(t, legacyKeys(t, legacy))
 }
 
-// An import that fails leaves no copy of the legacy value behind: the buffer
-// handed to the rotation is wiped whatever the rotation's error was.
-func TestResolveMigrationConflict_FailedImportWipesItsValue(t *testing.T) {
+// An import leaves no copy of the legacy value behind: the buffer handed to
+// the rotation is wiped whether the rotation failed or succeeded.
+func TestResolveMigrationConflict_ImportWipesItsValue(t *testing.T) {
 	ctx := context.Background()
 	home := &captureStore{Store: newHomeStore(t)}
 	legacyA := seal.NewMemoryBackend()
@@ -159,7 +159,10 @@ func TestResolveMigrationConflict_FailedImportWipesItsValue(t *testing.T) {
 	require.ErrorIs(t, err, quicraft.ErrShardNotReady)
 	requireWiped(t, home.writes, credentialPrefix+"db")
 
+	// A successful import wipes its copy too: the store keeps its own.
+	home.reset()
 	home.failWrites = false
 	require.NoError(t, svc.ResolveMigrationConflict(ctx, "db", MigrationImport))
+	requireWiped(t, home.writes, credentialPrefix+"db")
 	assert.Equal(t, "kept", retrieveString(t, svc, "db"), "an import that succeeds stores the value")
 }

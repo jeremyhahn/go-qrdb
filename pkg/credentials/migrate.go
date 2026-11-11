@@ -763,6 +763,9 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 		return map[string]any{"already_imported": true}, nil
 	}
 	imported := bytes.Clone(value)
+	// The rotation copies what it stores, so this buffer is wiped whatever
+	// the outcome: written, already imported or failed.
+	defer secure.Wipe(imported)
 	res, err := s.rotateBarrier(ctx, name, RotateOptions{
 		NewValue:       imported,
 		retainPrevious: true,
@@ -771,12 +774,9 @@ func (s *CredentialService) importLegacy(ctx context.Context, name string, c *le
 	if errors.Is(err, errAlreadyImported) {
 		// Another service derived over the same stores committed this copy
 		// between the check above and the write. Nothing was written.
-		secure.Wipe(imported)
 		return map[string]any{"already_imported": true}, nil
 	}
 	if err != nil {
-		// Nothing was stored, so the copy made for the rotation is dropped.
-		secure.Wipe(imported)
 		return nil, err
 	}
 	return map[string]any{
