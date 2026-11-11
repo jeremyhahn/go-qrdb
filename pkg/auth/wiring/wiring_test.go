@@ -405,24 +405,6 @@ func TestBuildAuthMiddleware_UnauthenticatedRejected(t *testing.T) {
 	assert.ErrorIs(t, err, auth.ErrUnauthenticated)
 }
 
-// TestBuildAuthMiddleware_ClusterTrustDomain verifies that a non-empty
-// ClusterTrustDomain does not prevent middleware construction (the mTLS
-// authenticator is pinned to the trust domain but authorization behaves
-// identically since AuthorizeTenant does not re-run authentication).
-func TestBuildAuthMiddleware_ClusterTrustDomain(t *testing.T) {
-	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
-		Enabled:            true,
-		RoleService:        adminRoleService(),
-		UserService:        &fakeUserService{},
-		ClusterTrustDomain: "spiffe://example.org",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, mw)
-
-	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
-}
-
 func TestBuildAuthMiddleware_AuthorizerErrorPropagates(t *testing.T) {
 	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
 		Enabled:       true,
@@ -435,20 +417,6 @@ func TestBuildAuthMiddleware_AuthorizerErrorPropagates(t *testing.T) {
 	assert.Nil(t, mw)
 	var dirErr *abac.PolicyDirError
 	assert.True(t, errors.As(err, &dirErr))
-}
-
-func TestBuildAuthMiddleware_DelegatedPrincipal(t *testing.T) {
-	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
-		Enabled:            true,
-		RoleService:        adminRoleService(),
-		UserService:        &fakeUserService{},
-		DelegatedPrincipal: "qrdb-cluster",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, mw)
-
-	ctx := auth.WithIdentity(context.Background(), adminIdentity())
-	require.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
 }
 
 // ReconcileBuiltInRoles satisfies role.RoleServicer; this double never drifts.

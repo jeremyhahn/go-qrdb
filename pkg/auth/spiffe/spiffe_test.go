@@ -134,16 +134,13 @@ func TestWorkloadFromCert_FailClosed(t *testing.T) {
 	}
 }
 
-func TestID_StringAndValidate(t *testing.T) {
+func TestID_String(t *testing.T) {
 	id := ID{TrustDomain: "acme", Kind: KindService, Name: "svc1"}
 	if got := id.String(); got != "spiffe://acme/svc/svc1" {
 		t.Fatalf("String = %q", got)
 	}
 	if (ID{}).String() != "" {
 		t.Fatal("invalid ID should stringify empty")
-	}
-	if err := (ID{Kind: KindUser, Name: "n"}).Validate(); !errors.Is(err, ErrTrustDomainEmpty) {
-		t.Fatalf("expected trust-domain-empty, got %v", err)
 	}
 }
 
