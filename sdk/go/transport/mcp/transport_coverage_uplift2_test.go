@@ -431,21 +431,6 @@ func TestMCP_DatabaseBarrier_SealDatabase_Success(t *testing.T) {
 	}
 }
 
-func TestMCP_DatabaseBarrier_SealDatabase_ServiceError(t *testing.T) {
-	// The mock SealDatabase always returns nil; just verify the method works.
-	// For error coverage, use a transport with no database service registered.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	err := tr.SealDatabase(context.Background(), "mydb")
-	// Tool not registered → RequestError expected.
-	if err == nil {
-		// If tool is registered on base server, this is expected to succeed.
-		// Either way the code path is exercised.
-		t.Logf("SealDatabase returned nil (tool may be registered)")
-	}
-}
-
 func TestMCP_DatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
 	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
 	defer cleanup()
@@ -453,16 +438,6 @@ func TestMCP_DatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
 	if err := tr.UnsealDatabase(context.Background(), "mydb", "s3cr3t"); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
 	}
-}
-
-func TestMCP_DatabaseBarrier_UnsealDatabase_ServiceError(t *testing.T) {
-	// The mock UnsealDatabase always returns nil; test error path via unregistered tool.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	err := tr.UnsealDatabase(context.Background(), "mydb", "wrong")
-	// Either RequestError (tool not found) or nil is acceptable.
-	_ = err
 }
 
 func TestMCP_DatabaseBarrier_Status_Success(t *testing.T) {
@@ -476,16 +451,6 @@ func TestMCP_DatabaseBarrier_Status_Success(t *testing.T) {
 	if status == nil {
 		t.Fatal("expected non-nil status")
 	}
-}
-
-func TestMCP_DatabaseBarrier_Status_ServiceError(t *testing.T) {
-	// The mock DatabaseBarrierStatus always returns ok; test error path via unregistered tool.
-	tr, cleanup := connectInProcess(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_, err := tr.DatabaseBarrierStatus(context.Background(), "mydb")
-	// Either RequestError (tool not found) or nil is acceptable.
-	_ = err
 }
 
 // ---------------------------------------------------------------------------
