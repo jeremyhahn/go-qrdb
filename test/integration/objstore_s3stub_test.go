@@ -23,13 +23,11 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -125,48 +123,6 @@ func (s *s3Stub) objectBodies() map[string][]byte {
 		out[k] = append([]byte(nil), v...)
 	}
 	return out
-}
-
-// localObjstoreSidecarSuffix ends the file the local provider keeps beside
-// every object for the object's metadata. S3 carries metadata in the
-// object's headers, so a sidecar is no object of an S3 bucket.
-const localObjstoreSidecarSuffix = ".metadata.json"
-
-// seedFromDir loads the tree a local-provider objstore store left under root
-// into the bucket and returns the names it seeded. The local provider keeps
-// an object under root at the object's own key, so every file but a metadata
-// sidecar is stored under its slash-separated path below root, with the
-// bytes the product wrote; nothing is added to them. The commit journal is
-// not among them: the local provider keeps it in a sibling tree, and a
-// store with nothing pending holds none.
-func (s *s3Stub) seedFromDir(t *testing.T, root string) []string {
-	t.Helper()
-	seeded := map[string][]byte{}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || strings.HasSuffix(path, localObjstoreSidecarSuffix) {
-			return err
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		body, err := os.ReadFile(path)
-		seeded[filepath.ToSlash(rel)] = body
-		return err
-	})
-	if err != nil {
-		t.Fatalf("seed: copy the local objstore tree %s: %v", root, err)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	names := make([]string, 0, len(seeded))
-	for name, body := range seeded {
-		s.objects[name] = body
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func (s *s3Stub) fail(w http.ResponseWriter, status int, code, format string, args ...any) {
@@ -276,7 +232,16 @@ func (s *s3Stub) verifySignature(r *http.Request, body []byte) error {
 		switch name {
 		case "host":
 		case "content-length":
+			// net/http moves the length out of the header map, and the
+			// signer signs only header-map entries, so the length the
+			// request actually carried goes back in as the header the
+			// client signed. A length the client signed but the request
+			// did not carry, or carried differently, fails the compare.
+			if r.ContentLength < 0 {
+				return fmt.Errorf("content-length is signed but the request carried no length")
+			}
 			clone.ContentLength = r.ContentLength
+			clone.Header.Set("Content-Length", strconv.FormatInt(r.ContentLength, 10))
 		default:
 			for _, v := range r.Header.Values(name) {
 				clone.Header.Add(name, v)

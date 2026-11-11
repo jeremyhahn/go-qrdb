@@ -18,11 +18,9 @@ package integration_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -216,36 +214,6 @@ func spawnObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.
 	return cmd, out, ca, restPort, restConnArgs(ca, certPath, keyPath, restPort)
 }
 
-// objstoreCredentialNodeServes waits until the unsealed node answers its
-// health check and reports true, or false if the node exits first.
-func objstoreCredentialNodeServes(t *testing.T, cmd *exec.Cmd, ca *testCA, port int, timeout time.Duration) bool {
-	t.Helper()
-	daemon := spawnedDaemon(t, cmd)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	exited := make(chan error, 1)
-	go func() { exited <- daemon.WaitContext(ctx) }()
-
-	url := adminURL(port, "/health")
-	client := qrdbdharness.HTTPSClient(ca.Pool, nil, 5*time.Second)
-	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); {
-		if resp, err := client.Get(url); err == nil {
-			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return true
-			}
-		}
-		select {
-		case <-exited:
-			return false
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	t.Fatalf("node on admin port %d neither answered %s nor exited in %v\n%s", port, url, timeout, daemon.Tail())
-	return false
-}
-
 // assertObjstoreCredentialsNotEchoed fails the test when any credential in
 // creds appears in the node's output, in a file under roots, or in a stored
 // object body.
@@ -340,18 +308,6 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 		}
 	})
 
-	// The bucket starts as a store the product itself formatted: the same
-	// binary boots once on the local provider, which takes no credential,
-	// and the objects it left are loaded into the stub under their keys.
-	// Whether that boot ends serving or exits, the tree is what the product
-	// wrote.
-	localCfg := writeObjstoreModeConfig(t, "")
-	localBucket := filepath.Join(filepath.Dir(localCfg), "bucket")
-	localCmd, localOut, localCA, localPort, _ := spawnObjstoreCredentialNode(t, bin, localCfg, t.TempDir())
-	if objstoreCredentialNodeServes(t, localCmd, localCA, localPort, 90*time.Second) {
-		stopNode(t, localCmd, 30*time.Second)
-	}
-
 	// The configuration loader lowercases settings keys, so the provider
 	// never sees forcePathStyle and addresses the bucket virtual-hosted, as
 	// <bucket>.<endpoint host>. The endpoint names a host that never
@@ -375,11 +331,8 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
 	dataDir := t.TempDir()
 
-	seeded := stub.seedFromDir(t, localBucket)
-	if len(seeded) == 0 {
-		t.Fatalf("the local-provider boot wrote no object under %s:\n%s", localBucket, localOut)
-	}
-
+	// The bucket starts empty, as a new deployment's does: the node formats
+	// the store itself, through the stub.
 	cmd, out, ca, restPort, conn := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
 	// Whatever the node did before the test ends, on a passing path or a
 	// failing one, it left neither credential behind.
@@ -391,6 +344,7 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	stub.awaitSignedRequest(t, 60*time.Second, out)
 	waitForAdminAfterUnseal(t, ca.Pool, cmd, restPort)
 	cli := buildCLIBinary(t)
+	beforePut := stub.objectBodies()
 	const kvKey, kvValue = "objstore-credentials-key", "objstore-credentials-value"
 	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...),
 		"kv", "put", kvKey, kvValue)...); err != nil {
@@ -403,13 +357,15 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	if !strings.Contains(stdout, kvValue) {
 		t.Fatalf("kv get %q = %q, want %q", kvKey, stdout, kvValue)
 	}
-	written := stub.objectBodies()
-	for _, name := range seeded {
-		delete(written, name)
+	wroteObject := false
+	for name, body := range stub.objectBodies() {
+		if prior, ok := beforePut[name]; !ok || !bytes.Equal(prior, body) {
+			wroteObject = true
+			break
+		}
 	}
-	if len(written) == 0 {
-		t.Fatalf("the kv put stored no object in the bucket beyond the seeded %v; requests: %v\nnode output:\n%s",
-			seeded, stub.requestList(), out)
+	if !wroteObject {
+		t.Fatalf("the kv put stored no new or changed object in the bucket; requests: %v\nnode output:\n%s", stub.requestList(), out)
 	}
 	stopNode(t, cmd, 30*time.Second)
 
