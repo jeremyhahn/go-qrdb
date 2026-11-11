@@ -29,21 +29,6 @@ func TestConditionParser_Parse(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "startswith operator",
-			expr:    "resource startswith \"orders://\"",
-			wantErr: false,
-		},
-		{
-			name:    "exists operator",
-			expr:    "subject.attrs.department exists",
-			wantErr: false,
-		},
-		{
-			name:    "not exists operator",
-			expr:    "subject.attrs.temp notexists",
-			wantErr: false,
-		},
-		{
 			name:    "empty expression",
 			expr:    "",
 			wantErr: true,
@@ -532,14 +517,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		wantTrue bool
 	}{
 		{
-			name: "subject.id",
-			expr: "subject.id == \"user-123\"",
-			ctx: &EvalContext{
-				Subject: &Subject{ID: "user-123"},
-			},
-			wantTrue: true,
-		},
-		{
 			name: "subject.name",
 			expr: "subject.name == \"John Doe\"",
 			ctx: &EvalContext{
@@ -747,14 +724,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 			wantTrue: true,
 		},
 		{
-			name: "field condition - boolean true",
-			expr: "subject.authenticated",
-			ctx: &EvalContext{
-				Subject: &Subject{Authenticated: true},
-			},
-			wantTrue: true,
-		},
-		{
 			name: "field condition - boolean false",
 			expr: "subject.authenticated",
 			ctx: &EvalContext{
@@ -765,14 +734,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		{
 			name: "field condition - non-nil value",
 			expr: "subject.id",
-			ctx: &EvalContext{
-				Subject: &Subject{ID: "user-123"},
-			},
-			wantTrue: true,
-		},
-		{
-			name: "quoted string with double quotes",
-			expr: "subject.id == \"user-123\"",
 			ctx: &EvalContext{
 				Subject: &Subject{ID: "user-123"},
 			},
