@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"sync/atomic"
 
 	quicgo "github.com/quic-go/quic-go"
 	"google.golang.org/protobuf/proto"
@@ -110,6 +111,13 @@ func (t *Transport) watchStream(ctx context.Context, method string, key, rangeEn
 	return ch, nil
 }
 
+// beforeWatchRead is a test hook: when set (only from _test.go files),
+// readWatchResponses calls it after its ctx.Done() check and just before
+// the blocking wire.ReadResponse, so a test can cancel while the reader is
+// committed to the read. Atomic because reader goroutines of earlier tests
+// may still be running when a test sets it.
+var beforeWatchRead atomic.Pointer[func()]
+
 // readWatchResponses reads wire.ReadResponse frames from the given
 // stream in a loop, decodes them as protobuf WatchResponse messages,
 // and sends them to the channel. The loop terminates when the context
@@ -128,6 +136,9 @@ func readWatchResponses(ctx context.Context, stream *quicgo.Stream, ch chan<- tr
 		default:
 		}
 
+		if hook := beforeWatchRead.Load(); hook != nil {
+			(*hook)()
+		}
 		_, statusCode, payload, err := wire.ReadResponse(stream)
 		if err != nil {
 			return

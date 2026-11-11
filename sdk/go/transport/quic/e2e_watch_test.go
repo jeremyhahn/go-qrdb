@@ -173,13 +173,20 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 
 	block := make(chan struct{})
 	t.Cleanup(func() { close(block) })
-	received := make(chan struct{})
-	var receivedOnce sync.Once
 	srv.SetResponder("watch.Watch", func(_ []byte) (uint16, []byte) {
-		receivedOnce.Do(func() { close(received) })
 		<-block // never respond during the test; simulates an idle watch stream.
 		return wire.StatusOK, nil
 	})
+
+	// Cancel only once the client reader has passed its ctx.Done() check
+	// and is committed to the blocking wire.ReadResponse, so this exercises
+	// unblocking an in-flight read (stream.CancelRead) rather than the
+	// pre-read ctx.Done() check at the top of the loop.
+	reading := make(chan struct{})
+	var readingOnce sync.Once
+	hook := func() { readingOnce.Do(func() { close(reading) }) }
+	beforeWatchRead.Store(&hook)
+	t.Cleanup(func() { beforeWatchRead.Store(nil) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -188,13 +195,10 @@ func TestE2E_Watch_ContextCancel_ClosesChannelPromptly(t *testing.T) {
 		t.Fatalf("Watch: %v", err)
 	}
 
-	// Cancel only once the server holds the watch request, so this
-	// exercises unblocking an in-flight read rather than the pre-read
-	// ctx.Done() check at the top of the loop.
 	select {
-	case <-received:
+	case <-reading:
 	case <-time.After(3 * time.Second):
-		t.Fatal("server never received the watch request")
+		t.Fatal("client reader never reached the blocking read")
 	}
 	cancel()
 
