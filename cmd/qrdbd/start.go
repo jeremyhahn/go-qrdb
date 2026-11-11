@@ -1192,6 +1192,25 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 	}
 }
 
+// defaultListenerClientAuth returns the client-auth mode and ClientCAs
+// pool for the shared listener when the operator chose no mode.
+//
+// The listener also serves POST /v1/cluster/keydelivery, whose receiver
+// authenticates the sending node by its client certificate whatever the
+// user-auth posture. So whenever the node has a cluster CA and a node
+// identity of its own, the listener requests a client certificate and
+// verifies one if given (VerifyClientCertIfGiven against the client-auth
+// pool), independent of auth.enabled: user-facing requests without a
+// certificate still work when auth is off, and a key delivery still
+// carries its sender's certificate. Only a bundle without a CA pool or
+// leaf certificate falls back to NoClientCert when auth is off.
+func defaultListenerClientAuth(authEnabled bool, bundle *TLSBundle) (tls.ClientAuthType, *x509.CertPool) {
+	if authEnabled || (bundle.ClientCACertPool != nil && len(bundle.CertPEM) > 0) {
+		return tls.VerifyClientCertIfGiven, bundle.ClientCACertPool
+	}
+	return tls.NoClientCert, bundle.TLSConfig.ClientCAs
+}
+
 // newSecureAllocator, setSecureAllocator, processSecureAllocator and
 // wipeSecureMemory indirect the process-wide, one-shot go-enclave lifecycle
 // calls runStart makes, purely for testability.
@@ -2718,11 +2737,8 @@ func runStart(f *startFlags) (err error) {
 			// Configure mTLS on the TLS listener. An explicit operator selection
 			// (--tls-client-auth flag or YAML tls.client_auth) was already applied
 			// after resolveTLS and always wins. Otherwise the mode is derived from
-			// the auth posture: when auth is enabled, VerifyClientCertIfGiven
-			// allows public endpoints (like /health) to work without a client
-			// certificate while still validating certs when provided; when auth
-			// is disabled, NoClientCert disables client cert verification
-			// entirely.
+			// the auth posture and the node's cluster identity; see
+			// defaultListenerClientAuth.
 			// SetClientAuthMode, never a direct mutation of
 			// bundle.TLSConfig.ClientAuth/.ClientCAs: by this point the
 			// pre-host sealed-window listener may have only just stopped
@@ -2732,11 +2748,7 @@ func runStart(f *startFlags) (err error) {
 			// write here would race an unsynchronized read there
 			// (go-qrdb#591's review, item 3).
 			if !f.tlsClientAuthSet {
-				if f.authEnabled {
-					bundle.SetClientAuthMode(tls.VerifyClientCertIfGiven, bundle.ClientCACertPool)
-				} else {
-					bundle.SetClientAuthMode(tls.NoClientCert, bundle.TLSConfig.ClientCAs)
-				}
+				bundle.SetClientAuthMode(defaultListenerClientAuth(f.authEnabled, bundle))
 			}
 
 			// Create and start the multi-protocol server.
