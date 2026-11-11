@@ -25,8 +25,8 @@ import (
 	"time"
 )
 
-// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart is the end-to-end
-// proof for go-qrdb hotfix/cakey-restart's first cause: a single-node
+// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol is
+// the end-to-end proof for go-qrdb hotfix/cakey-restart's first cause: a single-node
 // daemon with NO --tls-* flags self-generates the cluster CA (Key A) and
 // its own leaf, confirms Key A durably persisted into the replicated
 // store, and -- per docs/certificate-authority/architecture.md, "Bootstrap
@@ -37,108 +37,8 @@ import (
 // cakey.SoftwareProvider.AdoptIfAbsent's fix (c3225812c), it PEM-decoded
 // the empty key and refused with "adopted key is not valid EC PRIVATE KEY
 // PEM", so no v0.40.0-alpha node could restart.
-func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	dataDir := t.TempDir()
-	cfgPath := writeSealYAML(t, "seal:\n  enabled: true\n  strategy: none\n")
-	raftPort := allocatePorts(t, 1)[0]
-	adminPort := allocateTCPPorts(t, 1)[0]
-	grpcPort := allocateTCPPorts(t, 1)[0]
-
-	args := []string{
-		"start",
-		"--config", cfgPath,
-		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
-		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
-		"--data-dir", dataDir,
-		"--sm", "pebble",
-		"--discovery", "static",
-		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
-		"--shard-id", "1",
-		"--replica-id", "1",
-		"--admin-port", fmt.Sprintf("%d", adminPort),
-		"--grpc-port", fmt.Sprintf("%d", grpcPort),
-		"--auth-enabled=false",
-		"--enable-rest",
-		// Deliberately no --tls-ca-file/--tls-cert-file/--tls-key-file: the
-		// daemon must self-generate Key A (and its own TLS leaf) under
-		// dataDir, exercising confirmClusterCAPersisted's adopt-then-delete
-		// path rather than the BYO-TLS one (TLSBundle.ExplicitTLS).
-	}
-
-	caPath := filepath.Join(dataDir, "ca.pem")
-	keyPath := filepath.Join(dataDir, "ca-key.pem")
-
-	cmd := startNode(t, bin, args, "[clusterca-r1] ")
-	waitForFile(t, caPath, 30*time.Second)
-
-	connArgs := []string{
-		"--server", fmt.Sprintf("https://127.0.0.1:%d", adminPort),
-		"--ca-file", caPath,
-		"--timeout", "20s",
-	}
-	pollUntilSealedListenerUp(t, cli, connArgs, 30*time.Second)
-	// `qrdb init` is the only system bootstrap (go-qrdb#548). Its admin
-	// credential goes unused here -- auth is disabled -- but issuing it is
-	// what consumes Key A while ca-key.pem is still on disk.
-	credDir := t.TempDir()
-	bootAdminIdentity(t, cli, caPath, adminPort, "SOPIN12345", "USERPIN12345",
-		filepath.Join(credDir, "admin-cert.pem"), filepath.Join(credDir, "admin-key.pem"), "",
-		"--barrier-strategy", "none")
-	waitForHealthy(t, dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
-
-	if out, err := runQRDB(t, cli, connArgs, "kv", "put", "clusterca-survivor", "v1"); err != nil {
-		t.Fatalf("kv put: %v\noutput: %s", err, out)
-	}
-
-	// confirmClusterCAPersisted deletes ca-key.pem only after it has
-	// confirmed the key durably persisted into the replicated store --
-	// poll rather than assert immediately, since that runs after Raft
-	// leader election settles, not at the moment waitForHealthy returns.
-	if !pollUntil(30*time.Second, 200*time.Millisecond, func() bool {
-		_, err := os.Stat(keyPath)
-		return os.IsNotExist(err)
-	}) {
-		t.Fatal("ca-key.pem was never removed after confirmed persistence")
-	}
-
-	// Kill hard, same as the sm-storage-file durability test: the fix must
-	// not depend on a graceful shutdown path.
-	killNode(t, cmd)
-
-	// Restart over the SAME data directory and ports: resolveTLS's path 2
-	// loads the cached ca.pem/node-cert.pem/node-key.pem, with NO
-	// ca-key.pem (deleted above) -- bundle.CAKeyPEM is empty and
-	// bundle.ExplicitTLS is false, so BuildServices' built-in
-	// cakey.SoftwareProvider must LOAD the already-persisted Key A
-	// (AdoptIfAbsent's loadMatching path) rather than refuse with
-	// *cakey.NotInitializedError.
-	startNode(t, bin, args, "[clusterca-r2] ")
-	// A none barrier holds no secret, so the node unseals itself at
-	// restart (docs/barrier-seal/cli.md, `qrdb barrier unseal`): no unseal
-	// call, and the barrier must report unsealed on its own.
-	waitForHealthy(t, dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
-	if barrierStatus(t, cli, connArgs).Sealed {
-		t.Fatal("expected the none barrier to unseal itself at restart")
-	}
-
-	var out string
-	var err error
-	if !pollUntil(30*time.Second, 300*time.Millisecond, func() bool {
-		out, err = runQRDB(t, cli, connArgs, "kv", "get", "clusterca-survivor")
-		return err == nil && strings.Contains(out, "v1")
-	}) {
-		t.Fatalf("value did not survive the restart: err=%v out=%s", err, out)
-	}
-}
-
-// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol
-// generalizes TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart (REST
-// only) to every CLI-selectable transport. The bootstrap/key-deletion/kill/
+//
+// It runs over every CLI-selectable transport. The bootstrap/key-deletion/kill/
 // restart cycle happens once -- it is a daemon-internal event, not a CLI
 // operation -- but every transport's TLS listener serves the SAME
 // self-generated, Key-A-signed leaf certificate, so a `kv put`/`kv get`
@@ -186,8 +86,10 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 		"--enable-quic", "--quic-port", fmt.Sprintf("%d", quicPort),
 		"--enable-mcp", "--mcp-port", fmt.Sprintf("%d", mcpPort),
 		"--enable-unix", "--unix-socket-path", unixSocket,
-		// Deliberately no --tls-ca-file/--tls-cert-file/--tls-key-file: see
-		// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart.
+		// Deliberately no --tls-ca-file/--tls-cert-file/--tls-key-file: the
+		// daemon must self-generate Key A (and its own TLS leaf) under
+		// dataDir, exercising confirmClusterCAPersisted's adopt-then-delete
+		// path rather than the BYO-TLS one (TLSBundle.ExplicitTLS).
 	}
 
 	caPath := filepath.Join(dataDir, "ca.pem")
@@ -253,8 +155,8 @@ func TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart_CLI_PerProtocol(t *t
 
 	// Restart over the SAME data directory and ports.
 	startNode(t, bin, args, "[clusterca-perprotocol-r2] ")
-	// A none node unseals itself at restart: no unseal call. See
-	// TestClusterCA_SelfIssued_SurvivesKeyDeletionAndRestart.
+	// A none node unseals itself at restart: no unseal call
+	// (docs/barrier-seal/cli.md, `qrdb barrier unseal`).
 	waitForHealthy(t, dataDir, 60*time.Second)
 	pollUntilCLISucceeds(t, cli, connArgs, 60*time.Second)
 	if barrierStatus(t, cli, connArgs).Sealed {
