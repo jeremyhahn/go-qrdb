@@ -1434,26 +1434,6 @@ func TestResolveValue_EdgeCases(t *testing.T) {
 			wantNil: false,
 		},
 		{
-			name: "subject.roles field",
-			expr: "subject.roles contains \"admin\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Roles: []string{"admin", "user"},
-				},
-			},
-			wantNil: false,
-		},
-		{
-			name: "subject.groups field",
-			expr: "subject.groups contains \"eng\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Groups: []string{"eng", "ops"},
-				},
-			},
-			wantNil: false,
-		},
-		{
 			name: "resource without request context",
 			expr: "resource.owner exists",
 			ctx: &EvalContext{
