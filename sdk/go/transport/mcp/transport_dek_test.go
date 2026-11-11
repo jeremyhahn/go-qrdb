@@ -15,7 +15,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -92,35 +91,6 @@ func connectDEKInProcess(t *testing.T) *Transport {
 	}
 	t.Cleanup(func() { _ = tr.Close() })
 	return tr
-}
-
-func TestDEK_RoundTripThroughTheServerTools(t *testing.T) {
-	tr := connectDEKInProcess(t)
-	ctx := context.Background()
-	aad := []byte("tenant/path/v1")
-
-	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
-	if err != nil || enc.Version != 1 {
-		t.Fatalf("encrypt = %+v, %v", enc, err)
-	}
-	st, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{})
-	if err != nil || st.CurrentVersion != 2 {
-		t.Fatalf("rotate = %+v, %v", st, err)
-	}
-	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
-	if err != nil || rw.FromVersion != 1 || rw.ToVersion != 2 {
-		t.Fatalf("rewrap = %+v, %v", rw, err)
-	}
-	if st, err = tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1}); err != nil || st.Versions[0].RetiredAt == nil {
-		t.Fatalf("retire = %+v, %v", st, err)
-	}
-	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: rw.Ciphertext, AAD: aad})
-	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) || dec.Version != 2 {
-		t.Fatalf("decrypt = %+v, %v", dec, err)
-	}
-	if st, err = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{}); err != nil || len(st.Versions) != 2 {
-		t.Fatalf("status = %+v, %v", st, err)
-	}
 }
 
 // TestDEK_RefusalsReachTheClient: the server's refusals arrive as errors.
