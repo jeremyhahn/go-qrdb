@@ -19,6 +19,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 const credentialPrefix = "__sys:credentials/" //nolint:gosec // G101: the system key prefix the records live under, not a credential
@@ -255,6 +256,14 @@ func (s *CredentialService) emitAuditOutcome(ctx context.Context, action, name, 
 	if id := auth.IdentityFromContext(ctx); id != nil {
 		actor = id.Subject
 		tenantID = id.TenantID
+	}
+	// Internal callers (the rotation scheduler, retention GC) carry no
+	// identity; they bind the tenant they act for on the context, which owns
+	// the mutated credential.
+	if tenantID == "" {
+		if bound, ok := tenant.IDFromContext(ctx); ok {
+			tenantID = bound
+		}
 	}
 	audit.EmitBestEffort(ctx, logger, "credentials", audit.AuditEvent{
 		Actor:      actor,
