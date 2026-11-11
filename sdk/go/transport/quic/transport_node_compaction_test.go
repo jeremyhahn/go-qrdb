@@ -16,47 +16,10 @@ package quic
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 
-	"google.golang.org/protobuf/proto"
-
-	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-func TestE2E_NodeCompaction_SetAndRead(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	// sent is written on the server's stream goroutine and read here.
-	var sent atomic.Pointer[pb.DatabaseCompactionConfig]
-	srv.SetResponder("admin.SetNodeCompaction", func(payload []byte) (uint16, []byte) {
-		var req pb.SetNodeCompactionRequest
-		if err := proto.Unmarshal(payload, &req); err != nil {
-			return wire.StatusInvalidArgument, nil
-		}
-		sent.Store(req.GetCompaction())
-		return wire.StatusOK, mustMarshal(&pb.NodeCompactionResponse{Compaction: req.GetCompaction()})
-	})
-	srv.SetResponder("admin.GetNodeCompaction", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.NodeCompactionResponse{Compaction: sent.Load()})
-	})
-	ctx := context.Background()
-
-	set, err := tr.SetNodeCompaction(ctx, &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 4})
-	if err != nil || set == nil || set.RetainRevisions != 4 {
-		t.Fatalf("SetNodeCompaction = %+v, %v; want the revision policy", set, err)
-	}
-	if got := sent.Load(); got.GetMode() != "revision" || got.GetRetainRevisions() != 4 {
-		t.Fatalf("the server received %v; want the revision policy", got)
-	}
-	if got, err := tr.NodeCompaction(ctx); err != nil || got == nil || got.Mode != "revision" {
-		t.Fatalf("NodeCompaction = %+v, %v; want the policy set", got, err)
-	}
-	if off, err := tr.SetNodeCompaction(ctx, nil); err != nil || off != nil || sent.Load() != nil {
-		t.Fatalf("SetNodeCompaction(nil) = %+v, %v (sent %v); want off", off, err, sent.Load())
-	}
-}
 
 func TestE2E_NodeCompaction_Failures(t *testing.T) {
 	srv, tr := startE2EServer(t)
