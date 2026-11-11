@@ -1664,12 +1664,18 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// data plane must encrypt at rest. A standalone objstore backend
 		// does not, so the binding is refused before BindStore migrates
 		// (and deletes) any barrier-encrypted legacy credential.
-		if !credentialStoreEncryptsAtRest(infra.Backend) {
-			return &UnencryptedCredentialStoreError{Backend: infra.Backend}
-		}
-		credStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
-		if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
-			return err
+		//
+		// The manual strategy keeps its credentials in protected memory
+		// and writes nothing to the data plane, so it binds no store and
+		// starts on any backend.
+		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
+			if !credentialStoreEncryptsAtRest(infra.Backend) {
+				return &UnencryptedCredentialStoreError{Backend: infra.Backend}
+			}
+			credStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
+			if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+				return err
+			}
 		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
