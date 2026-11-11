@@ -183,11 +183,16 @@ func TestMigrateLegacy_SettleClaimFaults(t *testing.T) {
 	ctx := context.Background()
 	claimKey := MigrationClaimPrefix + "db"
 	for _, tc := range []struct {
-		name  string
-		fault func(*faultBackend)
+		name string
+		// afterWrite runs once the live write has landed; onRead once the
+		// refused install reads the live record back.
+		afterWrite, onRead func(*faultBackend)
+		settled            bool
 	}{
-		{name: "settle fails", fault: func(b *faultBackend) { arm(&b.failCAS, claimKey) }},
-		{name: "settle lost", fault: func(b *faultBackend) { b.casLosses.Store(1); arm(&b.loseCAS, claimKey) }},
+		{name: "settle fails", onRead: func(b *faultBackend) { arm(&b.failCAS, claimKey) }},
+		{name: "settle lost", onRead: func(b *faultBackend) { b.casLosses.Store(1); arm(&b.loseCAS, claimKey) }},
+		{name: "live record unreadable", afterWrite: func(b *faultBackend) { arm(&b.failList, credentialPrefix+"db") }},
+		{name: "settled claim unreadable", onRead: func(b *faultBackend) { arm(&b.failGet, claimKey) }, settled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			legacy := seal.NewMemoryBackend()
@@ -202,25 +207,29 @@ func TestMigrateLegacy_SettleClaimFaults(t *testing.T) {
 				}
 				wrote = true
 				require.NoError(t, live.StoreCredential(ctx, "db", []byte("fresh")))
+				if tc.afterWrite != nil {
+					armed = true
+					tc.afterWrite(shared)
+				}
 			}
 			shared.onGet = func(_ context.Context, key string) {
 				if !wrote || armed || key != credentialPrefix+"db" {
 					return
 				}
 				armed = true
-				tc.fault(shared)
+				tc.onRead(shared)
 			}
 
 			svc := newMigratingService(t, legacy)
 			require.NoError(t, svc.BindStore(ctx, shared))
 			require.True(t, armed)
+			disarmAll(shared)
 			claim, ok, err := svc.loadClaim(ctx, claimKey)
 			require.NoError(t, err)
 			require.True(t, ok)
-			assert.False(t, claim.Complete, "the claim stays pending")
+			assert.Equal(t, tc.settled, claim.Complete, "a claim is settled only by its swap")
 			assert.Len(t, legacyKeys(t, legacy), 3)
 
-			disarmAll(shared)
 			require.NoError(t, svc.MigrateLegacy(ctx))
 			conflicts, err := svc.ListMigrationConflicts(ctx)
 			require.NoError(t, err)
@@ -230,6 +239,47 @@ func TestMigrateLegacy_SettleClaimFaults(t *testing.T) {
 			assert.Len(t, legacyKeys(t, legacy), 3)
 		})
 	}
+}
+
+// A claim settled to something this node cannot parse, by a writer racing
+// its settle, is refused: the copy and the live value are kept.
+func TestMigrateLegacy_SettledClaimUnparseable(t *testing.T) {
+	ctx := context.Background()
+	claimKey := MigrationClaimPrefix + "db"
+	legacy := seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	shared := &faultBackend{MemoryBackend: seal.NewMemoryBackend()}
+	live := newUnboundService(t)
+	require.NoError(t, live.BindStore(ctx, shared.MemoryBackend))
+	wrote, garbled := false, false
+	shared.onCAS = func(ctx context.Context, key string) {
+		if !wrote && key == credentialPrefix+"db" {
+			wrote = true
+			require.NoError(t, live.StoreCredential(ctx, "db", []byte("fresh")))
+		}
+	}
+	shared.onGet = func(_ context.Context, key string) {
+		if !wrote || garbled || key != credentialPrefix+"db" {
+			return
+		}
+		garbled = true
+		require.NoError(t, shared.MemoryBackend.Put(ctx, claimKey, []byte("garbled")))
+	}
+
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+	require.True(t, garbled)
+	disarmAll(shared)
+	assert.ErrorIs(t, svc.MigrateLegacy(ctx), ErrStoreUnavailable)
+	assert.Equal(t, "fresh", retrieveRaw(t, shared.MemoryBackend, credentialPrefix+"db"))
+	assert.Len(t, legacyKeys(t, legacy), 3)
+}
+
+func retrieveRaw(t *testing.T, st Store, key string) string {
+	t.Helper()
+	value, err := st.Get(context.Background(), key)
+	require.NoError(t, err)
+	return string(value)
 }
 
 // While the legacy copy cannot be migrated, every verb is refused with the
