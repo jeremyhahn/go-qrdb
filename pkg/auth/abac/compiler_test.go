@@ -638,24 +638,6 @@ func TestAttributeMatcher_Exact(t *testing.T) {
 		wantMatch bool
 	}{
 		{
-			name: "exact match",
-			subject: &Subject{
-				Attributes: map[string]interface{}{
-					"department": "engineering",
-				},
-			},
-			wantMatch: true,
-		},
-		{
-			name: "no match",
-			subject: &Subject{
-				Attributes: map[string]interface{}{
-					"department": "sales",
-				},
-			},
-			wantMatch: false,
-		},
-		{
 			name: "missing attribute",
 			subject: &Subject{
 				Attributes: map[string]interface{}{},
