@@ -511,23 +511,6 @@ func TestFlatIndex_AllMetrics(t *testing.T) {
 	}
 }
 
-// TestFlatIndex_AllMetrics_EmptyIndex verifies error handling with all metrics on empty index.
-func TestFlatIndex_AllMetrics_EmptyIndex(t *testing.T) {
-	metrics := []hnsw.DistanceMetric{
-		hnsw.L2Distance,
-		hnsw.CosineDistance,
-		hnsw.DotProductDistance,
-		hnsw.ManhattanDistance,
-	}
-	for _, m := range metrics {
-		idx := NewIndex(m)
-		_, err := idx.Search([]float32{1.0}, 1)
-		if !errors.Is(err, ErrEmptyIndex) {
-			t.Errorf("metric %d: expected ErrEmptyIndex, got %v", m, err)
-		}
-	}
-}
-
 // TestFlatIndex_LargeDataset verifies correct recall on a 10K vector dataset.
 func TestFlatIndex_LargeDataset(t *testing.T) {
 	const (

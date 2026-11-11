@@ -15,9 +15,7 @@
 
 package scalar
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestScalarIndexType_String(t *testing.T) {
 	tests := []struct {

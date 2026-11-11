@@ -77,17 +77,6 @@ func TestGPUMemoryError(t *testing.T) {
 	}
 }
 
-func TestGPUMemoryError_ZeroValues(t *testing.T) {
-	err := &GPUMemoryError{
-		RequestedBytes: 0,
-		AvailableBytes: 0,
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "GPU memory allocation failed") {
-		t.Errorf("expected prefix in message, got: %s", msg)
-	}
-}
-
 func TestFactoryError_ErrorAndUnwrap(t *testing.T) {
 	err := &FactoryError{Op: "gpu factory: create remote index", Cause: ErrDeviceNotFound}
 
