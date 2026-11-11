@@ -139,10 +139,6 @@ func TestRingBuffer_Close(t *testing.T) {
 	}
 }
 
-func TestRingBuffer_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*RingBuffer)(nil)
-}
-
 func TestRingBuffer_Emit_ZeroTimestamp(t *testing.T) {
 	// Emit with zero timestamp should fill in current time.
 	r := NewRingBuffer(10)

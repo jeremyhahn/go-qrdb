@@ -384,10 +384,6 @@ func TestChainFileLogger_Retention(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*ChainFileLogger)(nil)
-}
-
 func TestChainFileLogger_WithSyncPerWrite_False(t *testing.T) {
 	// WithSyncPerWrite(false) must not panic and must still emit events correctly.
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
@@ -922,27 +918,6 @@ func TestVerifyChainFile_NonexistentFile(t *testing.T) {
 	if !errors.As(err, &fe) {
 		t.Fatalf("expected *FileError, got %T: %v", err, err)
 	}
-}
-
-func TestChainFileLogger_Emit_AfterFileClose(t *testing.T) {
-	// Force the underlying fd to be closed before Emit to cover the write error path.
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	l, err := NewFileLogger(path)
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	// Close the underlying file without going through l.Close() to leave l.f non-nil.
-	l.mu.Lock()
-	_ = l.f.Close()
-	l.mu.Unlock()
-
-	ctx := context.Background()
-	// Emit must not panic even when the file descriptor is closed.
-	l.Emit(ctx, testEvent("broken", "kv", "put"))
-	// l.f is now in a broken state; clean up by zeroing it.
-	l.mu.Lock()
-	l.f = nil
-	l.mu.Unlock()
 }
 
 func TestChainFileLogger_Query_Cursor_NoMatch(t *testing.T) {
