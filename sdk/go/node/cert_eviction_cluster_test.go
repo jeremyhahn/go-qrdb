@@ -18,11 +18,16 @@ package node
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert/certtest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -71,13 +76,19 @@ func TestClusteredNode_KeyBCacheEvictionPropagatesToEveryNode(t *testing.T) {
 	// only does so when a BarrierRegistry exists), so seal is turned on
 	// here with the simplest strategy -- no ceremony, no explicit Unseal
 	// call needed, exactly like sdk/go/conformance's own single-node
-	// cells.
+	// cells. Strict separation of duties (forced under FIPS 140-3) refuses
+	// a tenant without an SO, whose PIN tenant create commits to the SO PIN
+	// store, as cmd/qrdbd wires it.
+	soPINs, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("SO PIN store: %v", err)
+	}
 	nodes, err := bootFormationClusterWith(t, ca, replicas, func(self uint64) string {
 		return peerIdentitySpecs(t, self, replicas)
 	}, func(cfg *qrdbconfig.Config) {
 		cfg.Seal.Enabled = true
 		cfg.Seal.Strategy = "none"
-	})
+	}, server.WithSOAuthenticator(soPINs))
 	if err != nil {
 		t.Fatalf("bootFormationClusterWith: %v", err)
 	}
@@ -92,12 +103,19 @@ func TestClusteredNode_KeyBCacheEvictionPropagatesToEveryNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("certtest.NewCSR: %v", err)
 	}
+	_, soCSRPEM, err := certtest.NewCSR("acme-so")
+	if err != nil {
+		t.Fatalf("certtest.NewCSR(SO): %v", err)
+	}
 	if _, err := leaderNode.Client().Tenants().CreateTenant(ctx, &transport.CreateTenantRequest{
 		ID:            tenantID,
 		Name:          "Acme Corp",
 		IsolationType: transport.TenantIsolationPrefix,
 		AdminUsername: "admin",
 		AdminCSRPEM:   string(adminCSRPEM),
+		SOUsername:    "acme-so",
+		SOCSRPEM:      string(soCSRPEM),
+		SOPin:         "acme-so-pin-1234",
 	}); err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}

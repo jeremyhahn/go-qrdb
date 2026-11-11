@@ -22,6 +22,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"log/slog"
 	"maps"
 	"math/big"
 	"slices"
@@ -38,6 +39,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
@@ -178,8 +180,15 @@ func newDelegatingNode(t *testing.T, principal string, opts ...node.NodeOption) 
 		delegatingTenant: newLoginCA(t, delegatingTenant+"-login-ca"),
 		otherTenant:      newLoginCA(t, otherTenant+"-login-ca"),
 	}
+	// The SO PIN store tenant create commits each tenant SO's PIN to, as
+	// cmd/qrdbd wires it: strict separation of duties (forced under FIPS
+	// 140-3) refuses a tenant without an SO.
+	soPINs, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(64), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("SO PIN store: %v", err)
+	}
 	n, err := node.NewStandaloneNode(context.Background(), cfg,
-		[]server.ServerOption{server.WithAuditLogger(trail)},
+		[]server.ServerOption{server.WithAuditLogger(trail), server.WithSOAuthenticator(soPINs)},
 		append([]node.NodeOption{node.WithServicePrincipal(principal),
 			node.WithCertKeyProviderFactory(cas),
 			node.WithTenantIsolation(),
@@ -207,9 +216,14 @@ func newDelegatingNode(t *testing.T, principal string, opts ...node.NodeOption) 
 		if err != nil {
 			t.Fatalf("NewCSR: %v", err)
 		}
+		_, soCSRPEM, err := certtest.NewCSR(id + "-so")
+		if err != nil {
+			t.Fatalf("NewCSR(SO): %v", err)
+		}
 		if _, err := n.Services().TenantOnboarding.OnboardTenant(context.Background(), &service.OnboardTenantRequest{
 			ID: id, Name: id, IsolationType: tenant.IsolationBarrier, BarrierAutoUnseal: true,
 			AdminUsername: id + "-admin", AdminCSRPEM: csrPEM,
+			SOUsername: id + "-so", SOCSRPEM: soCSRPEM, SOPIN: []byte(id + "-so-pin-1234"),
 		}); err != nil {
 			t.Fatalf("OnboardTenant(%s): %v", id, err)
 		}
@@ -247,14 +261,16 @@ func issueDelegation(t *testing.T, n *node.Node, principal string, scope ...perm
 }
 
 // TestDelegatedContext_ActsInTheDelegatingTenantOnly proves the context
-// DelegatedContext returns for a delegation the tenant issued lists and
-// creates roles in that tenant through the embedded client, and is refused
-// in another tenant and in the system tenant.
+// DelegatedContext returns for a delegation the tenant issued lists roles and
+// creates users in that tenant through the embedded client, and is refused
+// in another tenant and in the system tenant. The write is user creation, an
+// Admin duty: role creation is the tenant SO's own act under strict
+// separation of duties (forced under FIPS 140-3), which no delegation holds.
 func TestDelegatedContext_ActsInTheDelegatingTenantOnly(t *testing.T) {
 	principal := uniquePrincipal("dctx")
-	permission.RegisterRoleGrant(principal, permission.RolesList, permission.RolesCreate)
+	permission.RegisterRoleGrant(principal, permission.RolesList, permission.UsersCreate)
 	n, _ := newDelegatingNode(t, principal)
-	leaf, _ := issueDelegation(t, n, principal, permission.RolesList, permission.RolesCreate)
+	leaf, _ := issueDelegation(t, n, principal, permission.RolesList, permission.UsersCreate)
 
 	ctx, err := n.DelegatedContext(context.Background(), []*x509.Certificate{leaf})
 	if err != nil {
@@ -269,24 +285,25 @@ func TestDelegatedContext_ActsInTheDelegatingTenantOnly(t *testing.T) {
 	if _, err := roles.ListRoles(ctx, &transport.ListRolesRequest{TenantID: delegatingTenant}); err != nil {
 		t.Fatalf("ListRoles in the delegating tenant: %v", err)
 	}
-	created, err := roles.CreateRole(ctx, &transport.CreateRoleRequest{
-		Name: "delegated-reader", TenantID: delegatingTenant, Permissions: []string{string(permission.RolesList)},
+	users := n.Client().Users()
+	created, err := users.CreateUser(ctx, &transport.CreateUserRequest{
+		Username: "delegated-user", WithoutEmailLoginKey: true, TenantID: delegatingTenant,
 	})
 	if err != nil {
-		t.Fatalf("CreateRole in the delegating tenant: %v", err)
+		t.Fatalf("CreateUser in the delegating tenant: %v", err)
 	}
-	if created.Name != "delegated-reader" {
-		t.Fatalf("CreateRole = %+v", created)
+	if created.Username != "delegated-user" {
+		t.Fatalf("CreateUser = %+v", created)
 	}
 
 	for _, other := range []string{otherTenant, tenantid.System} {
 		if _, err := roles.ListRoles(ctx, &transport.ListRolesRequest{TenantID: other}); err == nil {
 			t.Fatalf("ListRoles in %s admitted a delegation from %s", other, delegatingTenant)
 		}
-		if _, err := roles.CreateRole(ctx, &transport.CreateRoleRequest{
-			Name: "escaped", TenantID: other, Permissions: []string{string(permission.RolesList)},
+		if _, err := users.CreateUser(ctx, &transport.CreateUserRequest{
+			Username: "escaped", WithoutEmailLoginKey: true, TenantID: other,
 		}); err == nil {
-			t.Fatalf("CreateRole in %s admitted a delegation from %s", other, delegatingTenant)
+			t.Fatalf("CreateUser in %s admitted a delegation from %s", other, delegatingTenant)
 		}
 	}
 }
