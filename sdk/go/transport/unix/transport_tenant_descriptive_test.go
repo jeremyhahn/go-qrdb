@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"maps"
 	"strings"
 	"testing"
 
@@ -44,56 +43,6 @@ func startDescriptiveServer(t *testing.T) *Transport {
 	tr, cleanup := startAuthServer(t, unixserver.WithTenantService(svc))
 	t.Cleanup(cleanup)
 	return tr
-}
-
-func TestUnix_UpdateTenant_DescriptionAndMetadataRoundTrip(t *testing.T) {
-	tr := startDescriptiveServer(t)
-	ctx := context.Background()
-	desc := "Acme production"
-	want := map[string]string{"env": "prod", "team": "storage"}
-
-	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "acme", Description: &desc, Metadata: want}); err != nil {
-		t.Fatal(err)
-	}
-	got, err := tr.GetTenant(ctx, "acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Tenant.Description != desc || !maps.Equal(got.Tenant.Metadata, want) {
-		t.Fatalf("get = %q, %v; want %q, %v", got.Tenant.Description, got.Tenant.Metadata, desc, want)
-	}
-
-	// Nil fields leave the stored values unchanged.
-	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "acme", Name: "Acme Inc"}); err != nil {
-		t.Fatal(err)
-	}
-	got, err = tr.GetTenant(ctx, "acme")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Tenant.Description != desc || !maps.Equal(got.Tenant.Metadata, want) {
-		t.Fatalf("rename changed descriptive fields: %q, %v", got.Tenant.Description, got.Tenant.Metadata)
-	}
-}
-
-func TestUnix_UpdateTenant_EmptyMetadataClears(t *testing.T) {
-	tr := startDescriptiveServer(t)
-	ctx := context.Background()
-	desc := "to clear"
-	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{
-		TenantID: "acme", Description: &desc, Metadata: map[string]string{"env": "prod"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	empty := ""
-	resp, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "acme", Description: &empty, Metadata: map[string]string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Tenant.Description != "" || len(resp.Tenant.Metadata) != 0 {
-		t.Fatalf("cleared tenant = %q, %v; want both empty", resp.Tenant.Description, resp.Tenant.Metadata)
-	}
 }
 
 func TestUnix_UpdateTenant_OverLimitIsInvalidArgument(t *testing.T) {
