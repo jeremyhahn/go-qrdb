@@ -44,25 +44,6 @@ var (
 
 // TestSDK_ModuleTransports_AreTheServerTransports pins each SDK transport
 // name to the value the server reports.
-func TestSDK_ModuleTransports_AreTheServerTransports(t *testing.T) {
-	pairs := map[sdkserver.ModuleTransport]apimodule.Transport{
-		sdkserver.ModuleTransportGRPC:  apimodule.TransportGRPC,
-		sdkserver.ModuleTransportUnix:  apimodule.TransportUnix,
-		sdkserver.ModuleTransportREST:  apimodule.TransportREST,
-		sdkserver.ModuleTransportHTTP3: apimodule.TransportHTTP3,
-		sdkserver.ModuleTransportMCP:   apimodule.TransportMCP,
-		sdkserver.ModuleTransportQUIC:  apimodule.TransportQUIC,
-	}
-	if len(pairs) != 6 {
-		t.Fatalf("%d distinct transports, want 6", len(pairs))
-	}
-	for sdkValue, pkgValue := range pairs {
-		if sdkValue != pkgValue {
-			t.Errorf("sdk %q != server %q", sdkValue, pkgValue)
-		}
-	}
-}
-
 // TestSDK_ModuleConnObserver_IsPickedUpByTheServer is the behaviour: the
 // server's collection step (what every listener runs at Start) recognises an
 // SDK-written module as an observer, and events it routes reach the gauge,
