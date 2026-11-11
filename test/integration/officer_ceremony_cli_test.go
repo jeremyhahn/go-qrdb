@@ -1274,7 +1274,7 @@ func TestCLI_BarrierOfficerRegister_SealedWindow_CLI_PerProtocol(t *testing.T) {
 // register, claim, `barrier recovery generate`, `barrier seal`, and
 // `barrier quorum submit` all run identically over REST, gRPC, QUIC, MCP,
 // and Unix, reusing the same systemScope/officer/quorum abstractions
-// TestBarrierPermutations_ShamirLifecycle_PerProtocol uses for the system
+// TestBarrierCLI_ShamirLifecycle_PerProtocol uses for the system
 // barrier's unseal domain -- scoped here to transport.DomainRecovery.
 func TestCLI_RecoveryOfficerFlow_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
