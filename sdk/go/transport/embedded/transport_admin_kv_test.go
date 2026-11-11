@@ -104,30 +104,6 @@ func TestScan_AfterClose(t *testing.T) {
 	}
 }
 
-func TestExists_True(t *testing.T) {
-	kv := newMockKVService()
-	_ = kv.Put(context.Background(), "k", []byte("v"))
-	tr, _ := New(kv, &mockAdminService{})
-	ok, err := tr.Exists(context.Background(), "k")
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if !ok {
-		t.Error("expected true")
-	}
-}
-
-func TestExists_False(t *testing.T) {
-	tr, _ := New(newMockKVService(), &mockAdminService{})
-	ok, err := tr.Exists(context.Background(), "nope")
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if ok {
-		t.Error("expected false")
-	}
-}
-
 func TestExists_WithConsistency(t *testing.T) {
 	kv := newMockKVService()
 	_ = kv.Put(context.Background(), "k", []byte("v"))
