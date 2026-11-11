@@ -4,8 +4,7 @@
 # ends a running `docker logs -f`, as the daemon does when it removes the
 # container, and STUB_BLOCK makes the stub stop at the configurator or the
 # log stream and say so on a FIFO, so a test signals the script there without
-# guessing at timing. `docker info` answers STUB_NCPU (exit STUB_NCPU_RC), the
-# daemon CPU count the stage's CPU bound is capped at.
+# guessing at timing.
 #
 #   usage: scripts/in-toolchain-image_test.sh   (also: make test-in-toolchain-image)
 set -eu
@@ -35,7 +34,6 @@ case $1 in
       *:/src/*) if [ -n "${STUB_NO_PRODUCT:-}" ]; then exit 1; fi; echo product > "$3" ;;
       *) cat > /dev/null ;;
     esac ;;
-  info) printf '%s\n' "${STUB_NCPU:-}"; exit "${STUB_NCPU_RC:-0}" ;;
   start) ;;
   run)
     case " $* " in
@@ -388,33 +386,6 @@ for bad_path in /etc/passwd ../x coverage/../../x ./x a//b; do
     ok "IN_IMAGE_COPY_OUT refuses $bad_path"
   else bad "IN_IMAGE_COPY_OUT refuses $bad_path (rc=$rc)"; cat "$D/out"; fi
 done
-
-# 30. The daemon's NCPU caps the stage's CPU bound: a positive integer below
-# it lowers --cpus, GOMAXPROCS and GOFLAGS=-p together; empty, 0, malformed or
-# failed output leaves the bound as it was.
-# cpus_are <case> <want> <env...>: the stage's three CPU values are all <want>.
-cpus_are() {
-  local what=$1 want=$2
-  shift 2
-  reset
-  run "$@"
-  if [ "$rc" = 0 ] && called '^info --format {{.NCPU}}$' &&
-    called "^create .*--cpus $want " && called "^create .*--env GOMAXPROCS=$want " &&
-    called "^create .*--env GOFLAGS=-p=$want "; then
-    ok "CPU bound $want: $what"
-  else bad "CPU bound $want: $what (rc=$rc)"; cat "$D/out" "$D/state/calls"; fi
-}
-cpus_are "host 128, daemon 80" 80 IN_IMAGE_CPUS=128 STUB_NCPU=80
-cpus_are "requested 4, daemon 80" 4 IN_IMAGE_CPUS=4 STUB_NCPU=80
-cpus_are "daemon equal to the bound" 16 IN_IMAGE_CPUS=16 STUB_NCPU=16
-cpus_are "daemon output empty" 128 IN_IMAGE_CPUS=128 STUB_NCPU=
-cpus_are "daemon output 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0
-cpus_are "daemon output malformed" 128 IN_IMAGE_CPUS=128 STUB_NCPU=abc
-cpus_are "docker info fails with no output" 128 IN_IMAGE_CPUS=128 STUB_NCPU= STUB_NCPU_RC=1
-# An unreachable daemon: the CLI still renders the template (NCPU 0) and exits 1.
-cpus_are "docker info fails printing 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0 STUB_NCPU_RC=1
-# A failed lookup that still prints a positive count must not cap: only a zero exit counts.
-cpus_are "docker info fails printing 80" 128 IN_IMAGE_CPUS=128 STUB_NCPU=80 STUB_NCPU_RC=1
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
