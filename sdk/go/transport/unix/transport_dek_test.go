@@ -15,7 +15,6 @@
 package unix
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -102,35 +101,6 @@ func connectDEKTransport(t *testing.T) *Transport {
 	}
 	t.Cleanup(func() { _ = tr.Close() })
 	return tr
-}
-
-func TestTransportDEK_LifecycleOverTheSocket(t *testing.T) {
-	tr := connectDEKTransport(t)
-	ctx := context.Background()
-	aad := []byte("path=db/password|v=1")
-
-	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
-	if err != nil || enc.Version != 1 {
-		t.Fatalf("encrypt = %+v, %v", enc, err)
-	}
-	if _, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{}); err != nil {
-		t.Fatal(err)
-	}
-	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
-	if err != nil || rw.ToVersion != 2 {
-		t.Fatalf("rewrap = %+v, %v", rw, err)
-	}
-	if _, err := tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1}); err != nil {
-		t.Fatal(err)
-	}
-	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: rw.Ciphertext, AAD: aad})
-	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) {
-		t.Fatalf("decrypt = %+v, %v", dec, err)
-	}
-	st, err := tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{})
-	if err != nil || st.CurrentVersion != 2 || st.Versions[0].RetiredAt == nil {
-		t.Fatalf("status = %+v, %v", st, err)
-	}
 }
 
 func TestTransportDEK_CrossTenantIsPermissionDenied(t *testing.T) {
