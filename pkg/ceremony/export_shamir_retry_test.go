@@ -7,9 +7,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/stretchr/testify/require"
 )
 
 // ShamirSOPersistFault is a 2-of-3 ceremony whose system SO record write

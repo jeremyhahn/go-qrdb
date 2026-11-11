@@ -7,10 +7,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetry drives the
