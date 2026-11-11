@@ -148,7 +148,7 @@ func TestWorkloadFromCert_FailClosed(t *testing.T) {
 	}
 }
 
-func TestID_StringAndValidate(t *testing.T) {
+func TestID_String(t *testing.T) {
 	id := ID{TrustDomain: "acme", Kind: KindService, Name: "svc1"}
 	if got := id.String(); got != "spiffe://acme/svc/svc1" {
 		t.Fatalf("String = %q", got)
