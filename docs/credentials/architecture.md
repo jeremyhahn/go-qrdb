@@ -61,6 +61,10 @@ records, and no node can read them while it is sealed. No second key is
 layered over the records, and none is carried between nodes. This is the
 protection the system shard's other secret-bearing records already have, such
 as the DEK keyring of a prefix tenant ([../tenant-dek/](../tenant-dek/)).
+A standalone node whose backend is `objstore` writes its data plane without
+that at-rest encryption, so with seal enabled it binds the system seal
+barrier itself, which encrypts every record it stores, as the credential
+store instead of the data plane.
 
 **The prefixes are reached only through the credential verbs.** Every record
 under the four prefixes above is a secret or governs one, so the embedded
