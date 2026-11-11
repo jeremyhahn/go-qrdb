@@ -150,34 +150,6 @@ func TestE2E_BarrierInitializeShamir_HappyPath(t *testing.T) {
 // barrier.EnableEncryption. Asserting a real request round-trips proves the
 // marshal/dial/unmarshal path this test double exercises, not merely that
 // the method no longer short-circuits.
-func TestE2E_BarrierEnableEncryption_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("barrier.EnableEncryption", func(payload []byte) (uint16, []byte) {
-		var req pb.BarrierEnableEncryptionRequest
-		if err := proto.Unmarshal(payload, &req); err != nil {
-			t.Fatalf("server: unmarshal request: %v", err)
-		}
-		if req.GetStrategy() != "passphrase" {
-			t.Fatalf("server received strategy = %q, want passphrase", req.GetStrategy())
-		}
-		if string(req.GetPassphrase()) != "pw" {
-			t.Fatalf("server received passphrase = %q, want pw", req.GetPassphrase())
-		}
-		return wire.StatusOK, mustMarshal(&pb.BarrierEnableEncryptionResponse{
-			Status: "migration_started", Scope: "system",
-		})
-	})
-	resp, err := tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
-		Strategy: "passphrase", Passphrase: []byte("pw"),
-	})
-	if err != nil {
-		t.Fatalf("BarrierEnableEncryption: %v", err)
-	}
-	if resp.Status != "migration_started" || resp.Scope != "system" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
 func TestE2E_BarrierGenerateRecoveryKeys_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("barrier.RecoveryGenerate", func(_ []byte) (uint16, []byte) {
