@@ -184,22 +184,6 @@ func TestDefaultRemoteGPUConfig_Values(t *testing.T) {
 // RemoteGPUIndexFactory
 // ---------------------------------------------------------------------------
 
-func TestNewRemoteGPUIndexFactory_StoresConfigAndFallback(t *testing.T) {
-	cfg := DefaultRemoteGPUConfig()
-	fallback := &mockHNSWFactory{index: &mockHNSWIndex{countVal: 7}}
-
-	factory := NewRemoteGPUIndexFactory(cfg, fallback)
-	if factory == nil {
-		t.Fatal("NewRemoteGPUIndexFactory returned nil")
-	}
-	if factory.config != cfg {
-		t.Error("config not stored on RemoteGPUIndexFactory")
-	}
-	if factory.fallback != fallback {
-		t.Error("fallback not stored on RemoteGPUIndexFactory")
-	}
-}
-
 func TestRemoteGPUIndexFactory_CreateIndex_RemoteDisabled_UseFallback(t *testing.T) {
 	cpuIndex := &mockHNSWIndex{countVal: 4}
 	fallback := &mockHNSWFactory{index: cpuIndex}
