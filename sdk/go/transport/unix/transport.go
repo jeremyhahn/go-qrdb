@@ -241,6 +241,11 @@ func (t *Transport) ensureClient() error {
 // Connect establishes the gRPC connection over the Unix domain socket.
 // It uses insecure credentials since Unix sockets provide kernel-level
 // process isolation.
+//
+// Connect confirms the connection with a health check, and health is a
+// no-login verb on every transport (pkg/api/publicverbs), so Connect
+// succeeds for a caller holding no credential. Such a caller is refused at
+// its first call that needs one, not here.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}

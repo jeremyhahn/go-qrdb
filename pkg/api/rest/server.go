@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -1735,6 +1736,14 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 	s.recordStaticRoute(method, pattern, h)
 }
 
+// publicVerb registers a built-in no-login verb under the REST route
+// publicverbs.Table gives it; the table, not this transport, decides which
+// built-in routes are public.
+func (s *Server) publicVerb(enabled bool, v publicverbs.Verb, h http.HandlerFunc) {
+	method, pattern := publicverbs.RESTRoute(v)
+	s.publicIf(enabled, method, pattern, h)
+}
+
 // authenticatedIf registers a route that requires an authenticated caller
 // but no specific permission (e.g. /metrics for Prometheus scraping). The
 // marker is recorded unconditionally, the router registration is gated on
@@ -1947,7 +1956,7 @@ func (s *Server) registerRoutes() {
 	adminOn := s.adminSvc != nil
 	s.routeIf(adminOn, http.MethodGet, "/status", permission.AdminStatus, s.handleStatus)
 	s.routeIf(adminOn, http.MethodGet, "/peers", permission.AdminPeers, s.handlePeers)
-	s.publicIf(adminOn, http.MethodGet, "/health", s.handleHealth)
+	s.publicVerb(adminOn, publicverbs.VerbHealth, s.handleHealth)
 	s.routeIf(adminOn, http.MethodPost, "/drain", permission.AdminDrain, s.handleDrain)
 	s.routeIf(adminOn, http.MethodGet, "/capabilities", permission.AdminCapabilities, s.handleCapabilities)
 	s.routeIf(adminOn, http.MethodPost, "/membership/add", permission.AdminAddMember, s.handleMembershipAdd)
@@ -2429,7 +2438,7 @@ func (s *Server) registerRoutes() {
 	// and the redeemer holds no credential to authenticate with.
 	invitationsOn := s.invitations != nil
 	s.routeIf(invitationsOn, http.MethodPost, "/users/invite", permission.UsersInvite, s.handleInviteUser)
-	s.publicIf(invitationsOn, http.MethodPost, "/invitations/redeem", s.handleRedeemInvitation)
+	s.publicVerb(invitationsOn, publicverbs.VerbInvitationRedeem, s.handleRedeemInvitation)
 
 	// CA bootstrap endpoint (public, no auth required: joining nodes fetch
 	// the trust anchor before they hold credentials).

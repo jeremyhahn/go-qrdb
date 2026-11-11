@@ -147,6 +147,12 @@ const (
 // can cure (an unverifiable certificate, a foreign ALPN) ends Connect at
 // once. With no bound at all there is nothing to retry within, so one
 // attempt is made.
+//
+// Health is a no-login verb on every transport (pkg/api/publicverbs), so
+// with no client certificate Connect succeeds: the server refuses the
+// caller with StatusUnauthenticated at its first call that needs an
+// identity, not here. A client certificate the server cannot verify ends
+// the handshake instead, so Connect fails.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}

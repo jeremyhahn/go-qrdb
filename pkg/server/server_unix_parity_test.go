@@ -28,6 +28,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	unixtransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport/unix"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestStart_UnixOnly_TenantBarrierServiceReachable proves the unix
@@ -187,9 +189,20 @@ func TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated(t *testing.T) {
 	}
 	defer tr.Close()
 
-	err = tr.Connect(context.Background())
-	if err == nil {
-		t.Fatal("expected Connect to fail for an unauthenticated (no client certificate) unix caller")
+	// Connect probes Health, a no-login verb (pkg/api/publicverbs), so a
+	// caller with no certificate connects and is refused at its first
+	// authenticated call instead.
+	ctx := context.Background()
+	if err := tr.Connect(ctx); err != nil {
+		t.Fatalf("Connect with no client certificate: %v, want nil (Health is public)", err)
 	}
-	t.Logf("unauthenticated unix Connect rejected as expected: %v", err)
+	if _, err := tr.Health(ctx); err != nil {
+		t.Fatalf("Health with no client certificate: %v, want nil", err)
+	}
+	if _, err := tr.Get(ctx, "k"); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Get with no client certificate = %v, want Unauthenticated", err)
+	}
+	if _, err := tr.Status(ctx); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("Status with no client certificate = %v, want Unauthenticated", err)
+	}
 }

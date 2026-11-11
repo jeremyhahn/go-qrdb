@@ -499,9 +499,10 @@ service QRDBService {
     // Admin operations (unchanged)
     // -----------------------------------------------------------------------
 
-    // Health returns the node health status.
+    // Health returns the node health status. It needs no login on any
+    // transport (pkg/api/publicverbs).
     rpc Health(google.protobuf.Empty) returns (HealthResponse) {
-        option (qrdb.v1.permission) = "admin:health";
+        option (qrdb.v1.permission) = "identity:public";
     }
 
     // Status returns detailed node status information.

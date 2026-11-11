@@ -198,7 +198,7 @@ func TestLookupGRPCFromDescriptor_Found(t *testing.T) {
 		{"/qrdb.v1.QRDBService/VectorGetIndexStats", permission.VectorGetIndexStats},
 		{"/qrdb.v1.QRDBService/VectorCompactNamespace", permission.VectorCompact},
 		{"/qrdb.v1.QRDBService/VectorGetCompactionProgress", permission.VectorGetCompactProg},
-		{"/qrdb.v1.QRDBService/Health", permission.AdminHealth},
+		{"/qrdb.v1.QRDBService/Health", permission.Public},
 		{"/qrdb.v1.QRDBService/Status", permission.AdminStatus},
 		{"/qrdb.v1.QRDBService/Peers", permission.AdminPeers},
 		{"/qrdb.v1.QRDBService/AddMember", permission.AdminAddMember},
