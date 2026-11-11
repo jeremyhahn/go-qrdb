@@ -26,6 +26,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -1627,6 +1628,27 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
+// credentialStoreEncryptsAtRest reports whether the data plane of a node
+// whose primary engine is backend keeps the credential records encrypted at
+// rest. Pebble and file write through the barrier's at-rest Encryptor, and
+// memory keeps nothing at rest; an objstore backend writes the bytes it is
+// given to its bucket unencrypted.
+func credentialStoreEncryptsAtRest(backend database.BackendType) bool {
+	return backend != database.BackendObjstore
+}
+
+// UnencryptedCredentialStoreError is returned by BuildServices when the
+// node's data plane, which holds the credential store of record, does not
+// encrypt at rest. No credential is migrated, written or deleted.
+type UnencryptedCredentialStoreError struct {
+	// Backend is the primary engine's declared backend type.
+	Backend database.BackendType
+}
+
+func (e *UnencryptedCredentialStoreError) Error() string {
+	return fmt.Sprintf("lifecycle: credential store refused: backend %q does not encrypt at rest; use backend \"pebble\" or \"file\"", e.Backend)
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
@@ -1637,6 +1659,14 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		// shard's replicated KV, and its conditional writes are Raft
 		// transactions, so a policy, claim or version written on one node is
 		// the same record on every node.
+		//
+		// The records are written to the data plane as they are, so the
+		// data plane must encrypt at rest. A standalone objstore backend
+		// does not, so the binding is refused before BindStore migrates
+		// (and deletes) any barrier-encrypted legacy credential.
+		if !credentialStoreEncryptsAtRest(infra.Backend) {
+			return &UnencryptedCredentialStoreError{Backend: infra.Backend}
+		}
 		credStore := kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
 		if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
 			return err
