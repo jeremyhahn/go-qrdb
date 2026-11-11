@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Fixed
+
+- Key delivery works with `auth.enabled=false`: the listener now asks for node client certificates, and public Health on gRPC, Unix and MCP is held to its declared `admin:health` rate limit, as on QUIC.
+
 ### Added
 
 - **The replicated audit trail is a verifiable log.** Once the
