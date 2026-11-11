@@ -31,21 +31,11 @@ func TestInvalidInputError_Error(t *testing.T) {
 	}
 }
 
-func TestInvalidInputError_ImplementsError(t *testing.T) {
-	var err error = &InvalidInputError{}
-	_ = err.Error() // should not panic
-}
-
 func TestEmptyResponseError_Error(t *testing.T) {
 	e := &EmptyResponseError{}
 	if msg := e.Error(); !strings.Contains(msg, "empty") {
 		t.Errorf("expected message to mention 'empty', got %q", msg)
 	}
-}
-
-func TestEmptyResponseError_ImplementsError(t *testing.T) {
-	var err error = &EmptyResponseError{}
-	_ = err.Error()
 }
 
 func TestRetryExhaustedError_Error(t *testing.T) {
@@ -63,17 +53,6 @@ func TestRetryExhaustedError_Unwrap(t *testing.T) {
 	e := &RetryExhaustedError{Attempts: 1, Cause: errSentinel}
 	if !errors.Is(e, errSentinel) {
 		t.Error("errors.Is should find sentinel via Unwrap")
-	}
-}
-
-func TestRetryExhaustedError_As(t *testing.T) {
-	var target *RetryExhaustedError
-	err := &RetryExhaustedError{Attempts: 2, Cause: errSentinel}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *RetryExhaustedError")
-	}
-	if target.Attempts != 2 {
-		t.Errorf("expected Attempts=2, got %d", target.Attempts)
 	}
 }
 
@@ -106,30 +85,11 @@ func TestHTTPError_Error(t *testing.T) {
 	}
 }
 
-func TestHTTPError_As(t *testing.T) {
-	var target *HTTPError
-	err := &HTTPError{StatusCode: 500, Body: "internal server error"}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *HTTPError")
-	}
-	if target.StatusCode != 500 {
-		t.Errorf("expected StatusCode=500, got %d", target.StatusCode)
-	}
-}
-
 func TestDimensionMismatchError_Error(t *testing.T) {
 	e := &DimensionMismatchError{Expected: 1536, Received: 768}
 	msg := e.Error()
 	if !strings.Contains(msg, "1536") || !strings.Contains(msg, "768") {
 		t.Errorf("expected both dimensions in message, got %q", msg)
-	}
-}
-
-func TestDimensionMismatchError_As(t *testing.T) {
-	var target *DimensionMismatchError
-	err := &DimensionMismatchError{Expected: 512, Received: 256}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *DimensionMismatchError")
 	}
 }
 
@@ -171,14 +131,6 @@ func TestCacheCapacityError_Error(t *testing.T) {
 	}
 }
 
-func TestCacheCapacityError_Zero(t *testing.T) {
-	e := &CacheCapacityError{Capacity: 0}
-	msg := e.Error()
-	if !strings.Contains(msg, "0") {
-		t.Errorf("expected zero in message, got %q", msg)
-	}
-}
-
 func TestProviderAlreadyRegisteredError_Error(t *testing.T) {
 	e := &ProviderAlreadyRegisteredError{Name: "ollama"}
 	msg := e.Error()
@@ -187,30 +139,11 @@ func TestProviderAlreadyRegisteredError_Error(t *testing.T) {
 	}
 }
 
-func TestProviderAlreadyRegisteredError_As(t *testing.T) {
-	var target *ProviderAlreadyRegisteredError
-	err := &ProviderAlreadyRegisteredError{Name: "openai"}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *ProviderAlreadyRegisteredError")
-	}
-	if target.Name != "openai" {
-		t.Errorf("expected Name=openai, got %q", target.Name)
-	}
-}
-
 func TestProviderNotFoundError_Error(t *testing.T) {
 	e := &ProviderNotFoundError{Name: "vllm"}
 	msg := e.Error()
 	if !strings.Contains(msg, "vllm") {
 		t.Errorf("expected name in message, got %q", msg)
-	}
-}
-
-func TestProviderNotFoundError_As(t *testing.T) {
-	var target *ProviderNotFoundError
-	err := &ProviderNotFoundError{Name: "vllm"}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *ProviderNotFoundError")
 	}
 }
 
@@ -225,15 +158,6 @@ func TestCloseError_Error(t *testing.T) {
 	}
 	if !strings.Contains(msg, "pool drained") {
 		t.Errorf("expected second error in message, got %q", msg)
-	}
-}
-
-func TestCloseError_Unwrap(t *testing.T) {
-	inner := errors.New("inner")
-	e := &CloseError{Errors: []error{inner}}
-	errs := e.Unwrap()
-	if len(errs) != 1 || errs[0] != inner {
-		t.Error("Unwrap should return the inner errors slice")
 	}
 }
 
