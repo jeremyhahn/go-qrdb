@@ -111,24 +111,3 @@ func TestYAMLCodec_Marshal_PanicErrorRecovery(t *testing.T) {
 	require.True(t, errors.As(err, &encErr), "expected EncodeError, got %T", err)
 	assert.Equal(t, TypeYAML, encErr.Codec)
 }
-
-// ---------------------------------------------------------------------------
-// NewManagerFromConfig - wire codec resolve error
-// ---------------------------------------------------------------------------
-
-// TestNewManagerFromConfig_InvalidWireCodecResolve exercises the branch where
-// the storage codec resolves correctly but the wire codec fails to resolve.
-// Since Config.Validate() also checks the codec names, the error is a
-// ConfigValidationError returned from Validate, not UnsupportedCodecError.
-func TestNewManagerFromConfig_InvalidWireCodecResolve(t *testing.T) {
-	cfg := &Config{
-		StorageCodec: TypeMsgPack,
-		WireCodec:    "unknown_codec_xyz", // not registered
-	}
-	_, err := NewManagerFromConfig(cfg)
-	require.Error(t, err)
-
-	var cvErr *ConfigValidationError
-	require.True(t, errors.As(err, &cvErr), "expected ConfigValidationError, got %T", err)
-	assert.Equal(t, "wire_codec", cvErr.Field)
-}

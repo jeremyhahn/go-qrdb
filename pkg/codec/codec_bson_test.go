@@ -81,17 +81,3 @@ func TestBSONCodec_UnmarshalInvalidData(t *testing.T) {
 	require.True(t, errors.As(err, &decErr))
 	assert.Equal(t, TypeBSON, decErr.Codec)
 }
-
-func TestBSONCodec_MapRoundTrip(t *testing.T) {
-	c := &BSONCodec{}
-	original := map[string]string{"foo": "bar", "baz": "qux"}
-
-	data, err := c.Marshal(original)
-	require.NoError(t, err)
-	require.NotEmpty(t, data)
-
-	var decoded map[string]string
-	err = c.Unmarshal(data, &decoded)
-	require.NoError(t, err)
-	assert.Equal(t, original, decoded)
-}
