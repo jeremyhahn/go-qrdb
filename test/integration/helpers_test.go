@@ -353,10 +353,14 @@ func systemSOArgs(t *testing.T) []string {
 }
 
 // systemSOFields returns the POST /v1/ceremony/initialize fields naming a
-// system SO, for the fixtures that run the ceremony over REST.
-func systemSOFields(t *testing.T) map[string]any {
+// system SO, for the fixtures that run the ceremony over REST: a certificate
+// issued under ca, the node's own CA. These fixtures bring their own TLS (and
+// their admin certificate), so the node has no CeremonyCA to sign a CSR; the
+// CSR path stays covered by systemSOArgs on the managed-CA nodes.
+func systemSOFields(t *testing.T, ca *testCA) map[string]any {
 	t.Helper()
-	return map[string]any{"so_username": systemSOUsername, "so_csr_pem": systemSOCSRPEM(t)}
+	so := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject(systemSOUsername, "system"))
+	return map[string]any{"so_username": systemSOUsername, "so_cert_pem": mustReadFile(t, so.CertPath)}
 }
 
 // systemSOCSRPEM returns a PEM CSR for the system SO over a fresh P-256 key,
@@ -2659,7 +2663,7 @@ func initAndUnsealBarrierWith(t *testing.T, ca *testCA, port int, passphrase str
 		"secret": []byte(passphrase),
 	}
 	if _, named := extra["so_username"]; !named {
-		for k, v := range systemSOFields(t) {
+		for k, v := range systemSOFields(t, ca) {
 			fields[k] = v
 		}
 	}
