@@ -193,6 +193,25 @@ func TestClearPendingSystemSOIfEnrolled_PINCheckerFaults(t *testing.T) {
 	}
 }
 
+func TestClearPendingSystemSOIfEnrolled_StoreFaultKeepsTheRecord(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	bindPendingSO(t, users, so)
+
+	cleared, err := ClearPendingSystemSOIfEnrolled(ctx, &failingPutStore{store}, users, scriptedPINChecker{committed: true, matches: true})
+	require.Error(t, err)
+	assert.False(t, cleared)
+	assert.False(t, SystemSOConsumed(ctx, store))
+}
+
 func TestSOCertParsing_RejectsUnreadableInput(t *testing.T) {
 	notPEM := []byte("not pem")
 	badCert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")})
