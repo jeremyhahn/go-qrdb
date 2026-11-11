@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -84,5 +85,16 @@ func TestIssueDelegation_ServiceError(t *testing.T) {
 		Principal: "billing", Scope: []string{"kv:get"}, CSRPEM: "csr",
 	}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestIssueDelegation_Closed(t *testing.T) {
+	tr, cleanup := connectAuthInProcess(t, nil, nil, nil)
+	cleanup()
+	_ = tr.Close()
+	_, err := tr.IssueDelegation(context.Background(), &transport.IssueDelegationRequest{})
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
 	}
 }

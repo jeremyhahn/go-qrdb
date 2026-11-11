@@ -690,6 +690,38 @@ func TestUnixRT_Watch(t *testing.T) {
 	}
 }
 
+func TestUnixRT_WatchPrefix(t *testing.T) {
+	w := newMockWatcher(2, 4)
+	w.events <- watch.WatchResponse{
+		WatchID: 2,
+		Events: []*watch.Event{
+			{Type: watch.EventDelete, Kv: &kv.KeyValue{Key: []byte("prefix/k1")}},
+		},
+		Revision: 7,
+	}
+	close(w.events)
+
+	svc := &mockWatchSvc{watcher: w}
+	tr, cleanup := startAuthServer(t, unixserver.WithWatch(svc))
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ch, err := tr.WatchPrefix(ctx, "prefix/", transport.WatchOptions{})
+	if err != nil {
+		t.Fatalf("WatchPrefix: %v", err)
+	}
+
+	resp, ok := <-ch
+	if !ok {
+		t.Fatal("expected event on channel")
+	}
+	if resp.WatchID != 2 || len(resp.Events) != 1 {
+		t.Errorf("got %+v", resp)
+	}
+}
+
 func TestUnixRT_Watch_Canceled(t *testing.T) {
 	w := newMockWatcher(3, 4)
 	w.events <- watch.WatchResponse{

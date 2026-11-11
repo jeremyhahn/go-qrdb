@@ -23,13 +23,20 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-// TestUnixRT_UpdateDatabaseCompaction_ClosedTransport: the set/read path runs
-// in conformance TestCompactionPolicy_OnEveryTransport; this keeps the
-// closed-transport guard.
-func TestUnixRT_UpdateDatabaseCompaction_ClosedTransport(t *testing.T) {
+func TestUnixRT_UpdateDatabaseCompaction(t *testing.T) {
 	svc := &mockDatabaseSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
 	defer cleanup()
+
+	resp, err := tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{
+		Name: "db1", Compaction: &transport.DatabaseCompactionConfig{Mode: "period", RetainPeriod: "1h"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseCompaction: %v", err)
+	}
+	if resp.Compaction == nil || resp.Compaction.Mode != "period" || resp.Compaction.RetainPeriod != "1h" {
+		t.Fatalf("Compaction = %+v", resp.Compaction)
+	}
 
 	_ = tr.Close()
 	var closed *transport.ClosedError

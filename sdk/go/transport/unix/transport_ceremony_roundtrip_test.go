@@ -203,6 +203,33 @@ func TestUnixRT_Capabilities(t *testing.T) {
 	}
 }
 
+func TestUnixRT_Exists(t *testing.T) {
+	kvSvc := newMockKVService()
+	tr, cleanup := connectTransport(t, kvSvc, newMockAdminService())
+	defer cleanup()
+
+	ctx := context.Background()
+	if err := tr.Put(ctx, "present", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	exists, err := tr.Exists(ctx, "present")
+	if err != nil {
+		t.Fatalf("Exists(present): %v", err)
+	}
+	if !exists {
+		t.Error("expected Exists=true for present key")
+	}
+
+	exists, err = tr.Exists(ctx, "missing")
+	if err != nil {
+		t.Fatalf("Exists(missing): %v", err)
+	}
+	if exists {
+		t.Error("expected Exists=false for missing key")
+	}
+}
+
 func TestUnixRT_ConnState_AfterConnect(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()

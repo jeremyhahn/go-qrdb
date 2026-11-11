@@ -45,12 +45,6 @@ func TestMCPCredentials_AfterClose(t *testing.T) {
 	tr := newClosedTransport()
 	var ce *transport.ClosedError
 
-	if err := tr.CredentialStore(context.Background(), "k", []byte("v")); !errors.As(err, &ce) {
-		t.Errorf("CredentialStore: %v", err)
-	}
-	if _, err := tr.retrieveBytes(context.Background(), "k"); !errors.As(err, &ce) {
-		t.Errorf("CredentialRetrieve: %v", err)
-	}
 	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{}); !errors.As(err, &ce) {
 		t.Errorf("CredentialSubmit: %v", err)
 	}

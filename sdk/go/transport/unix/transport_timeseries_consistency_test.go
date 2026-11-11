@@ -54,6 +54,15 @@ func TestUnix_ProtoConsistencyFromString_KnownValues(t *testing.T) {
 	}
 }
 
+// TestUnix_ProtoConsistencyFromString_EmptyIsUnspecified ensures that an empty
+// Consistency field results in UNSPECIFIED.
+func TestUnix_ProtoConsistencyFromString_EmptyIsUnspecified(t *testing.T) {
+	got := protoConsistencyFromString("")
+	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED {
+		t.Fatalf("empty string should produce UNSPECIFIED, got %v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Round-trip tests: SDK unix client Consistency → server routes correctly
 // ---------------------------------------------------------------------------
@@ -248,6 +257,25 @@ func TestUnix_TSQuery_InvalidConsistency(t *testing.T) {
 	}
 }
 
+// TestUnix_TSQuery_ValidConsistency_Eventual verifies that "eventual" passes
+// validation and the RPC completes successfully.
+func TestUnix_TSQuery_ValidConsistency_Eventual(t *testing.T) {
+	svc := &mockTimeSeriesSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	resp, err := tr.TSQuery(context.Background(), &transport.TSQueryRequest{
+		Metric:      "cpu",
+		Consistency: "eventual",
+	})
+	if err != nil {
+		t.Fatalf("TSQuery (eventual): %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+}
+
 // TestUnix_TSAggregate_InvalidConsistency verifies that an invalid Consistency
 // value is rejected with *transport.RequestError before any RPC.
 func TestUnix_TSAggregate_InvalidConsistency(t *testing.T) {
@@ -268,6 +296,30 @@ func TestUnix_TSAggregate_InvalidConsistency(t *testing.T) {
 	}
 	if reqErr.Method != "TSAggregate" {
 		t.Fatalf("expected Method TSAggregate, got %q", reqErr.Method)
+	}
+}
+
+// TestUnix_TSAggregate_ValidConsistency_Eventual verifies that "eventual"
+// passes validation and the RPC completes successfully.
+func TestUnix_TSAggregate_ValidConsistency_Eventual(t *testing.T) {
+	svc := &mockTimeSeriesSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	now := time.Now()
+	resp, err := tr.TSAggregate(context.Background(), &transport.TSAggregateRequest{
+		Metric:      "cpu",
+		StartNs:     now.Add(-time.Hour).UnixNano(),
+		EndNs:       now.UnixNano(),
+		Function:    transport.AggAvg,
+		IntervalNs:  int64(time.Minute),
+		Consistency: "eventual",
+	})
+	if err != nil {
+		t.Fatalf("TSAggregate (eventual): %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
 	}
 }
 
@@ -294,6 +346,25 @@ func TestUnix_TSRichQuery_InvalidConsistency(t *testing.T) {
 	}
 }
 
+// TestUnix_TSRichQuery_ValidConsistency_Eventual verifies that "eventual"
+// passes validation and the RPC completes successfully.
+func TestUnix_TSRichQuery_ValidConsistency_Eventual(t *testing.T) {
+	svc := &mockTimeSeriesSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	now := time.Now()
+	_, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
+		Metric:      "cpu",
+		StartNs:     now.Add(-time.Hour).UnixNano(),
+		EndNs:       now.UnixNano(),
+		Consistency: "eventual",
+	})
+	if err != nil {
+		t.Fatalf("TSRichQuery (eventual): %v", err)
+	}
+}
+
 // TestUnix_TSListMetrics_InvalidConsistency verifies that an invalid Consistency
 // value is rejected with *transport.RequestError before any RPC.
 func TestUnix_TSListMetrics_InvalidConsistency(t *testing.T) {
@@ -314,5 +385,24 @@ func TestUnix_TSListMetrics_InvalidConsistency(t *testing.T) {
 	}
 	if reqErr.Method != "TSListMetrics" {
 		t.Fatalf("expected Method TSListMetrics, got %q", reqErr.Method)
+	}
+}
+
+// TestUnix_TSListMetrics_ValidConsistency_Eventual verifies that "eventual"
+// passes validation and the RPC completes successfully.
+func TestUnix_TSListMetrics_ValidConsistency_Eventual(t *testing.T) {
+	svc := &mockTimeSeriesSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithTimeSeries(svc))
+	defer cleanup()
+
+	resp, err := tr.TSListMetrics(context.Background(), &transport.TSListMetricsRequest{
+		Prefix:      "cpu",
+		Consistency: "eventual",
+	})
+	if err != nil {
+		t.Fatalf("TSListMetrics (eventual): %v", err)
+	}
+	if len(resp.Metrics) == 0 {
+		t.Fatal("expected non-empty metrics list")
 	}
 }

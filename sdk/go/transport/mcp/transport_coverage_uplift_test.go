@@ -999,3 +999,421 @@ func TestWatchPoll_ServerCanceledWatch(t *testing.T) {
 		t.Fatal("expected at least one Canceled=true response before channel close")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Additional JSON-decode error coverage for previously low-coverage methods
+// ---------------------------------------------------------------------------
+
+// TestCapabilities_JSONDecodeError exercises the json.Unmarshal failure
+// branch of Capabilities using a stub MCP tool.
+func TestCapabilities_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_capabilities": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.Capabilities(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestStatus_JSONDecodeError exercises the json.Unmarshal failure branch
+// of Status.
+func TestStatus_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_status": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.Status(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestHealth_JSONDecodeError exercises the json.Unmarshal failure branch
+// of Health.
+func TestHealth_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_health": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.Health(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestGetTopology_JSONDecodeError exercises the json.Unmarshal failure
+// branch of GetTopology.
+func TestGetTopology_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_topology": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.GetTopology(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestPeers_JSONDecodeError exercises the json.Unmarshal failure branch of
+// Peers.
+func TestPeers_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_peers": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.Peers(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestList_JSONDecodeError exercises the json.Unmarshal failure branch of
+// List.
+func TestList_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_list": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.List(context.Background(), "p")
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestScan_JSONDecodeError exercises the json.Unmarshal failure branch of
+// Scan.
+func TestScan_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_scan": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.Scan(context.Background(), "p")
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// TestGetShardState_JSONDecodeError exercises the decode failure branch.
+func TestGetShardState_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_shard_state": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.GetShardState(context.Background(), 1)
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Decode-error coverage for vector / transaction / credentials / timeseries /
+// database update methods. Each test routes through a stub MCP tool that
+// returns malformed JSON, hitting the json.Unmarshal error branch.
+// ---------------------------------------------------------------------------
+
+func TestGetIndexStats_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_get_index_stats": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.GetIndexStats(context.Background(), &transport.GetIndexStatsRequest{Namespace: "ns"})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
+	}
+}
+
+func TestUpdateMetadata_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_update_metadata": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateMetadata(context.Background(), &transport.UpdateVectorMetadataRequest{
+		Namespace: "ns",
+		ID:        1,
+		Metadata:  map[string]interface{}{"k": "v"},
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestRebuildIndex_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_rebuild_index": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.RebuildIndex(context.Background(), &transport.RebuildIndexRequest{Namespace: "ns"})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestCompactNamespace_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_compact_namespace": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.CompactNamespace(context.Background(), &transport.CompactNamespaceRequest{Namespace: "ns"})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestGetCompactionProgress_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_get_compaction_progress": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.GetCompactionProgress(context.Background(), &transport.GetCompactionProgressRequest{Namespace: "ns"})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestGetRebuildProgress_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_get_rebuild_progress": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.GetRebuildProgress(context.Background(), &transport.GetRebuildProgressRequest{Namespace: "ns"})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestBatchDeleteVectors_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_batch_delete": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.BatchDeleteVectors(context.Background(), &transport.BatchDeleteVectorsRequest{
+		Namespace: "ns",
+		IDs:       []uint64{1, 2},
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestSearchByID_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_search_by_id": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.SearchByID(context.Background(), &transport.SearchByIDRequest{
+		Namespace: "ns",
+		ID:        1,
+		K:         5,
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestSearchByMetadata_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_vector_search_by_metadata": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.SearchByMetadata(context.Background(), &transport.SearchByMetadataRequest{
+		Namespace: "ns",
+		Limit:     5,
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestExecuteTransaction_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_tx_execute": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
+		Compares: []transport.Compare{},
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestCredentialStrategy_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_credential_strategy": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.CredentialStrategy(context.Background())
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestTSQuery_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_ts_query": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.TSQuery(context.Background(), &transport.TSQueryRequest{
+		Metric: "cpu",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestTSRichQuery_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_ts_rich_query": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
+		Metric: "cpu",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestTSGetRetention_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_ts_get_retention_policy": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.TSGetRetention(context.Background(), &transport.TSGetRetentionRequest{
+		Metric: "cpu",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestUpdateDatabaseProtocol_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_database_update_protocol": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseProtocol(context.Background(), transport.UpdateDatabaseProtocolRequest{
+		Name: "db1",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestUpdateDatabaseEtcd_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_database_update_etcd": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseEtcd(context.Background(), transport.UpdateDatabaseEtcdRequest{
+		Name: "db1",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestUpdateDatabaseRaft_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_database_update_raft": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseRaft(context.Background(), transport.UpdateDatabaseRaftRequest{
+		Name: "db1",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestUpdateDatabaseBarrier_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_database_update_barrier": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseBarrier(context.Background(), transport.UpdateDatabaseBarrierRequest{
+		Name:    "db1",
+		Barrier: &transport.DatabaseBarrierConfig{Enabled: true},
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}
+
+func TestUpdateDatabaseConnection_JSONDecodeError(t *testing.T) {
+	tr, cleanup := connectStubInProcess(t, map[string]string{
+		"qrdb_database_update_connection": `not-json`,
+	})
+	defer cleanup()
+
+	_, err := tr.UpdateDatabaseConnection(context.Background(), transport.UpdateDatabaseConnectionRequest{
+		Name: "db1",
+	})
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+}

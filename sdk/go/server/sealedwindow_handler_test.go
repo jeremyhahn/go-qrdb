@@ -75,6 +75,26 @@ func sealedWindowTool(tools []mcpserver.ServerTool, name string) *mcpserver.Serv
 	return nil
 }
 
+// TestSealedWindowMCPTools_ExportsOnlyAllowlist checks that the sealed window
+// exports the barrier status tool and none of the tools a sealed node must
+// not serve, and that every exported name is on the MCP allowlist.
+func TestSealedWindowMCPTools_ExportsOnlyAllowlist(t *testing.T) {
+	tools := sdkserver.SealedWindowMCPTools(nil, nil, nil, &fakeProbe{sealed: true})
+	if sealedWindowTool(tools, "qrdb_barrier_status") == nil {
+		t.Fatal("a sealed window does not export qrdb_barrier_status")
+	}
+	for _, name := range []string{"qrdb_health", "qrdb_status", "qrdb_ceremony_status"} {
+		if sealedWindowTool(tools, name) != nil {
+			t.Errorf("a sealed window exports %s", name)
+		}
+	}
+	for _, tl := range tools {
+		if _, ok := sdkserver.MCPSealedWindowAllowlist[tl.Tool.Name]; !ok {
+			t.Errorf("exported tool %s is not on the MCP sealed-window allowlist", tl.Tool.Name)
+		}
+	}
+}
+
 // TestSealedWindowMCPTools_UnsealedRefuses checks that once the node is
 // unsealed the exported tools refuse rather than reach a service.
 func TestSealedWindowMCPTools_UnsealedRefuses(t *testing.T) {

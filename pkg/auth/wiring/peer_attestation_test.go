@@ -64,3 +64,14 @@ func TestBuildAuthMiddleware_PeerAttestationGateInstalled(t *testing.T) {
 	// No certificate on this context: refused before the verifier is asked.
 	assert.Equal(t, middleware.PeerAttestationNoPeerCertificate, refusal.Reason)
 }
+
+func TestBuildAuthMiddleware_NoPeerAttestationGateGatesNothing(t *testing.T) {
+	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
+		Enabled:     true,
+		RoleService: adminRoleService(),
+		UserService: &fakeUserService{},
+	})
+	require.NoError(t, err)
+	ctx := auth.WithIdentity(context.Background(), adminIdentity())
+	assert.NoError(t, mw.AuthorizeTenant(ctx, tenantid.System, permission.AdminStatus))
+}

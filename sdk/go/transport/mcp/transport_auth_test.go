@@ -610,6 +610,30 @@ func TestGetUser_Success(t *testing.T) {
 	}
 }
 
+func TestGetUser_NotFound(t *testing.T) {
+	svc := newMockUserSvc()
+	// The type the REAL user service returns, not prose that reads like it.
+	// go-qrdb#438 made that distinction load-bearing: the server classifies by
+	// TYPE now, so a double answering errors.New("user not found") produces an
+	// unclassified fault here exactly as it would in production, and the
+	// substring match that used to rescue it is gone.
+	svc.getErr = &user.UserNotFoundError{ID: 9999}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	_, err := tr.GetUser(context.Background(), 9999)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var unf *transport.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Fatalf("expected *transport.UserNotFoundError, got %T: %v", err, err)
+	}
+	if unf.ID != 9999 {
+		t.Errorf("ID = %d, want 9999 — the id the CALLER asked for", unf.ID)
+	}
+}
+
 func TestGetUser_ServiceError(t *testing.T) {
 	svc := newMockUserSvc()
 	svc.getErr = errors.New("internal")
@@ -633,6 +657,25 @@ func TestGetUserByUsername_Success(t *testing.T) {
 	}
 	if u.Username != "alice" {
 		t.Errorf("username: %q", u.Username)
+	}
+}
+
+func TestGetUserByUsername_NotFound(t *testing.T) {
+	svc := newMockUserSvc()
+	svc.getByErr = &user.UserNotFoundError{Lookup: "t1/missing"}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	_, err := tr.GetUserByUsername(context.Background(), "t1", "missing")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var unf *transport.UserNotFoundError
+	if !errors.As(err, &unf) {
+		t.Fatalf("expected *transport.UserNotFoundError, got %T: %v", err, err)
+	}
+	if unf.Lookup == "" {
+		t.Error("a non-id lookup left Lookup empty, so the error names no key")
 	}
 }
 
@@ -1307,6 +1350,16 @@ func TestTransport_GetUserByEmail_ReachesTheService(t *testing.T) {
 	}
 	if tenant != "t1" {
 		t.Fatalf(`argument key "tenant_id" did not reach the service: %q`, tenant)
+	}
+}
+
+func TestTransport_GetUserByEmail_NotFound(t *testing.T) {
+	svc := &mockUserSvc{getByErr: &user.UserNotFoundError{Lookup: "t1/nobody@example.com"}}
+	tr, cleanup := connectAuthInProcess(t, svc, nil, nil)
+	defer cleanup()
+
+	if _, err := tr.GetUserByEmail(context.Background(), "t1", "nobody@example.com"); err == nil {
+		t.Fatal("expected a not-found error")
 	}
 }
 

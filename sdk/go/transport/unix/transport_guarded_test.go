@@ -34,6 +34,14 @@ import (
 // transport's. The end-to-end delegation against a real node, on every engine
 // and mode, is the go-qrdb#121 conformance matrix.
 
+func TestUnixGuarded_ImplementsGuardedKVClient(t *testing.T) {
+	tr, cleanup := startServer(t, newMockKVService())
+	defer cleanup()
+	if _, ok := interface{}(tr).(transport.GuardedKVClient); !ok {
+		t.Fatal("unix transport does not implement transport.GuardedKVClient")
+	}
+}
+
 // guardedBinaryValue is deliberately not valid UTF-8, so a transport that
 // round-tripped values through a string somewhere would corrupt it and the
 // guard would be comparing a different value than the caller passed.
@@ -139,6 +147,26 @@ func TestUnixGuarded_CompareAndSwap_Guards(t *testing.T) {
 	}
 	if got, err := tr.Get(ctx, "k"); err != nil || string(got) != string(next) {
 		t.Errorf("after a successful swap the value is %v err=%v, want %v", got, err, next)
+	}
+}
+
+// A swap is not a create. This is what keeps the three verbs distinct, and an
+// implementation that forwarded a swap to an unguarded Put would satisfy every
+// assertion above while silently creating keys.
+func TestUnixGuarded_CompareAndSwap_DoesNotCreateAnAbsentKey(t *testing.T) {
+	tr, cleanup := startServer(t, newMockKVService())
+	defer cleanup()
+	ctx := context.Background()
+
+	swapped, err := tr.CompareAndSwap(ctx, "absent", nil, []byte("created"))
+	if err != nil {
+		t.Fatalf("CompareAndSwap(absent): %v", err)
+	}
+	if swapped {
+		t.Error("CompareAndSwap reported a swap on an absent key")
+	}
+	if exists, err := tr.Exists(ctx, "absent"); err != nil || exists {
+		t.Errorf("CompareAndSwap CREATED an absent key (exists=%v err=%v)", exists, err)
 	}
 }
 

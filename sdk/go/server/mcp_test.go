@@ -187,3 +187,18 @@ func TestNewMCPServer_RefusesWithoutTLS(t *testing.T) {
 // TestMCPServerOptions_ReExported applies the authentication and
 // sealed-window options through their aliases: each yields an option the
 // constructor accepts.
+func TestMCPServerOptions_ReExported(t *testing.T) {
+	opts := []sdkserver.MCPServerOption{
+		sdkserver.WithMCPServerAuthMiddleware(nil),
+		sdkserver.WithMCPServerSealedWindowProbe(&fakeProbe{}),
+		sdkserver.WithMCPServerSealedWindowDispatch(nil),
+	}
+	for i, opt := range opts {
+		if opt == nil {
+			t.Fatalf("option %d is nil", i)
+		}
+	}
+	if srv := sdkserver.NewMCPServer(nil, nil, "127.0.0.1:0", opts...); srv == nil {
+		t.Fatal("NewMCPServer returned nil")
+	}
+}

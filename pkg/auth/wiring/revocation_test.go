@@ -309,6 +309,32 @@ func (failingRevocationProvider) IsRevoked(context.Context, string) (bool, error
 	return false, &cert.StoreError{Op: "get", Detail: "revoked", Err: io.ErrUnexpectedEOF}
 }
 
+// TestRevocationChecker_NilProviderYieldsNilInterface guards the typed-nil
+// trap: a nil *cert.RevocationCache stored in an interface is NOT a nil
+// interface, so the authenticator's `revocation != nil` check would pass and
+// every request would call through a nil receiver — enforcement reported as on
+// and answering "not revoked" to everything.
+//
+// The comparison is a bare `!= nil` on purpose. testify's assert.Nil uses
+// reflection and reports a typed nil pointer as nil, so it passes on exactly
+// the value this test exists to reject (measured: it did not catch the
+// mutation that removed the guard).
+func TestRevocationChecker_NilProviderYieldsNilInterface(t *testing.T) {
+	if rc := revocationChecker(nil, time.Minute); rc != nil {
+		t.Fatalf("revocationChecker(nil, …) = %#v, want a nil interface", rc)
+	}
+}
+
+func TestRevocationChecker_ProviderYieldsChecker(t *testing.T) {
+	f := newRevocationFixture(t, "alice", "system")
+	rc := revocationChecker(f.provider, 5*time.Second)
+	require.NotNil(t, rc)
+
+	revoked, err := rc.IsCertRevoked(context.Background(), f.peer)
+	require.NoError(t, err)
+	assert.False(t, revoked)
+}
+
 // statusRoutes is the smallest route registry that admits the authenticated
 // GET /status used by these tests.
 func statusRoutes() *middleware.RESTRouteRegistry {
@@ -465,11 +491,10 @@ func TestRevocation_ExposedCheckerIsTheEnforcementState(t *testing.T) {
 // with no certificate authority gets: nothing to enforce with, expressed as a
 // nil INTERFACE so a reusing plane's `rc == nil` test is true.
 //
-// The comparison is a bare != nil rather than require.Nil: reflection reports
-// a typed nil pointer as nil and would pass on exactly the value this rejects.
-// A nil *cert.RevocationCache stored in the interface would pass the
-// authenticator's `revocation != nil` check and answer "not revoked" to every
-// request.
+// The comparison is a bare != nil rather than require.Nil for the reason
+// TestRevocationChecker_NilProviderYieldsNilInterface documents: reflection
+// reports a typed nil pointer as nil and would pass on exactly the value this
+// rejects.
 func TestRevocation_ExposedCheckerIsNilWithoutAProvider(t *testing.T) {
 	mw, err := BuildAuthMiddleware(AuthMiddlewareConfig{
 		Enabled:     true,

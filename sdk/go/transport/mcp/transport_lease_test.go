@@ -165,6 +165,21 @@ func TestLeaseGrant_ServiceError(t *testing.T) {
 // LeaseRevoke
 // ---------------------------------------------------------------------------
 
+func TestLeaseRevoke_Success(t *testing.T) {
+	svc := newMockLeaseSvc()
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	if err := tr.LeaseRevoke(context.Background(), 100); err != nil {
+		t.Fatalf("LeaseRevoke: %v", err)
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if svc.lastLeaseID != 100 {
+		t.Errorf("revoked id: got %d, want 100", svc.lastLeaseID)
+	}
+}
+
 func TestLeaseRevoke_ServiceError(t *testing.T) {
 	svc := newMockLeaseSvc()
 	svc.revokeErr = errors.New("not found")
@@ -304,6 +319,20 @@ func TestLeaseKeepAlive_Expired(t *testing.T) {
 // LeaseTimeToLive
 // ---------------------------------------------------------------------------
 
+func TestLeaseTimeToLive_Success(t *testing.T) {
+	svc := newMockLeaseSvc()
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	info, err := tr.LeaseTimeToLive(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("LeaseTimeToLive: %v", err)
+	}
+	if info.ID != 100 {
+		t.Errorf("ID: %d", info.ID)
+	}
+}
+
 func TestLeaseTimeToLive_ServiceError(t *testing.T) {
 	svc := newMockLeaseSvc()
 	svc.ttlErr = errors.New("not found")
@@ -350,6 +379,20 @@ func TestLeaseTimeToLive_Expired(t *testing.T) {
 // ---------------------------------------------------------------------------
 // LeaseList
 // ---------------------------------------------------------------------------
+
+func TestLeaseList_Success(t *testing.T) {
+	svc := newMockLeaseSvc()
+	tr, cleanup := connectLeaseInProcess(t, svc)
+	defer cleanup()
+
+	leases, err := tr.LeaseList(context.Background())
+	if err != nil {
+		t.Fatalf("LeaseList: %v", err)
+	}
+	if len(leases) != 2 {
+		t.Errorf("count: got %d, want 2", len(leases))
+	}
+}
 
 func TestLeaseList_ServiceError(t *testing.T) {
 	svc := newMockLeaseSvc()

@@ -25,10 +25,17 @@ func TestMCP_Database_UpdateDatabaseCompaction(t *testing.T) {
 	tr, cleanup := connectDatabaseBarrierInProcess(t, newMockDatabaseSvc())
 	defer cleanup()
 
-	// The revision policy and the off switch run in
-	// conformance TestCompactionPolicy_OnEveryTransport; the period field
-	// and a nil policy are checked here.
 	info, err := tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{
+		Name: "mydb", Compaction: &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 4},
+	})
+	if err != nil {
+		t.Fatalf("UpdateDatabaseCompaction: %v", err)
+	}
+	if info.Compaction == nil || info.Compaction.Mode != "revision" || info.Compaction.RetainRevisions != 4 {
+		t.Fatalf("Compaction = %+v", info.Compaction)
+	}
+
+	info, err = tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{
 		Name: "mydb", Compaction: &transport.DatabaseCompactionConfig{Mode: "period", RetainPeriod: "3h"},
 	})
 	if err != nil || info.Compaction == nil || info.Compaction.RetainPeriod != "3h" {
@@ -39,5 +46,10 @@ func TestMCP_Database_UpdateDatabaseCompaction(t *testing.T) {
 	info, err = tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{Name: "mydb"})
 	if err != nil || info.Compaction != nil {
 		t.Fatalf("off = %+v, %v", info, err)
+	}
+
+	tr.closed.Store(true)
+	if _, err := tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{Name: "mydb"}); err == nil {
+		t.Fatal("expected a closed-transport error")
 	}
 }

@@ -112,6 +112,66 @@ func newCaller(c *dekClient) Caller {
 	}}
 }
 
+func TestCallerStatusRotateRetireForwardAndConvert(t *testing.T) {
+	c := &dekClient{statusResp: &pb.TenantDEKStatusResponse{
+		TenantId: "acme", Algorithm: "AES-256-GCM", CurrentVersion: 2,
+		Versions: []*pb.TenantDEKVersion{{Version: 1, CreatedAtUnix: 10, RetiredAtUnix: 20}, {Version: 2, CreatedAtUnix: 15}},
+	}}
+	caller := newCaller(c)
+	ctx := context.Background()
+
+	st, err := caller.Status(ctx, &transport.TenantDEKRequest{TenantID: "acme"})
+	if err != nil || c.statusReq.GetTenantId() != "acme" {
+		t.Fatalf("Status: err=%v req=%v", err, c.statusReq)
+	}
+	if st.CurrentVersion != 2 || len(st.Versions) != 2 || st.Versions[0].RetiredAt == nil {
+		t.Fatalf("Status = %+v", st)
+	}
+
+	if _, err := caller.Rotate(ctx, &transport.TenantDEKRequest{TenantID: "acme"}); err != nil || c.rotateReq.GetTenantId() != "acme" {
+		t.Fatalf("Rotate: err=%v req=%v", err, c.rotateReq)
+	}
+
+	st, err = caller.Retire(ctx, &transport.TenantDEKRetireRequest{TenantID: "acme", Version: 1})
+	if err != nil || c.retireReq.GetTenantId() != "acme" || c.retireReq.GetVersion() != 1 {
+		t.Fatalf("Retire: err=%v req=%v", err, c.retireReq)
+	}
+	if st.Algorithm != "AES-256-GCM" {
+		t.Fatalf("Retire = %+v", st)
+	}
+}
+
+func TestCallerEncryptDecryptRewrapCarryAAD(t *testing.T) {
+	c := &dekClient{}
+	caller := newCaller(c)
+	ctx := context.Background()
+	aad := []byte("row-7")
+
+	enc, err := caller.Encrypt(ctx, &transport.TenantDEKEncryptRequest{TenantID: "acme", Plaintext: []byte("secret"), AAD: aad})
+	if err != nil || !bytes.Equal(c.encryptReq.GetAad(), aad) || c.encryptReq.GetTenantId() != "acme" {
+		t.Fatalf("Encrypt: err=%v req=%v", err, c.encryptReq)
+	}
+	if string(enc.Ciphertext) != "ct:secret" || enc.Version != 4 {
+		t.Fatalf("Encrypt = %+v", enc)
+	}
+
+	dec, err := caller.Decrypt(ctx, &transport.TenantDEKDecryptRequest{TenantID: "acme", Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || !bytes.Equal(c.decryptReq.GetAad(), aad) {
+		t.Fatalf("Decrypt: err=%v req=%v", err, c.decryptReq)
+	}
+	if string(dec.Plaintext) != "secret" || dec.Version != 4 {
+		t.Fatalf("Decrypt = %+v", dec)
+	}
+
+	rw, err := caller.Rewrap(ctx, &transport.TenantDEKRewrapRequest{TenantID: "acme", Ciphertext: enc.Ciphertext, AAD: aad})
+	if err != nil || !bytes.Equal(c.rewrapReq.GetAad(), aad) || c.rewrapReq.GetTenantId() != "acme" {
+		t.Fatalf("Rewrap: err=%v req=%v", err, c.rewrapReq)
+	}
+	if rw.FromVersion != 3 || rw.ToVersion != 4 || !bytes.Equal(rw.Ciphertext, enc.Ciphertext) {
+		t.Fatalf("Rewrap = %+v", rw)
+	}
+}
+
 // TestCallerMapsClientErrorsWithMethodName: every RPC failure goes through
 // MapError under the RPC's own name, and the client's error is not lost.
 func TestCallerMapsClientErrorsWithMethodName(t *testing.T) {

@@ -231,6 +231,15 @@ func TestUnixRT_UnassignRole_Error(t *testing.T) {
 	}
 }
 
+func TestUnixRT_ListPermissions_Closed(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+	_, err := tr.ListPermissions(context.Background())
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
 // Ensure the permission import is used.
 var _ permission.Permission = permission.Permission("kv.read")
 
@@ -272,6 +281,34 @@ func TestUnixRT_Delete_Error(t *testing.T) {
 
 	if err := tr.Delete(context.Background(), "k"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestUnixRT_Health_Error(t *testing.T) {
+	// A closed transport returns a ClosedError immediately.
+	tr := newClosedTransport()
+	_, err := tr.Health(context.Background())
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError from Health on closed transport, got %T: %v", err, err)
+	}
+}
+
+func TestUnixRT_Status_Error(t *testing.T) {
+	tr := newClosedTransport()
+	_, err := tr.Status(context.Background())
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError from Status on closed transport, got %T: %v", err, err)
+	}
+}
+
+func TestUnixRT_Capabilities_Error(t *testing.T) {
+	tr := newClosedTransport()
+	_, err := tr.Capabilities(context.Background())
+	var ce *transport.ClosedError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -715,6 +752,15 @@ func TestUnixRT_GetTenant_NoService(t *testing.T) {
 // ===========================================================================
 // Barrier error paths
 // ===========================================================================
+
+func TestUnixRT_BarrierUnseal_Error(t *testing.T) {
+	tr := newClosedTransport()
+	var ce *transport.ClosedError
+	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{})
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
 
 func TestUnixRT_BarrierInitializeShamir_Error(t *testing.T) {
 	tr := newClosedTransport()

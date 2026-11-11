@@ -17,6 +17,7 @@ package wiring
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -103,4 +104,9 @@ func TestBuildAuthorizer_SuppliedAuthorizerIsUsedAsIs(t *testing.T) {
 	got, err := BuildAuthorizer(AuthorizerConfig{Authorizer: own})
 	require.NoError(t, err)
 	require.Same(t, own, got)
+}
+
+func TestMissingServiceError_NamesTheService(t *testing.T) {
+	msg := (&MissingServiceError{Service: "role"}).Error()
+	require.True(t, strings.Contains(msg, "role service was not supplied"), msg)
 }

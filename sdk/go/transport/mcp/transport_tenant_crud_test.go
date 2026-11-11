@@ -70,6 +70,18 @@ func TestCreateTenant_ServiceError(t *testing.T) {
 	}
 }
 
+func TestCreateTenant_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.CreateTenant(context.Background(), &transport.CreateTenantRequest{ID: "x", Name: "y"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GetTenant
 // ---------------------------------------------------------------------------
@@ -104,6 +116,18 @@ func TestGetTenant_ServiceError(t *testing.T) {
 	}
 }
 
+func TestGetTenant_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.GetTenant(context.Background(), "acme")
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListTenants
 // ---------------------------------------------------------------------------
@@ -135,6 +159,18 @@ func TestListTenants_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected *transport.RequestError, got %T", err)
+	}
+}
+
+func TestListTenants_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.ListTenants(context.Background())
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
 	}
 }
 
@@ -218,6 +254,18 @@ func TestUpdateTenant_ServiceError(t *testing.T) {
 	}
 }
 
+func TestUpdateTenant_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.UpdateTenant(context.Background(), &transport.UpdateTenantRequest{TenantID: "x"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UpdateTenantQuotas
 // ---------------------------------------------------------------------------
@@ -256,6 +304,18 @@ func TestUpdateTenantQuotas_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Errorf("expected *transport.RequestError, got %T", err)
+	}
+}
+
+func TestUpdateTenantQuotas_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.UpdateTenantQuotas(context.Background(), &transport.UpdateTenantQuotasRequest{TenantID: "x"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
 	}
 }
 
@@ -312,6 +372,18 @@ func TestUpdateTenantEntitlements_ServiceError(t *testing.T) {
 	_, err := tr.UpdateTenantEntitlements(context.Background(), &transport.UpdateTenantEntitlementsRequest{TenantID: "acme"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUpdateTenantEntitlements_Closed(t *testing.T) {
+	svc := newMockTenantSvc()
+	tr, cleanup := connectTenantInProcess(t, svc)
+	cleanup()
+
+	_, err := tr.UpdateTenantEntitlements(context.Background(), &transport.UpdateTenantEntitlementsRequest{TenantID: "acme"})
+	var closedErr *transport.ClosedError
+	if !errors.As(err, &closedErr) {
+		t.Fatalf("expected *transport.ClosedError, got %T", err)
 	}
 }
 

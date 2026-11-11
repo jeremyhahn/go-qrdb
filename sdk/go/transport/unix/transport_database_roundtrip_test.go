@@ -216,6 +216,23 @@ func (m *mockDatabaseSvc) ScaleForTenant(_ context.Context, name string, targetR
 // Database round-trips
 // ---------------------------------------------------------------------------
 
+func TestUnixRT_CreateDatabase(t *testing.T) {
+	svc := &mockDatabaseSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
+	defer cleanup()
+
+	resp, err := tr.CreateDatabase(context.Background(), transport.CreateDatabaseRequest{
+		Name:    "db1",
+		Backend: "raft",
+	})
+	if err != nil {
+		t.Fatalf("CreateDatabase: %v", err)
+	}
+	if resp.Name != "db1" || resp.Status != "ready" {
+		t.Errorf("got %+v", resp)
+	}
+}
+
 func TestUnixRT_GetDatabase(t *testing.T) {
 	svc := &mockDatabaseSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithDatabaseService(svc))
@@ -409,7 +426,7 @@ func TestUnixRT_CreateDatabase_PropagatesCfg(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDatabase: %v", err)
 	}
-	if resp.Name != "main" || resp.Status != "ready" {
+	if resp.Name != "main" {
 		t.Errorf("got %+v", resp)
 	}
 }

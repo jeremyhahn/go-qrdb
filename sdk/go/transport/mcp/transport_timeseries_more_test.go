@@ -60,6 +60,29 @@ func TestTSWritePoint_ServiceError(t *testing.T) {
 // TSRichQuery
 // ---------------------------------------------------------------------------
 
+func TestTSRichQuery_Success(t *testing.T) {
+	svc := newMockTSSvc()
+	tr, cleanup := connectTSInProcess(t, svc)
+	defer cleanup()
+
+	now := time.Now().UTC()
+	resp, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
+		Metric:      "cpu",
+		StartNs:     now.Add(-time.Hour).UnixNano(),
+		EndNs:       now.UnixNano(),
+		Tags:        []transport.TSTag{{Key: "host", Value: "a"}},
+		Aggregation: transport.AggAvg,
+		IntervalNs:  60_000_000_000,
+		Limit:       100,
+	})
+	if err != nil {
+		t.Fatalf("TSRichQuery: %v", err)
+	}
+	if resp.Metric != "cpu" {
+		t.Errorf("metric: %q", resp.Metric)
+	}
+}
+
 func TestTSRichQuery_ServiceError(t *testing.T) {
 	svc := newMockTSSvc()
 	svc.queryRichErr = errors.New("query failed")
@@ -230,8 +253,5 @@ func TestTSRichQuery_AllOptions(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("expected non-nil response")
-	}
-	if resp.Metric != "cpu" {
-		t.Errorf("metric: %q", resp.Metric)
 	}
 }

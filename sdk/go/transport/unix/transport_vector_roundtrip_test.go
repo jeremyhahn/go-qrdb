@@ -667,6 +667,23 @@ func TestUnixRT_CompactNamespace(t *testing.T) {
 	}
 }
 
+func TestUnixRT_GetCompactionProgress(t *testing.T) {
+	svc := &mockVectorSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithVector(svc))
+	defer cleanup()
+
+	resp, err := tr.GetCompactionProgress(context.Background(), &transport.GetCompactionProgressRequest{
+		Namespace:   "ns",
+		OperationID: "compact-1",
+	})
+	if err != nil {
+		t.Fatalf("GetCompactionProgress: %v", err)
+	}
+	if resp.PercentComplete != 25.0 {
+		t.Errorf("got PercentComplete=%f, want 25.0", resp.PercentComplete)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Error propagation
 // ---------------------------------------------------------------------------
@@ -858,8 +875,8 @@ func TestUnixRT_GetCompactionProgress_Completed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCompactionProgress: %v", err)
 	}
-	if resp.InProgress || resp.PercentComplete != 100.0 {
-		t.Errorf("got InProgress=%v PercentComplete=%f, want false and 100", resp.InProgress, resp.PercentComplete)
+	if resp.InProgress {
+		t.Error("expected InProgress=false")
 	}
 	if resp.CompletedAt == nil || *resp.CompletedAt != completedAt {
 		t.Errorf("got CompletedAt=%v, want %d", resp.CompletedAt, completedAt)

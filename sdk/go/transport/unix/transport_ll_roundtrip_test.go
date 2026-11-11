@@ -196,6 +196,44 @@ var _ index.IndexServicer = (*mockIndexSvc)(nil)
 // Lease round-trips
 // ---------------------------------------------------------------------------
 
+func TestUnixRT_LeaseGrant(t *testing.T) {
+	svc := &mockLeaseSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	got, err := tr.LeaseGrant(context.Background(), 60)
+	if err != nil {
+		t.Fatalf("LeaseGrant: %v", err)
+	}
+	if got.ID != 42 || got.TTL != 60 {
+		t.Errorf("got %+v, want ID=42 TTL=60", got)
+	}
+}
+
+func TestUnixRT_LeaseRevoke(t *testing.T) {
+	svc := &mockLeaseSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	if err := tr.LeaseRevoke(context.Background(), 42); err != nil {
+		t.Fatalf("LeaseRevoke: %v", err)
+	}
+}
+
+func TestUnixRT_LeaseKeepAlive(t *testing.T) {
+	svc := &mockLeaseSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	got, err := tr.LeaseKeepAlive(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("LeaseKeepAlive: %v", err)
+	}
+	if got.ID != 42 {
+		t.Errorf("got %+v", got)
+	}
+}
+
 func TestUnixRT_LeaseTimeToLive(t *testing.T) {
 	svc := &mockLeaseSvc{}
 	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
@@ -207,6 +245,20 @@ func TestUnixRT_LeaseTimeToLive(t *testing.T) {
 	}
 	if got.ID != 42 || len(got.Keys) != 2 {
 		t.Errorf("got %+v", got)
+	}
+}
+
+func TestUnixRT_LeaseList(t *testing.T) {
+	svc := &mockLeaseSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLease(svc))
+	defer cleanup()
+
+	got, err := tr.LeaseList(context.Background())
+	if err != nil {
+		t.Fatalf("LeaseList: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d, want 2", len(got))
 	}
 }
 
@@ -228,6 +280,68 @@ func TestUnixRT_LockAcquire(t *testing.T) {
 		t.Fatalf("LockAcquire: %v", err)
 	}
 	if got.Key != "lock1" || got.FencingToken != 1 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestUnixRT_LockTryLock(t *testing.T) {
+	svc := &mockLockSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLock(svc))
+	defer cleanup()
+
+	got, err := tr.LockTryLock(context.Background(), &transport.LockAcquireRequest{
+		Key:      "lock1",
+		HolderID: "owner1",
+		TTL:      60,
+	})
+	if err != nil {
+		t.Fatalf("LockTryLock: %v", err)
+	}
+	if got.Key != "lock1" || got.FencingToken != 2 {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestUnixRT_LockRelease(t *testing.T) {
+	svc := &mockLockSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLock(svc))
+	defer cleanup()
+
+	if err := tr.LockRelease(context.Background(), &transport.LockReleaseRequest{
+		Key:          "lock1",
+		FencingToken: 1,
+	}); err != nil {
+		t.Fatalf("LockRelease: %v", err)
+	}
+}
+
+func TestUnixRT_LockExtend(t *testing.T) {
+	svc := &mockLockSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLock(svc))
+	defer cleanup()
+
+	got, err := tr.LockExtend(context.Background(), &transport.LockExtendRequest{
+		Key:          "lock1",
+		FencingToken: 1,
+	})
+	if err != nil {
+		t.Fatalf("LockExtend: %v", err)
+	}
+	if got.FencingToken != 2 {
+		t.Errorf("got FencingToken=%d, want 2", got.FencingToken)
+	}
+}
+
+func TestUnixRT_LockStatus(t *testing.T) {
+	svc := &mockLockSvc{}
+	tr, cleanup := startAuthServer(t, unixserver.WithLock(svc))
+	defer cleanup()
+
+	got, err := tr.LockStatus(context.Background(), "lock1")
+	if err != nil {
+		t.Fatalf("LockStatus: %v", err)
+	}
+	if got == nil || got.Key != "lock1" || got.HolderID != "owner" {
 		t.Errorf("got %+v", got)
 	}
 }

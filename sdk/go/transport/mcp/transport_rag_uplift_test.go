@@ -211,6 +211,43 @@ func TestMCP_RAG_ListDocuments_ServiceError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// RAG tests — from transport_coverage_uplift3_test.go
+// ---------------------------------------------------------------------------
+
+func TestMCP_RAG_IngestDocument_JSONDecodeError(t *testing.T) {
+	svc := newMinimalRAGSvc()
+	tr, cleanup := connectRAGInProcess(t, svc)
+	defer cleanup()
+
+	// The response from service will be valid JSON but the mock returns
+	// a real IngestDocumentResponse which should parse correctly.
+	// To exercise the decode path, call with a valid request.
+	resp, err := tr.RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{
+		DocumentID: "doc-test", Namespace: "ns1", Text: "test content",
+	})
+	// Either success or error is acceptable; just ensure no panic.
+	if err == nil && resp.DocumentID != "doc-test" {
+		t.Logf("unexpected DocumentID: %q", resp.DocumentID)
+	}
+}
+
+func TestMCP_RAG_Query_PathExercise(t *testing.T) {
+	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
+	defer cleanup()
+
+	// Call with filter specified to hit the additional code path.
+	resp, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{
+		Query: "test query", Namespace: "ns1", TopK: 3,
+		Filter: map[string]string{"category": "test"},
+	})
+	if err != nil {
+		t.Logf("RAGQuery with filter: %v", err)
+	} else if len(resp.Results) == 0 {
+		t.Logf("RAGQuery returned empty results")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RAG tests — from transport_coverage_uplift4_test.go
 // ---------------------------------------------------------------------------
 
@@ -270,4 +307,40 @@ func TestMCP_RAG_IngestDocument_ChunkMinSizeAlone(t *testing.T) {
 	if *got.ChunkConfig != want {
 		t.Errorf("ChunkConfig = %+v, want %+v", *got.ChunkConfig, want)
 	}
+}
+
+func TestMCP_RAG_Query_AllParams(t *testing.T) {
+	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
+	defer cleanup()
+
+	_, err := tr.RAGQuery(context.Background(), &transport.RAGQueryRequest{
+		Query:     "what is QRDB",
+		Namespace: "ns1",
+		TopK:      5,
+		Model:     "ada-002",
+		Provider:  "openai",
+		Filter:    map[string]string{"type": "doc"},
+	})
+	if err != nil {
+		t.Logf("RAGQuery with all params: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RAG tests — from transport_coverage_uplift7_test.go
+// ---------------------------------------------------------------------------
+
+func TestMCP_RAG_ListDocuments_WithPagination(t *testing.T) {
+	tr, cleanup := connectRAGInProcess(t, newMinimalRAGSvc())
+	defer cleanup()
+
+	resp, err := tr.RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{
+		Namespace: "ns1",
+		Limit:     10,
+		Offset:    5,
+	})
+	if err != nil {
+		t.Fatalf("RAGListDocuments with pagination: %v", err)
+	}
+	_ = resp
 }

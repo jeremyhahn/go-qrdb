@@ -502,6 +502,55 @@ func TestBarrierHasRecoveryKeys_ServiceError(t *testing.T) {
 // BarrierEnableEncryption
 // ---------------------------------------------------------------------------
 
+// mockEncMigrator is a minimal in-memory service.EncryptionMigrator for
+// transport round-trip tests. It records the last call's scope and target
+// strategy.
+type mockEncMigrator struct {
+	mu           sync.Mutex
+	lastScope    service.BarrierScope
+	lastStrategy seal.StrategyID
+	err          error
+}
+
+func (m *mockEncMigrator) EnableEncryption(_ context.Context, scope service.BarrierScope, opts seal.MigrationOptions) error {
+	m.mu.Lock()
+	m.lastScope = scope
+	m.lastStrategy = opts.TargetStrategy
+	m.mu.Unlock()
+	return m.err
+}
+
+// connectEncMigratorInProcess starts a real pkg/api/mcp.Server wired with mig
+// as its EncryptionMigrator (deliberately WITHOUT a barrier service -- see
+// go-qrdb#558's MCP registration fix: qrdb_barrier_enable_encryption is
+// registered independent of one) and connects an in-process MCP transport to
+// it.
+func connectEncMigratorInProcess(t *testing.T, mig service.EncryptionMigrator) (*Transport, func()) {
+	t.Helper()
+
+	srv := mcpapi.NewServer(
+		newMockKVService(),
+		newMockAdminService(),
+		":0",
+		mcpapi.WithEncryptionMigrator(mig),
+	)
+
+	mcpSrv := srv.MCPServer()
+	if mcpSrv == nil {
+		t.Fatal("MCPServer is nil")
+	}
+
+	tr, err := NewInProcess(mcpSrv)
+	if err != nil {
+		t.Fatalf("NewInProcess: %v", err)
+	}
+	if connErr := tr.Connect(context.Background()); connErr != nil {
+		t.Fatalf("Connect: %v", connErr)
+	}
+
+	return tr, func() { _ = tr.Close() }
+}
+
 // TestBarrierEnableEncryption_Success is the go-qrdb#558 wiring regression
 // test: this client method used to return a NotImplementedError
 // unconditionally, without dialing the server at all, even though
@@ -509,6 +558,31 @@ func TestBarrierHasRecoveryKeys_ServiceError(t *testing.T) {
 // qrdb_barrier_enable_encryption. A real server + real in-process client
 // round-trip proves the marshal/dial/unmarshal path, not merely that the
 // method no longer short-circuits.
+func TestBarrierEnableEncryption_Success(t *testing.T) {
+	mig := &mockEncMigrator{}
+	tr, cleanup := connectEncMigratorInProcess(t, mig)
+	defer cleanup()
+
+	resp, err := tr.BarrierEnableEncryption(context.Background(), &transport.BarrierEnableEncryptionRequest{
+		Strategy:   "passphrase",
+		Passphrase: []byte("pw"),
+	})
+	if err != nil {
+		t.Fatalf("BarrierEnableEncryption: %v", err)
+	}
+	if resp.Status != "migration_started" || resp.Scope != "system" {
+		t.Errorf("resp = %+v", resp)
+	}
+
+	mig.mu.Lock()
+	defer mig.mu.Unlock()
+	if mig.lastScope.Kind != service.ScopeSystem {
+		t.Errorf("scope: got %v, want system", mig.lastScope.Kind)
+	}
+	if mig.lastStrategy != seal.StrategyPassphrase {
+		t.Errorf("strategy: got %v, want passphrase", mig.lastStrategy)
+	}
+}
 
 // TestBarrierEnableEncryption_NoMigratorConfigured proves that with no
 // EncryptionMigrator configured on the server, the call round-trips to the

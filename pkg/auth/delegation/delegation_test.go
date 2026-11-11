@@ -302,6 +302,20 @@ func TestCheckLifetime(t *testing.T) {
 	}
 }
 
+func TestErrorStrings(t *testing.T) {
+	cause := errors.New("cause")
+	e := &ExtensionError{Reason: "r", Err: cause}
+	if !errors.Is(e, cause) || !strings.Contains(e.Error(), "cause") {
+		t.Fatalf("ExtensionError = %q", e.Error())
+	}
+	if (&ExtensionError{Reason: "r"}).Error() != "delegation: extension: r" {
+		t.Fatal("ExtensionError without a cause")
+	}
+	if (&GrantError{Field: "scope", Reason: "x"}).Error() != "delegation: scope: x" {
+		t.Fatal("GrantError")
+	}
+}
+
 // TestOID_IsPinned fails if the extension identifier moves: certificates
 // already issued carry it, and go-trusted-platform and go-xkms share its arc.
 func TestOID_IsPinned(t *testing.T) {
