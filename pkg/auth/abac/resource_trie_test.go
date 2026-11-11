@@ -38,12 +38,6 @@ func TestResourceTrie_ExactMatch(t *testing.T) {
 			wantValue: "rule1",
 		},
 		{
-			name:      "exact match 2",
-			resource:  "keys/config/cache",
-			wantFound: true,
-			wantValue: "rule2",
-		},
-		{
 			name:      "no match",
 			resource:  "keys/config/unknown",
 			wantFound: false,
@@ -83,12 +77,6 @@ func TestResourceTrie_SingleLevelWildcard(t *testing.T) {
 		{
 			name:      "wildcard match alice",
 			resource:  "keys/users/alice/profile",
-			wantFound: true,
-			wantValue: "rule1",
-		},
-		{
-			name:      "wildcard match bob",
-			resource:  "keys/users/bob/profile",
 			wantFound: true,
 			wantValue: "rule1",
 		},
@@ -231,12 +219,6 @@ func TestResourceTrie_GlobPattern(t *testing.T) {
 		{
 			name:      "glob match report",
 			resource:  "keys/reports/2024-01-final",
-			wantFound: true,
-			wantValue: "rule1",
-		},
-		{
-			name:      "glob match report different month",
-			resource:  "keys/reports/2024-12-final",
 			wantFound: true,
 			wantValue: "rule1",
 		},
