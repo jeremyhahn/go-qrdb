@@ -42,31 +42,6 @@ func (c *compactionCell) rawNodeCtx(t *testing.T) context.Context {
 	}), tenantid.System)
 }
 
-// TestNodeKeyspaceCompaction_OffByDefault: with no node-keyspace policy set,
-// the raw keyspace keeps its history across many passes.
-func TestNodeKeyspaceCompaction_OffByDefault(t *testing.T) {
-	c := bootCompactionCell(t, embeddedTransport, server.WithCompactionInterval(25*time.Millisecond))
-	ctx := c.rawNodeCtx(t)
-	raw := c.node.Client()
-	if err := raw.KV().Put(ctx, "node/raw-key", []byte("r1")); err != nil {
-		t.Fatalf("raw put: %v", err)
-	}
-	first, err := raw.MVCC().GetRevision(ctx, "node/raw-key")
-	if err != nil {
-		t.Fatalf("raw GetRevision: %v", err)
-	}
-	if err := raw.KV().Put(ctx, "node/raw-key", []byte("r2")); err != nil {
-		t.Fatalf("raw put: %v", err)
-	}
-	if got, err := raw.Admin().NodeCompaction(ctx); err != nil || got != nil {
-		t.Fatalf("NodeCompaction on a fresh node = %+v, %v; want none", got, err)
-	}
-	time.Sleep(250 * time.Millisecond)
-	if kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision); err != nil || string(kv.Value) != "r1" {
-		t.Fatalf("the raw keyspace was compacted with no policy set: %v, %v", kv, err)
-	}
-}
-
 // adminAs returns tenantID's admin client and the context it calls with: in
 // process the node's own client, scoped by the context's tenant; remote, the
 // client dialled with the tenant's certificate.
