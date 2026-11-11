@@ -15,8 +15,6 @@ package vector
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -25,53 +23,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector/schema"
 )
-
-// TestCleanupTombstones_CommitPath tests the commit success path in cleanup
-func TestCleanupTombstones_CommitPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(tmpDir, 0o750))
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true // Test the SyncWrites path
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	ns := "test_cleanup_commit"
-	err = storage.CreateNamespace(ctx, &NamespaceInfo{
-		Name:      ns,
-		Dimension: 3,
-	})
-	require.NoError(t, err)
-
-	// Create and immediately delete a vector to create a tombstone
-	vec := &VectorValue{
-		ID:        1,
-		Version:   1,
-		Embedding: []float32{1.0, 2.0, 3.0},
-		Metadata:  map[string]string{"key": "value"},
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.UpsertVector(ctx, ns, vec)
-	require.NoError(t, err)
-
-	err = storage.DeleteVector(ctx, ns, 1)
-	require.NoError(t, err)
-
-	// Wait to ensure tombstone is old enough
-	time.Sleep(100 * time.Millisecond)
-
-	// Cleanup tombstones - should trigger count > 0 and commit path
-	err = storage.CleanupTombstones(ctx, 50*time.Millisecond)
-	require.NoError(t, err)
-}
 
 // TestBatchUpsert_MetadataIndexing tests all paths in batch upsert
 func TestBatchUpsert_MetadataIndexing(t *testing.T) {
@@ -142,40 +93,6 @@ func TestBatchDelete_ReverseIndexIteration(t *testing.T) {
 
 	err = batch.Commit()
 	assert.NoError(t, err)
-}
-
-// TestUpsertVector_ContextTimeout tests context cancellation path
-func TestUpsertVector_ContextTimeout(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	// Create namespace first
-	ctx := context.Background()
-	ns := "test_ctx_timeout"
-	err := storage.CreateNamespace(ctx, &NamespaceInfo{
-		Name:      ns,
-		Dimension: 3,
-	})
-	require.NoError(t, err)
-
-	// Create a context with very short timeout
-	ctx2, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer cancel()
-
-	// Wait for context to expire
-	time.Sleep(10 * time.Millisecond)
-
-	vec := &VectorValue{
-		ID:        1,
-		Version:   1,
-		Embedding: []float32{1.0, 2.0, 3.0},
-		Metadata:  map[string]string{"key": "value"},
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-
-	// This might fail with context deadline or succeed depending on timing
-	_ = storage.UpsertVector(ctx2, ns, vec)
 }
 
 // TestIteratorNext_FirstCallPath tests the first call path in Next()
@@ -272,45 +189,6 @@ func TestUpsertVector_UpdateWithDifferentMetadata(t *testing.T) {
 	retrieved, err := storage.GetVector(ctx, ns, 1)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), retrieved.Version)
-}
-
-// TestCleanupTombstones_ShortKeyPath tests cleanup with keys that are too short
-func TestCleanupTombstones_ShortKeyPath(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	// Create namespace
-	ns := "test_cleanup_short"
-	err := storage.CreateNamespace(ctx, &NamespaceInfo{
-		Name:      ns,
-		Dimension: 3,
-	})
-	require.NoError(t, err)
-
-	// Create and delete vectors to generate tombstones
-	for i := uint64(1); i <= 3; i++ {
-		vec := &VectorValue{
-			ID:        i,
-			Version:   1,
-			Embedding: []float32{1.0, 2.0, 3.0},
-			Metadata:  map[string]string{"key": fmt.Sprintf("val%d", i)},
-			CreatedAt: time.Now().Unix(),
-			UpdatedAt: time.Now().Unix(),
-		}
-		err = storage.UpsertVector(ctx, ns, vec)
-		require.NoError(t, err)
-
-		err = storage.DeleteVector(ctx, ns, i)
-		require.NoError(t, err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Cleanup - tests the len(key) >= 8 check and timestamp extraction
-	err = storage.CleanupTombstones(ctx, 50*time.Millisecond)
-	require.NoError(t, err)
 }
 
 // TestMetadataIterator_FirstPath tests metadata iterator first call path

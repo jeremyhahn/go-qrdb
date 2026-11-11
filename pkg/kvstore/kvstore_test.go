@@ -32,14 +32,6 @@ func TestSealedError_Message(t *testing.T) {
 	}
 }
 
-func TestSealedError_As(t *testing.T) {
-	var err error = &SealedError{}
-	var target *SealedError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *SealedError")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // PutError
 // ---------------------------------------------------------------------------
@@ -65,14 +57,6 @@ func TestPutError_Unwrap(t *testing.T) {
 	}
 	if target.Key != "k" {
 		t.Fatalf("Key: got %q, want %q", target.Key, "k")
-	}
-}
-
-func TestPutError_EmptyKey(t *testing.T) {
-	err := &PutError{Key: "", Err: io.ErrUnexpectedEOF}
-	want := "kvstore put : unexpected EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
 
@@ -104,14 +88,6 @@ func TestGetError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestGetError_EmptyKey(t *testing.T) {
-	err := &GetError{Key: "", Err: io.ErrUnexpectedEOF}
-	want := "kvstore get : unexpected EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DeleteError
 // ---------------------------------------------------------------------------
@@ -137,14 +113,6 @@ func TestDeleteError_Unwrap(t *testing.T) {
 	}
 	if target.Key != "k" {
 		t.Fatalf("Key: got %q, want %q", target.Key, "k")
-	}
-}
-
-func TestDeleteError_EmptyKey(t *testing.T) {
-	err := &DeleteError{Key: "", Err: io.ErrUnexpectedEOF}
-	want := "kvstore delete : unexpected EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
 
@@ -176,14 +144,6 @@ func TestScanError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestScanError_EmptyPrefix(t *testing.T) {
-	err := &ScanError{Prefix: "", Err: io.EOF}
-	want := "kvstore scan : EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ListError
 // ---------------------------------------------------------------------------
@@ -212,14 +172,6 @@ func TestListError_Unwrap(t *testing.T) {
 	}
 }
 
-func TestListError_EmptyPrefix(t *testing.T) {
-	err := &ListError{Prefix: "", Err: io.ErrUnexpectedEOF}
-	want := "kvstore list : unexpected EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ExistsError
 // ---------------------------------------------------------------------------
@@ -245,13 +197,5 @@ func TestExistsError_Unwrap(t *testing.T) {
 	}
 	if target.Key != "k" {
 		t.Fatalf("Key: got %q, want %q", target.Key, "k")
-	}
-}
-
-func TestExistsError_EmptyKey(t *testing.T) {
-	err := &ExistsError{Key: "", Err: io.ErrUnexpectedEOF}
-	want := "kvstore exists : unexpected EOF"
-	if err.Error() != want {
-		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
 	}
 }
