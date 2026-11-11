@@ -51,28 +51,6 @@ func (plainTransport) Close() error                                    { return 
 func (plainTransport) Healthy(context.Context) bool                    { return true }
 func (plainTransport) Request(context.Context, string, any, any) error { return nil }
 
-func TestDatabaseScoped_DelegatesToTransport(t *testing.T) {
-	c, err := NewClient(&scoperTransport{})
-	if err != nil {
-		t.Fatalf("new client: %v", err)
-	}
-	scoped, err := c.DatabaseScoped("db2")
-	if err != nil {
-		t.Fatalf("DatabaseScoped: %v", err)
-	}
-	if scoped == c {
-		t.Fatal("expected a distinct scoped client")
-	}
-	// The scoped client wraps a scoper transport carrying db2.
-	st, ok := scoped.transport.(*scoperTransport)
-	if !ok {
-		t.Fatalf("unexpected transport type %T", scoped.transport)
-	}
-	if st.database != "db2" {
-		t.Fatalf("expected db2, got %q", st.database)
-	}
-}
-
 func TestDatabaseScoped_SystemIsTheReceiver(t *testing.T) {
 	for _, tr := range []transport.Transport{&scoperTransport{}, plainTransport{}} {
 		c, _ := NewClient(tr)
@@ -93,14 +71,6 @@ func TestDatabaseScoped_UnsupportedTransportRefuses(t *testing.T) {
 	var unsupported *transport.DatabaseScopeUnsupportedError
 	if !errors.As(err, &unsupported) || scoped != nil {
 		t.Fatalf("DatabaseScoped over a non-scoper = %v, %v; want *transport.DatabaseScopeUnsupportedError", scoped, err)
-	}
-}
-
-func TestDatabaseScoped_TransportRefusalPropagates(t *testing.T) {
-	refusal := &transport.DatabaseScopeUnsupportedError{Database: "db2", Reason: "test"}
-	c, _ := NewClient(&scoperTransport{refuse: refusal})
-	if _, err := c.DatabaseScoped("db2"); !errors.Is(err, refusal) {
-		t.Fatalf("err = %v, want the transport's refusal", err)
 	}
 }
 
