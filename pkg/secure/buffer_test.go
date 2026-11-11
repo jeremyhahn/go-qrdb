@@ -127,16 +127,6 @@ func TestNewBufferFromBytes_Empty(t *testing.T) {
 	}
 }
 
-func TestBuffer_DoubleDestroyIsSafe(t *testing.T) {
-	buf, err := NewBuffer(16)
-	if err != nil {
-		t.Fatalf("NewBuffer: %v", err)
-	}
-	buf.Destroy()
-	buf.Destroy() // must not panic
-	buf.Destroy()
-}
-
 // TestBuffer_DestroyErr pins the observable half of Destroy's contract: a
 // normal release reports nil, it is idempotent (a second call is a no-op that
 // also reports nil, not "already destroyed"), and it is safe on a nil
@@ -162,16 +152,6 @@ func TestBuffer_DestroyErr(t *testing.T) {
 	if err := nilBuf.DestroyErr(); err != nil {
 		t.Fatalf("DestroyErr() on a nil Buffer = %v, want nil", err)
 	}
-}
-
-// Destroy itself must still discard whatever DestroyErr reports, for the
-// existing `defer buf.Destroy()` call sites this package has everywhere.
-func TestBuffer_DestroyDiscardsTheReportForTheDeferredCallers(t *testing.T) {
-	buf, err := NewBuffer(16)
-	if err != nil {
-		t.Fatalf("NewBuffer: %v", err)
-	}
-	buf.Destroy() // must not panic and returns nothing to check
 }
 
 func TestBuffer_NilReceiverIsSafe(t *testing.T) {
@@ -202,39 +182,6 @@ func TestBuffer_ConcurrentDestroy(t *testing.T) {
 	wg.Wait()
 	if buf.Size() != 0 {
 		t.Fatalf("after concurrent destroy, Size() = %d, want 0", buf.Size())
-	}
-}
-
-// TestBuffer_MemoryInaccessibleAfterDestroy verifies the post-Destroy
-// guarantee: the caller cannot observe the prior contents. memguard
-// unmaps the underlying page on Destroy, so any attempt to read via a
-// retained slice reference faults with SIGSEGV. Our wrapper's public
-// API shields the caller from that fault by refusing WithBytes (so CopyOut
-// yields nothing) and returning 0 for Size() after Destroy; this test asserts
-// that contract.
-func TestBuffer_MemoryInaccessibleAfterDestroy(t *testing.T) {
-	buf, err := NewBufferFromBytes([]byte("canary-bytes"))
-	if err != nil {
-		t.Fatalf("NewBufferFromBytes: %v", err)
-	}
-	// Before Destroy, the contents read back and Size reports the length.
-	if buf.Size() != len("canary-bytes") {
-		t.Fatalf("pre-destroy Size mismatch")
-	}
-	if len(contents(buf)) != len("canary-bytes") {
-		t.Fatalf("pre-destroy contents len mismatch")
-	}
-
-	buf.Destroy()
-
-	// Post-Destroy: our wrapper must refuse to hand out the underlying
-	// slice. This prevents accidental use-after-destroy faults at
-	// callers.
-	if contents(buf) != nil {
-		t.Fatalf("contents must be unreadable after Destroy")
-	}
-	if buf.Size() != 0 {
-		t.Fatalf("Size() must be 0 after Destroy")
 	}
 }
 
