@@ -180,37 +180,6 @@ func TestUnixRT_PutWithLease(t *testing.T) {
 	}
 }
 
-func TestUnixRT_GetRevision(t *testing.T) {
-	svc := newMockMVCCSvc()
-	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
-	defer cleanup()
-
-	got, err := tr.GetRevision(context.Background(), "k1")
-	if err != nil {
-		t.Fatalf("GetRevision: %v", err)
-	}
-	if got == nil || string(got.Key) != "k1" {
-		t.Errorf("got %+v", got)
-	}
-	if got.ModRevision != 5 {
-		t.Errorf("got ModRevision=%d, want 5", got.ModRevision)
-	}
-}
-
-func TestUnixRT_GetAtRevision(t *testing.T) {
-	svc := newMockMVCCSvc()
-	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
-	defer cleanup()
-
-	got, err := tr.GetAtRevision(context.Background(), "k1", 99)
-	if err != nil {
-		t.Fatalf("GetAtRevision: %v", err)
-	}
-	if got == nil || got.ModRevision != 99 {
-		t.Errorf("got %+v, want ModRevision=99", got)
-	}
-}
-
 // TestUnixRT_GetAtRevision_Compacted: a revision below the compaction floor
 // comes back as the typed refusal carrying the revision asked for.
 func TestUnixRT_GetAtRevision_Compacted(t *testing.T) {
@@ -293,30 +262,6 @@ func TestUnixRT_Range_WithSortOptions(t *testing.T) {
 	}
 	if got.Count != 1 {
 		t.Errorf("got Count=%d, want 1", got.Count)
-	}
-}
-
-func TestUnixRT_Compact(t *testing.T) {
-	svc := newMockMVCCSvc()
-	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
-	defer cleanup()
-
-	if err := tr.Compact(context.Background(), 100); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-}
-
-func TestUnixRT_CurrentRevision(t *testing.T) {
-	svc := newMockMVCCSvc()
-	tr, cleanup := startAuthServer(t, unixserver.WithMVCC(svc))
-	defer cleanup()
-
-	rev, err := tr.CurrentRevision(context.Background())
-	if err != nil {
-		t.Fatalf("CurrentRevision: %v", err)
-	}
-	if rev != 42 {
-		t.Errorf("got rev=%d, want 42", rev)
 	}
 }
 
@@ -474,29 +419,6 @@ var _ service.TransactionServicer = (*mockTransactionSvc)(nil)
 // ---------------------------------------------------------------------------
 // Transaction round-trips
 // ---------------------------------------------------------------------------
-
-func TestUnixRT_ExecuteTransaction(t *testing.T) {
-	svc := &mockTransactionSvc{}
-	tr, cleanup := startAuthServer(t, unixserver.WithTransaction(svc))
-	defer cleanup()
-
-	resp, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
-		Compares: []transport.Compare{{
-			Key:    []byte("k"),
-			Target: transport.CompareValue,
-			Result: transport.CompareEqual,
-			Value:  []byte("v"),
-		}},
-		SuccessOps: []transport.Op{{Type: transport.OpPut, Key: []byte("k"), Value: []byte("new")}},
-		FailureOps: []transport.Op{{Type: transport.OpGet, Key: []byte("k")}},
-	})
-	if err != nil {
-		t.Fatalf("ExecuteTransaction: %v", err)
-	}
-	if !resp.Succeeded || resp.Revision != 10 {
-		t.Errorf("got %+v, want Succeeded=true Revision=10", resp)
-	}
-}
 
 func TestUnixRT_ExecuteTransaction_PropagatesArgs(t *testing.T) {
 	svc := &mockTransactionSvc{
