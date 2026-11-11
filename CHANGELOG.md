@@ -29,7 +29,10 @@ are not reconstructed here — their history is in the git log.
   `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
   to `strict` in one compare-and-swap, so a racing writer is refused and the
   floor is never unset in between. The Go SDK's `TenantInfo` reports the
-  tenant's isolation policy (`IsolationPolicy`) on every transport.
+  tenant's isolation policy (`IsolationPolicy`) on every transport. A tenant
+  update that changes `isolation_policy` always needs `tenants:update` on the
+  target tenant (and `tenants:update:cross` for another tenant), even when it
+  also carries `status` or `isolation_type`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
