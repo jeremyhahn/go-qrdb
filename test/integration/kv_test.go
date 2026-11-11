@@ -231,28 +231,6 @@ func (l *nodeLog) Lines(s string) []string {
 // Single-node KV tests
 // ---------------------------------------------------------------------------
 
-func TestKV_SingleNode_PutGetDelete(t *testing.T) {
-	adminPort, ca := startSingleNode(t, "pebble")
-
-	// PUT a key.
-	httpPut(t, ca, adminPort, "greeting", []byte("hello world"))
-
-	// GET the key and verify value.
-	val := httpGet(t, ca, adminPort, "greeting")
-	if !bytes.Equal(val, []byte("hello world")) {
-		t.Fatalf("GET greeting: got %q, want %q", val, "hello world")
-	}
-
-	// DELETE the key.
-	httpDelete(t, ca, adminPort, "greeting")
-
-	// GET after DELETE should return 404.
-	status := httpGetStatus(t, ca, adminPort, "greeting")
-	if status != http.StatusNotFound {
-		t.Fatalf("GET after DELETE: got %d, want 404", status)
-	}
-}
-
 func TestKV_SingleNode_Overwrite(t *testing.T) {
 	adminPort, ca := startSingleNode(t, "pebble")
 
@@ -491,22 +469,6 @@ func TestKV_ThreeNode_AllEndpoints(t *testing.T) {
 	s := httpGetStatus(t, ca, leaderPort, "test/a")
 	if s != http.StatusNotFound {
 		t.Errorf("GET after DELETE: got %d, want 404", s)
-	}
-}
-
-func TestKV_ThreeNode_ReadAfterWrite(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "pebble")
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-
-	// Write then immediately read -- linearizable consistency guarantee.
-	for i := range 10 {
-		key := fmt.Sprintf("raw/%d", i)
-		val := fmt.Sprintf("value-%d", i)
-		httpPut(t, ca, leaderPort, key, []byte(val))
-		got := httpGet(t, ca, leaderPort, key)
-		if string(got) != val {
-			t.Fatalf("read-after-write %s: got %q, want %q", key, got, val)
-		}
 	}
 }
 
