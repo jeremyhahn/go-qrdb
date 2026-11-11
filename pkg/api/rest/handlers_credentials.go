@@ -106,7 +106,7 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 	}
 	name, err := credentialNameFromSegment(segment)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -423,7 +423,7 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 	}
 	name, err := credentialNameFromSegment(parts[0])
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, err)
+		writeErrorJSON(w, mapHTTPError(err), err)
 		return
 	}
 
@@ -515,7 +515,7 @@ func credentialNameFromSegment(segment string) (string, error) {
 		return "", &InvalidParameterError{Param: "name", Err: err}
 	}
 	if name == "" {
-		return "", &MissingParameterError{Param: "name"}
+		return "", &InvalidParameterError{Param: "name", Err: &MissingParameterError{Param: "name"}}
 	}
 	return name, nil
 }
