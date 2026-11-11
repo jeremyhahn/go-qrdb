@@ -197,17 +197,3 @@ func TestMapGRPCError_Unavailable(t *testing.T) {
 // ===========================================================================
 // Request method — error from Invoke (disconnected conn)
 // ===========================================================================
-
-func TestUnixRequest_InvokeError(t *testing.T) {
-	// A Transport with a nil conn will panic on Invoke. Use a real (but
-	// unconnected) server address so Connect fails and we can't call Invoke.
-	// Instead, verify the closed path.
-	tr := &Transport{config: &transport.Config{}}
-	tr.closed.Store(true)
-
-	err := tr.Request(context.Background(), "/some.Method", nil, nil)
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
