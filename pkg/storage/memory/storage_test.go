@@ -341,13 +341,6 @@ func TestClose_Idempotent(t *testing.T) {
 	}
 }
 
-func TestClose_NoError(t *testing.T) {
-	s := NewStorage()
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: unexpected error: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // List tests
 // ---------------------------------------------------------------------------
@@ -1072,26 +1065,6 @@ func TestIterator_Value(t *testing.T) {
 	}
 }
 
-func TestIterator_OnlyKeys(t *testing.T) {
-	s := openTestStorage(t)
-	if err := s.Set([]byte("k"), []byte("myvalue")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	iter := s.NewIterator(&storage.IteratorOptions{OnlyKeys: true})
-	defer func() { _ = iter.Close() }()
-
-	if !iter.SeekToFirst() {
-		t.Fatal("SeekToFirst: expected true")
-	}
-	if string(iter.Key()) != "k" {
-		t.Fatalf("Key: got %q, want %q", iter.Key(), "k")
-	}
-	if iter.Value() != nil {
-		t.Fatalf("Value with OnlyKeys: got %v, want nil", iter.Value())
-	}
-}
-
 func TestIterator_OnlyKeysMultiple(t *testing.T) {
 	s := openTestStorage(t)
 	for _, k := range []string{"a", "b", "c"} {
@@ -1728,36 +1701,9 @@ func TestConcurrent_BatchCommits(t *testing.T) {
 // Compile-time interface check
 // ---------------------------------------------------------------------------
 
-func TestInterfaceCompliance(t *testing.T) {
-	// The var _ check at package level already ensures this, but an explicit
-	// test makes the intent clear.
-	s := openTestStorage(t)
-	var _ storage.Storage = s
-}
-
 // ---------------------------------------------------------------------------
 // NewStorage constructor
 // ---------------------------------------------------------------------------
-
-func TestNewStorage(t *testing.T) {
-	s := NewStorage()
-	if s == nil {
-		t.Fatal("NewStorage returned nil")
-	}
-	defer func() { _ = s.Close() }()
-
-	// Verify it is usable.
-	if err := s.Set([]byte("test"), []byte("value")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	got, err := s.Get([]byte("test"))
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if string(got) != "value" {
-		t.Fatalf("Get: got %q, want %q", got, "value")
-	}
-}
 
 func TestIterator_SeekToFirst_LowerBoundExceedsUpperBound(t *testing.T) {
 	s := openTestStorage(t)
@@ -1818,28 +1764,6 @@ func TestIterator_SeekToLast_ResultBelowLowerBound(t *testing.T) {
 
 	if iter.SeekToLast() {
 		t.Fatal("SeekToLast: expected false when result is below LowerBound")
-	}
-}
-
-func TestIterator_SeekToLast_UpperBoundSeekPrevBelowLower(t *testing.T) {
-	s := openTestStorage(t)
-
-	// Keys: a, b. Bounds [c, d). Seek to "d" goes past end, Last() returns "b",
-	// but "b" < "c" (LowerBound), so invalid.
-	for _, k := range []string{"a", "b"} {
-		if err := s.Set([]byte(k), []byte("val")); err != nil {
-			t.Fatalf("Set: %v", err)
-		}
-	}
-
-	iter := s.NewIterator(&storage.IteratorOptions{
-		LowerBound: []byte("c"),
-		UpperBound: []byte("d"),
-	})
-	defer func() { _ = iter.Close() }()
-
-	if iter.SeekToLast() {
-		t.Fatal("SeekToLast: expected false when all keys below LowerBound")
 	}
 }
 
