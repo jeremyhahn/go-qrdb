@@ -167,16 +167,6 @@ func TestNew_WithDefaults(t *testing.T) {
 	}
 }
 
-func TestNew_WithCustomTTL(t *testing.T) {
-	svc := newMockRoleService(nil)
-	ttl := 5 * time.Minute
-	authz := New(svc, WithCacheTTL(ttl))
-
-	if authz.cache.ttl != ttl {
-		t.Fatalf("expected TTL %v, got %v", ttl, authz.cache.ttl)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Authorize tests — basic admission
 // ---------------------------------------------------------------------------
@@ -402,7 +392,8 @@ func TestAuthorize_CacheExpiry(t *testing.T) {
 	svc := newMockRoleService(map[string][]permission.Permission{
 		"reader": {"kv:get"},
 	})
-	authz := New(svc, WithCacheTTL(10*time.Millisecond))
+	ttl := time.Hour
+	authz := New(svc, WithCacheTTL(ttl))
 
 	identity := &auth.Identity{
 		Subject:  "user-5",
@@ -410,14 +401,27 @@ func TestAuthorize_CacheExpiry(t *testing.T) {
 		Roles:    []string{"reader"},
 	}
 
-	// First call: cache miss.
+	// First call: cache miss. The entry it stores expires one TTL from now.
+	before := time.Now()
 	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
+	after := time.Now()
 	if svc.callCount.Load() != 1 {
 		t.Fatalf("expected 1 call after first authorize, got %d", svc.callCount.Load())
 	}
-
-	// Wait for cache to expire.
-	time.Sleep(20 * time.Millisecond)
+	entries := 0
+	authz.cache.entries.Range(func(_, v any) bool {
+		entries++
+		e := v.(*cacheEntry)
+		if e.expiresAt.Before(before.Add(ttl)) || e.expiresAt.After(after.Add(ttl)) {
+			t.Errorf("entry expires at %v, want one TTL (%v) after the store", e.expiresAt, ttl)
+		}
+		// Age the entry past its expiry instead of waiting the TTL out.
+		e.expiresAt = time.Now().Add(-time.Nanosecond)
+		return true
+	})
+	if entries != 1 {
+		t.Fatalf("expected 1 cache entry, got %d", entries)
+	}
 
 	// Second call: cache expired, should resolve again.
 	_ = authz.Authorize(ctxFor("tenant-1"), identity, "kv", "get")
@@ -882,14 +886,6 @@ func TestResolveError_Unwrap(t *testing.T) {
 // Cache tests (directly exercised for completeness)
 // ---------------------------------------------------------------------------
 
-func TestCache_GetMiss(t *testing.T) {
-	c := newPermissionCache(time.Minute)
-	_, ok := c.get("t", "s", []string{"r1"})
-	if ok {
-		t.Fatal("expected cache miss for empty cache")
-	}
-}
-
 func TestCache_SetAndGet(t *testing.T) {
 	c := newPermissionCache(time.Minute)
 	c.set("t", "s", []string{"r1"}, []permission.Permission{"kv:get", "kv:put"})
@@ -906,23 +902,6 @@ func TestCache_SetAndGet(t *testing.T) {
 	}
 	if _, has := perms["kv:put"]; !has {
 		t.Fatal("expected kv:put in permission set")
-	}
-}
-
-func TestCache_Expiry(t *testing.T) {
-	c := newPermissionCache(10 * time.Millisecond)
-	c.set("t", "s", []string{"r1"}, []permission.Permission{"kv:get"})
-
-	_, ok := c.get("t", "s", []string{"r1"})
-	if !ok {
-		t.Fatal("expected cache hit before expiry")
-	}
-
-	time.Sleep(20 * time.Millisecond)
-
-	_, ok = c.get("t", "s", []string{"r1"})
-	if ok {
-		t.Fatal("expected cache miss after expiry")
 	}
 }
 
