@@ -521,11 +521,15 @@ type failsNTimesThenSucceeds struct {
 	remain atomic.Int32
 	fail   error
 	calls  atomic.Int32
+	onFail func() // optional; runs before each failing return
 }
 
 func (l *failsNTimesThenSucceeds) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	l.calls.Add(1)
 	if l.remain.Add(-1) >= 0 {
+		if l.onFail != nil {
+			l.onFail()
+		}
 		return nil, l.fail
 	}
 	return l.real.GetUserByUsername(ctx, tenantID, username)
@@ -703,13 +707,13 @@ func TestWatchForAdminBound_ContextCanceledDuringInitialLookupRetryPropagatesErr
 
 	lookup := &failsNTimesThenSucceeds{real: userSvc, fail: errTransientLookupFault}
 	lookup.remain.Store(1_000_000) // never succeeds within this test's lifetime
+	// Cancel inside the first failing call: the retry loop then reaches its
+	// backoff select with ctx already done, every run.
+	lookup.onFail = cancel
 
 	notifier := &capturingAdminBoundNotifier{}
 	done := make(chan error, 1)
 	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
-
-	time.Sleep(10 * time.Millisecond) // let the first failing call enter its backoff wait
-	cancel()
 
 	select {
 	case err := <-done:
@@ -768,14 +772,18 @@ func TestWatchForAdminBound_WatchRegistrationFailurePropagates(t *testing.T) {
 // ever being found at all, distinct from failsReCheckNTimesThenSucceeds,
 // which eventually recovers.
 type failsAfterFirstCall struct {
-	real  AdminLookup
-	fail  error
-	calls atomic.Int32
+	real   AdminLookup
+	fail   error
+	calls  atomic.Int32
+	onFail func() // optional; runs before each failing return
 }
 
 func (l *failsAfterFirstCall) GetUserByUsername(ctx context.Context, tenantID, username string) (*user.User, error) {
 	if l.calls.Add(1) == 1 {
 		return l.real.GetUserByUsername(ctx, tenantID, username)
+	}
+	if l.onFail != nil {
+		l.onFail()
 	}
 	return nil, l.fail
 }
@@ -801,13 +809,12 @@ func TestWatchForAdminBound_ContextCanceledDuringRecheckRetryReturnsNil(t *testi
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	lookup := &failsAfterFirstCall{real: userSvc, fail: errTransientLookupFault}
+	// Cancel inside the re-check's first failing call: its retry loop then
+	// reaches the backoff select with ctx already done, every run.
+	lookup := &failsAfterFirstCall{real: userSvc, fail: errTransientLookupFault, onFail: cancel}
 	notifier := &capturingAdminBoundNotifier{}
 	done := make(chan error, 1)
 	go func() { done <- WatchForAdminBound(ctx, lookup, neverDeliveringAdminWatcher{}, notifier) }()
-
-	time.Sleep(10 * time.Millisecond) // let the re-check's first failing call enter its backoff wait
-	cancel()
 
 	select {
 	case err := <-done:
