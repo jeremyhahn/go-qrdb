@@ -85,6 +85,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -112,6 +113,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	raftbackend "github.com/jeremyhahn/go-qrdb/pkg/backend/raft"
+	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/capabilities"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
@@ -4864,13 +4866,20 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	if svcNode.Invitations != nil {
 		opts = append(opts, server.WithInvitations(svcNode.Invitations))
 	}
-	if svcNode.TenantOnboarding != nil {
-		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
-	}
 	// The SO PIN store the SO gate verifies against is the one tenant create
-	// commits a tenant SO's PIN to, as cmd/qrdbd wires it.
-	if pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator; pins != nil {
+	// commits a tenant SO's PIN to, as cmd/qrdbd wires it. Without it a
+	// strict tenant create is refused, and the refusal names the option the
+	// embedder passes.
+	pins := server.ResolveCryptoOptions(callerOpts...).SOAuthenticator
+	if pins != nil {
 		svcNode.AttachSOPINs(pins)
+	}
+	if svcNode.TenantOnboarding != nil {
+		// Node.Services hands the embedder the same wrapped service.
+		if _, wrapped := svcNode.TenantOnboarding.(soPINOptionOnboarding); pins == nil && !wrapped {
+			svcNode.TenantOnboarding = soPINOptionOnboarding{inner: svcNode.TenantOnboarding}
+		}
+		opts = append(opts, server.WithTenantOnboarding(svcNode.TenantOnboarding))
 	}
 	if svcNode.Embedding != nil {
 		opts = append(opts, server.WithEmbedding(svcNode.Embedding))
@@ -4900,6 +4909,30 @@ func buildServerOpts(svcNode *lifecycle.Node, ceremonySvc service.CeremonyServic
 	}
 	// Caller opts last: allow overriding any of the above.
 	return append(opts, callerOpts...)
+}
+
+// soPINSeamPrefix opens the bootstrap refusal for a tenant create that names
+// an SO when no SO PIN store is attached.
+const soPINSeamPrefix = "Dependencies.SOPINs"
+
+// soPINOptionOnboarding is tenant onboarding on a node built without
+// server.WithSOAuthenticator. The bootstrap refusal of a strict tenant create
+// names an internal seam; this wraps it so the error names the option the
+// embedder passes, and errors.As still finds the
+// *bootstrap.MissingProvisioningSeamError.
+type soPINOptionOnboarding struct {
+	inner service.TenantOnboardingServicer
+}
+
+// OnboardTenant runs the inner onboarding and names server.WithSOAuthenticator
+// in a missing-SO-PIN-store refusal.
+func (o soPINOptionOnboarding) OnboardTenant(ctx context.Context, req *service.OnboardTenantRequest) (*service.OnboardTenantResult, error) {
+	res, err := o.inner.OnboardTenant(ctx, req)
+	var seam *bootstrap.MissingProvisioningSeamError
+	if err != nil && errors.As(err, &seam) && strings.HasPrefix(seam.Seam, soPINSeamPrefix) {
+		return res, fmt.Errorf("node built without server.WithSOAuthenticator, which a strict tenant create needs to commit the tenant SO's PIN: %w", err)
+	}
+	return res, err
 }
 
 // resolveBackend returns the storage backend type and data directory derived
