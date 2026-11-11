@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"slices"
 	"sort"
@@ -652,6 +653,12 @@ func legacyMeta(raw []byte) (*credentialMeta, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&meta); err != nil {
+		return nil, false
+	}
+	// The whole value must be the one metadata document: trailing data
+	// (another JSON value or bytes that are not JSON) makes it a credential.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, false
 	}
 	if meta.CurrentVersion == 0 && len(meta.History) == 0 && meta.Policy == nil {
