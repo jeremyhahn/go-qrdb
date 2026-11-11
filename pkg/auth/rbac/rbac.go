@@ -563,23 +563,6 @@ func (a *RBACAuthorizer) resolvePermissionsOnce(resolveCtx context.Context, role
 //     resolved in the identity's own tenant when a tenant-aware resolver is
 //     installed (see WithScopeResolver); a resolver error fails safe.
 func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity, resource, action string) error {
-	return a.authorize(ctx, identity, resource, action, true)
-}
-
-// AuthorizeGrant reports whether identity's roles cover resource:action for
-// the purpose of granting it to a role (role.ValidateGrantable), not of
-// exercising it. It is Authorize without the SO cryptographic denial: the SO
-// administers roles but never uses keys (the PKCS#11 SO model), so a
-// cryptographic permission its roles otherwise cover is one it may grant,
-// though Authorize still refuses it to the SO itself. Every other refusal
-// -- holder certificates, missing grants, scope -- is Authorize's.
-func (a *RBACAuthorizer) AuthorizeGrant(ctx context.Context, identity *auth.Identity, resource, action string) error {
-	return a.authorize(ctx, identity, resource, action, false)
-}
-
-// authorize is Authorize, with the SO cryptographic denial applied only when
-// denySO is set (AuthorizeGrant clears it).
-func (a *RBACAuthorizer) authorize(ctx context.Context, identity *auth.Identity, resource, action string, denySO bool) error {
 	if identity == nil {
 		return auth.ErrUnauthenticated
 	}
@@ -611,7 +594,7 @@ func (a *RBACAuthorizer) authorize(ctx context.Context, identity *auth.Identity,
 	// denied exactly as a plain SO role already is. Checking only Roles left
 	// a bound SO grant free to combine with another tenant-scoped grant and
 	// evade the FIPS denial entirely.
-	if denySO && isSODenied(resource, action) {
+	if isSODenied(resource, action) {
 		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
 		if err != nil {
 			return err

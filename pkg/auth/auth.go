@@ -234,18 +234,6 @@ type Authorizer interface {
 	Authorize(ctx context.Context, identity *Identity, resource, action string) error
 }
 
-// GrantAuthorizer is an Authorizer that can also decide whether an identity
-// may grant resource:action to a role, as distinct from exercising it. The
-// two differ only for the Security Officer: it administers roles but never
-// uses keys, so AuthorizeGrant admits a cryptographic permission its roles
-// otherwise cover, which Authorize refuses it. Every other refusal is the
-// same. role.ValidateGrantable uses AuthorizeGrant when the authorizer
-// provides it.
-type GrantAuthorizer interface {
-	Authorizer
-	AuthorizeGrant(ctx context.Context, identity *Identity, resource, action string) error
-}
-
 // NoopAuthorizer permits all actions. Useful for development or single-user deployments.
 type NoopAuthorizer struct{}
 

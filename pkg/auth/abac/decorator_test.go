@@ -193,50 +193,6 @@ func TestDecorator_NoMatchDelegates(t *testing.T) {
 	})
 }
 
-// grantInner is an inner auth.GrantAuthorizer whose Authorize refuses and
-// whose AuthorizeGrant admits, as rbac's does for an SO granting keys:sign.
-type grantInner struct {
-	fakeAuthorizer
-	grantCalls int
-}
-
-func (g *grantInner) AuthorizeGrant(context.Context, *auth.Identity, string, string) error {
-	g.grantCalls++
-	return nil
-}
-
-// TestDecorator_AuthorizeGrant proves the decorator's grant check evaluates
-// the policies as Authorize does, and defers a request none of them decides
-// to the inner authorizer's AuthorizeGrant.
-func TestDecorator_AuthorizeGrant(t *testing.T) {
-	policy := testPolicy("guardrail", "tenant-a", Rule{
-		Name:      "no-delete",
-		Effect:    EffectDeny,
-		Actions:   []string{"delete"},
-		Resources: []string{"/kv/**"},
-	})
-	inner := &grantInner{fakeAuthorizer: fakeAuthorizer{err: fakeDeniedError{}}}
-	authz, err := Decorate(inner, WithPolicies([]*Policy{policy}))
-	if err != nil {
-		t.Fatalf("Decorate() error = %v", err)
-	}
-	ga, ok := authz.(auth.GrantAuthorizer)
-	if !ok {
-		t.Fatalf("the decorator %T is not an auth.GrantAuthorizer", authz)
-	}
-	ctx := tenant.WithTenantID(context.Background(), "tenant-a")
-	if err := ga.AuthorizeGrant(ctx, testIdentity("bob", "tenant-a"), "keys", "sign"); err != nil {
-		t.Fatalf("unmatched AuthorizeGrant = %v, want the inner grant decision", err)
-	}
-	if inner.grantCalls != 1 || inner.calls != 0 {
-		t.Fatalf("inner AuthorizeGrant %d / Authorize %d calls, want 1 / 0", inner.grantCalls, inner.calls)
-	}
-	var denied *PolicyDeniedError
-	if err := ga.AuthorizeGrant(ctx, testIdentity("bob", "tenant-a"), "/kv/orders/1", "delete"); !errors.As(err, &denied) {
-		t.Fatalf("denied AuthorizeGrant = %v, want *PolicyDeniedError", err)
-	}
-}
-
 func TestDecorator_TenantScoping(t *testing.T) {
 	// A deny policy owned by tenant-a must never affect tenant-b.
 	inner := &fakeAuthorizer{}
