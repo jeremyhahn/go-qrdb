@@ -413,6 +413,8 @@ cpus_are "daemon output malformed" 128 IN_IMAGE_CPUS=128 STUB_NCPU=abc
 cpus_are "docker info fails with no output" 128 IN_IMAGE_CPUS=128 STUB_NCPU= STUB_NCPU_RC=1
 # An unreachable daemon: the CLI still renders the template (NCPU 0) and exits 1.
 cpus_are "docker info fails printing 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0 STUB_NCPU_RC=1
+# A failed lookup that still prints a positive count must not cap: only a zero exit counts.
+cpus_are "docker info fails printing 80" 128 IN_IMAGE_CPUS=128 STUB_NCPU=80 STUB_NCPU_RC=1
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
