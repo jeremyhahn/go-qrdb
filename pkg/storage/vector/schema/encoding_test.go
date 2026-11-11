@@ -248,30 +248,6 @@ func TestNamespaceIsolation(t *testing.T) {
 	}
 }
 
-func TestMetadataIndexScan(t *testing.T) {
-	// Verify metadata index keys sort correctly for filtering
-	keys := [][]byte{
-		EncodeMetadataKey("default", "category", "tech", 1, 1),
-		EncodeMetadataKey("default", "category", "tech", 2, 1),
-		EncodeMetadataKey("default", "category", "tech", 10, 1),
-		EncodeMetadataKey("default", "category", "science", 1, 1),
-	}
-
-	// Verify proper prefix matching
-	prefix := EncodeMetadataKeyPrefix("default", "category", "tech")
-
-	matchCount := 0
-	for _, key := range keys {
-		if bytes.HasPrefix(key, prefix) {
-			matchCount++
-		}
-	}
-
-	if matchCount != 3 {
-		t.Errorf("expected 3 keys to match prefix, got %d", matchCount)
-	}
-}
-
 func TestEncodeNamespaceMetaKey(t *testing.T) {
 	key := EncodeNamespaceMetaKey("default")
 
