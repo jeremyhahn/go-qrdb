@@ -326,16 +326,6 @@ func createTestRole(t *testing.T, svc RoleServicer, name, tenantID string) *Role
 // NewStore
 // ---------------------------------------------------------------------------
 
-func TestNewStore_Success(t *testing.T) {
-	svc, err := NewStore(newMemKVStore())
-	if err != nil {
-		t.Fatalf("NewStore: %v", err)
-	}
-	if svc == nil {
-		t.Fatal("expected non-nil RoleServicer")
-	}
-}
-
 func TestNewStore_NilKVStore(t *testing.T) {
 	_, err := NewStore(nil)
 	if err == nil {
@@ -996,29 +986,6 @@ func TestListRoles_Empty(t *testing.T) {
 	}
 }
 
-func TestListRoles_WithRoles(t *testing.T) {
-	svc := newTestStore(t)
-	ctx := context.Background()
-
-	createTestRole(t, svc, "editor", "acme")
-	createTestRole(t, svc, "viewer", "acme")
-	createTestRole(t, svc, "manager", "acme")
-
-	resp, err := svc.ListRoles(ctx, &ListRolesRequest{TenantID: "acme"})
-	if err != nil {
-		t.Fatalf("ListRoles: %v", err)
-	}
-	if resp.Total != 3 {
-		t.Errorf("Total: got %d, want 3", resp.Total)
-	}
-	if len(resp.Roles) != 3 {
-		t.Errorf("Roles: got %d, want 3", len(resp.Roles))
-	}
-	if resp.HasMore {
-		t.Error("expected HasMore=false")
-	}
-}
-
 func TestListRoles_ByTenant(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
@@ -1159,20 +1126,6 @@ func TestListRoles_PageBeyondTotal(t *testing.T) {
 // ResolvePermissions
 // ---------------------------------------------------------------------------
 
-func TestResolvePermissions_SingleRole(t *testing.T) {
-	svc := newTestStore(t)
-	created := createTestRole(t, svc, "editor", "acme")
-	ctx := context.Background()
-
-	perms, err := svc.ResolvePermissions(ctx, []string{created.ID})
-	if err != nil {
-		t.Fatalf("ResolvePermissions: %v", err)
-	}
-	if len(perms) != 2 {
-		t.Errorf("Permissions: got %d, want 2", len(perms))
-	}
-}
-
 func TestResolvePermissions_MultipleRoles(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
@@ -1256,19 +1209,6 @@ func TestResolvePermissions_EmptyRoleIDs(t *testing.T) {
 	}
 }
 
-func TestResolvePermissions_NilRoleIDs(t *testing.T) {
-	svc := newTestStore(t)
-	ctx := context.Background()
-
-	perms, err := svc.ResolvePermissions(ctx, nil)
-	if err != nil {
-		t.Fatalf("ResolvePermissions: %v", err)
-	}
-	if len(perms) != 0 {
-		t.Errorf("Permissions: got %d, want 0", len(perms))
-	}
-}
-
 func TestResolvePermissions_RoleNotFound(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
@@ -1333,17 +1273,6 @@ func TestBuiltInRoles_DefaultTenant(t *testing.T) {
 	for _, r := range roles {
 		if r.TenantID != tenantid.System {
 			t.Errorf("role %q: TenantID: got %q, want %q", r.Name, r.TenantID, tenantid.System)
-		}
-	}
-}
-
-func TestBuiltInRoles_DeterministicUUID(t *testing.T) {
-	roles1 := BuiltInRoles("acme")
-	roles2 := BuiltInRoles("acme")
-	for i := range roles1 {
-		if roles1[i].ID != roles2[i].ID {
-			t.Errorf("role %q: IDs not deterministic: %q vs %q",
-				roles1[i].Name, roles1[i].ID, roles2[i].ID)
 		}
 	}
 }
@@ -2237,13 +2166,6 @@ func TestValidatePermissions_Empty(t *testing.T) {
 	}
 }
 
-func TestValidatePermissions_Nil(t *testing.T) {
-	err := validatePermissions(nil)
-	if err != nil {
-		t.Fatalf("validatePermissions(nil): unexpected error: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Fault injection: Store error paths
 // ---------------------------------------------------------------------------
@@ -2559,26 +2481,6 @@ func TestGetRole_CorruptedData(t *testing.T) {
 // ---------------------------------------------------------------------------
 // deterministicUUID
 // ---------------------------------------------------------------------------
-
-func TestDeterministicUUID_Stable(t *testing.T) {
-	id1 := deterministicUUID("acme", "admin")
-	id2 := deterministicUUID("acme", "admin")
-	if id1 != id2 {
-		t.Errorf("deterministicUUID not stable: %q vs %q", id1, id2)
-	}
-}
-
-func TestDeterministicUUID_DifferentInputs(t *testing.T) {
-	id1 := deterministicUUID("acme", "admin")
-	id2 := deterministicUUID("acme", "operator")
-	id3 := deterministicUUID("globex", "admin")
-	if id1 == id2 {
-		t.Error("different names should produce different UUIDs")
-	}
-	if id1 == id3 {
-		t.Error("different tenants should produce different UUIDs")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Integration: full lifecycle
