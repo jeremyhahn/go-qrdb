@@ -526,6 +526,12 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrRestoreFailed
 	}
+	if s.state == StateEnrolling && opts.Threshold >= 2 {
+		if result, handled, err := s.retrySystemSOPersistLocked(ctx, ca, opts, caBundle); handled {
+			s.mu.Unlock()
+			return result, err
+		}
+	}
 	if s.state != StateAwaitingInit {
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
@@ -776,7 +782,17 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	s.mu.Lock()
 	// InitializeShamir left the barrier unsealed; record the issued system
 	// SO in it before reporting success, as the single-admin path does.
+	//
+	// A failure here cannot be undone like an InitializeShamir failure:
+	// the barrier and the holder envelopes are already committed and the
+	// barrier has no un-initialize, so option (a) of go-qrdb#1129's
+	// round-1 finding is not available. Option (b) instead: the ceremony
+	// moves to StateEnrolling, exactly what restoreState reports for this
+	// barrier after a restart, and a retried Initialize then persists the
+	// SO, and only the SO (retrySystemSOPersistLocked), so strict first
+	// boot is never left without its required SO record.
 	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+		s.state = StateEnrolling
 		s.mu.Unlock()
 		return nil, err
 	}

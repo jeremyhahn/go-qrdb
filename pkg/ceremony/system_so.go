@@ -22,9 +22,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -284,6 +286,50 @@ func (s *CeremonyService) persistIssuedSystemSOLocked(ctx context.Context, so *I
 		return &SystemSOPersistError{Op: "write", Cause: err}
 	}
 	return nil
+}
+
+// retrySystemSOPersistLocked completes an M-of-N Initialize whose last step,
+// persisting the issued system SO into the unsealed barrier, failed after
+// InitializeShamir had already committed the barrier and the holder
+// envelopes (go-qrdb#1129, option (b) at Initialize). Such a ceremony sits
+// in StateEnrolling, in process and after a restart alike, with no SO
+// record, and a plain retry would get ErrAlreadyInitialized.
+//
+// handled is false, leaving Initialize to refuse as before, unless there is
+// provably no SO record (the barrier reads it as absent or empty), the PINs
+// are already provisioned, and opts asks for an SO. The caller's SO and User
+// PINs must then match the provisioned ones (pin.Provision verifies a PIN
+// already set): the retry re-runs nothing else -- no PIN provisioning, no
+// officer enrollment, no barrier initialization -- and issues and persists
+// only the SO.
+func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca CeremonyCA, opts *InitializeOptions, caBundle []byte) (*InitResult, bool, error) {
+	blob, err := s.barrier.Get(ctx, pendingSystemSOKey)
+	if err == nil && len(blob) > 0 {
+		return nil, false, nil
+	}
+	if err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+		return nil, false, nil
+	}
+	if s.pins == nil || !s.pins.SOPINSet() {
+		return nil, false, nil
+	}
+	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
+		return nil, true, err
+	}
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
+	if err != nil {
+		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
+		return nil, true, err
+	}
+	if systemSO == nil {
+		return nil, false, nil
+	}
+	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+		return nil, true, err
+	}
+	s.lastSystemSO = systemSO
+	s.logger.Info("ceremony: system SO credential issued on retry", slog.String("username", systemSO.Username))
+	return &InitResult{State: StateEnrolling, CACertPEM: caBundle, SOCertPEM: systemSO.CertPEM}, true, nil
 }
 
 // PendingSystemSO returns the system SO this node's Initialize issued: the

@@ -387,6 +387,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- An M-of-N `qrdb init` whose system SO record write failed after the Shamir barrier was initialized is left enrolling, and a retried init (after an unseal, with the provisioned SO PIN) persists only the SO, so strict first boot is never stranded without it (go-qrdb#1129).
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
