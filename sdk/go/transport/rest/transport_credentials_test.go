@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -128,7 +129,14 @@ func (s *credentialsServer) handler() http.Handler {
 			})
 
 		case strings.HasSuffix(r.URL.Path, "/migration-resolve") && r.Method == http.MethodPost:
-			s.resolveName.Store(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/credentials/"), "/migration-resolve"))
+			// The server routes on the once-decoded path and then unescapes
+			// the one name segment, as handleCredentialByPath does.
+			name, err := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/credentials/"), "/migration-resolve"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			s.resolveName.Store(name)
 			var body transport.CredentialResolveMigrationConflictRequest
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
@@ -530,6 +538,30 @@ func TestCredentialResolveMigrationConflict_Success(t *testing.T) {
 	}
 	if body, _ := srv.resolveBody.Load().(transport.CredentialResolveMigrationConflictRequest); body.Resolution != "import" {
 		t.Errorf("server saw body = %+v", body)
+	}
+}
+
+// TestCredentialPathSegment_StaysOneSegmentAfterOneDecode pins the wire form:
+// after the server decodes the path once, the name is still one segment that
+// unescapes back to the name.
+func TestCredentialPathSegment_StaysOneSegmentAfterOneDecode(t *testing.T) {
+	for name, wire := range map[string]string{
+		"plain":   "plain",
+		"db/main": "db%252Fmain",
+		"a%b":     "a%2525b",
+		"a b/%2F": "a%20b%252F%25252F",
+	} {
+		if got := credentialPathSegment(name); got != wire {
+			t.Errorf("credentialPathSegment(%q) = %q, want %q", name, got, wire)
+		}
+		decoded, err := url.PathUnescape(wire)
+		if err != nil || strings.Contains(decoded, "/") {
+			t.Fatalf("decoded segment %q (err %v) is not one segment", decoded, err)
+		}
+		back, err := url.PathUnescape(decoded)
+		if err != nil || back != name {
+			t.Errorf("round trip of %q = %q (err %v)", name, back, err)
+		}
 	}
 }
 

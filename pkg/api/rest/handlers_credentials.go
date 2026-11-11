@@ -17,6 +17,7 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -98,9 +99,14 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	name := strings.TrimPrefix(r.URL.Path, credentialsPathPrefix)
-	if name == "" || name == r.URL.Path {
+	segment := strings.TrimPrefix(r.URL.Path, credentialsPathPrefix)
+	if segment == "" || segment == r.URL.Path {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+	name, err := credentialNameFromSegment(segment)
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -411,9 +417,13 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 	}
 
 	parts := strings.Split(rest, "/")
-	name := parts[0]
-	if name == "" {
+	if parts[0] == "" {
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
+		return
+	}
+	name, err := credentialNameFromSegment(parts[0])
+	if err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -492,6 +502,22 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// credentialNameFromSegment returns the credential name a /v1/credentials/
+// path segment carries. canonicalPathMiddleware routes on the once-decoded
+// path, so a client escapes "%" and "/" in a name before path-escaping it
+// (db/main travels as db%252Fmain and arrives here as db%2Fmain); this
+// undoes that inner escape. A segment that does not unescape is refused.
+func credentialNameFromSegment(segment string) (string, error) {
+	name, err := url.PathUnescape(segment)
+	if err != nil {
+		return "", &InvalidParameterError{Param: "name", Err: err}
+	}
+	if name == "" {
+		return "", &MissingParameterError{Param: "name"}
+	}
+	return name, nil
 }
 
 // ---------------------------------------------------------------------------
