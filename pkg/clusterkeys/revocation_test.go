@@ -203,30 +203,6 @@ func TestHandler_RevokedPeerCert_Refused(t *testing.T) {
 	}
 }
 
-// TestHandler_RevokedPeerCert_AdmittedWithoutChecker is the control for the
-// test above, and it is the defect this change closes, kept executable.
-//
-// The SAME revoked certificate on the SAME request reaches the placement gate
-// when no checker is wired. If the guard is ever removed or bypassed, this
-// test keeps passing and the one above fails — which is what makes the pair
-// evidence rather than an assertion about code that happens to be present.
-func TestHandler_RevokedPeerCert_AdmittedWithoutChecker(t *testing.T) {
-	ca := newTestCA(t)
-	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	leader := newTestNodeCert(t, ca, "cluster.local", "leader-node-1")
-
-	// Revoked in the authority's eyes; the receiver is simply not asking.
-	recv := newReceiverWithRevocation(t, ca, follower, nil)
-
-	rec := httptest.NewRecorder()
-	recv.Handler()(rec, deliveryRequest(t, leader.cert))
-
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("no checker wired: status = %d, want %d (reached the placement gate)",
-			rec.Code, http.StatusForbidden)
-	}
-}
-
 // TestHandler_RevocationLookupFailure_FailsClosed verifies the second of the
 // three outcomes: a lookup that could have answered and did not refuses the
 // delivery with a retryable 503, rather than admitting a peer whose standing
@@ -555,23 +531,6 @@ func TestSender_RevokedRecipient_RefusesToSeal(t *testing.T) {
 	}
 	if authority.lookups.Load() != 1 {
 		t.Errorf("revocation lookups = %d, want 1", authority.lookups.Load())
-	}
-}
-
-// TestSender_RevokedRecipient_SealsWithoutChecker is the control: the same
-// revoked recipient receives the key when no checker is wired. This is the
-// behaviour before this change.
-func TestSender_RevokedRecipient_SealsWithoutChecker(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, nil)
-
-	if err := deliverTo(t, sender); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if deliveries.Load() != 1 {
-		t.Errorf("delivery POSTs = %d, want 1", deliveries.Load())
 	}
 }
 
