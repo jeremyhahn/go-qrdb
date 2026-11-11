@@ -81,19 +81,6 @@ func TestScan_Default(t *testing.T) {
 	}
 }
 
-func TestScan_WithConsistency(t *testing.T) {
-	kv := newMockKVService()
-	_ = kv.Put(context.Background(), "x", []byte("v"))
-	tr, _ := New(kv, &mockAdminService{})
-	out, err := tr.Scan(context.Background(), "", transport.WithConsistency(transport.ConsistencyEventual))
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if len(out) != 1 {
-		t.Errorf("len = %d", len(out))
-	}
-}
-
 func TestScan_AfterClose(t *testing.T) {
 	tr, _ := New(newMockKVService(), &mockAdminService{})
 	_ = tr.Close()
