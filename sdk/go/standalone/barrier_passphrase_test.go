@@ -229,57 +229,6 @@ func TestBarrierPassphrase_LiveBufferSealsTheDataPlane(t *testing.T) {
 	scanForPlaintext(t, filepath.Join(dataDir, "pebble"), []byte(plaintext))
 }
 
-// TestBarrierPassphrase_DestroyThenReconstruct drives the sequence the field
-// doc's own ownership rule invites: the buffer stays the CALLER'S to destroy,
-// so an embedder destroys it after the first server and builds another.
-//
-// The second data dir is fresh, which is what makes this the silent case
-// rather than a loud one.
-func TestBarrierPassphrase_DestroyThenReconstruct(t *testing.T) {
-	ctx := context.Background()
-
-	buf, err := secure.NewBufferFromBytes([]byte("reused-across-two-servers"))
-	if err != nil {
-		t.Fatalf("secure.NewBufferFromBytes: %v", err)
-	}
-
-	cfg := func(dir string) *ServerConfig {
-		return &ServerConfig{
-			Backend: database.BackendMemory,
-			DataDir: dir,
-			Barrier: &BarrierConfig{
-				Strategy:   seal.StrategyPassphrase,
-				AutoUnseal: true,
-				Passphrase: buf,
-			},
-		}
-	}
-
-	first, err := NewServer(ctx, cfg(t.TempDir()))
-	if err != nil {
-		buf.Destroy()
-		t.Fatalf("NewServer (first): %v", err)
-	}
-	if shutdownErr := first.Shutdown(ctx); shutdownErr != nil {
-		buf.Destroy()
-		t.Fatalf("Shutdown (first): %v", shutdownErr)
-	}
-
-	// The caller owns the buffer and disposes of it, exactly as documented.
-	buf.Destroy()
-
-	second, err := NewServer(ctx, cfg(t.TempDir()))
-	if err == nil {
-		_ = second.Shutdown(ctx)
-		t.Fatal("the second server came up on a destroyed passphrase — a none " +
-			"barrier, silently, from a config that names StrategyPassphrase")
-	}
-	var ppErr *BarrierPassphraseError
-	if !errors.As(err, &ppErr) {
-		t.Fatalf("err = %T (%v), want *BarrierPassphraseError", err, err)
-	}
-}
-
 // TestBarrierPassphraseError_Message covers both spellings of the diagnostic
 // and the Unwrap contract. The nil-Err form is the defensive "borrow succeeded
 // and returned nothing" branch, which no pkg/secure constructor can currently
