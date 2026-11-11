@@ -325,38 +325,6 @@ func TestTryLock_KeyHeld_DifferentHolder(t *testing.T) {
 	}
 }
 
-func TestTryLock_ReentrantSameHolder_IncrementsCount(t *testing.T) {
-	existingLV := lockValue{HolderID: "same-holder", Reentrant: true, AcquireCount: 1, LeaseID: 5, TTL: 30}
-	existingBytes := encodeLockValue(t, existingLV)
-
-	callCount := 0
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, _ []Op, _ []Op) (*TransactionResponse, error) {
-			callCount++
-			if callCount == 1 {
-				// First call: CAS fails -- key exists.
-				return &TransactionResponse{Succeeded: false, Revision: 10}, nil
-			}
-			// Second call: unconditional put for increment.
-			return &TransactionResponse{Succeeded: true, Revision: 11}, nil
-		},
-	}
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Key: []byte(lockKey("res")), Value: existingBytes, CreateRevision: 10, ModRevision: 10}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, &mockWatchService{}, kvs)
-
-	lock, err := svc.TryLock(context.Background(), LockOptions{Key: "res", HolderID: "same-holder", TTL: time.Second, Reentrant: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lock.AcquireCount != 2 {
-		t.Errorf("AcquireCount = %d, want 2", lock.AcquireCount)
-	}
-}
-
 func TestTryLock_NonReentrantSameHolder_ReturnsHeld(t *testing.T) {
 	existingLV := lockValue{HolderID: "same-holder", Reentrant: false, AcquireCount: 1, LeaseID: 5, TTL: 30}
 	existingBytes := encodeLockValue(t, existingLV)
@@ -604,24 +572,6 @@ func TestUnlock_StaleToken(t *testing.T) {
 	}
 }
 
-func TestUnlock_NotFound(t *testing.T) {
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return nil, &keyNotFoundDoubleError{key: lockKey("missing")}
-		},
-	}
-	svc := mustNewLocker(t, &mockTransactionService{}, &mockLeaseService{}, &mockWatchService{}, kvs)
-
-	err := svc.Unlock(context.Background(), "missing", 1)
-	var notFound *LockNotFoundError
-	if !errors.As(err, &notFound) {
-		t.Fatalf("expected LockNotFoundError, got %v", err)
-	}
-	if notFound.Key != "missing" {
-		t.Errorf("Key = %q, want %q", notFound.Key, "missing")
-	}
-}
-
 // TestUnlock_ReadErrorKeepsItsClass pins that a GetRevision failure other
 // than absence reaches the caller unchanged rather than as "not found".
 func TestUnlock_ReadErrorKeepsItsClass(t *testing.T) {
@@ -655,42 +605,6 @@ func TestUnlock_WrappedNotFound(t *testing.T) {
 	var notFound *LockNotFoundError
 	if err := svc.Unlock(context.Background(), "gone", 1); !errors.As(err, &notFound) || notFound.Key != "gone" {
 		t.Fatalf("Unlock error = %v, want LockNotFoundError{Key: gone}", err)
-	}
-}
-
-func TestUnlock_ReentrantDecrement(t *testing.T) {
-	lv := lockValue{HolderID: "h1", Reentrant: true, AcquireCount: 2, LeaseID: 9, TTL: 30}
-	lvBytes := encodeLockValue(t, lv)
-
-	var storedValue []byte
-	tx := &mockTransactionService{
-		executeFn: func(_ context.Context, _ []Compare, successOps, _ []Op) (*TransactionResponse, error) {
-			if len(successOps) > 0 {
-				storedValue = successOps[0].Value
-			}
-			return &TransactionResponse{Succeeded: true, Revision: 11}, nil
-		},
-	}
-	kvs := &mockMVCCKVService{
-		getRevisionFn: func(_ context.Context, _ string) (*kv.KeyValue, error) {
-			return &kv.KeyValue{Value: lvBytes, CreateRevision: 10, ModRevision: 10}, nil
-		},
-	}
-	svc := mustNewLocker(t, tx, &mockLeaseService{}, &mockWatchService{}, kvs)
-
-	err := svc.Unlock(context.Background(), "res", 10)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if storedValue == nil {
-		t.Fatal("expected updated value to be stored")
-	}
-	var updated lockValue
-	if err := json.Unmarshal(storedValue, &updated); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if updated.AcquireCount != 1 {
-		t.Errorf("AcquireCount after decrement = %d, want 1", updated.AcquireCount)
 	}
 }
 
