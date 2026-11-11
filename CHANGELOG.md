@@ -387,7 +387,10 @@ are not reconstructed here — their history is in the git log.
 ### Fixed
 
 - `qrdb roles reconcile --all-tenants` follows the SPEC again: it needs `roles:reconcile_all`, which only the system Admin holds, in both postures. The system SO no longer holds the permission and no transport requires a separate system SO first (go-qrdb#1129).
-- An M-of-N `qrdb init` whose system SO record write failed after the Shamir barrier was initialized is left enrolling, and a retried init (after an unseal, with the provisioned SO PIN) persists only the SO, so strict first boot is never stranded without it (go-qrdb#1129).
+- An M-of-N `qrdb init` whose system SO record write failed after the Shamir barrier was initialized is left enrolling, and a retried init (after an unseal, with the provisioned SO PIN) persists only the SO, so strict first boot is never stranded without it (go-qrdb#1129). The retry now reaches the ceremony core through the admin-rebind service wrapper that `qrdbd` and clustered SDK nodes serve, instead of being answered as an admin reissue.
+- The system SO and the bootstrap admin must be distinct accounts and keys only under strict separation of duties; in standard posture first boot and the `qrdb init` ceremony accept the admin as the SO, and first boot grants that account the SO role. One key still binds to one account (go-qrdb#1129).
+- Direct first boot refuses a holder-profile (custody) certificate as the system SO certificate before writing anything, as the ceremony already did (go-qrdb#1129).
+- Granting a permission to a role now checks the grantor's effective permissions, so an SO that also holds User can no longer grant `keys:sign` or another cryptographic permission it is denied (SPEC row 132). `auth.GrantAuthorizer` and its `AuthorizeGrant` methods are removed (go-qrdb#1129).
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
