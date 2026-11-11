@@ -217,16 +217,41 @@ func TestApproveJoinRequest_AlreadyDecided(t *testing.T) {
 // TestSubmitPendingJoinRequest_ExpiryReclaimed confirms an undecided entry
 // past its TTL is treated as absent: a retry starts a fresh entry rather
 // than being blocked by the stale one forever.
+// expirePendingJoin rewrites the stored entry id with an ExpiresAt in the
+// past, so a test sees an expired entry without waiting out a TTL on the
+// wall clock. It returns the rewritten record.
+func expirePendingJoin(t *testing.T, store kvstore.AtomicKVStore, id string) *pendingJoinRecord {
+	t.Helper()
+	ctx := context.Background()
+	data, err := store.Get(ctx, pendingJoinKey(id))
+	if err != nil || data == nil {
+		t.Fatalf("Get pending entry %q: data=%v err=%v", id, data, err)
+	}
+	rec, err := unmarshalPendingJoin(data)
+	if err != nil {
+		t.Fatalf("unmarshalPendingJoin: %v", err)
+	}
+	rec.ExpiresAt = rec.SubmittedAt.Add(-time.Second)
+	out, err := marshalPendingJoin(rec)
+	if err != nil {
+		t.Fatalf("marshalPendingJoin: %v", err)
+	}
+	if err := store.Put(ctx, pendingJoinKey(id), out); err != nil {
+		t.Fatalf("Put expired pending entry: %v", err)
+	}
+	return rec
+}
+
 func TestSubmitPendingJoinRequest_ExpiryReclaimed(t *testing.T) {
 	store := kvstore.NewMemoryKVStore()
 	_, csrDER := generateTestCSR(t)
 	req := &JoinRequest{CSRDER: csrDER}
 
-	first, err := SubmitPendingJoinRequest(context.Background(), store, req, time.Millisecond)
+	submitted, err := SubmitPendingJoinRequest(context.Background(), store, req, time.Hour)
 	if err != nil {
 		t.Fatalf("SubmitPendingJoinRequest: %v", err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	first := expirePendingJoin(t, store, submitted.ID)
 
 	second, err := SubmitPendingJoinRequest(context.Background(), store, req, time.Hour)
 	if err != nil {
@@ -287,10 +312,11 @@ func TestListPendingJoinRequests_SkipsExpiredAndDecided(t *testing.T) {
 	}
 
 	_, expiredCSR := generateTestCSR(t)
-	if _, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{CSRDER: expiredCSR}, time.Millisecond); err != nil {
+	expired, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{CSRDER: expiredCSR}, time.Hour)
+	if err != nil {
 		t.Fatalf("SubmitPendingJoinRequest (expired): %v", err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	expirePendingJoin(t, store, expired.ID)
 
 	_, decidedCSR := generateTestCSR(t)
 	decided, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{CSRDER: decidedCSR}, time.Hour)
@@ -386,12 +412,12 @@ func TestSubmitPendingJoinRequest_ReclaimCompareAndSwapErrorSurfacesTyped(t *tes
 	_, csrDER := generateTestCSR(t)
 	req := &JoinRequest{CSRDER: csrDER}
 
-	if _, err := SubmitPendingJoinRequest(ctx, real, req, time.Millisecond); err != nil {
+	if _, err := SubmitPendingJoinRequest(ctx, real, req, time.Hour); err != nil {
 		t.Fatalf("SubmitPendingJoinRequest (seed): %v", err)
 	}
-	time.Sleep(5 * time.Millisecond)
 
 	id := csrDigestHex(csrDER)
+	expirePendingJoin(t, real, id)
 	faulty := &faultyJoinStore{AtomicKVStore: real, failCompareAndSwapOnPrefix: pendingJoinKey(id)}
 	_, err := SubmitPendingJoinRequest(ctx, faulty, req, time.Hour)
 	var storeErr *PendingJoinStoreError
@@ -406,13 +432,12 @@ func TestSubmitPendingJoinRequest_ReclaimLostRaceReturnsWhicheverWon(t *testing.
 	_, csrDER := generateTestCSR(t)
 	req := &JoinRequest{CSRDER: csrDER}
 
-	stale, err := SubmitPendingJoinRequest(ctx, real, req, time.Millisecond)
-	if err != nil {
+	if _, err := SubmitPendingJoinRequest(ctx, real, req, time.Hour); err != nil {
 		t.Fatalf("SubmitPendingJoinRequest (seed): %v", err)
 	}
-	time.Sleep(5 * time.Millisecond)
 
 	id := csrDigestHex(csrDER)
+	stale := expirePendingJoin(t, real, id)
 	faulty := &faultyJoinStore{AtomicKVStore: real, forceCompareAndSwapFalseOnPrefix: pendingJoinKey(id)}
 	got, err := SubmitPendingJoinRequest(ctx, faulty, req, time.Hour)
 	if err != nil {
@@ -499,11 +524,11 @@ func TestApproveJoinRequest_ExpiredWhilePendingTreatedAsNotFound(t *testing.T) {
 	ctx := context.Background()
 	store := kvstore.NewMemoryKVStore()
 	_, csrDER := generateTestCSR(t)
-	rec, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{CSRDER: csrDER}, time.Millisecond)
+	rec, err := SubmitPendingJoinRequest(ctx, store, &JoinRequest{CSRDER: csrDER}, time.Hour)
 	if err != nil {
 		t.Fatalf("SubmitPendingJoinRequest: %v", err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	expirePendingJoin(t, store, rec.ID)
 
 	_, err = ApproveJoinRequest(ctx, store, testTrustDomain, rec.ID, "some-node", "operator-1")
 	var notFound *PendingJoinRequestNotFoundError
