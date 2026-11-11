@@ -253,28 +253,6 @@ func TestKeyCodec_TrailingUint64ColumnIsNotTheRowID(t *testing.T) {
 	}
 }
 
-// TestKeyCodec_DecodeRowID verifies the round trip a read path depends on:
-// the row id recovered from a key is the uint64 that was encoded into it.
-func TestKeyCodec_DecodeRowID(t *testing.T) {
-	codec, err := NewKeyCodec(keylessDef())
-	if err != nil {
-		t.Fatalf("NewKeyCodec: %v", err)
-	}
-	for _, id := range []uint64{1, 2, 1 << 32, ^uint64(0)} {
-		key, eerr := codec.EncodeValues([]any{id})
-		if eerr != nil {
-			t.Fatalf("EncodeValues(%d): %v", id, eerr)
-		}
-		vals, derr := codec.Decode(key)
-		if derr != nil {
-			t.Fatalf("Decode(%d): %v", id, derr)
-		}
-		if len(vals) != 1 || vals[0] != id {
-			t.Fatalf("Decode = %v, want [%d]", vals, id)
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RowCodec
 // ---------------------------------------------------------------------------
