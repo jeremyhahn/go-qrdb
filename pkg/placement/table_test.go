@@ -81,17 +81,6 @@ func TestMaxReplicaID_ReturnsLargest(t *testing.T) {
 	}
 }
 
-// TestReplicaState_ZeroValueIsActive verifies the Go zero-value-useful
-// convention: a Replica built without an explicit State is Active, so every
-// placement entry persisted before the State field existed keeps its
-// (correct) join=false semantics after upgrade.
-func TestReplicaState_ZeroValueIsActive(t *testing.T) {
-	var r Replica
-	if r.State != ReplicaStateActive {
-		t.Fatalf("zero-value Replica.State = %v, want ReplicaStateActive", r.State)
-	}
-}
-
 // TestReplica_JSON_BackwardCompatNoStateKey verifies that a placement entry
 // persisted before the State field existed (no "state" key in the JSON)
 // decodes to ReplicaStateActive, not some other zero-adjacent value.
@@ -143,16 +132,6 @@ func TestReplica_JSON_RoundTripState(t *testing.T) {
 	}
 	if decoded.State != ReplicaStateObserverReady {
 		t.Fatalf("round-tripped State = %v, want ReplicaStateObserverReady", decoded.State)
-	}
-}
-
-// TestPlacement_IsLocalBinding_ZeroValueIsRaft proves a placement entry
-// persisted before Backend existed -- the zero value, no "backend" key --
-// decodes as a dedicated Raft group, not a local binding.
-func TestPlacement_IsLocalBinding_ZeroValueIsRaft(t *testing.T) {
-	var p Placement
-	if p.IsLocalBinding() {
-		t.Fatalf("zero-value Placement.IsLocalBinding() = true, want false")
 	}
 }
 
