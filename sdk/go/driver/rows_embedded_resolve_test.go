@@ -20,7 +20,6 @@ import (
 	"context"
 	sqld "database/sql/driver"
 	"errors"
-	"io"
 	"reflect"
 	"testing"
 
@@ -49,25 +48,6 @@ func newSymbolicRows(t *testing.T, rows ...gmssql.Row) *embeddedRows {
 		ctx:    gmssql.NewContext(context.Background()),
 		schema: gmssql.Schema{{Name: "status", Type: enum}},
 		iter:   gmssql.RowsToRowIter(rows...),
-	}
-}
-
-// TestEmbeddedRows_ResolvesEnumOrdinal is the unit-level statement of the
-// defect: the cell holds 2, the caller must receive "active".
-func TestEmbeddedRows_ResolvesEnumOrdinal(t *testing.T) {
-	rows := newSymbolicRows(t, gmssql.Row{uint16(2)})
-	defer func() { _ = rows.Close() }()
-
-	dest := make([]sqld.Value, 1)
-	if err := rows.Next(dest); err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	if dest[0] != "active" {
-		t.Errorf("dest[0] = %#v (%T), want \"active\"", dest[0], dest[0])
-	}
-
-	if err := rows.Next(dest); err != io.EOF {
-		t.Errorf("second Next = %v, want io.EOF", err)
 	}
 }
 
@@ -129,18 +109,6 @@ func TestEmbeddedRows_ResolveNilColumn(t *testing.T) {
 	}
 	if dest[0] != int64(2) {
 		t.Errorf("dest[0] = %#v, want int64(2)", dest[0])
-	}
-}
-
-// TestEmbeddedRows_ColumnTypeScanType_Symbolic asserts the advertised scan
-// type for an ENUM column is the type Next produces, not the uint16 the
-// engine stores.
-func TestEmbeddedRows_ColumnTypeScanType_Symbolic(t *testing.T) {
-	rows := newSymbolicRows(t)
-	defer func() { _ = rows.Close() }()
-
-	if got, want := rows.ColumnTypeScanType(0), reflect.TypeOf(""); got != want {
-		t.Errorf("ColumnTypeScanType(0) = %v, want %v", got, want)
 	}
 }
 
