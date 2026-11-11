@@ -22,7 +22,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"log/slog"
 	"testing"
 
@@ -33,13 +32,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// TestBuildSealServicesOnly_StrictRefusesCeremonyWithoutSO proves the
+// TestBuildSealServicesOnly_StrictAcceptsCeremonyWithoutSO proves the
 // sealed-window composition carries the strict separation posture to the
-// initial ceremony: one that names no system SO is refused in preflight,
-// leaving no PIN, barrier or admin credential behind. Without the posture
-// the ceremony would commit initialization that first boot then refuses,
-// and an initialized node cannot redo it.
-func TestBuildSealServicesOnly_StrictRefusesCeremonyWithoutSO(t *testing.T) {
+// initial ceremony without making the system SO mandatory: the SO is
+// optional in both postures (docs/SPEC.md), so a strict ceremony that names
+// no system SO commits the PINs, leaves the awaiting-init state and issues
+// the admin credential.
+func TestBuildSealServicesOnly_StrictAcceptsCeremonyWithoutSO(t *testing.T) {
 	ctx := context.Background()
 	barrier, registry, credSvc := newTestBarrier(t)
 	pins := pintest.NewBackend(t)
@@ -69,20 +68,17 @@ func TestBuildSealServicesOnly_StrictRefusesCeremonyWithoutSO(t *testing.T) {
 		UserPin:     "test-user-pin",
 		AdminCSRPEM: strictTestCSRPEM(t),
 	})
-	var rejected *ceremony.SystemSORejectedError
-	if !errors.As(err, &rejected) {
-		t.Fatalf("Initialize = %v, want *ceremony.SystemSORejectedError", err)
+	if err != nil {
+		t.Fatalf("Initialize without an SO in strict posture: %v", err)
 	}
-	if pins.IsInitialized() {
-		t.Error("the PINs must stay uncommitted")
+	if !pins.IsInitialized() {
+		t.Error("the PINs must be committed")
 	}
-	// newTestBarrier's barrier is already unsealed for the credential
-	// store; the ceremony's own state is what an accepted Initialize moves.
-	if got := core.State(); got != ceremony.StateAwaitingInit {
-		t.Errorf("ceremony state = %q, want %q: nothing may be committed", got, ceremony.StateAwaitingInit)
+	if got := core.State(); got == ceremony.StateAwaitingInit {
+		t.Errorf("ceremony state = %q, want past %q", got, ceremony.StateAwaitingInit)
 	}
-	if last, _ := core.LastIssuedAdminCertPEM(); last != nil {
-		t.Error("no admin credential may be issued")
+	if last, _ := core.LastIssuedAdminCertPEM(); last == nil {
+		t.Error("the admin credential must be issued")
 	}
 }
 
