@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
@@ -164,5 +165,70 @@ func TestWithCredentialRotationPeriod(t *testing.T) {
 	}
 	if credentials.DefaultRotationCheckPeriod != time.Minute {
 		t.Fatalf("default period = %v, want 1m", credentials.DefaultRotationCheckPeriod)
+	}
+}
+
+// testSealProbe is a SealedWindowProbe whose state a test flips.
+type testSealProbe struct{ sealed atomic.Bool }
+
+func (p *testSealProbe) IsSealed() bool { return p.sealed.Load() }
+
+// TestCredentialRotationScheduler_SealedNodeSkipsPass: while the node's seal
+// probe (the one its transports gate on) reports sealed, a pass calls no
+// rotation source, so nothing is claimed, rotated or committed; after the
+// unseal the next pass rotates.
+func TestCredentialRotationScheduler_SealedNodeSkipsPass(t *testing.T) {
+	rotator := &fakeCredentialRotator{calls: make(chan time.Time, 2)}
+	sched := newTestCredentialRotationScheduler(rotator, nil)
+	probe := &testSealProbe{}
+	probe.sealed.Store(true)
+	sched.sealed = probe
+
+	if got := sched.passOnce(context.Background()); got != 0 {
+		t.Fatalf("sealed pass rotated %d, want 0", got)
+	}
+	if got := rotator.n.Load(); got != 0 {
+		t.Fatalf("sealed pass made %d RotateDue calls, want 0", got)
+	}
+
+	probe.sealed.Store(false)
+	sched.passOnce(context.Background())
+	if got := rotator.n.Load(); got != 1 {
+		t.Fatalf("unsealed pass made %d RotateDue calls, want 1", got)
+	}
+}
+
+// TestCredentialRotationScheduler_StartWiresTheSealProbe: the scheduler a
+// Server starts gates on the same probe its transports are given.
+func TestCredentialRotationScheduler_StartWiresTheSealProbe(t *testing.T) {
+	probe := &testSealProbe{}
+	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.opts.sealedWindowProbe = probe
+	sched := s.newCredentialRotationScheduler(&fakeCredentialRotator{})
+	if sched.sealed != SealedWindowProbe(probe) {
+		t.Fatal("scheduler is not gated on the server's seal probe")
+	}
+}
+
+// TestCredentialRotationPeriod_FromConfiguration: a Server built from a
+// configuration (as both qrdbd and the embedded SDK node build theirs) runs
+// the scheduler at seal.credential_rotation_check_period; the
+// WithCredentialRotationPeriod option overrides it, and with neither the
+// default applies.
+func TestCredentialRotationPeriod_FromConfiguration(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Seal.CredentialRotationCheckPeriod = "250ms"
+	s := &Server{config: cfg, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if got := s.newCredentialRotationScheduler(&fakeCredentialRotator{}).period; got != 250*time.Millisecond {
+		t.Fatalf("scheduler period from configuration = %v, want 250ms", got)
+	}
+
+	WithCredentialRotationPeriod(3 * time.Second)(&s.opts)
+	if got := s.newCredentialRotationScheduler(&fakeCredentialRotator{}).period; got != 3*time.Second {
+		t.Fatalf("period with the option = %v, want 3s", got)
+	}
+
+	if got := (&Server{}).credentialRotationPeriod(); got != credentials.DefaultRotationCheckPeriod {
+		t.Fatalf("period with no configuration = %v, want the default", got)
 	}
 }
