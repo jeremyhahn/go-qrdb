@@ -26,6 +26,7 @@
   import { ChevronLeft } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import TenantSelect from "../../components/admin/TenantSelect.svelte";
+  import { defaultTenantId, errorText } from "./tenantDefault.ts";
 
   let {
     client,
@@ -43,7 +44,7 @@
 
   let username: string = $state("");
   let email: string = $state("");
-  let tenantId: string = $state("default");
+  let tenantId: string = $state("");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
   let availableRoles: Role[] = $state([]);
@@ -101,8 +102,11 @@
       const dbs = await client.database.list();
       databases = dbs;
 
-      // If editing, fetch the existing user record.
-      if (userId !== null) {
+      // If creating, start on a tenant the server has; if editing, fetch
+      // the existing user record.
+      if (userId === null) {
+        tenantId = await defaultTenantId(client);
+      } else {
         const user: User = await client.users.get(userId);
         existingUser = user;
         username = user.username;
@@ -112,7 +116,7 @@
         selectedRoleIds = [...user.roleIds];
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load user data";
+      const msg = errorText(err, "Failed to load user data");
       showToast("error", msg);
     } finally {
       loading = false;
@@ -156,7 +160,7 @@
 
       onBack();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save user";
+      const msg = errorText(err, "Failed to save user");
       showToast("error", msg);
     } finally {
       saving = false;
@@ -179,7 +183,7 @@
           showToast("success", "Role assigned");
         }
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Failed to change role";
+        const msg = errorText(err, "Failed to change role");
         showToast("error", msg);
         return;
       }
@@ -203,7 +207,7 @@
       existingUser = await client.users.get(userId!);
       showToast("success", `User "${username}" ${enable ? "enabled" : "disabled"}`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to change user state";
+      const msg = errorText(err, "Failed to change user state");
       showToast("error", msg);
     } finally {
       busy = false;
@@ -222,7 +226,7 @@
       showToast("success", `User "${username}" deleted`);
       onBack();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to delete user";
+      const msg = errorText(err, "Failed to delete user");
       showToast("error", msg);
     } finally {
       busy = false;
@@ -248,7 +252,7 @@
       bindingExpiry = "";
       showToast("success", "Certificate binding added");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to add certificate binding";
+      const msg = errorText(err, "Failed to add certificate binding");
       showToast("error", msg);
     } finally {
       busy = false;
@@ -266,7 +270,7 @@
       if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
       showToast("success", "Certificate binding removed");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to remove certificate binding";
+      const msg = errorText(err, "Failed to remove certificate binding");
       showToast("error", msg);
     } finally {
       busy = false;

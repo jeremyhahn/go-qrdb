@@ -20,6 +20,7 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
+import { webTest } from "./fixtures/web-mode-mock.ts";
 import type { Page } from "@playwright/test";
 
 /** Timeout for async operations. */
@@ -237,6 +238,33 @@ test.describe("Admin - Role Management", () => {
     });
   });
 
+  test.describe("Create role without a default tenant", () => {
+    // A fresh daemon lists only the System tenant; there is no "default".
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        tenants: [{ id: "system", name: "System" }],
+      },
+    });
+
+    test("tenant defaults to the first tenant the server lists", async ({
+      page,
+    }) => {
+      await navigateToRoles(page);
+      await page.getByRole("button", { name: "Create Role" }).click();
+
+      const tenantSelect = page.locator("select#role-detail-tenant");
+      await expect(tenantSelect).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(tenantSelect).toHaveValue("system");
+
+      await page.getByPlaceholder("Enter role name").fill("ops");
+      await page.getByRole("button", { name: "Create" }).click();
+      await expect(page.getByText("ops", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
   test.describe("Edit role", () => {
     test("clicking a role row opens the edit form", async ({ page }) => {
       await navigateToRoles(page);
@@ -440,4 +468,55 @@ test.describe("Admin - Role Management", () => {
       });
     });
   });
+});
+
+webTest.describe("Admin - Role Management (web mode)", () => {
+  webTest(
+    "role creation failure shows the server's error text",
+    async ({ page }) => {
+      await page.route("**/metrics", (route) =>
+        route.fulfill({ status: 200, contentType: "text/plain", body: "" }),
+      );
+      await page.route("**/roles", async (route) => {
+        if (route.request().method() === "POST") {
+          await route.fulfill({
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({ error: 'tenant "nope" not found' }),
+          });
+        } else {
+          await route.fallback();
+        }
+      });
+      await page.route("**/permissions", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ categories: [] }),
+        }),
+      );
+      await page.route("**/roles/list**", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ roles: [], total: 0, hasMore: false }),
+        }),
+      );
+
+      await page.goto("/");
+      await expect(
+        page.locator(".breadcrumbs").getByText("Dashboard"),
+      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await page.locator("aside").getByText("Roles").click();
+      await page.getByRole("button", { name: "Create Role" }).click();
+      await page.getByPlaceholder("Enter role name").fill("ops");
+      await page.getByRole("button", { name: "Create" }).click();
+
+      const alert = page.locator('[role="alert"]').last();
+      await expect(alert).toContainText('tenant "nope" not found', {
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(alert).not.toContainText("transport:");
+    },
+  );
 });
