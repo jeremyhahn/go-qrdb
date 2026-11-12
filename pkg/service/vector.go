@@ -172,6 +172,84 @@ type vectorServiceMetrics struct {
 	operationErrors   *metrics.CounterVec
 	indexSizeBytes    *metrics.GaugeVec
 	vectorCount       *metrics.GaugeVec
+
+	// The two gauges carry one series per tenant, summing the tenant's
+	// namespaces, so each namespace's share is tracked here, keyed by the
+	// scoped namespace name: a change applies only its delta to the
+	// tenant series, and a namespace delete subtracts exactly the share
+	// the gauge holds for it.
+	nsMu         sync.Mutex
+	nsVectors    map[string]float64
+	nsIndexBytes map[string]float64
+}
+
+// addVectors changes a scoped namespace's vector count by delta and applies
+// the same delta to its tenant's vector_count series.
+func (m *vectorServiceMetrics) addVectors(scoped string, delta float64) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	m.nsVectors[scoped] += delta
+	m.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(delta)
+}
+
+// setIndexBytes records a scoped namespace's index size estimate and moves
+// its tenant's index_size_bytes series by the change from the last value.
+func (m *vectorServiceMetrics) setIndexBytes(scoped string, bytes float64) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	delta := bytes - m.nsIndexBytes[scoped]
+	m.nsIndexBytes[scoped] = bytes
+	m.indexSizeBytes.WithLabels(tenantMetricLabels(scoped)).Add(delta)
+}
+
+// dropNamespace removes a deleted scoped namespace's share from both tenant
+// series and forgets it.
+func (m *vectorServiceMetrics) dropNamespace(scoped string) {
+	m.nsMu.Lock()
+	defer m.nsMu.Unlock()
+	labels := tenantMetricLabels(scoped)
+	m.vectorCount.WithLabels(labels).Sub(m.nsVectors[scoped])
+	m.indexSizeBytes.WithLabels(labels).Sub(m.nsIndexBytes[scoped])
+	delete(m.nsVectors, scoped)
+	delete(m.nsIndexBytes, scoped)
+}
+
+// estimateIndexSizeBytes estimates the in-memory size of an HNSW index from
+// its stats: per node, the fixed node overhead, the float32 vector and the
+// neighbour IDs over every layer. Zero for a nil or empty index.
+func estimateIndexSizeBytes(index interfaces.HNSWIndex) uint64 {
+	if index == nil {
+		return 0
+	}
+	stats := index.GetStats()
+	if stats == nil || stats.NodeCount <= 0 {
+		return 0
+	}
+	const baseNodeOverhead = 8 + 8 + 24 + 48 // 88 bytes
+
+	vectorDataSize := uint64(stats.Dimensions) * 4 //nolint:gosec // G115: Dimensions is validated positive
+
+	maxLayers := stats.MaxLayer + 1
+	if maxLayers < 1 {
+		maxLayers = 1
+	}
+	connectionDataSize := uint64(stats.AvgConnections * float64(maxLayers) * 8)
+
+	perNodeSize := uint64(baseNodeOverhead) + vectorDataSize + connectionDataSize
+
+	return uint64(stats.NodeCount) * perNodeSize // #nosec G115 -- NodeCount is int64 from HNSW stats, checked positive above
+}
+
+// refreshIndexSizeMetric sets the index_size_bytes share of a scoped
+// namespace from its current index. Callers must not hold indexMu.
+func (v *vectorService) refreshIndexSizeMetric(scoped string) {
+	if v.metrics == nil {
+		return
+	}
+	v.indexMu.RLock()
+	index := v.hnswIndexes[scoped]
+	v.indexMu.RUnlock()
+	v.metrics.setIndexBytes(scoped, float64(estimateIndexSizeBytes(index)))
 }
 
 // RebuildJobState tracks the state of an index rebuild job.
@@ -507,6 +585,8 @@ func (v *vectorService) startBackground(job func(ctx context.Context)) error {
 // initMetrics initializes Prometheus metrics for the vector service.
 func (v *vectorService) initMetrics() {
 	v.metrics = &vectorServiceMetrics{
+		nsVectors:    make(map[string]float64),
+		nsIndexBytes: make(map[string]float64),
 		namespacesCreated: metrics.NewCounter(metrics.CounterOpts{
 			Namespace: "qrdb",
 			Subsystem: "vector",
@@ -617,7 +697,8 @@ func (v *vectorService) loadNamespaces() error {
 		// Update metrics with logical namespace name and tenant label so
 		// that no scoped key (containing \x1f) appears in emitted label values.
 		if v.metrics != nil {
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(ns.Name)).Add(float64(ns.VectorCount))
+			v.metrics.addVectors(ns.Name, float64(ns.VectorCount))
+			v.refreshIndexSizeMetric(ns.Name)
 		}
 	}
 
@@ -933,7 +1014,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesCreated.Inc()
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(0)
+			v.metrics.addVectors(scoped, 0)
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1008,7 +1090,8 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesCreated.Inc()
-		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(0)
+		v.metrics.addVectors(scoped, 0)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1154,6 +1237,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 		if v.metrics != nil {
 			v.metrics.namespacesDeleted.Inc()
 			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
+			v.metrics.setIndexBytes(scoped, 0)
 		}
 
 		v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully via Raft")
@@ -1179,6 +1263,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 	if v.metrics != nil {
 		v.metrics.namespacesDeleted.Inc()
 		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
+		v.metrics.setIndexBytes(scoped, 0)
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully")
@@ -1408,7 +1493,8 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Inc()
+			v.metrics.addVectors(scoped, 1)
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1456,7 +1542,8 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
-		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Inc()
+		v.metrics.addVectors(scoped, 1)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1573,7 +1660,8 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Dec()
+			v.metrics.addVectors(scoped, -1)
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1610,7 +1698,8 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Dec()
+		v.metrics.addVectors(scoped, -1)
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1720,7 +1809,8 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+			v.metrics.addVectors(scoped, float64(len(req.Vectors)))
+			v.refreshIndexSizeMetric(scoped)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1774,7 +1864,8 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+		v.metrics.addVectors(scoped, float64(len(req.Vectors)))
+		v.refreshIndexSizeMetric(scoped)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -2349,26 +2440,8 @@ func (v *vectorService) GetIndexStats(ctx context.Context, req *GetIndexStatsReq
 
 	if exists {
 		indexCount = index.Count()
-
-		stats := index.GetStats()
-		if stats != nil && stats.NodeCount > 0 {
-			const baseNodeOverhead = 8 + 8 + 24 + 48 // 88 bytes
-
-			vectorDataSize := uint64(stats.Dimensions) * 4 //nolint:gosec // G115: Dimensions is validated positive
-
-			avgConnectionsPerNode := stats.AvgConnections
-			maxLayers := stats.MaxLayer + 1
-			if maxLayers < 1 {
-				maxLayers = 1
-			}
-			connectionDataSize := uint64(avgConnectionsPerNode * float64(maxLayers) * 8)
-
-			perNodeSize := uint64(baseNodeOverhead) + vectorDataSize + connectionDataSize
-
-			indexSizeBytes = uint64(stats.NodeCount) * perNodeSize // #nosec G115 -- NodeCount is int64 from HNSW stats, always non-negative
-
-			memoryUsageBytes = indexSizeBytes + (indexSizeBytes / 5)
-		}
+		indexSizeBytes = estimateIndexSizeBytes(index)
+		memoryUsageBytes = indexSizeBytes + (indexSizeBytes / 5)
 	}
 
 	var vectorCount uint64

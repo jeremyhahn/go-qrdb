@@ -154,6 +154,74 @@ func TestVectorCountMetric_AggregatesPerTenant(t *testing.T) {
 	assert.Equal(t, float64(2), m.GetGauge().GetValue(), "the tenant total sums its namespaces")
 }
 
+// indexSizeOf returns the IndexSizeBytes GetIndexStats reports for a
+// namespace of the tenant in ctx: the same estimate the gauge carries.
+func indexSizeOf(t *testing.T, svc VectorService, ctx context.Context, name string) float64 {
+	t.Helper()
+	stats, err := svc.GetIndexStats(ctx, &GetIndexStatsRequest{Namespace: name})
+	require.NoError(t, err)
+	return float64(stats.IndexSizeBytes)
+}
+
+// tenantGauge returns the value of the single series of a tenant-labelled
+// gauge, failing unless exactly one series exists.
+func tenantGauge(t *testing.T, reg *prometheus.Registry, name, tenantID string) float64 {
+	t.Helper()
+	mf := gatherGaugeVec(t, reg, name)
+	require.NotNil(t, mf, "%s has no series", name)
+	require.Len(t, mf.GetMetric(), 1, "one series per tenant, not per namespace")
+	m := mf.GetMetric()[0]
+	require.Len(t, m.GetLabel(), 1)
+	require.Equal(t, tenantID, labelValue(m, "tenant"))
+	return m.GetGauge().GetValue()
+}
+
+func TestIndexSizeBytesMetric_SumsTenantNamespaces(t *testing.T) {
+	reg := isolatedRegistry(t)
+
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
+	require.NoError(t, err)
+
+	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
+	names := []string{"size-a", "size-b"}
+	for i, name := range names {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 4})
+		require.NoError(t, err)
+		for j := 0; j <= i+1; j++ {
+			_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+				Namespace: name,
+				ID:        uint64(j + 1),
+				Vector:    []float32{float32(j), 1, 2, 3},
+			})
+			require.NoError(t, err)
+		}
+	}
+	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{
+		Namespace: "size-b",
+		Vectors: []*VectorData{
+			{ID: 10, Vector: []float32{4, 5, 6, 7}},
+			{ID: 11, Vector: []float32{5, 6, 7, 8}},
+		},
+	})
+	require.NoError(t, err)
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "size-a", ID: 1})
+	require.NoError(t, err)
+
+	sizeA := indexSizeOf(t, svc, ctx, "size-a")
+	sizeB := indexSizeOf(t, svc, ctx, "size-b")
+	require.Positive(t, sizeA)
+	require.Positive(t, sizeB)
+	assert.Equal(t, sizeA+sizeB,
+		tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "tenant-x"),
+		"the tenant series sums both namespaces' index estimates")
+
+	_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "size-a"})
+	require.NoError(t, err)
+	assert.Equal(t, sizeB,
+		tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "tenant-x"),
+		"deleting a namespace drops its share")
+}
+
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
 // without an explicit tenant (pooling into system) carry tenant="system" in
 // the gauge label — not an empty string or \x1f.
