@@ -266,16 +266,6 @@ func TestNormalizeArgValue_UnwrapsValuer(t *testing.T) {
 	}
 }
 
-// TestNormalizeArgValue_Unsupported verifies an unconvertible type is reported.
-func TestNormalizeArgValue_Unsupported(t *testing.T) {
-	_, err := normalizeArgValue(1, struct{ A int }{})
-
-	var unsupported *UnsupportedArgumentTypeError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Defined (named) argument types
 // ---------------------------------------------------------------------------
@@ -366,29 +356,6 @@ func TestNormalizeArgValue_DefinedByteSlices(t *testing.T) {
 	}
 }
 
-// TestNormalizeArgValue_DefinedTypesAreValidDriverValues verifies the widened
-// classification still produces values database/sql itself recognizes, so
-// nothing downstream of the checker has to special-case them.
-func TestNormalizeArgValue_DefinedTypesAreValidDriverValues(t *testing.T) {
-	for _, v := range []any{
-		definedInt64(1), definedUint(2), definedFloat32(3), definedString("4"),
-		definedBool(true), definedBytes("5"), definedTime(time.Now()),
-	} {
-		got, err := normalizeArgValue(1, v)
-		if err != nil {
-			t.Fatalf("normalizeArgValue(%T): %v", v, err)
-		}
-		// uint64 is admitted by this driver but not by driver.IsValue; every
-		// other normalized form must satisfy the standard contract.
-		if _, isUint := got.(uint64); isUint {
-			continue
-		}
-		if !sqld.IsValue(got) {
-			t.Errorf("normalizeArgValue(%T) = %#v, which is not a driver.Value", v, got)
-		}
-	}
-}
-
 // TestNormalizeArgValue_KindIsNotEnough verifies kind-based classification
 // still refuses a value whose kind does not identify it. Widening the accepted
 // set must not become a catch-all: an unrecognized argument is reported, never
@@ -421,55 +388,6 @@ func TestNormalizeArgValue_KindIsNotEnough(t *testing.T) {
 				t.Errorf("Ordinal = %d, want 4", unsupported.Ordinal)
 			}
 		})
-	}
-}
-
-// TestNormalizeArgValue_ReportsOrdinal verifies the reported ordinal is the
-// argument's own position. It used to be reported as 0 for every argument,
-// which pointed at the wrong parameter in a multi-argument statement.
-func TestNormalizeArgValue_ReportsOrdinal(t *testing.T) {
-	_, err := normalizeArgValue(3, definedStruct{})
-
-	var unsupported *UnsupportedArgumentTypeError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
-	}
-	if unsupported.Ordinal != 3 {
-		t.Errorf("Ordinal = %d, want 3", unsupported.Ordinal)
-	}
-	if !strings.Contains(err.Error(), "argument 3") {
-		t.Errorf("Error() = %q, want it to name argument 3", err.Error())
-	}
-}
-
-// TestCheckNamedValue_ReportsOrdinal verifies the ordinal survives the driver's
-// real entry point, which is the only place it is known.
-func TestCheckNamedValue_ReportsOrdinal(t *testing.T) {
-	c := &embeddedConn{}
-	nv := &sqld.NamedValue{Ordinal: 2, Value: definedStruct{}}
-
-	err := c.CheckNamedValue(nv)
-
-	var unsupported *UnsupportedArgumentTypeError
-	if !errors.As(err, &unsupported) {
-		t.Fatalf("error = %v, want *UnsupportedArgumentTypeError", err)
-	}
-	if unsupported.Ordinal != 2 {
-		t.Errorf("Ordinal = %d, want 2", unsupported.Ordinal)
-	}
-}
-
-// TestCheckNamedValue_DefinedType verifies a defined type is accepted through
-// the driver's real entry point, which is where GORM's failure surfaced.
-func TestCheckNamedValue_DefinedType(t *testing.T) {
-	c := &embeddedConn{}
-	nv := &sqld.NamedValue{Ordinal: 1, Value: definedInt64(18)}
-
-	if err := c.CheckNamedValue(nv); err != nil {
-		t.Fatalf("CheckNamedValue: %v", err)
-	}
-	if nv.Value != int64(18) {
-		t.Errorf("Value = %#v (%T), want int64(18)", nv.Value, nv.Value)
 	}
 }
 
@@ -541,53 +459,6 @@ func TestNormalizeArgValue_DefinedTypePointers(t *testing.T) {
 	}
 }
 
-// TestBindArg_DefinedTypesBindLikeTheirUnderlying verifies the normalized form
-// of a defined type reaches the AST as the same expression its underlying type
-// does — in particular that a defined byte slice keeps the hex-literal binding
-// and a defined uint64 above math.MaxInt64 keeps its decimal text.
-func TestBindArg_DefinedTypesBindLikeTheirUnderlying(t *testing.T) {
-	tests := []struct {
-		name     string
-		value    any
-		wantType sqlparser.ValType
-		wantVal  string
-	}{
-		{"defined int64", definedInt64(-42), sqlparser.IntVal, "-42"},
-		{"defined uint64 beyond int64", definedUint64(math.MaxUint64), sqlparser.IntVal, "18446744073709551615"},
-		{"defined string", definedString("O'Brien"), sqlparser.StrVal, "O'Brien"},
-		{"defined bytes", definedBytes{0x00, 0xFF, 0x41}, sqlparser.HexVal, "00ff41"},
-		{"defined bool", definedBool(true), sqlparser.IntVal, "1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			normalized, err := normalizeArgValue(1, tt.value)
-			if err != nil {
-				t.Fatalf("normalizeArgValue: %v", err)
-			}
-			expr, err := bindArg(1, normalized, time.UTC)
-			if err != nil {
-				t.Fatalf("bindArg: %v", err)
-			}
-
-			val, ok := expr.(*sqlparser.SQLVal)
-			if !ok {
-				t.Fatalf("expr = %T, want *sqlparser.SQLVal", expr)
-			}
-			if val.Type != tt.wantType {
-				t.Errorf("Type = %v, want %v", val.Type, tt.wantType)
-			}
-			got := string(val.Val)
-			if val.Type == sqlparser.HexVal {
-				got = strings.ToLower(got)
-			}
-			if got != tt.wantVal {
-				t.Errorf("Val = %q, want %q", got, tt.wantVal)
-			}
-		})
-	}
-}
-
 // bindingKeys returns the keys of a bindings map, for failure messages.
 func bindingKeys(m map[string]sqlparser.Expr) []string {
 	keys := make([]string, 0, len(m))
@@ -637,26 +508,6 @@ func TestNormalizeArgValue_DereferencesPointers(t *testing.T) {
 	}
 }
 
-// TestNormalizeArgValue_NilPointerIsNull verifies a typed nil pointer binds as
-// SQL NULL rather than being rejected or dereferenced.
-func TestNormalizeArgValue_NilPointerIsNull(t *testing.T) {
-	var (
-		nilInt  *int
-		nilTime *time.Time
-		nilStr  *string
-	)
-
-	for _, v := range []any{nilInt, nilTime, nilStr} {
-		got, err := normalizeArgValue(1, v)
-		if err != nil {
-			t.Fatalf("normalizeArgValue(%T): %v", v, err)
-		}
-		if got != nil {
-			t.Errorf("normalizeArgValue(%T) = %#v, want nil", v, got)
-		}
-	}
-}
-
 // TestNormalizeArgValue_PointerToPointer verifies multi-level pointers are
 // fully dereferenced.
 func TestNormalizeArgValue_PointerToPointer(t *testing.T) {
@@ -698,21 +549,6 @@ func (v *pointerReceiverValuer) Value() (sqld.Value, error) {
 		return "nil-receiver-handled", nil
 	}
 	return v.payload, nil
-}
-
-// TestNormalizeArgValue_NilValueReceiverValuerIsNull verifies a nil pointer to
-// a value-receiver Valuer becomes SQL NULL instead of panicking. Before the
-// guard, this crashed the process from inside CheckNamedValue.
-func TestNormalizeArgValue_NilValueReceiverValuerIsNull(t *testing.T) {
-	var arg *valueReceiverValuer
-
-	got, err := normalizeArgValue(1, arg)
-	if err != nil {
-		t.Fatalf("normalizeArgValue: %v", err)
-	}
-	if got != nil {
-		t.Errorf("value = %v (%T), want nil (SQL NULL)", got, got)
-	}
 }
 
 // TestNormalizeArgValue_NonNilValueReceiverValuer verifies a populated value

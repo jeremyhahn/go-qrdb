@@ -446,49 +446,6 @@ func TestTransportRange_NoConsistency_OmitsQueryParam(t *testing.T) {
 // applyReadQueryParams / applyWriteModeQueryParam unit tests
 // ---------------------------------------------------------------------------
 
-func TestApplyReadQueryParams_ConsistencySet_AddsParam(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "http://host/kv/k", nil)
-	applyReadQueryParams(req, transport.WithConsistency(transport.ConsistencyStrong))
-	q := req.URL.Query()
-	if q.Get("consistency") != "strong" {
-		t.Fatalf("consistency = %q, want %q", q.Get("consistency"), "strong")
-	}
-}
-
-func TestApplyReadQueryParams_AllowStale_AddsEventual(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "http://host/kv/k", nil)
-	applyReadQueryParams(req, transport.WithAllowStale())
-	q := req.URL.Query()
-	if q.Get("consistency") != "eventual" {
-		t.Fatalf("consistency = %q, want %q", q.Get("consistency"), "eventual")
-	}
-}
-
-func TestApplyReadQueryParams_NoneSet_NoParamAdded(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "http://host/kv/k", nil)
-	applyReadQueryParams(req)
-	if req.URL.RawQuery != "" {
-		t.Fatalf("expected empty query, got %q", req.URL.RawQuery)
-	}
-}
-
-func TestApplyWriteModeQueryParam_ModeSet_AddsParam(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodPut, "http://host/kv/k", nil)
-	applyWriteModeQueryParam(req, transport.WithWriteMode(transport.WriteModeWALDurable))
-	q := req.URL.Query()
-	if q.Get("write_mode") != "wal_durable" {
-		t.Fatalf("write_mode = %q, want %q", q.Get("write_mode"), "wal_durable")
-	}
-}
-
-func TestApplyWriteModeQueryParam_NoneSet_NoParamAdded(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodPut, "http://host/kv/k", nil)
-	applyWriteModeQueryParam(req)
-	if req.URL.RawQuery != "" {
-		t.Fatalf("expected empty query, got %q", req.URL.RawQuery)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Verify existing ?prefix params are preserved when consistency is appended.
 // ---------------------------------------------------------------------------

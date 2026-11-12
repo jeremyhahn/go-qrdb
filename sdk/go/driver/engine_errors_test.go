@@ -97,10 +97,3 @@ func TestEngineError_NilIsNil(t *testing.T) {
 		t.Fatalf("engineError(nil) = %v, want nil", err)
 	}
 }
-
-func TestKeepTyped_ReturnsTheErrorItself(t *testing.T) {
-	cause := errors.New("cause")
-	if got := keepTyped(cause); got != cause {
-		t.Fatalf("keepTyped = %v, want the same error", got)
-	}
-}

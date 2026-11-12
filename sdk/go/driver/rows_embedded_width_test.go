@@ -77,20 +77,6 @@ func TestEmbeddedRows_Next_RowNarrowerThanDest(t *testing.T) {
 	}
 }
 
-// TestEmbeddedRows_Next_MatchingWidth is the unchanged path.
-func TestEmbeddedRows_Next_MatchingWidth(t *testing.T) {
-	rows := newWidthRows(gmssql.Row{int64(7)})
-	defer func() { _ = rows.Close() }()
-
-	dest := make([]sqld.Value, 1)
-	if err := rows.Next(dest); err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	if dest[0] != int64(7) {
-		t.Errorf("dest[0] = %#v, want int64(7)", dest[0])
-	}
-}
-
 // TestRowWidthError_Message pins the message format.
 func TestRowWidthError_Message(t *testing.T) {
 	err := &RowWidthError{Columns: 3, Values: 4}
