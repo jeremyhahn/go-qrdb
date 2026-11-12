@@ -190,7 +190,7 @@ test("advanced vector operations round-trip through VectorView against the live 
   await expect(page.getByTestId("vector-detail-metadata-json")).toContainText("beta");
 
   // --- updateMetadata: edit and save the metadata of vector 12. ----------
-  await page.getByTestId("vector-detail-metadata-input").fill('{"label": "beta", "tier": "gold"}');
+  await page.getByTestId("vector-detail-metadata-input").fill('{"label": "beta", "tier": "gold", "ownerTeam": "core"}');
   await page.getByRole("button", { name: "Save metadata" }).click();
   await expectToast(page, 'Metadata of vector "12" updated.');
   await expect(page.getByTestId("vector-detail-metadata-json")).toContainText("gold", {
@@ -199,6 +199,10 @@ test("advanced vector operations round-trip through VectorView against the live 
   await expect
     .poll(async () => JSON.stringify((await getVector(request, vb, "12")).body), { timeout: LOAD_TIMEOUT })
     .toContain("gold");
+  // A user's metadata keys reach the server as typed, not snake_cased.
+  const stored = JSON.stringify((await getVector(request, vb, "12")).body);
+  expect(stored).toContain('"ownerTeam"');
+  expect(stored).not.toContain("owner_team");
   await page.getByRole("button", { name: "Close", exact: true }).locator("visible=true").first().click();
   await expect(page.getByTestId("vector-detail")).toBeHidden({ timeout: LOAD_TIMEOUT });
 
@@ -206,7 +210,7 @@ test("advanced vector operations round-trip through VectorView against the live 
   await page.getByRole("tab", { name: "Search" }).click();
   const hybrid = page.getByTestId("hybrid-search-card");
   await hybrid.getByLabel("Hybrid vector", { exact: true }).fill("0, 1, 0, 0");
-  await hybrid.getByLabel("Hybrid metadata filter").fill('{"tier": "gold"}');
+  await hybrid.getByLabel("Hybrid metadata filter").fill('{"ownerTeam": "core"}');
   await hybrid.getByLabel("Hybrid k", { exact: true }).fill("3");
   await hybrid.getByRole("button", { name: "Hybrid search" }).click();
   await expect(page.locator("table").getByText("12", { exact: true }).first()).toBeVisible({
@@ -218,7 +222,7 @@ test("advanced vector operations round-trip through VectorView against the live 
     data: {
       namespace: "docs",
       query_vector: [0, 1, 0, 0],
-      metadata_filter: { tier: "gold" },
+      metadata_filter: { ownerTeam: "core" },
       k: 3,
     },
   });
