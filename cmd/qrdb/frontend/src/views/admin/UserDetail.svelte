@@ -18,6 +18,7 @@
   import type {
     Client,
     User,
+    CertBinding,
     Role,
     ListRolesResponse,
     DatabaseInfo,
@@ -53,8 +54,10 @@
   let saving: boolean = $state(false);
   let busy: boolean = $state(false);
   let confirmDelete: boolean = $state(false);
-  /** Thumbprints bound in this view; the User record does not list bindings. */
-  let certBindings: string[] = $state([]);
+  /** The user's certificate bindings as the server lists them. */
+  let certBindings: readonly CertBinding[] = $derived.by(
+    () => (existingUser as User | null)?.certBindings ?? [],
+  );
   let bindingThumbprint: string = $state("");
   let bindingExpiry: string = $state("");
 
@@ -245,9 +248,6 @@
     try {
       busy = true;
       existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
-      if (!certBindings.includes(thumbprint)) {
-        certBindings = [...certBindings, thumbprint];
-      }
       bindingThumbprint = "";
       bindingExpiry = "";
       showToast("success", "Certificate binding added");
@@ -266,7 +266,6 @@
     try {
       busy = true;
       existingUser = await client.users.removeCertBinding(userId!, tp);
-      certBindings = certBindings.filter((t) => t !== tp);
       if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
       showToast("success", "Certificate binding removed");
     } catch (err: unknown) {
@@ -485,16 +484,27 @@
               Remove Binding
             </button>
           </div>
-          {#if certBindings.length > 0}
+          {#if certBindings.length === 0}
+            <p class="text-base-content/50 pt-2 text-sm" data-testid="user-cert-bindings-empty">
+              No certificate bindings.
+            </p>
+          {:else}
             <ul class="flex flex-col gap-1 pt-2">
-              {#each certBindings as tp (tp)}
+              {#each certBindings as binding (binding.thumbprint)}
                 <li class="flex items-center gap-2" data-testid="user-binding-row">
-                  <span class="font-mono text-xs break-all">{tp}</span>
+                  <span
+                    class="font-mono text-xs break-all"
+                    data-testid="user-binding-thumbprint-value">{binding.thumbprint}</span
+                  >
+                  <span class="badge badge-ghost badge-xs">{binding.kind}</span>
+                  <span class="text-base-content/60 text-xs">
+                    {binding.notAfter !== undefined ? `expires ${binding.notAfter}` : "no expiry"}
+                  </span>
                   <button
                     class="btn btn-ghost btn-xs ml-auto"
-                    aria-label="Remove binding {tp}"
+                    aria-label="Remove binding {binding.thumbprint}"
                     disabled={busy}
-                    onclick={() => void handleRemoveBinding(tp)}
+                    onclick={() => void handleRemoveBinding(binding.thumbprint)}
                   >
                     Remove
                   </button>
