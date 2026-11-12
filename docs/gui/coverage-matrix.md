@@ -8,18 +8,18 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 
 | area | SDK method | UI reach (files under src/) | Playwright specs | gap |
 |---|---|---|---|---|
-| Admin | `addMember` | views/admin/Cluster.svelte  | none | no e2e |
+| Admin | `addMember` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
 | Admin | `capabilities` | stores/capabilities.svelte.ts views/admin/Dashboard.svelte  | admin-views.spec.ts admin-dashboard.spec.ts  |  |
 | Admin | `drain` | views/admin/Cluster.svelte  | admin-dashboard.spec.ts admin-cluster.spec.ts  |  |
 | Admin | `getTopology` | stores/connection-manager.svelte.ts views/admin/Topology.svelte  | real-backend/rebalance-real.spec.ts  |  |
 | Admin | `health` | views/admin/Dashboard.svelte  | setup-wizard.spec.ts admin-views.spec.ts  |  |
-| Admin | `mintJoinToken` | none | none | not in UI |
-| Admin | `nodeCompaction` | none | fixtures/wails-mock.ts  | not in UI |
+| Admin | `mintJoinToken` | none | none | not in UI; *verified* |
+| Admin | `nodeCompaction` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
 | Admin | `peers` | views/admin/Cluster.svelte  | setup-wizard.spec.ts full-admin-operations.spec.ts  |  |
-| Admin | `removeMember` | views/admin/Cluster.svelte  | none | no e2e |
-| Admin | `requestSnapshot` | views/admin/Cluster.svelte  | none | no e2e |
-| Admin | `setNodeCompaction` | none | none | not in UI |
-| Admin | `status` | App.svelte views/admin/SealManager.svelte stores/connection-manager.svelte.ts  | batch-advanced.spec.ts collection.spec.ts  |  |
+| Admin | `removeMember` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
+| Admin | `requestSnapshot` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
+| Admin | `setNodeCompaction` | none | none | not in UI; *verified* |
+| Admin | `status` | views/admin/Dashboard.svelte components/ConnectionManager.svelte | admin-dashboard.spec.ts | *verified* |
 | AuditQuery | `query` | views/user/SQLBrowserScoped.svelte views/user/TimeSeriesView.svelte views/user/CollectionView.svelte  | admin-audit.spec.ts timeseries-operations.spec.ts  |  |
 | Backup | `create` | views/admin/UserDetail.svelte views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte  | collection.spec.ts admin-databases.spec.ts  |  |
 | Backup | `delete` | stores/navigation.svelte.ts stores/toast.svelte.ts views/admin/BackupManager.svelte  | collection.spec.ts admin-roles.spec.ts  |  |
@@ -27,19 +27,19 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Backup | `list` | views/admin/CertManager.svelte views/user/IndexManager.svelte views/MainApp.svelte  | admin-nav-smoke.spec.ts tenant-barrier-unseal.spec.ts  |  |
 | Backup | `restore` | views/admin/BackupManager.svelte  | backup-manager.spec.ts kv-explorer-restore.spec.ts  |  |
 | Backup | `verify` | views/admin/BackupManager.svelte  | collection.spec.ts batch-advanced.spec.ts  |  |
-| Batch | `availableCodecs` | none | none | not in UI |
+| Batch | `availableCodecs` | none | none | not in UI; *verified* |
 | Batch | `availableImportFormats` | views/user/BatchView.svelte  | batch-import.spec.ts  |  |
-| Batch | `execute` | views/user/TransactionView.svelte views/admin/RebalancePanel.svelte views/user/BatchView.svelte  | transaction.spec.ts database.spec.ts  |  |
-| Batch | `importFile` | views/user/BatchView.svelte  | none | no e2e |
-| Ceremony | `initialize` | views/admin/SealManager.svelte components/ConnectionManager.svelte components/ServerInitWizard.svelte  | admin-seal-officers.spec.ts ceremony-init-wizard.spec.ts  |  |
-| Ceremony | `signCSR` | none | none | not in UI |
-| Ceremony | `status` | App.svelte stores/connection-manager.svelte.ts views/admin/SealManager.svelte  | collection.spec.ts batch-import.spec.ts  |  |
-| Cert | `enrollCert` | views/admin/CertManager.svelte  | none | no e2e |
-| Cert | `export` | views/admin/CertManager.svelte  | fixtures/web-mode-mock.ts fixtures/embedded-wizard-steps.ts  |  |
+| Batch | `execute` | views/user/BatchView.svelte | batch.spec.ts batch-advanced.spec.ts | *verified* |
+| Batch | `importFile` | views/user/BatchView.svelte | batch-import.spec.ts | *verified* |
+| Ceremony | `initialize` | components/ConnectionManager.svelte components/ServerInitWizard.svelte | ceremony-init-wizard.spec.ts | *verified* |
+| Ceremony | `signCSR` | none | none | not in UI; *verified* |
+| Ceremony | `status` | none (hits are `seal.status` / `admin.status`) | none | not in UI; *verified* |
+| Cert | `enrollCert` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
+| Cert | `export` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `issueCert` | views/admin/CertManager.svelte  | admin-certs.spec.ts  |  |
-| Cert | `issueCertWithLocalKey` | views/admin/CertManager.svelte  | none | no e2e |
-| Cert | `list` | views/admin/CertManager.svelte views/user/IndexManager.svelte views/admin/UserDetail.svelte  | tenant-barrier-unseal.spec.ts batch-advanced.spec.ts  |  |
-| Cert | `revoke` | views/user/LeaseManager.svelte views/admin/CertManager.svelte  | admin-seal-officers.spec.ts tenant-holders.spec.ts  |  |
+| Cert | `issueCertWithLocalKey` | views/admin/CertManager.svelte | admin-certs.spec.ts (blank-CSR issue) | *verified* |
+| Cert | `list` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
+| Cert | `revoke` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Collection | `create` | views/admin/UserDetail.svelte views/user/IndexManager.svelte views/admin/RoleDetail.svelte  | admin-roles.spec.ts bulk-delete.spec.ts  |  |
 | Collection | `deleteDocument` | views/user/CollectionView.svelte  | none | no e2e |
 | Collection | `drop` | views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte views/user/CollectionView.svelte  | collection.spec.ts admin-databases.spec.ts  |  |
@@ -102,12 +102,12 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Index | `scan` | lib/kvRange.ts views/user/IndexManager.svelte views/user/KVExplorer.svelte  | admin-audit.spec.ts index.spec.ts  |  |
 | Invitation | `invite` | components/admin/InviteUserModal.svelte  | none | no e2e |
 | Invitation | `redeem` | none | none | not in UI |
-| KV | `delete` | stores/navigation.svelte.ts views/admin/BackupManager.svelte stores/connection-manager.svelte.ts  | collection.spec.ts timeseries-chart-fix.spec.ts  |  |
-| KV | `exists` | none | admin-views.spec.ts admin-dashboard.spec.ts  | not in UI |
-| KV | `get` | views/admin/UserDetail.svelte views/admin/RoleDetail.svelte views/admin/DatabaseDetail.svelte  | watch-advanced.spec.ts vector-database.spec.ts  |  |
-| KV | `list` | views/admin/Dashboard.svelte stores/connection-manager.svelte.ts views/admin/UserDetail.svelte  | batch-advanced.spec.ts admin-nav-smoke.spec.ts  |  |
-| KV | `put` | views/user/KVExplorer.svelte  | batch.spec.ts error-recovery.spec.ts  |  |
-| KV | `scan` | views/user/IndexManager.svelte views/user/CollectionView.svelte views/user/KVExplorer.svelte  | index.spec.ts admin-audit.spec.ts  |  |
+| KV | `delete` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
+| KV | `exists` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| KV | `get` | none (KVExplorer reads through `kv.scan`; other hits are other clients' `get`) | none | not in UI; *verified* |
+| KV | `list` | none (other hits are other clients' `list`) | none | not in UI; *verified* |
+| KV | `put` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
+| KV | `scan` | views/user/KVExplorer.svelte | kv-crud.spec.ts dom/kv-explorer-roundtrip.spec.ts | *verified* |
 | Lease | `grant` | views/user/LeaseManager.svelte  | lease-advanced.spec.ts lease-grant-fix.spec.ts  |  |
 | Lease | `keepAlive` | views/user/LeaseManager.svelte  | none | no e2e |
 | Lease | `list` | stores/connection-manager.svelte.ts views/admin/RoleManager.svelte views/admin/BackupManager.svelte  | tenant-barrier-unseal.spec.ts admin-databases.spec.ts  |  |
@@ -119,13 +119,13 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Lock | `release` | views/user/LockManager.svelte  | lock.spec.ts  |  |
 | Lock | `status` | App.svelte stores/connection-manager.svelte.ts stores/seal.svelte.ts  | tenant-barrier-unseal.spec.ts batch-advanced.spec.ts  |  |
 | Lock | `tryLock` | views/user/LockManager.svelte  | lock.spec.ts  |  |
-| MVCC | `compact` | none | watch.spec.ts database.spec.ts  | not in UI |
-| MVCC | `currentRevision` | none | real-backend/kv-restore-mvcc-real.spec.ts  | not in UI |
-| MVCC | `getAtRevision` | none | none | not in UI |
-| MVCC | `getRevision` | none | none | not in UI |
-| MVCC | `putWithLease` | none | none | not in UI |
-| MVCC | `range` | lib/kvRange.ts views/user/KVExplorer.svelte  | index.spec.ts fixtures/wails-mock.ts  |  |
-| MVCC | `restoreToRevision` | views/user/KVExplorer.svelte  | fixtures/wails-mock.ts  |  |
+| MVCC | `compact` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| MVCC | `currentRevision` | none | real-backend/kv-restore-mvcc-real.spec.ts (REST only, no UI) | not in UI; *verified* |
+| MVCC | `getAtRevision` | none | none | not in UI; *verified* |
+| MVCC | `getRevision` | none | none | not in UI; *verified* |
+| MVCC | `putWithLease` | none | none | not in UI; *verified* |
+| MVCC | `range` | views/user/KVExplorer.svelte (as-of revision browse) | kv-explorer-restore.spec.ts | *verified* |
+| MVCC | `restoreToRevision` | views/user/KVExplorer.svelte | kv-explorer-restore.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
 | Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte  | none | no e2e |
 | Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte  | none | no e2e |
 | Officer | `listOfficers` | views/admin/SealManager.svelte components/ServerInitWizard.svelte  | none | no e2e |
@@ -187,7 +187,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | TimeSeries | `write` | none | transaction-operations.spec.ts admin-roles.spec.ts  | not in UI |
 | TimeSeries | `writeBatch` | none | none | not in UI |
 | TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
-| Transaction | `execute` | views/admin/RebalancePanel.svelte views/user/TransactionView.svelte views/user/BatchView.svelte  | transaction-operations.spec.ts transaction.spec.ts  |  |
+| Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
 | User | `addCertBinding` | none | none | not in UI |
 | User | `create` | views/admin/BackupManager.svelte views/admin/UserDetail.svelte views/admin/DatabaseDetail.svelte  | bulk-delete.spec.ts admin-databases.spec.ts  |  |
 | User | `delete` | stores/navigation.svelte.ts stores/connection-manager.svelte.ts stores/toast.svelte.ts  | collection.spec.ts admin-roles.spec.ts  |  |
