@@ -219,7 +219,7 @@ test.describe("KV Explorer — restore workflow", () => {
     await putEntry(page, "bulk/bravo", "bravo-orig"); // revision 2
     // Delete alpha via the UI (bulk-delete scenario).
     await page.getByText("bulk/alpha").first().click();
-    let detailPanel = page.getByLabel("Details");
+    const detailPanel = page.getByLabel("Details");
     await detailPanel.getByRole("button", { name: "Delete" }).click();
     await page.locator(".modal").getByRole("button", { name: "Delete" }).click();
     await expect(page.getByText('Deleted "bulk/alpha"')).toBeVisible({ timeout: 5_000 });
