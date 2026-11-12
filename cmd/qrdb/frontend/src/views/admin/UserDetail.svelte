@@ -42,6 +42,8 @@
   // ---------------------------------------------------------------------------
 
   let username: string = $state("");
+  let email: string = $state("");
+  let displayName: string = $state("");
   let tenantId: string = $state("default");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
@@ -103,6 +105,8 @@
         const user: User = await client.users.get(userId);
         existingUser = user;
         username = user.username;
+        email = user.email ?? "";
+        displayName = user.name ?? "";
         // Never allow tenantId to become undefined — TenantSelect's
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
@@ -133,6 +137,8 @@
       if (isCreate) {
         await client.users.create({
           username: username.trim(),
+          email: email.trim(),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -141,6 +147,8 @@
         await client.users.update({
           id: userId!,
           username: username.trim(),
+          ...(email.trim() === "" ? {} : { email: email.trim() }),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           roleIds: selectedRoleIds,
         });
         showToast("success", `User "${username}" updated`);
@@ -278,6 +286,30 @@
                 class="input input-bordered input-sm w-full"
                 placeholder="Enter username"
                 bind:value={username}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
+            <!-- Email (the email login key; the server requires it at create) -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Email</span></div>
+              <input
+                type="email"
+                class="input input-bordered input-sm w-full"
+                placeholder="user@example.com"
+                bind:value={email}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
+            <!-- Display name -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Display Name</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="Optional display name"
+                bind:value={displayName}
                 disabled={existingUser !== null && existingUser.system}
               />
             </label>
@@ -482,7 +514,7 @@
       <button
         class="btn btn-primary btn-sm"
         onclick={() => void handleSave()}
-        disabled={saving || username.trim() === ""}
+        disabled={saving || username.trim() === "" || (isCreate && email.trim() === "")}
       >
         {#if saving}
           <span class="loading loading-spinner loading-xs"></span>
