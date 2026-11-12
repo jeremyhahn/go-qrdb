@@ -144,6 +144,11 @@
 
   async function handleReveal(): Promise<void> {
     if (selectedName === "") return;
+    // The button reads "Hide" while a value is shown: toggle it off.
+    if (revealedValue !== null) {
+      revealedValue = null;
+      return;
+    }
     revealLoading = true;
     try {
       revealedValue = await client.credentials.retrieve(selectedName);
