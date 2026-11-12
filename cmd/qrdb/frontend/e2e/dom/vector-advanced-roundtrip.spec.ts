@@ -55,7 +55,7 @@ async function getVector(
   const url = `${vb.base}/vector/get?namespace=docs&id=${encodeURIComponent(id)}`;
   const resp = await request.get(url, { headers: vb.headers, ignoreHTTPSErrors: true });
   const text = await resp.text();
-  let body: Record<string, unknown> = {};
+  let body: Record<string, unknown>;
   try {
     body = JSON.parse(text) as Record<string, unknown>;
   } catch {

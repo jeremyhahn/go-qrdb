@@ -56,7 +56,7 @@ async function api(
         let text = "";
         res.on("data", (c: Buffer) => (text += c.toString()));
         res.on("end", () => {
-          let json: unknown = null;
+          let json: unknown;
           try {
             json = text ? JSON.parse(text) : null;
           } catch {

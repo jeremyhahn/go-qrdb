@@ -334,7 +334,7 @@ async function initializeCluster(
   // serve so specs start from a settled cluster.
   for (const url of adminUrls) {
     const deadline = Date.now() + 60_000;
-    let last = "no response";
+    let last: string;
     for (;;) {
       const res = await httpsGetStatus(`${url}/v1/barrier/status`);
       if (
