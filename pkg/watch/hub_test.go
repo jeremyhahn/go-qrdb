@@ -150,6 +150,32 @@ func TestHub_WatchPrefix_ReceivesPrefixEvent(t *testing.T) {
 	}
 }
 
+func TestHub_WatchPrefix_DoesNotMatchNonPrefixKey(t *testing.T) {
+	h := NewHub()
+	w, err := h.WatchPrefix(context.Background(), "/app/")
+	if err != nil {
+		t.Fatalf("WatchPrefix returned error: %v", err)
+	}
+
+	other := &kv.KeyValue{Key: []byte("/other/config"), Value: []byte("data")}
+	h.NotifyPut([]byte("/other/config"), other, nil)
+
+	// Barrier: an in-range event sent after the out-of-range one. A watcher's
+	// events are delivered in notify order (TestHub_EventDeliveryOrder), so if
+	// the first event received is the barrier, "/other/config" was dropped.
+	barrier := &kv.KeyValue{Key: []byte("/app/barrier"), Value: []byte("barrier")}
+	h.NotifyPut([]byte("/app/barrier"), barrier, nil)
+
+	select {
+	case resp := <-w.Events():
+		if len(resp.Events) != 1 || !bytes.Equal(resp.Events[0].Kv.Key, []byte("/app/barrier")) {
+			t.Fatalf("prefix watcher received an out-of-range event, got %+v", resp.Events)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the barrier event")
+	}
+}
+
 func TestHub_WatchPrefix_OnClosedHub_ReturnsError(t *testing.T) {
 	h := NewHub()
 	h.Close()
