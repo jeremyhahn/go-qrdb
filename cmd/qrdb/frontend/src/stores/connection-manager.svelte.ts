@@ -432,9 +432,19 @@ async function detectWebServerMode(
     } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        // Only a refusal (403) says the caller is no server administrator:
-        // the admin views are then not offered.
-        return { serverMode: 'standalone', nodeCount: 0, serverAdmin: !isForbidden(err) };
+        // Only a refusal (403) can say the caller is no server administrator,
+        // and only when the tenant list is refused too: a tenant admin is
+        // refused the topology but manages its tenant from the admin views.
+        if (!isForbidden(err)) {
+            return { serverMode: 'standalone', nodeCount: 0, serverAdmin: true };
+        }
+        let serverAdmin = true;
+        try {
+            await client.tenants.list();
+        } catch (listErr) {
+            serverAdmin = !isForbidden(listErr);
+        }
+        return { serverMode: 'standalone', nodeCount: 0, serverAdmin };
     }
 }
 
