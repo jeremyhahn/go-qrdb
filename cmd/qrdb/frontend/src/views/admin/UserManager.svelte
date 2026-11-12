@@ -41,6 +41,8 @@
   let showDetail: boolean = $state(false);
   let detailUserId: string | null = $state(null);
   let showInvite: boolean = $state(false);
+  let searchThumbprint: string = $state("");
+  let searching: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -132,6 +134,25 @@
     void fetchUsers();
   }
 
+  /** Looks up the user bound to a certificate thumbprint and opens it. */
+  async function handleThumbprintSearch(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const thumbprint = searchThumbprint.trim();
+    if (thumbprint === "") return;
+    try {
+      searching = true;
+      const user = await client.users.getUserByCertThumbprint(thumbprint);
+      searchThumbprint = "";
+      detailUserId = user.id;
+      showDetail = true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "No user bound to that thumbprint";
+      showToast("error", msg);
+    } finally {
+      searching = false;
+    }
+  }
+
   /** Opens the invite-a-user modal (see InviteUserModal.svelte). */
   function handleInvite(): void {
     showInvite = true;
@@ -175,6 +196,34 @@
         Invite User
       </button>
     </div>
+
+    <!-- Certificate thumbprint lookup -->
+    <form
+      class="flex items-end gap-2"
+      data-testid="user-thumbprint-search"
+      onsubmit={(e) => void handleThumbprintSearch(e)}
+    >
+      <label class="form-control grow">
+        <div class="label">
+          <span class="label-text font-semibold">Find user by certificate thumbprint</span>
+        </div>
+        <input
+          type="text"
+          class="input input-bordered input-sm w-full font-mono"
+          placeholder="Certificate thumbprint"
+          data-testid="user-thumbprint-input"
+          bind:value={searchThumbprint}
+        />
+      </label>
+      <button
+        type="submit"
+        class="btn btn-sm btn-outline"
+        data-testid="user-thumbprint-submit"
+        disabled={searching || searchThumbprint.trim() === ""}
+      >
+        Find
+      </button>
+    </form>
 
     <CrudTable
       title="Users"
