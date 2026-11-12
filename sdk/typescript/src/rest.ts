@@ -298,6 +298,32 @@ const SDK_VERSION = '0.1.0';
  * so that SDK consumers see the camelCase field names declared in types.ts.
  * Throws {@link TransportError} on non-OK status codes.
  */
+/**
+ * Returns the server's refusal of a request as an Error whose message is the
+ * server's own message: the `error` (a string, or an object's `message`) or
+ * `message` field of a JSON error body. A body in no such shape is kept as
+ * it came, so no refusal is ever shown blank.
+ */
+export function serverRefusal(body: string): Error {
+    try {
+        const parsed: unknown = JSON.parse(body);
+        if (parsed !== null && typeof parsed === 'object') {
+            const obj = parsed as Record<string, unknown>;
+            const e = obj['error'];
+            if (typeof e === 'string' && e !== '') return new Error(e);
+            if (e !== null && typeof e === 'object') {
+                const m = (e as Record<string, unknown>)['message'];
+                if (typeof m === 'string' && m !== '') return new Error(m);
+            }
+            const m = obj['message'];
+            if (typeof m === 'string' && m !== '') return new Error(m);
+        }
+    } catch {
+        // Not JSON: the body itself is the server's text.
+    }
+    return new Error(body);
+}
+
 async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
@@ -316,7 +342,7 @@ async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit)
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
     const raw = await resp.json();
@@ -346,7 +372,7 @@ async function requestVoid(baseUrl: string, path: string, init?: RequestInit): P
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
 }
@@ -396,7 +422,7 @@ async function requestOptionalJSON<T>(baseUrl: string, path: string, init?: Requ
         );
     }
     if (!resp.ok) {
-        throw new TransportError(`${method} ${path}`, resp.status, new Error(await resp.text()));
+        throw new TransportError(`${method} ${path}`, resp.status, serverRefusal(await resp.text()));
     }
     if (resp.status === 204) {
         return undefined;
@@ -440,7 +466,7 @@ async function requestText(baseUrl: string, path: string, init?: RequestInit): P
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
     return resp.text();
@@ -1055,7 +1081,7 @@ export class RestClient implements Client {
                 throw new TransportError(
                     'GET /watch',
                     resp.status,
-                    new Error(body),
+                    serverRefusal(body),
                 );
             }
             if (!resp.body) {
