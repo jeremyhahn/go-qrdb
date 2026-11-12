@@ -74,19 +74,40 @@ export interface DomCluster {
  * mirroring the daemon's own auto-generated node certificates so the Raft QUIC
  * transport accepts every peer.
  */
-function generateClusterCerts(certDir: string, n: number): {
+function generateClusterCerts(
+  certDir: string,
+  n: number,
+): {
   caPath: string;
   nodes: { certPath: string; keyPath: string }[];
 } {
   const caKey = join(certDir, "ca.key");
   const caPath = join(certDir, "ca.crt");
 
-  execFileSync("openssl", ["ecparam", "-genkey", "-name", "prime256v1", "-out", caKey]);
   execFileSync("openssl", [
-    "req", "-x509", "-new", "-key", caKey, "-days", "1", "-out", caPath,
-    "-subj", "/CN=qrdb-dom-cluster-ca",
-    "-addext", "basicConstraints=critical,CA:TRUE",
-    "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    "ecparam",
+    "-genkey",
+    "-name",
+    "prime256v1",
+    "-out",
+    caKey,
+  ]);
+  execFileSync("openssl", [
+    "req",
+    "-x509",
+    "-new",
+    "-key",
+    caKey,
+    "-days",
+    "1",
+    "-out",
+    caPath,
+    "-subj",
+    "/CN=qrdb-dom-cluster-ca",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
   ]);
 
   // SAN/EKU extension file shared by all leaves.
@@ -107,13 +128,40 @@ function generateClusterCerts(certDir: string, n: number): {
     const keyPath = join(certDir, `node${i + 1}.key`);
     const csrPath = join(certDir, `node${i + 1}.csr`);
     const certPath = join(certDir, `node${i + 1}.crt`);
-    execFileSync("openssl", ["ecparam", "-genkey", "-name", "prime256v1", "-out", keyPath]);
     execFileSync("openssl", [
-      "req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=qrdb-node-${i + 1}`,
+      "ecparam",
+      "-genkey",
+      "-name",
+      "prime256v1",
+      "-out",
+      keyPath,
     ]);
     execFileSync("openssl", [
-      "x509", "-req", "-in", csrPath, "-CA", caPath, "-CAkey", caKey,
-      "-CAcreateserial", "-days", "1", "-out", certPath, "-extfile", extPath,
+      "req",
+      "-new",
+      "-key",
+      keyPath,
+      "-out",
+      csrPath,
+      "-subj",
+      `/CN=qrdb-node-${i + 1}`,
+    ]);
+    execFileSync("openssl", [
+      "x509",
+      "-req",
+      "-in",
+      csrPath,
+      "-CA",
+      caPath,
+      "-CAkey",
+      caKey,
+      "-CAcreateserial",
+      "-days",
+      "1",
+      "-out",
+      certPath,
+      "-extfile",
+      extPath,
     ]);
     nodes.push({ certPath, keyPath });
   }
@@ -128,20 +176,29 @@ function writeClusterConfig(path: string): void {
     '  wire_codec: "json"',
     "seal:",
     "  enabled: false",
-    // auth.enabled requires seal.enabled, so a seal-off cluster runs auth-off.
+    // auth off: without a seal the server cannot hold credentials, and the
+    // topology UI under test needs no login.
     "auth:",
     "  enabled: false",
   ];
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
 
-async function httpsGetStatus(url: string, timeoutMs = 1000): Promise<{ code: number; body: string } | null> {
+async function httpsGetStatus(
+  url: string,
+  timeoutMs = 1000,
+): Promise<{ code: number; body: string } | null> {
   const https = await import("https");
   return new Promise((resolve) => {
     const req = https.default.get(url, { rejectUnauthorized: false }, (res) => {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
-      res.on("end", () => resolve({ code: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+      res.on("end", () =>
+        resolve({
+          code: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString(),
+        }),
+      );
     });
     req.on("error", () => resolve(null));
     req.setTimeout(timeoutMs, () => {
@@ -156,14 +213,20 @@ async function httpsGetStatus(url: string, timeoutMs = 1000): Promise<{ code: nu
  * member set (membership converged + a leader elected). Returns the observed
  * distinct node count.
  */
-async function waitForClusterTopology(adminUrl: string, want: number, timeoutMs = 60_000): Promise<void> {
+async function waitForClusterTopology(
+  adminUrl: string,
+  want: number,
+  timeoutMs = 60_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = "no response";
   while (Date.now() < deadline) {
     const res = await httpsGetStatus(`${adminUrl}/admin/topology`);
     if (res !== null && res.code === 200) {
       try {
-        const topo = JSON.parse(res.body) as { shards?: { nodes?: Record<string, string> }[] };
+        const topo = JSON.parse(res.body) as {
+          shards?: { nodes?: Record<string, string> }[];
+        };
         const ids = new Set<string>();
         for (const shard of topo.shards ?? []) {
           for (const id of Object.keys(shard.nodes ?? {})) ids.add(id);
@@ -178,25 +241,33 @@ async function waitForClusterTopology(adminUrl: string, want: number, timeoutMs 
     }
     await new Promise((r) => setTimeout(r, 400));
   }
-  throw new Error(`cluster topology did not reach ${want} nodes within ${timeoutMs}ms (last: ${last})`);
+  throw new Error(
+    `cluster topology did not reach ${want} nodes within ${timeoutMs}ms (last: ${last})`,
+  );
 }
 
 /** Boots a 3-node cluster and blocks until topology reports all members. */
-export async function startCluster(nodeCount = 3, opts: { sm?: "mvcc" } = {}): Promise<DomCluster> {
+export async function startCluster(nodeCount = 3): Promise<DomCluster> {
   const certDir = mkdtempSync(join(tmpdir(), "qrdb-dom-cluster-certs-"));
   const { caPath, nodes: nodeCerts } = generateClusterCerts(certDir, nodeCount);
 
   const peersFlag = NODE_PORTS.slice(0, nodeCount)
     .map((p, i) => `${i + 1}=127.0.0.1:${p.raft}`)
     .join(",");
-
-  // quicraft admits a member only with its transport identity: every node is
-  // told the identities (`qrdbd node-identity`) of the other replicas.
-  const identities = nodeCerts.map((c, i) => {
-    const out = execFileSync(qrdbdBin(), ["node-identity", "--cert", c.certPath]).toString().trim();
-    const id = out.split(/\s+/).find((t) => t.startsWith("spki:")) ?? out;
-    return `${i + 1}=${id}`;
-  });
+  // Static peers must each list every replica's Raft member identity
+  // (spki:<sha256-hex>), which qrdbd node-identity derives from the cert.
+  const identitiesFlag = nodeCerts
+    .map((c, i) => {
+      const id = execFileSync(qrdbdBin(), [
+        "node-identity",
+        "--cert",
+        c.certPath,
+      ])
+        .toString()
+        .trim();
+      return `${i + 1}=${id}`;
+    })
+    .join(",");
 
   const procs: ChildProcess[] = [];
   const dataDirs: string[] = [];
@@ -211,32 +282,44 @@ export async function startCluster(nodeCount = 3, opts: { sm?: "mvcc" } = {}): P
 
     const args = [
       "start",
-      "--config", configPath,
-      "--data-dir", dataDir,
-      "--listen", `0.0.0.0:${ports.raft}`,
-      "--raft-address", `127.0.0.1:${ports.raft}`,
-      "--admin-port", String(ports.admin),
-      "--grpc-port", String(ports.grpc),
+      "--config",
+      configPath,
+      "--data-dir",
+      dataDir,
+      "--listen",
+      `0.0.0.0:${ports.raft}`,
+      "--raft-address",
+      `127.0.0.1:${ports.raft}`,
+      "--admin-port",
+      String(ports.admin),
+      "--grpc-port",
+      String(ports.grpc),
       "--auth-enabled=false",
       "--tls-client-auth=none",
-      "--discovery", "static",
-      "--peers", peersFlag,
-      ...(nodeCount > 1
-        ? ["--member-identities", identities.filter((_, j) => j !== i).join(",")]
-        : []),
-      "--shard-id", "1",
-      "--replica-id", String(i + 1),
-      "--cluster-trust-domain", CLUSTER_TRUST_DOMAIN,
-      "--tls-ca-file", caPath,
-      "--tls-cert-file", nodeCerts[i]!.certPath,
-      "--tls-key-file", nodeCerts[i]!.keyPath,
-      "--log-level", "warn",
+      "--discovery",
+      "static",
+      "--peers",
+      peersFlag,
+      "--member-identities",
+      identitiesFlag,
+      "--shard-id",
+      "1",
+      "--replica-id",
+      String(i + 1),
+      "--cluster-trust-domain",
+      CLUSTER_TRUST_DOMAIN,
+      "--tls-ca-file",
+      caPath,
+      "--tls-cert-file",
+      nodeCerts[i]!.certPath,
+      "--tls-key-file",
+      nodeCerts[i]!.keyPath,
+      "--log-level",
+      "warn",
       "--enable-grpc=false",
       "--enable-unix=false",
       "--enable-quic=false",
       "--enable-mcp=false",
-      // mvcc keeps revision history, which the node compaction policy needs.
-      ...(opts.sm !== undefined ? ["--sm", opts.sm] : []),
     ];
 
     const proc = spawn(qrdbdBin(), args, {
@@ -254,7 +337,11 @@ export async function startCluster(nodeCount = 3, opts: { sm?: "mvcc" } = {}): P
     await waitForClusterTopology(adminUrl, nodeCount);
   } catch (err) {
     for (const p of procs) p.kill("SIGTERM");
-    const logs = stderrBufs.map((b, i) => `--- node${i + 1} stderr ---\n${Buffer.concat(b).toString()}`).join("\n");
+    const logs = stderrBufs
+      .map(
+        (b, i) => `--- node${i + 1} stderr ---\n${Buffer.concat(b).toString()}`,
+      )
+      .join("\n");
     throw new Error(`${err}\n${logs}`);
   }
 
@@ -264,25 +351,8 @@ export async function startCluster(nodeCount = 3, opts: { sm?: "mvcc" } = {}): P
 /** Stops all cluster nodes and removes their data + cert directories. */
 export async function stopCluster(cluster: DomCluster | null): Promise<void> {
   if (cluster === null) return;
-  // Wait for every node to exit: the next test reuses the fixed ports, and a
-  // node still shutting down holds them (bind: address already in use).
-  await Promise.all(
-    cluster.procs.map(
-      (p) =>
-        new Promise<void>((resolve) => {
-          if (p.exitCode !== null || p.signalCode !== null) {
-            resolve();
-            return;
-          }
-          const kill = setTimeout(() => p.kill("SIGKILL"), 10_000);
-          p.once("exit", () => {
-            clearTimeout(kill);
-            resolve();
-          });
-          p.kill("SIGTERM");
-        }),
-    ),
-  );
+  for (const p of cluster.procs) p.kill("SIGTERM");
+  await new Promise((r) => setTimeout(r, 600));
   for (const dir of [...cluster.dataDirs, cluster.certDir]) {
     try {
       rmSync(dir, { recursive: true, force: true });
