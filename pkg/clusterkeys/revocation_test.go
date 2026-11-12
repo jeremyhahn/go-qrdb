@@ -32,7 +32,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterkeys"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
-	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest"
 )
@@ -370,9 +369,6 @@ func TestHandler_RevocationCheckedAfterSAN(t *testing.T) {
 // delivering node is refused before it.
 func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.RevocationChecker) (*seal.BarrierRegistry, int, string) {
 	t.Helper()
-	ctx := context.Background()
-
-	leaderDataRoot := t.TempDir()
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
@@ -395,32 +391,14 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
 	mux.HandleFunc("/v1/cluster/keydelivery", recv.Handler())
-	srv := httptest.NewServer(&peerCertInjector{peer: leader.cert, next: mux})
-	t.Cleanup(srv.Close)
-
-	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-
-	distPlacement := &placement.Placement{
-		TenantID:        tenantID,
-		Database:        "db-main",
-		ShardID:         1,
-		RF:              2,
-		LeaderReplicaID: 1,
-		Replicas: []placement.Replica{
-			{ReplicaID: 1, NodeID: "leader-node-1", RaftAddr: "leader-node-1:9000", DataRoot: leaderDataRoot},
-			{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000", DataRoot: followerDataRoot},
-		},
-	}
 	// leader.cert is the peer the receiver sees; a test revoking it must build
 	// its checker from this same certificate, which is why the helper hands the
 	// option in rather than the certificate out.
-	status, body := postSealedEnvelope(ctx, t, sender, srv, distPlacement.Replicas[1], keydelivery.Meta{
+	srv := httptest.NewServer(&peerCertInjector{peer: leader.cert, next: mux})
+	t.Cleanup(srv.Close)
+
+	status, body := postSealedEnvelope(t, &follower.key.PublicKey, srv, keydelivery.Meta{
 		TenantID:     tenantID,
 		Database:     "db-main",
 		ShardID:      1,
@@ -480,187 +458,11 @@ func (s *subjectRevocationChecker) IsCertRevoked(_ context.Context, peer *x509.C
 var _ auth.RevocationChecker = (*subjectRevocationChecker)(nil)
 
 // ---------------------------------------------------------------------------
-// Sender: the leader must not seal a root key to a revoked recipient
-// ---------------------------------------------------------------------------
-
-// newRevocationSender builds a Sender pointed at a nodekey endpoint serving
-// certPEM, and returns it with the counter of delivery POSTs the endpoint saw.
-// A test asserting the leader refused wants both facts: the error, and that no
-// envelope was ever sent.
-func newRevocationSender(t *testing.T, ca *testCABundle, certPEM []byte, revocation auth.RevocationChecker) (*clusterkeys.Sender, *atomic.Int32) {
-	t.Helper()
-	var deliveries atomic.Int32
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/cluster/nodekey", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/x-pem-file")
-		_, _ = w.Write(certPEM)
-	})
-	mux.HandleFunc("/v1/cluster/keydelivery", func(w http.ResponseWriter, _ *http.Request) {
-		deliveries.Add(1)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"imported":true}`))
-	})
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
-	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", revocation, newTestLogger())
-	if err != nil {
-		t.Fatalf("NewSender: %v", err)
-	}
-	return sender, &deliveries
-}
-
-// deliverTo runs one Deliver against the follower-node-1 replica.
-func deliverTo(t *testing.T, sender *clusterkeys.Sender) error {
-	t.Helper()
-	target := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000"}
-	meta := keydelivery.Meta{
-		TenantID:     "tenant-1",
-		Database:     "db-main",
-		ShardID:      1,
-		ReplicaID:    2,
-		TargetNodeID: "follower-node-1",
-		Mode:         testUnknownMode,
-	}
-	return sender.Deliver(context.Background(), target, meta, []byte(`{"root_key":"AA=="}`))
-}
-
-// TestSender_RevokedRecipient_RefusesToSeal is the disclosure half of the same
-// gap. HPKE recipient-binding guarantees only the holder of the recipient key
-// can open the envelope; against a revoked node that guarantee works FOR the
-// attacker, delivering the tenant root key to precisely the node the operator
-// withdrew. The leader must decline before sealing.
-func TestSender_RevokedRecipient_RefusesToSeal(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	checker, authority := revokedCheckerFor(t, recipient.cert)
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, checker)
-
-	err := deliverTo(t, sender)
-	if !errors.Is(err, clusterkeys.ErrRecipientRevoked) {
-		t.Errorf("Deliver error = %v, want ErrRecipientRevoked", err)
-	}
-	if !errors.Is(err, auth.ErrCertificateRevoked) {
-		t.Errorf("Deliver error = %v, want the auth-layer cause preserved", err)
-	}
-	if deliveries.Load() != 0 {
-		t.Errorf("delivery POSTs = %d, want 0 (nothing may be sealed to a revoked recipient)", deliveries.Load())
-	}
-	if authority.lookups.Load() != 1 {
-		t.Errorf("revocation lookups = %d, want 1", authority.lookups.Load())
-	}
-}
-
-// TestSender_RevokedRecipient_SealsWithoutChecker is the control: the same
-// revoked recipient receives the key when no checker is wired. This is the
-// behaviour before this change.
-func TestSender_RevokedRecipient_SealsWithoutChecker(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, nil)
-
-	if err := deliverTo(t, sender); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if deliveries.Load() != 1 {
-		t.Errorf("delivery POSTs = %d, want 1", deliveries.Load())
-	}
-}
-
-// TestSender_RecipientRevocationUnknown_FailsClosed verifies the leader
-// refuses when it cannot determine the recipient's standing, and that the
-// refusal is distinguishable from a revocation so a caller can retry it.
-func TestSender_RecipientRevocationUnknown_FailsClosed(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	checker, _ := failingChecker(t, errors.New("read index timeout"))
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, checker)
-
-	err := deliverTo(t, sender)
-	if !errors.Is(err, clusterkeys.ErrRecipientRevocationUnknown) {
-		t.Errorf("Deliver error = %v, want ErrRecipientRevocationUnknown", err)
-	}
-	if errors.Is(err, clusterkeys.ErrRecipientRevoked) {
-		t.Error("an undetermined status must not be reported as a revocation")
-	}
-	if deliveries.Load() != 0 {
-		t.Errorf("delivery POSTs = %d, want 0", deliveries.Load())
-	}
-}
-
-// TestSender_RecipientRevocationStateUnavailable_Delivers verifies the sealed-
-// barrier posture on the sending side. A leader whose own system barrier has
-// no revocation state to read still distributes keys; refusing would stall
-// cluster formation in exactly the window it has to work.
-func TestSender_RecipientRevocationStateUnavailable_Delivers(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-
-	checker, authority := failingChecker(t, &cert.BarrierSealedError{})
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, checker)
-
-	if err := deliverTo(t, sender); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if deliveries.Load() != 1 {
-		t.Errorf("delivery POSTs = %d, want 1", deliveries.Load())
-	}
-	if authority.lookups.Load() != 1 {
-		t.Errorf("revocation lookups = %d, want 1", authority.lookups.Load())
-	}
-}
-
-// TestSender_UnrevokedRecipient_Delivers is the ordinary case with the checker
-// wired: a recipient nobody revoked is delivered to.
-func TestSender_UnrevokedRecipient_Delivers(t *testing.T) {
-	ca := newTestCA(t)
-	recipient := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	other := newTestNodeCert(t, ca, "cluster.local", "node-3")
-
-	checker, authority := revokedCheckerFor(t, other.cert)
-	sender, deliveries := newRevocationSender(t, ca, recipient.pem, checker)
-
-	if err := deliverTo(t, sender); err != nil {
-		t.Fatalf("Deliver: %v", err)
-	}
-	if deliveries.Load() != 1 {
-		t.Errorf("delivery POSTs = %d, want 1", deliveries.Load())
-	}
-	if authority.lookups.Load() != 1 {
-		t.Errorf("revocation lookups = %d, want 1", authority.lookups.Load())
-	}
-}
-
-// TestSender_RevocationCheckedAfterNodeIdentity verifies the sender's gate
-// order: a recipient whose SAN names the wrong node is refused on identity,
-// without a revocation lookup.
-func TestSender_RevocationCheckedAfterNodeIdentity(t *testing.T) {
-	ca := newTestCA(t)
-	wrongNode := newTestNodeCert(t, ca, "cluster.local", "node-9")
-
-	checker, authority := revokedCheckerFor(t, wrongNode.cert)
-	sender, _ := newRevocationSender(t, ca, wrongNode.pem, checker)
-
-	err := deliverTo(t, sender)
-	if !errors.Is(err, clusterkeys.ErrRecipientNodeMismatch) {
-		t.Errorf("Deliver error = %v, want ErrRecipientNodeMismatch", err)
-	}
-	if authority.lookups.Load() != 0 {
-		t.Errorf("revocation lookups = %d, want 0 (identity refuses first)", authority.lookups.Load())
-	}
-}
-
-// ---------------------------------------------------------------------------
 // The constructor parameter
 // ---------------------------------------------------------------------------
 
 // TestNilRevocationChecker_IsEnforcementOff states the documented posture for
-// a node with no certificate authority wired: a nil checker admits, and does
-// so on both halves of the plane. The parameter is required so that posture is
+// a node with no certificate authority wired: a nil checker admits. The parameter is required so that posture is
 // stated at the construction site; nil is a legal thing to state.
 func TestNilRevocationChecker_IsEnforcementOff(t *testing.T) {
 	ca := newTestCA(t)
@@ -672,14 +474,6 @@ func TestNilRevocationChecker_IsEnforcementOff(t *testing.T) {
 	recv.Handler()(rec, deliveryRequest(t, leader.cert))
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("receiver with nil checker: status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-
-	sender, deliveries := newRevocationSender(t, ca, follower.pem, nil)
-	if err := deliverTo(t, sender); err != nil {
-		t.Fatalf("sender with nil checker: Deliver: %v", err)
-	}
-	if deliveries.Load() != 1 {
-		t.Errorf("delivery POSTs = %d, want 1", deliveries.Load())
 	}
 }
 
@@ -700,23 +494,6 @@ func TestTypedNilRevocationCache_Admits(t *testing.T) {
 	recv.Handler()(rec, deliveryRequest(t, leader.cert))
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("typed-nil cache: status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-// TestRevocationErrorSentinels_AreDistinct keeps the two sender refusals from
-// collapsing into one. They carry different operator meanings — withdraw the
-// node, versus retry the delivery — and errors.Is must not confuse them.
-func TestRevocationErrorSentinels_AreDistinct(t *testing.T) {
-	if errors.Is(clusterkeys.ErrRecipientRevoked, clusterkeys.ErrRecipientRevocationUnknown) {
-		t.Error("ErrRecipientRevoked matches ErrRecipientRevocationUnknown")
-	}
-	if errors.Is(clusterkeys.ErrRecipientRevocationUnknown, clusterkeys.ErrRecipientRevoked) {
-		t.Error("ErrRecipientRevocationUnknown matches ErrRecipientRevoked")
-	}
-	for _, sentinel := range []error{clusterkeys.ErrRecipientRevoked, clusterkeys.ErrRecipientRevocationUnknown} {
-		if errors.Is(sentinel, clusterkeys.ErrRecipientUntrusted) {
-			t.Errorf("%v matches ErrRecipientUntrusted", sentinel)
-		}
 	}
 }
 

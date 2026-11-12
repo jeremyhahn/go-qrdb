@@ -23,7 +23,6 @@
 // envelope.
 //
 // Receiver handles POST /v1/cluster/keydelivery and GET /v1/cluster/nodekey.
-// Sender delivers keys to follower replicas.
 package clusterkeys
 
 import (
