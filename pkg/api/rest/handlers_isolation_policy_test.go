@@ -15,13 +15,20 @@
 package rest
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func restFloorCall(srv *Server, method, body string) *httptest.ResponseRecorder {
@@ -144,5 +151,40 @@ func TestHandleUpdateTenant_IsolationPolicy(t *testing.T) {
 	}
 	if rec := restTenantCall(srv, http.MethodPut, `{"description":"d"}`); rec.Code != http.StatusOK {
 		t.Fatalf("update without isolation_policy on a strict tenant: status %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// A status carried alongside an isolation policy does not lift the target
+// tenants:update check (Codex P1 on #1423): a system principal holding
+// tenants:update on its own tenant and tenants:set_status, but not
+// tenants:update:cross, is refused when it updates another tenant's status
+// and isolation policy together, and the policy is left as it was.
+func TestHandleUpdateTenant_MixedStatusAndIsolationPolicyNeedsTheTargetUpdateCheck(t *testing.T) {
+	srv := strictIsolationActiveRESTServer(t)
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
+	WithAuthMiddleware(authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles)))(srv)
+	operator := &auth.Identity{Subject: "operator", TenantID: tenantid.System, Roles: []string{
+		authtest.CustomRole(t, roles, tenantid.System, "status-operator", permission.TenantsUpdate, permission.TenantsSetStatus),
+	}}
+	send := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.dispatch(rec, req.WithContext(auth.WithIdentity(req.Context(), operator)))
+		return rec
+	}
+
+	if rec := send(`{"status":"active","isolation_policy":"strict"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("status+isolation_policy on acme: status %d; want 403 (%s)", rec.Code, rec.Body.String())
+	}
+	got, err := srv.tenantSvc.GetTenant(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got.IsolationPolicy != "" {
+		t.Fatalf("isolation_policy after the refused update = %q; want it unchanged (inherit)", got.IsolationPolicy)
+	}
+	// The status half alone is within the principal's grant.
+	if rec := send(`{"status":"active"}`); rec.Code != http.StatusOK {
+		t.Fatalf("status-only update on acme: status %d; want 200 (%s)", rec.Code, rec.Body.String())
 	}
 }
