@@ -810,6 +810,13 @@
             </div>
           </div>
         </div>
+        <div class="mt-6 w-full max-w-md">
+          <EmbeddedServerPanel
+            {client}
+            available={connManagerStore.embeddedAvailable}
+            onStartNew={showEmbeddedPanel}
+          />
+        </div>
       </div>
 
     <!-- Profile grid -->
