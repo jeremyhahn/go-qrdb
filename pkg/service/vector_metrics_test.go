@@ -335,6 +335,45 @@ func TestVectorCountMetric_CountsStoredVectorsExactly(t *testing.T) {
 	assert.Equal(t, stored(), gauge(), "a batch delete subtracts each stored id once")
 }
 
+// TestVectorCountMetric_RestartSeedsTheStoredCount reopens the on-disk store
+// after re-upserts, a duplicate batch id and a delete of a missing id: the
+// gauge the new service seeds at startup equals the vectors stored.
+func TestVectorCountMetric_RestartSeedsTheStoredCount(t *testing.T) {
+	dir := t.TempDir()
+	ctx := tenant.WithTenantID(context.Background(), "tenant-s")
+
+	isolatedRegistry(t)
+	store1 := newRestartVectorStorage(t, dir)
+	svc1, err := NewVectorService(store1, newMockLogger())
+	require.NoError(t, err)
+	_, err = svc1.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "seed", Dimension: 2})
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = svc1.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "seed", ID: 1, Vector: []float32{1, float32(i)}})
+		require.NoError(t, err)
+	}
+	_, err = svc1.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "seed", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 2}},
+		{ID: 2, Vector: []float32{2, 2}},
+		{ID: 2, Vector: []float32{2, 3}},
+	}})
+	require.NoError(t, err)
+	_, _ = svc1.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "seed", ID: 99})
+	require.NoError(t, store1.Close())
+
+	reg := isolatedRegistry(t)
+	store2 := newRestartVectorStorage(t, dir)
+	defer func() { _ = store2.Close() }()
+	_, err = NewVectorService(store2, newMockLogger())
+	require.NoError(t, err)
+
+	stats, err := store2.GetStats(context.Background(), scopedFromContext(ctx, "seed"))
+	require.NoError(t, err)
+	require.Equal(t, uint64(2), stats.Count)
+	assert.Equal(t, float64(stats.Count), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-s"),
+		"the gauge seeded after a restart equals the stored vector count")
+}
+
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
 // without an explicit tenant (pooling into system) carry tenant="system" in
 // the gauge label — not an empty string or \x1f.
