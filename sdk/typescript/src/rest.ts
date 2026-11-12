@@ -2701,7 +2701,7 @@ export class RestClient implements Client {
         return {
             getShardStats: async (shardId: number): Promise<ShardStatsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShardStatsResponse>(`/v1/rebalance/shards/${encodeURIComponent(String(shardId))}/stats`,
+                return this.fetchJSON<ShardStatsResponse>(`/v1/rebalance/shards/${encodeURIComponent(String(shardId))}`,
                 );
             },
             createPlan: async (req: RebalancePlanRequest): Promise<RebalancePlan> => {
