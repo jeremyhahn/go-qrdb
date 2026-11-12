@@ -115,6 +115,17 @@
     }
   }
 
+  /**
+   * Keeps Enter and Space on the focused copy button to the button: the
+   * row opens on those keys, and the button's own activation already
+   * copies. Other keys (Tab, arrows) still reach the row.
+   */
+  function stopKeyToRow(event: KeyboardEvent): void {
+    if (event.key === "Enter" || event.key === " ") {
+      event.stopPropagation();
+    }
+  }
+
   /** Checks if content is overflowing. */
   function checkOverflow(): void {
     if (contentRef !== null) {
@@ -171,8 +182,9 @@
     {#if copyable && displayValue !== ""}
       <button
         type="button"
-        class="btn btn-ghost btn-xs ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+        class="btn btn-ghost btn-xs ml-auto shrink-0 pointer-events-none opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
         onclick={copyToClipboard}
+        onkeydown={stopKeyToRow}
         data-testid="cell-copy"
         title="Copy to clipboard"
       >
