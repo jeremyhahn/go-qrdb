@@ -127,8 +127,11 @@
     const req = {
       name: dbWizardStore.name,
       backend: dbWizardStore.backend || "pebble",
-      ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
-        ? { dataDir: dbWizardStore.dataDir }
+      // The storage step offers a data directory in every mode; it is a path
+      // on the server, and an explicit one gives the database a dedicated
+      // store (which a per-database barrier requires).
+      ...(dbWizardStore.backend !== "memory" && dbWizardStore.dataDir.trim() !== ""
+        ? { dataDir: dbWizardStore.dataDir.trim() }
         : {}),
       // Replication factor and dedicated WAL for a dedicated-raft database.
       // Both are only meaningful on a Raft-mode server; the backend ignores
