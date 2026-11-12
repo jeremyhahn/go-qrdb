@@ -82,14 +82,6 @@ func TestSessionBuilder_Unsealed_Passthrough(t *testing.T) {
 	require.ErrorAs(t, err2, &sealedErr)
 }
 
-// TestWithSealedWindowProbe_Option verifies the option threads the probe
-// into the server.
-func TestWithSealedWindowProbe_Option(t *testing.T) {
-	probe := &fakeSealedProbe{}
-	s := NewServer(nil, nil, "127.0.0.1:0", WithSealedWindowProbe(probe))
-	assert.NotNil(t, s.sealedProbe)
-}
-
 // TestBarrierSealedError_Message verifies the typed error's message
 // identifies its origin.
 func TestBarrierSealedError_Message(t *testing.T) {

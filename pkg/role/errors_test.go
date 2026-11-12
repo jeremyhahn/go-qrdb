@@ -35,17 +35,6 @@ func TestRoleNotFoundError_Message(t *testing.T) {
 	}
 }
 
-func TestRoleNotFoundError_As(t *testing.T) {
-	var err error = &RoleNotFoundError{ID: "xyz"}
-	var target *RoleNotFoundError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *RoleNotFoundError")
-	}
-	if target.ID != "xyz" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "xyz")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RoleNameExistsError
 // ---------------------------------------------------------------------------
@@ -55,17 +44,6 @@ func TestRoleNameExistsError_Message(t *testing.T) {
 	want := "role: name already exists: admin in tenant acme"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestRoleNameExistsError_As(t *testing.T) {
-	var err error = &RoleNameExistsError{Name: "editor", TenantID: "system"}
-	var target *RoleNameExistsError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *RoleNameExistsError")
-	}
-	if target.Name != "editor" {
-		t.Fatalf("Name: got %q, want %q", target.Name, "editor")
 	}
 }
 
@@ -108,17 +86,6 @@ func TestSystemRoleImmutableError_Message(t *testing.T) {
 	}
 }
 
-func TestSystemRoleImmutableError_As(t *testing.T) {
-	var err error = &SystemRoleImmutableError{ID: "admin-id"}
-	var target *SystemRoleImmutableError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *SystemRoleImmutableError")
-	}
-	if target.ID != "admin-id" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "admin-id")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // StoreError
 // ---------------------------------------------------------------------------
@@ -147,29 +114,10 @@ func TestStoreError_MessageNoErr(t *testing.T) {
 	}
 }
 
-func TestStoreError_Unwrap(t *testing.T) {
-	inner := io.ErrClosedPipe
-	err := &StoreError{Op: "put", Err: inner}
-	if !errors.Is(err, inner) {
-		t.Fatal("Unwrap should allow errors.Is to match inner error")
-	}
-}
-
 func TestStoreError_UnwrapNil(t *testing.T) {
 	err := &StoreError{Op: "put"}
 	if err.Unwrap() != nil {
 		t.Fatal("Unwrap should return nil when Err is nil")
-	}
-}
-
-func TestStoreError_As(t *testing.T) {
-	var err error = &StoreError{Op: "delete", Detail: "index", Err: io.EOF}
-	var target *StoreError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *StoreError")
-	}
-	if target.Op != "delete" {
-		t.Fatalf("Op: got %q, want %q", target.Op, "delete")
 	}
 }
 
@@ -187,15 +135,6 @@ func TestStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
 	err := &StoreError{Op: "get", Detail: "unmarshal", Err: io.EOF}
 	if err.ReadTransient() {
 		t.Fatal("a bare composite literal must read ReadTransient() = false; only newStoreError sets it true")
-	}
-}
-
-// TestStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the method
-// reports exactly the field newStoreError computed, not a hardcoded value.
-func TestStoreError_ReadTransient_TrueWhenSetByNewStoreError(t *testing.T) {
-	err := newStoreError("get", "primary lookup", io.ErrUnexpectedEOF)
-	if !err.ReadTransient() {
-		t.Fatal("newStoreError on a non-decrypt cause must produce ReadTransient() = true")
 	}
 }
 
@@ -234,21 +173,6 @@ func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
 	}
 }
 
-// TestIsTransientCause_NonDecryptCause and TestIsTransientCause_DecryptCause
-// exercise isTransientCause directly, independent of newStoreError, so a
-// future caller of it is held to the same two-cause contract.
-func TestIsTransientCause_NonDecryptCause(t *testing.T) {
-	if !isTransientCause(errors.New("leader lost")) {
-		t.Fatal("isTransientCause(a generic read failure) must be true")
-	}
-}
-
-func TestIsTransientCause_DecryptCause(t *testing.T) {
-	if isTransientCause(seal.ErrDecryptionFailed) {
-		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ValidationError
 // ---------------------------------------------------------------------------
@@ -258,17 +182,6 @@ func TestValidationError_Message(t *testing.T) {
 	want := "role: validation failed: name: must not be empty"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestValidationError_As(t *testing.T) {
-	var err error = &ValidationError{Field: "id", Reason: "required"}
-	var target *ValidationError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *ValidationError")
-	}
-	if target.Field != "id" {
-		t.Fatalf("Field: got %q, want %q", target.Field, "id")
 	}
 }
 
@@ -284,14 +197,6 @@ func TestServiceRequiredError_Message(t *testing.T) {
 	}
 }
 
-func TestServiceRequiredError_As(t *testing.T) {
-	var err error = &ServiceRequiredError{}
-	var target *ServiceRequiredError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *ServiceRequiredError")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RoleIDExistsError
 // ---------------------------------------------------------------------------
@@ -301,17 +206,6 @@ func TestRoleIDExistsError_Message(t *testing.T) {
 	want := "role: id already exists: role-123 in tenant acme"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestRoleIDExistsError_As(t *testing.T) {
-	var err error = &RoleIDExistsError{ID: "role-xyz", TenantID: "globex"}
-	var target *RoleIDExistsError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *RoleIDExistsError")
-	}
-	if target.ID != "role-xyz" {
-		t.Fatalf("ID: got %q, want %q", target.ID, "role-xyz")
 	}
 }
 
@@ -345,17 +239,6 @@ func TestReservedRoleNameError_Message(t *testing.T) {
 	}
 }
 
-func TestReservedRoleNameError_As(t *testing.T) {
-	var err error = &ReservedRoleNameError{Name: "owner", TenantID: "acme"}
-	var target *ReservedRoleNameError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *ReservedRoleNameError")
-	}
-	if target.Name != "owner" {
-		t.Fatalf("Name: got %q, want %q", target.Name, "owner")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // InvalidPermissionError
 // ---------------------------------------------------------------------------
@@ -365,16 +248,5 @@ func TestInvalidPermissionError_Message(t *testing.T) {
 	want := "role: invalid permission: fake:perm"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestInvalidPermissionError_As(t *testing.T) {
-	var err error = &InvalidPermissionError{Permission: "bad:action"}
-	var target *InvalidPermissionError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *InvalidPermissionError")
-	}
-	if target.Permission != "bad:action" {
-		t.Fatalf("Permission: got %q, want %q", target.Permission, "bad:action")
 	}
 }

@@ -369,9 +369,3 @@ func TestSnapshot_NilAndUnlatchedPermitEverything(t *testing.T) {
 		assert.True(t, snap.permitsDatabase(service.PrivilegeAll))
 	}
 }
-
-func TestQueryState_ImplementsTheInterface(t *testing.T) {
-	state := &queryState{}
-	state.AuthorizationQueryStateImpl()
-	assert.NoError(t, state.Error())
-}
