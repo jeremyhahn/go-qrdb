@@ -390,6 +390,12 @@ client into the `storage.Storage` interface for distributed mode. That makes the
 `storage.Storage` signature a cross-repo contract: changing it is a breaking change for
 go-xkms, not only for this repo.
 
+**go-quicbaas configures the object-storage provider per go-objstore backend**
+(owner ruling 228(2), 228(3)); `pkg/storage/objstore` is the seam, and go-qrdb
+designs no backend of its own. What the seam offers today and the open
+questions on what it still lacks are in
+[../decisions/object-storage-provider-seam.md](../decisions/object-storage-provider-seam.md).
+
 ## Trust boundaries
 
 - **Tenant isolation is not this layer's job.** An engine does not know about
