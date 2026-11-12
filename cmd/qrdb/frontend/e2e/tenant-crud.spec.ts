@@ -439,9 +439,7 @@ webTest.describe("Admin - Tenant CRUD (web mode / REST route regression)", () =>
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const tenantsSidebar = page.locator("aside").getByText("Tenants");
-      if (!(await tenantsSidebar.isVisible())) {
-        return; // Not in web-admin mode — skip.
-      }
+      await expect(tenantsSidebar).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       await tenantsSidebar.click();
       await expect(

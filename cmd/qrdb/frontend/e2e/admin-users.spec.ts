@@ -636,9 +636,7 @@ webTest.describe("Admin - User Management (web mode / auth-disabled regression)"
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const usersSidebar = page.locator("aside").getByText("Users");
-      if (!(await usersSidebar.isVisible())) {
-        return; // Not in web-admin mode — skip.
-      }
+      await expect(usersSidebar).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       await usersSidebar.click();
       await expect(
