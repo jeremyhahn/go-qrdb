@@ -295,7 +295,7 @@
       if (ns >= u.ns) {
         const v = ns / u.ns;
         const shown = Number.isInteger(v) ? String(v) : v.toFixed(2);
-        return `${shown} ${u.label}`;
+        return `${shown} ${v === 1 ? u.label.slice(0, -1) : u.label}`;
       }
     }
     return `${ns} ns`;
@@ -912,7 +912,7 @@
         </button>
         {#if parseDurationNs(aggInterval) !== null}
           <div class="text-xs text-base-content/50">
-            {formatDurationNs(parseDurationNs(aggInterval) ?? 0)}
+            <span>{formatDurationNs(parseDurationNs(aggInterval) ?? 0)}</span>
             <div class="font-mono">{parseDurationNs(aggInterval)} ns</div>
           </div>
         {/if}
