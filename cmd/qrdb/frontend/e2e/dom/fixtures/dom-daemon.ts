@@ -291,8 +291,19 @@ export async function waitForHealthy(
 /** Stops the daemon and removes its data directory (best effort). */
 export async function stopDaemon(daemon: DomDaemon | null): Promise<void> {
   if (daemon === null) return;
-  daemon.proc.kill("SIGTERM");
-  await new Promise((r) => setTimeout(r, 400));
+  // Wait for the daemon to exit: the next test boots on the same fixed port,
+  // and a daemon still shutting down answers (or resets) its requests.
+  const { proc } = daemon;
+  if (proc.exitCode === null && proc.signalCode === null) {
+    await new Promise<void>((resolve) => {
+      const kill = setTimeout(() => proc.kill("SIGKILL"), 15_000);
+      proc.once("exit", () => {
+        clearTimeout(kill);
+        resolve();
+      });
+      proc.kill("SIGTERM");
+    });
+  }
   try {
     rmSync(daemon.dataDir, { recursive: true, force: true });
   } catch {
