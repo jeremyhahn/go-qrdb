@@ -33,6 +33,7 @@
     Ticket,
   } from "lucide-svelte";
   import RedeemInvitationModal from "./RedeemInvitationModal.svelte";
+  import EmbeddedServerPanel from "./EmbeddedServerPanel.svelte";
   import {
     connManagerStore,
     connectProfile,
@@ -843,6 +844,12 @@
           </button>
         </div>
       </div>
+
+      <EmbeddedServerPanel
+        {client}
+        available={connManagerStore.embeddedAvailable}
+        onStartNew={() => { if (activePanel !== "embedded") showEmbeddedPanel(); }}
+      />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {#each connManagerStore.profiles as profile (profile.id)}
