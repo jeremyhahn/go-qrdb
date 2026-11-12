@@ -15,7 +15,12 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, RestoreRevisionRequest, RestoreRevisionResult } from "@qrdb/sdk";
+  import type {
+    Client,
+    MVCCKeyValue,
+    RestoreRevisionRequest,
+    RestoreRevisionResult,
+  } from "@qrdb/sdk";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
@@ -71,6 +76,27 @@
   // Detail panel
   let selectedEntry: KVEntry | null = $state(null);
 
+  // Selected entry's MVCC metadata (mvcc.getRevision) and the point-in-time
+  // "value at revision" lookup (mvcc.getAtRevision).
+  let entryMeta: MVCCKeyValue | null = $state(null);
+  let entryMetaError: string = $state("");
+  let atRevisionInput: string = $state("");
+  let atRevisionResult: MVCCKeyValue | null = $state(null);
+  let atRevisionError: string = $state("");
+  let atRevisionBusy: boolean = $state(false);
+
+  // Store-wide revision (mvcc.currentRevision) and compaction (mvcc.compact).
+  let currentRevision: number | null = $state(null);
+  let compactRevisionInput: string = $state("");
+  let compactTarget: number | null = $state(null);
+
+  // Optional lease for a save (mvcc.putWithLease); blank saves through kv.put.
+  let modalLeaseId: string = $state("");
+
+  // "Go to key" (kv.exists then kv.get) and the keys-only listing (kv.list).
+  let gotoKeyInput: string = $state("");
+  let keysOnly: boolean = $state(false);
+
   // As-of (historical) browse. asOfRevision is the revision currently being
   // viewed; null means "live". Set independently of the input text so a
   // typo mid-edit doesn't change what's displayed until "View" is clicked.
@@ -122,6 +148,11 @@
 
   const isHistorical = $derived(asOfRevision !== null);
 
+  // Keys-only listing has no values, so the Value column is dropped.
+  const visibleColumns = $derived(
+    keysOnly && asOfRevision === null ? browseColumns.filter((c) => c.id === "key") : browseColumns,
+  );
+
   const restoreModalTitle = $derived(
     restorePhase === "form"
       ? "Restore to Revision"
@@ -150,6 +181,11 @@
           client.mvcc.range(start, end, { revision: asOfRevision as number }),
         );
         entries = resp.kvs.map((kv) => ({ key: kv.key, value: kv.value }));
+      } else if (keysOnly) {
+        // Keys only: kv.list returns names without values; a row's value is
+        // fetched with kv.get when it is opened.
+        const keys = await withRetry(() => client.kv.list(prefixFilter));
+        entries = [...keys].sort().map((key) => ({ key, value: "" }));
       } else {
         // Use scan() so we get keys+values in one round trip instead of N+1.
         const map = await withRetry(() => client.kv.scan(prefixFilter));
@@ -164,6 +200,121 @@
       entries = [];
     } finally {
       loading = false;
+    }
+    await refreshCurrentRevision();
+  }
+
+  /** Reads the store-wide revision; a daemon without MVCC leaves it unknown. */
+  async function refreshCurrentRevision(): Promise<void> {
+    try {
+      currentRevision = await client.mvcc.currentRevision();
+    } catch {
+      currentRevision = null;
+    }
+  }
+
+  /** Asks for confirmation before compacting history up to the entered revision. */
+  function requestCompact(): void {
+    const revision = Number(compactRevisionInput);
+    if (!Number.isInteger(revision) || revision <= 0) {
+      showToast("warning", "Enter a positive revision to compact to.");
+      return;
+    }
+    if (currentRevision !== null && revision > currentRevision) {
+      showToast("warning", `Revision ${revision} is beyond the current revision ${currentRevision}.`);
+      return;
+    }
+    compactTarget = revision;
+  }
+
+  async function confirmCompact(): Promise<void> {
+    if (compactTarget === null) return;
+    const revision = compactTarget;
+    compactTarget = null;
+    try {
+      await client.mvcc.compact(revision);
+      showToast("success", `Compacted history to revision ${revision}`);
+      compactRevisionInput = "";
+      await refreshCurrentRevision();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Opens the detail panel for entry and loads its MVCC metadata. */
+  async function selectEntry(entry: KVEntry): Promise<void> {
+    selectedEntry = entry;
+    entryMeta = null;
+    entryMetaError = "";
+    atRevisionInput = "";
+    atRevisionResult = null;
+    atRevisionError = "";
+    try {
+      const meta = await client.mvcc.getRevision(entry.key);
+      if (selectedEntry?.key === entry.key) entryMeta = meta;
+    } catch (err: unknown) {
+      if (selectedEntry?.key === entry.key) {
+        entryMetaError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  /** Opens key's panel, fetching its current value with kv.get. */
+  async function openKey(key: string): Promise<void> {
+    try {
+      const value = await client.kv.get(key);
+      await selectEntry({ key, value });
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** "Go to key": checks the key exists, then opens it. */
+  async function goToKey(): Promise<void> {
+    const key = gotoKeyInput.trim();
+    if (key === "") {
+      showToast("warning", "Enter a key.");
+      return;
+    }
+    try {
+      const exists = await client.kv.exists(key);
+      if (!exists) {
+        showToast("warning", `Key "${key}" does not exist.`);
+        return;
+      }
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+      return;
+    }
+    await openKey(key);
+  }
+
+  async function toggleKeysOnly(): Promise<void> {
+    selectedEntry = null;
+    await loadEntries();
+  }
+
+  /** Looks up the selected key's value at the entered revision. */
+  async function lookupAtRevision(): Promise<void> {
+    if (selectedEntry === null) return;
+    const revision = Number(atRevisionInput);
+    atRevisionResult = null;
+    atRevisionError = "";
+    if (!Number.isInteger(revision) || revision <= 0) {
+      atRevisionError = "Enter a positive revision.";
+      return;
+    }
+    const key = selectedEntry.key;
+    atRevisionBusy = true;
+    try {
+      const kv = await client.mvcc.getAtRevision(key, revision);
+      if (selectedEntry?.key === key) atRevisionResult = kv;
+    } catch (err: unknown) {
+      if (selectedEntry?.key === key) {
+        atRevisionError = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      atRevisionBusy = false;
     }
   }
 
@@ -189,6 +340,7 @@
     editMode = false;
     modalKey = "";
     modalValue = "";
+    modalLeaseId = "";
     showCreatePanel = true;
   }
 
@@ -196,6 +348,7 @@
     editMode = true;
     modalKey = entry.key;
     modalValue = entry.value;
+    modalLeaseId = entryMeta && entryMeta.key === entry.key && entryMeta.leaseId ? String(entryMeta.leaseId) : "";
     showCreatePanel = true;
   }
 
@@ -209,10 +362,25 @@
       return;
     }
 
+    const leaseText = String(modalLeaseId ?? "").trim();
+    const leaseId = leaseText === "" ? 0 : Number(leaseText);
+    if (!Number.isInteger(leaseId) || leaseId < 0) {
+      showToast("warning", "Lease ID must be a positive integer.");
+      return;
+    }
+
     modalLoading = true;
     try {
-      await client.kv.put(modalKey, modalValue);
-      showToast("success", editMode ? `Updated "${modalKey}"` : `Created "${modalKey}"`);
+      if (leaseId > 0) {
+        await client.mvcc.putWithLease(modalKey, modalValue, leaseId);
+      } else {
+        await client.kv.put(modalKey, modalValue);
+      }
+      const verb = editMode ? "Updated" : "Created";
+      showToast(
+        "success",
+        leaseId > 0 ? `${verb} "${modalKey}" with lease ${leaseId}` : `${verb} "${modalKey}"`,
+      );
       showCreatePanel = false;
       await loadEntries();
     } catch (err: unknown) {
@@ -272,7 +440,11 @@
   }
 
   function handleRowClick(event: RowClickEvent<KVEntry>): void {
-    selectedEntry = event.row;
+    if (keysOnly && !isHistorical) {
+      void openKey(event.row.key);
+    } else {
+      void selectEntry(event.row);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -484,6 +656,52 @@
     </div>
   </div>
 
+  <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
+    <span class="text-base-content/70" data-testid="kv-current-revision">
+      Current revision: <strong class="font-mono">{currentRevision ?? "—"}</strong>
+    </span>
+
+    <div class="join">
+      <input
+        type="number"
+        min="1"
+        class="input join-item input-bordered input-sm w-28 font-mono"
+        placeholder="revision"
+        aria-label="Compact revision"
+        bind:value={compactRevisionInput}
+        onkeydown={(e) => e.key === "Enter" && requestCompact()}
+      />
+      <button class="btn btn-outline btn-sm join-item" onclick={requestCompact}>
+        Compact to revision
+      </button>
+    </div>
+
+    <div class="join">
+      <input
+        type="text"
+        class="input join-item input-bordered input-sm w-48 font-mono"
+        placeholder="Go to key..."
+        aria-label="Go to key"
+        bind:value={gotoKeyInput}
+        disabled={isHistorical}
+        onkeydown={(e) => e.key === "Enter" && goToKey()}
+      />
+      <button class="btn btn-sm join-item" onclick={goToKey} disabled={isHistorical}>Go</button>
+    </div>
+
+    <label class="label cursor-pointer gap-2">
+      <input
+        type="checkbox"
+        class="toggle toggle-sm"
+        aria-label="Keys only"
+        bind:checked={keysOnly}
+        onchange={toggleKeysOnly}
+        disabled={isHistorical}
+      />
+      <span class="label-text">Keys only</span>
+    </label>
+  </div>
+
   {#if isHistorical}
     <div role="alert" class="alert alert-warning mt-3 py-2 text-sm">
       <Clock class="h-4 w-4 shrink-0" />
@@ -501,7 +719,7 @@
   <CrudTable
     title={isHistorical ? `Key-Value Entries (as of revision ${asOfRevision})` : "Key-Value Entries"}
     data={entries}
-    columns={browseColumns}
+    columns={visibleColumns}
     {loading}
     showCreate={!isHistorical}
     showDelete={!isHistorical}
@@ -537,6 +755,52 @@
         <div>
           <span class="text-sm font-medium text-base-content/70 block mb-1">Value</span>
           <div class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap">{selectedEntry.value}</div>
+        </div>
+        <div data-testid="kv-entry-revision">
+          <span class="text-sm font-medium text-base-content/70 block mb-1">Latest revision</span>
+          {#if entryMeta}
+            <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2">
+              <dt class="text-base-content/60">Create revision</dt>
+              <dd class="font-mono" data-testid="kv-create-revision">{entryMeta.createRevision ?? "—"}</dd>
+              <dt class="text-base-content/60">Mod revision</dt>
+              <dd class="font-mono" data-testid="kv-mod-revision">{entryMeta.modRevision ?? "—"}</dd>
+              <dt class="text-base-content/60">Version</dt>
+              <dd class="font-mono" data-testid="kv-version">{entryMeta.version ?? "—"}</dd>
+              <dt class="text-base-content/60">Lease</dt>
+              <dd class="font-mono" data-testid="kv-lease">{entryMeta.leaseId ? entryMeta.leaseId : "none"}</dd>
+            </dl>
+          {:else if entryMetaError}
+            <div class="text-error text-xs" data-testid="kv-entry-revision-error">{entryMetaError}</div>
+          {:else}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+        </div>
+        <div>
+          <label class="text-sm font-medium text-base-content/70 block mb-1" for="kv-at-revision">
+            Value at revision
+          </label>
+          <div class="join w-full">
+            <input
+              id="kv-at-revision"
+              type="number"
+              min="1"
+              class="input join-item input-bordered input-sm w-full font-mono"
+              placeholder="revision"
+              bind:value={atRevisionInput}
+              onkeydown={(e) => e.key === "Enter" && lookupAtRevision()}
+            />
+            <button class="btn btn-sm join-item" onclick={lookupAtRevision} disabled={atRevisionBusy}>
+              Look up
+            </button>
+          </div>
+          {#if atRevisionResult}
+            <div
+              class="mt-2 font-mono text-sm bg-base-200 rounded px-3 py-2 break-all whitespace-pre-wrap"
+              data-testid="kv-at-revision-value"
+            >{atRevisionResult.value}</div>
+          {:else if atRevisionError}
+            <div class="mt-2 text-error text-xs" data-testid="kv-at-revision-error">{atRevisionError}</div>
+          {/if}
         </div>
       </div>
     {/if}
@@ -605,6 +869,16 @@
           bind:value={modalValue}
         ></textarea>
       </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Lease ID (optional)</span></div>
+        <input
+          type="text"
+          inputmode="numeric"
+          class="input input-bordered w-full font-mono"
+          placeholder="Attach the key to a lease; blank for none"
+          bind:value={modalLeaseId}
+        />
+      </label>
     </div>
   {/snippet}
 </FormModal>
@@ -618,6 +892,17 @@
   variant="error"
   onconfirm={confirmDeleteEntry}
   oncancel={() => (deleteTarget = null)}
+/>
+
+<!-- Compaction confirmation modal -->
+<ConfirmModal
+  open={compactTarget !== null}
+  title="Compact History"
+  message={`Discard every revision older than ${compactTarget ?? ""}? Reads and restores below it will no longer be possible.`}
+  confirmLabel="Compact"
+  variant="warning"
+  onconfirm={confirmCompact}
+  oncancel={() => (compactTarget = null)}
 />
 
 <!-- Restore workflow modal: form -> preview -> result -->
