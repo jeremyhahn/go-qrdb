@@ -151,8 +151,13 @@
    * report the M-of-N scheme without echoing the strategy string, so a barrier
    * advertising shares is treated as configured regardless of the strategy
    * field (matching the isShamir fallback above).
+   *
+   * A sealed barrier is configured too: the "none" strategy never seals, and
+   * a sealed server reports an empty strategy (the key material that names
+   * it is behind the barrier), so the unseal panel must still show.
    */
   let encryptionConfigured = $derived(
+    sealStore.sealed ||
     sealStore.strategy === "passphrase" ||
       sealStore.strategy === "shamir" ||
       sealStore.sharesRequired > 0 ||
