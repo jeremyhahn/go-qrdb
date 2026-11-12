@@ -25,7 +25,7 @@ go-quicraft/pkg/seal/          Interfaces + go-enclave protected memory + minima
         ↑
 go-qrdb/pkg/seal/              StorageBarrier: multi-tenant, storage wrapping, recovery, root tokens,
                                share exchange, StrategyRegistry (Software + None pre-registered)
-go-qrdb/pkg/keydelivery/       Per-node tenant root-key transport over mTLS + HPKE
+go-qrdb/pkg/keydelivery/       Node-to-node HPKE envelope over mTLS (no tenant key)
 go-qrdb/pkg/clusterkeys/       Node-identity and peer-authentication for key delivery
 go-qrdb/pkg/clusterseal/       Replicated seal records, per-node enforcement, the serving lease
         ↑
@@ -248,19 +248,17 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
   shared across nodes and is managed per-node by the system barrier's configured strategy.
 - **Per-tenant barriers** in multi-node clusters: a tenant barrier sealed with `none`, `passphrase`
   or `shamir` has its own key on every node that serves it
-  ([Per-node barrier keys](#per-node-barrier-keys)). For any other strategy,
-  `clusterkeys.Sender.DistributeTenantKey` ships the owner-sealed root-key blob verbatim to every
-  follower replica (`pkg/clusterkeys/sender.go`), which imports it
-  (`StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) and is unsealed on that node. No
-  plaintext root key crosses nodes, but those replicas share one tenant root key, so a key
-  recovered from one replica decrypts that tenant's data on every other replica.
-- **Key delivery**: `pkg/keydelivery/` implements secure cross-node transport of tenant root keys
-  over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
+  ([Per-node barrier keys](#per-node-barrier-keys)). Every other strategy does the same: each
+  serving node keys itself from the barrier owner's signed init statement, and no root key or
+  sealed blob crosses nodes.
+- **Key plane**: `pkg/keydelivery/` implements a node-to-node HPKE envelope (it carries no tenant
+  root key; the receiver refuses every envelope at its mode dispatch until verifier delivery is
+  built) over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the
   node SPIFFE SAN, the placement gate, and **certificate revocation**, on both the receiving and the
   sending side. Revocation is checked separately because the other three are all satisfied by a
   revoked certificate: without it, a node whose certificate an operator has withdrawn keeps taking
-  part in key delivery, and a leader keeps sealing tenant root keys to it. See
+  part in the key plane. See
   [certificate-authority → Where revocation is enforced](../certificate-authority/architecture.md#where-revocation-is-enforced)
   and
   [../multi-tenancy.md → Per-node-independent key design](../multi-tenancy/architecture.md#per-node-independent-key-design).
@@ -816,7 +814,7 @@ and built as [Per-node barrier keys](#per-node-barrier-keys).
 > binary and wired as the gate on isolated tenants and on the claim (see
 > **Feature gate** below). A `none` or `passphrase` tenant barrier
 > is initialised on every serving node by that node, the client sending a
-> passphrase init to each of them, and `DistributeTenantKey` ships neither.
+> passphrase init to each of them; no key is shipped between nodes.
 > A Shamir tenant barrier is not shipped either: every serving node is armed
 > from the claimed statement and keys itself at its holders' first quorum, and
 > a replica refuses a Shamir sealed blob rather than import a key it could
@@ -1057,20 +1055,14 @@ that serves it:
    one replica started out of three, the group has no quorum and the pending
    first admin is never written.
 
-Shipping one node's key to the others
-(`clusterkeys.Sender.DistributeTenantKey`) gives every replica the same key,
-which the binding rules below forbid. It is nevertheless the current path for
-a tenant barrier sealed with any strategy other than `none`, `passphrase` or
-`shamir`: the database service calls it when it invites replicas for a tenant
-without auto-unseal (`pkg/service/database_service.go`, `inviteReplicas`), and
-the sender skips those three strategies (`pkg/clusterkeys/sender.go`,
-`ownKeyOnEveryNode`).
+No node ships its key to another: the tenant-key transport is deleted, and
+the database service and the rebalance service only place a new replica,
+which keys itself from the barrier owner's signed init statement on the init
+watcher's next poll (`pkg/barrierinit`).
 
 ### Binding rules
 
-The rules state the target design. `DistributeTenantKey` stays the path for
-strategies other than `none`, `passphrase` and `shamir` until it is replaced,
-and until then those strategies do not meet the first two rules.
+The rules state the target design.
 
 - **No key transport.**
   - Root keys are never pushed or transported, and there is no single key for
@@ -1526,13 +1518,15 @@ changes how it is resolved and recorded:
 
 #### 14. What the design deletes
 
-Not implemented: every row below is still in the code.
+*Implemented:* the tenant-key transport is deleted -- the sender's tenant-key
+distribution, the receiver's self-managed import handler, the sealed-blob
+export and import and `BarrierRegistry`'s import path in `pkg/seal`, and the
+database service's distributor, its key step in `inviteReplicas` and the
+rebalance deliverer. *Not implemented:* every row below is still in the code.
 
 | Where | What |
 |---|---|
-| `pkg/clusterkeys` | `DistributeTenantKey`, `deliverSelfManaged`, the receiver's import mode (`keydelivery.ModeSelfManaged`), and the `/v1/cluster/keydelivery` and `/v1/cluster/nodekey` routes. The package keeps node identity and the HPKE envelope. |
-| `pkg/seal` | `ExportSealedBlob`, `ImportSealedBlob` (`import_key.go`); `BarrierRegistry.ImportTenant`. |
-| `pkg/service` | `KeyDistributor`, `deliverTenantKeyToReplica`, the key step in `inviteReplicas`, the rebalance deliverer (`rebalance_options.go`). |
+| `pkg/clusterkeys` | The `keydelivery.ModeSelfManaged` mode constant, and the `/v1/cluster/keydelivery` and `/v1/cluster/nodekey` routes, which now refuse every envelope at the mode dispatch until verifier delivery registers a mode. The package keeps node identity and the HPKE envelope. |
 | `sdk/go/node` | `WithSealStrategy` (§11). |
 | `pkg/clustermig` | the tenant arm, tenant `NodeMigrationStatus`, the tenant credential files (`seal.migration_credentials_dir`). |
 

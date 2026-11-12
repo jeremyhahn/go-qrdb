@@ -685,14 +685,11 @@ on every node that serves it: each node initialises its own key through its
 own `BarrierKeyProvider`, and no key is transported
 ([../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-barrier-keys)).
 
-For any other strategy, `clusterkeys.Sender.DistributeTenantKey` ships the
-owner-sealed root-key blob verbatim to every follower replica, over the
-authenticated mTLS control plane inside an HPKE envelope bound to the
-receiving node (`pkg/clusterkeys`). The replica imports it sealed
-(`StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) and the tenant
-unseals it there. No plaintext root key crosses nodes, but those replicas
-share one tenant root key, so a key recovered from one replica decrypts that
-tenant's data on every other replica.
+Every other strategy does the same: each serving node initialises its own key
+from the barrier owner's signed init statement, and a node placed later by
+scale-out or a rebalance move keys itself on the init watcher's next poll
+(`pkg/barrierinit`). The tenant-key transport is deleted: nothing ships a
+root key or a sealed blob between nodes.
 
 A tenant seal is a cluster seal record once the cluster has activated
 `cluster-seal`: every node holding the tenant's barrier seals it, ends the
@@ -1067,9 +1064,6 @@ type, an admin setting.
 >
 > **Not built:**
 >
-> - An owner-custody tenant still has its owner-sealed blob delivered to the
->   other serving nodes (`clusterkeys.Sender.DistributeTenantKey`,
->   `StorageBarrier.ImportSealedBlob`) until per-node init fan-out.
 > - Placement does not check the tenant's signed serving set before a node
 >   registers a shell.
 > - A node composed without a cluster identity (a single-node cluster run
@@ -1098,8 +1092,8 @@ What this buys:
 - **The tenant's credential is the only common secret.** It travels from the
   credential holder's client to each node, and never from node to node.
 - **`pkg/clusterkeys` stops carrying tenant keys.**
-  `StorageBarrier.ImportSealedBlob` and the tenant-key delivery are removed,
-  not kept for compatibility. `clusterkeys` keeps its node-identity
+  The sealed-blob import and the tenant-key delivery are deleted, not kept
+  for compatibility. `clusterkeys` keeps its node-identity
   checks, and delivers a **credential verifier** to a new replica (below),
   which is not a key.
 - **A system-managed tenant is strictly weaker, as today.** Its replica keys
@@ -1624,8 +1618,8 @@ Open question: SNI as the passthrough routing input.
 | Tenant records, isolation modes, provisioning | `pkg/tenant` | go-qrdb |
 | Quotas, entitlements, usage counters, reconciler | `pkg/quota` | go-qrdb |
 | Per-tenant barriers, `BarrierRegistry`, `TenantBarrier` | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
-| Tenant root-key transport (HPKE over mTLS) | `pkg/keydelivery`, `pkg/clusterkeys` | go-qrdb |
-| The multi-node composition of `raft` isolation: the key plane, the key distributor, the rebalance dependencies, the replica host, the peer admin registry | `pkg/server/lifecycle` (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), composed identically by `qrdbd` and a clustered `sdk/go/node` node | go-qrdb |
+| Node-to-node HPKE envelope over mTLS (no tenant key is carried; verifier delivery to be built) | `pkg/keydelivery`, `pkg/clusterkeys` | go-qrdb |
+| The multi-node composition of `raft` isolation: the key plane, the rebalance dependencies, the replica host, the peer admin registry | `pkg/server/lifecycle` (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), composed identically by `qrdbd` and a clustered `sdk/go/node` node | go-qrdb |
 | Replica placement and reconciliation | `pkg/placement` | go-qrdb |
 | Volume allocation | `pkg/volume` — see [../volume-pools/](../volume-pools/) | go-qrdb (the seam and the `dir` provider); **go-xkms** registers its own providers |
 | Raft groups | — | **go-quicraft** |

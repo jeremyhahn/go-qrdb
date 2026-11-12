@@ -507,12 +507,11 @@ type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
   One boundary does it: `sdk/go/transport/embedded`'s RBAC surface REFUSES an
   identity with an empty `TenantID` (`transport.InvalidIdentityError`) rather
   than folding it.
-- **No plaintext root key leaves a node**: a `none`, `passphrase` or `shamir`
-  tenant barrier is initialized by every serving node with its own key, and
-  nothing is shipped (`clusterkeys.ownKeyOnEveryNode`). For any other
-  self-managed strategy the leader ships the owner-sealed barrier blob verbatim,
-  HPKE-sealed to the receiving node's verified delivery key over mTLS
-  (`Sender.DistributeTenantKey`). A platform-custody barrier is not shipped.
+- **No tenant root key leaves a node**: every serving node initializes a
+  tenant barrier with its own key from the barrier owner's signed init
+  statement, including a node placed later by scale-out or a rebalance move
+  (`pkg/barrierinit` re-polls the init records). Nothing ships a root key or
+  a sealed blob.
 - **A tenant seal reaches every replica**, and only the tenant's own
   administrators may issue it — see
   [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
@@ -1346,7 +1345,7 @@ Store key:
 | Audit events | `{dataDir}/audit-events.ndjson` (`audit.DefaultTrailFile`) | node-local, every tenant in one file; the replicated chain for a tenant whose audit entitlement is on | `audit.ChainFileLogger`, `service.ReplicatedLogger` | `ChainFileLogger.Query`, `ReplicatedLogger.Query` | Tenant events: the tenant's replicated trail in its home group. Platform events: the replicated platform trail in the system shard. The node-local file is the destination of neither. |
 | Rate-limit buckets | key `tenant\0subject\0perm` (`pkg/auth/middleware/ratelimit.go`) | node memory | limiter | limiter | Node memory; stays |
 | Metrics | `qrdb_vector_*{tenant,namespace}` (`pkg/service/vector.go`) | scrape | — | `/metrics` (authentication only, `pkg/api/rest/server.go`) | Namespace label removed |
-| Tenant key delivery | HPKE envelope with root key or sealed blob (`pkg/clusterkeys/sender.go`; import `StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) | in transit; re-wrapped into TB | `clusterkeys.Sender.DistributeTenantKey` | `pkg/clusterkeys/receiver.go` | **Removed.** Verifier delivery replaces it. |
+| Tenant key delivery | none: the transport is deleted | — | — | `pkg/clusterkeys/receiver.go` refuses every envelope at its mode dispatch | **Removed.** Verifier delivery replaces it. |
 
 ### Rules that hold under every policy
 
@@ -1378,9 +1377,10 @@ Store key:
 - **No tenant key crosses a node boundary.**
   - Nothing exports a tenant root key, a replica key, or a sealed blob meant
     for import on another node.
-  - Today `clusterkeys.Sender.DistributeTenantKey` delivers a tenant root key
-    or sealed blob, and `StorageBarrier.ImportSealedBlob` imports it. This
-    invariant removes both.
+  - The tenant-key transport (the sender's distribution, the receiver's
+    self-managed import and the sealed-blob import into a barrier) is
+    deleted; the `clusterkeys` receiver refuses every envelope at its mode
+    dispatch until verifier delivery registers a mode.
 - **A replica key is born on its node, under a credential presented to that
   node.** A node that has never met a valid credential for the tenant holds no
   key for it, and it reports `sealed`.
@@ -1632,27 +1632,19 @@ phase 5 on.
 > read from its home group, so every node reads them under its own key.
 > Pinned by `TestIsolationRaft_EndToEnd` (assertions b2 and g),
 > `TestRegisterTenantShell_*`,
-> `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`
-> and `TestBarrierRegistry_ImportTenant_InitializesRegisteredShell`.
+> and `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`.
 > Not yet built: the serving-set check before a shell is registered, and a
 > node without a cluster identity, which refuses a platform-custody raft
 > tenant and claims nothing for a barrier or volume one (a standalone node
 > composes no signer and needs none).
 >
 > **PN-4, owner custody under `none` and `passphrase`.** Every node serving
-> the barrier initialises its own key, and neither key is shipped:
-> `clusterkeys.Sender.DistributeTenantKey` returns without contacting a
-> follower for either strategy, which covers each delivery site that routes
-> through it (database invites, observer adds and rebalance moves), and
-> ships nothing for a barrier not yet initialised. A Shamir key is not
-> shipped either: every serving node is armed from the claimed init
-> statement's roster and check value and keys itself at its holders' first
-> quorum, and `StorageBarrier.ImportSealedBlob` refuses a Shamir blob
-> (`seal.ErrImportSealedBlobShamir`), which carries none of the node's
-> wrapped-key and roster records and would leave the replica unable either
-> to key itself or to unwrap the import. The sender reads the strategy from
-> the persisted blob, so a leader still sealed after a restart ships nothing
-> too.
+> the barrier initialises its own key, and no key is shipped: the
+> tenant-key transport is deleted, so database invites, observer adds and
+> rebalance moves only place the replica, which keys itself from the
+> signed init statement on the watcher's next poll. A Shamir replica is
+> armed from the claimed init statement's roster and check value and keys
+> itself at its holders' first quorum.
 >
 > - **Serving-node discovery.** `TenantBarrierStatus` lists the nodes holding
 >   a replica of the tenant's groups, each with the API endpoints its member
@@ -1675,10 +1667,8 @@ phase 5 on.
 > Pinned by `TestClusterEnableEncryption_TenantScope_RF3` (through the CLI,
 > no key delivered and no unseal on the followers),
 > `TestSendToServingNodes_*`, `TestTenantBarrierInit_FansOutToServingNodes`,
-> `TestBarrierNodes_*`, `TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing`,
-> `TestDistributeTenantKey_Uninitialized_ShipsNothing`,
-> `TestDistributeTenantKey_Shamir_ShipsNothing`,
-> `TestBarrierRegistry_ImportTenant_ShamirBlobLeavesTheReplicaToArmShamir` and
+> `TestBarrierNodes_*`, `TestWatcher_KeysAReplicaPlacedAfterTheInit`,
+> `TestRoundTrip_NoChecker_ReachesModeDispatch` and
 > `TestCheckFirstInitCertificate_*`.
 >
 > - **First-admin completion.** The barrier-ready hook
@@ -1762,7 +1752,7 @@ to 12, in the table after it, are the plan.
 |---|---|---|---|
 | **5. Isolation policy and RBAC (S4: G1 for databases)** | **Built:** the floor and the tenant policy, tighten-only (`tenant.ClusterIsolationPolicy`, `tenant.TenantIsolationPolicy`; a loosening is refused with `IsolationPolicyChangeError`), the floor set from `tenant.isolation_policy`. `ScopeSelf` has no system lift, `EffectiveTenant` has no system branch, and `tenants:read:cross` and `tenants:delete:cross` exist. **To build:** register a strict-isolation feature; get and set of the floor and the tenant policy on six transports and the CLI; tenant-qualified operator permissions to read and write a tenant's identity records, audited in both trails. The policy governs isolated tenants only; a shared tenant is never refused. **G1:** every database of a strict tenant is created with a dedicated WAL, and a request to create one without it is refused. A strict tenant never has a log under a node key. Before activation, behaviour is unchanged and the new verbs return `feature.NotActiveError`. | Under `operator-access`, the operator's read of a tenant's identity records succeeds and appears in both trails, and a `prefix` create under a strict floor succeeds. **G1:** a strict tenant's raft database is created today with its log on the shared WAL; it must be created on a dedicated WAL, and the system-shard LogDB must hold no entry of its shard. | 3, 4 |
 | **6. Tenant home group and replicated catalog (S4: G1 for the home group)** | **Built:** the home group of every isolated tenant, its log on a dedicated WAL from its first entry (see [Remaining work](#remaining-work)). **To build:** the database catalog, node-local today (a `meta.json` per database), moves into the home store. Placement is keyed by opaque database id (S5). Database groups are confined to the serving set. | A database created through node A is unknown to node B's catalog today; it must resolve on every serving node. A scan of the system shard finds the database name in placement keys today; it must find only the opaque id. | 2, 5 |
-| **7. Per-replica keys (S4: G10)** | The work packages above. **Built:** every serving node initializes its own key from the barrier owner's signed init statement (`featuregate.PerNodeBarrierKeys`), and the CLI sends a tenant barrier init to every serving node. **To build:** delete tenant-key transport (`StorageBarrier.ImportSealedBlob`, `clusterkeys.Sender.DistributeTenantKey`). Client fan-out for unseal and rekey. Verifier delivery through `clusterkeys`. Per-node tenant bootstrap records. Each node's dedicated WALs are keyed by **its own** replica key. Unseal is per node, against the cluster seal record. | Two replicas of one tenant must have distinct key fingerprints. One replica's key must fail to open another replica's store and WAL. A Raft snapshot catch-up across distinct keys must succeed. | 6, cluster-wide sealing record |
+| **7. Per-replica keys (S4: G10)** | The work packages above. **Built:** every serving node initializes its own key from the barrier owner's signed init statement (`featuregate.PerNodeBarrierKeys`), and the CLI sends a tenant barrier init to every serving node. The tenant-key transport is deleted: scale-out and rebalance place a replica that keys itself from the signed init. **To build:** client fan-out for unseal and rekey. Verifier delivery through `clusterkeys`. Per-node tenant bootstrap records. Each node's dedicated WALs are keyed by **its own** replica key. Unseal is per node, against the cluster seal record. | Two replicas of one tenant must have distinct key fingerprints. One replica's key must fail to open another replica's store and WAL. A Raft snapshot catch-up across distinct keys must succeed. | 6, cluster-wide sealing record |
 | **8. Move the records; delete the shared store paths** | The records [Remaining work](#remaining-work) lists as still in the system shard move into the home store; the SO PIN commitment and the unseal roster go to the bootstrap record. The CA chain is pinned per tenant, and the binding policy is `required` for strict tenants. `tenant.IdentityIndex`, `tenant.OwningTenant` and the resolver's shared-store branch are deleted. | **The residue test** (below) must pass. A cluster-CA certificate naming a strict tenant authenticates today; it must be refused. | 7 |
 | **9. Layer-4 passthrough (S6)** | SNI routing and the relay tunnel for REST, gRPC, and the etcd and SQL listeners over TCP; QUIC by Initial-packet SNI and connection id. A typed not-served-here error for Unix and embedded. The SDK and CLI set SNI. On-behalf forwarding is refused for strict tenants. The routing input (SNI) is not yet decided. | A strict tenant's client that connects to a non-serving node is refused as sealed today; it must be served through the relay. On every transport, the serving node must observe the client's own certificate, the relaying node's TLS-termination counter for the connection must be zero, and an SNI/certificate mismatch must be refused. | 8, the routing input decided |
 | **10. Tenant audit trail and metrics (S9)** | Every isolated tenant's audit trail is a replicated, hash-chained trail in its home group under the tenant barrier. The chain exists (`OpAuditAppend`, `service.ReplicatedLogger`) but is routed to the system shard by `service.SystemShardAuditResolver`, which refuses a `volume` or `raft` tenant with `DedicatedTenantAuditNotSupportedError`. Platform events stay in the platform trail in the system shard. The `namespace` label is removed from the `qrdb_vector_*` metrics. | A tenant event lands in the system shard today; it must land only in the tenant's trail. The platform trail must hold no tenant username, and a `/metrics` scrape must show no tenant data name. | 8 |
@@ -2000,7 +1990,10 @@ Measured against the contract above:
   served from a log under the node key.
 - **Per-replica keys (phase 7)** are unblocked for the resolver-routed
   records of every isolated tenant. Every record still listed above keeps them
-  blocked.
+  blocked. The tenant-key transport is deleted (a replica placed by scale-out
+  or a rebalance move keys itself from the signed init); client fan-out for
+  unseal and rekey, verifier delivery through `clusterkeys`, per-node tenant
+  bootstrap records and per-replica WAL keys remain.
 - **Late-joining nodes.** A node that joins after an isolated tenant was
   created receives the home placement through the reconciler. Until its
   replica has caught up (the shard's join window has closed) the node refuses
