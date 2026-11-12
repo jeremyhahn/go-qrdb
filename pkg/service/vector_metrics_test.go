@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/vector"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	pkgmetrics "github.com/jeremyhahn/go-qrdb/pkg/util/metrics"
@@ -220,6 +221,64 @@ func TestIndexSizeBytesMetric_SumsTenantNamespaces(t *testing.T) {
 	assert.Equal(t, sizeB,
 		tenantGauge(t, reg, "qrdb_vector_index_size_bytes", "tenant-x"),
 		"deleting a namespace drops its share")
+}
+
+// TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors checks that
+// deleting a namespace holding N vectors lowers its tenant's vector_count
+// by exactly N, leaving the other namespace's share, both when storage
+// reports the live count and when its stored record count is stale (a
+// count the storage does not maintain): the gauge subtracts the share it
+// tracked for the namespace, not the storage record.
+func TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		staleInfo bool
+	}{
+		{name: "live stored count"},
+		{name: "stale stored count", staleInfo: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := isolatedRegistry(t)
+
+			storage := newMockVectorStorage()
+			if tc.staleInfo {
+				storage.getNamespaceInfoFn = func(_ context.Context, namespace string) (*vector.NamespaceInfo, error) {
+					storage.mu.RLock()
+					defer storage.mu.RUnlock()
+					data, ok := storage.namespaces[namespace]
+					if !ok {
+						return nil, vector.ErrNamespaceNotFound
+					}
+					info := *data.info
+					info.VectorCount = 0
+					return &info, nil
+				}
+			}
+			svc, err := NewVectorService(storage, newMockLogger())
+			require.NoError(t, err)
+
+			ctx := tenant.WithTenantID(context.Background(), "tenant-d")
+			counts := map[string]int{"del-a": 3, "del-b": 2}
+			for _, name := range []string{"del-a", "del-b"} {
+				_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+				require.NoError(t, err)
+				for j := 0; j < counts[name]; j++ {
+					_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+						Namespace: name,
+						ID:        uint64(j + 1),
+						Vector:    []float32{float32(j), 1},
+					})
+					require.NoError(t, err)
+				}
+			}
+			require.Equal(t, float64(5), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-d"))
+
+			_, err = svc.DeleteNamespace(ctx, &DeleteNamespaceRequest{Namespace: "del-a"})
+			require.NoError(t, err)
+			assert.Equal(t, float64(2), tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-d"),
+				"deleting a namespace of 3 vectors lowers the tenant total by exactly 3")
+		})
+	}
 }
 
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created

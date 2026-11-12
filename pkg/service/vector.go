@@ -1236,8 +1236,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
-			v.metrics.setIndexBytes(scoped, 0)
+			v.metrics.dropNamespace(scoped)
 		}
 
 		v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully via Raft")
@@ -1262,8 +1261,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
-		v.metrics.setIndexBytes(scoped, 0)
+		v.metrics.dropNamespace(scoped)
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully")
