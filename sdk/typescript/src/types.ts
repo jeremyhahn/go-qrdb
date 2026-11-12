@@ -1750,7 +1750,7 @@ export interface CertRecord {
     /** Username embedded in the certificate. */
     readonly username: string;
     /** Tenant the certificate belongs to. */
-    readonly tenantId: string;
+    readonly tenantID: string;
     /** ISO 8601 issuance timestamp. */
     readonly issuedAt: string;
     /** ISO 8601 expiration timestamp. */

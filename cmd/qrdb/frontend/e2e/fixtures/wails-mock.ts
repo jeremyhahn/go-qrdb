@@ -1939,7 +1939,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -1969,7 +1969,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,

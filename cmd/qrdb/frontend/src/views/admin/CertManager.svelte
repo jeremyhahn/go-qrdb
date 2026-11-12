@@ -46,7 +46,7 @@
   // ---------------------------------------------------------------------------
 
   /** Tenant filter — defaults to the authenticated user's tenant. */
-  let filterTenantId: string = $state(identityStore.tenantId || "default");
+  let filterTenantId: string = $state(identityStore.tenantId || "");
 
   /** Certificate list state. */
   let certs: CertRecord[] = $state([]);
@@ -734,9 +734,9 @@
               <th>
                 <button
                   class="flex items-center gap-1 font-semibold hover:text-primary"
-                  onclick={() => toggleSort("tenantId")}
+                  onclick={() => toggleSort("tenantID")}
                 >
-                  Tenant{sortIndicator("tenantId")}
+                  Tenant{sortIndicator("tenantID")}
                 </button>
               </th>
               <th>
@@ -771,7 +771,7 @@
               <tr>
                 <td class="font-mono text-xs">{cert.serial}</td>
                 <td>{cert.username}</td>
-                <td>{cert.tenantId}</td>
+                <td>{cert.tenantID}</td>
                 <td class="whitespace-nowrap text-xs">{formatDate(cert.issuedAt)}</td>
                 <td class="whitespace-nowrap text-xs">{formatDate(cert.expiresAt)}</td>
                 <td>
