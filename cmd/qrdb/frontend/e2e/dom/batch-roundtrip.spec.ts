@@ -8,6 +8,11 @@
  * and a delete executes through the real DOM, the server is then read back
  * over REST to prove each put landed and the delete removed its key, and a
  * batch the server refuses surfaces the server's own error in the UI.
+ *
+ * The Import tab, in a browser, takes a picked file and streams it over the
+ * server's chunked import session: a file in each format the server lists
+ * (GET /batch/import/formats) lands its keys on the server, and a malformed
+ * file shows the server's parse error.
  */
 
 import { test, expect, type Page } from "@playwright/test";
@@ -118,4 +123,133 @@ test("a batch the server refuses shows the server's error", async ({ page }) => 
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
   await expect(page.getByText("Batch executed successfully.")).toHaveCount(0);
   expect(await serverGet(page, "batch/z")).toBeNull();
+});
+
+
+// ---------------------------------------------------------------------------
+// Import from the browser: a picked file streams over the chunked import
+// session (begin / append / commit) and lands on the server.
+// ---------------------------------------------------------------------------
+
+/** Two records, keyed by id, for the format under test. */
+function importRows(format: string): Array<{ id: string; name: string }> {
+  return [
+    { id: `imp-${format}/1`, name: `${format}-alpha` },
+    { id: `imp-${format}/2`, name: `${format}-bravo` },
+  ];
+}
+
+/** A plain (ustar) tar holding one file, the archive format's simplest case. */
+function tarOf(name: string, content: Buffer): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100, "utf8");
+  header.write("0000644\0", 100, 8, "ascii");
+  header.write("0000000\0", 108, 8, "ascii");
+  header.write("0000000\0", 116, 8, "ascii");
+  header.write(content.length.toString(8).padStart(11, "0") + "\0", 124, 12, "ascii");
+  header.write("00000000000\0", 136, 12, "ascii");
+  header.write("        ", 148, 8, "ascii");
+  header.write("0", 156, 1, "ascii");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  let sum = 0;
+  for (const b of header) sum += b;
+  header.write(sum.toString(8).padStart(6, "0") + "\0 ", 148, 8, "ascii");
+  const padded = Buffer.alloc(Math.ceil(content.length / 512) * 512);
+  content.copy(padded);
+  return Buffer.concat([header, padded, Buffer.alloc(1024)]);
+}
+
+/** The file to pick for one import format: its name and its bytes. */
+function importFileFor(format: string): { name: string; mimeType: string; buffer: Buffer } {
+  const rows = importRows(format);
+  const json = Buffer.from(JSON.stringify(rows));
+  switch (format) {
+    case "csv":
+      return {
+        name: "rows.csv",
+        mimeType: "text/csv",
+        buffer: Buffer.from(["id,name", ...rows.map((r) => `${r.id},${r.name}`)].join("\n") + "\n"),
+      };
+    case "json":
+      return { name: "rows.json", mimeType: "application/json", buffer: json };
+    case "auto":
+      // auto infers the format from the filename the browser reports.
+      return { name: "rows-auto.json", mimeType: "application/json", buffer: json };
+    case "ndjson":
+      return {
+        name: "rows.ndjson",
+        mimeType: "application/x-ndjson",
+        buffer: Buffer.from(rows.map((r) => JSON.stringify(r)).join("\n") + "\n"),
+      };
+    case "yaml":
+      return {
+        name: "rows.yaml",
+        mimeType: "application/yaml",
+        buffer: Buffer.from(rows.map((r) => `- id: "${r.id}"\n  name: "${r.name}"`).join("\n") + "\n"),
+      };
+    case "archive":
+      return { name: "rows.tar", mimeType: "application/x-tar", buffer: tarOf("rows.json", json) };
+    default:
+      throw new Error(`no import fixture for format "${format}" the server lists`);
+  }
+}
+
+/** Opens the Import tab of the Batch view. */
+async function openImport(page: Page): Promise<void> {
+  await openBatch(page);
+  await page.getByRole("button", { name: "Import", exact: true }).or(
+    page.getByRole("tab", { name: "Import", exact: true }),
+  ).first().click();
+  await expect(page.getByTestId("import-file-input")).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
+/** Picks a file, sets the format and key field, and runs the import. */
+async function importThroughUI(
+  page: Page,
+  format: string,
+  file: { name: string; mimeType: string; buffer: Buffer },
+): Promise<void> {
+  await page.getByTestId("import-file-input").setInputFiles(file);
+  await page.locator("#import-format").selectOption(format);
+  await page.locator("#import-key-field").fill("id");
+  await page.locator("button.btn-primary", { hasText: /^\s*Import\s*$/ }).click();
+}
+
+test("a file in each listed format imports through the file input", async ({ page }) => {
+  const resp = await page.request.get(`${daemon!.adminUrl}/batch/import/formats`, { ignoreHTTPSErrors: true });
+  expect(resp.ok(), `GET /batch/import/formats: HTTP ${String(resp.status())}`).toBe(true);
+  const { formats } = (await resp.json()) as { formats: string[] };
+  expect(formats.length).toBeGreaterThan(0);
+
+  test.setTimeout(30_000 + formats.length * LOAD_TIMEOUT);
+
+  await openImport(page);
+  for (const format of formats) {
+    // The previous format's toast must be gone, so this one's is fresh.
+    await expect(page.locator(".toast .alert")).toHaveCount(0, { timeout: LOAD_TIMEOUT });
+    await importThroughUI(page, format, importFileFor(format));
+    await expectToast(page, "Imported 2 of 2 records.");
+    for (const row of importRows(format)) {
+      const value = await serverGet(page, row.id);
+      expect(value, `${format}: ${row.id}`).not.toBeNull();
+      expect(value, `${format}: ${row.id}`).toContain(row.name);
+    }
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+  }
+});
+
+test("a malformed import file shows the server's error", async ({ page }) => {
+  await openImport(page);
+  await importThroughUI(page, "json", {
+    name: "broken.json",
+    mimeType: "application/json",
+    buffer: Buffer.from('[{"id": "imp-bad/1", "name": '),
+  });
+  // The server's parse refusal, carried through the commit's error body.
+  const toast = page.locator(".toast .alert-error").first();
+  await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(toast).toContainText(/json/i);
+  await expect(toast).not.toContainText("{\"error\"");
+  expect(await serverGet(page, "imp-bad/1")).toBeNull();
 });
