@@ -91,6 +91,34 @@ describe('batch.importContent', () => {
         expect(new TextDecoder().decode(calls[1]!.body as Uint8Array)).toBe('id,name\n1,a\n');
     });
 
+    it('sends the collection target on begin', async () => {
+        const client = await connected();
+        const calls = stubServer((c) => {
+            if (c.path === '/batch/import/begin') return json(200, { session_id: 'c' });
+            if (c.path.endsWith('/commit')) return json(200, { total: 1, succeeded: 1, failed: 0 });
+            return new Response(null, { status: 204 });
+        });
+
+        await client.batch.importContent(new Blob(['id,name\n1,a\n']), { ...opts, collection: 'people' });
+
+        const begin = JSON.parse(calls[0]!.body as string) as Record<string, unknown>;
+        expect(begin.collection).toBe('people');
+    });
+
+    it('omits an empty collection so a KV import stays a KV import', async () => {
+        const client = await connected();
+        const calls = stubServer((c) => {
+            if (c.path === '/batch/import/begin') return json(200, { session_id: 'k' });
+            if (c.path.endsWith('/commit')) return json(200, { total: 1, succeeded: 1, failed: 0 });
+            return new Response(null, { status: 204 });
+        });
+
+        await client.batch.importContent(new Blob(['id,name\n1,a\n']), { ...opts, collection: '' });
+
+        const begin = JSON.parse(calls[0]!.body as string) as Record<string, unknown>;
+        expect(begin).not.toHaveProperty('collection');
+    });
+
     it('aborts the session and rethrows the server refusal when a step fails', async () => {
         const client = await connected();
         const calls = stubServer((c) => {

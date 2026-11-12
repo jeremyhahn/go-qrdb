@@ -1020,6 +1020,9 @@ export class RestClient implements Client {
                 value_field: opts.value_field ?? '',
                 skip_header: opts.skip_header ?? false,
                 transactional: opts.transactional ?? false,
+                // The server refuses a non-empty collection (batch import
+                // writes the KV keyspace only) rather than dropping it.
+                ...(opts.collection ? { collection: opts.collection } : {}),
             }),
         });
         const base = `/batch/import/${encodeURIComponent(begin.sessionId)}`;
