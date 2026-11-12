@@ -1,6 +1,6 @@
 # SQLite VFS Backend — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-21
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-12
 > Conflicts with this document are defects. Fix them here first. This is a
 > future feature: not scheduled, not implemented.
 
@@ -164,18 +164,28 @@ Tier 1 is the natural first milestone; tiers 2–3 reuse its core.
 
 ## Open questions (blocking a build decision)
 
+Each question is answered with options, a recommendation and its reason in
+the proposed decision record
+[../decisions/sqlite-vfs-build.md](../decisions/sqlite-vfs-build.md),
+pending the owner's ruling.
+
 1. **WAL-mode support** — advertise batch-atomic and force rollback-journal
    semantics (simpler), or replicate WAL frames dqlite-style (harder,
-   better concurrency)?
+   better concurrency)? See
+   [Q1](../decisions/sqlite-vfs-build.md#q1-wal-mode-support).
 2. **Checkpoint/vacuum behaviour** — `VACUUM` rewrites every page; needs a
-   chunked-proposal strategy to avoid one giant Raft entry.
+   chunked-proposal strategy to avoid one giant Raft entry. See
+   [Q2](../decisions/sqlite-vfs-build.md#q2-checkpointvacuum-chunking).
 3. **Multi-writer default** — serialized-writer vs optimistic as the
-   shipped default, and how `SQLITE_BUSY` surfaces through each tier.
+   shipped default, and how `SQLITE_BUSY` surfaces through each tier. See
+   [Q3](../decisions/sqlite-vfs-build.md#q3-multi-writer-default-and-how-sqlite_busy-surfaces).
 4. **Backup/restore interplay** — the page namespace must participate in
    qrdb's existing backup, PITR and tenant-barrier machinery; encryption
-   comes free via the barrier, but restore semantics need definition.
+   comes free via the barrier, but restore semantics need definition. See
+   [Q4](../decisions/sqlite-vfs-build.md#q4-backup-restore-and-pitr-interplay).
 5. **Quota/entitlement accounting** — pages are opaque to the entity/SQL
-   planes; per-tenant quotas need to count the namespace.
+   planes; per-tenant quotas need to count the namespace. See
+   [Q5](../decisions/sqlite-vfs-build.md#q5-quota-and-entitlement-accounting).
 
 ## Non-goals
 
