@@ -38,6 +38,8 @@ import {
 const LOAD_TIMEOUT = 15_000;
 const BACKUPS = 7;
 const PAGE_SIZE = 20;
+/** The view's server page size (AUDIT_PAGE_SIZE in AuditLog.svelte). */
+const SERVER_PAGE_SIZE = 100;
 const TENANT_ID = "audit-tenant";
 
 let daemon: DomDaemon | null = null;
@@ -284,6 +286,62 @@ test("audit log: every filter, paging and the event detail match the server (UI 
   for (const [k, v] of Object.entries(ev.attributes ?? {})) {
     await expect(page.locator("pre").filter({ hasText: `"${k}"` })).toContainText(JSON.stringify(v));
   }
+
+  expect(errors).toEqual([]);
+});
+
+test("audit log load more: the view pages through the server's cursor until every event is shown (UI ↔ live daemon)", async ({ page, request }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  const opts = { ignoreHTTPSErrors: true };
+  const base = daemon!.adminUrl;
+
+  // More audited changes than one server page. KV puts are not audited, so
+  // backups are made through the REST API: each records two events (the
+  // "permitted" decision and the "success" outcome).
+  for (let i = 0; 2 * i <= SERVER_PAGE_SIZE; i++) {
+    const r = await request.post(`${base}/v1/backups`, {
+      ...opts,
+      data: { destination: `${daemon!.dataDir}/audit-load-more-${i}`, encryption: "none" },
+    });
+    expect(r.status(), await r.text()).toBe(201);
+  }
+  // The server's own count: follow its cursor to the last page.
+  const first = await serverQuery(request, { limit: String(SERVER_PAGE_SIZE) });
+  expect(first.events).toHaveLength(SERVER_PAGE_SIZE);
+  expect(first.next ?? "").not.toBe("");
+  let n = first.events.length;
+  for (let cursor = first.next ?? ""; cursor !== ""; ) {
+    const next = await serverQuery(request, { limit: String(SERVER_PAGE_SIZE), cursor });
+    n += next.events.length;
+    cursor = next.next ?? "";
+  }
+  expect(n).toBeGreaterThan(SERVER_PAGE_SIZE);
+  const totalText = (shown: number) =>
+    first.total > 0 ? `Showing ${shown} of ${first.total} events` : `Showing ${shown} events`;
+
+  await page.goto(UI_BASE_URL);
+  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Audit Log", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Audit Log", exact: true }).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+  // First page: exactly one server page, and a Load more button.
+  await expect(page.getByText(totalText(SERVER_PAGE_SIZE), { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  const loadMore = page.getByRole("button", { name: "Load more" });
+  await expect(loadMore).toBeVisible();
+
+  // Load more until the server returns no cursor: every event is then shown.
+  for (let shown = SERVER_PAGE_SIZE; shown < n; ) {
+    await loadMore.click();
+    shown = Math.min(shown + SERVER_PAGE_SIZE, n);
+    await expect(page.getByText(totalText(shown), { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  }
+  await expect(loadMore).toHaveCount(0);
+  if (first.total > 0) expect(first.total).toBe(n);
+
+  // The table holds every appended event, paged at 20 rows.
+  await expect(page.getByText(`Showing 1 - ${PAGE_SIZE} of ${n} rows`)).toBeVisible();
+  await expect(dataRows(page)).toHaveCount(PAGE_SIZE);
 
   expect(errors).toEqual([]);
 });
