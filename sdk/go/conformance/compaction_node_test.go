@@ -62,13 +62,19 @@ func (c *compactionCell) adminAs(t *testing.T, tenantID string) (transport.Admin
 // policy is set through the platform verb on each transport, by the system
 // tenant only. A tenant whose role holds admin:node_compaction -- the grant
 // a tenant Admin or SO could give itself -- is refused both the read and
-// the write and changes nothing. The policy the system tenant sets compacts
-// the raw keyspace on a real raft node, and no key of any tenant's database,
+// the write and changes nothing. With no policy set, the raw keyspace's
+// history on a real raft node survives many scheduler passes. The policy the
+// system tenant then sets compacts it, and no key of any tenant's database,
 // the system tenant's own databases included, over many passes.
 func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
+	const (
+		compactionInterval = 25 * time.Millisecond
+		// noPolicyWindow spans many scheduler passes with no policy set.
+		noPolicyWindow = 10 * compactionInterval
+	)
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootCompactionCell(t, tk, server.WithCompactionInterval(25*time.Millisecond))
+			c := bootCompactionCell(t, tk, server.WithCompactionInterval(compactionInterval))
 			revA := c.writeHistory(t, "tenant-a", "k")
 			revSys := c.writeHistory(t, tenantid.System, "k")
 
@@ -103,6 +109,20 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			sysAdmin, sysCtx := c.adminAs(t, tenantid.System)
 			if got, err := sysAdmin.NodeCompaction(sysCtx); err != nil || got != nil {
 				t.Fatalf("%s: NodeCompaction after a refused policy = %+v, %v; want none", tk, got, err)
+			}
+
+			// With no policy set, the raw keyspace keeps its history across
+			// many scheduler passes.
+			window := time.Now().Add(noPolicyWindow)
+			for {
+				kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision)
+				if err != nil || kv == nil || string(kv.Value) != "r1" {
+					t.Fatalf("%s: the raw keyspace was compacted with no policy set: %+v, %v", tk, kv, err)
+				}
+				if time.Now().After(window) {
+					break
+				}
+				time.Sleep(compactionInterval)
 			}
 
 			// The system tenant sets it, and reads it back.
