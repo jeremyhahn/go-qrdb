@@ -1588,10 +1588,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if (!user) throw new Error(`user "${id}" not found`);
             return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
-          Update: async (req: { id: string; username?: string; email?: string; name?: string; tenant?: string }) => {
+          Update: async (req: { id: string; username?: string; email?: string; name?: string; tenant?: string; role_ids?: string[] }) => {
             maybeReject("UserBinding.Update");
             const user = userStore.get(req.id);
             if (!user) throw new Error(`user "${req.id}" not found`);
+            // transport.UpdateUserRequest.RoleIDs (role_ids, omitempty): a
+            // non-empty set replaces the user's roles, as the server does.
+            if (req.role_ids !== undefined && req.role_ids.length > 0) user.roleIds = [...req.role_ids];
             if (req.username !== undefined) user.username = req.username;
             if (req.email) user.email = req.email;
             if (req.name) user.name = req.name;

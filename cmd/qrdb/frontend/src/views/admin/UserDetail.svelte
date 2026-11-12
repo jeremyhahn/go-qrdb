@@ -156,7 +156,9 @@
           username: username.trim(),
           ...(trimmedEmail !== "" ? { email: trimmedEmail } : {}),
           ...(trimmedName !== "" ? { name: trimmedName } : {}),
-          roleIds: selectedRoleIds,
+          // No roleIds: an existing user's roles change only through
+          // roles.assign / roles.unassign (toggleRole), so a Save racing an
+          // in-flight toggle cannot resend the stale set and undo it.
         });
         showToast("success", `User "${username}" updated`);
       }

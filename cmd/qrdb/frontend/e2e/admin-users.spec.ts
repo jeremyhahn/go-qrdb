@@ -500,6 +500,44 @@ test.describe("Admin - User Management", () => {
       expect((await mockUser(page, id)).roleIds).not.toContain(roleId);
     });
 
+    test("Save while an unassign is in flight keeps the role revoked", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "race-user");
+      const roleId = await seedRole(page, "race-role");
+      await page.evaluate(
+        ({ uid, rid }: { uid: string; rid: string }) => {
+          type Binding = { Assign: (u: string, r: string) => Promise<void>; Unassign: (u: string, r: string) => Promise<void> };
+          const w = window as unknown as {
+            go: { main: { RoleBinding: Binding } };
+            releaseUnassign?: () => void;
+          };
+          const roles = w.go.main.RoleBinding;
+          // The server applies the unassign at once; its response arrives
+          // only when the test releases it.
+          const unassign = roles.Unassign.bind(roles);
+          roles.Unassign = async (u: string, r: string) => {
+            await unassign(u, r);
+            await new Promise<void>((resolve) => {
+              w.releaseUnassign = resolve;
+            });
+          };
+          return roles.Assign(uid, rid);
+        },
+        { uid: id, rid: roleId },
+      );
+      await openUser(page, "race-user");
+
+      const box = page.getByTestId("user-role-race-role");
+      await expect(box).toBeChecked();
+      await box.uncheck();
+      await page.waitForFunction(() => typeof (window as { releaseUnassign?: unknown }).releaseUnassign === "function");
+      await page.getByRole("button", { name: /save/i }).click();
+      await expect(page.getByText('User "race-user" updated')).toBeVisible();
+      await page.evaluate(() => (window as unknown as { releaseUnassign: () => void }).releaseUnassign());
+
+      expect((await mockUser(page, id)).roleIds).not.toContain(roleId);
+    });
+
     test("shows an error toast when adding a binding fails", async ({ page }) => {
       await navigateToUsers(page);
       await seedUser(page, "bind-err-user");
