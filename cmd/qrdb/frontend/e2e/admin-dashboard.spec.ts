@@ -241,6 +241,86 @@ test.describe("Admin - Dashboard", () => {
     await expect(main.getByText("Vectors")).toBeVisible();
   });
 
+  test("capabilities list includes the enabled Index entry", async ({ page }) => {
+    await navigateToDashboard(page);
+
+    const index = page.locator("main .badge-lg", { hasText: "Index" });
+    await expect(index).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(index).toHaveText("Index");
+    await expect(index).toHaveClass(/badge-success/);
+  });
+
+  test("shards card shows none when status has no shards", async ({ page }) => {
+    await navigateToDashboard(page);
+
+    const card = page.getByTestId("dashboard-shards");
+    await expect(card.getByRole("heading", { name: "Shards" })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card.getByTestId("dashboard-shards-empty")).toHaveText("none");
+    await expect(card.getByTestId("dashboard-shards-table")).toHaveCount(0);
+  });
+
+  test("shards card renders status.shards objects as table rows", async ({ page }) => {
+    await overrideAdminBindingsOnLoad(page);
+    await page.addInitScript(() => {
+      const w = window as unknown as {
+        go: { main: { AdminBinding: Record<string, (...args: unknown[]) => Promise<unknown>> } };
+      };
+      w.go.main.AdminBinding.Status = async () => ({
+        nodeId: 42,
+        raftAddress: "10.0.0.1:63001",
+        isLeader: true,
+        leaderId: 42,
+        shardCount: 2,
+        isDraining: false,
+        shards: [
+          { shardId: 1, leader: true, term: 7 },
+          { shardId: 2, leader: false, appliedIndex: 99 },
+        ],
+      });
+    });
+    await page.goto("/");
+
+    const table = page.getByTestId("dashboard-shards-table");
+    await expect(table).toBeVisible({ timeout: LOAD_TIMEOUT });
+    // One column per key seen across all rows, in first-seen order.
+    await expect(table.locator("thead th")).toHaveText([
+      "shardId",
+      "leader",
+      "term",
+      "appliedIndex",
+    ]);
+    const rows = table.locator("tbody tr");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator("td")).toHaveText(["1", "true", "7", ""]);
+    await expect(rows.nth(1).locator("td")).toHaveText(["2", "false", "", "99"]);
+    await expect(page.getByTestId("dashboard-shards-empty")).toHaveCount(0);
+  });
+
+  test("shards card renders non-tabular status.shards as JSON", async ({ page }) => {
+    await overrideAdminBindingsOnLoad(page);
+    await page.addInitScript(() => {
+      const w = window as unknown as {
+        go: { main: { AdminBinding: Record<string, (...args: unknown[]) => Promise<unknown>> } };
+      };
+      w.go.main.AdminBinding.Status = async () => ({
+        nodeId: 42,
+        raftAddress: "10.0.0.1:63001",
+        isLeader: true,
+        leaderId: 42,
+        shardCount: 1,
+        isDraining: false,
+        shards: { "1": "leader" },
+      });
+    });
+    await page.goto("/");
+
+    const json = page.getByTestId("dashboard-shards-json");
+    await expect(json).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(json).toContainText('"1": "leader"');
+  });
+
   test.describe("with databases", () => {
     // Seeded through the fixture, so the dashboard's first fetch lists them.
     test.use({
