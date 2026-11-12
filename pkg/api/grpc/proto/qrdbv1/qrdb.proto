@@ -3992,6 +3992,9 @@ message DatabaseRaftInfo {
     DatabaseMulticastDiscoveryInfo multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscoveryInfo token = 11;
+    // state_storage is the storage of the Raft group state (pebble, file or
+    // memory) the database recorded at create.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscoveryInfo reports static peer discovery.
@@ -4132,6 +4135,10 @@ message DatabaseRaftConfig {
     DatabaseMulticastDiscovery multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscovery token = 11;
+    // state_storage is the storage of the Raft group state: pebble, file or
+    // memory. Empty takes the node's database_defaults; create records the
+    // resolved value.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscovery holds static peer discovery configuration.

@@ -361,6 +361,7 @@ func protoRaftConfigToDomain(r *pb.DatabaseRaftConfig) *database.DatabaseRaftCon
 		Peers:          r.GetPeers(),
 		LocalNodeCount: int(r.GetLocalNodeCount()),
 		Discovery:      database.DiscoveryMethod(r.GetDiscovery()),
+		StateStorage:   database.BackendType(r.GetStateStorage()),
 	}
 
 	if s := r.GetStatic(); s != nil {
