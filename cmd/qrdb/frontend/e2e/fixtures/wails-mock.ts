@@ -2833,7 +2833,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               movesCompleted: plan.moves.length,
               movesFailed: 0,
-              duration: "3.5s",
+              duration_ms: 3500,
               finalImbalance: 0.05,
             };
           },
