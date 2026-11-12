@@ -118,12 +118,7 @@ function tokenShape(token: string): { length: number; alphabet: string } {
   return { length: token.length, alphabet: classes.join(",") };
 }
 
-// fixme: the Cluster view is hidden on a single-node server by design
-// (e2e/web-mode-cluster-detection.spec.ts "hides Cluster + Topology nav when
-// topology reports 1 node"), so this daemon never reaches the mint card. The
-// spec runs once that is ruled on, or on a multi-node cluster fixture with a
-// barrier and cluster_join (fixtures/dom-cluster.ts boots neither today).
-test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({ page, request }) => {
+test("mint join token round-trip (UI ↔ live daemon)", async ({ page, request }) => {
   expect(daemon).not.toBeNull();
 
   // --- Mint in the UI. --------------------------------------------------------------
