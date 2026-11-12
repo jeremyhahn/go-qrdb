@@ -269,14 +269,25 @@
     }))
   );
 
+  /** The SDK maps the wire's metric and index names to enum numbers. */
+  const METRIC_LABELS: Record<number, string> = { 0: "Cosine", 1: "Euclidean", 2: "Dot product" };
+  const INDEX_LABELS: Record<number, string> = { 0: "HNSW", 1: "Flat", 2: "IVF" };
+
+  function enumLabel(value: unknown, labels: Record<number, string>): string {
+    if (typeof value === "number") return labels[value] ?? String(value);
+    if (typeof value === "string" && value !== "") return value;
+    return "unknown";
+  }
+
   const vectorTableData = $derived(
     vecListResults.map((vec, index) => {
       const v = vec as Record<string, unknown>;
-      const vector = v.vector as number[] | undefined;
+      const vector = v.vector as number[] | null | undefined;
       return {
         index: index + 1,
         id: (v.id as string) ?? "",
-        dimensions: vector?.length ?? 0,
+        // The list route omits the vector values; the namespace fixes the width.
+        dimensions: vector?.length || parsedNsInfo?.dimension || 0,
         metadata: JSON.stringify(v.metadata ?? {}),
         raw: vec,
       };
@@ -306,8 +317,8 @@
     return {
       totalVectors: (s.totalVectors as number) ?? (s.total_vectors as number) ?? 0,
       dimensions: (s.dimensions as number) ?? (s.dimension as number) ?? 0,
-      indexType: (s.indexType as string) ?? (s.index_type as string) ?? "unknown",
-      distanceMetric: (s.distanceMetric as string) ?? (s.distance_metric as string) ?? "unknown",
+      indexType: enumLabel(s.indexType ?? s.index_type, INDEX_LABELS),
+      distanceMetric: enumLabel(s.distanceMetric ?? s.distance_metric, METRIC_LABELS),
       lastRebuilt: (s.lastRebuilt as string) ?? (s.last_rebuilt as string) ?? "N/A",
     };
   });
@@ -317,8 +328,8 @@
     const n = nsInfoResult as Record<string, unknown>;
     return {
       dimension: (n.dimension as number) ?? (n.dimensions as number) ?? 0,
-      distanceMetric: (n.distanceMetric as string) ?? (n.distance_metric as string) ?? "unknown",
-      indexType: (n.indexType as string) ?? (n.index_type as string) ?? "unknown",
+      distanceMetric: enumLabel(n.distanceMetric ?? n.distance_metric, METRIC_LABELS),
+      indexType: enumLabel(n.indexType ?? n.index_type, INDEX_LABELS),
       vectorCount: (n.vectorCount as number) ?? (n.vector_count as number) ?? 0,
     };
   });
@@ -516,6 +527,8 @@
     try {
       const resp: ListVectorsResponse = await client.vector.listVectors({ namespace: selectedNamespace });
       vecListResults = [...resp.vectors];
+      // Every write relists; the namespace cards follow the same refresh.
+      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
