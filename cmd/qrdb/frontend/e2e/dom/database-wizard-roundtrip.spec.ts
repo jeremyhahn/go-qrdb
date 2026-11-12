@@ -134,7 +134,33 @@ test("database wizard creates a database with a barrier passphrase on a passphra
   await waitForHealthy(daemon);
 
   const name = "e2ewizbarrier";
-  // A barrier needs a dedicated store: an explicit data directory on the server.
+
+  // A barrier with no data directory is refused by the server (422), so the
+  // wizard holds it at the barrier step and says why: Create is never reached.
+  await openApp(page);
+  await page.getByRole("button", { name: "New Database" }).first().click();
+  await page.getByRole("textbox").first().fill(name);
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.locator('input[name="db-storage-backend"][value="pebble"]').check();
+  await expect(page.locator("#data-dir-input")).toHaveValue("");
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Per-Database Barrier", { exact: true })).toBeVisible();
+  const dirError = page.getByTestId("db-barrier-datadir-error");
+  for (const mode of ["passphrase", "shamir"]) {
+    await page.getByTestId(`db-seal-mode-${mode}`).click();
+    if (mode === "passphrase") {
+      await page.locator("#db-barrier-passphrase").fill(PASSPHRASE);
+      await page.locator("#db-barrier-passphrase-confirm").fill(PASSPHRASE);
+    }
+    await expect(dirError).toContainText("data directory");
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+  }
+  await expect(page.getByRole("button", { name: /^Create/ })).toHaveCount(0);
+  const absent = await request.get(`${daemon.adminUrl}/v1/databases/${name}`, { ignoreHTTPSErrors: true });
+  expect(absent.status(), "no database is created without a data directory").toBe(404);
+
+  // With a data directory set the same barrier is created.
   const dataDir = `${daemon.dataDir}/wizard-barrier-db`;
   await createThroughWizard(page, name, "pebble", { dataDir, passphrase: PASSPHRASE });
 
@@ -165,4 +191,27 @@ test("database wizard creates a database with a barrier passphrase on a passphra
   expect((await status()).sealed).toBe(false);
 
   await expectOpens(page, name);
+});
+
+test("five new memory databases each open with no error toast", async ({ page }) => {
+  test.setTimeout(180_000);
+  daemon = await startDaemon({ seal: "none" });
+  // Any 5xx the UI meets, and the daemon's stderr, explain a failing open.
+  // 501 is a capability answer (a memory store keeps no revision), which the
+  // Data tool handles without a toast; a 500 (once seen on /kv/scan) is not.
+  const failures: string[] = [];
+  page.on("response", (res) => {
+    if (res.status() >= 500 && res.status() !== 501) failures.push(`${res.request().method()} ${res.url()} -> ${res.status()}`);
+  });
+  const serverLog: string[] = [];
+  daemon.proc.stderr?.on("data", (chunk: Buffer) => serverLog.push(chunk.toString()));
+
+  for (let i = 1; i <= 5; i++) {
+    const name = `e2ewizmem${i}`;
+    await createThroughWizard(page, name, "memory");
+    const toasts = await page.locator(".toast .alert-error").allInnerTexts();
+    expect(toasts, `error toasts after creating ${name}; 5xx: ${JSON.stringify(failures)}`).toEqual([]);
+    await expectOpens(page, name);
+    expect(failures, `5xx responses opening ${name}; server log: ${serverLog.join("").slice(-2000)}`).toEqual([]);
+  }
 });
