@@ -233,7 +233,9 @@ func (c *ClientConn) dial(ctx context.Context, u *url.URL, reqHdr http.Header) (
 		requestStr.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		return nil, nil, err
 	}
-	// TODO(#136): create the session to allow optimistic opening of streams and sending of datagrams
+	// The session is created only after the response arrives. Creating it
+	// earlier, to allow optimistic opening of streams and sending of
+	// datagrams, is upstream issue quic-go/webtransport-go#136.
 	rsp, err := requestStr.ReadResponse()
 	if err != nil {
 		requestStr.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
