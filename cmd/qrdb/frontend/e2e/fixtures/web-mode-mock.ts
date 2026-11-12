@@ -228,6 +228,26 @@ export async function injectWebRestMock(
       body: JSON.stringify({ roles: [], total: 0, hasMore: false }),
     });
   });
+
+  // The connect-time probes of the admin views' read routes (each view shows
+  // only when its route is not refused). Empty answers keep every view on
+  // offer; a spec that asserts on one of these routes its own, which takes
+  // precedence.
+  const probeAnswers: ReadonlyArray<readonly [string, unknown]> = [
+    ["**/peers", { peers: [] }],
+    ["**/v1/rebalance/report", {}],
+    ["**/users/list**", { users: [], total: 0, hasMore: false }],
+    ["**/v1/volume-pools/list**", { pools: [] }],
+    ["**/certs/list**", { certs: [] }],
+    ["**/v1/credentials", { names: [] }],
+    ["**/v1/backups/list**", { backups: [] }],
+    ["**/v1/audit/events**", { events: [] }],
+  ];
+  for (const [pattern, body] of probeAnswers) {
+    await page.route(pattern, (route) => {
+      void route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
