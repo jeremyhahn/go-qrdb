@@ -17,7 +17,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
@@ -33,6 +33,7 @@ const LOAD_TIMEOUT = 15_000;
 const USERNAME = "cert-alice";
 const SO_PIN = "certs-roundtrip-so-pin-0123";
 const USER_PIN = "certs-roundtrip-user-pin-0123";
+const P12_PASS = "certs-roundtrip-p12-pass";
 
 let daemon: DomDaemon | null = null;
 
@@ -54,11 +55,11 @@ test.afterEach(async () => {
   daemon = null;
 });
 
-/** Generates a P-256 CSR for `cn` with openssl; the key is discarded. */
-function makeCSR(cn: string): string {
+/** Generates a P-256 key and a CSR for `cn` with openssl, both per run. */
+function makeCSR(cn: string): { csr: string; key: string } {
   const dir = mkdtempSync(join(tmpdir(), "qrdb-csr-"));
   try {
-    return execFileSync(
+    const csr = execFileSync(
       "openssl",
       [
         "req", "-new",
@@ -66,8 +67,30 @@ function makeCSR(cn: string): string {
         "-nodes", "-keyout", join(dir, "key.pem"),
         "-subj", `/CN=${cn}`,
       ],
-      { encoding: "utf8" },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
+    return { csr, key: readFileSync(join(dir, "key.pem"), "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The leaf serial (upper-case hex) OpenSSL reads from a PKCS#12 archive. */
+function pkcs12Serial(b64: string, passphrase: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "qrdb-p12-"));
+  try {
+    const p12 = join(dir, "export.p12");
+    writeFileSync(p12, Buffer.from(b64, "base64"));
+    const leaf = execFileSync(
+      "openssl",
+      ["pkcs12", "-in", p12, "-passin", `pass:${passphrase}`, "-nokeys", "-clcerts"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const out = execFileSync("openssl", ["x509", "-noout", "-serial"], {
+      input: leaf,
+      encoding: "utf8",
+    });
+    return out.trim().replace(/^serial=/, "");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -83,7 +106,7 @@ async function openCerts(page: Page): Promise<void> {
   });
 }
 
-test("a client certificate is issued, listed and revoked against the live backend", async ({
+test("a client certificate is issued, listed, exported as PKCS#12 and revoked against the live backend", async ({
   page,
   request,
 }) => {
@@ -98,17 +121,20 @@ test("a client certificate is issued, listed and revoked against the live backen
   expect(created.ok(), `create user: ${created.status()} ${await created.text()}`).toBeTruthy();
 
   // --- Issue from a CSR through the view. ----------------------------------
+  const csr = makeCSR(USERNAME);
   await page.getByRole("button", { name: "Issue", exact: true }).first().click();
   await page.locator("input[placeholder='e.g. alice']").first().fill(USERNAME);
   await page
     .locator("textarea[placeholder='-----BEGIN CERTIFICATE REQUEST-----']")
-    .fill(makeCSR(USERNAME));
+    .fill(csr.csr);
   await page.locator("input[placeholder='8760h']").fill("8760h");
   await page.getByRole("button", { name: "Issue", exact: true }).last().click();
   await expect(page.getByText(`Certificate issued for "${USERNAME}"`).last()).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await expect(page.getByText("Certificate PEM", { exact: true })).toBeVisible();
+  const certPEM = await page.locator("textarea[readonly]").first().inputValue();
+  expect(certPEM).toContain("BEGIN CERTIFICATE");
 
   // --- A reload lists it from the server, with its detail columns. -------
   await page.reload();
@@ -128,6 +154,30 @@ test("a client certificate is issued, listed and revoked against the live backen
   await expect(field("Serial")).toHaveText(serial);
   await expect(field("Tenant")).toHaveText("system");
   await expect(field("Validity remaining")).toHaveText(/^36[45] days$/);
+
+  // --- Export the issued certificate and its key as PKCS#12. -----------------
+  // The archive is built in the browser; the server only reports the serial.
+  await page.getByRole("button", { name: "Export PKCS#12", exact: true }).first().click();
+  await page.locator("textarea[placeholder='Paste certificate PEM here']").fill(certPEM);
+  await page.locator("textarea[placeholder='Paste private key PEM here']").fill(csr.key);
+  await page.locator("input[placeholder='PKCS#12 passphrase']").fill(P12_PASS);
+  await page.getByRole("button", { name: "Export PKCS#12", exact: true }).last().click();
+  await expect(page.getByText("Certificate exported successfully").last()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  const pkcs12 = await page
+    .locator("div", { has: page.getByText("PKCS#12 Data (Base64)", { exact: true }) })
+    .locator("textarea[readonly]")
+    .last()
+    .inputValue();
+  expect(pkcs12).not.toBe("");
+
+  const listed = await request.get(`${daemon!.adminUrl}/certs/list`, { ignoreHTTPSErrors: true });
+  expect(listed.ok(), `list certs: ${listed.status()}`).toBeTruthy();
+  const records = ((await listed.json()) as { certs: { serial: string; username: string }[] }).certs;
+  const record = records.find((c) => c.username === USERNAME);
+  expect(record?.serial).toBe(serial);
+  expect(BigInt(`0x${pkcs12Serial(pkcs12, P12_PASS)}`)).toBe(BigInt(`0x${record!.serial}`));
 
   // --- Revoke by serial. ---------------------------------------------------
   await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
