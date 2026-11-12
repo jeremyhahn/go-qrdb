@@ -547,7 +547,11 @@ Composition, conceptually:
 
 Each question implementing this design requires deciding is answered below
 with a recommendation. Whether to adopt the design at all is the first
-decision; these are the ones that follow from adopting it.
+decision; these are the ones that follow from adopting it. The decision
+record [../decisions/object-storage-lsm.md](../decisions/object-storage-lsm.md)
+lays out each one (OS-0, adopting the design, and OS-1 to OS-7) with its
+options, the recommendation, and the go-objstore v0.9.1-alpha API each option
+relies on, for the owner's ruling.
 
 **OS-1 — Is Pebble v2's remote storage a stable, supported surface?**
 No — it is real, functional and already used in production by CockroachDB, but
