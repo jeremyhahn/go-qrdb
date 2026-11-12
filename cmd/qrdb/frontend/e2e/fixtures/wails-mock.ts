@@ -951,6 +951,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("EmbeddedServerBinding.StartEmbedded");
             const s = getState();
             s.embeddedRunning = true;
+            // The Go binding persists the config it started with.
+            (s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = true;
           },
           StopEmbedded: async () => {
             maybeReject("EmbeddedServerBinding.StopEmbedded");
@@ -958,6 +960,22 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.embeddedRunning = false;
           },
           IsEmbedded: () => getState().embeddedRunning,
+          HasSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.HasSavedConfig");
+            return (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig === true;
+          },
+          RestoreEmbedded: async () => {
+            maybeReject("EmbeddedServerBinding.RestoreEmbedded");
+            const s = getState();
+            if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            s.embeddedRunning = true;
+          },
+          ClearSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.ClearSavedConfig");
+            (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = false;
+          },
         },
         KVBinding: {
           Put: async (key: string, value: string) => {
