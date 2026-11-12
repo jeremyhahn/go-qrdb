@@ -1291,7 +1291,7 @@
             >Tags</span
           >
           <div class="flex flex-wrap gap-1">
-            {#each selectedPoint.tags as tag}
+            {#each selectedPoint.tags as tag, i (i)}
               <span class="badge badge-sm badge-outline font-mono">
                 {tag.key}={tag.value}
               </span>

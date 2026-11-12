@@ -42,7 +42,7 @@
   class="border-base-content/6 flex items-center gap-1 border-b"
   role="tablist"
 >
-  {#each tabs as tab}
+  {#each tabs as tab, i (i)}
     <button
       class="-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium transition-colors
              {tab.id === activeTab

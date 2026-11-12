@@ -266,7 +266,7 @@
         disabled={loading}
       >
         <option value="" disabled>Select a namespace...</option>
-        {#each availableNamespaces as ns}
+        {#each availableNamespaces as ns, i (i)}
           <option value={ns}>{ns}</option>
         {/each}
       </select>
@@ -385,7 +385,7 @@
           <!-- Key-Value Builder -->
           {#if metadataFields.length > 0}
             <div class="flex flex-col gap-2">
-              {#each metadataFields as field, index}
+              {#each metadataFields as field, index (index)}
                 <div class="flex items-center gap-2">
                   <input
                     type="text"
@@ -500,7 +500,7 @@
         bind:value={distanceMetric}
         disabled={loading}
       >
-        {#each distanceMetrics as metric}
+        {#each distanceMetrics as metric, i (i)}
           <option value={metric.value}>{metric.label}</option>
         {/each}
       </select>

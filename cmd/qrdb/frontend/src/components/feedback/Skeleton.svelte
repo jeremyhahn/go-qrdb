@@ -79,7 +79,7 @@
     role="status"
     aria-label="Loading"
   >
-    {#each Array(lines) as _, i}
+    {#each Array(lines) as _, i (i)}
       <div
         class="skeleton-base {animationClass}"
         style:height={computedHeight}
@@ -125,7 +125,7 @@
     role="status"
     aria-label="Loading row"
   >
-    {#each Array(columns) as _, i}
+    {#each Array(columns) as _, i (i)}
       <div
         class="skeleton-base {animationClass} h-4 flex-1"
         style:max-width={getCellWidth(i)}
@@ -140,18 +140,18 @@
     aria-label="Loading table"
   >
     <div class="border-base-300 mb-2 flex items-center gap-3 border-b py-3">
-      {#each Array(columns) as _, i}
+      {#each Array(columns) as _, i (i)}
         <div
           class="skeleton-base {animationClass} h-4 flex-1"
           style:max-width={getCellWidth(i)}
         ></div>
       {/each}
     </div>
-    {#each Array(rows) as _, rowIndex}
+    {#each Array(rows) as _, rowIndex (rowIndex)}
       <div
         class="border-base-300/50 flex items-center gap-3 border-b py-3 last:border-b-0"
       >
-        {#each Array(columns) as _, colIndex}
+        {#each Array(columns) as _, colIndex (colIndex)}
           <div
             class="skeleton-base {animationClass} h-4 flex-1"
             style:max-width={getCellWidth(
