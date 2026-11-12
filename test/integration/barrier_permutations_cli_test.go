@@ -27,7 +27,7 @@
 // (sdk/go/transport/{grpc,quic,unix,rest,mcp}/transport.go) counts that
 // refusal as "up and sealed" rather than unreachable. A genuinely unreachable
 // daemon still fails Connect. See
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols below for the
+// barrier_cli_test.go's TestBarrierCLI_PassphraseLifecycle_PerProtocol below for the
 // proof. coldSealedWindowProtocols is therefore the full multiProtocols set
 // -- every lifecycle test in this file that starts from a cold sealed barrier
 // exercises all five transports.
@@ -62,7 +62,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +73,7 @@ import (
 // reach a daemon's pre-host sealed-window listener from a cold, uninitialized
 // barrier: every transport's Connect counts the typed sealed refusal as
 // reachable (see this file's package comment and
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols), so that is
+// barrier_cli_test.go's TestBarrierCLI_PassphraseLifecycle_PerProtocol), so that is
 // all five -- REST, gRPC, native QUIC, MCP, and Unix (grpc-over-UDS).
 // It remains a distinct variable (rather than every call site using
 // multiProtocols directly) purely for the descriptive name: every lifecycle
@@ -347,81 +346,6 @@ func TestBarrierPermutations_SystemBarrierInitRefused_PerProtocol(t *testing.T) 
 // Strategy "passphrase": single-secret lifecycle.
 // ---------------------------------------------------------------------------
 
-// TestBarrierPermutations_PassphraseLifecycle_PerProtocol mirrors
-// barrier_cli_test.go's TestBarrierCLI_PassphraseLifecycle (init, unseal
-// wrong/right, seal, data-plane proof) but loops the full canonical
-// multiProtocols table instead of exercising REST alone.
-func TestBarrierPermutations_PassphraseLifecycle_PerProtocol(t *testing.T) {
-	t.Parallel()
-	for _, proto := range coldSealedWindowProtocols {
-		t.Run(proto.name, func(t *testing.T) {
-			t.Parallel()
-			node := startFreshSealedNode(t, "passphrase", 0, 0)
-			noAuth := node.noAuthFlagsFor(proto)
-			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
-
-			status := barrierStatus(t, node.cli, noAuth)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected fresh passphrase barrier to be sealed pre-init, got: %+v", proto.name, status)
-			}
-
-			const passphrase = "barrier-perm-passphrase-1"
-			node.initSystem(t, proto, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
-			node.waitForFullBoot(t)
-			flags := node.flagsFor(proto)
-
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after qrdb init", proto.name)
-			}
-			if status.Strategy != "passphrase" {
-				t.Errorf("[%s] expected strategy 'passphrase', got %q", proto.name, status.Strategy)
-			}
-
-			key := "barrier-perm-pp-" + proto.name
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"kv", "put", key, "pp-value")...); err != nil {
-				t.Fatalf("[%s] kv put: %v\nstderr: %s", proto.name, err, stderr)
-			}
-
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
-				t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected barrier to be sealed after 'barrier seal -y'", proto.name)
-			}
-
-			// Negative: a wrong passphrase must fail and must not unseal.
-			if _, _, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "unseal", "--passphrase", "definitely-wrong")...); err == nil {
-				t.Fatalf("[%s] expected non-zero exit for wrong-passphrase unseal", proto.name)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if !status.Sealed {
-				t.Fatalf("[%s] wrong-passphrase unseal must not have left the barrier unsealed", proto.name)
-			}
-
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "unseal", "--passphrase", passphrase)...); err != nil {
-				t.Fatalf("[%s] barrier unseal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after the correct passphrase", proto.name)
-			}
-
-			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "kv", "get", key)...)
-			if err != nil {
-				t.Fatalf("[%s] kv get after seal/unseal cycle: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			if !strings.Contains(stdout, "pp-value") {
-				t.Fatalf("[%s] kv get after seal/unseal cycle: expected surviving value, got: %s", proto.name, stdout)
-			}
-		})
-	}
-}
-
 // TestBarrierPermutations_MCPPassphraseBytesAreLossless initializes the
 // system barrier over MCP with passphrases a JSON text argument cannot carry
 // exactly -- bytes that are not UTF-8, and a leading byte-order mark -- and
@@ -479,180 +403,6 @@ func TestBarrierPermutations_MCPPassphraseBytesAreLossless(t *testing.T) {
 			}
 			if barrierStatus(t, node.cli, mcpFlags).Sealed {
 				t.Fatal("barrier still sealed after the MCP unseal")
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Strategy "shamir": M-of-N officer lifecycle.
-// ---------------------------------------------------------------------------
-
-// TestBarrierPermutations_ShamirLifecycle_PerProtocol mirrors
-// barrier_cli_test.go's TestBarrierCLI_ShamirLifecycle's core (holders
-// named in `qrdb init`, claim, and the seal, unseal and root-token
-// quorums) looped over every CLI-selectable protocol. Rekey and the
-// independent recovery-key scope are exhaustively covered on REST already
-// (barrier_cli_test.go) and are intentionally left out of this per-protocol
-// loop to bound the number of daemons this file boots; see the file-level
-// comment.
-func TestBarrierPermutations_ShamirLifecycle_PerProtocol(t *testing.T) {
-	t.Parallel()
-	for _, proto := range coldSealedWindowProtocols {
-		t.Run(proto.name, func(t *testing.T) {
-			t.Parallel()
-			workDir := t.TempDir()
-			const threshold, total = 2, 3
-			node := startFreshSealedNode(t, "shamir", threshold, total)
-			noAuth := node.noAuthFlagsFor(proto)
-			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
-
-			status := barrierStatus(t, node.cli, noAuth)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected fresh shamir barrier to be sealed pre-init, got: %+v", proto.name, status)
-			}
-
-			// `qrdb init`, over the SAME protocol under test, enrols the
-			// holders from their CSRs and splits the unseal key to them.
-			holders, holderFlags := initHolders(t, workDir, "alice-"+proto.name, "bob-"+proto.name, "carol-"+proto.name)
-			initOut := node.initSystem(t, proto, append([]string{"--barrier-strategy", "shamir",
-				"--threshold", strconv.Itoa(threshold), "--shares", strconv.Itoa(total)}, holderFlags...)...)
-			adoptInitHolders(t, workDir, initOut, holders)
-			alice, bob := holders[0], holders[1]
-
-			node.waitForFullBoot(t)
-			flags := node.flagsFor(proto)
-
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after qrdb init", proto.name)
-			}
-			if status.Strategy != "shamir" {
-				t.Errorf("[%s] expected strategy 'shamir', got %q", proto.name, status.Strategy)
-			}
-
-			ep := endpoint{serverURL: node.serverURLFor(proto), caFile: node.ca.CertPath}
-			claimEnvelope(t, node.cli, workDir, ep, systemScope(transport.DomainUnseal), alice)
-			claimEnvelope(t, node.cli, workDir, ep, systemScope(transport.DomainUnseal), bob)
-
-			quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "seal", alice, bob)
-			status = barrierStatus(t, node.cli, flags)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected barrier to be sealed after the seal quorum", proto.name)
-			}
-
-			// A below-threshold round is progress, not an error, and leaves
-			// the barrier sealed.
-			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "unseal", alice); out.Complete {
-				t.Fatalf("[%s] one of two submissions completed the round: %+v", proto.name, out)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if !status.Sealed {
-				t.Fatalf("[%s] a below-threshold round must not unseal the barrier", proto.name)
-			}
-
-			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "unseal", bob); !out.Complete {
-				t.Fatalf("[%s] the second submission did not complete the round: %+v", proto.name, out)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after the unseal quorum", proto.name)
-			}
-
-			if out := quorumAll(t, node.cli, ep, systemScope(transport.DomainUnseal), "root-token", alice, bob); !out.Complete || out.RootToken == "" {
-				t.Fatalf("[%s] root-token round = %+v, want a root token", proto.name, out)
-			}
-
-			key := "barrier-perm-shamir-" + proto.name
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"kv", "put", key, "shamir-value")...); err != nil {
-				t.Fatalf("[%s] kv put after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			stdout, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "kv", "get", key)...)
-			if err != nil {
-				t.Fatalf("[%s] kv get after shamir unseal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			if !strings.Contains(stdout, "shamir-value") {
-				t.Fatalf("[%s] kv get after shamir unseal: expected surviving value, got: %s", proto.name, stdout)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Sealed-window connectivity: all five transports reach a cold daemon.
-// ---------------------------------------------------------------------------
-
-// TestBarrierPermutations_SealedWindowConnectivity_AllProtocols proves that
-// a completely fresh, cold, uninitialized daemon's pre-host sealed-window
-// listener is reachable -- and drives a full barrier init/unseal cold-boot
-// lifecycle -- over ALL FIVE CLI-selectable transports (REST, gRPC, native
-// QUIC, MCP, and Unix/grpc-over-UDS).
-//
-// This used to be a real, confirmed, cross-transport bug: gRPC, native
-// QUIC, and Unix could not connect AT ALL while the barrier was sealed, so
-// none of the sealed-window operations pkg/api/sealedwindow.Table
-// allowlists for those three transports (barrier init/init-shamir/unseal,
-// ceremony initialize, officer register/claim, ...) were actually reachable
-// on them despite being nominally allowlisted. REST and MCP were always
-// unaffected.
-//
-// Root cause and fix (verified by reading source, not assumed):
-//
-//  1. Every SDK transport's Connect() probes the node's health call before
-//     returning nil.
-//  2. A sealed node serves the unseal call and nothing else: the health
-//     call, and `barrier status` with it, get the typed sealed refusal
-//     (Unavailable with reason SEALED on every transport).
-//  3. Connect() counts that refusal as a live, sealed node, and the CLI
-//     reports `barrier status` as the refusal, which barrierStatus reads as
-//     Sealed. A genuinely unreachable daemon (nothing listening,
-//     TLS/handshake failure, etc.) still fails Connect().
-func TestBarrierPermutations_SealedWindowConnectivity_AllProtocols(t *testing.T) {
-	t.Parallel()
-	for _, proto := range multiProtocols {
-		t.Run(proto.name, func(t *testing.T) {
-			t.Parallel()
-			node := startFreshSealedNode(t, "passphrase", 0, 0)
-			noAuth := node.noAuthFlagsFor(proto)
-
-			// Connect() + `barrier status` against a daemon that has never
-			// been initialized is the connectivity assertion under test.
-			waitForBarrierReachable(t, node.cli, noAuth, 60*time.Second)
-
-			status := barrierStatus(t, node.cli, noAuth)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected a fresh passphrase barrier to be sealed pre-init, got: %+v", proto.name, status)
-			}
-
-			passphrase := "sealed-window-connectivity-" + proto.name
-			node.initSystem(t, proto, "--barrier-strategy", "passphrase", "--passphrase", passphrase)
-			node.waitForFullBoot(t)
-			flags := node.flagsFor(proto)
-
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after qrdb init", proto.name)
-			}
-
-			// Drive an explicit seal -> unseal cycle to prove `barrier
-			// unseal` itself (not just init's implicit unseal) works over
-			// this transport post-boot too.
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...), "barrier", "seal", "-y", "--so-pin", sealNodeSOPIN)...); err != nil {
-				t.Fatalf("[%s] barrier seal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if !status.Sealed {
-				t.Fatalf("[%s] expected barrier to be sealed after 'barrier seal -y'", proto.name)
-			}
-
-			if _, stderr, err := runCLISplit(t, node.cli, append(append([]string{}, flags...),
-				"barrier", "unseal", "--passphrase", passphrase)...); err != nil {
-				t.Fatalf("[%s] barrier unseal: %v\nstderr: %s", proto.name, err, stderr)
-			}
-			status = barrierStatus(t, node.cli, flags)
-			if status.Sealed {
-				t.Fatalf("[%s] expected barrier to be unsealed after 'barrier unseal'", proto.name)
 			}
 		})
 	}
