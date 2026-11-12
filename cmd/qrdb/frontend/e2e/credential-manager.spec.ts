@@ -72,10 +72,10 @@ test.describe("Credential Manager", () => {
     await expect(page.getByText(/Credential "secret-1" stored/)).toBeVisible({ timeout: 5_000 });
 
     await page.locator("table tbody tr").first().click();
-    await page.getByRole("button", { name: "Reveal" }).click();
+    await page.getByRole("button", { name: "Reveal", exact: true }).click();
 
     await expect(page.getByText("sekrit-value")).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByRole("button", { name: "Hide" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Hide", exact: true })).toBeVisible();
   });
 
   test("rotate updates the version and shows a success toast", async ({ page }) => {
@@ -91,6 +91,51 @@ test.describe("Credential Manager", () => {
     await page.locator(".modal").getByRole("button", { name: "Rotate" }).click();
 
     await expect(page.getByText(/rotated: v1 -> v2/)).toBeVisible({ timeout: 5_000 });
+  });
+
+  test("reveal a past version via credentials.retrieveVersion", async ({ page }) => {
+    await navigateToCredentials(page);
+
+    await storeCredential(page, "versioned", "first-secret");
+    await expect(page.getByText(/Credential "versioned" stored/)).toBeVisible({ timeout: 5_000 });
+
+    await page.locator("table tbody tr").first().click();
+    await page.getByRole("button", { name: "Rotate" }).click();
+    await expect(page.locator(".modal").getByText("Rotate Credential")).toBeVisible();
+    await page.locator(".modal input[type='text']").fill("second-secret");
+    await page.locator(".modal input[type='number']").fill("3600");
+    await page.locator(".modal").getByRole("button", { name: "Rotate" }).click();
+    await expect(page.getByText(/rotated: v1 -> v2/)).toBeVisible({ timeout: 5_000 });
+
+    const v1 = page.getByTestId("credential-version-value-1");
+    await expect(v1).toHaveText("•••••");
+    await page.getByRole("button", { name: "Reveal version 1" }).click();
+    await expect(v1).toHaveText("first-secret", { timeout: 5_000 });
+    await expect(page.getByTestId("credential-version-value-2")).toHaveText("•••••");
+
+    await page.getByRole("button", { name: "Reveal version 2" }).click();
+    await expect(page.getByTestId("credential-version-value-2")).toHaveText("second-secret", { timeout: 5_000 });
+
+    await page.getByRole("button", { name: "Hide version 1" }).click();
+    await expect(v1).toHaveText("•••••");
+  });
+
+  test("error on credentials.retrieveVersion shows an error toast and keeps the value masked", async ({ page }) => {
+    await navigateToCredentials(page);
+
+    await storeCredential(page, "versioned-err", "hidden-secret");
+    await expect(page.getByText(/Credential "versioned-err" stored/)).toBeVisible({ timeout: 5_000 });
+
+    await page.locator("table tbody tr").first().click();
+    await expect(page.getByTestId("credential-version-value-1")).toBeVisible({ timeout: 5_000 });
+
+    await injectError(page, "CredentialBinding.RetrieveVersion", "retrieve version failed: sealed");
+    await page.getByRole("button", { name: "Reveal version 1" }).click();
+
+    await expect(page.getByText("retrieve version failed: sealed")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("credential-version-value-1")).toHaveText("•••••");
+
+    await clearError(page, "CredentialBinding.RetrieveVersion");
   });
 
   test("gc expired reports the reaped count", async ({ page }) => {
