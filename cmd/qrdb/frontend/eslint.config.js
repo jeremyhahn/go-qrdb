@@ -45,4 +45,12 @@ export default ts.config(
       "svelte/prefer-svelte-reactivity": "off",
     },
   },
+  {
+    // Playwright reads a fixture's dependencies from its first parameter's
+    // destructuring pattern, so a fixture with none must be written ({}, use).
+    files: ["e2e/**/*.ts"],
+    rules: {
+      "no-empty-pattern": ["error", { allowObjectPatternsAsParameters: true }],
+    },
+  },
 );
