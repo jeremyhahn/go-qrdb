@@ -262,6 +262,207 @@ test.describe("Admin - User Management", () => {
     });
   });
 
+  test.describe("User operations", () => {
+    /** Reads the mock's stored user record through the Wails binding. */
+    async function mockUser(
+      page: Page,
+      id: string,
+    ): Promise<{ lifecycle: string; roleIds: string[] }> {
+      return page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              UserBinding: {
+                Get: (id: string) => Promise<{ lifecycle: string; roleIds: string[] }>;
+              };
+            };
+          };
+        };
+        return w.go.main.UserBinding.Get(uid);
+      }, id);
+    }
+
+    /** Creates a role through the mock binding and returns its id. */
+    async function seedRole(page: Page, name: string): Promise<string> {
+      return page.evaluate((n: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              RoleBinding: {
+                Create: (req: { name: string }) => Promise<{ id: string }>;
+              };
+            };
+          };
+        };
+        return w.go.main.RoleBinding.Create({ name: n }).then((r) => r.id);
+      }, name);
+    }
+
+    /** Binds a thumbprint to a user through the mock binding. */
+    async function seedBinding(page: Page, id: string, thumbprint: string): Promise<void> {
+      await page.evaluate(
+        ({ uid, tp }: { uid: string; tp: string }) => {
+          const w = window as unknown as {
+            go: {
+              main: {
+                UserBinding: {
+                  AddCertBinding: (id: string, tp: string, n: number) => Promise<unknown>;
+                };
+              };
+            };
+          };
+          return w.go.main.UserBinding.AddCertBinding(uid, tp, 0);
+        },
+        { uid: id, tp: thumbprint },
+      );
+    }
+
+    /** Re-fetches the user list and opens the named user's detail view. */
+    async function openUser(page: Page, name: string): Promise<void> {
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+      await expect(page.getByText(name, { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await page.getByText(name, { exact: true }).click();
+      await expect(page.getByText("Edit User")).toBeVisible();
+    }
+
+    test("disables an active user", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "dis-user");
+      await openUser(page, "dis-user");
+
+      await page.getByTestId("user-disable").click();
+      await expect(page.getByTestId("user-enable")).toBeVisible();
+      expect((await mockUser(page, id)).lifecycle).toBe("disabled");
+    });
+
+    test("enables a disabled user", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "en-user");
+      await page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: { main: { UserBinding: { Disable: (id: string) => Promise<void> } } };
+        };
+        return w.go.main.UserBinding.Disable(uid);
+      }, id);
+      await openUser(page, "en-user");
+
+      await page.getByTestId("user-enable").click();
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
+    test("deletes a user after confirmation", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "del-user");
+      await openUser(page, "del-user");
+
+      const del = page.getByTestId("user-delete");
+      await del.click();
+      await expect(del).toHaveText("Confirm Delete");
+      await del.click();
+      await expect(page.getByText("No users found.")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+
+    test("adds a certificate binding", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "bind-user");
+      await openUser(page, "bind-user");
+
+      await page.getByTestId("user-binding-thumbprint").fill("tp-add-1");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.getByTestId("user-binding-row")).toContainText("tp-add-1");
+      await expect(page.locator('[role="alert"]').first()).toContainText(
+        "Certificate binding added",
+      );
+    });
+
+    test("removes a certificate binding", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "unbind-user");
+      await openUser(page, "unbind-user");
+
+      await page.getByTestId("user-binding-thumbprint").fill("tp-rm-1");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(1);
+      await page.getByRole("button", { name: "Remove binding tp-rm-1" }).click();
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+
+      // The mock no longer resolves the thumbprint.
+      await page.getByRole("button", { name: /^Back$/ }).click();
+      await page.getByTestId("user-thumbprint-input").fill("tp-rm-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.locator('[role="alert"]').last()).toContainText("no user bound");
+    });
+
+    test("finds a user by certificate thumbprint", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "found-user");
+      await seedBinding(page, id, "tp-find-1");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-find-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByText("Edit User")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByPlaceholder("Enter username")).toHaveValue("found-user");
+    });
+
+    test("assigns a role to an existing user at once", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "assign-user");
+      const roleId = await seedRole(page, "assign-role");
+      await openUser(page, "assign-user");
+
+      await page.getByTestId("user-role-assign-role").check();
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).toContain(roleId);
+    });
+
+    test("unassigns a role from an existing user at once", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "unassign-user");
+      const roleId = await seedRole(page, "unassign-role");
+      await page.evaluate(
+        ({ uid, rid }: { uid: string; rid: string }) => {
+          const w = window as unknown as {
+            go: {
+              main: { RoleBinding: { Assign: (u: string, r: string) => Promise<void> } };
+            };
+          };
+          return w.go.main.RoleBinding.Assign(uid, rid);
+        },
+        { uid: id, rid: roleId },
+      );
+      await openUser(page, "unassign-user");
+
+      const box = page.getByTestId("user-role-unassign-role");
+      await expect(box).toBeChecked();
+      await box.uncheck();
+      await expect(page.getByText("Role unassigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).not.toContain(roleId);
+    });
+
+    test("shows an error toast when adding a binding fails", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "bind-err-user");
+      await openUser(page, "bind-err-user");
+
+      await injectError(page, "UserBinding.AddCertBinding", "thumbprint already bound");
+      await page.getByTestId("user-binding-thumbprint").fill("tp-err-1");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.locator('[role="alert"]').last()).toContainText(
+        "thumbprint already bound",
+      );
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+      await clearError(page, "UserBinding.AddCertBinding");
+    });
+  });
+
   test.describe("Error handling", () => {
     test("displays error toast when user list fails to load", async ({
       page,
