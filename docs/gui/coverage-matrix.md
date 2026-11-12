@@ -77,31 +77,31 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Daemon | `restartDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `startDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `stopDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
-| Database | `barrierStatus` | views/admin/TenantManager.svelte components/DatabaseHoldersPanel.svelte  | none | no e2e |
-| Database | `create` | views/user/IndexManager.svelte views/admin/UserDetail.svelte views/admin/DatabaseDetail.svelte  | collection.spec.ts database-switching.spec.ts  |  |
-| Database | `drop` | views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte views/user/CollectionView.svelte  | admin-databases.spec.ts index.spec.ts  |  |
-| Database | `get` | stores/toast.svelte.ts views/admin/DatabaseDetail.svelte views/admin/UserDetail.svelte  | bulk-delete.spec.ts timeseries-chart-fix.spec.ts  |  |
-| Database | `list` | views/admin/Dashboard.svelte views/admin/UserDetail.svelte views/admin/CertManager.svelte  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
+| Database | `barrierStatus` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Database | `create` | views/admin/DatabaseDetail.svelte components/wizard/database/StepDatabaseCreating.svelte | admin-databases.spec.ts database-wizard-full-flow.spec.ts | *verified* |
+| Database | `drop` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
+| Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
+| Database | `list` | views/MainApp.svelte views/admin/DatabaseManager.svelte views/admin/Dashboard.svelte views/admin/UserDetail.svelte views/admin/RoleDetail.svelte stores/connection-manager.svelte.ts | admin-databases.spec.ts database-switching.spec.ts | *verified* |
 | Database | `scale` | views/admin/DatabaseDetail.svelte  | database-scale.spec.ts  |  |
-| Database | `updateBarrier` | none | none | not in UI |
-| Database | `updateCompaction` | none | none | not in UI |
-| Database | `updateConnection` | none | none | not in UI |
-| Database | `updateProtocol` | views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte  | none | no e2e |
-| Database | `updateRaft` | none | none | not in UI |
-| Database | `updateSQL` | none | none | not in UI |
-| EmbeddedServer | `clearSavedConfig` | none | none | not in UI |
-| EmbeddedServer | `hasSavedConfig` | none | none | not in UI |
-| EmbeddedServer | `isEmbedded` | none | database-wizard-raft-config.spec.ts fixtures/wails-mock.ts  | not in UI |
-| EmbeddedServer | `restoreEmbedded` | none | none | not in UI |
-| EmbeddedServer | `startEmbedded` | none | fixtures/wails-mock.ts database-wizard-full-flow.spec.ts  | not in UI |
-| EmbeddedServer | `stopEmbedded` | none | none | not in UI |
-| Index | `create` | views/admin/UserDetail.svelte views/user/IndexManager.svelte views/admin/RoleDetail.svelte  | admin-databases.spec.ts collection.spec.ts  |  |
-| Index | `drop` | views/admin/DatabaseDetail.svelte views/user/CollectionView.svelte views/user/IndexManager.svelte  | index.spec.ts admin-databases.spec.ts  |  |
-| Index | `list` | stores/connection-manager.svelte.ts views/admin/UserDetail.svelte views/MainApp.svelte  | admin-nav-smoke.spec.ts tenant-barrier-unseal.spec.ts  |  |
-| Index | `query` | views/user/IndexManager.svelte views/user/SQLBrowserScoped.svelte views/user/TimeSeriesView.svelte  | admin-audit.spec.ts index.spec.ts  |  |
-| Index | `scan` | lib/kvRange.ts views/user/IndexManager.svelte views/user/KVExplorer.svelte  | admin-audit.spec.ts index.spec.ts  |  |
-| Invitation | `invite` | components/admin/InviteUserModal.svelte  | none | no e2e |
-| Invitation | `redeem` | none | none | not in UI |
+| Database | `updateBarrier` | none | none | not in UI; *verified* |
+| Database | `updateCompaction` | none | none | not in UI; *verified* |
+| Database | `updateConnection` | none | none | not in UI; *verified* |
+| Database | `updateProtocol` | views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte | regression-bugs.spec.ts (UpdateProtocol) | *verified* |
+| Database | `updateRaft` | none | none | not in UI; *verified* |
+| Database | `updateSQL` | none | none | not in UI; *verified* |
+| EmbeddedServer | `clearSavedConfig` | none | none | not in UI; *verified* |
+| EmbeddedServer | `hasSavedConfig` | none | none | not in UI; *verified* |
+| EmbeddedServer | `isEmbedded` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| EmbeddedServer | `restoreEmbedded` | none | none | not in UI; *verified* |
+| EmbeddedServer | `startEmbedded` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| EmbeddedServer | `stopEmbedded` | none | none | not in UI; *verified* |
+| Index | `create` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts index-operations.spec.ts | *verified* |
+| Index | `drop` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
+| Index | `list` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
+| Index | `query` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
+| Index | `scan` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
+| Invitation | `invite` | components/admin/InviteUserModal.svelte | none (admin-users.spec.ts never opens the invite modal) | no e2e; *verified* |
+| Invitation | `redeem` | none | none | not in UI; *verified* |
 | KV | `delete` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
 | KV | `exists` | none | none (spec hits are false name matches) | not in UI; *verified* |
 | KV | `get` | none (KVExplorer reads through `kv.scan`; other hits are other clients' `get`) | none | not in UI; *verified* |
@@ -109,15 +109,15 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | KV | `put` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
 | KV | `scan` | views/user/KVExplorer.svelte | kv-crud.spec.ts dom/kv-explorer-roundtrip.spec.ts | *verified* |
 | Lease | `grant` | views/user/LeaseManager.svelte  | lease-advanced.spec.ts lease-grant-fix.spec.ts  |  |
-| Lease | `keepAlive` | views/user/LeaseManager.svelte  | none | no e2e |
-| Lease | `list` | stores/connection-manager.svelte.ts views/admin/RoleManager.svelte views/admin/BackupManager.svelte  | tenant-barrier-unseal.spec.ts admin-databases.spec.ts  |  |
-| Lease | `revoke` | views/user/LeaseManager.svelte views/admin/CertManager.svelte  | admin-seal-officers.spec.ts lease-advanced.spec.ts  |  |
-| Lease | `timeToLive` | views/user/LeaseManager.svelte  | none | no e2e |
+| Lease | `keepAlive` | views/user/LeaseManager.svelte | lease-operations.spec.ts | *verified* |
+| Lease | `list` | views/user/LeaseManager.svelte | lease-operations.spec.ts | *verified* |
+| Lease | `revoke` | views/user/LeaseManager.svelte | lease-operations.spec.ts | *verified* |
+| Lease | `timeToLive` | views/user/LeaseManager.svelte | lease.spec.ts lease-advanced.spec.ts | *verified* |
 | Lock | `acquire` | views/user/LockManager.svelte  | lock.spec.ts  |  |
-| Lock | `extend` | views/user/LockManager.svelte  | ceremony-init-wizard.spec.ts lock.spec.ts  |  |
-| Lock | `list` | stores/connection-manager.svelte.ts views/MainApp.svelte views/admin/RoleManager.svelte  | tenant-barrier-unseal.spec.ts collection.spec.ts  |  |
+| Lock | `extend` | views/user/LockManager.svelte | lock.spec.ts | *verified* |
+| Lock | `list` | views/user/LockManager.svelte | lock.spec.ts | *verified* |
 | Lock | `release` | views/user/LockManager.svelte  | lock.spec.ts  |  |
-| Lock | `status` | App.svelte stores/connection-manager.svelte.ts stores/seal.svelte.ts  | tenant-barrier-unseal.spec.ts batch-advanced.spec.ts  |  |
+| Lock | `status` | views/user/LockManager.svelte | lock.spec.ts | *verified* |
 | Lock | `tryLock` | views/user/LockManager.svelte  | lock.spec.ts  |  |
 | MVCC | `compact` | none | none (spec hits are false name matches) | not in UI; *verified* |
 | MVCC | `currentRevision` | none | real-backend/kv-restore-mvcc-real.spec.ts (REST only, no UI) | not in UI; *verified* |
@@ -126,21 +126,21 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | MVCC | `putWithLease` | none | none | not in UI; *verified* |
 | MVCC | `range` | views/user/KVExplorer.svelte (as-of revision browse) | kv-explorer-restore.spec.ts | *verified* |
 | MVCC | `restoreToRevision` | views/user/KVExplorer.svelte | kv-explorer-restore.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
-| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte  | none | no e2e |
-| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte  | none | no e2e |
-| Officer | `listOfficers` | views/admin/SealManager.svelte components/ServerInitWizard.svelte  | none | no e2e |
-| Officer | `listTenantOfficers` | views/admin/TenantManager.svelte  | none | no e2e |
-| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte  | none | no e2e |
-| Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte  | ceremony-init-wizard.spec.ts  |  |
-| Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte  | none | no e2e |
-| Officer | `registerTenantOfficer` | none | none | not in UI |
-| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte  | none | no e2e |
-| Officer | `revokeOfficer` | views/admin/SealManager.svelte  | none | no e2e |
-| Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte  | none | no e2e |
-| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte  | none | no e2e |
-| Officer | `startRekey` | views/admin/SealManager.svelte  | none | no e2e |
-| Officer | `startTenantRekey` | views/admin/TenantManager.svelte  | none | no e2e |
-| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte  | none | no e2e |
+| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
+| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `listOfficers` | views/admin/SealManager.svelte components/ServerInitWizard.svelte | admin-seal-officers.spec.ts dom/barrier-shamir.spec.ts | *verified* |
+| Officer | `listTenantOfficers` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
+| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
+| Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
+| Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
+| Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
+| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
+| Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
+| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `startRekey` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
+| Officer | `startTenantRekey` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
+| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
 | Rebalance | `createPlan` | views/admin/RebalancePanel.svelte  | none | no e2e |
 | Rebalance | `execute` | views/user/TransactionView.svelte views/admin/RebalancePanel.svelte views/user/BatchView.svelte  | database.spec.ts batch-operations.spec.ts  |  |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte  | none | no e2e |
