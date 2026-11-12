@@ -242,17 +242,21 @@ type DatabaseConnectionConfig struct {
 
 // CreateDatabaseRequest represents a request to create a database.
 type CreateDatabaseRequest struct {
-	TenantID   string                    `json:"tenantId,omitempty"`
-	Name       string                    `json:"name"`
-	Backend    string                    `json:"backend"`
-	Protocol   ProtocolConfig            `json:"protocol,omitempty"`
-	DataDir    string                    `json:"dataDir,omitempty"`
-	Mode       string                    `json:"mode,omitempty"`
-	Replicas   int                       `json:"replicas,omitempty"`
-	Raft       *DatabaseRaftConfig       `json:"raft,omitempty"`
-	Barrier    *DatabaseBarrierConfig    `json:"barrier,omitempty"`
-	Connection *DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL        *DatabaseSQLConfig        `json:"sql,omitempty"`
+	TenantID string         `json:"tenantId,omitempty"`
+	Name     string         `json:"name"`
+	Backend  string         `json:"backend"`
+	Protocol ProtocolConfig `json:"protocol,omitempty"`
+	DataDir  string         `json:"dataDir,omitempty"`
+	Mode     string         `json:"mode,omitempty"`
+	Replicas int            `json:"replicas,omitempty"`
+	// DedicatedWAL gives a dedicated-raft database its own WAL under the
+	// tenant's key (raft backend only); required for every database of a
+	// strict-isolation tenant.
+	DedicatedWAL bool                      `json:"dedicatedWal,omitempty"`
+	Raft         *DatabaseRaftConfig       `json:"raft,omitempty"`
+	Barrier      *DatabaseBarrierConfig    `json:"barrier,omitempty"`
+	Connection   *DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *DatabaseSQLConfig        `json:"sql,omitempty"`
 }
 
 // UpdateDatabaseRaftRequest represents a request to update Raft config.

@@ -547,6 +547,10 @@ var databaseRules = []rule{
 	// caller can restore.
 	as(&database.SharedStoreBarrierUnsupportedError{}, Unprocessable),
 	as(&database.BarrierOffDataPathError{}, Unprocessable),
+	// A strict tenant's database created without a dedicated WAL (phase 5
+	// G1) is refused by the tenant's isolation policy, not by the request's
+	// shape: the same request succeeds for an operator-access tenant.
+	as(&database.StrictTenantDedicatedWALRequiredError{}, FailedPrecondition),
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A database configuration that fails validation is the caller's error,
 	// not the server's: each of these used to reach REST as a 500.

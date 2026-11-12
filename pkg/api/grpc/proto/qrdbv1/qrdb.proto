@@ -3921,6 +3921,10 @@ message DatabaseCreateRequest {
     DatabaseBarrierConfig barrier = 8;
     // sql holds the database's SQL settings; unset means the defaults.
     DatabaseSQLConfig sql = 9;
+    // dedicated_wal requests a dedicated WAL, keyed by the tenant's own key,
+    // for a dedicated-raft database (raft backend only). Required for every
+    // database of a strict-isolation tenant.
+    bool dedicated_wal = 10;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.

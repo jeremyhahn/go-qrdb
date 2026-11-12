@@ -132,6 +132,9 @@ func toolDatabaseCreate() mcp.Tool {
 		mcp.WithNumber("replicas",
 			mcp.Description("Replication factor for a dedicated-raft database. Meaningful only for raft-backed databases; unset defaults to 1."),
 		),
+		mcp.WithBoolean("dedicated_wal",
+			mcp.Description("Give a dedicated-raft database its own WAL under the tenant's key (raft backend only). Required for every database of a strict-isolation tenant."),
+		),
 		mcp.WithBoolean("mysql",
 			mcp.Description("Enable MySQL wire protocol for this database."),
 		),
@@ -187,10 +190,11 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		}
 
 		cfg := database.DatabaseConfig{
-			Name:     name,
-			Backend:  database.BackendType(backend),
-			DataDir:  mcp.ParseString(req, "data_dir", ""),
-			Replicas: int(mcp.ParseInt64(req, "replicas", 0)),
+			Name:         name,
+			Backend:      database.BackendType(backend),
+			DataDir:      mcp.ParseString(req, "data_dir", ""),
+			Replicas:     int(mcp.ParseInt64(req, "replicas", 0)),
+			DedicatedWAL: mcp.ParseBoolean(req, "dedicated_wal", false),
 			Protocol: database.ProtocolConfig{
 				MySQL:      mcp.ParseBoolean(req, "mysql", false),
 				PostgreSQL: mcp.ParseBoolean(req, "postgresql", false),
@@ -776,7 +780,7 @@ var (
 // handleDatabaseCreate and wire.RejectUnknownArgs.
 var createDatabaseKnownArgs = func() map[string]struct{} {
 	names := append([]string{
-		"name", "backend", "data_dir", "mode", "replicas", "mysql", "postgresql",
+		"name", "backend", "data_dir", "mode", "replicas", "dedicated_wal", "mysql", "postgresql",
 		"etcd", "etcd_listen_addr", "etcd_advertise_urls",
 		"barrier_enabled", "barrier_mode", "barrier_shares_required", "barrier_shares_total",
 		"barrier_secret", "barrier_secret" + secretB64Suffix,
