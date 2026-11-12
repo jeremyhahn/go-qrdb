@@ -50,6 +50,7 @@
   let showExecuteConfirm: boolean = $state(false);
   let lastResult: RebalanceResult | null = $state(null);
 
+  let shardIdInput: string = $state("");
   let selectedShardId: number | null = $state(null);
   let shardStats: ShardStatsResponse | null = $state(null);
   let shardStatsLoading: boolean = $state(false);
@@ -160,7 +161,18 @@
   }
 
   function handleMoveRowClick(event: RowClickEvent<RebalanceMove>): void {
+    shardIdInput = String(event.row.shardId);
     void loadShardStats(event.row.shardId);
+  }
+
+  /** Loads the statistics of the shard typed into the Shard ID field. */
+  function handleLoadShardStats(): void {
+    const shardId = parseInt(String(shardIdInput), 10);
+    if (Number.isNaN(shardId) || shardId < 1) {
+      showToast("error", "Shard ID must be a positive integer");
+      return;
+    }
+    void loadShardStats(shardId);
   }
 
   // ---------------------------------------------------------------------------
@@ -245,33 +257,6 @@
           {#if plan.moves.length > 0}
             <p class="text-base-content/60 text-xs">Click a move to view its shard's statistics.</p>
           {/if}
-          {#if selectedShardId !== null}
-            <div class="rounded-box bg-base-100 p-4" data-testid="shard-stats-panel">
-              <div class="flex items-center justify-between">
-                <h4 class="font-semibold">Shard {selectedShardId} Statistics</h4>
-                <button class="btn btn-ghost btn-xs" onclick={() => (selectedShardId = null)}>Close</button>
-              </div>
-              {#if shardStatsLoading}
-                <div class="flex justify-center py-4" data-testid="shard-stats-loading">
-                  <span class="loading loading-spinner loading-md text-primary"></span>
-                </div>
-              {:else if shardStatsError !== null}
-                <div class="alert alert-error mt-2 text-sm" data-testid="shard-stats-error">
-                  <span>Failed to load shard statistics: {shardStatsError}</span>
-                </div>
-              {:else if shardStats !== null}
-                <table class="table table-sm mt-2">
-                  <tbody>
-                    <tr><th class="w-40">Shard ID</th><td>{shardStats.shardId}</td></tr>
-                    <tr><th>Keys</th><td>{shardStats.keyCount}</td></tr>
-                    <tr><th>Bytes</th><td>{formatBytes(shardStats.byteCount)} ({shardStats.byteCount})</td></tr>
-                    <tr><th>Leader Replica</th><td>{shardStats.leaderId}</td></tr>
-                    <tr><th>Replicas</th><td>{shardStats.replicaCount}</td></tr>
-                  </tbody>
-                </table>
-              {/if}
-            </div>
-          {/if}
           {#if plan.moves.length > 0}
             <div>
               <button class="btn btn-warning btn-sm" onclick={() => (showExecuteConfirm = true)}>
@@ -279,6 +264,56 @@
                 Execute Plan
               </button>
             </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  </div>
+
+  <!-- Shard statistics: any shard by ID, or the shard of a clicked move -->
+  <div class="card bg-base-200 shadow" data-testid="shard-stats-card">
+    <div class="card-body p-5">
+      <h3 class="card-title text-base">Shard Statistics</h3>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="form-control w-full max-w-[160px]">
+          <div class="label"><span class="label-text text-xs">Shard ID</span></div>
+          <input
+            type="number"
+            class="input input-bordered input-sm w-full"
+            min="1"
+            placeholder="Shard ID"
+            aria-label="Shard ID"
+            bind:value={shardIdInput}
+          />
+        </label>
+        <button class="btn btn-primary btn-sm" onclick={handleLoadShardStats} disabled={shardStatsLoading}>
+          Load Stats
+        </button>
+      </div>
+      {#if selectedShardId !== null}
+        <div class="rounded-box bg-base-100 mt-3 p-4" data-testid="shard-stats-panel">
+          <div class="flex items-center justify-between">
+            <h4 class="font-semibold">Shard {selectedShardId} Statistics</h4>
+            <button class="btn btn-ghost btn-xs" onclick={() => (selectedShardId = null)}>Close</button>
+          </div>
+          {#if shardStatsLoading}
+            <div class="flex justify-center py-4" data-testid="shard-stats-loading">
+              <span class="loading loading-spinner loading-md text-primary"></span>
+            </div>
+          {:else if shardStatsError !== null}
+            <div class="alert alert-error mt-2 text-sm" data-testid="shard-stats-error">
+              <span>Failed to load shard statistics: {shardStatsError}</span>
+            </div>
+          {:else if shardStats !== null}
+            <table class="table table-sm mt-2">
+              <tbody>
+                <tr><th class="w-40">Shard ID</th><td>{shardStats.shardId}</td></tr>
+                <tr><th>Keys</th><td>{shardStats.keyCount}</td></tr>
+                <tr><th>Bytes</th><td>{formatBytes(shardStats.byteCount)} ({shardStats.byteCount})</td></tr>
+                <tr><th>Leader Replica</th><td>{shardStats.leaderId}</td></tr>
+                <tr><th>Replicas</th><td>{shardStats.replicaCount}</td></tr>
+              </tbody>
+            </table>
           {/if}
         </div>
       {/if}
