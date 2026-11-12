@@ -246,7 +246,11 @@ convention is the barrier tools' own
 The Go SDK's MCP client always sends `<name>_b64`.
 
 `DatabaseRaftConfig` fields: `clusterMode` (`none|local|distributed`),
-`replicaId`, `raftAddress`, `peers`, `localNodeCount`. **There is no
+`replicaId`, `raftAddress`, `peers`, `localNodeCount`, `stateStorage`
+(`pebble|file|memory`; gRPC `state_storage`, CLI `database create
+--state-storage`). `stateStorage` is set at create only: an unset value takes
+the node's `database_defaults`, and an update keeps the stored value whatever
+it names, since a database's Raft state never moves. **There is no
 `shardId`**: the cluster issues a database's shard ID at create, it never
 changes, and it is reported only as `DatabaseInfo.shardId`. gRPC reserves
 field 2 (`shard_id`) of `DatabaseRaftConfig`; on the JSON transports the key is
@@ -265,6 +269,7 @@ arguments are named alike in both.
 | `raftAddress` | `raft_address` | `raft_address` |
 | `peers` | `raft_peers` (array) | `peers` (array) |
 | `localNodeCount` | `raft_local_node_count` | `local_node_count` |
+| `stateStorage` | `raft_state_storage` | -- (create only) |
 | `discovery` | `discovery_method` | `discovery_method` |
 | `static` | `static_peers` (array), `static_shared_secret` | same |
 | `multicast` | `multicast_shared_secret`, `multicast_group`, `multicast_interface`, `multicast_min_peers`, `multicast_announce_interval`, `multicast_discover_timeout` | same |
