@@ -397,6 +397,12 @@ node. When `--server`'s node cannot list the serving nodes (its status reports
 naming the tenant and sends nothing: unsealing one node could leave the others
 sealed.
 
+A rerun after a partial unseal is safe: a node whose barrier is already open
+checks the credential against the key it holds and reports success when it
+matches, so the rerun unseals the nodes that refused before and reports every
+node OK. A wrong credential is still refused on an open node, which stays
+unsealed.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |

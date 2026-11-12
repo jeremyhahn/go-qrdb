@@ -260,6 +260,46 @@ func TestTenantBarrierUnseal_FansOutToServingNodes(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierUnseal_RerunAfterAPartialFanOut proves a rerun after a
+// partial unseal reports every node unsealed: n2 refuses the first run, and
+// the rerun reaches n1 and n3 again, whose service answers an open barrier
+// under the right credential with success.
+func TestTenantBarrierUnseal_RerunAfterAPartialFanOut(t *testing.T) {
+	n1, n2, n3 := newUnsealRecorder(nil, nil), newUnsealRecorder(nil, nil), newUnsealRecorder(nil, nil)
+	n2.svc.barrierUnsealFn = func(_ context.Context, _ string, key []byte) error {
+		n2.mu.Lock()
+		defer n2.mu.Unlock()
+		n2.unseals = append(n2.unseals, append([]byte(nil), key...))
+		if len(n2.unseals) == 1 {
+			return errors.New("node unavailable")
+		}
+		return nil
+	}
+	nodes := []servingNode{servingNodeOn(t, "n1", n1.svc), servingNodeOn(t, "n2", n2.svc), servingNodeOn(t, "n3", n3.svc)}
+	req := &transport.TenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("credential")}
+
+	_, err := sendToServingNodes(context.Background(), nodes, "the barrier unseal", barrierUnseal(req))
+	var fanOut *BarrierFanOutError
+	if !errors.As(err, &fanOut) || strings.Join(fanOut.Failed, ",") != "n2" {
+		t.Fatalf("first run err = %v; want *BarrierFanOutError naming n2", err)
+	}
+
+	results, err := sendToServingNodes(context.Background(), nodes, "the barrier unseal", barrierUnseal(req))
+	if err != nil {
+		t.Fatalf("rerun err = %v, results = %+v; want every node unsealed", err, results)
+	}
+	for i, addr := range []string{"n1", "n2", "n3"} {
+		if len(results) != 3 || results[i].Node != addr || results[i].Error != "" {
+			t.Fatalf("rerun results = %+v; want n1, n2 and n3 OK", results)
+		}
+	}
+	for name, r := range map[string]*initRecorder{"n1": n1, "n2": n2, "n3": n3} {
+		if len(r.unseals) != 2 {
+			t.Fatalf("%s received %d unseals; want one per run", name, len(r.unseals))
+		}
+	}
+}
+
 func TestTenantBarrierUnseal_SeveralNodesFanOut(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte("credential"))
 	for _, transportType := range []string{transportREST, transportGRPC, transportQUIC, transportMCP} {

@@ -470,8 +470,27 @@ func (s *TenantService) unsealBarrier(ctx context.Context, info *TenantInfo, cre
 	if err != nil {
 		return err
 	}
-	if err := s.registry.UnsealTenantWithStrategy(ctx, info.ID, resolved.Strategy, creds); err != nil {
-		return &BarrierError{TenantID: info.ID, Op: "unseal", Err: err}
+	return s.unsealOutcome(ctx, info.ID, creds, s.registry.UnsealTenantWithStrategy(ctx, info.ID, resolved.Strategy, creds))
+}
+
+// unsealOutcome maps the registry's answer to an unseal. A barrier that is
+// already open is not a refusal of creds: a rerun of a partial fan-out, or
+// the recovery of one restarted replica, reaches replicas an earlier run
+// opened. The credential is still checked against the open barrier's root
+// key, so an open barrier never vouches for a wrong secret.
+func (s *TenantService) unsealOutcome(ctx context.Context, tenantID string, creds seal.Credentials, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, seal.ErrAlreadyUnsealed) {
+		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
+	}
+	tb, err := s.registry.GetTenant(tenantID)
+	if err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
+	}
+	if err := tb.Barrier().VerifyCredentials(ctx, creds); err != nil {
+		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
 	}
 	return nil
 }
@@ -496,8 +515,5 @@ func (s *TenantService) migratedOffNone(tenantID string, stated seal.StrategyID)
 // unsealRegistered unseals tenantID's barrier with the strategy registered
 // under its persisted root key's strategy ID.
 func (s *TenantService) unsealRegistered(ctx context.Context, tenantID string, creds seal.Credentials) error {
-	if err := s.registry.UnsealTenant(ctx, tenantID, creds); err != nil {
-		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
-	}
-	return nil
+	return s.unsealOutcome(ctx, tenantID, creds, s.registry.UnsealTenant(ctx, tenantID, creds))
 }
