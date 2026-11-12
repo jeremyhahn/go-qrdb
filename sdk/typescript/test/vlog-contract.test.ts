@@ -26,6 +26,7 @@ interface CapturedRequest {
     url: string;
     method: string;
     body: unknown;
+    headers: Record<string, string>;
 }
 
 const BASE = 'https://localhost:63002';
@@ -35,7 +36,13 @@ function installMockFetch(responseBody: unknown = {}): CapturedRequest[] {
     vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = typeof input === 'string' ? input : (input as URL).toString();
         const body = init?.body && typeof init.body === 'string' ? JSON.parse(init.body) : undefined;
-        calls.push({ url, method: init?.method ?? 'GET', body });
+        const headers: Record<string, string> = {};
+        if (init?.headers && typeof init.headers === 'object') {
+            for (const [k, v] of Object.entries(init.headers as Record<string, string>)) {
+                headers[k.toLowerCase()] = v;
+            }
+        }
+        calls.push({ url, method: init?.method ?? 'GET', body, headers });
         return new Response(JSON.stringify(responseBody), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -201,6 +208,54 @@ describe('VlogClient — REST wire contract', () => {
 });
 
 type BindingFn = (...args: unknown[]) => Promise<unknown>;
+
+// ---------------------------------------------------------------------------
+// Active-database scope — every /vlog call is data-plane: a databaseScoped()
+// client sends X-QRDB-Database on it, the unscoped client never does.
+// ---------------------------------------------------------------------------
+
+type VlogCall = (vlog: RestClient['vlog']) => Promise<unknown>;
+
+const VLOG_CALLS: ReadonlyArray<[string, string, VlogCall]> = [
+    ['create', '/vlog/log', (v) => v.create({ log: 'events', signingKeyType: 'ed25519' })],
+    ['list', '/vlog/logs', (v) => v.list()],
+    ['append', '/vlog/append', (v) => v.append({ log: 'events', entries: ['YQ=='] })],
+    ['get', '/vlog/entries', (v) => v.get({ log: 'events', from: 0, limit: 1 })],
+    ['proveInclusion', '/vlog/proof/inclusion', (v) => v.proveInclusion({ log: 'events', index: 0, size: 1 })],
+    ['proveConsistency', '/vlog/proof/consistency', (v) => v.proveConsistency({ log: 'events', size1: 1, size2: 2 })],
+    ['head', '/vlog/head', (v) => v.head('events')],
+    ['signHead', '/vlog/head/sign', (v) => v.signHead('events')],
+    ['rotateKey', '/vlog/key/rotate', (v) => v.rotateKey({ log: 'events', signingKeyType: 'ecdsa-p256-sha256' })],
+    ['expireBodies', '/vlog/expire', (v) => v.expireBodies({ log: 'events', cutoff: 1 })],
+];
+
+describe('VlogClient — X-QRDB-Database scope header', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it.each(VLOG_CALLS)('scoped vlog.%s (%s) sends X-QRDB-Database: analytics', async (_name, path, call) => {
+        const client = (await connectedClient()).databaseScoped('analytics');
+        const calls = installMockFetch({});
+
+        await call(client.vlog);
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe(path);
+        expect(calls[0].headers['x-qrdb-database']).toBe('analytics');
+    });
+
+    it.each(VLOG_CALLS)('unscoped vlog.%s (%s) sends no X-QRDB-Database', async (_name, path, call) => {
+        const client = await connectedClient();
+        const calls = installMockFetch({});
+
+        await call(client.vlog);
+
+        expect(calls).toHaveLength(1);
+        expect(new URL(calls[0].url).pathname).toBe(path);
+        expect(calls[0].headers['x-qrdb-database']).toBeUndefined();
+    });
+});
 
 function installVlogBinding(binding: Record<string, BindingFn>): void {
     vi.stubGlobal('window', { go: { main: { VlogBinding: binding } } });
