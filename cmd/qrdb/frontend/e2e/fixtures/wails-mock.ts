@@ -1562,8 +1562,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }
