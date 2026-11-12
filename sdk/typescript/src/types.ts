@@ -490,6 +490,11 @@ export interface BatchRequest {
 export interface BatchResponse {
     /** Per-operation results. */
     readonly responses: readonly OpResponse[];
+    /**
+     * The single store revision every write in the batch committed at (wire
+     * field `revision`). Zero or absent when the batch held no put or delete.
+     */
+    readonly revision?: number;
 }
 
 // ---------------------------------------------------------------------------
