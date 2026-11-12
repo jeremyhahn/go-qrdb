@@ -112,6 +112,26 @@
   let aggLoading: boolean = $state(false);
   let aggRan: boolean = $state(false);
 
+  // Rich query card
+  interface RichGroup {
+    tags: readonly TSTag[];
+    points: readonly TSDataPoint[];
+    aggregatedValue?: number;
+  }
+  interface RichResult {
+    points: readonly TSDataPoint[];
+    aggregatedValue?: number;
+    groupedResults: RichGroup[];
+  }
+  let rqTags: string = $state("");
+  let rqAggregation: number = $state(0);
+  let rqInterval: string = $state("");
+  let rqGroupBy: string = $state("");
+  let rqLimit: string = $state("");
+  let rqPercentile: string = $state("95");
+  let rqResult: RichResult | null = $state(null);
+  let rqLoading: boolean = $state(false);
+
   const aggChartData = $derived(
     aggResults.map((b) => ({
       timestamp: Math.round(b.timestampNs / 1_000_000),
@@ -273,6 +293,55 @@
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  async function runRichQuery(): Promise<void> {
+    if (selectedMetric === null) return;
+    const intervalNs = parseDurationNs(rqInterval);
+    if (rqInterval.trim() !== "" && intervalNs === null) {
+      showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
+      return;
+    }
+    const limit = rqLimit.trim() === "" ? null : parseInt(rqLimit, 10);
+    if (limit !== null && (Number.isNaN(limit) || limit < 0)) {
+      showToast("warning", "Limit must be a non-negative integer.");
+      return;
+    }
+    const percentile = rqAggregation === 6 ? parseFloat(rqPercentile) : null;
+    if (percentile !== null && (Number.isNaN(percentile) || percentile < 0 || percentile > 100)) {
+      showToast("warning", "Percentile must be between 0 and 100.");
+      return;
+    }
+    const tags = parseTags(rqTags);
+    const groupBy = rqGroupBy.split(",").map((s) => s.trim()).filter((s) => s !== "");
+    rqLoading = true;
+    try {
+      const resp = await client.timeSeries!.richQuery({
+        metric: selectedMetric,
+        startNs: rangeStartMs * 1_000_000,
+        endNs: rangeEndMs * 1_000_000,
+        ...(tags.length > 0 ? { tags } : {}),
+        ...(rqAggregation !== 0 ? { aggregation: rqAggregation as AggFunc } : {}),
+        ...(intervalNs !== null ? { intervalNs } : {}),
+        ...(groupBy.length > 0 ? { groupBy } : {}),
+        ...(limit !== null ? { limit } : {}),
+        ...(percentile !== null ? { percentile } : {}),
+      });
+      rqResult = {
+        points: resp?.points ?? [],
+        ...(resp?.aggregatedValue !== undefined ? { aggregatedValue: resp.aggregatedValue } : {}),
+        groupedResults: (resp?.groupedResults ?? []).map((g) => ({
+          tags: g.tags ?? [],
+          points: g.points ?? [],
+          ...(g.aggregatedValue !== undefined ? { aggregatedValue: g.aggregatedValue } : {}),
+        })),
+      };
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+      rqResult = null;
+    } finally {
+      rqLoading = false;
+    }
+  }
 
   async function runAggregate(): Promise<void> {
     if (selectedMetric === null) return;
@@ -738,6 +807,131 @@
             </tbody>
           </table>
         {/if}
+      {/if}
+    </div>
+
+    <!-- Rich query -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-rich-card">
+      <h3 class="mb-3 text-sm font-semibold">Rich query</h3>
+      <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Tag filters</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="host=node1,region=us-east"
+            bind:value={rqTags}
+            data-testid="ts-rich-tags"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Aggregation</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={rqAggregation}
+            data-testid="ts-rich-aggregation"
+          >
+            {#each AGG_FUNC_NAMES as name, i (name)}
+              <option value={i}>{name}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Interval</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="e.g. 5m"
+            bind:value={rqInterval}
+            data-testid="ts-rich-interval"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Group by tags</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="host,region"
+            bind:value={rqGroupBy}
+            data-testid="ts-rich-groupby"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Limit</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="no limit"
+            bind:value={rqLimit}
+            data-testid="ts-rich-limit"
+          />
+        </label>
+        {#if rqAggregation === 6}
+          <label class="form-control">
+            <div class="label"><span class="label-text">Percentile</span></div>
+            <input
+              type="text"
+              class="input input-bordered input-sm font-mono"
+              placeholder="95"
+              bind:value={rqPercentile}
+              data-testid="ts-rich-percentile"
+            />
+          </label>
+        {/if}
+      </div>
+      <div class="mt-3 flex items-center gap-3">
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={runRichQuery}
+          disabled={rqLoading}
+          data-testid="ts-rich-run"
+        >
+          {#if rqLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Run rich query
+        </button>
+        <span class="text-xs text-base-content/50">Uses the selected time range.</span>
+      </div>
+
+      {#if rqResult}
+        <div class="mt-4 space-y-3" data-testid="ts-rich-result">
+          {#if rqResult.aggregatedValue !== undefined}
+            <div class="text-sm">
+              Aggregated value:
+              <span class="font-mono" data-testid="ts-rich-aggregated">{rqResult.aggregatedValue}</span>
+            </div>
+          {/if}
+          <div class="text-sm" data-testid="ts-rich-point-count">{rqResult.points.length} points</div>
+          {#if rqResult.points.length > 0}
+            <table class="table table-sm" data-testid="ts-rich-points">
+              <thead><tr><th>Timestamp</th><th class="text-right">Value</th><th>Tags</th></tr></thead>
+              <tbody>
+                {#each rqResult.points as p, i (`${p.timestampNs}-${i}`)}
+                  <tr>
+                    <td class="font-mono text-xs">{p.timestampNs}</td>
+                    <td class="text-right font-mono">{p.value}</td>
+                    <td class="font-mono text-xs">{formatTags(p.tags ?? [])}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+          {#if rqResult.groupedResults.length > 0}
+            <table class="table table-sm" data-testid="ts-rich-groups">
+              <thead>
+                <tr><th>Group</th><th class="text-right">Points</th><th class="text-right">Aggregated</th></tr>
+              </thead>
+              <tbody>
+                {#each rqResult.groupedResults as g, i (i)}
+                  <tr data-testid="ts-rich-group-row">
+                    <td class="font-mono text-xs">{formatTags(g.tags)}</td>
+                    <td class="text-right font-mono">{g.points.length}</td>
+                    <td class="text-right font-mono">{g.aggregatedValue ?? ""}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
       {/if}
     </div>
   {/if}
