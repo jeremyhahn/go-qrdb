@@ -12542,8 +12542,12 @@ func (x *GetUserByEmailRequest) GetEmail() string {
 // GetUserByCertThumbprintRequest resolves a user by an mTLS certificate's
 // SPKI thumbprint via the secondary index.
 type GetUserByCertThumbprintRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Thumbprint    string                 `protobuf:"bytes,1,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Thumbprint string                 `protobuf:"bytes,1,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	// tenant_id names the tenant to resolve the thumbprint in; empty is the
+	// caller's own. Another tenant is an operator access, gated on that
+	// tenant's isolation policy and recorded in both trails.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12581,6 +12585,13 @@ func (*GetUserByCertThumbprintRequest) Descriptor() ([]byte, []int) {
 func (x *GetUserByCertThumbprintRequest) GetThumbprint() string {
 	if x != nil {
 		return x.Thumbprint
+	}
+	return ""
+}
+
+func (x *GetUserByCertThumbprintRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -35753,11 +35764,12 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\busername\x18\x02 \x01(\tR\busername\"J\n" +
 	"\x15GetUserByEmailRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
-	"\x05email\x18\x02 \x01(\tR\x05email\"@\n" +
+	"\x05email\x18\x02 \x01(\tR\x05email\"]\n" +
 	"\x1eGetUserByCertThumbprintRequest\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x01 \x01(\tR\n" +
-	"thumbprint\"\x93\x01\n" +
+	"thumbprint\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"\x93\x01\n" +
 	"\x15AddCertBindingRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1e\n" +
 	"\n" +

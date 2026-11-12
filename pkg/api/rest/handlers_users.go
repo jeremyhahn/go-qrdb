@@ -502,6 +502,10 @@ func (s *Server) handleLookupUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetUserByCertThumbprint(w http.ResponseWriter, r *http.Request, thumbprint string) {
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
+	ctx, ok := s.operatorTenantContext(ctx, w, r.URL.Query().Get("tenantID"), permission.UsersReadTenant)
+	if !ok {
+		return
+	}
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, thumbprint)
 	if err != nil {

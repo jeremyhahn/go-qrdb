@@ -3258,6 +3258,10 @@ message GetUserByEmailRequest {
 // SPKI thumbprint via the secondary index.
 message GetUserByCertThumbprintRequest {
     string thumbprint = 1;
+    // tenant_id names the tenant to resolve the thumbprint in; empty is the
+    // caller's own. Another tenant is an operator access, gated on that
+    // tenant's isolation policy and recorded in both trails.
+    string tenant_id = 2;
 }
 
 // AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.

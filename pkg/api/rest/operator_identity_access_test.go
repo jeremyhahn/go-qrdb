@@ -145,6 +145,20 @@ func TestOperatorIdentityAccess_UserOperationsRefusedUnderStrict(t *testing.T) {
 	}
 }
 
+func TestOperatorIdentityAccess_CertThumbprintLookupGated(t *testing.T) {
+	srv, sink := newOperatorServer(t, tenant.TenantIsolationPolicyStrict)
+	rec := serveOperator(srv, http.MethodGet, "/users/by-cert-thumbprint/abc?tenantID=acme", "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("thumbprint lookup on a strict tenant = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	// The built-in system Admin does not hold the route's
+	// users:get_by_cert_thumbprint, so the route refuses before the gate and
+	// nothing reaches either trail.
+	if trails := sink.operatorTrails(); len(trails) != 0 {
+		t.Fatalf("operator access recorded in %v before the route admitted it", trails)
+	}
+}
+
 // boundRoleService records the tenant every call runs under.
 func boundRoleService(seen *[]string) *mockRoleService {
 	rec := func(ctx context.Context) { *seen = append(*seen, tenant.FromContext(ctx)) }

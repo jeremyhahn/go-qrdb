@@ -72,6 +72,7 @@ type getUserByEmailWireRequest struct {
 // user.GetByCertThumbprint.
 type getUserByCertThumbprintWireRequest struct {
 	Thumbprint string `json:"thumbprint"`
+	TenantID   string `json:"tenantID,omitempty"`
 }
 
 // addCertBindingWireRequest is the JSON wire payload for user.AddCertBinding.
@@ -382,6 +383,10 @@ func (s *Server) handleGetUserByCertThumbprint(ctx context.Context, payload []by
 	var req getUserByCertThumbprintWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+	ctx, err := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if err != nil {
+		return nil, err
 	}
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, req.Thumbprint)

@@ -138,6 +138,10 @@ func (s *qrdbServiceServer) GetUserByCertThumbprint(ctx context.Context, req *pb
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, req.GetThumbprint())
 	if err != nil {
