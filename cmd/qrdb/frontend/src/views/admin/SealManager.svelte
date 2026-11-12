@@ -198,6 +198,8 @@
   let enableInProgress: boolean = $state(false);
   let enableSuccess: boolean = $state(false);
   let enableSealedAfter: boolean = $state(false);
+  // Strategy the migration ended on (a sealed server reports no strategy).
+  let enabledStrategy: string = $state("");
   let enablePollTimer: ReturnType<typeof setInterval> | null = null;
 
   // ---------------------------------------------------------------------------
@@ -486,13 +488,13 @@
   /**
    * Polls the seal status until it reports a keyed strategy, signalling that
    * the migration has completed. A system-scope migration recycles the data
-   * plane in-process and comes back SEALED under the new keyed strategy (the
-   * barrier self-describes its persisted strategy while sealed), so
-   * {sealed: true, strategy: "passphrase"|"shamir"} is the real completion
-   * signal — the operator must then unseal with the new credential. A
-   * tenant-scope migration does not seal, so a keyed strategy with
-   * sealed: false is equally terminal. Transient status errors during the
-   * recycle are ignored.
+   * plane in-process and comes back SEALED under the new keyed strategy. A
+   * sealed barrier does not report its strategy (status.strategy is ""), so
+   * {sealed: true} after the migration started is the completion signal and
+   * the requested strategy is shown — the operator must then unseal with the
+   * new credential. A tenant-scope migration does not seal, so a keyed
+   * strategy with sealed: false is equally terminal. Transient status errors
+   * during the recycle are ignored.
    */
   function startEnablePolling(): void {
     stopEnablePolling();
@@ -501,11 +503,13 @@
         try {
           const status = await client.seal.status();
           updateSealStatus(status);
-          if (status.strategy !== "none" && status.strategy !== "") {
+          const keyed = status.strategy !== "none" && status.strategy !== "";
+          if (keyed || status.sealed) {
             stopEnablePolling();
             enableInProgress = false;
             enableSuccess = true;
             enableSealedAfter = status.sealed;
+            enabledStrategy = keyed ? status.strategy : enableStrategy;
             showToast("success", "Encryption enabled successfully");
           }
         } catch {
@@ -1113,7 +1117,7 @@
                 <CheckCircle class="h-5 w-5 shrink-0" />
                 <span class="text-sm">
                   Encryption enabled. This barrier now uses the
-                  <strong>{sealStore.strategy}</strong> strategy.
+                  <strong>{enabledStrategy}</strong> strategy.
                 </span>
               </div>
               {#if enableSealedAfter}

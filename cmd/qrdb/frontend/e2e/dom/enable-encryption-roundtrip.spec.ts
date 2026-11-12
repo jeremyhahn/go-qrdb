@@ -34,12 +34,17 @@ let daemon: DomDaemon | null = null;
  * REST endpoint. The strategy comes from server config; the secret is
  * ignored by the none strategy but the endpoint requires a non-empty one.
  */
+const SO_PIN = "dom-so-pin-1";
+const USER_PIN = "dom-user-pin-1";
+
 async function initializeNoneBarrier(d: DomDaemon): Promise<void> {
   const https = await import("https");
   await new Promise<void>((resolve, reject) => {
-    const body = JSON.stringify({ secret: "none-strategy-ignores-this" });
+    // The barrier route refuses initialization (409, use qrdb init); the
+    // ceremony route is the one entry point and needs the SO PIN and user PIN.
+    const body = JSON.stringify({ so_pin: SO_PIN, user_pin: USER_PIN, admin_generate: true });
     const req = https.default.request(
-      `${d.adminUrl}/v1/barrier/initialize`,
+      `${d.adminUrl}/v1/ceremony/initialize`,
       {
         method: "POST",
         rejectUnauthorized: false,
@@ -48,7 +53,7 @@ async function initializeNoneBarrier(d: DomDaemon): Promise<void> {
       (res) => {
         res.resume();
         if (res.statusCode && res.statusCode < 300) resolve();
-        else reject(new Error(`barrier initialize returned ${res.statusCode}`));
+        else reject(new Error(`ceremony initialize returned ${res.statusCode}`));
       },
     );
     req.on("error", reject);
@@ -97,9 +102,9 @@ test("none -> passphrase migration through the Seal Manager preserves data", asy
 
   // The real migration runs (journalled copy -> verify -> swap -> adopt),
   // then the daemon recycles the data plane in-process and comes back SEALED
-  // under the new passphrase strategy. The recycled barrier self-describes
-  // its persisted strategy while sealed, so the wizard's status poll sees
-  // {sealed: true, strategy: "passphrase"} and flips to the success state.
+  // under the new passphrase strategy. A sealed barrier reports no strategy,
+  // so the wizard's status poll takes {sealed: true} as completion and shows
+  // the strategy it requested.
   await expect(page.getByTestId("enable-encryption-success")).toBeVisible({
     timeout: MIGRATE_TIMEOUT,
   });
