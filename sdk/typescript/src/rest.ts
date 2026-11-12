@@ -1756,12 +1756,22 @@ export class RestClient implements Client {
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
-                const stats = await this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
+                // The wire (vectorIndexStatsResponse) names the sizes
+                // memory_usage_bytes and index_size_bytes.
+                const stats = await this.fetchJSON<IndexStats & {
+                    memoryUsageBytes?: number;
+                    indexSizeBytes?: number;
+                }>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
                 );
-                return normalizeVectorEnumFields(stats);
+                const { memoryUsageBytes, indexSizeBytes, ...rest } = stats;
+                return normalizeVectorEnumFields({
+                    ...rest,
+                    memoryUsage: memoryUsageBytes ?? stats.memoryUsage ?? 0,
+                    diskUsage: indexSizeBytes ?? stats.diskUsage ?? 0,
+                });
             },
             compactNamespace: async (
                 req: CompactNamespaceRequest,
