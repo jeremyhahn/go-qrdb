@@ -16,6 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, ClusterMigration, CeremonyStatusResponse } from "@qrdb/sdk";
+  import { TransportError } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -38,6 +39,14 @@
   let clusterSeal: ClusterSeal | null = $state(null);
   let clusterMigration: ClusterMigration | null = $state(null);
   let clusterUnsealLoading: boolean = $state(false);
+  // True while this node answers status with 503 SEALED: unsealed, but held
+  // by a cluster seal (or cut off from the seal records).
+  let clusterHeld: boolean = $state(false);
+
+  /** Status refused with 503 SEALED: the gate is closed on an unsealed barrier. */
+  function isClusterHeldError(err: unknown): boolean {
+    return err instanceof TransportError && err.statusCode === 503 && err.message.includes('"code":"SEALED"');
+  }
 
   // Change passphrase form state (passphrase-held barriers).
   let cpCurrent: string = $state("");
@@ -158,6 +167,9 @@
    */
   let encryptionConfigured = $derived(
     sealStore.sealed ||
+    // Only a keyed barrier can be held by a cluster seal; the held node
+    // reports no strategy.
+    clusterHeld ||
     sealStore.strategy === "passphrase" ||
       sealStore.strategy === "shamir" ||
       sealStore.sharesRequired > 0 ||
@@ -213,7 +225,20 @@
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
       clusterMigration = status.clusterMigration ?? null;
+      clusterHeld = false;
     } catch (err: unknown) {
+      if (isClusterHeldError(err)) {
+        // The node barrier is unsealed (a sealed node answers status through
+        // its sealed-window listener), but a cluster seal holds the node or
+        // it cannot confirm the seal records: it answers no status question
+        // and admits only the authenticated cluster unseal. Offer that, with
+        // no record: only a serving node reports one.
+        sealStore.sealed = false;
+        clusterHeld = true;
+        clusterSeal = { active: true, sealed: true, epoch: 0 };
+        clusterMigration = null;
+        return;
+      }
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";
       showToast("error", msg);
     } finally {
@@ -846,10 +871,17 @@
         {#if clusterSeal?.active}
           <div class="divider my-2"></div>
           <div data-testid="cluster-seal-status">
-            <p class="text-sm">
-              Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
-              (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
-            </p>
+            {#if clusterHeld}
+              <p class="text-sm" data-testid="cluster-seal-held">
+                Cluster seal: this node is unsealed but not serving. A cluster seal holds it, or it cannot
+                confirm the seal records; read the record from a serving node.
+              </p>
+            {:else}
+              <p class="text-sm">
+                Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
+                (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
+              </p>
+            {/if}
             {#if clusterSeal.principal || clusterSeal.node || clusterSeal.at}
               <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm mt-2" data-testid="cluster-seal-record">
                 {#if clusterSeal.principal}
