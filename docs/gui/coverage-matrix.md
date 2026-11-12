@@ -27,13 +27,13 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Backup | `list` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `restore` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `verify` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
-| Batch | `availableCodecs` | none | none | not in UI; *verified* |
+| Batch | `availableCodecs` | views/user/BatchView.svelte (display only; no SDK codec option yet) | batch.spec.ts | *verified* |
 | Batch | `availableImportFormats` | views/user/BatchView.svelte  | batch-import.spec.ts  |  |
 | Batch | `execute` | views/user/BatchView.svelte | batch.spec.ts batch-advanced.spec.ts | *verified* |
 | Batch | `importFile` | views/user/BatchView.svelte | batch-import.spec.ts | *verified* |
 | Ceremony | `initialize` | components/ConnectionManager.svelte components/ServerInitWizard.svelte | ceremony-init-wizard.spec.ts | *verified* |
-| Ceremony | `signCSR` | none | none | not in UI; *verified* |
-| Ceremony | `status` | none (hits are `seal.status` / `admin.status`) | none | not in UI; *verified* |
+| Ceremony | `signCSR` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
+| Ceremony | `status` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
 | Cert | `enrollCert` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `export` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `issueCert` | views/admin/CertManager.svelte  | admin-certs.spec.ts  |  |
@@ -50,9 +50,9 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Collection | `listDocuments` | views/user/CollectionView.svelte | collections-crud.spec.ts (documents appear in the list) | *verified* |
 | Collection | `updateDocument` | views/user/CollectionView.svelte | collection-advanced.spec.ts | *verified* |
 | Connection | `connect` | App.svelte | web-mode-smoke.spec.ts (boot path) | UI *verified* |
-| Connection | `disconnect` | none (hits are `connectionManager.disconnect`) | none | not in UI; *verified* |
+| Connection | `disconnect` | views/admin/Settings.svelte | admin-settings-connection.spec.ts | *verified* |
 | Connection | `getVersion` | views/admin/Settings.svelte views/MainApp.svelte  | real-backend/sdk-wire-format.spec.ts  |  |
-| Connection | `isConnected` | none | none | not in UI; *verified* |
+| Connection | `isConnected` | views/admin/Settings.svelte | admin-settings-connection.spec.ts | *verified* |
 | ConnectionManager | `connect` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
 | ConnectionManager | `deleteProfile` | stores/connection-manager.svelte.ts | none (the spec only checks the built-in profile has no delete button) | no e2e; *verified* |
 | ConnectionManager | `disconnect` | stores/connection-manager.svelte.ts | none | no e2e; *verified* |
@@ -154,16 +154,16 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Role | `unassign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `update` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | SQL | `query` | views/user/SQLBrowserScoped.svelte | sql-browser.spec.ts dom/sql-browser-roundtrip.spec.ts | *verified* |
-| Seal | `changePassphrase` | none | none | not in UI; *verified* |
-| Seal | `clusterUnseal` | views/admin/SealManager.svelte | none | no e2e; *verified* |
+| Seal | `changePassphrase` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
+| Seal | `clusterUnseal` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
 | Seal | `enableEncryption` | views/admin/SealManager.svelte views/admin/TenantManager.svelte | web-mode-enable-encryption.spec.ts web-mode-tenant-enable-encryption.spec.ts | *verified* |
 | Seal | `initialize` | views/admin/SealManager.svelte (re-initialise) | admin-seal.spec.ts | *verified* |
 | Seal | `initializeShamir` | views/admin/SealManager.svelte | admin-seal.spec.ts | UI *verified* |
 | Seal | `seal` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
 | Seal | `status` | App.svelte views/MainApp.svelte views/admin/SealManager.svelte stores/connection-manager.svelte.ts | admin-seal.spec.ts unseal.spec.ts | *verified* |
 | Seal | `unseal` | App.svelte views/admin/SealManager.svelte | unseal.spec.ts admin-seal.spec.ts | *verified* |
-| ServerConfig | `initialized` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| ServerConfig | `isEmbeddedAvailable` | none (hit is `connectionManager.isEmbeddedAvailable`) | none | not in UI; *verified* |
+| ServerConfig | `initialized` | views/admin/Settings.svelte | admin-settings-connection.spec.ts | *verified* |
+| ServerConfig | `isEmbeddedAvailable` | views/admin/Settings.svelte | admin-settings-connection.spec.ts | *verified* |
 | Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `barrierInit` | views/admin/TenantManager.svelte  | real-backend/per-tenant-barrier.spec.ts  |  |
 | Tenant | `barrierStatus` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
@@ -234,13 +234,13 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | surface | fields | UI display | Playwright spec | gap |
 |---|---|---|---|---|
 | /health (`admin.health`) | status, isLeader | views/admin/Dashboard.svelte (status badge, Leader/Follower) | admin-dashboard.spec.ts | *verified* |
-| /status (`admin.status`) | nodeId, raftAddress, isLeader, leaderId, shardCount, isDraining, shards | views/admin/Dashboard.svelte (all but `shards`) | admin-dashboard.spec.ts | per-shard `shards` not shown; *verified* |
+| /status (`admin.status`) | nodeId, raftAddress, isLeader, leaderId, shardCount, isDraining, shards | views/admin/Dashboard.svelte (all fields; Shards card) | admin-dashboard.spec.ts | *verified* |
 | /peers (`admin.peers`) | shards[].shardId, peers[].replicaId, address, isLeader | views/admin/Cluster.svelte (shard, replica, address table) | admin-cluster.spec.ts | *verified* |
-| /capabilities (`admin.capabilities`) | kv, mvcc, transaction, batch, watch, lease, index, timeSeries, vector | views/admin/Dashboard.svelte (feature list); stores/capabilities.svelte.ts gates views | admin-dashboard.spec.ts admin-views.spec.ts | `index` missing from the Dashboard list; *verified* |
+| /capabilities (`admin.capabilities`) | kv, mvcc, transaction, batch, watch, lease, index, timeSeries, vector | views/admin/Dashboard.svelte (feature list); stores/capabilities.svelte.ts gates views | admin-dashboard.spec.ts admin-views.spec.ts | *verified* |
 | cluster/raft topology (`admin.getTopology`) | nodeId, raftAddress, shardCount, shards[].shardId, replicaId, leaderId, replicas | views/admin/Topology.svelte (per-shard table) | admin-topology.spec.ts dom/cluster-topology.spec.ts | *verified* |
 | shard balance (`rebalance.getImbalanceReport`) | imbalance score, nodes, hotspots | views/admin/RebalancePanel.svelte (stat cards) | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | seal state (`seal.status`) | sealed, initialized, strategy, sharesRequired, sharesProvided, sharesTotal | App.svelte (unseal gate), views/admin/SealManager.svelte (stats) | admin-seal.spec.ts unseal.spec.ts | *verified* |
-| cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (sealed/clear, epoch, local only) | none | principal, node, at not shown; `clusterMigration` progress not shown; no e2e; *verified* |
+| cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (all fields) | admin-seal.spec.ts | `clusterMigration` not in the SDK type; *verified* |
 | ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
 | metrics (/metrics) | Prometheus exposition | none: the SDK has no metrics method | none | not in SDK, not in UI; *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 199 | 194 |
+| operations | 218 | 207 | 203 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 19. In UI without e2e: 5. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 11. In UI without e2e: 4. Displays with a partial field gap: 0 (cluster seal `clusterMigration` waits on an SDK field).
