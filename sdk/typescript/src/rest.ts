@@ -666,7 +666,7 @@ export class RestClient implements Client {
                 // Attempt to retrieve server version from status endpoint.
                 try {
                     const status = await this.fetchJSON<StatusResponse>('/status');
-                    this.serverVersion = status.nodeId ?? '';
+                    this.serverVersion = status.version ?? '';
                 } catch {
                     // Non-fatal: version remains empty.
                 }

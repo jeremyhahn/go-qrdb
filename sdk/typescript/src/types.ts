@@ -26,6 +26,8 @@ export interface HealthResponse {
 
 /** Detailed host and shard status information. */
 export interface StatusResponse {
+    /** Build version of the server binary (what its --version prints). */
+    readonly version: string;
     /** Unique identifier for this node. */
     readonly nodeId: string;
     /** Raft transport address of this node. */
