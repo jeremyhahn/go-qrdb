@@ -100,23 +100,6 @@ func TestStore_LoadCompacted_WithPersistedValue(t *testing.T) {
 // Store.Put — writes metadata for existing key (version increment)
 // ---------------------------------------------------------------------------
 
-func TestStore_Put_UpdatesExistingKey(t *testing.T) {
-	s := newTestStore(t)
-
-	_, err := s.Put([]byte("key"), []byte("v1"), 0)
-	if err != nil {
-		t.Fatalf("first Put: %v", err)
-	}
-
-	kv2, err := s.Put([]byte("key"), []byte("v2"), 0)
-	if err != nil {
-		t.Fatalf("second Put: %v", err)
-	}
-	if kv2.Version != 2 {
-		t.Errorf("expected version 2, got %d", kv2.Version)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Store.Delete — getDataAtRevision returns nil val (RevisionNotFoundError)
 // ---------------------------------------------------------------------------

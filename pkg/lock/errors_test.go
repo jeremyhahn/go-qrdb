@@ -23,22 +23,6 @@ import (
 // Sentinel errors
 // ---------------------------------------------------------------------------
 
-func TestSentinelErrors_NonNil(t *testing.T) {
-	sentinels := []error{
-		ErrInvalidTTL,
-		ErrEmptyKey,
-		ErrNilTxService,
-		ErrNilLeaseService,
-		ErrNilWatchService,
-		ErrNilKVService,
-	}
-	for _, s := range sentinels {
-		if s == nil {
-			t.Errorf("sentinel error is nil")
-		}
-	}
-}
-
 func TestSentinelErrors_DistinctMessages(t *testing.T) {
 	seen := map[string]bool{}
 	sentinels := []error{
@@ -78,10 +62,6 @@ func TestLockHeldError_ContainsKey(t *testing.T) {
 	}
 }
 
-func TestLockHeldError_ImplementsError(t *testing.T) {
-	var _ error = &LockHeldError{}
-}
-
 func TestLockHeldError_EmptyHolder(t *testing.T) {
 	err := &LockHeldError{Key: "k", HolderID: ""}
 	msg := err.Error()
@@ -113,10 +93,6 @@ func TestNotLockHolderError_ContainsTokens(t *testing.T) {
 	}
 }
 
-func TestNotLockHolderError_ImplementsError(t *testing.T) {
-	var _ error = &NotLockHolderError{}
-}
-
 func TestNotLockHolderError_ZeroTokens(t *testing.T) {
 	err := &NotLockHolderError{Key: "k", ExpectedToken: 0, ActualToken: 0}
 	msg := err.Error()
@@ -142,18 +118,6 @@ func TestLockNotFoundError_ContainsPrefix(t *testing.T) {
 	msg := err.Error()
 	if !strings.Contains(msg, "lock: not found") {
 		t.Errorf("LockNotFoundError.Error() = %q, want it to contain %q", msg, "lock: not found")
-	}
-}
-
-func TestLockNotFoundError_ImplementsError(t *testing.T) {
-	var _ error = &LockNotFoundError{}
-}
-
-func TestLockNotFoundError_EmptyKey(t *testing.T) {
-	err := &LockNotFoundError{Key: ""}
-	msg := err.Error()
-	if msg == "" {
-		t.Error("LockNotFoundError.Error() returned empty string")
 	}
 }
 

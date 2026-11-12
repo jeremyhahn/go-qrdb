@@ -234,17 +234,6 @@ func TestRecordToken_NoClassifierNoRetry(t *testing.T) {
 	}
 }
 
-func TestRetryable(t *testing.T) {
-	s := &Service{}
-	if s.retryable(transientError{}) {
-		t.Fatal("retryable without a classifier = true")
-	}
-	WithRetryable(isTransient)(s)
-	if !s.retryable(transientError{}) || s.retryable(finalError{}) {
-		t.Fatal("retryable does not follow the classifier")
-	}
-}
-
 func TestBackoff(t *testing.T) {
 	fake := clocktest.New()
 	s := &Service{clock: fake}

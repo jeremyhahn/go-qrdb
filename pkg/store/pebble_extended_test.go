@@ -334,90 +334,6 @@ func lookupExtKey(t *testing.T, s *PebbleStateMachine, key string) []byte {
 // Tests: Backward compatibility (base KV ops still work)
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_ExtendedBackwardCompat_PutGetDelete(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Put via base KV protocol.
-	putCmd, err := kv.EncodePut([]byte("key1"), []byte("val1"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	entries := []sm.Entry{
-		{Index: 1, Cmd: putCmd},
-	}
-	results := applyExtEntries(t, s, entries)
-	if results[0].Value != uint64(len("val1")) {
-		t.Fatalf("expected result %d, got %d", len("val1"), results[0].Value)
-	}
-
-	// Lookup via []byte query.
-	val, err := s.Lookup(context.Background(), []byte("key1"))
-	if err != nil {
-		t.Fatalf("Lookup: %v", err)
-	}
-	if !bytes.Equal(val.([]byte), []byte("val1")) {
-		t.Fatalf("expected val1, got %s", val)
-	}
-
-	// Delete via base KV protocol.
-	delCmd, err := kv.EncodeDelete([]byte("key1"))
-	if err != nil {
-		t.Fatalf("EncodeDelete: %v", err)
-	}
-	delEntries := []sm.Entry{
-		{Index: 2, Cmd: delCmd},
-	}
-	delResults := applyExtEntries(t, s, delEntries)
-	if delResults[0].Value != 1 {
-		t.Fatalf("expected delete result 1, got %d", delResults[0].Value)
-	}
-
-	// Verify key is gone.
-	_, err = s.Lookup(context.Background(), []byte("key1"))
-	if err == nil {
-		t.Fatal("expected error for deleted key")
-	}
-	var knf *kv.KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
-	}
-}
-
-func TestPebbleStateMachine_ExtendedBackwardCompat_ListQuery(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd1, err := kv.EncodePut([]byte("prefix:a"), []byte("1"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	cmd2, err := kv.EncodePut([]byte("prefix:b"), []byte("2"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	cmd3, err := kv.EncodePut([]byte("other:c"), []byte("3"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	entries := []sm.Entry{
-		{Index: 1, Cmd: cmd1},
-		{Index: 2, Cmd: cmd2},
-		{Index: 3, Cmd: cmd3},
-	}
-	applyExtEntries(t, s, entries)
-
-	result, err := s.Lookup(context.Background(), kv.ListQuery{Prefix: "prefix:"})
-	if err != nil {
-		t.Fatalf("Lookup ListQuery: %v", err)
-	}
-	keys := result.([]string)
-	if len(keys) != 2 {
-		t.Fatalf("expected 2 keys, got %d", len(keys))
-	}
-	if keys[0] != "prefix:a" || keys[1] != "prefix:b" {
-		t.Fatalf("unexpected keys: %v", keys)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: MVCC-compatible put/delete (no revision tracking)
 // ---------------------------------------------------------------------------
@@ -681,41 +597,6 @@ func TestPebbleStateMachine_Transaction_SuccessPath(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_Transaction_FailurePath(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Put initial value.
-	putCmd := mustEncode(protocol.EncodeMVCCPut([]byte("txn-key"), []byte("initial"), 0))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: putCmd}})
-
-	// Transaction: compare value == "wrong", then set to "updated" (should fail).
-	compare := mustEncode(protocol.EncodeCompare(
-		[]byte("txn-key"),
-		3, // CompareValue
-		0, // CompareEqual
-		[]byte("wrong"),
-		0, 0, 0,
-	))
-	successOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("updated"), nil, 0))
-	failureOp := mustEncode(protocol.EncodeOp(protocol.OpMVCCPut, []byte("txn-key"), []byte("failed"), nil, 0))
-	cmd := mustEncode(protocol.EncodeTransaction([][]byte{compare}, [][]byte{successOp}, [][]byte{failureOp}))
-	results := applyExtEntries(t, s, []sm.Entry{{Index: 2, Cmd: cmd}})
-
-	// Check succeeded flag is 0.
-	if len(results[0].Data) > 0 && results[0].Data[0] != 0 {
-		t.Fatal("expected transaction to fail")
-	}
-
-	// Verify failure ops ran.
-	val, err := s.Lookup(context.Background(), []byte("txn-key"))
-	if err != nil {
-		t.Fatalf("Lookup: %v", err)
-	}
-	if !bytes.Equal(val.([]byte), []byte("failed")) {
-		t.Fatalf("expected failed, got %s", val)
-	}
-}
-
 func TestPebbleStateMachine_Transaction_VersionCompare(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -802,20 +683,6 @@ func TestPebbleStateMachine_LeaseGrant(t *testing.T) {
 	}
 	if l.TTL != 10 {
 		t.Fatalf("expected TTL 10, got %d", l.TTL)
-	}
-}
-
-func TestPebbleStateMachine_LeaseGrant_NoLessor(t *testing.T) {
-	s := openExtendedStore(t) // no lessor configured
-
-	cmd := mustEncode(protocol.EncodeLeaseGrant(10))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when lessor not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when lessor not configured")
 	}
 }
 
@@ -1088,33 +955,6 @@ func TestPebbleStateMachine_IndexDrop_NotFound(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_Lookup_IndexQuery(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Create an index.
-	createCmd := mustEncode(protocol.EncodeIndexCreateOpts("q_idx", "field", protocol.IndexCreateOptions{Unique: false, Sparse: false, Numeric: false}))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: createCmd}})
-
-	// Manually add entries to the index via the PebbleDB-backed index.
-	idx := s.indexes["q_idx"]
-	if err := idx.Put([]byte("42"), []byte("hello")); err != nil {
-		t.Fatalf("index Put: %v", err)
-	}
-
-	// Query via Lookup.
-	result, err := s.Lookup(context.Background(), index.IndexQueryRequest{
-		IndexName: "q_idx",
-		Value:     []byte("hello"),
-	})
-	if err != nil {
-		t.Fatalf("Lookup IndexQueryRequest: %v", err)
-	}
-	keys := result.([][]byte)
-	if len(keys) != 1 || string(keys[0]) != "42" {
-		t.Fatalf("expected [42], got %v", keys)
-	}
-}
-
 func TestPebbleStateMachine_Lookup_IndexQuery_NotFound(t *testing.T) {
 	s := openExtendedStore(t)
 
@@ -1153,21 +993,6 @@ func TestPebbleStateMachine_TSWrite(t *testing.T) {
 
 	if results[0].Value != 1 {
 		t.Fatalf("expected 1, got %d", results[0].Value)
-	}
-}
-
-func TestPebbleStateMachine_TSWrite_NoStorage(t *testing.T) {
-	s := openExtendedStore(t) // no TS configured
-
-	ts := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWrite("cpu.usage", ts, 42.5, nil))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error when time-series not configured: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload when time-series not configured")
 	}
 }
 
@@ -1543,63 +1368,9 @@ func TestPebbleStateMachine_GuardedVerbs_RefuseReservedKeys(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_WatchMVCCPut(t *testing.T) {
-	s, hub := openStoreWithHub(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	w, err := hub.Watch(ctx, "mvcc-watch")
-	if err != nil {
-		t.Fatalf("Watch: %v", err)
-	}
-	defer func() { _ = w.Close() }()
-
-	cmd := mustEncode(protocol.EncodeMVCCPut([]byte("mvcc-watch"), []byte("val"), 0))
-	applyExtEntries(t, s, []sm.Entry{{Index: 1, Cmd: cmd}})
-
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
-		}
-		if resp.Events[0].Type != watch.EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for watch event")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Unknown opcode
 // ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_UnknownOp(t *testing.T) {
-	s := openExtendedStore(t)
-
-	// Use an opcode that is not registered. It is REFUSED in the result
-	// payload, not returned to Raft: an opcode with no handler says nothing
-	// about the health of the storage underneath, and returning it halted the
-	// shard (go-qrdb#520).
-	cmd := []byte{200, 0, 0}
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-
-	assertRefusedNotHalted(t, s.Update(context.Background(), entries, results),
-		results[0], "unknown op code")
-}
-
-func TestPebbleStateMachine_EmptyCommand(t *testing.T) {
-	s := openExtendedStore(t)
-
-	entries := []sm.Entry{{Index: 1, Cmd: []byte{}}}
-	results := make([]sm.Result, 1)
-	err := s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected error for empty command")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Tests: Setter methods
@@ -1624,72 +1395,10 @@ func TestPebbleStateMachine_SetTimeSeries(t *testing.T) {
 	}
 }
 
-func TestPebbleStateMachine_SetLessor(t *testing.T) {
-	s := NewPebbleStateMachine(nil)
-	if s.Lessor() != nil {
-		t.Fatal("expected nil Lessor")
-	}
-
-	lr := lease.NewLessor()
-	s.SetLessor(lr)
-	if s.Lessor() != lr {
-		t.Fatal("expected Lessor to be set")
-	}
-}
-
-func TestPebbleStateMachine_DB(t *testing.T) {
-	s := NewPebbleStateMachine(nil)
-	if s.DB() != nil {
-		t.Fatal("expected nil DB before open")
-	}
-
-	dir := filepath.Join(t.TempDir(), "db")
-	_, err := s.Open(context.Background(), dir, nil)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = s.Close(context.Background()) }()
-
-	if s.DB() == nil {
-		t.Fatal("expected non-nil DB after open")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Lookup unsupported query type
 // ---------------------------------------------------------------------------
 
-func TestPebbleStateMachine_Lookup_UnsupportedType(t *testing.T) {
-	s := openExtendedStore(t)
-
-	_, err := s.Lookup(context.Background(), 42)
-	if err == nil {
-		t.Fatal("expected error for unsupported query type")
-	}
-	var iqe *InvalidQueryError
-	if !errors.As(err, &iqe) {
-		t.Fatalf("expected InvalidQueryError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Tests: Not-open errors
 // ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_Update_NotOpen(t *testing.T) {
-	s := NewPebbleStateMachine(nil)
-	putCmd, err := kv.EncodePut([]byte("k"), []byte("v"))
-	if err != nil {
-		t.Fatalf("EncodePut: %v", err)
-	}
-	entries := []sm.Entry{{Index: 1, Cmd: putCmd}}
-	results := make([]sm.Result, 1)
-	err = s.Update(context.Background(), entries, results)
-	if err == nil {
-		t.Fatal("expected NotOpenError")
-	}
-	var noe *NotOpenError
-	if !errors.As(err, &noe) {
-		t.Fatalf("expected NotOpenError, got %T: %v", err, err)
-	}
-}

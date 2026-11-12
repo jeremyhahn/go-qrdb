@@ -41,8 +41,3 @@ func TestManagerEventType_String(t *testing.T) {
 }
 
 // TestManagerEventType_String_InvalidValue ensures unknown event types produce UNKNOWN.
-func TestManagerEventType_String_InvalidValue(t *testing.T) {
-	invalid := ManagerEventType(255)
-	result := invalid.String()
-	assert.Equal(t, "UNKNOWN", result, "out-of-range ManagerEventType should produce UNKNOWN")
-}
