@@ -46,6 +46,7 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
+  import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
   import TenantDetail from "./TenantDetail.svelte";
 
   let { client }: { client: Client } = $props();
@@ -198,11 +199,26 @@
   let holdersTenantId: string = $state("");
   let holders = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
   let holdersLoading: boolean = $state(false);
+  // Holder enrolment on the tenant barrier (registerTenantOfficer).
+  let showEnrol: boolean = $state(false);
+  let enrolRegistered: number = $state(0);
+
+  /** Registers one holder on the open tenant and reloads the holder list. */
+  async function enrolTenantHolder(
+    req: import("@qrdb/sdk").OfficerRegisterRequest,
+  ): Promise<import("@qrdb/sdk").OfficerRegisterResponse> {
+    const tenantId = holdersTenantId;
+    const resp = await client.officers.registerTenantOfficer({ tenantId, ...req });
+    void fetchHolders(tenantId);
+    return resp;
+  }
 
   /** Opens the share-holder panel for a tenant. */
   function handleHolders(tenantId: string): void {
     holdersTenantId = tenantId;
     holders = [];
+    showEnrol = false;
+    enrolRegistered = 0;
     showHoldersPanel = true;
     void fetchHolders(tenantId);
   }
@@ -1374,6 +1390,26 @@
             </table>
           </div>
         {/if}
+
+        <div class="border-t border-base-300 pt-4" data-testid="tenant-holder-enrol">
+          <button
+            class="btn btn-outline btn-sm"
+            data-testid="tenant-holder-enrol-toggle"
+            onclick={() => { showEnrol = !showEnrol; enrolRegistered = 0; }}
+          >
+            {showEnrol ? "Cancel enrolment" : "Enrol holder"}
+          </button>
+          {#if showEnrol}
+            <div class="mt-4">
+              <HolderEnrolmentForms
+                {client}
+                count={1}
+                bind:registeredCount={enrolRegistered}
+                enrol={enrolTenantHolder}
+              />
+            </div>
+          {/if}
+        </div>
 
         <div class="border-t border-base-300 pt-4">
           <HolderRekeyPanel
