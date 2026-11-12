@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, CeremonyStatusResponse } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -37,6 +37,24 @@
   // The node barrier's cluster seal state; null from a server that reports none.
   let clusterSeal: ClusterSeal | null = $state(null);
   let clusterUnsealLoading: boolean = $state(false);
+
+  // Change passphrase form state (passphrase-held barriers).
+  let cpCurrent: string = $state("");
+  let cpNext: string = $state("");
+  let cpConfirm: string = $state("");
+  let cpSoPin: string = $state("");
+  let cpLoading: boolean = $state(false);
+
+  // Ceremony state: the CA's status and the Sign CSR form.
+  let ceremonyStatus: CeremonyStatusResponse | null = $state(null);
+  let ceremonyLoading: boolean = $state(false);
+  let ceremonyError: string = $state("");
+  let csrUsername: string = $state("");
+  let csrSoPin: string = $state("");
+  let csrPem: string = $state("");
+  let csrRole: string = $state("so");
+  let csrLoading: boolean = $state(false);
+  let csrCertPem: string = $state("");
   /**
    * The Security Officer PIN for the seal, required once one is provisioned
    * (`qrdb init` provisions one). Cleared whenever the confirmation closes.
@@ -269,6 +287,89 @@
       showToast("error", msg);
     } finally {
       clusterUnsealLoading = false;
+    }
+  }
+
+  /**
+   * Changes a passphrase-held barrier's passphrase. The SO PIN is sent once
+   * one is entered; the server requires it once one is provisioned.
+   */
+  async function handleChangePassphrase(): Promise<void> {
+    if (cpCurrent === "" || cpNext === "") {
+      showToast("warning", "The current and new passphrases are required");
+      return;
+    }
+    if (cpNext !== cpConfirm) {
+      showToast("error", "Passphrases do not match");
+      return;
+    }
+    if (cpNext.length < 8) {
+      showToast("error", "Passphrase must be at least 8 characters");
+      return;
+    }
+    try {
+      cpLoading = true;
+      await client.seal.changePassphrase(cpCurrent, cpNext, cpSoPin === "" ? undefined : cpSoPin);
+      cpCurrent = "";
+      cpNext = "";
+      cpConfirm = "";
+      cpSoPin = "";
+      showToast("success", "Passphrase changed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to change the passphrase";
+      showToast("error", msg);
+    } finally {
+      cpLoading = false;
+    }
+  }
+
+  /** Loads the initialization ceremony's state and the CA's SPKI pin. */
+  async function fetchCeremonyStatus(): Promise<void> {
+    try {
+      ceremonyLoading = true;
+      ceremonyError = "";
+      ceremonyStatus = await client.ceremony.status();
+    } catch (err: unknown) {
+      ceremonyStatus = null;
+      ceremonyError = err instanceof Error ? err.message : "Failed to load the ceremony status";
+    } finally {
+      ceremonyLoading = false;
+    }
+  }
+
+  /** Signs a holder CSR through the ceremony CA under the SO PIN. */
+  async function handleSignCSR(): Promise<void> {
+    if (csrUsername.trim() === "" || csrSoPin === "" || csrPem.trim() === "") {
+      showToast("warning", "Username, SO PIN and CSR are required");
+      return;
+    }
+    try {
+      csrLoading = true;
+      csrCertPem = "";
+      const res = await client.ceremony.signCSR({
+        username: csrUsername.trim(),
+        soPin: csrSoPin,
+        csrPem: csrPem,
+        role: csrRole,
+      });
+      csrCertPem = res.certPem;
+      csrSoPin = "";
+      showToast("success", "CSR signed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to sign the CSR";
+      showToast("error", msg);
+    } finally {
+      csrLoading = false;
+    }
+  }
+
+  /** Copies the signed certificate PEM to the clipboard. */
+  async function copySignedCert(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(csrCertPem);
+      showToast("success", "Certificate copied");
+    } catch {
+      showToast("error", "Failed to copy the certificate");
     }
   }
 
@@ -534,6 +635,7 @@
       }
     });
     startPolling();
+    void fetchCeremonyStatus();
 
     return () => {
       stopPolling();
@@ -717,6 +819,24 @@
               Cluster seal: record {clusterSeal.sealed ? "sealed" : "clear"}
               (epoch {clusterSeal.epoch}); this node is {clusterSeal.local ?? "unknown"}.
             </p>
+            {#if clusterSeal.principal || clusterSeal.node || clusterSeal.at}
+              <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm mt-2" data-testid="cluster-seal-record">
+                {#if clusterSeal.principal}
+                  <dt class="text-base-content/70">Written by</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-principal">
+                    {clusterSeal.principal}{clusterSeal.principalTenant ? ` (tenant ${clusterSeal.principalTenant})` : ""}
+                  </dd>
+                {/if}
+                {#if clusterSeal.node}
+                  <dt class="text-base-content/70">Through node</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-node">{clusterSeal.node}</dd>
+                {/if}
+                {#if clusterSeal.at}
+                  <dt class="text-base-content/70">At</dt>
+                  <dd class="font-mono" data-testid="cluster-seal-at">{clusterSeal.at}</dd>
+                {/if}
+              </dl>
+            {/if}
             {#if clusterSeal.sealed}
               <div class="alert alert-info mt-2">
                 <Info class="h-5 w-5 shrink-0" />
@@ -1472,6 +1592,142 @@
       </div>
     </div>
   {/if}
+
+  <!-- Change passphrase (an unsealed, keyed barrier) -->
+  {#if !sealStore.sealed && sealStore.initialized && encryptionConfigured}
+    <div class="card bg-base-200 shadow" data-testid="change-passphrase-card">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Change Passphrase</h2>
+        <p class="text-base-content/70 text-sm">
+          Re-wraps the barrier's master key under a new passphrase. Stored data
+          is not re-encrypted.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+          <label class="form-control">
+            <span class="label-text">Current passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="current-password"
+              bind:value={cpCurrent} data-testid="cp-current" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">New passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="new-password"
+              bind:value={cpNext} data-testid="cp-new" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">Confirm new passphrase</span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="new-password"
+              bind:value={cpConfirm} data-testid="cp-confirm" />
+          </label>
+          <label class="form-control">
+            <span class="label-text">
+              Security Officer PIN{sealStore.strategy === "shamir" ? "" : " (once provisioned)"}
+            </span>
+            <input type="password" class="input input-bordered input-sm" autocomplete="off"
+              bind:value={cpSoPin} data-testid="cp-so-pin" />
+          </label>
+        </div>
+        <div class="card-actions justify-end mt-2">
+          <button
+            class="btn btn-primary btn-sm"
+            onclick={() => void handleChangePassphrase()}
+            disabled={cpLoading}
+            data-testid="cp-submit"
+          >
+            {#if cpLoading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {/if}
+            Change Passphrase
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Initialization ceremony: status and holder CSR signing -->
+  <div class="card bg-base-200 shadow" data-testid="ceremony-card">
+    <div class="card-body">
+      <div class="flex items-center justify-between">
+        <h2 class="card-title text-lg">Ceremony</h2>
+        <button
+          class="btn btn-ghost btn-sm"
+          onclick={() => void fetchCeremonyStatus()}
+          disabled={ceremonyLoading}
+          title="Refresh ceremony status"
+          data-testid="ceremony-refresh"
+        >
+          <RefreshCw class={`h-4 w-4 ${ceremonyLoading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      {#if ceremonyError}
+        <div class="alert alert-error text-sm" data-testid="ceremony-error">
+          <AlertCircle class="h-4 w-4 shrink-0" />
+          <span>{ceremonyError}</span>
+        </div>
+      {:else if ceremonyStatus}
+        <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+          <dt class="text-base-content/70">State</dt>
+          <dd class="font-mono" data-testid="ceremony-state">{ceremonyStatus.state}</dd>
+          <dt class="text-base-content/70">CA SPKI pin</dt>
+          <dd class="font-mono break-all" data-testid="ceremony-spki-pin">{ceremonyStatus.spkiPin ?? "none"}</dd>
+        </dl>
+      {/if}
+
+      <div class="divider my-2"></div>
+      <h3 class="font-semibold">Sign CSR</h3>
+      <p class="text-base-content/70 text-sm">
+        Issues a holder certificate (Security Officer or custodian) from the
+        ceremony CA under the SO PIN.
+      </p>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+        <label class="form-control">
+          <span class="label-text">Username</span>
+          <input type="text" class="input input-bordered input-sm" bind:value={csrUsername} data-testid="csr-username" />
+        </label>
+        <label class="form-control">
+          <span class="label-text">Security Officer PIN</span>
+          <input type="password" class="input input-bordered input-sm" autocomplete="off"
+            bind:value={csrSoPin} data-testid="csr-so-pin" />
+        </label>
+        <label class="form-control">
+          <span class="label-text">Role</span>
+          <select class="select select-bordered select-sm" bind:value={csrRole} data-testid="csr-role">
+            <option value="so">Security Officer</option>
+            <option value="custodian">Custodian</option>
+          </select>
+        </label>
+      </div>
+      <label class="form-control mt-2">
+        <span class="label-text">CSR (PEM)</span>
+        <textarea class="textarea textarea-bordered font-mono text-xs" rows="5"
+          bind:value={csrPem} data-testid="csr-pem"></textarea>
+      </label>
+      <div class="card-actions justify-end mt-2">
+        <button
+          class="btn btn-primary btn-sm"
+          onclick={() => void handleSignCSR()}
+          disabled={csrLoading}
+          data-testid="csr-sign-btn"
+        >
+          {#if csrLoading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Sign CSR
+        </button>
+      </div>
+      {#if csrCertPem}
+        <div class="mt-2" data-testid="csr-cert">
+          <div class="flex items-center justify-between">
+            <span class="label-text">Issued certificate</span>
+            <button class="btn btn-ghost btn-xs" onclick={() => void copySignedCert()} data-testid="csr-cert-copy">
+              <Copy class="h-3 w-3" />
+              Copy
+            </button>
+          </div>
+          <pre class="bg-base-300 rounded p-2 text-xs overflow-x-auto" data-testid="csr-cert-pem">{csrCertPem}</pre>
+        </div>
+      {/if}
+    </div>
+  </div>
 
   <!-- Reconfigure server -->
   {#if onReconfigure}

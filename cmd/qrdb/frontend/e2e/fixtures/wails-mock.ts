@@ -108,6 +108,17 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
   };
   unsealProgress: {
     sealed: boolean;
@@ -661,6 +672,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           Status: async () => {
             maybeReject("SealBinding.Status");
             return { ...getState().sealStatus };
+          },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            return { ...next };
           },
         },
         CeremonyBinding: {
