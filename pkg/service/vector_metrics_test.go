@@ -281,6 +281,55 @@ func TestVectorCountMetric_NamespaceDeleteSubtractsItsVectors(t *testing.T) {
 	}
 }
 
+// TestVectorCountMetric_CountsStoredVectorsExactly: the tenant's
+// vector_count series equals the number of vectors stored, across a
+// re-upsert of a stored id, a batch holding a stored id and a duplicate id,
+// and deletes of a stored and a missing id.
+func TestVectorCountMetric_CountsStoredVectorsExactly(t *testing.T) {
+	reg := isolatedRegistry(t)
+	storage := newMockVectorStorage()
+	svc, err := NewVectorService(storage, newMockLogger())
+	require.NoError(t, err)
+
+	ctx := tenant.WithTenantID(context.Background(), "tenant-r")
+	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: "reup", Dimension: 2})
+	require.NoError(t, err)
+
+	stored := func() float64 {
+		t.Helper()
+		storage.mu.RLock()
+		defer storage.mu.RUnlock()
+		return float64(len(storage.vectors[scopedFromContext(ctx, "reup")]))
+	}
+	gauge := func() float64 {
+		t.Helper()
+		return tenantGauge(t, reg, "qrdb_vector_vector_count", "tenant-r")
+	}
+
+	for i := 0; i < 2; i++ {
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "reup", ID: 1, Vector: []float32{1, float32(i)}})
+		require.NoError(t, err)
+	}
+	require.Equal(t, float64(1), stored())
+	assert.Equal(t, stored(), gauge(), "a re-upsert of a stored id does not count again")
+
+	_, err = svc.BatchUpsert(ctx, &BatchUpsertRequest{Namespace: "reup", Vectors: []*VectorData{
+		{ID: 1, Vector: []float32{1, 2}},
+		{ID: 2, Vector: []float32{2, 2}},
+		{ID: 2, Vector: []float32{2, 3}},
+		{ID: 3, Vector: []float32{3, 3}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, float64(3), stored())
+	assert.Equal(t, stored(), gauge(), "a batch counts only ids not stored before, each once")
+
+	_, err = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "reup", ID: 2})
+	require.NoError(t, err)
+	_, _ = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "reup", ID: 99})
+	require.Equal(t, float64(2), stored())
+	assert.Equal(t, stored(), gauge(), "a delete subtracts only an id that was stored")
+}
+
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
 // without an explicit tenant (pooling into system) carry tenant="system" in
 // the gauge label — not an empty string or \x1f.
