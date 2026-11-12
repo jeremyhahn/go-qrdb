@@ -1290,7 +1290,61 @@ func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
 	if !mux.IsDedicated(homeShard) {
 		t.Fatalf("the home group's WAL is not registered as dedicated")
 	}
+	held := sharedWALShards(t, f, host, sysBarrier, hostDir)
+	if held[homeShard] {
+		t.Fatalf("the shared host WAL holds an entry of the tenant's home group (shard %d)", homeShard)
+	}
+	if !held[sharedShard] {
+		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
+	}
+}
 
+// TestRaftBackendFactory_StrictTenantDatabase_SharedWALHoldsNoEntry is the
+// LogDB half of docs/multi-tenancy/engineering.md phase 5, G1: a strict
+// tenant's database is created DedicatedWAL (the create path refuses it
+// otherwise), so the system shard's shared WAL never holds an entry of its
+// shard, while a non-dedicated database on the same host does.
+func TestRaftBackendFactory_StrictTenantDatabase_SharedWALHoldsNoEntry(t *testing.T) {
+	hostDir := t.TempDir()
+	sysBarrier := newTestSystemBarrier(t)
+	host, mux := newSharedTestHostAt(t, hostDir, sysBarrier)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src,
+		volTestLogger(), WithMultiplexLogDB(mux))
+
+	ctx := context.Background()
+	root, _ := registerVolumeTenant(t, reg, "st")
+	const strictShard, sharedShard = uint64(2410), uint64(2411)
+	src.add("st", "app", strictShard, root)
+	src.setDedicated("st", "app")
+	src.add("st", "plain", sharedShard, root)
+	for _, name := range []string{"app", "plain"} {
+		svcs, err := f.Services(ctx, "st", name)
+		if err != nil {
+			t.Fatalf("Services(%s): %v", name, err)
+		}
+		if err := svcs.KV.Put(ctx, "k", []byte("v")); err != nil {
+			t.Fatalf("Put(%s): %v", name, err)
+		}
+	}
+	if !mux.IsDedicated(strictShard) {
+		t.Fatalf("the strict tenant's database WAL is not registered as dedicated")
+	}
+	held := sharedWALShards(t, f, host, sysBarrier, hostDir)
+	if held[strictShard] {
+		t.Fatalf("the shared host WAL holds an entry of the strict tenant's database (shard %d)", strictShard)
+	}
+	if !held[sharedShard] {
+		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
+	}
+}
+
+// sharedWALShards closes the factory and the host, reopens the host's shared
+// WAL under the system barrier and returns the set of shards it holds.
+func sharedWALShards(t *testing.T, f *RaftBackendFactory, host interface{ Close() error }, sysBarrier *seal.StorageBarrier, hostDir string) map[uint64]bool {
+	t.Helper()
+	ctx := context.Background()
 	if err := f.CloseAll(); err != nil {
 		t.Fatalf("CloseAll: %v", err)
 	}
@@ -1321,12 +1375,7 @@ func TestRaftBackendFactory_HomeGroup_SharedWALHoldsNoEntry(t *testing.T) {
 	for _, ni := range infos {
 		held[ni.ShardID] = true
 	}
-	if held[homeShard] {
-		t.Fatalf("the shared host WAL holds an entry of the tenant's home group (shard %d)", homeShard)
-	}
-	if !held[sharedShard] {
-		t.Fatalf("the shared WAL holds no entry of the non-dedicated database (shard %d): the check proves nothing", sharedShard)
-	}
+	return held
 }
 
 // TestRaftBackendFactory_DedicatedWAL_NoMuxRefusesToStart proves that when no
