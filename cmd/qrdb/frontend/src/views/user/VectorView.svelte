@@ -594,7 +594,7 @@
       out.push({
         id: o.id,
         vector: vec as number[],
-        metadata: md as Record<string, unknown> | undefined,
+        ...(md !== undefined ? { metadata: md as Record<string, unknown> } : {}),
         version: 0,
         createdAt: 0,
         updatedAt: 0,
@@ -1404,6 +1404,7 @@
     onclose={() => (showBatchUpsertPanel = false)}
   >
     {#snippet children()}
+      {#if showBatchUpsertPanel}
       <div class="flex flex-col gap-5">
         <div class="surface-panel rounded-lg p-4">
           <div class="text-base-content/50 flex items-center gap-2 text-xs font-medium">
@@ -1436,6 +1437,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     {/snippet}
     {#snippet footer()}
       <div class="flex gap-2 justify-end">
