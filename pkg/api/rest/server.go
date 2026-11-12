@@ -115,6 +115,8 @@ type route struct {
 // Server is the HTTP/2+HTTP/3 REST server for QRDB. It routes requests
 // to the service layer using map-based dispatch for O(1) routing.
 type Server struct {
+	// version is the build version GET /status reports (WithVersion).
+	version           string
 	kvSvc             service.KVServicer
 	adminSvc          service.AdminServicer
 	mvccSvc           service.MVCCKVServicer
@@ -365,6 +367,14 @@ const DefaultMaxBodyBytes = 4 << 20
 
 // ServerOption configures optional Server dependencies.
 type ServerOption func(*Server)
+
+// WithVersion sets the build version GET /status reports in its version
+// field: the value the server binary's --version flag prints.
+func WithVersion(version string) ServerOption {
+	return func(s *Server) {
+		s.version = version
+	}
+}
 
 // WithMaxBodyBytes bounds every request body this server reads. n <= 0
 // resolves to DefaultMaxBodyBytes at construction; there is no way to
