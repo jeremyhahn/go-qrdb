@@ -326,6 +326,27 @@ async function initializeCluster(
       throw new Error(`ceremony init ${url}: ${res.code} ${res.body}`);
     }
   }
+  // A node confirms the cluster seal records only after it has read them:
+  // until then it answers 503 SEAL_STATE_UNCONFIRMED. Wait for every node to
+  // serve so specs start from a settled cluster.
+  for (const url of adminUrls) {
+    const deadline = Date.now() + 60_000;
+    let last = "no response";
+    for (;;) {
+      const res = await httpsGetStatus(`${url}/v1/barrier/status`);
+      if (
+        res !== null &&
+        res.code === 200 &&
+        res.body.includes('"local":"serving"')
+      )
+        break;
+      last = res === null ? "unreachable" : `${res.code} ${res.body}`;
+      if (Date.now() > deadline) {
+        throw new Error(`${url} not serving within 60000ms (last: ${last})`);
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
 }
 
 /**
