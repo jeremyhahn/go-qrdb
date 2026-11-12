@@ -341,29 +341,68 @@ func TestSendStreamWriteWhileSendingHeaderAsync(t *testing.T) {
 	}
 }
 
-// signallingHeaderStream reports when the stream header write starts and
-// records every write.
-type signallingHeaderStream struct {
+// orderedHeaderStream blocks writing the stream header until unblock is
+// closed, as a QUIC stream without flow-control credit does, and records the
+// order of header writes, payload writes, CancelWrite and Close. stopped is
+// closed by the first CancelWrite or Close.
+type orderedHeaderStream struct {
 	*blockingHeaderStream
-	started chan struct{}
-	writes  []string
+	started     chan struct{}
+	stopped     chan struct{}
+	stoppedOnce sync.Once
+
+	mx     sync.Mutex
+	events []string
 }
 
-func (s *signallingHeaderStream) Write(b []byte) (int, error) {
-	s.writes = append(s.writes, string(b))
+func newOrderedHeaderStream() *orderedHeaderStream {
+	return &orderedHeaderStream{
+		blockingHeaderStream: &blockingHeaderStream{unblock: make(chan struct{})},
+		started:              make(chan struct{}),
+		stopped:              make(chan struct{}),
+	}
+}
+
+func (s *orderedHeaderStream) record(ev string) {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	s.events = append(s.events, ev)
+}
+
+func (s *orderedHeaderStream) recorded() []string {
+	s.mx.Lock()
+	defer s.mx.Unlock()
+	return append([]string(nil), s.events...)
+}
+
+func (s *orderedHeaderStream) Write(b []byte) (int, error) {
 	if string(b) == "hdr" {
 		close(s.started)
+		<-s.unblock
 	}
-	return s.blockingHeaderStream.Write(b)
+	s.record(string(b))
+	return len(b), nil
 }
 
-func (s *signallingHeaderStream) WriteWithLimit(b []byte, limit func(int) int) (int, error) {
+func (s *orderedHeaderStream) WriteWithLimit(b []byte, _ func(int) int) (int, error) {
 	return s.Write(b)
 }
 
+func (s *orderedHeaderStream) CancelWrite(quic.StreamErrorCode) {
+	s.record("cancel")
+	s.stoppedOnce.Do(func() { close(s.stopped) })
+}
+
+func (s *orderedHeaderStream) Close() error {
+	s.record("close")
+	s.stoppedOnce.Do(func() { close(s.stopped) })
+	return nil
+}
+
 // CancelWrite and Close must not wait behind a Write that is blocked sending
-// the stream header. The header still goes out first; the Write then returns
-// their error without sending its payload.
+// the stream header, and must release that Write with their error while the
+// peer still withholds credit. The header still goes out before the stop
+// reaches the QUIC stream, and the payload never does.
 func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
 	const errorCode StreamErrorCode = 42
 
@@ -371,16 +410,19 @@ func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
 		name        string
 		stop        func(*SendStream) error
 		expectedErr error
+		stopEvent   string
 	}{
 		{
 			name:        "cancel",
 			stop:        func(s *SendStream) error { s.CancelWrite(errorCode); return nil },
 			expectedErr: &StreamError{ErrorCode: errorCode},
+			stopEvent:   "cancel",
 		},
 		{
 			name:        "close",
 			stop:        (*SendStream).Close,
 			expectedErr: errors.New("write on closed stream"),
+			stopEvent:   "close",
 		},
 	}
 
@@ -389,10 +431,7 @@ func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
 			defer cancel()
 
-			qstr := &signallingHeaderStream{
-				blockingHeaderStream: &blockingHeaderStream{unblock: make(chan struct{})},
-				started:              make(chan struct{}),
-			}
+			qstr := newOrderedHeaderStream()
 			str := newSendStream(qstr, []byte("hdr"), nil, nil, func() {})
 
 			errChan := make(chan error, 1)
@@ -411,9 +450,22 @@ func TestSendStreamStopWhileWriteSendsHeader(t *testing.T) {
 				t.Fatal("stopping the stream waited for the stream header write")
 			}
 
+			// The peer still withholds credit: the Write must return now.
+			select {
+			case err := <-errChan:
+				require.Equal(t, tc.expectedErr, err)
+			case <-ctx.Done():
+				t.Fatal("Write stayed blocked in the stream header after the stop")
+			}
+			require.Empty(t, qstr.recorded())
+
 			close(qstr.unblock)
-			require.Equal(t, tc.expectedErr, <-errChan)
-			require.Equal(t, []string{"hdr"}, qstr.writes)
+			select {
+			case <-qstr.stopped:
+			case <-ctx.Done():
+				t.Fatal("the stop never reached the QUIC stream")
+			}
+			require.Equal(t, []string{"hdr", tc.stopEvent}, qstr.recorded())
 		})
 	}
 }

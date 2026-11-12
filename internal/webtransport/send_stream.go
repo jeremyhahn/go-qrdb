@@ -40,11 +40,15 @@ type SendStream struct {
 	// Set by Close or CancelWrite before sending a pending stream header asynchronously.
 	// Prevents Write from sending payload before the header.
 	writeErr error
-	// Set while Write sends the stream header without holding streamHdrMu.
+	// Set while Write's header goroutine sends the stream header without
+	// holding streamHdrMu.
 	sendingHdr bool
-	// Set by Close or CancelWrite while sendingHdr; Write runs it once the
-	// header is out.
+	// Set by Close or CancelWrite while sendingHdr; the header goroutine
+	// runs it once the header is out.
 	stopAfterHdr func()
+	// Made by Write while sendingHdr, nil otherwise. Close and CancelWrite
+	// close it to release a Write waiting on the header with writeErr.
+	hdrAbort chan struct{}
 
 	onClose func() // to remove the stream from the streamsMap
 
@@ -141,25 +145,50 @@ func (s *SendStream) write(b []byte) (int, error) {
 		return s.writeData(b)
 	}
 	// Sending the header can block on flow control, so streamHdrMu is not
-	// held across it: CancelWrite and Close leave their action for us instead.
+	// held across it, and it runs off this goroutine: CancelWrite and Close
+	// leave their action for the header goroutine and close hdrAbort, which
+	// releases this Write at once while the header and the stop complete.
 	s.sendingHdr = true
+	abort := make(chan struct{})
+	s.hdrAbort = abort
 	s.streamHdrMu.Unlock()
 
-	err := s.maybeSendStreamHeader()
-
-	s.streamHdrMu.Lock()
-	s.sendingHdr = false
-	stop, stopErr := s.stopAfterHdr, s.writeErr
-	s.stopAfterHdr = nil
-	s.streamHdrMu.Unlock()
-	if stop != nil {
-		stop()
-		return 0, stopErr
+	type hdrResult struct {
+		err     error
+		stopped bool
+		stopErr error
 	}
-	if err != nil {
+	done := make(chan hdrResult, 1)
+	go func() {
+		err := s.maybeSendStreamHeader()
+
+		s.streamHdrMu.Lock()
+		s.sendingHdr = false
+		s.hdrAbort = nil
+		stop, stopErr := s.stopAfterHdr, s.writeErr
+		s.stopAfterHdr = nil
+		s.streamHdrMu.Unlock()
+		if stop != nil {
+			stop()
+		}
+		done <- hdrResult{err: err, stopped: stop != nil, stopErr: stopErr}
+	}()
+
+	select {
+	case res := <-done:
+		if res.stopped {
+			return 0, res.stopErr
+		}
+		if res.err != nil {
+			return 0, res.err
+		}
+		return s.writeData(b)
+	case <-abort:
+		s.streamHdrMu.Lock()
+		err := s.writeErr
+		s.streamHdrMu.Unlock()
 		return 0, err
 	}
-	return s.writeData(b)
 }
 
 func (s *SendStream) writeData(b []byte) (int, error) {
@@ -242,7 +271,9 @@ func (s *SendStream) maybeSendStreamHeader() error {
 
 // CancelWrite aborts sending on this stream.
 // Data already written, but not yet delivered to the peer is not guaranteed to be delivered reliably.
-// Write will unblock immediately, and future calls to Write will fail.
+// Write will unblock immediately, even one blocked sending the stream header
+// (the header and the reset are then delivered asynchronously), and future
+// calls to Write will fail.
 // When called multiple times it is a no-op.
 func (s *SendStream) CancelWrite(e StreamErrorCode) {
 	// onClose takes the stream out of the session's map, so session shutdown
@@ -263,8 +294,9 @@ func (s *SendStream) CancelWrite(e StreamErrorCode) {
 // stopAfterHeader runs stop (CancelWrite or Close on the QUIC stream) after
 // the stream header, without waiting for the header: sending it might block if
 // we are blocked by flow control. A pending header is sent asynchronously, or
-// by a Write already sending it, and Write then returns writeErr. Without a
-// pending header, stop runs at once and its error is returned.
+// by the header goroutine of a Write already sending it, which then runs stop;
+// that Write is released at once with writeErr. Without a pending header, stop
+// runs at once and its error is returned.
 func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 	// if a Goroutine is already sending the header, return immediately
 	s.streamHdrMu.Lock()
@@ -284,7 +316,9 @@ func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 		_ = stop()
 	}
 	if s.sendingHdr {
-		// Write is sending the header; it finishes it and then stops.
+		// Write's header goroutine is sending the header; it finishes it and
+		// then stops. Release the waiting Write now: a peer withholding
+		// credit must not keep it blocked after the stop.
 		s.writeErr = writeErr
 		s.stopAfterHdr = func() {
 			s.streamHdrMu.Lock()
@@ -293,6 +327,7 @@ func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 			s.streamHdrMu.Unlock()
 			sendHdrAndStop(streamHdr)
 		}
+		close(s.hdrAbort)
 		s.streamHdrMu.Unlock()
 		return nil
 	}
