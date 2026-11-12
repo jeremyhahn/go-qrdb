@@ -62,7 +62,6 @@ const maxEnvelopeBytes = 64 << 10
 
 type Receiver struct {
 	kd                *keydelivery.Receiver
-	registry          *seal.BarrierRegistry
 	placements        PlacementGetter
 	pinnedTrustDomain string
 	selfNodeID        string
@@ -126,7 +125,6 @@ var modeHandlers = map[keydelivery.Mode]modeImporter{}
 // the node.
 func NewReceiver(
 	kd *keydelivery.Receiver,
-	registry *seal.BarrierRegistry,
 	placements PlacementGetter,
 	pinnedTrustDomain string,
 	selfNodeID string,
@@ -137,9 +135,6 @@ func NewReceiver(
 ) (*Receiver, error) {
 	if kd == nil {
 		return nil, ErrNilReceiver
-	}
-	if registry == nil {
-		return nil, ErrNilRegistry
 	}
 	if placements == nil {
 		return nil, ErrNilPlacements
@@ -155,7 +150,6 @@ func NewReceiver(
 	}
 	return &Receiver{
 		kd:                kd,
-		registry:          registry,
 		placements:        placements,
 		pinnedTrustDomain: pinnedTrustDomain,
 		selfNodeID:        selfNodeID,

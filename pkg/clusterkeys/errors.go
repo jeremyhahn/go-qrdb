@@ -22,9 +22,6 @@ var (
 	// ErrNilReceiver indicates a nil keydelivery.Receiver was provided.
 	ErrNilReceiver = errors.New("clusterkeys: keydelivery receiver must not be nil")
 
-	// ErrNilRegistry indicates a nil BarrierRegistry was provided.
-	ErrNilRegistry = errors.New("clusterkeys: barrier registry must not be nil")
-
 	// ErrNilPlacements indicates a nil PlacementGetter was provided.
 	ErrNilPlacements = errors.New("clusterkeys: placement getter must not be nil")
 
