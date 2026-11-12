@@ -276,8 +276,7 @@ func (s *SendStream) maybeSendStreamHeader() error {
 // calls to Write will fail.
 // When called multiple times it is a no-op.
 func (s *SendStream) CancelWrite(e StreamErrorCode) {
-	// onClose takes the stream out of the session's map, so session shutdown
-	// no longer reaches it: end a Write waiting in handleSessionGoneError here.
+	// As in Close: onClose takes the stream out of the session's map.
 	defer s.closeOnce.Do(func() {
 		s.closeErr = &StreamError{ErrorCode: e}
 		close(s.closed)
@@ -358,7 +357,15 @@ func (s *SendStream) closeWithSession(err error) {
 // Close closes the write-direction of the stream.
 // Future calls to Write are not permitted after calling Close.
 func (s *SendStream) Close() error {
-	return s.stopAfterHeader(errors.New("write on closed stream"), func() error {
+	closeErr := errors.New("write on closed stream")
+	// onClose takes the stream out of the session's map, so session shutdown
+	// no longer reaches it: end a Write waiting in handleSessionGoneError here.
+	defer s.closeOnce.Do(func() {
+		s.closeErr = closeErr
+		close(s.closed)
+	})
+
+	return s.stopAfterHeader(closeErr, func() error {
 		s.onClose()
 		return maybeConvertStreamError(s.str.Close())
 	})

@@ -177,7 +177,9 @@ func TestSendStreamHeaderRetryAfterDeadlineError(t *testing.T) {
 	// second write should succeed and include the header
 	_, err = str.Write([]byte("data"))
 	require.NoError(t, err)
-	require.NoError(t, str.Close())
+	// the peer's STOP_SENDING already reset the QUIC stream, so Close
+	// reports that; only its effect on the waiting Write matters here
+	_ = str.Close()
 
 	// verify that the header was written
 	serverStr, err := server.AcceptUniStream(ctx)
@@ -284,6 +286,54 @@ func TestSendStreamCancelWriteThenCloseSessionDuringSessionGone(t *testing.T) {
 
 	_, err := str.Write([]byte("foo"))
 	requireLocalStreamError(t, err, 42)
+}
+
+func TestSendStreamCloseDuringSessionGone(t *testing.T) {
+	str, _ := newSessionGoneSendStream(t)
+	// no write deadline: only Close can end the wait
+	require.NoError(t, str.SetWriteDeadline(time.Time{}))
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := str.Write([]byte("foo"))
+		errChan <- err
+	}()
+
+	// Close takes the stream out of the session's map, so session shutdown
+	// no longer reaches it; Close itself must end the wait.
+	// the peer's STOP_SENDING already reset the QUIC stream, so Close
+	// reports that; only its effect on the waiting Write matters here
+	_ = str.Close()
+	select {
+	case err := <-errChan:
+		require.Error(t, err)
+		require.NotErrorIs(t, err, os.ErrDeadlineExceeded)
+	case <-time.After(scaleDuration(5 * time.Second)):
+		t.Fatal("Write still blocked after Close")
+	}
+}
+
+func TestSendStreamCloseThenCloseSessionDuringSessionGone(t *testing.T) {
+	str, sm := newSessionGoneSendStream(t)
+	require.NoError(t, str.SetWriteDeadline(time.Time{}))
+
+	// the peer's STOP_SENDING already reset the QUIC stream, so Close
+	// reports that; only its effect on the waiting Write matters here
+	_ = str.Close()
+	sm.CloseSession(&SessionError{ErrorCode: 7, Message: "bye"})
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := str.Write([]byte("foo"))
+		errChan <- err
+	}()
+	select {
+	case err := <-errChan:
+		require.Error(t, err)
+		require.NotErrorIs(t, err, os.ErrDeadlineExceeded)
+	case <-time.After(scaleDuration(5 * time.Second)):
+		t.Fatal("Write blocked after Close and session shutdown")
+	}
 }
 
 type blockingHeaderStream struct {
