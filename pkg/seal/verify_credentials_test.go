@@ -169,6 +169,46 @@ func TestStorageBarrier_VerifyCredentialsWithStrategy(t *testing.T) {
 	}
 }
 
+// TestStorageBarrier_VerifyCredentials_StrategyNone pins the plaintext rule:
+// an open none barrier holds no root key and takes no secret, so there is
+// nothing to compare and the check passes; a non-none strategy still fails
+// the ID check, and a sealed none barrier is still ErrSealed.
+func TestStorageBarrier_VerifyCredentials_StrategyNone(t *testing.T) {
+	ctx := context.Background()
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
+		RootKeyPath:     "verify/none-root-key",
+		PreferenceOrder: []StrategyID{StrategyNone},
+	}, NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if err := b.VerifyCredentials(ctx, Credentials{}); err != nil {
+		t.Fatalf("VerifyCredentials on an open none barrier = %v, want nil", err)
+	}
+	if err := b.VerifyCredentialsWithStrategy(ctx, NewNoneStrategy(), Credentials{}); err != nil {
+		t.Fatalf("VerifyCredentialsWithStrategy(none) = %v, want nil", err)
+	}
+	passphrase, _, _ := tunedPassphraseStrategy(t, "a-passphrase-for-none")
+	err = b.VerifyCredentialsWithStrategy(ctx, passphrase, Credentials{})
+	if !errors.Is(err, ErrCredentialMismatch) {
+		t.Fatalf("VerifyCredentialsWithStrategy(passphrase) = %v, want ErrCredentialMismatch", err)
+	}
+	if b.IsSealed() {
+		t.Fatal("barrier sealed after VerifyCredentials")
+	}
+
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := b.VerifyCredentials(ctx, Credentials{}); !errors.Is(err, ErrSealed) {
+		t.Fatalf("VerifyCredentials on a sealed none barrier = %v, want ErrSealed", err)
+	}
+}
+
 func TestStorageBarrier_CeremonyDistributor(t *testing.T) {
 	b := newVerifyBarrier(t, NewMemoryBackend(), "distributor-pass")
 	if got := b.CeremonyDistributor(); got != nil {

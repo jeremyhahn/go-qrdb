@@ -50,6 +50,38 @@ func TestTenantBarrierUnseal_AnOpenBarrierVerifiesTheCredential(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierUnseal_AnOpenNoneBarrierRerunSucceeds pins the rerun of a
+// plaintext tenant barrier: none holds no root key and takes no secret, so a
+// second unseal of the already-open barrier succeeds instead of failing the
+// credential check.
+func TestTenantBarrierUnseal_AnOpenNoneBarrierRerunSucceeds(t *testing.T) {
+	svc, reg := newTestService(t)
+	ctx := WithTenantID(context.Background(), "plain")
+
+	if _, err := svc.CreateTenant(context.Background(), "plain", "Plain", ""); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	if _, err := svc.TenantBarrierInitWithStrategy(ctx, "plain", nil, 0, 0, seal.StrategyNone, nil); err != nil {
+		t.Fatalf("TenantBarrierInitWithStrategy(none): %v", err)
+	}
+	if err := reg.SealTenant("plain"); err != nil {
+		t.Fatalf("SealTenant: %v", err)
+	}
+	if err := svc.TenantBarrierUnseal(ctx, "plain", []byte("unused")); err != nil {
+		t.Fatalf("first TenantBarrierUnseal: %v", err)
+	}
+	if err := svc.TenantBarrierUnseal(ctx, "plain", []byte("unused")); err != nil {
+		t.Fatalf("rerun TenantBarrierUnseal of an open none barrier: %v", err)
+	}
+	status, err := reg.TenantStatus("plain")
+	if err != nil {
+		t.Fatalf("TenantStatus: %v", err)
+	}
+	if status.Sealed {
+		t.Fatal("barrier sealed after the rerun")
+	}
+}
+
 // The provider-backed path answers a rerun the same way.
 func TestTenantBarrierUnseal_AnOpenProviderBackedBarrierRerunSucceeds(t *testing.T) {
 	device, err := sealtest.NewDeviceStrategy("test-kms")

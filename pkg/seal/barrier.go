@@ -784,6 +784,11 @@ func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 // does not unseal the matching key (including when the strategy itself
 // refuses creds outright), or any error encountered loading the persisted
 // blob.
+//
+// An open barrier whose persisted root key names StrategyNone returns nil:
+// the none (plaintext) strategy holds no root key and takes no secret, so
+// there is nothing to compare creds against (the rule KeyFingerprint
+// applies too).
 func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credentials) error {
 	return b.verifyCredentials(ctx, nil, creds)
 }
@@ -793,7 +798,10 @@ func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credential
 // barrier resolves its strategy on every unseal; checking a rerun against
 // the registered copy would let a strategy the provider no longer returns
 // vouch for creds. The persisted root key must name strategy's ID, else
-// ErrCredentialMismatch; every other return is VerifyCredentials's.
+// ErrCredentialMismatch; every other return is VerifyCredentials's. The ID
+// check runs first, so a none-sealed root key checked under a non-none
+// strategy is ErrCredentialMismatch; under the none strategy an open
+// barrier returns nil.
 func (b *StorageBarrier) VerifyCredentialsWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
 	if strategy == nil {
 		return ErrStrategyNotFound
@@ -826,6 +834,12 @@ func (b *StorageBarrier) verifyCredentials(ctx context.Context, strategy Sealing
 		strategy = registered
 	} else if strategy.ID() != sealed.Strategy {
 		return ErrCredentialMismatch
+	}
+
+	// A none (plaintext) barrier holds no root key and takes no secret:
+	// an open none barrier has nothing to compare creds against.
+	if sealed.Strategy == StrategyNone {
+		return nil
 	}
 
 	live, err := b.barrier.RootKey(ctx)
