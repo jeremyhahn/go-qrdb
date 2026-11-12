@@ -234,7 +234,7 @@ test("tenant trust anchors: the tenant admin adds, lists and removes one (UI ↔
   try {
     await expect(page.getByTestId("trust-anchors-table")).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
-    throw new Error(`add trust anchor: toasts ${await toasts(page)}\n${err}`);
+    throw new Error(`add trust anchor: toasts ${await toasts(page)}\n${err}`, { cause: err });
   }
   const added = await serverAnchorFingerprints(d);
   expect(added).toHaveLength(1);
@@ -278,7 +278,7 @@ test("tenant share holder enrols from the Holders panel (UI ↔ live daemon)", a
     await expect(panel.getByTestId("officer-cert-0")).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const alerts = await panel.locator('[role="alert"]').allInnerTexts();
-    throw new Error(`enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`);
+    throw new Error(`enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`, { cause: err });
   }
   // The panel reloads its list from the daemon, which now holds alice.
   await expect(panel.getByTestId("tenant-holders-table")).toContainText("alice", { timeout: LOAD_TIMEOUT });

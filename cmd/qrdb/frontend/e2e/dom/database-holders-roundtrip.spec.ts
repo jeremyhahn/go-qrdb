@@ -167,7 +167,7 @@ async function enrolInUI(panel: ReturnType<Page["getByTestId"]>, i: number, user
     await expect(panel.getByTestId(`officer-cert-${i}`)).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const alerts = await panel.locator('[role="alert"]').allInnerTexts();
-    throw new Error(`enrol ${username}: alerts ${JSON.stringify(alerts)}\n${err}`);
+    throw new Error(`enrol ${username}: alerts ${JSON.stringify(alerts)}\n${err}`, { cause: err });
   }
 }
 
@@ -253,7 +253,7 @@ test("holders enrol, list, unenrol, initialize, rekey round-trip (UI ↔ live da
     });
   } catch (err) {
     const alerts = await panel.locator('[role="alert"]').allInnerTexts();
-    throw new Error(`start rekey: alerts ${JSON.stringify(alerts)}\n${err}`);
+    throw new Error(`start rekey: alerts ${JSON.stringify(alerts)}\n${err}`, { cause: err });
   }
   // A rekey round changes no holder until a quorum submits.
   expect(await serverHolderNames(d)).toEqual(["alice", "bob"]);
@@ -275,7 +275,7 @@ test("revoking an initialized holder opens a removal round (UI ↔ live daemon)"
     await expect(page.getByTestId("open-round")).toContainText("Removes bob", { timeout: LOAD_TIMEOUT });
   } catch (err) {
     const toasts = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`revoke: toasts ${JSON.stringify(toasts)}\n${err}`);
+    throw new Error(`revoke: toasts ${JSON.stringify(toasts)}\n${err}`, { cause: err });
   }
   // The revocation takes effect only once a quorum submits: bob still holds a share.
   expect(await serverHolderNames(d)).toEqual(["alice", "bob", "carol"]);

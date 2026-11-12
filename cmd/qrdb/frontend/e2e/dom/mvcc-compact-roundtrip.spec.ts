@@ -46,7 +46,7 @@ async function expectToast(page: Page, text: string | RegExp): Promise<string> {
     await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(`expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`, { cause: err });
   }
   return toast.innerText();
 }

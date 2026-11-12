@@ -115,7 +115,7 @@ async function expectToast(page: Page, text: string): Promise<void> {
       timeout: LOAD_TIMEOUT,
     });
   } catch (err) {
-    throw new Error(`toast "${text}" not shown; toasts ${await toasts(page)}\n${err}`);
+    throw new Error(`toast "${text}" not shown; toasts ${await toasts(page)}\n${err}`, { cause: err });
   }
 }
 
@@ -182,7 +182,7 @@ test("barrier-isolated tenant is created and enrols a share holder (UI ↔ live 
     await expect(panel.getByTestId("officer-cert-0")).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const alerts = await panel.locator('[role="alert"]').allInnerTexts();
-    throw new Error(`enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`);
+    throw new Error(`enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`, { cause: err });
   }
   await expect(panel.getByTestId("tenant-holders-table")).toContainText("alice", { timeout: LOAD_TIMEOUT });
   expect(await serverHolderNames(d)).toEqual(["alice"]);

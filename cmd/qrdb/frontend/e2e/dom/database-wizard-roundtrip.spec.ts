@@ -87,7 +87,7 @@ async function createThroughWizard(
     await expect(page.getByText(`${name} / Data`)).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const alerts = await page.locator("main [role=alert]").allInnerTexts();
-    throw new Error(`wizard did not complete; alerts: ${JSON.stringify(alerts)}\n${err}`);
+    throw new Error(`wizard did not complete; alerts: ${JSON.stringify(alerts)}\n${err}`, { cause: err });
   }
 }
 

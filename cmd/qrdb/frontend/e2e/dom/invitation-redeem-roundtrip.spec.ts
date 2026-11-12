@@ -139,7 +139,7 @@ test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", a
     await expect(result).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.getByTestId("redeem-error").allInnerTexts();
-    throw new Error(`redeem failed; error shown: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(`redeem failed; error shown: ${JSON.stringify(shown)}\n${err}`, { cause: err });
   }
   await expect(page.getByTestId("redeem-username")).toHaveText(INVITEE);
   const userID = (await page.getByTestId("redeem-user-id").innerText()).trim();

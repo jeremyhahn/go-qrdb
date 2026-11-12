@@ -505,7 +505,7 @@ export async function startCluster(
         (b, i) => `--- node${i + 1} stderr ---\n${Buffer.concat(b).toString()}`,
       )
       .join("\n");
-    throw new Error(`${err}\n${logs}`);
+    throw new Error(`${err}\n${logs}`, { cause: err });
   }
 
   return { adminUrl, adminUrls, nodeCount, procs, dataDirs, certDir };

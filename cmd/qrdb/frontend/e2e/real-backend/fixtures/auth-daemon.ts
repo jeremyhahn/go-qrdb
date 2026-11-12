@@ -145,6 +145,7 @@ export const test = base.extend<AuthDaemonFixtures>({
       const stderr = Buffer.concat(stderrChunks).toString();
       throw new Error(
         `[auth-daemon] health check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+        { cause: err },
       );
     }
 

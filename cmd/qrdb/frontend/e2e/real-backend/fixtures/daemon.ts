@@ -236,6 +236,7 @@ async function spawnDaemon(extraArgs: string[] = []): Promise<{ info: DaemonInfo
     const stderr = Buffer.concat(stderrChunks).toString();
     throw new Error(
       `[daemon fixture] daemon health check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+      { cause: err },
     );
   }
 
