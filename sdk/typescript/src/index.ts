@@ -95,6 +95,7 @@ export {
     RoleExistsError,
     CertNotFoundError,
     CertExportError,
+    CertKeyMismatchError,
     FeatureDisabledError,
     DesktopOnlyError,
     NotImplementedError,

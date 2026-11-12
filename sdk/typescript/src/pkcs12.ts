@@ -18,7 +18,7 @@
  * @module
  */
 
-import { CertExportError } from './errors.js';
+import { CertExportError, CertKeyMismatchError } from './errors.js';
 
 /** Iteration count for both PBKDF2 and the MAC KDF (OpenSSL's default). */
 export const PKCS12_ITERATIONS = 2048;
@@ -263,6 +263,167 @@ async function shroud(pkcs8: Uint8Array, passphrase: string): Promise<Uint8Array
 }
 
 // ---------------------------------------------------------------------------
+// Key / certificate match
+// ---------------------------------------------------------------------------
+
+const OID_ED25519 = '1.3.101.112';
+const OID_ED448 = '1.3.101.113';
+const EC_CURVES: Readonly<Record<string, string>> = {
+    '1.2.840.10045.3.1.7': 'P-256',
+    '1.3.132.0.34': 'P-384',
+    '1.3.132.0.35': 'P-521',
+};
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** Decodes the dotted form of a DER OBJECT IDENTIFIER element's contents. */
+function oidString(body: Uint8Array): string {
+    const arcs: number[] = [];
+    let v = 0;
+    for (const b of body) {
+        v = v * 128 + (b & 0x7f);
+        if ((b & 0x80) === 0) {
+            if (arcs.length === 0) arcs.push(v < 80 ? Math.floor(v / 40) : 2, v < 80 ? v % 40 : v - 80);
+            else arcs.push(v);
+            v = 0;
+        }
+    }
+    return arcs.join('.');
+}
+
+/** The contents of a BIT STRING element without its unused-bits octet. */
+function bitStringBytes(e: Element | undefined, what: string): Uint8Array {
+    if (!e || e.tag !== 0x03 || e.body.length < 1) throw new CertExportError(`${what} is not a BIT STRING`);
+    return e.body.subarray(1);
+}
+
+function base64urlToBytes(s: string): Uint8Array {
+    const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+    return base64ToBytes(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+}
+
+/** The algorithm OID, raw algorithm parameters and public key of a certificate. */
+function certPublicKey(certDER: Uint8Array): { alg: string; params?: Uint8Array; key: Uint8Array } {
+    const [cert] = children(certDER);
+    const [tbs] = cert ? children(cert.body) : [];
+    if (!tbs || tbs.tag !== 0x30) throw new CertExportError('certificate holds no TBSCertificate');
+    const fields = children(tbs.body);
+    const spki = fields[fields[0]?.tag === 0xa0 ? 6 : 5];
+    if (!spki || spki.tag !== 0x30) throw new CertExportError('certificate holds no SubjectPublicKeyInfo');
+    const [algId, bits] = children(spki.body);
+    const [algOid, params] = algId?.tag === 0x30 ? children(algId.body) : [];
+    if (!algOid || algOid.tag !== 0x06) throw new CertExportError('certificate public key names no algorithm');
+    return { alg: oidString(algOid.body), params: params?.raw, key: bitStringBytes(bits, 'certificate public key') };
+}
+
+/** Compares two EC points, either of which may be compressed (SEC 1 2.3.3). */
+function ecPointsEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (bytesEqual(a, b)) return true;
+    const [full, comp] = a[0] === 0x04 ? [a, b] : [b, a];
+    if (full[0] !== 0x04 || (comp[0] !== 0x02 && comp[0] !== 0x03)) return false;
+    const n = (full.length - 1) / 2;
+    if (comp.length !== n + 1) return false;
+    const yOdd = (full[full.length - 1] & 1) === 1;
+    return bytesEqual(comp.subarray(1), full.subarray(1, 1 + n)) && yOdd === (comp[0] === 0x03);
+}
+
+/** Derives the public key of a PKCS#8 key through Web Crypto's JWK export. */
+async function webCryptoPublic(pkcs8: Uint8Array, alg: EcKeyImportParams | Algorithm): Promise<JsonWebKey> {
+    try {
+        const key = await subtle().importKey('pkcs8', pkcs8 as BufferSource, alg, true, ['sign']);
+        return await subtle().exportKey('jwk', key);
+    } catch (err) {
+        throw new CertExportError(`private key cannot be read: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
+
+/**
+ * Checks that the PKCS#8 private key is the key of the certificate, as Go's
+ * PKCS#12 encoder does: an archive with a mismatched pair is useless to every
+ * TLS stack that reads it. RSA, EC (P-256/384/521) and Ed25519 keys have their
+ * public half derived and compared; any other algorithm must carry its public
+ * key in the PKCS#8 (RFC 5958 OneAsymmetricKey) for the check to pass.
+ *
+ * @throws CertKeyMismatchError when the public halves differ.
+ */
+async function checkKeyMatchesCert(pkcs8: Uint8Array, certDER: Uint8Array): Promise<void> {
+    const cert = certPublicKey(certDER);
+    const [info] = children(pkcs8);
+    const fields = info?.tag === 0x30 ? children(info.body) : [];
+    const [, algId, privOctets] = fields;
+    const [algOid, params] = algId?.tag === 0x30 ? children(algId.body) : [];
+    if (!algOid || algOid.tag !== 0x06 || !privOctets || privOctets.tag !== 0x04) {
+        throw new CertExportError('private key is not a PKCS#8 PrivateKeyInfo');
+    }
+    const alg = oidString(algOid.body);
+    if (alg !== cert.alg) {
+        throw new CertKeyMismatchError(`key algorithm ${alg}, certificate algorithm ${cert.alg}`);
+    }
+    // RFC 5958 [1] publicKey, when present.
+    const embedded = fields.find((e) => e.tag === 0x81 || e.tag === 0xa1);
+
+    switch (alg) {
+        case OID_RSA_ENCRYPTION: {
+            const [rsaKey] = children(privOctets.body);
+            const [, n, e] = rsaKey?.tag === 0x30 ? children(rsaKey.body) : [];
+            const [pub] = children(cert.key);
+            const [cn, ce] = pub?.tag === 0x30 ? children(pub.body) : [];
+            if (!n || !e || n.tag !== 0x02 || e.tag !== 0x02) throw new CertExportError('RSA private key is malformed');
+            if (!cn || !ce) throw new CertExportError('certificate RSA public key is malformed');
+            if (!bytesEqual(n.raw, cn.raw) || !bytesEqual(e.raw, ce.raw)) {
+                throw new CertKeyMismatchError('RSA modulus or exponent differs');
+            }
+            return;
+        }
+        case OID_EC_PUBLIC_KEY: {
+            if (!params || !cert.params || !bytesEqual(params.raw, cert.params)) {
+                throw new CertKeyMismatchError('EC curve differs');
+            }
+            const [ecKey] = children(privOctets.body);
+            const ecFields = ecKey?.tag === 0x30 ? children(ecKey.body) : [];
+            const pubField = ecFields.find((f) => f.tag === 0xa1);
+            let point: Uint8Array;
+            if (pubField) {
+                point = bitStringBytes(children(pubField.body)[0], 'EC private key public point');
+            } else {
+                const curve = params.tag === 0x06 ? EC_CURVES[oidString(params.body)] : undefined;
+                if (!curve) throw new CertExportError('EC private key carries no public point on a curve Web Crypto knows');
+                const jwk = await webCryptoPublic(pkcs8, { name: 'ECDSA', namedCurve: curve });
+                point = concat(Uint8Array.of(0x04), base64urlToBytes(jwk.x ?? ''), base64urlToBytes(jwk.y ?? ''));
+            }
+            if (!ecPointsEqual(point, cert.key)) throw new CertKeyMismatchError('EC public point differs');
+            return;
+        }
+        case OID_ED25519:
+        case OID_ED448: {
+            const jwk = embedded
+                ? undefined
+                : await webCryptoPublic(pkcs8, { name: alg === OID_ED25519 ? 'Ed25519' : 'Ed448' });
+            const pub = embedded ? embeddedPublicKey(embedded) : base64urlToBytes(jwk?.x ?? '');
+            if (!bytesEqual(pub, cert.key)) throw new CertKeyMismatchError('EdDSA public key differs');
+            return;
+        }
+        default: {
+            if (!embedded) {
+                throw new CertExportError(`cannot check a ${alg} private key against the certificate: the key carries no public key`);
+            }
+            if (!bytesEqual(embeddedPublicKey(embedded), cert.key)) {
+                throw new CertKeyMismatchError(`${alg} public key differs`);
+            }
+        }
+    }
+}
+
+/** The bytes of a OneAsymmetricKey [1] IMPLICIT BIT STRING publicKey. */
+function embeddedPublicKey(e: Element): Uint8Array {
+    if (e.tag === 0xa1) return bitStringBytes(children(e.body)[0], 'PKCS#8 public key');
+    if (e.body.length < 1) throw new CertExportError('PKCS#8 public key is empty');
+    return e.body.subarray(1);
+}
+
+// ---------------------------------------------------------------------------
 // PKCS#12
 // ---------------------------------------------------------------------------
 
@@ -276,6 +437,7 @@ const dataContentInfo = (content: Uint8Array): Uint8Array =>
  *
  * @returns the DER-encoded PFX.
  * @throws CertExportError when a PEM block is missing or malformed.
+ * @throws CertKeyMismatchError when the key is not the leaf certificate's.
  */
 export async function encodePKCS12(certPEM: string, keyPEM: string, passphrase: string): Promise<Uint8Array> {
     const certs = pemBlocks(certPEM).filter((b) => b.label === 'CERTIFICATE');
@@ -285,6 +447,7 @@ export async function encodePKCS12(certPEM: string, keyPEM: string, passphrase: 
         if (!top || top.tag !== 0x30) throw new CertExportError('CERTIFICATE block is not a DER SEQUENCE');
     }
     const pkcs8 = privateKeyInfo(keyPEM);
+    await checkKeyMatchesCert(pkcs8, certs[0].der);
     const keyId = await digest('SHA-1', certs[0].der);
     const attrs = set(seq(oid(OID_LOCAL_KEY_ID), set(octets(keyId))));
 

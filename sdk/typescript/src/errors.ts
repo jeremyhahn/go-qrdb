@@ -409,6 +409,18 @@ export class CertExportError extends QRDBError {
     }
 }
 
+/**
+ * Thrown when the private key given to a PKCS#12 export is not the key of
+ * the leaf certificate: its public half differs from the certificate's
+ * SubjectPublicKeyInfo. Raised before any archive bytes are built.
+ */
+export class CertKeyMismatchError extends CertExportError {
+    constructor(reason: string) {
+        super(`private key does not match the certificate: ${reason}`);
+        this.name = 'CertKeyMismatchError';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Feature errors
 // ---------------------------------------------------------------------------
