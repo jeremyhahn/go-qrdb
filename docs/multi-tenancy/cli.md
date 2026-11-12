@@ -385,6 +385,13 @@ qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 2 --shares
 The credential unseal. A Shamir tenant barrier refuses it: M of its share
 holders unseal it with `qrdb tenant barrier-quorum submit --op unseal`.
 
+A barrier served by several nodes holds its own key on each. The unseal reads
+the nodes from `--server`'s barrier status and is sent to every one of them,
+over `--server`'s transport (rest, grpc, quic or mcp) at the endpoint each node
+publishes, with one result printed per node; the command fails naming the
+nodes that refused. A barrier served by one node is unsealed on `--server`'s
+node.
+
 | Flag | Type | Meaning |
 |---|---|---|
 | `--id` | string | tenant ID |

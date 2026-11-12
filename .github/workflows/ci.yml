@@ -10,6 +10,8 @@
 #     registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
+#   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
+#     taken ahead of the v1.35.2 Signatures move (DS-8544, m2586)
 #   - preflight's timeout is 15 minutes against the template's 10, because it
 #     runs the diff and every full-tree architecture gate
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
@@ -65,8 +67,10 @@ on:
     # and a run whose jobs an `if:` skips would post `skipped` over the real
     # run's `CI / *` contexts, CI Gate included. The cost: adding `ci:full`
     # waits for the PR's next push or update-branch, or takes effect through
-    # `workflow_dispatch`. test/buildgates/ci_tiers_test.go holds this line.
-    types: [opened, synchronize, reopened]
+    # `workflow_dispatch`. A draft runs no CI; `ready_for_review` starts the
+    # run when it is marked ready (v1.35.3, DS-8544), so no empty commit is
+    # needed. test/buildgates/ci_tiers_test.go holds this line.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:                    # re-fire a whole workflow
   # v1.23: main's full tier after every merge and once a week, at 04:00 UTC
   # on Sunday, the end of this project's night in the factory's rotation
