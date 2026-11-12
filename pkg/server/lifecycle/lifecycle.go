@@ -974,7 +974,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices). Otherwise create a fresh manager.
 	dbManager := infra.DatabaseManager
 	if dbManager == nil {
-		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(infra.DatabaseDefaults))
+		dbDefaults := infra.DatabaseDefaults
+		if dbDefaults.RunMode == "" {
+			dbDefaults.RunMode = database.RunModeForBackend(infra.Backend)
+		}
+		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults))
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 

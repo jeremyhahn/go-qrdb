@@ -1517,8 +1517,12 @@ func runStart(f *startFlags) (err error) {
 	// from the replicated store, and its record is kept in the replicated
 	// catalog (lifecycle.BuildServices wires both and opens every recorded
 	// database), never in anything on this node's disk.
-	dbManager := database.NewManager(slog.Default(), f.dataDir,
-		database.WithDefaults(database.DefaultsFromConfig(f.databaseDefaults)))
+	dbDefaults := database.DefaultsFromConfig(f.databaseDefaults)
+	dbDefaults.RunMode = database.RunModeRaft
+	if f.mode == capabilities.ModeStandalone {
+		dbDefaults.RunMode = database.RunModeStandalone
+	}
+	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.

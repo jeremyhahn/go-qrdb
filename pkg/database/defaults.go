@@ -4,6 +4,36 @@ import "github.com/jeremyhahn/go-qrdb/pkg/config"
 
 // DefaultsFromConfig converts the node's database_defaults block into the
 // Defaults a Manager fills into a new database record.
+// RunMode is a node's run mode, which picks a new database's backend when
+// nothing else names one.
+type RunMode string
+
+const (
+	// RunModeRaft is a node hosting Raft groups; its databases default to
+	// the raft backend.
+	RunModeRaft RunMode = "raft"
+	// RunModeStandalone is a node without Raft; its databases default to
+	// the pebble backend.
+	RunModeStandalone RunMode = "standalone"
+)
+
+// runModeBackends maps a node run mode to its default database backend.
+var runModeBackends = map[RunMode]BackendType{
+	RunModeRaft:       BackendRaft,
+	RunModeStandalone: BackendPebble,
+}
+
+// RunModeForBackend is the run mode of a node whose primary engine uses
+// backend: raft for the raft backend, standalone for any other.
+func RunModeForBackend(backend BackendType) RunMode {
+	if backend == BackendRaft {
+		return RunModeRaft
+	}
+	return RunModeStandalone
+}
+
+// DefaultsFromConfig converts the node's database_defaults key. RunMode is
+// not part of the key; the caller sets it from the node's run mode.
 func DefaultsFromConfig(c config.DatabaseDefaults) Defaults {
 	return Defaults{
 		Backend:          BackendType(c.Backend),
@@ -34,6 +64,9 @@ func WithDefaults(d Defaults) ManagerOption {
 func (d Defaults) fill(cfg *DatabaseConfig) {
 	if cfg.Backend == "" {
 		cfg.Backend = d.Backend
+	}
+	if cfg.Backend == "" {
+		cfg.Backend = runModeBackends[d.RunMode]
 	}
 	if cfg.Backend != BackendRaft {
 		return

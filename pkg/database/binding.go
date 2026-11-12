@@ -135,6 +135,10 @@ type Defaults struct {
 	// RaftStateStorage is the default state storage of a raft database's
 	// group. Empty selects DefaultRaftStateStorage.
 	RaftStateStorage BackendType
+	// RunMode is the node's run mode. A create whose backend neither the
+	// request nor Backend names records the run mode's default backend
+	// (raft in raft mode, pebble in standalone mode). Empty records none.
+	RunMode RunMode
 }
 
 // BindingNode is the node-level input to ResolveBinding.

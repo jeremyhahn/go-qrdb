@@ -73,6 +73,25 @@ func TestDefaultsFill(t *testing.T) {
 			want: DatabaseConfig{Name: "app", Backend: BackendPebble},
 		},
 		{
+			name: "raft run mode records the raft backend",
+			d:    Defaults{RunMode: RunModeRaft, RaftClusterMode: RaftLocal},
+			cfg:  DatabaseConfig{Name: "app"},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal}},
+		},
+		{
+			name: "standalone run mode records the pebble backend",
+			d:    Defaults{RunMode: RunModeStandalone},
+			cfg:  DatabaseConfig{Name: "app"},
+			want: DatabaseConfig{Name: "app", Backend: BackendPebble},
+		},
+		{
+			name: "backend default wins over the run mode",
+			d:    Defaults{RunMode: RunModeRaft, Backend: BackendFile},
+			cfg:  DatabaseConfig{Name: "app"},
+			want: DatabaseConfig{Name: "app", Backend: BackendFile},
+		},
+		{
 			name: "no defaults leave the record empty",
 			cfg:  DatabaseConfig{Name: "app"},
 			want: DatabaseConfig{Name: "app"},
@@ -99,6 +118,19 @@ func TestDatabaseRaftConfigValidateStateStorage(t *testing.T) {
 	var target *InvalidRaftStateStorageError
 	if !errors.As(err, &target) || target.StateStorage != BackendObjstore {
 		t.Fatalf("Validate(objstore) = %v, want *InvalidRaftStateStorageError", err)
+	}
+}
+
+func TestRunModeForBackend(t *testing.T) {
+	for backend, want := range map[BackendType]RunMode{
+		BackendRaft:   RunModeRaft,
+		BackendPebble: RunModeStandalone,
+		BackendMemory: RunModeStandalone,
+		"":            RunModeStandalone,
+	} {
+		if got := RunModeForBackend(backend); got != want {
+			t.Errorf("RunModeForBackend(%q) = %q, want %q", backend, got, want)
+		}
 	}
 }
 
