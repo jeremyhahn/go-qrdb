@@ -51,6 +51,10 @@ const LOAD_TIMEOUT = 20_000;
 
 let cluster: DomCluster | null = null;
 
+// Booting three raft nodes takes longer than the default 30 s test timeout;
+// a beforeEach that times out leaves the nodes on the fixed ports.
+test.describe.configure({ timeout: 180_000 });
+
 test.beforeEach(async () => {
   cluster = await startCluster(3);
 });
