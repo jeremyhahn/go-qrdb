@@ -691,6 +691,9 @@ export interface IndexCreateRequest {
     readonly sparse?: boolean;
     /** Whether values are encoded as fixed-width integers for numeric range scans. */
     readonly numeric?: boolean;
+    /** Whether string values are lower-cased on write and on query, so a
+     * lookup matches regardless of case. */
+    readonly caseInsensitive?: boolean;
 }
 
 /** Parameters for querying an index by exact value. */
@@ -2908,9 +2911,21 @@ export interface CollectionInfo {
     readonly id_strategy: string;
     readonly field_hash?: string;
     readonly schema?: Readonly<Record<string, string>>;
+    readonly indexes?: readonly CollectionIndexDefinition[];
     readonly document_count: number;
     readonly storage_codec?: string;
     readonly created_at: string;
+    /** Lifecycle state (e.g. `dropping`); absent for a live collection. */
+    readonly state?: string;
+    /** When the collection entered `state` (RFC 3339). */
+    readonly state_since?: string;
+}
+
+/** A secondary index declared on a collection's field at create. */
+export interface CollectionIndexDefinition {
+    readonly field_name: string;
+    readonly unique?: boolean;
+    readonly sparse?: boolean;
 }
 
 /** Request to create a new collection. */
@@ -2920,6 +2935,7 @@ export interface CreateCollectionRequest {
     readonly id_strategy?: string;
     readonly field_hash?: string;
     readonly storage_codec?: string;
+    readonly indexes?: readonly CollectionIndexDefinition[];
 }
 
 /** Response containing a list of collections. */

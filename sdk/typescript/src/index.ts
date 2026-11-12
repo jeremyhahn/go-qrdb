@@ -291,6 +291,7 @@ export type {
 
     // Collection management
     CollectionInfo,
+    CollectionIndexDefinition,
     CreateCollectionRequest,
     ListCollectionsResponse,
 
