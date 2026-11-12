@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -366,9 +365,8 @@ func TestScaleForTenant_QuotaReservationRollback_OnSchedulerFailure(t *testing.T
 // ---------------------------------------------------------------------------
 
 // stepLog is a mutex-protected append-only log of named steps, shared across
-// the key-distributor, placement-store, and RaftHost fakes so a test can
-// assert the mandated per-replica ordering: key-delivery -> placement-put ->
-// add-node.
+// the placement-store and RaftHost fakes so a test can assert the mandated
+// per-replica ordering: placement-put -> add-node.
 type stepLog struct {
 	mu    sync.Mutex
 	steps []string
@@ -386,23 +384,6 @@ func (l *stepLog) snapshot() []string {
 	out := make([]string, len(l.steps))
 	copy(out, l.steps)
 	return out
-}
-
-// orderedKeyDistributor wraps captureDistributor to additionally record a
-// "key-delivery" step in the shared log for every call.
-type orderedKeyDistributor struct {
-	captureDistributor
-	log *stepLog
-}
-
-func (d *orderedKeyDistributor) DistributeTenantKey(
-	ctx context.Context,
-	p *placement.Placement,
-	lb *seal.StorageBarrier,
-	nodeID string,
-) error {
-	d.log.record("key-delivery")
-	return d.captureDistributor.DistributeTenantKey(ctx, p, lb, nodeID)
 }
 
 // orderingPlacementKV wraps memPlacementKV to additionally record a
@@ -427,19 +408,13 @@ func (k *orderingPlacementKV) CompareAndSwap(ctx context.Context, key string, ex
 	return k.memPlacementKV.CompareAndSwap(ctx, key, expected, next)
 }
 
-// TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering
-// verifies the per-new-replica step ordering: the placement update is
-// persisted BEFORE the tenant barrier key is delivered, which in turn
-// happens before the Raft membership AddObserver call (scale-up admits a
-// new replica as a non-voting observer, never directly as a voter -- see
-// database_service.go's scaleUp). Placement must come first because the
-// receiver's placement gate
-// (pkg/clusterkeys/receiver.go) only authorizes a delivery once its own copy
-// of the replicated placement table lists it as the assigned replica --
-// delivering the key before the entry is ever persisted anywhere means the
-// receiver rejects every attempt unconditionally (this ordering was
-// previously reversed, a real bug: see database_service.go's scaleUp).
-func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *testing.T) {
+// TestScaleForTenant_ScaleUp_PlacementThenAddNodeOrdering verifies the
+// per-new-replica step ordering: the placement update is persisted BEFORE
+// the Raft membership AddObserver call (scale-up admits a new replica as a
+// non-voting observer, never directly as a voter -- see database_service.go's
+// scaleUp). No key is shipped: the new replica keys itself from the owner's
+// signed init statement through the barrierinit watcher.
+func TestScaleForTenant_ScaleUp_PlacementThenAddNodeOrdering(t *testing.T) {
 	t.Parallel()
 
 	log := &stepLog{}
@@ -461,9 +436,6 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 	}
 
 	host := &fakeRaftHost{leaderOK: true, onObserver: func() { log.record("add-node") }}
-	dist := &orderedKeyDistributor{log: log}
-	tb := newTestTenantBarrier(t, scaleTenantID)
-	lookup := &fakeTenantBarrierLookup{tb: tb}
 
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}}
 	svc := NewDatabaseService(mgr,
@@ -474,8 +446,6 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 		WithPlacementStore(store),
 		WithPlacementScheduler(scheduler),
 		WithDatabaseLogger(logger),
-		WithKeyDistributor(dist),
-		WithBarrierLookup(lookup),
 		WithLocalNodeID(leaderNodeID),
 		WithRaftHost(host),
 	).(*DatabaseService)
@@ -496,11 +466,11 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 	}
 
 	got := log.snapshot()
-	if len(got) != 3 {
-		t.Fatalf("step log = %v, want exactly 3 steps", got)
+	if len(got) != 2 {
+		t.Fatalf("step log = %v, want exactly 2 steps", got)
 	}
-	if got[0] != "placement-put" || got[1] != "key-delivery" || got[2] != "add-node" {
-		t.Errorf("step order = %v, want [placement-put key-delivery add-node]", got)
+	if got[0] != "placement-put" || got[1] != "add-node" {
+		t.Errorf("step order = %v, want [placement-put add-node]", got)
 	}
 }
 
@@ -920,101 +890,6 @@ func idsOf(rs []placement.Replica) []uint64 {
 		out[i] = r.ReplicaID
 	}
 	return out
-}
-
-// ---------------------------------------------------------------------------
-// deliverTenantKeyToReplicaWithRetry
-// ---------------------------------------------------------------------------
-
-// errFlakyKeyDistributor is returned by flakyKeyDistributor's configured
-// failures, mirroring clusterkeys.Sender.Deliver's single collapsed
-// ErrDelivery sentinel (deliverTenantKeyToReplicaWithRetry cannot and does
-// not attempt to distinguish a transient placement-gate race from a
-// permanent failure -- see its doc comment).
-var errFlakyKeyDistributor = errors.New("flakyKeyDistributor: delivery failed")
-
-// flakyKeyDistributor fails the first failCount calls to DistributeTenantKey,
-// then succeeds. If cancel is non-nil it is invoked after recording the
-// FIRST call, letting tests assert that a cancelled context aborts the
-// retry loop early instead of exhausting every attempt.
-type flakyKeyDistributor struct {
-	failCount int
-	calls     int
-	cancel    context.CancelFunc
-}
-
-func (f *flakyKeyDistributor) DistributeTenantKey(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string) error {
-	f.calls++
-	if f.cancel != nil && f.calls == 1 {
-		f.cancel()
-	}
-	if f.calls <= f.failCount {
-		return errFlakyKeyDistributor
-	}
-	return nil
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_SucceedsAfterTransientFailures
-// verifies the retry loop converges once the underlying KeyDistributor
-// starts succeeding, within the bound scaleUpKeyDeliveryMaxAttempts allows.
-func TestDeliverTenantKeyToReplicaWithRetry_SucceedsAfterTransientFailures(t *testing.T) {
-	t.Parallel()
-
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts - 1}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(scaleCtx(), dist, lookup, p, dst, "node1")
-	if err != nil {
-		t.Fatalf("deliverTenantKeyToReplicaWithRetry error = %v, want nil after eventual success", err)
-	}
-	if dist.calls != scaleUpKeyDeliveryMaxAttempts {
-		t.Errorf("dist.calls = %d, want %d (fails on every attempt but the last)", dist.calls, scaleUpKeyDeliveryMaxAttempts)
-	}
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_GivesUpAfterMaxAttempts verifies
-// that a KeyDistributor which never succeeds is retried exactly
-// scaleUpKeyDeliveryMaxAttempts times and the final error is returned (so
-// scaleUp's existing non-fatal Warn-log behavior is unchanged).
-func TestDeliverTenantKeyToReplicaWithRetry_GivesUpAfterMaxAttempts(t *testing.T) {
-	t.Parallel()
-
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts + 5}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(scaleCtx(), dist, lookup, p, dst, "node1")
-	if !errors.Is(err, errFlakyKeyDistributor) {
-		t.Fatalf("deliverTenantKeyToReplicaWithRetry error = %v, want errFlakyKeyDistributor", err)
-	}
-	if dist.calls != scaleUpKeyDeliveryMaxAttempts {
-		t.Errorf("dist.calls = %d, want exactly %d (bounded retry)", dist.calls, scaleUpKeyDeliveryMaxAttempts)
-	}
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_ContextCancellationAbortsEarly
-// verifies that a context cancelled mid-retry stops the loop immediately
-// (returning the last delivery error) rather than sleeping out the full
-// retry budget.
-func TestDeliverTenantKeyToReplicaWithRetry_ContextCancellationAbortsEarly(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(scaleCtx())
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts + 5, cancel: cancel}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(ctx, dist, lookup, p, dst, "node1")
-	if err == nil {
-		t.Fatal("deliverTenantKeyToReplicaWithRetry error = nil, want non-nil after cancellation")
-	}
-	if dist.calls != 1 {
-		t.Errorf("dist.calls = %d, want exactly 1 (retry loop must abort on the first post-failure cancellation check)", dist.calls)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1807,10 +1682,7 @@ func TestAddObserverReplica_RejectsStaleCurrentSnapshot(t *testing.T) {
 	}
 
 	r := placement.Replica{ReplicaID: 3, NodeID: "node3", RaftAddr: "node3:1", State: placement.ReplicaStateObserver}
-	updated, kerr, placementFailed, err := addObserverReplica(context.Background(), host, store, nil, nil, current, r, "local")
-	if kerr != nil {
-		t.Fatalf("unexpected key-delivery error: %v", kerr)
-	}
+	updated, placementFailed, err := addObserverReplica(context.Background(), host, store, current, r)
 	if !placementFailed {
 		t.Error("placementFailed = false, want true (the write must be attributed to the placement step)")
 	}

@@ -17,7 +17,6 @@ package service
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 	"testing"
 
@@ -25,36 +24,11 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // ---------------------------------------------------------------------------
 // Fakes
 // ---------------------------------------------------------------------------
-
-// fakeKeyDeliverer is a test double for RebalanceKeyDeliverer.
-type fakeKeyDeliverer struct {
-	deliverFn func(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string) error
-}
-
-func (f *fakeKeyDeliverer) DistributeTenantKey(ctx context.Context, p *placement.Placement, barrier *seal.StorageBarrier, selfNodeID string) error {
-	if f.deliverFn != nil {
-		return f.deliverFn(ctx, p, barrier, selfNodeID)
-	}
-	return nil
-}
-
-// fakeBarrierLookup is a test double for RebalanceBarrierLookup.
-type fakeBarrierLookup struct {
-	getFn func(tenantID string) (*seal.TenantBarrier, error)
-}
-
-func (f *fakeBarrierLookup) GetTenant(tenantID string) (*seal.TenantBarrier, error) {
-	if f.getFn != nil {
-		return f.getFn(tenantID)
-	}
-	return nil, errors.New("no barrier configured")
-}
 
 // newTestPlacementStore creates an in-memory *placement.Store pre-seeded with
 // the provided placements.
@@ -148,19 +122,11 @@ func TestRebalanceService_SetRebalanceDeps_InjectsFields(t *testing.T) {
 	}
 
 	store := newTestPlacementStore(t)
-	deliverer := &fakeKeyDeliverer{}
-	lookup := &fakeBarrierLookup{}
 
-	concrete.SetRebalanceDeps(store, deliverer, lookup, "self:9100")
+	concrete.SetRebalanceDeps(store, "self:9100")
 
 	if concrete.placementStore != store {
 		t.Error("placementStore not set by SetRebalanceDeps")
-	}
-	if concrete.keyDeliverer != deliverer {
-		t.Error("keyDeliverer not set by SetRebalanceDeps")
-	}
-	if concrete.barrierLookup != lookup {
-		t.Error("barrierLookup not set by SetRebalanceDeps")
 	}
 	if concrete.selfNodeID != "self:9100" {
 		t.Errorf("selfNodeID = %q, want self:9100", concrete.selfNodeID)
@@ -171,12 +137,12 @@ func TestRebalanceService_SetRebalanceDeps_NilArgumentsAccepted(t *testing.T) {
 	svc := NewRebalanceService(&mockHost{})
 	concrete := svc.(*RebalanceService)
 	// Nil arguments must not panic and must zero the fields.
-	concrete.SetRebalanceDeps(nil, nil, nil, "")
+	concrete.SetRebalanceDeps(nil, "")
 	if concrete.placementStore != nil {
 		t.Error("expected nil placementStore")
 	}
-	if concrete.keyDeliverer != nil {
-		t.Error("expected nil keyDeliverer")
+	if concrete.selfNodeID != "" {
+		t.Error("expected empty selfNodeID")
 	}
 }
 
@@ -709,60 +675,6 @@ func TestMoveTenantGroupShard_LeaderRouting_NonMemberFallsBackWhenSourceIsOnlyRe
 // moveTenantGroupShard: key delivery failure is non-fatal
 // ---------------------------------------------------------------------------
 
-// TestMoveTenantGroupShard_KeyDeliveryFailure_NonFatal verifies that, exactly
-// like DatabaseService.scaleUp, a key-delivery failure for the MOVE
-// destination is logged and does NOT fail the call: the destination's own
-// TenantShardReconciler pulls the key independently once its placement view
-// catches up. This is a deliberate behavior change from the move's old
-// key-delivery-is-fatal semantics, which predates observer-first admission
-// and could never have worked anyway once placement-put was correctly
-// reordered to precede key delivery (see addObserverReplica's doc comment).
-func TestMoveTenantGroupShard_KeyDeliveryFailure_NonFatal(t *testing.T) {
-	p := newTestPlacement("acme", "db1", 10)
-	store := newTestPlacementStore(t, p)
-
-	deliverErr := errors.New("HPKE seal failed")
-	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
-	svc := &RebalanceService{
-		host:           hostForMove(t),
-		placementStore: store,
-		selfNodeID:     "node-b:9100",
-		raftHost:       host,
-		logger:         testLogger(),
-		keyDeliverer: &fakeKeyDeliverer{
-			deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string) error {
-				return deliverErr
-			},
-		},
-		barrierLookup: &fakeBarrierLookup{
-			getFn: func(_ string) (*seal.TenantBarrier, error) {
-				return nil, errors.New("barrier not found")
-			},
-		},
-	}
-
-	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
-		t.Fatalf("unexpected error (key-delivery failure must be non-fatal): %v", err)
-	}
-
-	// The move must still have completed: dst admitted as observer, src
-	// evicted, placement fully updated.
-	if len(host.observerCalls) != 1 {
-		t.Errorf("expected 1 AddObserver call, got %d", len(host.observerCalls))
-	}
-	if len(host.removeCalls) != 1 {
-		t.Errorf("expected 1 RemoveFollowerNode call, got %d", len(host.removeCalls))
-	}
-	current, getErr := store.Get(context.Background(), p.TenantID, p.Database)
-	if getErr != nil {
-		t.Fatalf("store.Get: %v", getErr)
-	}
-	if len(current.Replicas) != 2 {
-		t.Fatalf("expected 2 replicas after move, got %d", len(current.Replicas))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // moveTenantGroupShard: AddObserver failure
 // ---------------------------------------------------------------------------
@@ -1213,17 +1125,12 @@ func TestMoveTenantGroupShard_HappyPath_NoKeyDelivery(t *testing.T) {
 	}
 }
 
-// TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrdering
-// verifies the step ordering: the placement update (dst added) is persisted
-// BEFORE the tenant barrier key is delivered, which in turn happens before
-// the Raft AddObserver call -- reusing the SAME ordering fakes
-// (orderingPlacementKV / orderedKeyDistributor) database_service_scale_test.go
-// uses to pin scale-up's identical ordering contract, since both now share
-// the addObserverReplica helper. This is the direct regression test for the
-// ordering defect fixed in moveTenantGroupShard (placement-before-key-
-// delivery; the receiver's placement gate rejects a key delivered before its
-// own copy of the placement table lists the destination replica).
-func TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrdering(t *testing.T) {
+// TestMoveTenantGroupShard_PlacementBeforeAddObserverOrdering verifies the
+// step ordering: the placement update (dst added) is persisted BEFORE the
+// Raft AddObserver call -- reusing the ordering fake (orderingPlacementKV)
+// database_service_scale_test.go uses to pin scale-up's identical ordering
+// contract, since both share the addObserverReplica helper.
+func TestMoveTenantGroupShard_PlacementBeforeAddObserverOrdering(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 
 	log := &stepLog{}
@@ -1240,9 +1147,6 @@ func TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrderin
 	log.mu.Unlock()
 
 	host := &fakeRaftHost{leaderID: 2, leaderOK: true, onObserver: func() { log.record("add-node") }}
-	dist := &orderedKeyDistributor{log: log}
-	tb := newTestTenantBarrier(t, "acme")
-	lookup := &fakeTenantBarrierLookup{tb: tb}
 
 	svc := &RebalanceService{
 		host:           hostForMove(t),
@@ -1250,8 +1154,6 @@ func TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrderin
 		selfNodeID:     "node-b:9100",
 		raftHost:       host,
 		logger:         testLogger(),
-		keyDeliverer:   dist,
-		barrierLookup:  lookup,
 	}
 
 	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
@@ -1261,12 +1163,14 @@ func TestMoveTenantGroupShard_PlacementBeforeKeyDeliveryBeforeAddObserverOrderin
 
 	got := log.snapshot()
 	// The remove-src placement-put also records "placement-put", so at least
-	// 3 steps are expected; only the first 3 (dst admission) are asserted.
-	if len(got) < 3 {
-		t.Fatalf("step log = %v, want at least 3 steps", got)
+	// 2 steps are expected; only the first 2 (dst admission) are asserted.
+	// No key is shipped between them: the destination keys itself from the
+	// barrier owner's signed init statement once the placement names it.
+	if len(got) < 2 {
+		t.Fatalf("step log = %v, want at least 2 steps", got)
 	}
-	if got[0] != "placement-put" || got[1] != "key-delivery" || got[2] != "add-node" {
-		t.Fatalf("step order = %v, want [placement-put key-delivery add-node ...]", got)
+	if got[0] != "placement-put" || got[1] != "add-node" {
+		t.Fatalf("step order = %v, want [placement-put add-node ...]", got)
 	}
 }
 
@@ -1562,132 +1466,6 @@ func TestRebalancePlacementReadError_ErrorAndUnwrap(t *testing.T) {
 // deliverKeyToDst: success path
 // ---------------------------------------------------------------------------
 
-// TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesSelfNodeID
-// verifies moveTenantGroupShard's key delivery (through the shared
-// addObserverReplica -> deliverTenantKeyToReplicaWithRetry ->
-// deliverTenantKeyToReplica chain) resolves the tenant barrier and
-// correctly propagates selfNodeID to the deliverer, exactly
-// as DatabaseService.scaleUp's identical delivery does. This replaces the
-// old TestDeliverKeyToDst_SuccessPath, which exercised a
-// RebalanceService.deliverKeyToDst method now superseded by the shared
-// addObserverReplica helper.
-func TestMoveTenantGroupShard_KeyDeliverySuccess_PropagatesSelfNodeID(t *testing.T) {
-	// Build a minimal real TenantBarrier (sealed, StrategyNone) so that
-	// Barrier().ActiveStrategy() is callable. A sealed barrier returns "" from
-	// ActiveStrategy, which is not StrategySystemBarrier, so the key ships.
-	backend := seal.NewMemoryBackend()
-	tb, err := seal.NewTenantBarrier(
-		"acme",
-		slog.Default(),
-		backend,
-		seal.BarrierConfig{
-			PreferenceOrder: []seal.StrategyID{seal.StrategyNone},
-			RootKeyPath:     "root",
-		},
-		seal.NewNoneStrategy(),
-	)
-	if err != nil {
-		t.Fatalf("NewTenantBarrier: %v", err)
-	}
-
-	delivered := false
-	var capturedSelfNodeID string
-	deliverer := &fakeKeyDeliverer{
-		deliverFn: func(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, selfNodeID string) error {
-			delivered = true
-			capturedSelfNodeID = selfNodeID
-			return nil
-		},
-	}
-
-	p := newTestPlacement("acme", "db1", 10)
-	store := newTestPlacementStore(t, p)
-	svc := &RebalanceService{
-		host:           hostForMove(t),
-		placementStore: store,
-		// self is node-b (replica 2, the leader); the MOVE's source is
-		// node-a (replica 1, NOT self) so this exercises the ordinary path
-		// without triggering the self-source leadership transfer (see
-		// TestMoveTenantGroupShard_LeaderRouting_TransfersAwayWhenSelfIsSource).
-		selfNodeID:   "node-b:9100",
-		raftHost:     &fakeRaftHost{leaderID: 2, leaderOK: true},
-		logger:       testLogger(),
-		keyDeliverer: deliverer,
-		barrierLookup: &fakeBarrierLookup{
-			getFn: func(_ string) (*seal.TenantBarrier, error) {
-				return tb, nil
-			},
-		},
-	}
-
-	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	if err := svc.moveTenantGroupShard(context.Background(), move, p); err != nil {
-		t.Fatalf("moveTenantGroupShard: %v", err)
-	}
-
-	if !delivered {
-		t.Error("the key was not delivered for a non-platform-custody barrier")
-	}
-	if capturedSelfNodeID != "node-b:9100" {
-		t.Errorf("selfNodeID = %q, want node-b:9100", capturedSelfNodeID)
-	}
-}
-
-// TestMoveTenantGroupShard_PlatformCustodySkipsKeyDelivery verifies a MOVE of
-// a platform-custody tenant's group ships no key: the barrier is sealed by the
-// system barrier, so the destination self-initializes under its own key and
-// the deliverer must never be reached.
-func TestMoveTenantGroupShard_PlatformCustodySkipsKeyDelivery(t *testing.T) {
-	ctx := context.Background()
-	sys, err := seal.NewStorageBarrier(slog.Default(), seal.NewMemoryBackend(), seal.BarrierConfig{RootKeyPath: "sys/root"}, seal.NewNoneStrategy())
-	if err != nil {
-		t.Fatalf("NewStorageBarrier: %v", err)
-	}
-	if err := sys.Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("Initialize(system): %v", err)
-	}
-	tb, err := seal.NewTenantBarrier("acme", slog.Default(), seal.NewMemoryBackend(),
-		seal.BarrierConfig{RootKeyPath: "tenants/acme/root"}, seal.NewSystemBarrierStrategy(sys))
-	if err != nil {
-		t.Fatalf("NewTenantBarrier: %v", err)
-	}
-	if err := tb.Initialize(ctx, seal.Credentials{}); err != nil {
-		t.Fatalf("Initialize(tenant): %v", err)
-	}
-	if got := tb.Barrier().ActiveStrategy(); got != seal.StrategySystemBarrier {
-		t.Fatalf("ActiveStrategy = %q, want %q", got, seal.StrategySystemBarrier)
-	}
-
-	delivered := false
-	deliverer := &fakeKeyDeliverer{
-		deliverFn: func(context.Context, *placement.Placement, *seal.StorageBarrier, string) error {
-			delivered = true
-			return nil
-		},
-	}
-
-	p := newTestPlacement("acme", "db1", 10)
-	svc := &RebalanceService{
-		host:           hostForMove(t),
-		placementStore: newTestPlacementStore(t, p),
-		selfNodeID:     "node-b:9100",
-		raftHost:       &fakeRaftHost{leaderID: 2, leaderOK: true},
-		logger:         testLogger(),
-		keyDeliverer:   deliverer,
-		barrierLookup: &fakeBarrierLookup{
-			getFn: func(string) (*seal.TenantBarrier, error) { return tb, nil },
-		},
-	}
-
-	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
-	if err := svc.moveTenantGroupShard(ctx, move, p); err != nil {
-		t.Fatalf("moveTenantGroupShard: %v", err)
-	}
-	if delivered {
-		t.Error("a platform-custody tenant's key was delivered to the MOVE destination")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // WithRebalance* option constructors
 // ---------------------------------------------------------------------------
@@ -1698,24 +1476,6 @@ func TestWithRebalancePlacementStore_SetsField(t *testing.T) {
 	WithRebalancePlacementStore(store)(svc)
 	if svc.placementStore != store {
 		t.Error("WithRebalancePlacementStore did not set field")
-	}
-}
-
-func TestWithRebalanceKeyDeliverer_SetsField(t *testing.T) {
-	d := &fakeKeyDeliverer{}
-	svc := &RebalanceService{host: &mockHost{}}
-	WithRebalanceKeyDeliverer(d)(svc)
-	if svc.keyDeliverer != d {
-		t.Error("WithRebalanceKeyDeliverer did not set field")
-	}
-}
-
-func TestWithRebalanceBarrierLookup_SetsField(t *testing.T) {
-	lookup := &fakeBarrierLookup{}
-	svc := &RebalanceService{host: &mockHost{}}
-	WithRebalanceBarrierLookup(lookup)(svc)
-	if svc.barrierLookup != lookup {
-		t.Error("WithRebalanceBarrierLookup did not set field")
 	}
 }
 

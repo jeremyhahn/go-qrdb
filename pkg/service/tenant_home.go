@@ -66,13 +66,10 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	if !errors.Is(err, placement.ErrPlacementNotFound) {
 		return nil, err
 	}
-	var autoUnseal bool
 	if s.tenantInfo != nil {
-		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
-		if err != nil {
+		if _, err := s.tenantInfo.GetTenant(ctx, tenantID); err != nil {
 			return nil, err
 		}
-		autoUnseal = info.BarrierAutoUnseal
 	}
 	shardID, err := s.manager.ClaimShardID(ctx)
 	if err != nil {
@@ -106,7 +103,7 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 		slog.String("tenant", tenantID),
 		slog.Uint64("shard_id", plan.ShardID),
 		slog.Int("rf", plan.RF))
-	s.inviteReplicas(ctx, tenantID, database.TenantHomeName, plan, autoUnseal)
+	s.inviteReplicas(ctx, tenantID, database.TenantHomeName, plan)
 	return plan, nil
 }
 

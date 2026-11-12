@@ -139,7 +139,7 @@ func PeerAdminURLMap(entries []qrdbconfig.PeerAdminEntry) map[string]string {
 // clustered node (sdk/go/node) compose it identically.
 type RaftTenantClusterConfig struct {
 	// Services are the node's services; their DatabaseService and
-	// RebalanceService receive the key distributor and the replica host.
+	// RebalanceService receive the local node ID and the replica host.
 	Services *Node
 	// Host is the shared Raft host dedicated raft groups run on; nil on a
 	// node without one, which composes nothing that needs it.
@@ -219,10 +219,10 @@ func (c *RaftTenantCluster) ServerOptions() []server.ServerOption {
 //     created here, and trusted through CACertPool, the CA node certificates
 //     chain to, for that tenant alone (wirePlatformInit) -- so every node it
 //     is placed on initializes its own key under its own system barrier;
-//   - DatabaseService's key distributor, so a dedicated raft database's
-//     owner-sealed tenant key reaches its replicas when it is placed;
-//   - RebalanceService's placement table, key deliverer and barrier lookup,
-//     for a dedicated tenant group's MOVE;
+//   - DatabaseService's and RebalanceService's local node ID, and
+//     RebalanceService's placement table for a dedicated tenant group's MOVE.
+//     No tenant key is shipped: a replica placed later (scale-out, MOVE)
+//     keys itself from its owner's statement on the init watcher's next poll;
 //   - with dedicated raft groups, the replica host both services add and
 //     remove replicas through, and the barrier init watcher: every tenant
 //     barrier a group placed here belongs to is initialized with this node's
@@ -250,24 +250,13 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 	if c.Host != nil {
 		wirePlatformInit(c.Services, c.CACertPool, c.Identity)
 	}
-	if out.KeySender != nil {
-		if concrete, ok := c.Services.Database.(*service.DatabaseService); ok {
-			concrete.SetDistributor(out.KeySender, c.Barriers, c.RaftAddr)
-		}
+	if concrete, ok := c.Services.Database.(*service.DatabaseService); ok {
+		concrete.SetLocalNodeID(c.RaftAddr)
 	}
-	// Every dependency is nil-guarded inside: without the sender or the
-	// placement table the dedicated-tenant MOVE path is off and the system
-	// shard path is used.
+	// Without the placement table the dedicated-tenant MOVE path is off and
+	// the system shard path is used.
 	if concrete, ok := c.Services.Rebalance.(*service.RebalanceService); ok {
-		var deliverer service.RebalanceKeyDeliverer
-		if out.KeySender != nil {
-			deliverer = out.KeySender
-		}
-		var lookup service.RebalanceBarrierLookup
-		if c.Barriers != nil {
-			lookup = c.Barriers
-		}
-		concrete.SetRebalanceDeps(c.Services.PlacementStore, deliverer, lookup, c.RaftAddr)
+		concrete.SetRebalanceDeps(c.Services.PlacementStore, c.RaftAddr)
 	}
 	if c.DedicatedRaft && c.Host != nil {
 		replicas := &replicaHost{host: c.Host, gate: c.FeatureGate}
