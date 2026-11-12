@@ -1393,6 +1393,23 @@ export interface CompactionProgress {
  * A passwordless user entity. Authentication is exclusively via mTLS
  * X.509 certificates.
  */
+/**
+ * A certificate bound to a user account: the certificate authenticates as
+ * the account while the binding is live.
+ */
+export interface CertBinding {
+    /**
+     * Base64url SHA-256 the certificate is matched by: of its
+     * SubjectPublicKeyInfo for the canonical kind, of the whole DER for a
+     * full-certificate pin.
+     */
+    readonly thumbprint: string;
+    /** What the thumbprint is over (e.g. "spki_sha256"). */
+    readonly kind: string;
+    /** RFC 3339 time the binding stops authenticating; absent when it does not expire. */
+    readonly notAfter?: string;
+}
+
 export interface User {
     /** Globally unique user identifier. */
     readonly id: string;
@@ -1409,6 +1426,11 @@ export interface User {
     readonly lifecycle: string;
     /** Whether this is a built-in system user. */
     readonly system: boolean;
+    /**
+     * The account's enrolled certificate bindings (mTLS keys), expired ones
+     * included. Absent when the account has none.
+     */
+    readonly certBindings?: readonly CertBinding[];
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last update timestamp. */

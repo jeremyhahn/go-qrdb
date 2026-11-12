@@ -49,6 +49,10 @@
   let databases: DatabaseInfo[] = $state([]);
   let loading: boolean = $state(true);
   let saving: boolean = $state(false);
+  let statusUpdating: boolean = $state(false);
+  let bindingUpdating: boolean = $state(false);
+  let newThumbprint: string = $state("");
+  let newNotAfter: string = $state("");
 
   /** Whether we are creating a new user (vs editing an existing one). */
   let isCreate = $derived(userId === null);
@@ -148,6 +152,78 @@
       showToast("error", msg);
     } finally {
       saving = false;
+    }
+  }
+
+  /** Re-reads the user from the server after a status or binding change. */
+  async function reloadUser(): Promise<void> {
+    if (userId === null) return;
+    existingUser = await client.users.get(userId);
+  }
+
+  /** Disables or re-enables the account and shows the server's verdict. */
+  async function handleSetEnabled(enable: boolean): Promise<void> {
+    if (userId === null) return;
+    try {
+      statusUpdating = true;
+      if (enable) {
+        await client.users.enable(userId);
+      } else {
+        await client.users.disable(userId);
+      }
+      await reloadUser();
+      showToast("success", `User "${username}" ${enable ? "enabled" : "disabled"}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : `Failed to ${enable ? "enable" : "disable"} user`;
+      showToast("error", msg);
+    } finally {
+      statusUpdating = false;
+    }
+  }
+
+  /** Binds a certificate (by SPKI SHA-256 thumbprint) to the account. */
+  async function handleAddBinding(): Promise<void> {
+    if (userId === null) return;
+    const thumbprint = newThumbprint.trim();
+    if (thumbprint === "") {
+      showToast("warning", "Thumbprint is required");
+      return;
+    }
+    let notAfterUnix: number | undefined;
+    if (newNotAfter !== "") {
+      const ms = Date.parse(newNotAfter);
+      if (Number.isNaN(ms)) {
+        showToast("warning", "Expiry is not a valid date");
+        return;
+      }
+      notAfterUnix = Math.floor(ms / 1000);
+    }
+    try {
+      bindingUpdating = true;
+      existingUser = await client.users.addCertBinding(userId, thumbprint, notAfterUnix);
+      newThumbprint = "";
+      newNotAfter = "";
+      showToast("success", "Certificate binding added");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to add certificate binding";
+      showToast("error", msg);
+    } finally {
+      bindingUpdating = false;
+    }
+  }
+
+  /** Withdraws a certificate binding from the account. */
+  async function handleRemoveBinding(thumbprint: string): Promise<void> {
+    if (userId === null) return;
+    try {
+      bindingUpdating = true;
+      existingUser = await client.users.removeCertBinding(userId, thumbprint);
+      showToast("success", "Certificate binding removed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to remove certificate binding";
+      showToast("error", msg);
+    } finally {
+      bindingUpdating = false;
     }
   }
 
@@ -273,6 +349,111 @@
         </div>
       </div>
     </div>
+
+    {#if existingUser !== null}
+      <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <!-- Account status -->
+        <div class="card bg-base-200 shadow">
+          <div class="card-body">
+            <h3 class="card-title text-base">Account Status</h3>
+            <div class="flex items-center gap-3">
+              <span
+                class="badge"
+                class:badge-success={existingUser.lifecycle === "active"}
+                class:badge-error={existingUser.lifecycle === "disabled"}
+                class:badge-warning={existingUser.lifecycle !== "active" && existingUser.lifecycle !== "disabled"}
+                data-testid="user-lifecycle-badge"
+              >
+                {existingUser.lifecycle}
+              </span>
+              {#if existingUser.lifecycle === "disabled"}
+                <button
+                  class="btn btn-success btn-sm"
+                  data-testid="user-enable-btn"
+                  onclick={() => void handleSetEnabled(true)}
+                  disabled={statusUpdating}
+                >
+                  Enable
+                </button>
+              {:else}
+                <button
+                  class="btn btn-error btn-sm"
+                  data-testid="user-disable-btn"
+                  onclick={() => void handleSetEnabled(false)}
+                  disabled={statusUpdating || existingUser.system}
+                >
+                  Disable
+                </button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <!-- Certificate bindings -->
+        <div class="card bg-base-200 shadow">
+          <div class="card-body">
+            <h3 class="card-title text-base">Certificate Bindings</h3>
+            <p class="text-base-content/70 text-xs">
+              A bound certificate authenticates as this user. Enter the base64url
+              SHA-256 thumbprint of the certificate's SubjectPublicKeyInfo.
+            </p>
+            {#if (existingUser.certBindings ?? []).length === 0}
+              <p class="text-base-content/50 text-sm" data-testid="user-cert-bindings-empty">
+                No certificate bindings.
+              </p>
+            {:else}
+              <ul class="flex flex-col gap-1" data-testid="user-cert-bindings">
+                {#each existingUser.certBindings ?? [] as binding (binding.thumbprint)}
+                  <li class="flex items-center gap-2 rounded px-2 hover:bg-base-300">
+                    <span class="font-mono text-xs break-all" data-testid="user-cert-binding-thumbprint">
+                      {binding.thumbprint}
+                    </span>
+                    <span class="badge badge-xs badge-ghost">{binding.kind}</span>
+                    {#if binding.notAfter}
+                      <span class="text-base-content/60 text-xs">until {binding.notAfter}</span>
+                    {/if}
+                    <button
+                      class="btn btn-ghost btn-xs text-error ml-auto"
+                      data-testid="user-cert-binding-remove"
+                      aria-label="Remove binding {binding.thumbprint}"
+                      onclick={() => void handleRemoveBinding(binding.thumbprint)}
+                      disabled={bindingUpdating}
+                    >
+                      Remove
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            <div class="flex flex-col gap-2 pt-2">
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                placeholder="SPKI SHA-256 thumbprint (base64url)"
+                aria-label="Certificate thumbprint"
+                data-testid="user-cert-binding-thumbprint-input"
+                bind:value={newThumbprint}
+              />
+              <input
+                type="datetime-local"
+                class="input input-bordered input-sm w-full"
+                aria-label="Binding expiry (optional)"
+                data-testid="user-cert-binding-not-after-input"
+                bind:value={newNotAfter}
+              />
+              <button
+                class="btn btn-primary btn-sm self-start"
+                data-testid="user-cert-binding-add"
+                onclick={() => void handleAddBinding()}
+                disabled={bindingUpdating || newThumbprint.trim() === ""}
+              >
+                Add Binding
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- Database access summary -->
     {#if databases.length > 0}

@@ -249,6 +249,7 @@ export type {
     CreateUserRequest,
     UpdateUserRequest,
     AddCertBindingRequest,
+    CertBinding,
     ListUsersRequest,
     ListUsersResponse,
 

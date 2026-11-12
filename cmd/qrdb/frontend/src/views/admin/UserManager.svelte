@@ -41,6 +41,9 @@
   let showDetail: boolean = $state(false);
   let detailUserId: string | null = $state(null);
   let showInvite: boolean = $state(false);
+  let lookupThumbprint: string = $state("");
+  let lookupLoading: boolean = $state(false);
+  let lookupNotFound: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -132,6 +135,32 @@
     void fetchUsers();
   }
 
+  /**
+   * Looks the account up by a bound certificate's thumbprint and opens it.
+   * A 404 means no account holds the binding; other refusals show the
+   * server's message.
+   */
+  async function handleThumbprintLookup(): Promise<void> {
+    const thumbprint = lookupThumbprint.trim();
+    if (thumbprint === "") return;
+    try {
+      lookupLoading = true;
+      lookupNotFound = false;
+      const user = await client.users.getUserByCertThumbprint(thumbprint);
+      detailUserId = user.id;
+      showDetail = true;
+    } catch (err: unknown) {
+      if (err instanceof TransportError && err.statusCode === 404) {
+        lookupNotFound = true;
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to look up user";
+        showToast("error", msg);
+      }
+    } finally {
+      lookupLoading = false;
+    }
+  }
+
   /** Opens the invite-a-user modal (see InviteUserModal.svelte). */
   function handleInvite(): void {
     showInvite = true;
@@ -175,6 +204,43 @@
         Invite User
       </button>
     </div>
+
+    <!-- Lookup by certificate thumbprint -->
+    <form
+      class="flex flex-wrap items-end gap-2"
+      onsubmit={(e) => {
+        e.preventDefault();
+        void handleThumbprintLookup();
+      }}
+    >
+      <label class="form-control w-full max-w-xl" for="user-lookup-thumbprint">
+        <div class="label">
+          <span class="label-text font-semibold">Find by certificate thumbprint</span>
+        </div>
+        <input
+          id="user-lookup-thumbprint"
+          type="text"
+          class="input input-bordered input-sm w-full font-mono"
+          placeholder="SPKI SHA-256 thumbprint (base64url)"
+          data-testid="user-lookup-thumbprint-input"
+          bind:value={lookupThumbprint}
+          oninput={() => (lookupNotFound = false)}
+        />
+      </label>
+      <button
+        type="submit"
+        class="btn btn-sm btn-outline"
+        data-testid="user-lookup-thumbprint-btn"
+        disabled={lookupLoading || lookupThumbprint.trim() === ""}
+      >
+        Find
+      </button>
+      {#if lookupNotFound}
+        <span class="text-warning text-sm" data-testid="user-lookup-not-found">
+          No user holds this certificate binding.
+        </span>
+      {/if}
+    </form>
 
     <CrudTable
       title="Users"
