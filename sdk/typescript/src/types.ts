@@ -2635,7 +2635,7 @@ export interface MetricFamily {
  * SDK's `transport.DatabaseRaftConfig`.
  */
 export interface DatabaseRaftConfig {
-    /** Cluster mode (e.g. "single", "multi"). */
+    /** Cluster mode: "none", "local" or "distributed". */
     readonly clusterMode: string;
     /** Replica identifier for this database. */
     readonly replicaId?: number;
@@ -2759,7 +2759,7 @@ export interface TokenDiscoveryInfo {
 /** Raft configuration as a database reports it. Discovery secrets are
  * write-only: each is reported only as set. The Go SDK's `DatabaseRaftInfo`. */
 export interface DatabaseRaftInfo {
-    /** Cluster mode (e.g. "single", "multi"). */
+    /** Cluster mode: "none", "local" or "distributed". */
     readonly clusterMode: string;
     /** Replica identifier for this database. */
     readonly replicaId?: number;
@@ -2806,6 +2806,9 @@ export interface DatabaseBarrierStatus {
     readonly hardwareBacked: boolean;
     /** RFC 3339 time the barrier was first initialized; absent until then. */
     readonly initializedAt?: string;
+    /** The database barrier's cluster seal state (wire `cluster_seal`).
+     * Absent from a server that does not report it. */
+    readonly clusterSeal?: ClusterSeal;
 }
 
 /** Encryption barrier settings a create request sets. The secret
