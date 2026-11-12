@@ -325,7 +325,12 @@ export function serverRefusal(body: string): Error {
     return new Error(body);
 }
 
-async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+async function requestJSON<T>(
+    baseUrl: string,
+    path: string,
+    init?: RequestInit,
+    camel = true,
+): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -347,7 +352,7 @@ async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit)
         );
     }
     const raw = await resp.json();
-    return deepSnakeToCamel(raw) as T;
+    return (camel ? deepSnakeToCamel(raw) : raw) as T;
 }
 
 /**
@@ -2073,7 +2078,7 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateCollectionRequest): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<CollectionInfo>('/v1/collections', {
+                return this.fetchWireJSON<CollectionInfo>('/v1/collections', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
@@ -2081,12 +2086,12 @@ export class RestClient implements Client {
             },
             get: async (database: string, name: string): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<CollectionInfo>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                return this.fetchWireJSON<CollectionInfo>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
                 );
             },
             list: async (database: string): Promise<CollectionInfo[]> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListCollectionsResponse>(`/v1/collections/list${buildQuery({ database })}`,
+                const resp = await this.fetchWireJSON<ListCollectionsResponse>(`/v1/collections/list${buildQuery({ database })}`,
                 );
                 return resp.collections as CollectionInfo[];
             },
@@ -2098,7 +2103,7 @@ export class RestClient implements Client {
             },
             insertDocument: async (req: InsertDocumentRequest): Promise<InsertDocumentResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<InsertDocumentResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
+                return this.fetchWireJSON<InsertDocumentResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2112,7 +2117,7 @@ export class RestClient implements Client {
                 id: string,
             ): Promise<DocumentResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<DocumentResponse>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                return this.fetchWireJSON<DocumentResponse>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
                 );
             },
             updateDocument: async (req: UpdateDocumentRequest): Promise<void> => {
@@ -2137,7 +2142,7 @@ export class RestClient implements Client {
             },
             listDocuments: async (req: ListDocumentsRequest): Promise<ListDocumentsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListDocumentsResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
+                return this.fetchWireJSON<ListDocumentsResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
                         page_size: req.page_size,
                         page_token: req.page_token,
                     })}`,
@@ -3023,6 +3028,17 @@ export class RestClient implements Client {
     /** Database-scope-aware wrapper over {@link requestJSON}. */
     private fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
         return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init));
+    }
+
+    /**
+     * Like fetchJSON, but returns the server's JSON keys as sent. The
+     * collection group's contract (CollectionInfo, ListDocumentsResponse,
+     * DocumentResponse) is the Go handlers' snake_case shape, which the
+     * Wails transport returns unchanged; a user document's own keys must
+     * never be renamed either.
+     */
+    private fetchWireJSON<T>(path: string, init?: RequestInit): Promise<T> {
+        return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init), false);
     }
 
     /**
