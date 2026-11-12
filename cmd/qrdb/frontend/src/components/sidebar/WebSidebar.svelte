@@ -86,7 +86,9 @@
   {collapsed}
 />
 
-<!-- Server Admin section -->
+<!-- Server Admin section: not offered to a caller the server refuses its
+     admin topology (a tenant user without an admin role). -->
+{#if !connManagerStore.nonAdminProfileIds.includes(profileId)}
 {#if !collapsed}
   <div class="mt-3 mb-1 flex items-center gap-1.5 px-2">
     <Shield class="h-3 w-3 text-base-content/40" />
@@ -99,3 +101,4 @@
 {/if}
 
 <AdminNav {profileId} {collapsed} {serverMode} />
+{/if}

@@ -110,8 +110,9 @@ export interface StartDaemonOptions {
    */
   tenantAdmin?: TenantAdminOptions;
   /**
-   * Like tenantAdmin, then the tenant admin invites a plain user holding one
-   * data role (no admin role), who redeems the invitation with its own CSR;
+   * Like tenantAdmin, then the tenant admin invites a plain user holding the
+   * tenant's data role and a role listing and reading databases (no admin
+   * role), who redeems the invitation with its own CSR;
    * the Vite proxy presents the user's certificate instead of the admin's.
    */
   tenantUser?: TenantUserOptions;
@@ -152,7 +153,7 @@ export interface DomDaemon {
   /** The tenant admin the Vite proxy presents, set with tenantAdmin. */
   tenantAdmin?: ClientCredential & { tenant: string; username: string };
   /** The plain tenant user the Vite proxy presents, set with tenantUser. */
-  tenantUser?: ClientCredential & { tenant: string; username: string; roleId: string };
+  tenantUser?: ClientCredential & { tenant: string; username: string; roleIds: string[] };
 }
 
 function proxyClientFiles(): { cert: string; key: string } | null {
@@ -307,13 +308,28 @@ async function provisionTenantUser(
   if (roles.status >= 300 || !role) {
     throw new Error(`role ${roleName} not in tenant ${opts.tenant} (${roles.status}): ${roles.text.slice(0, 300)}`);
   }
+  // The operator role has no database permissions, so the user could not see
+  // the database its data lives in; the tenant admin, who holds them, grants
+  // listing and reading databases in a role of the tenant's own.
+  const viewerName = `${opts.tenant}-databases`;
+  const viewer = await daemonRequest(
+    daemon.adminUrl,
+    "POST",
+    "/roles",
+    { name: viewerName, tenant_id: opts.tenant, permissions: ["databases:list", "databases:read"] },
+    admin,
+  );
+  const vr = viewer.json as { id?: string } | null;
+  if (viewer.status >= 300 || !vr?.id) {
+    throw new Error(`create role ${viewerName} returned ${viewer.status}: ${viewer.text.slice(0, 300)}`);
+  }
 
   const username = opts.userName ?? `${opts.tenant}-user`;
   const invite = await daemonRequest(
     daemon.adminUrl,
     "POST",
     "/users/invite",
-    { username, email: `${username}@example.test`, roleIDs: [role.id] },
+    { username, email: `${username}@example.test`, roleIDs: [role.id, vr.id] },
     admin,
   );
   const vj = invite.json as { token?: string } | null;
@@ -334,7 +350,7 @@ async function provisionTenantUser(
   }
   return {
     ...admins,
-    tenantUser: { certPem, keyPem, tenant: opts.tenant, username, roleId: role.id },
+    tenantUser: { certPem, keyPem, tenant: opts.tenant, username, roleIds: [role.id, vr.id] },
   };
 }
 

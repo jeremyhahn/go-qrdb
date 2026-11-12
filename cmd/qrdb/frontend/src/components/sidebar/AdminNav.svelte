@@ -49,6 +49,7 @@
   type IconComponent = any;
   import { navStore, navigateToAdmin } from "../../stores/navigation.svelte.ts";
   import type { AdminView } from "../../stores/navigation.svelte.ts";
+  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -92,7 +93,9 @@
     readonly items: readonly AdminItem[];
   }
 
-  const allSections: AdminSection[] = $derived.by(() => [
+  // A server that refused the caller its admin topology (403) offers it no
+  // admin view: the caller is a user, not a server administrator.
+  const allSections: AdminSection[] = $derived.by(() => connManagerStore.nonAdminProfileIds.includes(profileId) ? [] : [
     {
       title: 'Overview',
       items: [
