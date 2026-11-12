@@ -94,11 +94,38 @@ the typed reason in `Error`.
 - **Before cut over**, a failed step (copy error, verify mismatch, the node
   cannot reopen from the destination, the destination pool becomes
   unavailable) is retried on that node (Q6). If it still fails, or the
-  operator cancels (Q8), the move aborts: every node in `NodesCopied` closes
-  its destination stores, reopens from its kept source directory, and removes
-  the destination directory through the inside-pool guard on the destination
-  pool; the destination reservation is released; the journal is deleted. The
-  source copy was never touched, so the abort loses nothing.
+  operator cancels (Q8), the move aborts. The journal goes to `aborting`;
+  nodes still in `NodesPending` remove any partial destination directory.
+  A node in `NodesCopied` has served the tenant from the destination since
+  step 3, and Q10 serves writes during the move, so its kept source
+  directory is stale: it lacks every write the node acknowledged after it
+  resumed. The abort therefore never simply reopens the source. One
+  `NodesCopied` node at a time (as in step 2), the node quiesces its replica
+  (closes its destination stores; the others keep quorum) and then:
+  - **(a) Multi-replica tenant.** It reopens from the source directory and
+    catches up from the group, the same restart catch-up step 3 relies on.
+    Every write it acknowledged is held by a quorum of the other replicas,
+    none of which is rolled back at the same time. Because its log has gone
+    back, the replica rejoins as a non-voting member and is promoted only
+    once caught up, so it never votes or counts toward a commit while it
+    lacks entries it once acknowledged; if go-quicraft cannot demote a
+    replica in place, the multi-replica case uses (b) as well.
+  - **(b) Single-replica tenant.** No other replica holds its writes, so the
+    node copies the destination directory back over the source directory,
+    verifies the copy as in Q4, and only then reopens from the source.
+
+  The node then removes the destination directory through the inside-pool
+  guard on the destination pool and leaves `NodesCopied` with a CAS on the
+  journal; a node that crashes mid-abort redoes its abort step from the
+  start, opening from the destination until that CAS. When no node is left
+  in `NodesCopied`, the destination reservation is released and the journal
+  is deleted. Every write acknowledged before or during the move is on the
+  source when the abort ends, so the abort loses nothing. The alternative,
+  making a node's resume on the destination the point after which the move
+  only rolls forward, is not picked: it would leave cancel open only until
+  the first replica resumes (for a single-replica tenant, never after its one
+  step), and a later node whose destination pool turns unready would leave
+  the tenant split across two pools with no way back.
 - **A node that crashes mid-step** reads the journal at boot. A step that had
   not recorded `NodesCopied` is redone from the start: the partial
   destination directory is removed and the copy restarts. A node in
@@ -256,8 +283,11 @@ ask for.
 ### Q8. Can an operator cancel a move?
 
 - **A (recommended). Yes, until cut over.** `CancelMove` aborts as in
-  "Failure and rollback"; after cut over it is refused with
-  `FailedPrecondition`. Dependency: none.
+  "Failure and rollback": each node that already serves from the destination
+  is quiesced and brought back to the source with every write it
+  acknowledged (group catch-up, or a verified copy back for a single
+  replica) before the destination is removed. After cut over it is refused
+  with `FailedPrecondition`. Dependency: none.
 - **B. No cancel.** A move ends only by finishing or failing. Dependency:
   none; one verb fewer, but an operator who started a move onto the wrong
   pool waits for it to finish and moves back.
@@ -307,9 +337,16 @@ sleeps: every wait is on an observable state):
   tree; a corrupted or truncated destination file fails verify; removal of
   both directories goes through `RequireInsideLocalPool`, including a
   symbolic link pointing out of the pool; a crash injected after copy and
-  before the journal CAS redoes the step at reopen.
+  before the journal CAS redoes the step at reopen. The abort step of a
+  single-replica `NodesCopied` node with writes made after it resumed on the
+  destination: the destination is copied back over the source, a corrupted
+  copy-back fails verify and the source is not reopened, and after reopen
+  every write acknowledged on the destination is readable from the source; a
+  crash injected mid-abort redoes the abort step at reopen.
 - **Unit, the reconciler.** One replica offline at a time; bounded retry,
-  then abort; leader change mid-move resumes from the journal.
+  then abort; leader change mid-move resumes from the journal; an abort
+  returns `NodesCopied` nodes one at a time, and a multi-replica node
+  rejoins non-voting and is promoted only once caught up.
 - **Unit, keys.** A `Lockable` destination double that records `Unlock`
   calls: the move derives no key and calls `Unlock` on none; a sealed node's
   step waits and reports `StateLocked`.
@@ -319,7 +356,11 @@ sleeps: every wait is on an observable state):
   during the move, `get-move` until the move is gone, then `tenant get`
   reports the new pool, every value is readable, and the source directories
   are gone. The same with `cancel-move` before cut over (data intact on the
-  source, destination directories gone), with a destination pool that is
+  source, destination directories gone); `cancel-move` after at least one
+  replica has resumed on the destination and the test has written through
+  the CLI since, for a single-replica tenant and for a three-replica tenant,
+  then every write the CLI acknowledged is readable after `cancel-move`
+  returns and the move is gone; with a destination pool that is
   unready on one node (admit refused), and without the permission
   (`PERMISSION_DENIED`).
 
