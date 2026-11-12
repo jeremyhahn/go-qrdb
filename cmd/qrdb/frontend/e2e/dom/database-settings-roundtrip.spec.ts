@@ -161,17 +161,29 @@ test("updateBarrier: the form reports the daemon's refusal and the stored barrie
   expect(stored?.enabled ?? false).toBe(false);
 });
 
-test("updateRaft: raft configuration on the daemon's raft cluster", async ({ page }) => {
-  const main = await openDetail(page, RAFT_DB);
-  const form = main.getByTestId("db-settings-raft");
+// The fixture runs a raft cluster (single replica), so updateRaft is a full
+// roundtrip on a raft-backend database.
+test("updateRaft: raft configuration round-trips through the daemon", async ({ page }) => {
+  let main = await openDetail(page, RAFT_DB);
+  let form = main.getByTestId("db-settings-raft");
   await form.getByLabel("Cluster mode").selectOption("distributed");
   await form.getByLabel("Replica ID").fill("1");
-  await form.getByLabel("Raft address").fill("127.0.0.1:7000");
+  await form.getByLabel("Raft address").fill("127.0.0.1:7100");
   await form.getByLabel("Discovery").selectOption("static");
   await form.getByRole("button", { name: "Save Raft Configuration" }).click();
-  await expect(
-    form.getByTestId("outcome-success").or(form.getByTestId("outcome-error")),
-  ).toBeVisible({ timeout: LOAD_TIMEOUT });
-  console.log("raft outcome:", await form.locator("[data-testid^=outcome-]").first().textContent());
-  console.log("raft stored:", JSON.stringify((await storedDb(RAFT_DB)).raft));
+  await expect(form.getByTestId("outcome-success")).toHaveText("Raft configuration saved.");
+
+  await page.reload();
+  main = await openDetail(page, RAFT_DB);
+  form = main.getByTestId("db-settings-raft");
+  await expect(form.getByLabel("Cluster mode")).toHaveValue("distributed");
+  await expect(form.getByLabel("Replica ID")).toHaveValue("1");
+  await expect(form.getByLabel("Raft address")).toHaveValue("127.0.0.1:7100");
+  await expect(form.getByLabel("Discovery")).toHaveValue("static");
+  expect((await storedDb(RAFT_DB)).raft).toMatchObject({
+    clusterMode: "distributed",
+    replicaId: 1,
+    raftAddress: "127.0.0.1:7100",
+    discovery: "static",
+  });
 });
