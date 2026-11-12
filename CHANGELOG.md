@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, MINOR is where breaking changes live; PATCH is reserved for changes
-that do not move the API. Releases before `0.2.0-alpha` predate this file and
+that do not move the API. What holds from the first release candidate on is
+proposed in [docs/release/compatibility.md](docs/release/compatibility.md).
+Releases before `0.2.0-alpha` predate this file and
 are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
