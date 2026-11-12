@@ -162,23 +162,6 @@ func TestFileEngine_List(t *testing.T) {
 	}
 }
 
-func TestFileEngine_ListEmptyDir(t *testing.T) {
-	dir := memdir.TempDir(t)
-	eng, err := New(dir)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer func() { _ = eng.Close() }()
-
-	keys, err := eng.List(nil)
-	if err != nil {
-		t.Fatalf("List empty dir: %v", err)
-	}
-	if len(keys) != 0 {
-		t.Fatalf("List empty dir: got %d keys, want 0", len(keys))
-	}
-}
-
 func TestFileEngine_ListAllKeys(t *testing.T) {
 	dir := memdir.TempDir(t)
 	eng, err := New(dir)

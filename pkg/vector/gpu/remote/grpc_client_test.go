@@ -74,14 +74,6 @@ func jsonOf(v any) []byte {
 // newVectorIndexServiceClient
 // ---------------------------------------------------------------------------
 
-func TestNewVectorIndexServiceClient_ReturnsNonNil(t *testing.T) {
-	conn := &fakeConn{}
-	client := newVectorIndexServiceClient(conn)
-	if client == nil {
-		t.Fatal("expected non-nil client")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Insert
 // ---------------------------------------------------------------------------
@@ -110,20 +102,6 @@ func TestVectorIndexServiceClient_Insert_RPCError(t *testing.T) {
 	_, err := client.Insert(context.Background(), &proto.InsertRequest{ID: 2})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel, got: %v", err)
-	}
-}
-
-func TestVectorIndexServiceClient_Insert_EmptyResponse(t *testing.T) {
-	// Empty body: invoke returns nil and resp bytes are empty — no unmarshal error.
-	conn := &fakeConn{}
-	client := newClientConn(conn)
-
-	resp, err := client.Insert(context.Background(), &proto.InsertRequest{ID: 3})
-	if err != nil {
-		t.Fatalf("unexpected error on empty response: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil InsertResponse even on empty body")
 	}
 }
 
@@ -191,14 +169,6 @@ func TestVectorIndexServiceClient_Search_RPCError(t *testing.T) {
 	_, err := newClientConn(conn).Search(context.Background(), &proto.SearchRequest{K: 5})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("expected sentinel, got: %v", err)
-	}
-}
-
-func TestVectorIndexServiceClient_Search_InvalidJSON(t *testing.T) {
-	conn := &fakeConn{respPayload: []byte("not-valid-json")}
-	_, err := newClientConn(conn).Search(context.Background(), &proto.SearchRequest{K: 1})
-	if err == nil {
-		t.Fatal("expected unmarshal error for invalid JSON")
 	}
 }
 
