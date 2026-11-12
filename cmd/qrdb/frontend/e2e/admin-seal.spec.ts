@@ -456,3 +456,174 @@ test.describe("Admin - Seal Manager", () => {
     });
   });
 });
+
+test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () => {
+  const passphraseState = {
+    ...secondLaunchEmbeddedState,
+    sealStatus: {
+      sealed: false,
+      initialized: true,
+      sharesRequired: 0,
+      sharesProvided: 0,
+      sharesTotal: 0,
+      strategy: "passphrase",
+    },
+  };
+
+  test.describe("cluster seal record", () => {
+    test.use({
+      mockState: {
+        ...passphraseState,
+        sealStatus: {
+          ...passphraseState.sealStatus,
+          clusterSeal: { active: true, sealed: true, epoch: 4, local: "held" },
+        },
+      },
+    });
+
+    test("clearing the cluster seal shows every record field", async ({ page }) => {
+      await navigateToSealManager(page);
+      const status = page.getByTestId("cluster-seal-status");
+      await expect(status).toContainText("record sealed", { timeout: LOAD_TIMEOUT });
+      await expect(status).toContainText("this node is held");
+
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      await expect(status).toContainText("record clear (epoch 5)", { timeout: LOAD_TIMEOUT });
+      await expect(status).toContainText("this node is serving");
+      await expect(page.getByTestId("cluster-seal-principal")).toHaveText("admin (tenant system)");
+      await expect(page.getByTestId("cluster-seal-node")).toHaveText("127.0.0.1:7000");
+      await expect(page.getByTestId("cluster-seal-at")).toHaveText("2026-11-12T10:00:00Z");
+      await expect(page.getByTestId("cluster-unseal-btn")).toHaveCount(0);
+    });
+
+    test("cluster unseal error shows error toast", async ({ page }) => {
+      await navigateToSealManager(page);
+      await expect(page.getByTestId("cluster-unseal-btn")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await injectError(page, "SealBinding.ClusterUnseal", "cluster seal clear refused");
+
+      await page.getByTestId("cluster-unseal-btn").click();
+
+      const alert = page.locator('[role="alert"]').filter({ hasText: "cluster seal clear refused" });
+      await expect(alert).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByTestId("cluster-seal-status")).toContainText("record sealed");
+    });
+  });
+
+  test.describe("change passphrase", () => {
+    test.use({ mockState: passphraseState });
+
+    test("changes the passphrase and clears the form", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("change-passphrase-card");
+      await expect(card).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await card.getByTestId("cp-current").fill("old-passphrase");
+      await card.getByTestId("cp-new").fill("new-passphrase-1");
+      await card.getByTestId("cp-confirm").fill("new-passphrase-1");
+      await card.getByTestId("cp-so-pin").fill("123456");
+      await card.getByTestId("cp-submit").click();
+
+      const alert = page.locator('[role="alert"]').filter({ hasText: "Passphrase changed" });
+      await expect(alert).toBeVisible({ timeout: 5_000 });
+      await expect(card.getByTestId("cp-current")).toHaveValue("");
+      await expect(card.getByTestId("cp-new")).toHaveValue("");
+      await expect(card.getByTestId("cp-so-pin")).toHaveValue("");
+    });
+
+    test("mismatched confirmation is refused before the call", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("change-passphrase-card");
+      await expect(card).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await card.getByTestId("cp-current").fill("old-passphrase");
+      await card.getByTestId("cp-new").fill("new-passphrase-1");
+      await card.getByTestId("cp-confirm").fill("new-passphrase-2");
+      await card.getByTestId("cp-submit").click();
+
+      const alert = page.locator('[role="alert"]').filter({ hasText: "Passphrases do not match" });
+      await expect(alert).toBeVisible({ timeout: 5_000 });
+      await expect(card.getByTestId("cp-current")).toHaveValue("old-passphrase");
+    });
+
+    test("change passphrase error shows error toast", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("change-passphrase-card");
+      await expect(card).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await injectError(page, "SealBinding.ChangePassphrase", "decryption failed: wrong passphrase");
+
+      await card.getByTestId("cp-current").fill("wrong-passphrase");
+      await card.getByTestId("cp-new").fill("new-passphrase-1");
+      await card.getByTestId("cp-confirm").fill("new-passphrase-1");
+      await card.getByTestId("cp-submit").click();
+
+      const alert = page.locator('[role="alert"]').filter({ hasText: "decryption failed: wrong passphrase" });
+      await expect(alert).toBeVisible({ timeout: 5_000 });
+      await expect(card.getByTestId("cp-current")).toHaveValue("wrong-passphrase");
+    });
+  });
+
+  test.describe("ceremony", () => {
+    test.use({ mockState: passphraseState });
+
+    test("shows the ceremony state and SPKI pin", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-state")).toHaveText("operational", { timeout: LOAD_TIMEOUT });
+      await expect(card.getByTestId("ceremony-spki-pin")).toHaveText("mockpin");
+    });
+
+    test("ceremony status error is shown in the card", async ({ page }) => {
+      await page.goto("/");
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await injectError(page, "CeremonyBinding.Status", "ceremony status unavailable");
+      await page.locator("aside").getByText("Seal Manager").click();
+
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-error")).toContainText("ceremony status unavailable", {
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(card.getByTestId("ceremony-state")).toHaveCount(0);
+
+      await clearError(page, "CeremonyBinding.Status");
+      await card.getByTestId("ceremony-refresh").click();
+      await expect(card.getByTestId("ceremony-state")).toHaveText("operational", { timeout: LOAD_TIMEOUT });
+    });
+
+    test("signs a CSR and shows the certificate", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-state")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await card.getByTestId("csr-username").fill("carol");
+      await card.getByTestId("csr-so-pin").fill("123456");
+      await card.getByTestId("csr-role").selectOption("custodian");
+      await card
+        .getByTestId("csr-pem")
+        .fill("-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----");
+      await card.getByTestId("csr-sign-btn").click();
+
+      const pem = card.getByTestId("csr-cert-pem");
+      await expect(pem).toContainText("mock-signed-carol", { timeout: 5_000 });
+      await expect(pem).toContainText("-----BEGIN CERTIFICATE-----");
+      await expect(card.getByTestId("csr-cert-copy")).toBeVisible();
+      await expect(card.getByTestId("csr-so-pin")).toHaveValue("");
+    });
+
+    test("sign CSR error shows error toast", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-state")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await injectError(page, "CeremonyBinding.SignCSR", "invalid SO PIN");
+
+      await card.getByTestId("csr-username").fill("carol");
+      await card.getByTestId("csr-so-pin").fill("000000");
+      await card.getByTestId("csr-pem").fill("-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----");
+      await card.getByTestId("csr-sign-btn").click();
+
+      const alert = page.locator('[role="alert"]').filter({ hasText: "invalid SO PIN" });
+      await expect(alert).toBeVisible({ timeout: 5_000 });
+      await expect(card.getByTestId("csr-cert")).toHaveCount(0);
+    });
+  });
+});
