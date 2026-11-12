@@ -2676,7 +2676,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               backup_id: req.backup_id,
               shards_restored: 3,
-              duration: "1.2s",
+              duration_ms: 1200,
               errors: [],
             };
           },

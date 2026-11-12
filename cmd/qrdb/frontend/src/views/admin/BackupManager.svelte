@@ -60,6 +60,12 @@
   let restoreLoading: boolean = $state(false);
   let restoreValidateFirst: boolean = $state(true);
   let restoreDecryptionKeyRef: string = $state("");
+  // The server refuses to restore a plaintext backup unless the request
+  // opts in explicitly (allowPlaintext); the operator must tick it, it is
+  // never inferred from the backup's stored metadata.
+  let restoreAllowPlaintext: boolean = $state(false);
+  // Comma-separated shard IDs; blank restores every shard in the backup.
+  let restoreTargetShards: string = $state("");
 
   // Delete confirmation
   let showDeleteConfirm: boolean = $state(false);
@@ -168,20 +174,31 @@
 
   async function handleRestore(): Promise<void> {
     if (selectedBackup === null) return;
+    const shardText = restoreTargetShards.trim();
+    const targetShards = shardText === "" ? [] : shardText.split(/[\s,]+/).filter((s) => s !== "").map(Number);
+    if (targetShards.some((n) => !Number.isInteger(n) || n <= 0)) {
+      showToast("warning", "Target shards must be positive shard IDs separated by commas.");
+      return;
+    }
     restoreLoading = true;
     try {
       const result = await client.backups.restore({
         backupId: selectedBackup.id,
+        ...(targetShards.length > 0 ? { targetShards } : {}),
         validateFirst: restoreValidateFirst,
         ...(restoreDecryptionKeyRef.trim() !== "" ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() } : {}),
+        ...(restoreAllowPlaintext ? { allowPlaintext: true } : {}),
       });
-      const errorCount = (result.errors ?? []).length;
+      const errors = result.errors ?? [];
+      const errorText = errors.map((e) => `shard ${e.shardId}: ${e.message}`).join("; ");
       showToast(
-        errorCount === 0 ? "success" : "warning",
-        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.duration}${errorCount > 0 ? `, ${errorCount} error(s)` : ""}.`,
+        errors.length === 0 ? "success" : "warning",
+        `Restore completed: ${result.shardsRestored} shard(s) restored in ${result.durationMs} ms${errors.length > 0 ? `, ${errors.length} error(s): ${errorText}` : ""}.`,
       );
       showRestoreModal = false;
       restoreDecryptionKeyRef = "";
+      restoreAllowPlaintext = false;
+      restoreTargetShards = "";
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -431,6 +448,19 @@
       <label class="label cursor-pointer justify-start gap-2">
         <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreValidateFirst} />
         <span class="label-text">Validate backup integrity before restoring</span>
+      </label>
+      <label class="label cursor-pointer justify-start gap-2">
+        <input type="checkbox" class="checkbox checkbox-sm checkbox-warning" bind:checked={restoreAllowPlaintext} />
+        <span class="label-text">Allow restoring a plaintext (unencrypted) backup</span>
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Target Shards (optional)</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono text-xs"
+          placeholder="Comma-separated shard IDs; blank restores every shard"
+          bind:value={restoreTargetShards}
+        />
       </label>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Key File Name Override (optional)</span></div>

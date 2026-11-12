@@ -3657,8 +3657,8 @@ export interface RestoreResult {
     readonly backupId: string;
     /** Number of shards successfully restored. */
     readonly shardsRestored: number;
-    /** Human-readable restore duration. */
-    readonly duration: string;
+    /** Restore duration in milliseconds (wire field `duration_ms`). */
+    readonly durationMs: number;
     /** Per-shard errors, if any. Omitted on the wire when there are none. */
     readonly errors?: ShardError[];
 }
