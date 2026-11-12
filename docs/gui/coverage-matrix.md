@@ -188,16 +188,16 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | TimeSeries | `writeBatch` | none | none | not in UI; *verified* |
 | TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
 | Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
-| User | `addCertBinding` | none | none | not in UI; *verified* |
-| User | `create` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
-| User | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
-| User | `disable` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| User | `enable` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| User | `addCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
+| User | `create` | views/admin/UserDetail.svelte (username, email, display name) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
+| User | `delete` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
+| User | `disable` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
+| User | `enable` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `get` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
-| User | `getUserByCertThumbprint` | none | none | not in UI; *verified* |
+| User | `getUserByCertThumbprint` | views/admin/UserManager.svelte (inline not-found message) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
-| User | `removeCertBinding` | none | none | not in UI; *verified* |
-| User | `update` | views/admin/UserDetail.svelte | admin-users.spec.ts (edit form; save not asserted) | *verified* |
+| User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
+| User | `update` | views/admin/UserDetail.svelte (username, email, display name) | dom/user-detail-roundtrip.spec.ts | *verified* |
 | Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
 | Vector | `batchUpsert` | none | none | not in UI; *verified* |
 | Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
@@ -243,6 +243,7 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (sealed/clear, epoch, local only) | none | principal, node, at not shown; `clusterMigration` progress not shown; no e2e; *verified* |
 | ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
+| user record (`users.get`) | username, email, name, tenantId, roleIds, lifecycle, system, certBindings[].thumbprint, kind, notAfter, createdAt, updatedAt | views/admin/UserDetail.svelte (form fields, lifecycle badge, bindings list) | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | metrics (/metrics) | Prometheus exposition | none: the SDK has no metrics method | none | not in SDK, not in UI; *verified* |
 
 ## Gap groups
@@ -270,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 161 | 145 |
-| displays | 11 | 9 | 8 |
+| operations | 218 | 167 | 151 |
+| displays | 12 | 10 | 9 |
 
-Operations not in UI: 57. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 51. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).

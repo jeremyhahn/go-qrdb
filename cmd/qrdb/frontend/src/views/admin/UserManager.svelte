@@ -148,7 +148,12 @@
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      if (err instanceof TransportError && err.statusCode === 404) {
+      // HTTP transports answer 404; the Wails bindings pass the Go error
+      // through, so a "not found" message means the same there.
+      if (
+        (err instanceof TransportError && err.statusCode === 404) ||
+        (err instanceof Error && /\bnot found\b/i.test(err.message))
+      ) {
         thumbprintNotFound = true;
       } else {
         const msg = err instanceof Error ? err.message : "Failed to look up user";

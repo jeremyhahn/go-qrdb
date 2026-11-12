@@ -463,12 +463,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     const userStore = new Map<string, {
       id: string;
       username: string;
+      email?: string;
+      name?: string;
       tenant: string;
       lifecycle: string;
       createdAt: string;
       updatedAt: string;
       roleIds?: string[];
-      certBindings?: { thumbprint: string; notAfterUnix: number }[];
+      // SDK CertBinding shape, as the server lists it on the User record.
+      certBindings?: { thumbprint: string; kind: string; notAfter?: string }[];
     }>();
     const roleStore = new Map<string, {
       id: string;
@@ -1551,13 +1554,15 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           GetCompactionProgress: async () => ({}),
         },
         UserBinding: {
-          Create: async (req: { username: string; tenant?: string }) => {
+          Create: async (req: { username: string; email?: string; name?: string; tenant?: string }) => {
             maybeReject("UserBinding.Create");
             const id = fakeUUID();
             const now = new Date().toISOString();
             const user = {
               id,
               username: req.username,
+              ...(req.email ? { email: req.email } : {}),
+              ...(req.name ? { name: req.name } : {}),
               tenant: req.tenant ?? "default",
               lifecycle: "active",
               createdAt: now,
@@ -1572,11 +1577,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             if (!user) throw new Error(`user "${id}" not found`);
             return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
-          Update: async (req: { id: string; username?: string; tenant?: string }) => {
+          Update: async (req: { id: string; username?: string; email?: string; name?: string; tenant?: string }) => {
             maybeReject("UserBinding.Update");
             const user = userStore.get(req.id);
             if (!user) throw new Error(`user "${req.id}" not found`);
             if (req.username !== undefined) user.username = req.username;
+            if (req.email) user.email = req.email;
+            if (req.name) user.name = req.name;
             if (req.tenant !== undefined) user.tenant = req.tenant;
             user.updatedAt = new Date().toISOString();
             return { ...user };
@@ -1613,14 +1620,19 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 return { ...user, roleIds: [...(user.roleIds ?? [])] };
               }
             }
-            throw new Error(`no user bound to thumbprint "${thumbprint}"`);
+            throw new Error(`user not found: no user bound to thumbprint "${thumbprint}"`);
           },
           AddCertBinding: async (id: string, thumbprint: string, notAfterUnix: number) => {
             maybeReject("UserBinding.AddCertBinding");
             const user = userStore.get(id);
             if (!user) throw new Error(`user "${id}" not found`);
             const bindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
-            user.certBindings = [...bindings, { thumbprint, notAfterUnix }];
+            const binding: { thumbprint: string; kind: string; notAfter?: string } = {
+              thumbprint,
+              kind: "spki_sha256",
+            };
+            if (notAfterUnix) binding.notAfter = new Date(notAfterUnix * 1000).toISOString();
+            user.certBindings = [...bindings, binding];
             user.updatedAt = new Date().toISOString();
             return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },

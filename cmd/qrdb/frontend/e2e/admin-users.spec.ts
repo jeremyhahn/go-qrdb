@@ -150,6 +150,8 @@ test.describe("Admin - User Management", () => {
 
       // Fill the form
       await page.getByPlaceholder("Enter username").fill("charlie");
+      await page.getByPlaceholder("user@example.com").fill("  charlie@example.com ");
+      await page.getByPlaceholder("Optional display name").fill("Charlie C");
 
       // Submit
       await page.getByRole("button", { name: "Create" }).click();
@@ -161,6 +163,11 @@ test.describe("Admin - User Management", () => {
       await expect(
         page.getByText("charlie", { exact: true }),
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      // The trimmed email and the display name reach the server and load back.
+      await page.getByText("charlie", { exact: true }).click();
+      await expect(page.getByPlaceholder("user@example.com")).toHaveValue("charlie@example.com");
+      await expect(page.getByPlaceholder("Optional display name")).toHaveValue("Charlie C");
     });
 
     test("shows validation when username is empty", async ({ page }) => {
@@ -333,8 +340,13 @@ test.describe("Admin - User Management", () => {
       const id = await seedUser(page, "dis-user");
       await openUser(page, "dis-user");
 
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("active");
+      await expect(badge).toHaveClass(/badge-success/);
       await page.getByTestId("user-disable").click();
       await expect(page.getByTestId("user-enable")).toBeVisible();
+      await expect(badge).toHaveText("disabled");
+      await expect(badge).toHaveClass(/badge-error/);
       expect((await mockUser(page, id)).lifecycle).toBe("disabled");
     });
 
@@ -349,8 +361,10 @@ test.describe("Admin - User Management", () => {
       }, id);
       await openUser(page, "en-user");
 
+      await expect(page.getByTestId("user-lifecycle-badge")).toHaveText("disabled");
       await page.getByTestId("user-enable").click();
       await expect(page.getByTestId("user-disable")).toBeVisible();
+      await expect(page.getByTestId("user-lifecycle-badge")).toHaveText("active");
       expect((await mockUser(page, id)).lifecycle).toBe("active");
     });
 
@@ -373,9 +387,14 @@ test.describe("Admin - User Management", () => {
       await seedUser(page, "bind-user");
       await openUser(page, "bind-user");
 
+      await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
       await page.getByTestId("user-binding-thumbprint").fill("tp-add-1");
+      await page.getByTestId("user-binding-expiry").fill("2031-01-02T03:04");
       await page.getByTestId("user-binding-add").click();
-      await expect(page.getByTestId("user-binding-row")).toContainText("tp-add-1");
+      await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText("tp-add-1");
+      await expect(page.getByTestId("user-binding-row")).toContainText("spki_sha256");
+      await expect(page.getByTestId("user-binding-row")).toContainText("expires 2031-01-0");
+      await expect(page.getByTestId("user-cert-bindings-empty")).toHaveCount(0);
       await expect(page.locator('[role="alert"]').first()).toContainText(
         "Certificate binding added",
       );
@@ -391,12 +410,46 @@ test.describe("Admin - User Management", () => {
       await expect(page.getByTestId("user-binding-row")).toHaveCount(1);
       await page.getByRole("button", { name: "Remove binding tp-rm-1" }).click();
       await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+      await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
 
-      // The mock no longer resolves the thumbprint.
+      // The mock no longer resolves the thumbprint: the lookup says so inline.
       await page.getByRole("button", { name: /^Back$/ }).click();
       await page.getByTestId("user-thumbprint-input").fill("tp-rm-1");
       await page.getByTestId("user-thumbprint-submit").click();
-      await expect(page.locator('[role="alert"]').last()).toContainText("no user bound");
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveText(
+        "No user holds this certificate binding.",
+      );
+    });
+
+    test("lists the bindings the server holds when a user opens", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "listed-user");
+      await seedBinding(page, id, "tp-listed-1");
+      await seedBinding(page, id, "tp-listed-2");
+      await openUser(page, "listed-user");
+
+      await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText([
+        "tp-listed-1",
+        "tp-listed-2",
+      ]);
+      await expect(page.getByTestId("user-binding-row").first()).toContainText("no expiry");
+    });
+
+    test("clears the not-found message on the next lookup", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "nf-user");
+      await seedBinding(page, id, "tp-nf-1");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-unknown");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByTestId("user-thumbprint-not-found")).toBeVisible();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-nf-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByText("Edit User")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveCount(0);
     });
 
     test("finds a user by certificate thumbprint", async ({ page }) => {
