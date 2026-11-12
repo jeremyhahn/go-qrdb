@@ -386,6 +386,7 @@ export type {
     // Tenant management
     TenantIsolationType,
     TenantInfo,
+    TenantStatus,
     CreateTenantRequest,
     CreateTenantResponse,
     GetTenantResponse,
