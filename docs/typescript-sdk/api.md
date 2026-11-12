@@ -27,6 +27,10 @@ documented in each feature's `api.md`. Error classes are exported from
 `errors.ts`; how a server status maps to each is the table in
 [engineering.md](engineering.md#error-semantics).
 
+Each feature's `api.md` maps its capabilities to the `Client` service that
+serves them; for example `client.vlog` (`VlogClient`), the verifiable logs, is
+mapped in [databases/api.md](../databases/api.md#verifiable-logs).
+
 The SDK enforces no `scp` permission itself: every call is authorized by the
 server it reaches, as the identity the client authenticated as.
 
