@@ -91,7 +91,9 @@ export interface DomDaemon {
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
   if (opts.seal === "none") {
+    // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off.
     lines.push("  enabled: false");
+    lines.push("auth:", "  enabled: false");
   } else if (opts.seal === "none-committed") {
     lines.push("  enabled: true", '  strategy: "none"');
   } else {

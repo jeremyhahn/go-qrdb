@@ -42,6 +42,7 @@
   // ---------------------------------------------------------------------------
 
   let username: string = $state("");
+  let email: string = $state("");
   let tenantId: string = $state("default");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
@@ -135,6 +136,11 @@
       if (isCreate) {
         await client.users.create({
           username: username.trim(),
+          // The daemon requires an email login key unless the user is
+          // explicitly created without one; a blank field means "none".
+          ...(email.trim() !== ""
+            ? { email: email.trim() }
+            : { withoutEmailLoginKey: true }),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -312,6 +318,20 @@
                 disabled={existingUser !== null && existingUser.system}
               />
             </label>
+
+            {#if isCreate}
+              <!-- Email (the user's email login key; blank = none) -->
+              <label class="form-control w-full">
+                <div class="label"><span class="label-text">Email</span></div>
+                <input
+                  type="email"
+                  class="input input-bordered input-sm w-full"
+                  placeholder="Enter email (blank: no email login)"
+                  data-testid="user-email"
+                  bind:value={email}
+                />
+              </label>
+            {/if}
 
             <!-- Tenant ID -->
             <label class="form-control w-full" for="user-detail-tenant">

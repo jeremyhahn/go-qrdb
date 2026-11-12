@@ -1419,6 +1419,11 @@ export interface User {
 export interface CreateUserRequest {
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email address: the user's email login key. The daemon requires it
+     *  unless withoutEmailLoginKey is set. */
+    readonly email?: string;
+    /** Create the user with no email login key (email may then be empty). */
+    readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
     readonly tenantId?: string;
     /** Role IDs to assign at creation time. */
