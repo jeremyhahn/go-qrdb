@@ -53,7 +53,7 @@
   let saving: boolean = $state(false);
   let busy: boolean = $state(false);
   let confirmDelete: boolean = $state(false);
-  /** Thumbprints bound in this view; the User record does not list bindings. */
+  /** Thumbprints bound to the user, as the server lists them. */
   let certBindings: string[] = $state([]);
   let bindingThumbprint: string = $state("");
   let bindingExpiry: string = $state("");
@@ -114,6 +114,7 @@
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
         selectedRoleIds = [...user.roleIds];
+        certBindings = boundThumbprints(user);
       }
     } catch (err: unknown) {
       const msg = errorText(err, "Failed to load user data");
@@ -195,6 +196,11 @@
     }
   }
 
+  /** Thumbprints of the bindings the server lists on a user record. */
+  function boundThumbprints(user: User): string[] {
+    return (user.certBindings ?? []).map((b) => b.thumbprint);
+  }
+
   /** Enables or disables the existing user. */
   async function handleSetEnabled(enable: boolean): Promise<void> {
     try {
@@ -245,7 +251,9 @@
     try {
       busy = true;
       existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
-      if (!certBindings.includes(thumbprint)) {
+      if (existingUser.certBindings !== undefined) {
+        certBindings = boundThumbprints(existingUser);
+      } else if (!certBindings.includes(thumbprint)) {
         certBindings = [...certBindings, thumbprint];
       }
       bindingThumbprint = "";
@@ -266,7 +274,10 @@
     try {
       busy = true;
       existingUser = await client.users.removeCertBinding(userId!, tp);
-      certBindings = certBindings.filter((t) => t !== tp);
+      certBindings =
+        existingUser.certBindings !== undefined
+          ? boundThumbprints(existingUser)
+          : certBindings.filter((t) => t !== tp);
       if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
       showToast("success", "Certificate binding removed");
     } catch (err: unknown) {
