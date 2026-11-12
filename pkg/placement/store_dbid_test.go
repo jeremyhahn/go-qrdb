@@ -111,3 +111,89 @@ func TestStore_GetByNameFindsTheTenantsEntry(t *testing.T) {
 		t.Fatalf("GetByName of an empty name: err = %v, want ErrEmptyDatabase", err)
 	}
 }
+
+// putNamed stores a placement for tenant acme naming database orders under
+// the given id, with the drop fence set as asked.
+func putNamed(t *testing.T, s *Store, id string, shard uint64, dropping bool) {
+	t.Helper()
+	p := samplePlacement("acme", "orders", shard)
+	p.DatabaseID = id
+	p.Dropping = dropping
+	if err := s.Put(context.Background(), p); err != nil {
+		t.Fatalf("Put(%s): %v", id, err)
+	}
+}
+
+// TestStore_GetByNamePrefersTheLiveEntry is #1517 Codex finding 2: a drop
+// whose placement delete failed leaves a fenced entry naming the database,
+// and a re-create under the same name stores a second, live entry. The
+// lookup must resolve the live one whichever id sorts first in the scan.
+func TestStore_GetByNamePrefersTheLiveEntry(t *testing.T) {
+	const low = "00000000000000000000000000000001"
+	const high = "ffffffffffffffffffffffffffffff01"
+	for _, tc := range []struct {
+		name          string
+		droppingID    string
+		liveID        string
+		droppingShard uint64
+		liveShard     uint64
+	}{
+		{"dropping id sorts first", low, high, 1000, 1001},
+		{"live id sorts first", high, low, 1000, 1001},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := NewStore(newFakeKV())
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			putNamed(t, s, tc.droppingID, tc.droppingShard, true)
+			putNamed(t, s, tc.liveID, tc.liveShard, false)
+			got, err := s.GetByName(context.Background(), "acme", "orders")
+			if err != nil {
+				t.Fatalf("GetByName: %v", err)
+			}
+			if got.DatabaseID != tc.liveID || got.Dropping {
+				t.Fatalf("GetByName = id %s dropping=%v; want the live entry %s", got.DatabaseID, got.Dropping, tc.liveID)
+			}
+		})
+	}
+}
+
+// TestStore_GetByNameFindsAFencedEntryAlone proves a resumed drop still
+// finds its own entry: when only a Dropping entry names the database, the
+// lookup returns it.
+func TestStore_GetByNameFindsAFencedEntryAlone(t *testing.T) {
+	s, err := NewStore(newFakeKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	const id = "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4"
+	putNamed(t, s, id, 1000, true)
+	got, err := s.GetByName(context.Background(), "acme", "orders")
+	if err != nil {
+		t.Fatalf("GetByName: %v", err)
+	}
+	if got.DatabaseID != id || !got.Dropping {
+		t.Fatalf("GetByName = id %s dropping=%v; want the fenced entry %s", got.DatabaseID, got.Dropping, id)
+	}
+}
+
+// TestStore_GetByNameRefusesTwoLiveEntries proves the lookup fails closed
+// when two live entries name the database, rather than pick one by scan
+// order.
+func TestStore_GetByNameRefusesTwoLiveEntries(t *testing.T) {
+	s, err := NewStore(newFakeKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	putNamed(t, s, "00000000000000000000000000000001", 1000, false)
+	putNamed(t, s, "ffffffffffffffffffffffffffffff01", 1001, false)
+	_, err = s.GetByName(context.Background(), "acme", "orders")
+	if !errors.Is(err, ErrAmbiguousPlacement) {
+		t.Fatalf("GetByName: err = %v, want ErrAmbiguousPlacement", err)
+	}
+	var se *StoreError
+	if !errors.As(err, &se) || se.Op != "get" {
+		t.Fatalf("GetByName: err = %#v, want a *StoreError with Op get", err)
+	}
+}

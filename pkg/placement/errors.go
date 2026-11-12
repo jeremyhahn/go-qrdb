@@ -54,6 +54,12 @@ var (
 	// for the requested (tenant, database).
 	ErrPlacementNotFound = errors.New("placement: placement not found")
 
+	// ErrAmbiguousPlacement is returned by Store.GetByName when more than one
+	// live (not Dropping) placement entry names the same database: the name
+	// no longer identifies one database, so the lookup fails closed rather
+	// than pick one.
+	ErrAmbiguousPlacement = errors.New("placement: more than one live placement names the database")
+
 	// ErrWatchUnsupported is returned by Store.Watch when the backing KV does
 	// not implement Watcher.
 	ErrWatchUnsupported = errors.New("placement: watch not supported by kv backend")

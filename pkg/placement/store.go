@@ -566,6 +566,14 @@ func (s *Store) ListForTenant(ctx context.Context, tenantID string) ([]*Placemen
 // tenant's entries for the one whose record names the database; a caller
 // that holds the id uses Get. It returns ErrPlacementNotFound when no entry
 // names the database.
+//
+// A drop removes the catalog record before it deletes the placement entry,
+// and that delete can fail, so a fenced (Dropping) entry can outlive its
+// database and share its name with a re-created one. GetByName therefore
+// prefers the live (not Dropping) entry; it returns a Dropping entry only
+// when no live one names the database, so a resumed drop still finds its
+// own entry. More than one live entry naming the database fails closed with
+// ErrAmbiguousPlacement rather than picking one by scan order.
 func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placement, error) {
 	if name == "" {
 		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabase}
@@ -574,10 +582,27 @@ func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placemen
 	if err != nil {
 		return nil, err
 	}
+	var live, dropping *Placement
 	for _, p := range placements {
-		if p.Database == name {
-			return p, nil
+		if p.Database != name {
+			continue
 		}
+		if p.Dropping {
+			if dropping == nil {
+				dropping = p
+			}
+			continue
+		}
+		if live != nil {
+			return nil, &StoreError{TenantID: tenantID, DatabaseID: name, Op: "get", Err: ErrAmbiguousPlacement}
+		}
+		live = p
+	}
+	if live != nil {
+		return live, nil
+	}
+	if dropping != nil {
+		return dropping, nil
 	}
 	return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrPlacementNotFound}
 }
