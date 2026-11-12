@@ -722,8 +722,15 @@ func (v *vectorService) loadNamespaces() error {
 
 		// Update metrics with logical namespace name and tenant label so
 		// that no scoped key (containing \x1f) appears in emitted label values.
+		// The seed is the stored count: ListNamespaces returns the record
+		// as created, whose VectorCount no write updates, while
+		// GetNamespaceInfo overlays the live count of stored vectors.
 		if v.metrics != nil {
-			v.metrics.addVectors(ns.Name, float64(ns.VectorCount))
+			stored := ns.VectorCount
+			if info, err := v.storage.GetNamespaceInfo(ctx, ns.Name); err == nil && info != nil {
+				stored = info.VectorCount
+			}
+			v.metrics.addVectors(ns.Name, float64(stored))
 			v.refreshIndexSizeMetric(ns.Name)
 		}
 	}
