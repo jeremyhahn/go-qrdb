@@ -578,7 +578,7 @@ func PlacementServingSet(ps *placement.Store) placement.ServingSetFunc {
 		if ps == nil || database.IsTenantHome(name) {
 			return nil, false, nil
 		}
-		home, err := ps.Get(ctx, tenantID, database.TenantHomeName)
+		home, err := ps.Get(ctx, tenantID, database.TenantHomeID)
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return nil, false, nil
 		}
