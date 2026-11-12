@@ -333,6 +333,20 @@ func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
 			if !strings.Contains(out, "State:    file") {
 				t.Fatalf("[%s] database info %s: output lacks %q\noutput: %s", proto.name, dbName, "State:    file", out)
 			}
+
+			// A raft block naming only its state storage takes the
+			// default cluster mode: no --cluster-mode is needed.
+			bare := dbName + "-bare"
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", bare) })
+			out, err = runCLIProto(t, node, proto, "database", "create", bare,
+				"--backend", "raft", "--state-storage", "file")
+			if err != nil {
+				t.Fatalf("[%s] database create %s --state-storage file without --cluster-mode: %v\noutput: %s", proto.name, bare, err, out)
+			}
+			info = cliDatabaseInfo(t, node, proto, bare)
+			if info.Raft == nil || info.Raft.StateStorage != "file" || info.Raft.ClusterMode == "" {
+				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=file and a cluster mode", proto.name, bare, info.Raft)
+			}
 		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 func TestDefaultsFromConfig(t *testing.T) {
@@ -65,6 +66,19 @@ func TestDefaultsFill(t *testing.T) {
 			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone}},
+		},
+		{
+			name: "supplied state-storage-only block falls back to cluster mode none",
+			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile}},
+		},
+		{
+			name: "supplied state-storage-only block takes the node cluster mode",
+			d:    Defaults{RaftClusterMode: RaftLocal},
+			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendFile}},
 		},
 		{
 			name: "raft defaults skip a non-raft backend",
@@ -203,5 +217,27 @@ func TestManagerCreateRaftWithoutRaftBlockRecordsShard(t *testing.T) {
 	}
 	if raft.ShardID == 0 {
 		t.Fatal("recorded shard ID = 0, want one issued at create")
+	}
+}
+
+// TestManagerCreateStateStorageOnlyRaftBlock pins that a raft create whose
+// block names only its state storage succeeds with no node cluster-mode
+// default: the empty cluster mode defaults as for a synthesized block
+// instead of failing the raft block's validation.
+func TestManagerCreateStateStorageOnlyRaftBlock(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	m := newCatalogManager(logger, t.TempDir())
+	m.SetShardIDClaimer(testShardClaimer(t))
+	t.Cleanup(func() { _ = m.Close() })
+
+	db, err := m.CreateWithCredentials(context.Background(),
+		DatabaseConfig{Name: "stateonly", Backend: BackendRaft, Raft: &DatabaseRaftConfig{StateStorage: BackendFile}},
+		seal.Credentials{})
+	if err != nil {
+		t.Fatalf("CreateWithCredentials() = %v", err)
+	}
+	raft := db.Config().Raft
+	if raft == nil || raft.StateStorage != BackendFile || raft.ClusterMode != RaftNone {
+		t.Fatalf("recorded raft = %+v, want state storage %q and cluster mode %q", raft, BackendFile, RaftNone)
 	}
 }

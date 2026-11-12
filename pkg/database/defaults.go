@@ -57,9 +57,10 @@ func WithDefaults(d Defaults) ManagerOption {
 // ResolveBinding applies: the backend first, then -- for a raft database
 // only, since a raft option on any other backend is refused -- the replica
 // count, the cluster mode and the state storage. A raft database the caller
-// sent without a raft block gets one (cluster mode none when the node names
-// none), because a raft block is what has the Manager issue the database a
-// shard. The record then holds every resolved value, and opening it never
+// sent without a raft block gets one, because a raft block is what has the
+// Manager issue the database a shard. A cluster mode neither the request's
+// block nor the node names is none, for a supplied block (one naming only
+// its state storage) exactly as for a synthesized one. The record then holds every resolved value, and opening it never
 // re-resolves one from node config.
 func (d Defaults) fill(cfg *DatabaseConfig) {
 	if cfg.Backend == "" {
@@ -83,7 +84,10 @@ func (d Defaults) fill(cfg *DatabaseConfig) {
 	if raft.ClusterMode == "" {
 		raft.ClusterMode = d.RaftClusterMode
 	}
-	if raft.ClusterMode == "" && cfg.Raft == nil {
+	// A cluster mode neither the request nor the node names is none,
+	// whether the request carried a block (one naming only its state
+	// storage, say) or the block is synthesized here.
+	if raft.ClusterMode == "" {
 		raft.ClusterMode = RaftNone
 	}
 	if raft.StateStorage == "" {
