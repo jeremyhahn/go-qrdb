@@ -38,7 +38,7 @@ func TestHandleBatchImportFormats_ListsFormatsAndCodecs(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v (%s)", err, rr.Body.String())
 	}
-	wantFormats := []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
+	wantFormats := codec.ImportFormats()
 	if !reflect.DeepEqual(got.Formats, wantFormats) {
 		t.Errorf("formats = %v, want %v", got.Formats, wantFormats)
 	}
@@ -58,8 +58,9 @@ func TestHandleBatchImportFormats_ResponseDoesNotAliasList(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if batchImportFormats[0] != "auto" {
-		t.Fatalf("handler mutated the shared format list: %v", batchImportFormats)
+	got.Formats[0] = "mutated"
+	if codec.ImportFormats()[0] != "auto" {
+		t.Fatalf("response aliases the shared format list: %v", codec.ImportFormats())
 	}
 }
 

@@ -20,10 +20,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 )
 
-// batchImportFormats lists the import file formats the batch import
-// session accepts, in the order the desktop binding reports them.
-var batchImportFormats = []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
-
 // batchImportFormatsResponse is the body of GET /batch/import/formats.
 type batchImportFormatsResponse struct {
 	Formats []string `json:"formats"`
@@ -34,10 +30,8 @@ type batchImportFormatsResponse struct {
 // codecs, so a REST client (the browser UI) can offer the same choices the
 // desktop binding's AvailableImportFormats and AvailableCodecs offer.
 func (s *Server) handleBatchImportFormats(w http.ResponseWriter, _ *http.Request) {
-	formats := make([]string, len(batchImportFormats))
-	copy(formats, batchImportFormats)
 	writeJSON(w, batchImportFormatsResponse{
-		Formats: formats,
+		Formats: codec.ImportFormats(),
 		Codecs:  codec.AvailableCodecs(),
 	})
 }
