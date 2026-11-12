@@ -510,6 +510,48 @@ test.describe("Admin - User Management", () => {
       expect((await mockUser(page, id)).roleIds).toEqual([roleId]);
     });
 
+    test("a role change in flight holds the toggles of every other role", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "serial-user");
+      const roleA = await seedRole(page, "serial-role-a");
+      const roleB = await seedRole(page, "serial-role-b");
+      await page.evaluate(
+        async ({ uid, rids }: { uid: string; rids: string[] }) => {
+          const w = window as unknown as {
+            go: {
+              main: { RoleBinding: { Assign: (u: string, r: string) => Promise<void> } };
+            };
+          };
+          for (const rid of rids) await w.go.main.RoleBinding.Assign(uid, rid);
+        },
+        { uid: id, rids: [roleA, roleB] },
+      );
+      await openUser(page, "serial-user");
+
+      const boxA = page.getByTestId("user-role-serial-role-a");
+      const boxB = page.getByTestId("user-role-serial-role-b");
+      await expect(boxA).toBeChecked();
+      await expect(boxB).toBeChecked();
+      await holdCall(page, "RoleBinding.Unassign");
+      await boxA.uncheck();
+      await expect(boxB).toBeDisabled();
+      // The browser refuses a click on the disabled box: B sends no call.
+      await boxB.click({ force: true });
+      expect(await releaseCall(page, "RoleBinding.Unassign")).toBe(1);
+
+      await expect(page.getByText("Role unassigned")).toBeVisible();
+      await expect(boxA).toBeEnabled();
+      await expect(boxB).toBeEnabled();
+      await expect(boxA).not.toBeChecked();
+      await expect(boxB).toBeChecked();
+      expect((await mockUser(page, id)).roleIds).toEqual([roleB]);
+
+      await boxB.uncheck();
+      await expect(boxB).toBeEnabled();
+      await expect(boxB).not.toBeChecked();
+      await expect.poll(async () => (await mockUser(page, id)).roleIds).toEqual([]);
+    });
+
     test("a refused assign leaves the role unchecked", async ({ page }) => {
       await navigateToUsers(page);
       const id = await seedUser(page, "refused-user");

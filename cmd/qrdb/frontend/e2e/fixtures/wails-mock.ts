@@ -1725,6 +1725,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Unassign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Unassign");
+            await maybeHold("RoleBinding.Unassign");
             const user = userStore.get(userId);
             if (!user) throw new Error(`user "${userId}" not found`);
             user.roleIds = (user.roleIds ?? []).filter((id) => id !== roleId);

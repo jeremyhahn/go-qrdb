@@ -172,29 +172,32 @@
     }
   }
 
-  /** Role ids whose assign / unassign request is still running. */
-  let pendingRoleIds: string[] = $state([]);
+  /** Set while any role assign / unassign request of this user is running. */
+  let roleChangePending = $state(false);
 
   /**
    * Toggles a role ID in the selected roles set. For an existing user the
-   * change is applied at once through roles.assign / roles.unassign. A role
-   * with a request in flight ignores further toggles (its checkbox is
-   * disabled meanwhile), so a quick check-then-uncheck cannot send assign
-   * twice; selectedRoleIds stays the authoritative state and changes only
-   * once the server accepts the change. On a refusal the checkbox is put
-   * back to that state, undoing the browser's own toggle.
+   * change is applied at once through roles.assign / roles.unassign. While
+   * any role change is in flight every role toggle waits for it: all role
+   * checkboxes are disabled and a toggle that still arrives is ignored and
+   * its box put back. The server replaces the user's whole role set on each
+   * change, so two concurrent changes (even to different roles) could undo
+   * each other; one at a time keeps them ordered. selectedRoleIds stays the
+   * authoritative state and changes only once the server accepts the
+   * change. On a refusal the checkbox is put back to that state, undoing
+   * the browser's own toggle.
    */
   async function toggleRole(roleId: string, box?: HTMLInputElement): Promise<void> {
     const revert = (): void => {
       if (box !== undefined) box.checked = selectedRoleIds.includes(roleId);
     };
-    if (pendingRoleIds.includes(roleId)) {
+    if (roleChangePending) {
       revert();
       return;
     }
     const assigned = selectedRoleIds.includes(roleId);
     if (!isCreate) {
-      pendingRoleIds = [...pendingRoleIds, roleId];
+      roleChangePending = true;
       try {
         if (assigned) {
           await client.roles.unassign(userId!, roleId);
@@ -204,12 +207,12 @@
           showToast("success", "Role assigned");
         }
       } catch (err: unknown) {
-        pendingRoleIds = pendingRoleIds.filter((id) => id !== roleId);
+        roleChangePending = false;
         revert();
         showToast("error", err instanceof Error ? err.message : "Failed to change role");
         return;
       }
-      pendingRoleIds = pendingRoleIds.filter((id) => id !== roleId);
+      roleChangePending = false;
     }
     if (assigned) {
       selectedRoleIds = selectedRoleIds.filter((id) => id !== roleId);
@@ -426,7 +429,7 @@
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
                     checked={selectedRoleIds.includes(role.id)}
-                    disabled={pendingRoleIds.includes(role.id)}
+                    disabled={roleChangePending}
                     data-testid="user-role-{role.name}"
                     onchange={(e) => void toggleRole(role.id, e.currentTarget)}
                   />
