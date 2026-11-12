@@ -185,29 +185,24 @@ func TestVectorCountMetric_SystemTenantLabel(t *testing.T) {
 	assert.False(t, containsControlBytes(ten))
 }
 
-// TestNamespaceMetricLabels_NoControlBytes verifies that namespaceMetricLabels
-// never returns label values containing control characters regardless of input.
-func TestNamespaceMetricLabels_NoControlBytes(t *testing.T) {
+// TestTenantMetricLabels_TenantOnly verifies that tenantMetricLabels returns
+// only the control-byte-free tenant ID, never the namespace name.
+func TestTenantMetricLabels_TenantOnly(t *testing.T) {
 	cases := []struct {
-		physical      string
-		wantNamespace string
-		wantTenant    string
+		physical   string
+		wantTenant string
 	}{
-		{"alice\x1fembeddings", "embeddings", "alice"},
-		{"\x1fglobal", "global", tenantid.System},
-		{"tenant-b\x1fmy-vecs", "my-vecs", "tenant-b"},
+		{"alice\x1fembeddings", "alice"},
+		{"\x1fglobal", tenantid.System},
+		{"tenant-b\x1fmy-vecs", "tenant-b"},
 		// Legacy unscoped name (no separator) falls through to system.
-		{"legacy-ns", "legacy-ns", tenantid.System},
+		{"legacy-ns", tenantid.System},
 	}
 
 	for _, tc := range cases {
-		labels := namespaceMetricLabels(tc.physical)
-		ns := labels["namespace"]
-		ten := labels["tenant"]
-
-		assert.Equal(t, tc.wantNamespace, ns, "physical=%q", tc.physical)
-		assert.Equal(t, tc.wantTenant, ten, "physical=%q", tc.physical)
-		assert.False(t, containsControlBytes(ns), "namespace must be control-byte-free for physical=%q", tc.physical)
-		assert.False(t, containsControlBytes(ten), "tenant must be control-byte-free for physical=%q", tc.physical)
+		labels := tenantMetricLabels(tc.physical)
+		assert.Len(t, labels, 1, "physical=%q", tc.physical)
+		assert.Equal(t, tc.wantTenant, labels["tenant"], "physical=%q", tc.physical)
+		assert.False(t, containsControlBytes(labels["tenant"]), "tenant must be control-byte-free for physical=%q", tc.physical)
 	}
 }

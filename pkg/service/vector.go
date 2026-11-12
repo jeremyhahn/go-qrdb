@@ -311,19 +311,15 @@ func scopedFromContext(ctx context.Context, logical string) string {
 	return scopedNamespace(tenant.FromContext(ctx), logical)
 }
 
-// namespaceMetricLabels returns Prometheus label values for the two GaugeVecs
+// tenantMetricLabels returns Prometheus label values for the two GaugeVecs
 // (vectorCount, indexSizeBytes) keyed by a physical (scoped) namespace name.
-// The "namespace" label carries the logical name (control-byte-free, tenant
-// prefix stripped) and "tenant" carries the owner tenant ID.
-//
-// This ensures no \x1f byte or other control character appears in emitted
-// label values, and prevents cross-tenant namespace name leakage on /metrics.
-func namespaceMetricLabels(physical string) prometheus.Labels {
-	tenantID, logical := unscopedNamespace(physical)
-	return prometheus.Labels{
-		"namespace": logical,
-		"tenant":    tenantID,
-	}
+// The only label is "tenant", the owner tenant ID taken from the scope prefix.
+// The namespace name is never a label value: a tenant's namespace names are
+// tenant data and must not reach a /metrics scrape (strict-tenant-isolation
+// phase 10), so the gauges aggregate over every namespace a tenant owns.
+func tenantMetricLabels(physical string) prometheus.Labels {
+	tenantID, _ := unscopedNamespace(physical)
+	return prometheus.Labels{"tenant": tenantID}
 }
 
 // parseDistanceMetric resolves a namespace's stored or requested distance
@@ -565,15 +561,15 @@ func (v *vectorService) initMetrics() {
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "index_size_bytes",
-			Help:      "Size of HNSW index in bytes, partitioned by logical namespace and tenant",
-		}, []string{"namespace", "tenant"}),
+			Help:      "Size of HNSW indexes in bytes, summed per tenant",
+		}, []string{"tenant"}),
 
 		vectorCount: metrics.NewGaugeVec(metrics.GaugeOpts{
 			Namespace: "qrdb",
 			Subsystem: "vector",
 			Name:      "vector_count",
-			Help:      "Number of vectors in namespace, partitioned by logical namespace and tenant",
-		}, []string{"namespace", "tenant"}),
+			Help:      "Number of vectors, summed over the tenant's namespaces",
+		}, []string{"tenant"}),
 	}
 }
 
@@ -621,7 +617,7 @@ func (v *vectorService) loadNamespaces() error {
 		// Update metrics with logical namespace name and tenant label so
 		// that no scoped key (containing \x1f) appears in emitted label values.
 		if v.metrics != nil {
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(ns.Name)).Set(float64(ns.VectorCount))
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(ns.Name)).Add(float64(ns.VectorCount))
 		}
 	}
 
@@ -937,7 +933,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesCreated.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(0)
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1012,7 +1008,7 @@ func (v *vectorService) CreateNamespace(ctx context.Context, req *CreateNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesCreated.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(0)
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1157,7 +1153,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 		if v.metrics != nil {
 			v.metrics.namespacesDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
 		}
 
 		v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully via Raft")
@@ -1182,7 +1178,7 @@ func (v *vectorService) DeleteNamespace(ctx context.Context, req *DeleteNamespac
 
 	if v.metrics != nil {
 		v.metrics.namespacesDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Set(0)
+		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Sub(float64(vectorsDeleted))
 	}
 
 	v.logger.WithField("namespace", req.Namespace).Info("namespace deleted successfully")
@@ -1412,7 +1408,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Inc()
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1460,7 +1456,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Inc()
+		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Inc()
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1577,7 +1573,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Dec()
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1614,7 +1610,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Dec()
+		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Dec()
 	}
 
 	v.logger.WithFields(map[string]interface{}{
@@ -1724,7 +1720,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+			v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(float64(len(req.Vectors)))
 		}
 
 		v.logger.WithFields(map[string]interface{}{
@@ -1778,7 +1774,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-		v.metrics.vectorCount.WithLabels(namespaceMetricLabels(scoped)).Add(float64(len(req.Vectors)))
+		v.metrics.vectorCount.WithLabels(tenantMetricLabels(scoped)).Add(float64(len(req.Vectors)))
 	}
 
 	v.logger.WithFields(map[string]interface{}{
