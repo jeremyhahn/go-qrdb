@@ -88,3 +88,23 @@ test("a plain tenant user sees no server admin views and works in its database",
   expect(back.status, back.text).toBe(200);
   expect(back.text).toContain(value);
 });
+
+test("a refused tenant list shows the refusal, not an empty list", async ({ page }) => {
+  test.setTimeout(120_000);
+  const d = daemon!;
+  const refused = await daemonRequest(d.adminUrl, "GET", "/v1/tenants/list", undefined, d.tenantUser);
+  expect(refused.status, refused.text).toBe(403);
+
+  // A server without the topology endpoint (404) keeps the admin views on
+  // offer, so this caller can open Tenants; the tenant list's 403 is the live
+  // server's.
+  await page.route("**/admin/topology", (route) =>
+    route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
+  );
+  await page.goto(UI_BASE_URL);
+  await page.locator('aside button[title="Tenants"]').click();
+  const main = page.locator("main");
+  await expect(main.getByRole("heading", { name: "Tenants" }).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(main.getByText(/403|forbidden|permission/i).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(main.getByText("No tenants found.")).toHaveCount(0);
+});

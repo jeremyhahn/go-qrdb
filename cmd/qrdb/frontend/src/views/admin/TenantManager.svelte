@@ -369,17 +369,28 @@
   // Actions
   // ---------------------------------------------------------------------------
 
+  /**
+   * Why the server refused the tenant list, shown in place of the empty state:
+   * "No tenants found." under a refusal would say the list is empty when the
+   * server never gave it.
+   */
+  let listError = $state<string | null>(null);
+
   /** Fetches the tenant list from the server. */
   async function fetchTenants(): Promise<void> {
     try {
       loading = true;
       const response: ListTenantsResponse = await client.tenants.list();
       tenants = [...(response.tenants ?? [])];
+      listError = null;
     } catch (err: unknown) {
       if (err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501 || err.statusCode === 503)) {
         tenants = [];
+        listError = null;
       } else {
         const msg = errorText(err, "Failed to fetch tenants");
+        tenants = [];
+        listError = msg;
         showToast("error", msg);
       }
     } finally {
@@ -1678,7 +1689,7 @@
       showDelete={true}
       createLabel="Create Tenant"
       deleteLabel="Delete Selected"
-      emptyMessage="No tenants found."
+      emptyMessage={listError ?? "No tenants found."}
       oncreateclick={handleCreate}
       ondeleteselected={handleDeleteSelected}
       onrowclick={handleSelectRow}
