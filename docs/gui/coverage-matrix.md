@@ -83,11 +83,11 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
 | Database | `list` | views/MainApp.svelte views/admin/DatabaseManager.svelte views/admin/Dashboard.svelte views/admin/UserDetail.svelte views/admin/RoleDetail.svelte stores/connection-manager.svelte.ts | admin-databases.spec.ts database-switching.spec.ts | *verified* |
 | Database | `scale` | views/admin/DatabaseDetail.svelte  | database-scale.spec.ts  |  |
-| Database | `updateBarrier` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateBarrier` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts; SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none |
 | Database | `updateCompaction` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte) | database-settings.spec.ts | gap none |
-| Database | `updateConnection` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateConnection` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts; SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none |
 | Database | `updateProtocol` | views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte | regression-bugs.spec.ts (UpdateProtocol) | *verified* |
-| Database | `updateRaft` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateRaft` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts; SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none |
 | Database | `updateSQL` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte) | database-settings.spec.ts | gap none |
 | EmbeddedServer | `clearSavedConfig` | none | none | not in UI; *verified* |
 | EmbeddedServer | `hasSavedConfig` | none | none | not in UI; *verified* |
@@ -145,13 +145,13 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | Rebalance | `getShardStats` | none | none (binding-presence smoke only) | not in UI; *verified* |
-| Role | `assign` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| Role | `assign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `create` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
-| Role | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
+| Role | `delete` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `get` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `list` | views/admin/RoleManager.svelte views/admin/UserDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `listPermissions` | components/admin/PermissionTreePicker.svelte | mandated-scenarios.spec.ts regression-bugs.spec.ts | *verified* |
-| Role | `unassign` | none | none | not in UI; *verified* |
+| Role | `unassign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `update` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | SQL | `query` | views/user/SQLBrowserScoped.svelte | sql-browser.spec.ts dom/sql-browser-roundtrip.spec.ts | *verified* |
 | Seal | `changePassphrase` | none | none | not in UI; *verified* |
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 167 | 151 |
+| operations | 218 | 170 | 154 |
 | displays | 12 | 10 | 9 |
 
-Operations not in UI: 51. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 48. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
