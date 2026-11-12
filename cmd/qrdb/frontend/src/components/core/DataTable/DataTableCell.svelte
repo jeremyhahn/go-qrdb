@@ -99,13 +99,19 @@
     return String(val);
   }
 
-  /** Copies the cell value to clipboard. */
-  async function copyToClipboard(): Promise<void> {
+  /**
+   * Copies the cell value to clipboard. Only the copy button calls this,
+   * and its click stops there: it never also counts as a row click. A
+   * browser that refuses clipboard access (no permission, insecure
+   * context, headless) gets a quiet info toast, not an error.
+   */
+  async function copyToClipboard(event: MouseEvent): Promise<void> {
+    event.stopPropagation();
     try {
       await navigator.clipboard.writeText(displayValue);
       showToast("success", "Copied to clipboard");
     } catch {
-      showToast("error", "Failed to copy to clipboard");
+      showToast("info", "Clipboard unavailable in this browser");
     }
   }
 
@@ -165,8 +171,9 @@
     {#if copyable && displayValue !== ""}
       <button
         type="button"
-        class="btn btn-ghost btn-xs opacity-0 transition-opacity group-hover:opacity-100"
+        class="btn btn-ghost btn-xs ml-auto shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
         onclick={copyToClipboard}
+        data-testid="cell-copy"
         title="Copy to clipboard"
       >
         <svg
