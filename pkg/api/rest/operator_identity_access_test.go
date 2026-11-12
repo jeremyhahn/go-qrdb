@@ -145,4 +145,65 @@ func TestOperatorIdentityAccess_UserOperationsRefusedUnderStrict(t *testing.T) {
 	}
 }
 
-var _ = role.Role{}
+// boundRoleService records the tenant every call runs under.
+func boundRoleService(seen *[]string) *mockRoleService {
+	rec := func(ctx context.Context) { *seen = append(*seen, tenant.FromContext(ctx)) }
+	rl := &role.Role{ID: "r1", TenantID: "acme", Name: "r"}
+	return &mockRoleService{
+		createRoleFn:    func(ctx context.Context, _ *role.CreateRoleRequest) (*role.Role, error) { rec(ctx); return rl, nil },
+		getRoleFn:       func(ctx context.Context, _ string) (*role.Role, error) { rec(ctx); return rl, nil },
+		getRoleByNameFn: func(ctx context.Context, _, _ string) (*role.Role, error) { rec(ctx); return rl, nil },
+		updateRoleFn:    func(ctx context.Context, _ *role.UpdateRoleRequest) (*role.Role, error) { rec(ctx); return rl, nil },
+		deleteRoleFn:    func(ctx context.Context, _ string) error { rec(ctx); return nil },
+	}
+}
+
+// roleOperations are the role routes beyond list that take the tenant
+// qualifier.
+var roleOperations = []struct{ name, method, path, body string }{
+	{"get", http.MethodGet, "/roles/r1?tenantID=acme", ""},
+	{"get by name", http.MethodGet, "/roles/by-name?name=r&tenant_id=acme", ""},
+	{"create", http.MethodPost, "/roles", `{"tenant_id":"acme","name":"r","permissions":["kv:read"]}`},
+	{"update", http.MethodPut, "/roles/r1?tenantID=acme", `{"name":"r2"}`},
+	// Delete takes the qualifier too; the built-in system Admin does not hold
+	// the route's roles:delete, so the route refuses it before the gate.
+}
+
+func TestOperatorIdentityAccess_RoleOperationsUnderOperatorAccess(t *testing.T) {
+	for _, op := range roleOperations {
+		var seen []string
+		srv, sink := newOperatorServer(t, tenant.TenantIsolationPolicyInherit, WithRoleService(boundRoleService(&seen)))
+		rec := serveOperator(srv, op.method, op.path, op.body)
+		if rec.Code >= 300 {
+			t.Fatalf("%s: operator under operator-access = %d %s, want served", op.name, rec.Code, rec.Body.String())
+		}
+		if len(seen) == 0 || seen[0] != "acme" {
+			t.Fatalf("%s: role service ran under tenants %v, want acme", op.name, seen)
+		}
+		if trails := sink.operatorTrails(); !trails["acme"] || !trails[tenantid.Normalize(tenantid.System)] {
+			t.Fatalf("%s: operator access recorded in trails %v, want the platform trail and acme's", op.name, trails)
+		}
+	}
+}
+
+func TestOperatorIdentityAccess_RoleOperationsRefusedUnderStrict(t *testing.T) {
+	ops := append(roleOperations[:len(roleOperations):len(roleOperations)],
+		struct{ name, method, path, body string }{"assign", http.MethodPost, "/roles/assign", `{"user_id":"7","role_id":"r1","tenant_id":"acme"}`},
+		struct{ name, method, path, body string }{"unassign", http.MethodPost, "/roles/unassign", `{"user_id":"7","role_id":"r1","tenant_id":"acme"}`},
+	)
+	for _, op := range ops {
+		var seen, userSeen []string
+		srv, sink := newOperatorServer(t, tenant.TenantIsolationPolicyStrict,
+			WithRoleService(boundRoleService(&seen)), WithUserService(boundUserService(&userSeen)))
+		rec := serveOperator(srv, op.method, op.path, op.body)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s: operator on a strict tenant = %d %s, want 403", op.name, rec.Code, rec.Body.String())
+		}
+		if len(seen)+len(userSeen) != 0 {
+			t.Fatalf("%s: identity services ran (%v %v) after the refusal", op.name, seen, userSeen)
+		}
+		if !sink.operatorTrails()["acme"] {
+			t.Fatalf("%s: the refusal is not in acme's trail", op.name)
+		}
+	}
+}

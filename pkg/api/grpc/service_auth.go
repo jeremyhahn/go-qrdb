@@ -383,6 +383,11 @@ func (s *qrdbServiceServer) CreateRole(ctx context.Context, req *pb.CreateRoleRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	perms := make([]permission.Permission, len(req.GetPermissions()))
 	for i, p := range req.GetPermissions() {
 		perms[i] = permission.Permission(p)
@@ -407,6 +412,11 @@ func (s *qrdbServiceServer) GetRole(ctx context.Context, req *pb.GetRoleRequest)
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	r, err := s.roleSvc.GetRole(ctx, req.GetId())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -421,6 +431,11 @@ func (s *qrdbServiceServer) GetRoleByName(ctx context.Context, req *pb.GetRoleBy
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	r, err := s.roleSvc.GetRoleByName(ctx, req.GetTenantId(), req.GetName())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -433,6 +448,11 @@ func (s *qrdbServiceServer) GetRoleByName(ctx context.Context, req *pb.GetRoleBy
 func (s *qrdbServiceServer) UpdateRole(ctx context.Context, req *pb.UpdateRoleProtoRequest) (*pb.RoleResponse, error) {
 	if s.roleSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	updateReq := &role.UpdateRoleRequest{
@@ -459,6 +479,11 @@ func (s *qrdbServiceServer) UpdateRole(ctx context.Context, req *pb.UpdateRolePr
 func (s *qrdbServiceServer) DeleteRole(ctx context.Context, req *pb.DeleteRoleRequest) (*emptypb.Empty, error) {
 	if s.roleSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.roleSvc.DeleteRole(ctx, req.GetId()); err != nil {
@@ -510,6 +535,11 @@ func (s *qrdbServiceServer) AssignRole(ctx context.Context, req *pb.AssignRoleRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
 	if err := s.authMW.AuthorizeRoleAssignment(ctx, s.userSvc, s.roleSvc, req.GetUserId(), req.GetRoleId()); err != nil {
@@ -548,6 +578,11 @@ func (s *qrdbServiceServer) UnassignRole(ctx context.Context, req *pb.UnassignRo
 	}
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.GetUserId(), req.GetRoleId()); err != nil {

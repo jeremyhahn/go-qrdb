@@ -40,6 +40,10 @@ type createRoleWireRequest struct {
 // getRoleWireRequest is the JSON wire payload for role.Get.
 type getRoleWireRequest struct {
 	ID string `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // getRoleByNameWireRequest is the JSON wire payload for role.GetByName.
@@ -65,11 +69,19 @@ type updateRoleWireRequest struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	Permissions []string `json:"permissions"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // deleteRoleWireRequest is the JSON wire payload for role.Delete.
 type deleteRoleWireRequest struct {
 	ID string `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // listRolesWireRequest is the JSON wire payload for role.List.
@@ -84,6 +96,10 @@ type listRolesWireRequest struct {
 type assignRoleWireRequest struct {
 	UserID uint64 `json:"userID"`
 	RoleID string `json:"roleID"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // roleWireResponse is the JSON wire representation of a role entity.
@@ -164,6 +180,11 @@ func (s *Server) handleCreateRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	perms := stringsToPermissions(req.Permissions)
 
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
@@ -195,6 +216,11 @@ func (s *Server) handleGetRole(ctx context.Context, payload []byte) ([]byte, err
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	rl, err := s.roleSvc.GetRole(ctx, req.ID)
 	if err != nil {
 		return nil, err
@@ -218,6 +244,11 @@ func (s *Server) handleGetRoleByName(ctx context.Context, payload []byte) ([]byt
 	var req getRoleByNameWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesReadTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	rl, err := s.roleSvc.GetRoleByName(ctx, req.TenantID, req.Name)
@@ -446,6 +477,11 @@ func (s *Server) handleUpdateRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	perms := stringsToPermissions(req.Permissions)
 
 	rl, err := s.roleSvc.UpdateRole(ctx, &role.UpdateRoleRequest{
@@ -474,6 +510,11 @@ func (s *Server) handleDeleteRole(ctx context.Context, payload []byte) ([]byte, 
 	var req deleteRoleWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.roleSvc.DeleteRole(ctx, req.ID); err != nil {
@@ -544,6 +585,11 @@ func (s *Server) handleAssignRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant, and the role must exist there.
 	if err := s.authMW.AuthorizeRoleAssignment(ctx, s.userSvc, s.roleSvc, req.UserID, req.RoleID); err != nil {
@@ -590,6 +636,11 @@ func (s *Server) handleUnassignRole(ctx context.Context, payload []byte) ([]byte
 	var req assignRoleWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.RolesWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.authMW.AuthorizeRoleUnassignment(ctx, s.userSvc, req.UserID, req.RoleID); err != nil {
