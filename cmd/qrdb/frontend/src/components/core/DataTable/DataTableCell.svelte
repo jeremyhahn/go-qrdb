@@ -162,6 +162,8 @@
       class="block overflow-hidden text-ellipsis whitespace-nowrap"
     >
       {#if rendered !== undefined}
+        <!-- Column.render returns markup by contract; callers must escape data. -->
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
         {@html rendered}
       {:else}
         {displayValue}
@@ -202,6 +204,8 @@
     >
       <div class="max-h-32 overflow-auto whitespace-pre-wrap break-all">
         {#if rendered !== undefined}
+          <!-- Column.render returns markup by contract; callers must escape data. -->
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
           {@html rendered}
         {:else}
           {displayValue}
