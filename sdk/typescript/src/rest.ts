@@ -921,7 +921,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const resp = await this.fetchJSON<BatchResponse>('/batch', {
                     method: 'POST',
-                    ...jsonBody({ ops }),
+                    ...jsonBody({ ops: ops.map(serializeOp) }),
                 });
                 // Get/Range ops within the batch return MVCCKeyValue results
                 // whose key/value are base64 on the wire; decode them to

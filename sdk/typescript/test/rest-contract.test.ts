@@ -89,6 +89,33 @@ async function connectedClient(): Promise<RestClient> {
 //        range_end, lease_id.
 // ---------------------------------------------------------------------------
 
+describe('batch wire format', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('maps OpType numbers to server string names and snake_case fields', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ responses: [] });
+
+        await client.batch.execute([
+            { type: 0, key: 'a', value: 'v' },
+            { type: 1, key: 'b' },
+            { type: 2, key: 'c' },
+            { type: 3, key: 'd', rangeEnd: 'e' },
+        ]);
+
+        expect(calls).toHaveLength(1);
+        const req = calls[0];
+        expect(req.url).toBe('https://localhost:63002/batch');
+        expect(req.method).toBe('POST');
+        const body = req.body as { ops: Array<Record<string, unknown>> };
+        expect(body.ops.map((o) => o['type'])).toEqual(['put', 'get', 'delete', 'range']);
+        expect(body.ops[3]['range_end']).toBe('e');
+        expect(body.ops[3]).not.toHaveProperty('rangeEnd');
+    });
+});
+
 describe('Bug 1 – transaction wire format', () => {
     beforeEach(() => {
         vi.unstubAllGlobals();
