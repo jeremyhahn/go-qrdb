@@ -122,9 +122,10 @@
     // server can build the barrier at all is its answer to this request; the
     // wizard withholds no mode itself.
     const barrierSecret = takeBarrierPassphrase();
+    // The engine is a UI choice only: a database serves every engine, and the
+    // server's strict decoder refuses a field it does not define.
     const req = {
       name: dbWizardStore.name,
-      engine: dbWizardStore.engine,
       mode: dbWizardStore.mode,
       backend: dbWizardStore.backend || "pebble",
       ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
@@ -191,7 +192,7 @@
     // Never log the request itself: it carries the barrier passphrase.
     console.debug("[StepDatabaseCreating] assembled request", {
       name: req.name,
-      engine: req.engine,
+      engine: dbWizardStore.engine,
       backend: req.backend,
       barrier: dbWizardStore.barrierEnabled ? dbWizardStore.sealMode : "none",
     });
