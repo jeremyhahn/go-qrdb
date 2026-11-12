@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
+import { CertExportError } from '../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fetch mock helpers
@@ -1231,18 +1232,16 @@ describe('Certs — issueCert/enrollCert send literal camelCase PEM fields', () 
         expect(body['cert_p_e_m']).toBeUndefined();
     });
 
-    it('export posts to /certs/export with certPEM/keyPEM verbatim', async () => {
+    it('export builds the archive locally and sends nothing to the server', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({ pkcs12: 'BASE64DATA' });
 
-        await client.certs.export({ certPEM: 'LEAF', keyPEM: 'KEY', passphrase: 'secret' });
+        await expect(
+            client.certs.export({ certPEM: 'LEAF', keyPEM: 'KEY', passphrase: 'secret' }),
+        ).rejects.toBeInstanceOf(CertExportError);
 
-        expect(calls).toHaveLength(1);
-        const body = calls[0].body as Record<string, unknown>;
-        expect(body['certPEM']).toBe('LEAF');
-        expect(body['keyPEM']).toBe('KEY');
-        expect(body['cert_p_e_m']).toBeUndefined();
-        expect(body['key_p_e_m']).toBeUndefined();
+        // No request at all: a private key never leaves this process.
+        expect(calls).toHaveLength(0);
     });
 
     it('issueCertWithLocalKey throws DesktopOnlyError on REST transport', async () => {

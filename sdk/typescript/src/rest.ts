@@ -31,6 +31,7 @@ import {
     normalizeVectorIDField,
     vectorIDToWire,
 } from './transform.js';
+import { encodePKCS12Base64 } from './pkcs12.js';
 import type {
     AdminClient,
     AuditQueryClient,
@@ -1920,15 +1921,12 @@ export class RestClient implements Client {
             },
             export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
                 this.ensureConnected();
-                // certPEM/keyPEM are also literal camelCase on the wire
-                // (ExportCertRequest); see issueCert above. Using jsonBody()
-                // here previously mangled them into "cert_p_e_m"/"key_p_e_m",
-                // silently breaking every export call.
-                return this.fetchSecretJSON<ExportCertResponse>('/certs/export', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(req),
-                }, Boolean(req.passphrase));
+                // Built locally, never posted: no node has a PKCS#12 route,
+                // because a private key must not be sent to a server to be
+                // packaged (docs/certificate-authority/api.md). The Go CLI
+                // (`qrdb ca export-bundle`) and the desktop binding do the
+                // same in-process.
+                return { pkcs12: await encodePKCS12Base64(req.certPEM, req.keyPEM, req.passphrase) };
             },
             revoke: async (serial: string): Promise<void> => {
                 this.ensureConnected();

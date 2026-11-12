@@ -134,12 +134,6 @@ const SECRET_CASES: readonly SecretCase[] = [
         call: (c) => c.database.updateRaft('db', { clusterMode: 'multi', multicast: { sharedSecret: 'hmac' } }),
     },
     {
-        name: 'certs.export',
-        request: 'POST /certs/export',
-        answers: { 'POST /certs/export': {} },
-        call: (c) => c.certs.export({ certPEM: 'cert', keyPEM: 'key', passphrase: 'pass' }),
-    },
-    {
         name: 'invitations.redeem',
         request: 'POST /invitations/redeem',
         answers: { 'POST /invitations/redeem': {} },

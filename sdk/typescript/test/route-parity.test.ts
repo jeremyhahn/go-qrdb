@@ -19,10 +19,7 @@ interface Route {
 }
 
 /** SDK calls with no server route yet; each needs a server change. */
-const KNOWN_UNSERVED: readonly string[] = [
-    // certs.export: the server registers no export route (#1478 report).
-    'POST /certs/export',
-];
+const KNOWN_UNSERVED: readonly string[] = [];
 
 function serverRoutes(): Route[] {
     const routes: Route[] = [];
