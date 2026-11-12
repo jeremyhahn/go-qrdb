@@ -54,13 +54,6 @@ func newIndexedClient(t *testing.T) (*sdk.Client, *embedded.Transport) {
 	return client, tr
 }
 
-func TestNewServiceIndexService_ReturnsAServiceIndexServicer(t *testing.T) {
-	var svc sdk.ServiceIndexServicer = sdk.NewServiceIndexService(mvcchost.New(t), mvcchost.ShardID)
-	if svc == nil {
-		t.Fatal("sdk.NewServiceIndexService returned nil")
-	}
-}
-
 // The re-exports are aliases, not new types: a value of either name is a value
 // of the other, and the constructor alias has the service constructor's
 // signature.
@@ -69,13 +62,6 @@ var (
 	_ sdk.ServiceIndexServicer                                                        = service.IndexServicer(nil)
 	_ func(service.Host, uint64, ...service.IndexServiceOption) service.IndexServicer = sdk.NewServiceIndexService
 )
-
-func TestServiceIndexServicer_IsTheServiceLayerInterface(t *testing.T) {
-	var svc service.IndexServicer = sdk.NewServiceIndexService(mvcchost.New(t), mvcchost.ShardID)
-	if _, ok := svc.(sdk.ServiceIndexServicer); !ok {
-		t.Fatalf("%T does not satisfy sdk.ServiceIndexServicer", svc)
-	}
-}
 
 func TestNewServiceIndexService_CreateAndListThroughEmbeddedClient(t *testing.T) {
 	client, _ := newIndexedClient(t)
