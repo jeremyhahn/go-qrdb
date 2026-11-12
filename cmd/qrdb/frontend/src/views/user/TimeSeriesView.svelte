@@ -132,6 +132,19 @@
   let rqResult: RichResult | null = $state(null);
   let rqLoading: boolean = $state(false);
 
+  // Retention card
+  interface RetentionView {
+    durationNs: number;
+    resolutionNs?: number;
+    aggregation?: number;
+  }
+  let retention: RetentionView | null = $state(null);
+  let retentionLoaded: boolean = $state(false);
+  let retentionLoading: boolean = $state(false);
+  let retDuration: string = $state("7d");
+  let retResolution: string = $state("");
+  let retAggregation: number = $state(0);
+
   const aggChartData = $derived(
     aggResults.map((b) => ({
       timestamp: Math.round(b.timestampNs / 1_000_000),
@@ -294,6 +307,68 @@
   // Actions
   // ---------------------------------------------------------------------------
 
+  async function loadRetention(metric: string): Promise<void> {
+    retentionLoading = true;
+    retentionLoaded = false;
+    try {
+      const resp = await client.timeSeries!.getRetention({ metric });
+      const p = resp?.policy ?? null;
+      retention = p === null
+        ? null
+        : {
+            durationNs: p.durationNs,
+            ...(p.resolutionNs !== undefined ? { resolutionNs: p.resolutionNs } : {}),
+            ...(p.aggregation !== undefined ? { aggregation: p.aggregation as number } : {}),
+          };
+      retentionLoaded = true;
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+      retention = null;
+    } finally {
+      retentionLoading = false;
+    }
+  }
+
+  async function saveRetention(): Promise<void> {
+    if (selectedMetric === null) return;
+    const durationNs = parseDurationNs(retDuration);
+    if (durationNs === null || durationNs <= 0) {
+      showToast("warning", "Duration must be a positive duration like 12h or 30d.");
+      return;
+    }
+    const resolutionNs = parseDurationNs(retResolution);
+    if (retResolution.trim() !== "" && resolutionNs === null) {
+      showToast("warning", "Resolution must be a duration like 1m or 1h.");
+      return;
+    }
+    const metric = selectedMetric;
+    retentionLoading = true;
+    try {
+      await client.timeSeries!.setRetention({
+        metric,
+        policy: {
+          durationNs,
+          ...(resolutionNs !== null ? { resolutionNs } : {}),
+          ...(retAggregation !== 0 ? { aggregation: retAggregation as AggFunc } : {}),
+        },
+      });
+      showToast("success", `Retention set for "${metric}".`);
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+      retentionLoading = false;
+      return;
+    }
+    await loadRetention(metric);
+  }
+
+  function resetMetricCards(): void {
+    aggResults = [];
+    aggRan = false;
+    rqResult = null;
+    retention = null;
+    retentionLoaded = false;
+  }
+
   async function runRichQuery(): Promise<void> {
     if (selectedMetric === null) return;
     const intervalNs = parseDurationNs(rqInterval);
@@ -397,7 +472,8 @@
     // view transitions immediately on click rather than waiting for the
     // async query to complete.
     selectedMetric = metric;
-    await loadDataPoints(metric);
+    resetMetricCards();
+    await Promise.all([loadDataPoints(metric), loadRetention(metric)]);
   }
 
   async function loadDataPoints(metric: string): Promise<void> {
@@ -428,6 +504,7 @@
     selectedMetric = null;
     dataPoints = [];
     selectedPoint = null;
+    resetMetricCards();
   }
 
   function openWritePanel(): void {
@@ -932,6 +1009,85 @@
             </table>
           {/if}
         </div>
+      {/if}
+    </div>
+
+    <!-- Retention -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-retention-card">
+      <h3 class="mb-3 text-sm font-semibold">Retention</h3>
+      <div class="mb-3 text-sm" data-testid="ts-retention-current">
+        {#if retentionLoading && !retentionLoaded}
+          <span class="loading loading-spinner loading-xs"></span>
+        {:else if retention === null}
+          <span data-testid="ts-retention-none">Current policy: none</span>
+        {:else}
+          <div>
+            Duration:
+            <span data-testid="ts-retention-duration">{formatDurationNs(retention.durationNs)}</span>
+            <span class="font-mono text-xs text-base-content/40">{retention.durationNs} ns</span>
+          </div>
+          {#if retention.resolutionNs !== undefined && retention.resolutionNs > 0}
+            <div>
+              Resolution:
+              <span data-testid="ts-retention-resolution">{formatDurationNs(retention.resolutionNs)}</span>
+              <span class="font-mono text-xs text-base-content/40">{retention.resolutionNs} ns</span>
+            </div>
+          {/if}
+          {#if retention.aggregation !== undefined && retention.aggregation !== 0}
+            <div>
+              Downsample aggregation:
+              <span data-testid="ts-retention-aggregation">{AGG_FUNC_NAMES[retention.aggregation] ?? retention.aggregation}</span>
+            </div>
+          {/if}
+        {/if}
+      </div>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Duration</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="7d"
+            bind:value={retDuration}
+            data-testid="ts-retention-duration-input"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Resolution</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="optional, e.g. 1h"
+            bind:value={retResolution}
+            data-testid="ts-retention-resolution-input"
+          />
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Aggregation</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={retAggregation}
+            data-testid="ts-retention-aggregation-input"
+          >
+            {#each AGG_FUNC_NAMES as name, i (name)}
+              <option value={i}>{name}</option>
+            {/each}
+          </select>
+        </label>
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={saveRetention}
+          disabled={retentionLoading}
+          data-testid="ts-retention-save"
+        >
+          Set retention
+        </button>
+      </div>
+      {#if parseDurationNs(retDuration) !== null}
+        <p class="mt-2 text-xs text-base-content/50">
+          {formatDurationNs(parseDurationNs(retDuration) ?? 0)}
+          <span class="font-mono">({parseDurationNs(retDuration)} ns)</span>
+        </p>
       {/if}
     </div>
   {/if}
