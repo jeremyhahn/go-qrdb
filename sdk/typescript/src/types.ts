@@ -3041,8 +3041,11 @@ export interface TenantQuotas {
     readonly maxBackups: number;
     /** Maximum vector dimensions. */
     readonly maxVectorDims: number;
-    /** Maximum time-series metrics. */
-    readonly maxTSMetrics: number;
+    /**
+     * Maximum time-series metrics. Wire name: `max_ts_metrics`; the
+     * camel↔snake transform maps it to and from `maxTsMetrics` only.
+     */
+    readonly maxTsMetrics: number;
     /**
      * Bytes an isolated tenant may consume by opting to use the shared system
      * barrier: 0 makes that option unavailable, -1 unlimited, >0 a cap accounted

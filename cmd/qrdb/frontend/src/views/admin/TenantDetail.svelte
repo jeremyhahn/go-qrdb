@@ -191,7 +191,7 @@
     maxCertificates = quotas?.maxCertificates ?? 0;
     maxBackups = quotas?.maxBackups ?? 0;
     maxVectorDims = quotas?.maxVectorDims ?? 0;
-    maxTSMetrics = quotas?.maxTSMetrics ?? 0;
+    maxTSMetrics = quotas?.maxTsMetrics ?? 0;
     maxDedicatedWalGroups = quotas?.maxDedicatedWalGroups ?? 0;
     systemBarrierQuota = quotas?.systemBarrierQuota ?? 0;
   }
@@ -255,7 +255,7 @@
           maxCertificates,
           maxBackups,
           maxVectorDims,
-          maxTSMetrics,
+          maxTsMetrics: maxTSMetrics,
           maxDedicatedWalGroups,
           systemBarrierQuota,
         },

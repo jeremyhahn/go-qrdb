@@ -747,7 +747,7 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
                 maxCertificates: 50,
                 maxBackups: 5,
                 maxVectorDims: 512,
-                maxTSMetrics: 100,
+                maxTsMetrics: 100,
             },
         });
 
@@ -762,6 +762,10 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
         expect(body['tenant_id']).toBeUndefined();
         expect(body['max_databases']).toBe(5);
         expect(body['max_keys']).toBe(1000);
+        // The handler's tag is max_ts_metrics; maxTSMetrics would go out as
+        // max_t_s_metrics and the quota would be dropped.
+        expect(body['max_ts_metrics']).toBe(100);
+        expect(body['max_t_s_metrics']).toBeUndefined();
         expect(body['max_storage_bytes']).toBe(500000);
         expect(body['max_database_size_bytes']).toBe(250000);
         expect(body['max_raft_groups']).toBe(3);
