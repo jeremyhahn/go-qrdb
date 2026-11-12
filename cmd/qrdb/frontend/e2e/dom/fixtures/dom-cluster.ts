@@ -200,6 +200,9 @@ export interface StartClusterOptions {
    * USER_PIN below.
    */
   seal?: ClusterSealMode;
+  /** "mvcc": every node runs the MVCC state machine, which keeps the
+   * revision history the node compaction policy needs. */
+  sm?: "mvcc";
 }
 
 /** Credentials a passphrase-sealed cluster is initialized with. */
@@ -469,6 +472,8 @@ export async function startCluster(
       "--enable-quic=false",
       "--enable-mcp=false",
       "--auth-enabled=false",
+      // mvcc keeps revision history, which the node compaction policy needs.
+      ...(opts.sm !== undefined ? ["--sm", opts.sm] : []),
     ];
 
     const proc = spawn(qrdbdBin(), args, {
