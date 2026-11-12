@@ -24,7 +24,7 @@
  */
 
 import { spawn, execFileSync, type ChildProcess } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -61,6 +61,8 @@ const CLUSTER_TRUST_DOMAIN = "qrdb.cluster";
 export interface DomCluster {
   /** Admin URL of node 1 (the proxy target). */
   adminUrl: string;
+  /** Admin URL of every node, node 1 first. */
+  adminUrls: string[];
   /** Number of nodes in the cluster. */
   nodeCount: number;
   procs: ChildProcess[];
@@ -80,6 +82,7 @@ function generateClusterCerts(
 ): {
   caPath: string;
   nodes: { certPath: string; keyPath: string }[];
+  admin: { certPath: string; keyPath: string };
 } {
   const caKey = join(certDir, "ca.key");
   const caPath = join(certDir, "ca.crt");
@@ -123,11 +126,28 @@ function generateClusterCerts(
     ].join("\n"),
   );
 
+  // The admin leaf names its tenant and user in a SPIFFE URI SAN
+  // (spiffe://<tenant>/user/<name>), matching its first OU.
+  const adminExtPath = join(certDir, "admin.ext");
+  writeFileSync(
+    adminExtPath,
+    [
+      "subjectAltName=URI:spiffe://system/user/admin",
+      "extendedKeyUsage=clientAuth",
+      "keyUsage=digitalSignature",
+      "basicConstraints=CA:FALSE",
+      "",
+    ].join("\n"),
+  );
+
   const nodes: { certPath: string; keyPath: string }[] = [];
-  for (let i = 0; i < n; i++) {
-    const keyPath = join(certDir, `node${i + 1}.key`);
-    const csrPath = join(certDir, `node${i + 1}.csr`);
-    const certPath = join(certDir, `node${i + 1}.crt`);
+  // n node leaves, then one more leaf (index n) for the cluster admin's
+  // bring-your-own certificate.
+  for (let i = 0; i <= n; i++) {
+    const name = i < n ? `node${i + 1}` : "admin";
+    const keyPath = join(certDir, `${name}.key`);
+    const csrPath = join(certDir, `${name}.csr`);
+    const certPath = join(certDir, `${name}.crt`);
     execFileSync("openssl", [
       "ecparam",
       "-genkey",
@@ -144,7 +164,7 @@ function generateClusterCerts(
       "-out",
       csrPath,
       "-subj",
-      `/CN=qrdb-node-${i + 1}`,
+      i < n ? `/CN=qrdb-node-${i + 1}` : "/OU=system/CN=admin",
     ]);
     execFileSync("openssl", [
       "x509",
@@ -161,26 +181,48 @@ function generateClusterCerts(
       "-out",
       certPath,
       "-extfile",
-      extPath,
+      i < n ? extPath : adminExtPath,
     ]);
     nodes.push({ certPath, keyPath });
   }
-  return { caPath, nodes };
+  const admin = nodes.pop()!;
+  return { caPath, nodes, admin };
 }
 
-function writeClusterConfig(path: string): void {
-  // seal disabled: this fixture exercises cluster topology UI, not barriers.
+/** Seal modes the cluster fixture boots. */
+export type ClusterSealMode = "none" | "passphrase";
+
+export interface StartClusterOptions {
+  /**
+   * "none" (default): seal and auth off. "passphrase": every node runs a
+   * passphrase barrier; the cluster is initialized through POST
+   * /v1/ceremony/initialize on node 1 with the PASSPHRASE / SO_PIN /
+   * USER_PIN below.
+   */
+  seal?: ClusterSealMode;
+}
+
+/** Credentials a passphrase-sealed cluster is initialized with. */
+export const CLUSTER_PASSPHRASE = "dom-cluster-active-seal-secret-1";
+export const CLUSTER_SO_PIN = "dom-cluster-active-seal-so-pin";
+export const CLUSTER_USER_PIN = "dom-cluster-active-seal-user-pin";
+
+function writeClusterConfig(path: string, seal: ClusterSealMode): void {
   const lines = [
     "codec:",
     '  storage_codec: "json"',
     '  wire_codec: "json"',
     "seal:",
-    "  enabled: false",
-    // auth off: without a seal the server cannot hold credentials, and the
-    // topology UI under test needs no login.
-    "auth:",
-    "  enabled: false",
   ];
+  if (seal === "none") {
+    lines.push("  enabled: false");
+  } else {
+    lines.push("  enabled: true", `  strategy: "${seal}"`);
+  }
+  // auth off in every mode: the DOM tier drives the UI with no login (a
+  // seal-off server cannot hold credentials at all), and the seal and
+  // topology surfaces under test need none.
+  lines.push("auth:", "  enabled: false");
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
 
@@ -206,6 +248,84 @@ async function httpsGetStatus(
       resolve(null);
     });
   });
+}
+
+async function httpsPostJson(
+  url: string,
+  body: unknown,
+  timeoutMs = 30_000,
+): Promise<{ code: number; body: string }> {
+  const https = await import("https");
+  const payload = JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const req = https.default.request(
+      url,
+      {
+        method: "POST",
+        rejectUnauthorized: false,
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () =>
+          resolve({
+            code: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString(),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`POST ${url} timed out`));
+    });
+    req.end(payload);
+  });
+}
+
+/** Polls url until it answers 200. */
+async function waitForStatus200(
+  url: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last = "no response";
+  while (Date.now() < deadline) {
+    const res = await httpsGetStatus(url);
+    if (res !== null && res.code === 200) return;
+    last = res === null ? "unreachable" : `status ${res.code} ${res.body}`;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error(`${url} not 200 within ${timeoutMs}ms (last: ${last})`);
+}
+
+/**
+ * Initializes every node's passphrase barrier through POST
+ * /v1/ceremony/initialize (each node holds its own barrier key; the cluster
+ * seal record is what the nodes share).
+ */
+async function initializeCluster(
+  adminUrls: string[],
+  adminCertPem: string,
+): Promise<void> {
+  for (const url of adminUrls) {
+    await waitForStatus200(`${url}/v1/barrier/status`);
+  }
+  for (const url of adminUrls) {
+    const res = await httpsPostJson(`${url}/v1/ceremony/initialize`, {
+      secret: Buffer.from(CLUSTER_PASSPHRASE).toString("base64"),
+      so_pin: CLUSTER_SO_PIN,
+      user_pin: CLUSTER_USER_PIN,
+      admin_cert_pem: adminCertPem,
+    });
+    if (res.code < 200 || res.code >= 300) {
+      throw new Error(`ceremony init ${url}: ${res.code} ${res.body}`);
+    }
+  }
 }
 
 /**
@@ -247,9 +367,17 @@ async function waitForClusterTopology(
 }
 
 /** Boots a 3-node cluster and blocks until topology reports all members. */
-export async function startCluster(nodeCount = 3): Promise<DomCluster> {
+export async function startCluster(
+  nodeCount = 3,
+  opts: StartClusterOptions = {},
+): Promise<DomCluster> {
+  const seal = opts.seal ?? "none";
   const certDir = mkdtempSync(join(tmpdir(), "qrdb-dom-cluster-certs-"));
-  const { caPath, nodes: nodeCerts } = generateClusterCerts(certDir, nodeCount);
+  const {
+    caPath,
+    nodes: nodeCerts,
+    admin: adminCert,
+  } = generateClusterCerts(certDir, nodeCount);
 
   const peersFlag = NODE_PORTS.slice(0, nodeCount)
     .map((p, i) => `${i + 1}=127.0.0.1:${p.raft}`)
@@ -278,7 +406,7 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
     const dataDir = mkdtempSync(join(tmpdir(), `qrdb-dom-cluster-n${i + 1}-`));
     dataDirs.push(dataDir);
     const configPath = join(dataDir, "config.yaml");
-    writeClusterConfig(configPath);
+    writeClusterConfig(configPath, seal);
 
     const args = [
       "start",
@@ -294,7 +422,6 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
       String(ports.admin),
       "--grpc-port",
       String(ports.grpc),
-      "--auth-enabled=false",
       "--tls-client-auth=none",
       "--discovery",
       "static",
@@ -320,6 +447,7 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
       "--enable-unix=false",
       "--enable-quic=false",
       "--enable-mcp=false",
+      "--auth-enabled=false",
     ];
 
     const proc = spawn(qrdbdBin(), args, {
@@ -333,7 +461,16 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
   }
 
   const adminUrl = `https://127.0.0.1:${DOM_ADMIN_PORT}`;
+  const adminUrls = NODE_PORTS.slice(0, nodeCount).map(
+    (p) => `https://127.0.0.1:${p.admin}`,
+  );
   try {
+    if (seal !== "none") {
+      await initializeCluster(
+        adminUrls,
+        readFileSync(adminCert.certPath, "utf8"),
+      );
+    }
     await waitForClusterTopology(adminUrl, nodeCount);
   } catch (err) {
     for (const p of procs) p.kill("SIGTERM");
@@ -345,7 +482,7 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
     throw new Error(`${err}\n${logs}`);
   }
 
-  return { adminUrl, nodeCount, procs, dataDirs, certDir };
+  return { adminUrl, adminUrls, nodeCount, procs, dataDirs, certDir };
 }
 
 /** Stops all cluster nodes and removes their data + cert directories. */
