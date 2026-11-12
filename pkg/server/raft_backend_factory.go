@@ -1266,6 +1266,10 @@ type StartedShard struct {
 	TenantID string
 	// Database is the database name.
 	Database string
+	// ShardID is the raft shard the started replica serves: its identity,
+	// which a recreated database of the same name never shares. A start
+	// in flight that has no shard id yet reports 0.
+	ShardID uint64
 }
 
 // ListStarted returns a snapshot of every (TenantID, Database) pair whose
@@ -1279,8 +1283,8 @@ func (f *RaftBackendFactory) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
 	return out
 }
@@ -1296,11 +1300,11 @@ func (f *RaftBackendFactory) ListOnHost() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]StartedShard, 0, len(f.shards)+len(f.starting))
-	for k := range f.shards {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.shards {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
-	for k := range f.starting {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
+	for k, s := range f.starting {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: s.shardID})
 	}
 	return out
 }

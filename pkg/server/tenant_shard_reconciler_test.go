@@ -44,6 +44,13 @@ type fakeShardLifecycle struct {
 	closed    []raftShardKey
 	purged    []raftShardKey
 	attachFn  func(tenantID, db string) error
+	// shardIDs records the raft shard each started shard serves, as the
+	// real factory's raftShard.shardID does; ListStarted and ListOnHost
+	// report it.
+	shardIDs map[raftShardKey]uint64
+	// shardIDOf resolves the shard an Attach starts (the real factory
+	// reads it from the placement); nil leaves it 0.
+	shardIDOf func(tenantID, db string) uint64
 	// passes counts ListStarted calls: ReconcileOnce makes exactly one per
 	// pass, so this counts reconcile passes.
 	passes int
@@ -53,7 +60,32 @@ func newFakeShardLifecycle() *fakeShardLifecycle {
 	return &fakeShardLifecycle{
 		started:   make(map[raftShardKey]bool),
 		observers: make(map[raftShardKey]bool),
+		shardIDs:  make(map[raftShardKey]uint64),
 	}
+}
+
+// seedStarted marks (tenantID, db) started on shard shardID, as if a
+// previous assignment had started it here.
+func (f *fakeShardLifecycle) seedStarted(tenantID, db string, shardID uint64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	f.started[key] = true
+	f.shardIDs[key] = shardID
+}
+
+func (f *fakeShardLifecycle) ListOnHost() []StartedShard {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.listLocked()
+}
+
+func (f *fakeShardLifecycle) listLocked() []StartedShard {
+	out := make([]StartedShard, 0, len(f.started))
+	for k := range f.started {
+		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database, ShardID: f.shardIDs[k]})
+	}
+	return out
 }
 
 func (f *fakeShardLifecycle) Attach(_ context.Context, tenantID, db string) error {
@@ -66,6 +98,9 @@ func (f *fakeShardLifecycle) Attach(_ context.Context, tenantID, db string) erro
 		}
 	}
 	f.started[key] = true
+	if f.shardIDOf != nil {
+		f.shardIDs[key] = f.shardIDOf(tenantID, db)
+	}
 	f.attached = append(f.attached, key)
 	return nil
 }
@@ -96,11 +131,7 @@ func (f *fakeShardLifecycle) ListStarted() []StartedShard {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.passes++
-	out := make([]StartedShard, 0, len(f.started))
-	for k := range f.started {
-		out = append(out, StartedShard{TenantID: k.tenantID, Database: k.database})
-	}
-	return out
+	return f.listLocked()
 }
 
 // StartedAsObserver reports the role recorded via setStartedAsObserver;
@@ -388,6 +419,9 @@ func newTestReconciler(
 			t.Fatalf("store.Put: %v", err)
 		}
 	}
+	if fake, ok := factory.(*fakeShardLifecycle); ok && fake.shardIDOf == nil {
+		fake.shardIDOf = shardIDFromStore(store, "local:1")
+	}
 	opts := []TenantShardReconcilerOption{
 		WithReconcilerPollInterval(10 * time.Millisecond),
 	}
@@ -396,6 +430,26 @@ func newTestReconciler(
 	}
 	r := NewTenantShardReconciler(store, factory, "local:1", nil, opts...)
 	return r, store
+}
+
+// shardIDFromStore resolves the shard an Attach starts the way the real
+// factory does: from the placement of (tenantID, db) that assigns self.
+func shardIDFromStore(store *placement.Store, self string) func(tenantID, db string) uint64 {
+	return func(tenantID, db string) uint64 {
+		ps, err := store.List(context.Background())
+		if err != nil {
+			return 0
+		}
+		for _, p := range ps {
+			if p.TenantID != tenantID || p.Database != db {
+				continue
+			}
+			if _, ok := p.ReplicaForNode(self); ok {
+				return p.ShardID
+			}
+		}
+		return 0
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -493,9 +547,7 @@ func TestTenantShardReconciler_MetaManagedShardSurvivesReconcile(t *testing.T) {
 func TestTenantShardReconciler_DemotionTeardown(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	// Pre-start the shard as if it was previously assigned here.
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	// Place a placement entry that assigns the replica to "other:1" only.
 	demoted := &placement.Placement{
@@ -512,6 +564,72 @@ func TestTenantShardReconciler_DemotionTeardown(t *testing.T) {
 	}
 	if factory.closeCount() != 1 {
 		t.Errorf("Close called %d times; want 1", factory.closeCount())
+	}
+}
+
+// TestTenantShardReconciler_FencedPredecessorDoesNotPurgeSuccessor: a fenced
+// predecessor entry (id A, shard 100) that survived a failed delete sits
+// beside its recreated successor (id B, shard 200) under the same name. The
+// predecessor's replica set excludes this node, the successor's includes
+// it: the successor's running shard must never be closed or purged by the
+// predecessor's demotion, whichever entry the table lists last.
+func TestTenantShardReconciler_FencedPredecessorDoesNotPurgeSuccessor(t *testing.T) {
+	predecessor := func() *placement.Placement {
+		return &placement.Placement{
+			TenantID: "acme", DatabaseID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Database: "orders",
+			ShardID: 100, RF: 1, LeaderReplicaID: 2,
+			Replicas: []placement.Replica{{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"}},
+		}
+	}
+	successor := func() *placement.Placement {
+		p := placement1("acme", "orders", 200)
+		p.DatabaseID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		return p
+	}
+	orders := map[string][]*placement.Placement{
+		"predecessor first": {predecessor(), successor()},
+		"successor first":   {successor(), predecessor()},
+	}
+	for name, entries := range orders {
+		t.Run(name, func(t *testing.T) {
+			factory := newFakeShardLifecycle()
+			factory.seedStarted("acme", "orders", 200)
+			r, _ := newTestReconciler(t, factory, nil, entries...)
+			r.ReconcileOnce(context.Background())
+
+			if !factory.isStarted("acme", "orders") {
+				t.Error("successor shard 200 must keep running beside its fenced predecessor")
+			}
+			if factory.closeCount() != 0 || factory.purgeCount() != 0 {
+				t.Errorf("close=%d purge=%d; want 0, 0 (the predecessor owns shard 100, not 200)",
+					factory.closeCount(), factory.purgeCount())
+			}
+		})
+	}
+}
+
+// TestTenantShardReconciler_EventDelete_PredecessorIDLeavesSuccessor: the
+// delete of a predecessor entry (id A, shard 100) while the recreated
+// successor's shard 200 runs under the same name closes nothing.
+func TestTenantShardReconciler_EventDelete_PredecessorIDLeavesSuccessor(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.seedStarted("acme", "orders", 200)
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	r.rememberName("acme", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "orders", 100)
+	r.rememberName("acme", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "orders", 200)
+
+	r.handleEvent(context.Background(), placement.Event{
+		Type:       placement.EventDelete,
+		TenantID:   "acme",
+		DatabaseID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	if !factory.isStarted("acme", "orders") {
+		t.Error("successor shard 200 must keep running after its predecessor's delete")
+	}
+	if factory.closeCount() != 0 {
+		t.Errorf("closeCount() = %d, want 0", factory.closeCount())
 	}
 }
 
@@ -724,9 +842,7 @@ func TestTenantShardReconciler_WatchPath_Put(t *testing.T) {
 func TestTenantShardReconciler_WatchPath_Delete(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	// Pre-start the shard.
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	kv := newWatchablePlacementKV()
 	p := placement1("acme", "orders", 1001)
@@ -926,9 +1042,7 @@ func TestWithReconcilerPollInterval(t *testing.T) {
 func TestTenantShardReconciler_HandleEvent_PutDemotion(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	// Pre-start the shard to simulate the "was assigned, now demoted" scenario.
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "db"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "db", 1001)
 
 	store, _ := placement.NewStore(newMemKV())
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
@@ -983,9 +1097,9 @@ func TestTenantShardReconciler_HandleEvent_PutNoLocalReplica_NotRunning(t *testi
 	if factory.attachCount() != 0 {
 		t.Errorf("Attach called %d times for non-local EventPut; want 0", factory.attachCount())
 	}
-	// Close is called (idempotent no-op since shard was never started).
-	if factory.closeCount() != 1 {
-		t.Errorf("Close called %d times; want 1 (idempotent demotion Close)", factory.closeCount())
+	// No shard of this entry runs on the host, so nothing is closed.
+	if factory.closeCount() != 0 {
+		t.Errorf("Close called %d times; want 0 (no shard of the entry on this host)", factory.closeCount())
 	}
 }
 
@@ -1181,9 +1295,7 @@ func TestTenantShardReconciler_ListStarted_Factory(t *testing.T) {
 // CloseAndPurge (default true) rather than plain Close.
 func TestTenantShardReconciler_DemotionPurgesByDefault(t *testing.T) {
 	factory := newFakeShardLifecycle()
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	demoted := &placement.Placement{
 		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
@@ -1207,9 +1319,7 @@ func TestTenantShardReconciler_DemotionPurgesByDefault(t *testing.T) {
 // path (no data-dir purge) for demotion teardown.
 func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 	factory := newFakeShardLifecycle()
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	demoted := &placement.Placement{
 		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
@@ -1241,12 +1351,12 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 // EventDelete (full DropForTenant) path also purges by default.
 func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 	factory := newFakeShardLifecycle()
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	store, _ := placement.NewStore(newMemKV())
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	// The entry was seen while it existed (a pass or a put event).
+	r.rememberName("acme", "orders", "orders", 1001)
 
 	r.handleEvent(context.Background(), placement.Event{
 		Type:       placement.EventDelete,
@@ -1266,9 +1376,7 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 // the database the entry named when it last saw it.
 func TestTenantShardReconciler_EventDelete_ByIDClosesTheNamedShard(t *testing.T) {
 	factory := newFakeShardLifecycle()
-	factory.mu.Lock()
-	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
-	factory.mu.Unlock()
+	factory.seedStarted("acme", "orders", 1001)
 
 	store, _ := placement.NewStore(newMemKV())
 	p := placement1("acme", "orders", 1001)

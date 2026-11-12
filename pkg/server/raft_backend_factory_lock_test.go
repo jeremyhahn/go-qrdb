@@ -19,6 +19,13 @@ import (
 // only a call queued behind the held read reaches it.
 const lockTestDeadline = 10 * time.Second
 
+// shardOfa and shardOfb are the raft shards these tests give databases
+// "a" and "b": ListStarted and ListOnHost report them with each shard.
+const (
+	shardOfa uint64 = 1001
+	shardOfb uint64 = 1002
+)
+
 // heldRead is an identitiesOverride that holds the FIRST read of one shard's
 // member identities until unhold, as a system shard that has stopped
 // answering holds it, and answers every other read at once. It answers what
@@ -121,7 +128,7 @@ func TestRaftBackendFactory_HeldReadBlocksNoOtherCaller(t *testing.T) {
 		}
 	})
 	within(t, "ListStarted", func() {
-		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b", ShardID: shardOfb}}) {
 			t.Errorf("ListStarted = %v, want only b: a is still being planned", got)
 		}
 	})
@@ -200,7 +207,7 @@ func TestRaftBackendFactory_ShardStoppedDuringReadPlansAgain(t *testing.T) {
 	if n := held.calls.Load(); n != 2 {
 		t.Fatalf("identity reads for shard 1001 = %d, want 2: the stop during the read must send the start back to plan", n)
 	}
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a"}}) {
+	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a", ShardID: shardOfa}}) {
 		t.Fatalf("ListStarted = %v, want only a", got)
 	}
 }
@@ -268,7 +275,7 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 		}
 	})
 	within(t, "ListStarted", func() {
-		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+		if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b", ShardID: shardOfb}}) {
 			t.Errorf("ListStarted = %v, want only b: a has not served", got)
 		}
 	})
@@ -276,7 +283,7 @@ func TestRaftBackendFactory_StartWithoutQuorumBlocksNoOtherCaller(t *testing.T) 
 
 	cancel()
 	requireAwaitLeader(t, "Services(a)", (<-a).err)
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b", ShardID: shardOfb}}) {
 		t.Fatalf("ListStarted after a's failed start = %v, want only b", got)
 	}
 	if _, err := f.host.ShardInfo(1001); err == nil {
@@ -363,18 +370,18 @@ func TestRaftBackendFactory_ListOnHostIncludesStartsInFlight(t *testing.T) {
 
 	a := resolveAsync(ctx, f, "rt", "a")
 	awaitStarting(t, f, "rt", "a")
-	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListStarted(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b", ShardID: shardOfb}}) {
 		t.Fatalf("ListStarted = %v, want only the serving b", got)
 	}
 	got := f.ListOnHost()
 	slices.SortFunc(got, func(x, y StartedShard) int { return strings.Compare(x.Database, y.Database) })
-	if want := []StartedShard{{TenantID: "rt", Database: "a"}, {TenantID: "rt", Database: "b"}}; !slices.Equal(got, want) {
+	if want := []StartedShard{{TenantID: "rt", Database: "a", ShardID: shardOfa}, {TenantID: "rt", Database: "b", ShardID: shardOfb}}; !slices.Equal(got, want) {
 		t.Fatalf("ListOnHost = %v, want %v: the start in flight runs on the host", got, want)
 	}
 
 	cancel()
 	requireAwaitLeader(t, "Services(a)", (<-a).err)
-	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b"}}) {
+	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "b", ShardID: shardOfb}}) {
 		t.Fatalf("ListOnHost after the failed start = %v, want only b", got)
 	}
 }

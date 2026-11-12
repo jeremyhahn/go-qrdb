@@ -53,6 +53,11 @@ type ShardLifecycle interface {
 	// detect orphans.
 	ListStarted() []StartedShard
 
+	// ListOnHost returns every shard on this host, serving or with a start
+	// in flight, each with its ShardID. Used to close a demoted or deleted
+	// entry's shard only when the shard under that name is the entry's own.
+	ListOnHost() []StartedShard
+
 	// StartedAsObserver reports whether the locally running shard for
 	// (tenantID, db) was started with the observer role latched into its
 	// local raft configuration (false when the shard is not started). Used
@@ -258,11 +263,18 @@ type TenantShardReconciler struct {
 	unsealNotifier BarrierUnsealNotifier
 	kick           chan struct{}
 
-	// placedNames maps "tenant/database id" to the database name of every
-	// placement this reconciler has seen. The table is keyed by the opaque
-	// id, so a delete event names only the id; the shard to close is found
-	// here (see handleEvent).
+	// placedNames maps "tenant/database id" to the database name and raft
+	// shard (placedShard) of every placement this reconciler has seen. The
+	// table is keyed by the opaque id, so a delete event names only the id;
+	// the shard to close is found here (see handleEvent), and closes only
+	// when the shard on this host is that entry's shard.
 	placedNames sync.Map
+}
+
+// placedShard is what placedNames records for one placement entry.
+type placedShard struct {
+	name    string
+	shardID uint64
 }
 
 // NewTenantShardReconciler creates a TenantShardReconciler. store and factory
@@ -313,17 +325,19 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		return
 	}
 	for _, p := range placements {
-		r.rememberName(p.TenantID, p.DatabaseID, p.Database)
+		r.rememberName(p.TenantID, p.DatabaseID, p.Database, p.ShardID)
 	}
 
-	// allPlacements tracks every entry in the placement table, regardless of
-	// whether this node is an assigned replica. This lets the teardown loop
-	// distinguish "placement exists, I'm not in it" (demotion → stop) from
-	// "no placement entry" (meta-managed → leave running).
-	allPlacements := make(map[raftShardKey]*placement.Placement, len(placements))
+	// byShard indexes every entry in the placement table by its raft shard,
+	// regardless of whether this node is an assigned replica. This lets the
+	// teardown loop distinguish "placement exists, I'm not in it" (demotion
+	// → stop) from "no placement entry" (meta-managed → leave running). The
+	// shard id is the shard's identity: a fenced predecessor that survived a
+	// failed delete shares its name with a recreated successor, never its
+	// shard, so the predecessor's replica set never tears the successor down.
+	byShard := make(map[uint64]*placement.Placement, len(placements))
 	for _, p := range placements {
-		key := raftShardKey{tenantID: p.TenantID, database: p.Database}
-		allPlacements[key] = p
+		byShard[p.ShardID] = p
 		if p.IsLocalBinding() {
 			// A single-node binding on a non-raft Backend (go-qrdb Lane 2B,
 			// OD-4 A): there is no Raft group to attach. The owning node
@@ -343,11 +357,11 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 	}
 
 	for _, s := range r.factory.ListStarted() {
-		key := raftShardKey{tenantID: s.TenantID, database: s.Database}
-		p, hasPlacement := allPlacements[key]
-		if !hasPlacement {
-			// No placement entry — this shard is catalog-managed (opened from
-			// the database catalog at boot or single-node Phase-4b). Do not
+		p, hasPlacement := byShard[s.ShardID]
+		if s.ShardID == 0 || !hasPlacement || p.TenantID != s.TenantID || p.Database != s.Database {
+			// No placement entry for this shard — it is catalog-managed
+			// (opened from the database catalog at boot or single-node
+			// Phase-4b), or a start in flight with no shard id yet. Do not
 			// tear it down.
 			continue
 		}
@@ -359,7 +373,7 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		r.logger.Info("placement reconciler: stopping demoted shard",
 			slog.String("tenant", s.TenantID),
 			slog.String("database", s.Database))
-		if err := r.closeDemoted(s.TenantID, s.Database); err != nil {
+		if err := r.closeDemotedShard(s.TenantID, s.Database, s.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: demoted shard stop failed",
 				slog.String("tenant", s.TenantID),
 				slog.String("database", s.Database),
@@ -380,6 +394,32 @@ func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
 		return r.factory.CloseAndPurge(tenantID, db)
 	}
 	return r.factory.Close(tenantID, db)
+}
+
+// closeDemotedShard stops (and, by default, purges) the shard for
+// (tenantID, db) only when the shard on this host is shardID: the entry
+// being torn down owns it. A recreated database of the same name runs a
+// different shard, so a fenced predecessor's demotion or delete leaves the
+// successor running. A shard id of 0 (unknown) closes nothing.
+func (r *TenantShardReconciler) closeDemotedShard(tenantID, db string, shardID uint64) error {
+	if shardID == 0 {
+		return nil
+	}
+	for _, s := range r.factory.ListOnHost() {
+		if s.TenantID != tenantID || s.Database != db {
+			continue
+		}
+		if s.ShardID != shardID {
+			r.logger.Info("placement reconciler: shard under this name belongs to another placement, left running",
+				slog.String("tenant", tenantID),
+				slog.String("database", db),
+				slog.Uint64("shard_id", s.ShardID),
+				slog.Uint64("entry_shard_id", shardID))
+			return nil
+		}
+		return r.closeDemoted(tenantID, db)
+	}
+	return nil
 }
 
 // maybeRestartPromotedLocal restarts the LOCAL replica of p as a full
@@ -730,7 +770,7 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 		if ev.Placement == nil {
 			break
 		}
-		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database)
+		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database, ev.Placement.ShardID)
 		if ev.Placement.IsLocalBinding() {
 			// Same as ReconcileOnce: a local binding has no Raft group for
 			// this reconciler to attach.
@@ -743,27 +783,27 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 			r.maybePromoteReadyObservers(ctx, ev.Placement)
 			break
 		}
-		// This node is no longer in the replica set — demotion (M1).
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		// This node is no longer in the replica set — demotion (M1). Only
+		// the entry's own shard closes: a successor of the same name runs
+		// another shard.
+		if err := r.closeDemotedShard(ev.TenantID, ev.Database, ev.Placement.ShardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on demotion failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", ev.Database),
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
-		// A delete names only the entry's id; the database whose shard
-		// closes is the one the entry named while it existed.
-		name := r.forgetName(ev.TenantID, ev.DatabaseID)
-		if name == "" {
-			name = ev.Database
-		}
-		if name == "" {
+		// A delete names only the entry's id; the shard that closes is the
+		// one the entry placed while it existed, found by its shard id, so
+		// a recreated database of the same name keeps running.
+		name, shardID := r.forgetName(ev.TenantID, ev.DatabaseID)
+		if name == "" || shardID == 0 {
 			r.logger.Debug("placement reconciler: delete of an entry never seen, nothing to close",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database_id", ev.DatabaseID))
 			break
 		}
-		if err := r.closeDemoted(ev.TenantID, name); err != nil {
+		if err := r.closeDemotedShard(ev.TenantID, name, shardID); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),
 				slog.String("database", name),
@@ -772,24 +812,24 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 	}
 }
 
-// rememberName records the database name a placement entry carries, so a
+// rememberName records the database name and raft shard a placement entry carries, so a
 // later delete of the entry (which names only its id) closes that shard.
-func (r *TenantShardReconciler) rememberName(tenantID, databaseID, name string) {
+func (r *TenantShardReconciler) rememberName(tenantID, databaseID, name string, shardID uint64) {
 	if databaseID == "" || name == "" {
 		return
 	}
-	r.placedNames.Store(tenantID+"/"+databaseID, name)
+	r.placedNames.Store(tenantID+"/"+databaseID, placedShard{name: name, shardID: shardID})
 }
 
-// forgetName returns and drops the name recorded for the entry, or "" when
+// forgetName returns and drops the name and shard id recorded for the entry, or "" and 0 when
 // the entry was never seen.
-func (r *TenantShardReconciler) forgetName(tenantID, databaseID string) string {
+func (r *TenantShardReconciler) forgetName(tenantID, databaseID string) (string, uint64) {
 	v, ok := r.placedNames.LoadAndDelete(tenantID + "/" + databaseID)
 	if !ok {
-		return ""
+		return "", 0
 	}
-	name, _ := v.(string) //nolint:errcheck // the map only ever holds strings
-	return name
+	ps, _ := v.(placedShard) //nolint:errcheck // the map only ever holds placedShard
+	return ps.name, ps.shardID
 }
 
 // runPoll calls ReconcileOnce on every pollInterval tick until ctx is cancelled.
