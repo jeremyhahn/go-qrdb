@@ -46,12 +46,6 @@ async function injectStatefulTimeSeriesBinding(
       tags?: { key: string; value: string }[];
     }
 
-    interface TSQueryRequest {
-      metric: string;
-      startNs: number;
-      endNs: number;
-    }
-
     interface TSAggregateRequest {
       metric: string;
       startNs: number;

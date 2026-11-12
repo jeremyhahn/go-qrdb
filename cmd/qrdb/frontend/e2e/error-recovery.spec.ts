@@ -60,19 +60,6 @@ async function navigateToDatabase(page: Page): Promise<void> {
 }
 
 /** Navigates to the named admin section (admin is always visible in sidebar). */
-async function navigateToAdmin(page: Page, section: string): Promise<void> {
-  await page.goto("/");
-  await expect(
-    page.locator(".breadcrumbs").getByText("Dashboard"),
-  ).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-  // Admin sections are always in the sidebar — no toggle required.
-  await page.locator("aside").getByText(section, { exact: true }).click();
-  await expect(
-    page.locator(".breadcrumbs").getByText(section),
-  ).toBeVisible({ timeout: LOAD_TIMEOUT });
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

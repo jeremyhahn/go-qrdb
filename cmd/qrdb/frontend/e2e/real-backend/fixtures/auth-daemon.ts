@@ -19,7 +19,7 @@
  */
 
 import { test as base } from "@playwright/test";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";

@@ -32,7 +32,6 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   findFreePort,
-  waitForHealthExported,
   waitForSealedWindow,
 } from "./daemon-helpers.ts";
 

@@ -15,7 +15,6 @@
  */
 
 import { defineConfig, devices } from "@playwright/test";
-import { shutdownDaemon } from "./e2e/real-backend/fixtures/daemon.ts";
 
 export default defineConfig({
   testDir: "./e2e/real-backend",

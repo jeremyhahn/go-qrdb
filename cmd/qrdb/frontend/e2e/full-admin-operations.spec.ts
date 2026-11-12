@@ -63,17 +63,6 @@ const raftAdminState: MockState = {
   ],
 };
 
-const sealedState: MockState = {
-  ...adminState,
-  sealStatus: {
-    sealed: true,
-    initialized: true,
-    sharesRequired: 2,
-    sharesProvided: 0,
-    sharesTotal: 3,
-  },
-};
-
 const unsealedState: MockState = {
   ...adminState,
   sealStatus: {

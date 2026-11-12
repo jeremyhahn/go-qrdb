@@ -17,8 +17,6 @@ import {
   expect,
   defaultMockState,
   secondLaunchEmbeddedState,
-  injectError,
-  clearError,
 } from "./fixtures/wails-mock.ts";
 import {
   waitForConnectionManager,

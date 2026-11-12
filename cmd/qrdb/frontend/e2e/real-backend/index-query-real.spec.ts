@@ -20,7 +20,6 @@
  */
 
 import { test, expect } from "./fixtures/daemon.ts";
-import { ApiClient } from "./fixtures/api.ts";
 
 function name(label: string): string {
   return `e2e-idx-${label}-${Date.now()}`;
@@ -31,7 +30,6 @@ test.describe("Index query (real backend — bug #10)", () => {
     request,
     daemon,
   }) => {
-    const api = new ApiClient(request, daemon.adminUrl);
     const indexName = name("create-ok");
 
     const resp = await request.post(`${daemon.adminUrl}/index/create`, {
@@ -51,7 +49,6 @@ test.describe("Index query (real backend — bug #10)", () => {
   });
 
   test("GET /index/list returns created index", async ({ request, daemon }) => {
-    const api = new ApiClient(request, daemon.adminUrl);
     const indexName = name("list-check");
 
     const probe = await request.post(`${daemon.adminUrl}/index/create`, {
@@ -77,7 +74,6 @@ test.describe("Index query (real backend — bug #10)", () => {
   test(
     "GET /index/query on existing index returns 200 with keys array",
     async ({ request, daemon }) => {
-      const api = new ApiClient(request, daemon.adminUrl);
       const indexName = name("query-empty");
 
       await request.post(`${daemon.adminUrl}/index/create`, {

@@ -22,7 +22,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import {
   startDaemon,
   stopDaemon,
@@ -95,18 +95,6 @@ function makeCSR(commonName: string): string {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-/** Expects a toast; on a miss, reports the toasts on screen. */
-async function expectToast(page: Page, text: string | RegExp): Promise<string> {
-  const toast = page.locator(".toast .alert").filter({ hasText: text }).last();
-  try {
-    await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
-  } catch (err) {
-    const shown = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`);
-  }
-  return toast.innerText();
 }
 
 test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", async ({ page, request }) => {
