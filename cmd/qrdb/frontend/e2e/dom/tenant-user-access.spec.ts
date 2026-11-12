@@ -21,6 +21,11 @@ import { startDaemon, stopDaemon, daemonRequest, UI_BASE_URL, type DomDaemon } f
 const LOAD_TIMEOUT = 30_000;
 const TENANT = "acme";
 const DB = "acmedb";
+/** Every admin view the Server Admin nav lists on a standalone web server. */
+const ADMIN_LABELS = [
+  "Dashboard", "Seal Manager", "Tenants", "Users", "Roles", "Volume Pools", "Certificates",
+  "Credentials", "Databases", "Backups", "Audit Log", "Settings",
+];
 
 let daemon: DomDaemon | null = null;
 
@@ -66,6 +71,10 @@ test("a plain tenant user sees no server admin views and works in its database",
   await expect(aside.getByText("Server Admin")).toHaveCount(0);
   await expect(aside.getByText("Seal Manager")).toHaveCount(0);
   await expect(aside.getByText("Tenants", { exact: true })).toHaveCount(0);
+  // Not even a view whose read route is open to it (its own databases).
+  for (const label of ADMIN_LABELS) {
+    await expect(aside.locator(`button[title="${label}"]`), label).toHaveCount(0);
+  }
 
   // The Dashboard shows the refusal, not empty data.
   await expect(page.locator("main").getByText("Failed to load dashboard data")).toBeVisible({ timeout: LOAD_TIMEOUT });
@@ -96,11 +105,18 @@ test("a refused tenant list shows the refusal, not an empty list", async ({ page
   expect(refused.status, refused.text).toBe(403);
 
   // A server without the topology endpoint (404) keeps the admin views on
-  // offer, so this caller can open Tenants; the tenant list's 403 is the live
-  // server's.
+  // offer, and a connect-time probe of the tenant list that fails short of a
+  // refusal (503) keeps Tenants, so this caller can open it; the tenant
+  // list's 403 the view then shows is the live server's.
   await page.route("**/admin/topology", (route) =>
     route.fulfill({ status: 404, contentType: "application/json", body: '{"error":"not found"}' }),
   );
+  let probed = false;
+  await page.route("**/v1/tenants/list", (route) => {
+    if (probed) return route.continue();
+    probed = true;
+    return route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"unavailable"}' });
+  });
   await page.goto(UI_BASE_URL);
   await page.locator('aside button[title="Tenants"]').click();
   const main = page.locator("main");

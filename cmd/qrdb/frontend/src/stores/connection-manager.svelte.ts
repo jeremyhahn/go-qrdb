@@ -139,12 +139,11 @@ export interface ConnManagerState {
     /** Number of cluster nodes for the currently active profile. */
     activeClusterNodeCount: number;
     /**
-     * Profiles whose server refused the caller its admin topology (403): the
-     * caller is no server administrator there (a tenant user without an admin
-     * role), and that server's admin views are not offered. Kept in memory
-     * only: a different credential on the next load is probed afresh.
+     * Per profile, the admin views whose own read route the server refused
+     * the caller (403) at connect time; those views are not offered. Kept in
+     * memory only: a different credential on the next load is probed afresh.
      */
-    nonAdminProfileIds: string[];
+    refusedAdminViews: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +267,7 @@ export const connManagerStore: ConnManagerState = $state({
     loading: true,
     activeServerMode: '',
     activeClusterNodeCount: 0,
-    nonAdminProfileIds: [],
+    refusedAdminViews: {},
 });
 
 // ---------------------------------------------------------------------------
@@ -418,7 +417,10 @@ async function loadWebProfiles(client: Client): Promise<void> {
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; serverAdmin: boolean }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; refusedViews: string[] }> {
+    let serverMode: 'standalone' | 'raft' = 'standalone';
+    let nodeCount = 0;
+    const refusedViews: string[] = [];
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -427,25 +429,69 @@ async function detectWebServerMode(
                 replicaIds.add(replicaId);
             }
         }
-        const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount >= 1 ? 'raft' : 'standalone', nodeCount, serverAdmin: true };
+        nodeCount = replicaIds.size;
+        serverMode = nodeCount >= 1 ? 'raft' : 'standalone';
     } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        // Only a refusal (403) can say the caller is no server administrator,
-        // and only when the tenant list is refused too: a tenant admin is
-        // refused the topology but manages its tenant from the admin views.
-        if (!isForbidden(err)) {
-            return { serverMode: 'standalone', nodeCount: 0, serverAdmin: true };
-        }
-        let serverAdmin = true;
-        try {
-            await client.tenants.list();
-        } catch (listErr) {
-            serverAdmin = !isForbidden(listErr);
-        }
-        return { serverMode: 'standalone', nodeCount: 0, serverAdmin };
+        if (isRefused(err)) refusedViews.push('topology');
     }
+    // Each admin view is offered only when the server allows the caller the
+    // view's own read route: a refusal (403) hides that view; any other
+    // error keeps it, so the view shows its own error.
+    const probes = adminViewProbes(client);
+    const results = await Promise.allSettled(probes.map(([, probe]) => probe()));
+    results.forEach((r, i) => {
+        if (r.status === 'rejected' && isRefused(r.reason)) refusedViews.push(probes[i]![0]);
+    });
+    return { serverMode, nodeCount, refusedViews };
+}
+
+/**
+ * The read route each probed admin view loads first. Views not listed
+ * (settings, daemon) are local to the client and never hidden by a probe.
+ */
+function adminViewProbes(client: Client): Array<[string, () => Promise<unknown>]> {
+    return [
+        ['dashboard', () => client.admin.status()],
+        ['cluster', () => client.admin.peers()],
+        ['rebalance', () => client.rebalance.getImbalanceReport()],
+        ['seal-manager', () => client.seal.status()],
+        ['tenants', () => client.tenants.list()],
+        ['users', () => client.users.list({})],
+        ['roles', () => client.roles.list({})],
+        ['volume-pools', () => client.volumePools.list()],
+        ['certificates', () => client.certs.list('')],
+        ['credentials', () => client.credentials.list()],
+        ['databases', () => client.database.list()],
+        ['backups', () => client.backups.list()],
+        ['audit-log', () => client.audit.query({})],
+    ];
+}
+
+/** Whether the server allowed the caller this admin view's read route. */
+export function adminViewAllowed(profileId: string, view: string): boolean {
+    return !(connManagerStore.refusedAdminViews[profileId] ?? []).includes(view);
+}
+
+/**
+ * Whether the caller administers anything on this server: a server
+ * administrator reads the topology, a tenant administrator its tenant list.
+ * A plain user, refused both, is offered no admin view even where a read
+ * route (its own databases, the seal status) is open to it.
+ */
+export function hasAdminViews(profileId: string): boolean {
+    const refused = connManagerStore.refusedAdminViews[profileId] ?? [];
+    return !(refused.includes('topology') && refused.includes('tenants'));
+}
+
+/**
+ * A refusal (403), from a TransportError or from an SDK module that
+ * reports the status in its error message ("... failed: 403 ...").
+ */
+function isRefused(err: unknown): boolean {
+    if (isForbidden(err)) return true;
+    return err instanceof Error && /failed: 403\b/.test(err.message);
 }
 
 /** True when err is the server's refusal of the caller (HTTP 403). */
@@ -472,12 +518,11 @@ export function isMultiNodeServer(): boolean {
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount, serverAdmin } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, refusedViews } = await detectWebServerMode(client);
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
-    const others = connManagerStore.nonAdminProfileIds.filter((id) => id !== profileId);
-    connManagerStore.nonAdminProfileIds = serverAdmin ? others : [...others, profileId];
+    connManagerStore.refusedAdminViews = { ...connManagerStore.refusedAdminViews, [profileId]: refusedViews };
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;

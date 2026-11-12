@@ -210,6 +210,76 @@ async function serverAnchorFingerprints(d: DomDaemon): Promise<string[]> {
   return (j?.anchors ?? []).map((a) => a.fingerprint ?? "").sort();
 }
 
+/**
+ * Admin views of a standalone web server and the read route each loads
+ * first: the view is offered exactly when the server does not refuse (403)
+ * the caller that route.
+ */
+const ADMIN_VIEW_ROUTES: ReadonlyArray<readonly [label: string, path: string]> = [
+  ["Tenants", "/v1/tenants/list"],
+  ["Volume Pools", "/v1/volume-pools/list"],
+  ["Credentials", "/v1/credentials"],
+  ["Databases", "/v1/databases/list"],
+  ["Backups", "/v1/backups/list"],
+  ["Audit Log", "/v1/audit/events"],
+];
+
+/** Each admin view is in the aside exactly when its own read route is not refused. */
+async function expectAdminViewsMatchServer(
+  page: Page,
+  status: (path: string) => Promise<{ status: number; text: string }>,
+): Promise<string[]> {
+  const aside = page.locator("aside");
+  const refused: string[] = [];
+  for (const [label, path] of ADMIN_VIEW_ROUTES) {
+    const r = await status(path);
+    const button = aside.locator(`button[title="${label}"]`);
+    if (r.status === 403) {
+      refused.push(label);
+      await expect(button, `${label} (${path} 403)`).toHaveCount(0);
+    } else {
+      await expect(button, `${label} (${path} ${r.status})`).toBeVisible({ timeout: LOAD_TIMEOUT });
+    }
+  }
+  return refused;
+}
+
+// A tenant admin manages its tenant from the admin views, but the server
+// refuses it the server-wide ones: each view shows only when the server
+// allows the caller that view's own read route.
+test("a tenant admin sees Tenants and not the admin views the server refuses it (UI ↔ live daemon)", async ({
+  page,
+}) => {
+  daemon = await startDaemon({ seal: "none-committed", tenantAdmin: { tenant: TENANT } });
+  const d = daemon;
+  const asTenantAdmin = (path: string) => daemonRequest(d.adminUrl, "GET", path, undefined, d.tenantAdmin);
+  // The topology is a server administrator's: refused here, allowed the system admin.
+  expect((await asTenantAdmin("/admin/topology")).status).toBe(403);
+  const sysPools = await daemonRequest(d.adminUrl, "GET", "/v1/volume-pools/list", undefined, d.systemAdmin);
+  expect(sysPools.status, sysPools.text).toBe(200);
+
+  await page.goto(UI_BASE_URL);
+  await expect(page.locator('aside button[title="Tenants"]')).toBeVisible({ timeout: 20_000 });
+  const refused = await expectAdminViewsMatchServer(page, asTenantAdmin);
+  expect(refused).not.toContain("Tenants");
+  // Volume pools are system-tenant only (ScopeCross): refused, so hidden.
+  expect(refused).toContain("Volume Pools");
+});
+
+// The auth-off root session of a seal "none" daemon is refused nothing: every
+// admin view is offered.
+test("the root session of a seal none daemon sees every admin view (UI ↔ live daemon)", async ({ page }) => {
+  daemon = await startDaemon({ seal: "none" });
+  const d = daemon;
+  await page.goto(UI_BASE_URL);
+  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
+  const refused = await expectAdminViewsMatchServer(page, (path) => api(d, "GET", path));
+  expect(refused).toEqual([]);
+  for (const label of ["Dashboard", "Seal Manager", "Users", "Roles", "Certificates", "Settings"]) {
+    await expect(page.locator(`aside button[title="${label}"]`), label).toBeVisible({ timeout: LOAD_TIMEOUT });
+  }
+});
+
 // The tenant's own admin (auth on, its certificate presented by the Vite
 // proxy) manages the tenant's trust anchors from the tenant detail: add, list
 // and remove, each checked against the daemon's own answer.
