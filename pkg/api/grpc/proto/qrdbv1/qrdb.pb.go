@@ -31558,9 +31558,13 @@ type TenantBarrierStatusResponse struct {
 	KeyFingerprint string `protobuf:"bytes,9,opt,name=key_fingerprint,json=keyFingerprint,proto3" json:"key_fingerprint,omitempty"`
 	// nodes are the nodes serving the barrier, each with its own key, for a
 	// client fanning a barrier init out to every one.
-	Nodes         []*TenantBarrierNode `protobuf:"bytes,10,rep,name=nodes,proto3" json:"nodes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Nodes []*TenantBarrierNode `protobuf:"bytes,10,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	// nodes_unreadable is true when the server could not read the nodes
+	// serving the barrier: an empty nodes then means the serving set is
+	// unknown, not a standalone barrier.
+	NodesUnreadable bool `protobuf:"varint,11,opt,name=nodes_unreadable,json=nodesUnreadable,proto3" json:"nodes_unreadable,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TenantBarrierStatusResponse) Reset() {
@@ -31661,6 +31665,13 @@ func (x *TenantBarrierStatusResponse) GetNodes() []*TenantBarrierNode {
 		return x.Nodes
 	}
 	return nil
+}
+
+func (x *TenantBarrierStatusResponse) GetNodesUnreadable() bool {
+	if x != nil {
+		return x.NodesUnreadable
+	}
+	return false
 }
 
 // TenantBarrierNode is one node serving a tenant barrier: its Raft address
@@ -37326,7 +37337,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x18TenantBarrierSealRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"9\n" +
 	"\x1aTenantBarrierStatusRequest\x12\x1b\n" +
-	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\xa0\x03\n" +
+	"\ttenant_id\x18\x01 \x01(\tR\btenantId\"\xcb\x03\n" +
 	"\x1bTenantBarrierStatusResponse\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x16\n" +
 	"\x06sealed\x18\x02 \x01(\bR\x06sealed\x12 \n" +
@@ -37338,7 +37349,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\fcluster_seal\x18\b \x01(\v2\x19.qrdb.v1.ClusterSealStateR\vclusterSeal\x12'\n" +
 	"\x0fkey_fingerprint\x18\t \x01(\tR\x0ekeyFingerprint\x120\n" +
 	"\x05nodes\x18\n" +
-	" \x03(\v2\x1a.qrdb.v1.TenantBarrierNodeR\x05nodes\"\xae\x01\n" +
+	" \x03(\v2\x1a.qrdb.v1.TenantBarrierNodeR\x05nodes\x12)\n" +
+	"\x10nodes_unreadable\x18\v \x01(\bR\x0fnodesUnreadable\"\xae\x01\n" +
 	"\x11TenantBarrierNode\x12\x12\n" +
 	"\x04node\x18\x01 \x01(\tR\x04node\x12G\n" +
 	"\tendpoints\x18\x02 \x03(\v2).qrdb.v1.TenantBarrierNode.EndpointsEntryR\tendpoints\x1a<\n" +

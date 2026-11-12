@@ -377,6 +377,26 @@ otherwise; the embedded column is served while the embedded client has one
 ([user.md](user.md), "Keep a verifiable log") drive it. Each method is
 authorized by its permission before the service is reached.
 
+The TypeScript SDK's `client.vlog` is a `VlogClient` (`sdk/typescript`): the
+`RestClient` drives the REST routes below, and the `WailsClient` calls the
+desktop GUI's `VlogBinding` (`cmd/qrdb/bindings_vlog.go`), which drives
+`Client.Vlog()` over the connection profile's transport. Both take and answer
+the `vlogwire` shapes with camelCase field names, byte fields as base64
+strings:
+
+| Capability | TypeScript `VlogClient` | Wails `VlogBinding` |
+|---|---|---|
+| Create log | `create(req)` | `Create` |
+| List logs | `list()` | `List` |
+| Append | `append(req)` | `Append` |
+| Get entries | `get(req)` | `Get` |
+| Inclusion proof | `proveInclusion(req)` | `ProveInclusion` |
+| Consistency proof | `proveConsistency(req)` | `ProveConsistency` |
+| Head | `head(log)` | `Head` |
+| Sign head | `signHead(log)` | `SignHead` |
+| Rotate key | `rotateKey(req)` | `RotateKey` |
+| Expire bodies | `expireBodies(req)` | `ExpireBodies` |
+
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded | Permission |
 |---|---|---|---|---|---|---|
 | Create log | `POST /vlog/log` | `VlogCreate` | `vlog.Create` | `qrdb_vlog_create` | `CreateLog` | `vlog:create` |
