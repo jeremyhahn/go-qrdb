@@ -41,6 +41,7 @@ export const API_PREFIXES: readonly string[] = [
   "/membership",
   "/v1",
   "/users",
+  "/invitations",
   "/roles",
   "/permissions",
   "/tenants",
