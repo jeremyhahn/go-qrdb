@@ -2653,12 +2653,15 @@ export class RestClient implements Client {
                 // top level and adds an "admin" key (the Go handler's
                 // createTenantResponse anonymously embeds *tenantResponse);
                 // split them apart to match the SDK's {tenant, admin} contract.
-                const raw = await this.fetchJSON<TenantInfo & { admin: TenantAdminCredential }>('/v1/tenants', {
+                const raw = await this.fetchJSON<TenantInfo & {
+                    admin: TenantAdminCredential;
+                    so?: TenantAdminCredential;
+                }>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
-                const { admin, ...tenant } = raw;
-                return { tenant, admin };
+                const { admin, so, ...tenant } = raw;
+                return so === undefined ? { tenant, admin } : { tenant, admin, so };
             },
             get: async (tenantId: string): Promise<GetTenantResponse> => {
                 this.ensureConnected();

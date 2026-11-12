@@ -3185,6 +3185,10 @@ export interface TenantInfo {
      * for prefix/barrier tenants.
      */
     readonly volumePool?: string;
+    /** Free-text description; absent when empty. */
+    readonly description?: string;
+    /** Operator key/value metadata; absent when empty. */
+    readonly metadata?: Readonly<Record<string, string>>;
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last-updated timestamp. */
@@ -3328,6 +3332,8 @@ export interface CreateTenantResponse {
     readonly tenant: TenantInfo;
     /** The tenant's first admin, as onboarding left it. */
     readonly admin: TenantAdminCredential;
+    /** The tenant's security officer, present when the request named one. */
+    readonly so?: TenantAdminCredential;
 }
 
 /**

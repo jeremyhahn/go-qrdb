@@ -658,6 +658,57 @@ describe('Outbound transform — tenants.create sends isolation_type', () => {
         vi.unstubAllGlobals();
     });
 
+    it('create sends the SO fields and splits the SO credential from the tenant', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            id: 't1',
+            name: 'T',
+            isolation_type: 'prefix',
+            admin: { username: 'admin', cert_pem: 'CERT', thumbprint: 'THUMB' },
+            so: { username: 'officer', cert_pem: 'SO_CERT', thumbprint: 'SO_THUMB' },
+        });
+
+        const result = await client.tenants.create({
+            id: 't1',
+            name: 'T',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+            soUsername: 'officer',
+            soCertPem: 'SO_CERT',
+            soChainPem: 'SO_CHAIN',
+            soPin: '1234',
+        });
+
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['so_username']).toBe('officer');
+        expect(body['so_cert_pem']).toBe('SO_CERT');
+        expect(body['so_chain_pem']).toBe('SO_CHAIN');
+        expect(body['so_pin']).toBe('1234');
+        expect(result.so?.username).toBe('officer');
+        expect(result.admin.username).toBe('admin');
+        expect('so' in result.tenant).toBe(false);
+    });
+
+    it('create sends so_csr_pem and omits so when the server names no SO', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            id: 't1',
+            name: 'T',
+            admin: { username: 'admin', cert_pem: 'CERT', thumbprint: 'THUMB' },
+        });
+
+        const result = await client.tenants.create({
+            id: 't1',
+            name: 'T',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+            soCsrPem: 'SO_CSR',
+        });
+
+        expect((calls[0].body as Record<string, unknown>)['so_csr_pem']).toBe('SO_CSR');
+        expect('so' in result).toBe(false);
+    });
+
     it('isolationType is serialized as isolation_type in POST body', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({

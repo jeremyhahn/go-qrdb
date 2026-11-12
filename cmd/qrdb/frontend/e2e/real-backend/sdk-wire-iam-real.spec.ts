@@ -170,6 +170,61 @@ test.describe("SDK IAM wire (real daemon)", () => {
     await client.roles.delete(roleB.id);
   });
 
+  test("users create/update carry name, authMethods, lifecycle, pending, lastAuth, roleBindings and attributes", async ({
+    daemon,
+  }) => {
+    const client = await sdk(daemon.adminUrl);
+    const [p1] = await somePermissions(client);
+    const role = await client.roles.create({ name: uniq("rbind"), tenantId: "system", permissions: [p1] });
+    const username = uniq("full");
+
+    const created = await client.users.create({
+      username,
+      email: `${username}@example.test`,
+      tenantId: "system",
+      name: "Full Name",
+      authMethods: ["piv"],
+      lifecycle: "disabled",
+    });
+    expect(created.email).toBe(`${username}@example.test`);
+    expect(created.name).toBe("Full Name");
+    expect([...(created.authMethods ?? [])]).toEqual(["piv"]);
+    expect(created.lifecycle).toBe("disabled");
+
+    const pendingName = uniq("pend");
+    const pending = await client.users.create({
+      username: pendingName,
+      email: `${pendingName}@example.test`,
+      tenantId: "system",
+      pending: true,
+    });
+    expect(pending.lifecycle).toBe("pending");
+
+    const lastAuth = "2026-01-02T03:04:05Z";
+    await client.users.update({
+      id: created.id,
+      email: `${username}-v2@example.test`,
+      name: "Renamed",
+      authMethods: ["piv", "mtls"],
+      lifecycle: "active",
+      lastAuth,
+      roleBindings: [{ roleId: role.id, tenantId: "system" }],
+      attributes: { costCenter: "cc-1", clearance_level: "high" },
+    });
+    const got = await client.users.get(created.id);
+    expect(got.email).toBe(`${username}-v2@example.test`);
+    expect(got.name).toBe("Renamed");
+    expect([...(got.authMethods ?? [])].sort()).toEqual(["mtls", "piv"]);
+    expect(got.lifecycle).toBe("active");
+    expect(Date.parse(got.lastAuth ?? "")).toBe(Date.parse(lastAuth));
+    expect(got.roleBindings).toEqual([{ roleId: role.id, tenantId: "system" }]);
+    expect(got.attributes).toEqual({ costCenter: "cc-1", clearance_level: "high" });
+
+    await client.users.delete(created.id);
+    await client.users.delete(pending.id);
+    await client.roles.delete(role.id);
+  });
+
   test("users create withoutEmailLoginKey is accepted without an email", async ({ daemon }) => {
     const client = await sdk(daemon.adminUrl);
     const username = uniq("noemail");
@@ -232,8 +287,23 @@ test.describe("SDK IAM wire (real daemon)", () => {
       expect((await client.tenants.get("system")).tenant.name).toBe(renamed);
       const listed = await client.tenants.list();
       expect(listed.tenants.find((t) => t.id === "system")?.name).toBe(renamed);
+
+      const described = await client.tenants.update("system", {
+        description: "wire description",
+        metadata: { "cost-center": "cc-1", "owner.team": "core" },
+      });
+      expect(described.tenant.description).toBe("wire description");
+      expect(described.tenant.metadata).toEqual({ "cost-center": "cc-1", "owner.team": "core" });
+      const reread = (await client.tenants.get("system")).tenant;
+      expect(reread.description).toBe("wire description");
+      expect(reread.metadata).toEqual({ "cost-center": "cc-1", "owner.team": "core" });
+      expect(reread.name).toBe(renamed);
     } finally {
-      await client.tenants.update("system", { name: before.name });
+      await client.tenants.update("system", {
+        name: before.name,
+        description: before.description ?? "",
+        metadata: { ...(before.metadata ?? {}) },
+      });
     }
     expect((await client.tenants.get("system")).tenant.name).toBe(before.name);
   });
