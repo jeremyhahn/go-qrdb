@@ -80,6 +80,12 @@ export interface StartDaemonOptions {
    * all regular UI traffic.
    */
   tlsClientAuth?: "none" | "request";
+  /**
+   * State machine type passed as --sm=<value>. Defaults to the daemon's
+   * default (pebble). Lock listing and status need an MVCC-backed shard,
+   * so the lock spec boots with "mvcc".
+   */
+  sm?: "mvcc";
 }
 
 export interface DomDaemon {
@@ -167,6 +173,7 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     "--enable-unix=false",
     "--enable-quic=false",
     "--enable-mcp=false",
+    ...(opts.sm !== undefined ? ["--sm", opts.sm] : []),
   ];
 
   const proc = spawn(qrdbdBin(), args, {
