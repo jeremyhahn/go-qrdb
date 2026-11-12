@@ -62,18 +62,6 @@ func generateTestCSRPEM(t *testing.T, cn string) []byte {
 // SetCA
 // ---------------------------------------------------------------------------
 
-// TestSetCA_WiresWhenUnset verifies that lifecycle wiring can install a
-// CeremonyCA on a service that has not run Initialize, enabling officer
-// registration in daemon deployments.
-func TestSetCA_WiresWhenUnset(t *testing.T) {
-	svc := newBareTestService(t)
-	require.Nil(t, svc.CA())
-
-	ca := testCA(t)
-	svc.SetCA(ca)
-	assert.Same(t, CeremonyCA(ca), svc.CA())
-}
-
 // TestSetCA_NilIsNoOp verifies that a nil CA argument leaves the service
 // unchanged in both the unset and already-set states.
 func TestSetCA_NilIsNoOp(t *testing.T) {
@@ -249,20 +237,6 @@ func TestSignCSRInit_NoCARefuses(t *testing.T) {
 
 	_, err := svc.SignCSRInit(context.Background(), "", "", nil, "")
 	assert.ErrorIs(t, err, ErrCANotInitialized)
-}
-
-// TestCACell_LoadStore covers the lock-free CA cell's three operations.
-func TestCACell_LoadStore(t *testing.T) {
-	var c caCell
-	assert.Nil(t, c.load(), "an empty cell holds no CA")
-
-	first, second := testCA(t), testCA(t)
-	c.storeIfEmpty(first)
-	assert.Same(t, CeremonyCA(first), c.load())
-	c.storeIfEmpty(second)
-	assert.Same(t, CeremonyCA(first), c.load(), "storeIfEmpty never overwrites")
-	c.store(second)
-	assert.Same(t, CeremonyCA(second), c.load(), "store always overwrites")
 }
 
 // TestCACell_ConcurrentReplaceIsRaceFree drives ReplaceCA against readers

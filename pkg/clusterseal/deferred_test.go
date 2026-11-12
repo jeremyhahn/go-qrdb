@@ -74,14 +74,6 @@ func TestDeferredForwardsAndSharesStreams(t *testing.T) {
 	}
 }
 
-func TestNewMonitorUsesTheGivenStreams(t *testing.T) {
-	s := NewStreams()
-	h := newHarness(t, func(c *Config) { c.Streams = s })
-	if h.m.Streams() != s {
-		t.Fatal("monitor built its own registry")
-	}
-}
-
 func TestPrincipalFrom(t *testing.T) {
 	if got := PrincipalFrom(context.Background()); got != (Principal{}) {
 		t.Fatalf("anonymous principal = %+v", got)

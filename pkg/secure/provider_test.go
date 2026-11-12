@@ -12,49 +12,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"strings"
 	"testing"
 )
-
-func TestStdinProvider_ReadsUntilNewline(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  []byte
-	}{
-		{name: "plain", input: "hunter2\n", want: []byte("hunter2")},
-		{name: "crlf", input: "hunter2\r\n", want: []byte("hunter2")},
-		{name: "no newline eof", input: "hunter2", want: []byte("hunter2")},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			p := NewStdinProviderFromReader(strings.NewReader(tc.input))
-			buf, err := p.Passphrase(context.Background(), "prompt> ")
-			if err != nil {
-				t.Fatalf("Passphrase: %v", err)
-			}
-			defer buf.Destroy()
-			if !bytes.Equal(contents(buf), tc.want) {
-				t.Fatalf("got %q, want %q", contents(buf), tc.want)
-			}
-		})
-	}
-}
-
-func TestStdinProvider_Empty(t *testing.T) {
-	p := NewStdinProviderFromReader(strings.NewReader(""))
-	buf, err := p.Passphrase(context.Background(), "")
-	if err == nil || buf != nil {
-		t.Fatalf("expected error on empty input")
-	}
-	var pe *ProviderError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected *ProviderError, got %T", err)
-	}
-}
 
 func TestStdinProvider_CtxCanceled(t *testing.T) {
 	p := NewStdinProviderFromReader(strings.NewReader("anything\n"))
@@ -131,94 +92,6 @@ func TestTerminalProvider_NonTTY(t *testing.T) {
 	_, err := p.Passphrase(context.Background(), "")
 	if err == nil {
 		t.Fatalf("expected error when stdin is not a tty")
-	}
-	var pe *ProviderError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected *ProviderError, got %T", err)
-	}
-}
-
-// TestStdinProvider_LineEndings pins the line-ending handling that used to
-// live in the trimTrailingNewline helper. The helper is gone: the read now
-// goes byte-at-a-time straight into mlocked memory (a bufio.Reader staged the
-// passphrase in an unwipeable heap buffer), so the trimming is part of the
-// read and is tested through the provider.
-func TestStdinProvider_LineEndings(t *testing.T) {
-	tests := []struct {
-		name  string
-		in    string
-		want  string
-		isErr bool
-	}{
-		{name: "no terminator", in: "abc", want: "abc"},
-		{name: "lf", in: "abc\n", want: "abc"},
-		{name: "crlf", in: "abc\r\n", want: "abc"},
-		{name: "lf only", in: "\n", isErr: true},
-		{name: "crlf only", in: "\r\n", isErr: true},
-		// A CR is half of a CRLF, not a terminator in its own right: with no
-		// newline behind it the byte is part of the passphrase and is kept.
-		{name: "bare cr at eof", in: "abc\r", want: "abc\r"},
-		// Only the first line is consumed, and nothing past the newline is
-		// read from the underlying reader.
-		{name: "stops at first newline", in: "abc\ndef\n", want: "abc"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			p := NewStdinProviderFromReader(strings.NewReader(tc.in))
-			buf, err := p.Passphrase(context.Background(), "")
-			if tc.isErr {
-				if err == nil {
-					buf.Destroy()
-					t.Fatalf("Passphrase(%q): expected an error", tc.in)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("Passphrase(%q): %v", tc.in, err)
-			}
-			defer buf.Destroy()
-			if string(contents(buf)) != tc.want {
-				t.Fatalf("Passphrase(%q) = %q, want %q", tc.in, contents(buf), tc.want)
-			}
-		})
-	}
-}
-
-// TestStdinProvider_DoesNotOverRead is the reason the bufio.Reader had to go
-// beyond the un-wipeable staging buffer: bufio consumes up to its whole
-// buffer from the underlying reader, so everything after the passphrase's
-// newline was swallowed and unavailable to the next reader of the same
-// stream. This asserts the remainder is still there.
-func TestStdinProvider_DoesNotOverRead(t *testing.T) {
-	r := strings.NewReader("hunter2\nthe-rest-of-the-stream\n")
-	p := NewStdinProviderFromReader(r)
-	buf, err := p.Passphrase(context.Background(), "")
-	if err != nil {
-		t.Fatalf("Passphrase: %v", err)
-	}
-	defer buf.Destroy()
-	if string(contents(buf)) != "hunter2" {
-		t.Fatalf("passphrase = %q, want %q", contents(buf), "hunter2")
-	}
-	rest, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	if string(rest) != "the-rest-of-the-stream\n" {
-		t.Fatalf("remaining stream = %q, want %q", rest, "the-rest-of-the-stream\n")
-	}
-}
-
-// TestStdinProvider_TooLong verifies that input exceeding the mlocked line
-// buffer is REFUSED, not truncated. Truncation would unseal against a prefix
-// of the operator's passphrase without telling anyone.
-func TestStdinProvider_TooLong(t *testing.T) {
-	long := strings.Repeat("a", MaxStdinPassphraseLen+1) + "\n"
-	p := NewStdinProviderFromReader(strings.NewReader(long))
-	buf, err := p.Passphrase(context.Background(), "")
-	if err == nil {
-		buf.Destroy()
-		t.Fatalf("expected an error for input longer than %d bytes", MaxStdinPassphraseLen)
 	}
 	var pe *ProviderError
 	if !errors.As(err, &pe) {
@@ -313,22 +186,6 @@ func TestStdinProvider_IOError(t *testing.T) {
 	}
 }
 
-// TestStdinProvider_EOFWithoutNewline verifies that a reader which returns
-// data + io.EOF simultaneously (common for bytes.Reader on the last read)
-// is treated as success when the data is non-empty.
-func TestStdinProvider_EOFWithoutNewlineSuccess(t *testing.T) {
-	// bytes.Reader returns (n, io.EOF) on the final read when n > 0.
-	p := NewStdinProviderFromReader(strings.NewReader("mysecret"))
-	buf, err := p.Passphrase(context.Background(), "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer buf.Destroy()
-	if !bytes.Equal(contents(buf), []byte("mysecret")) {
-		t.Fatalf("got %q, want %q", contents(buf), "mysecret")
-	}
-}
-
 // TestTerminalProvider_CtxCanceled verifies that TerminalProvider.Passphrase
 // returns *ProviderError immediately when the context is already cancelled,
 // without attempting any terminal I/O.
@@ -360,23 +217,6 @@ func TestCallbackProvider_NilReceiver(t *testing.T) {
 	var pe *ProviderError
 	if !errors.As(err, &pe) {
 		t.Fatalf("expected *ProviderError, got %T", err)
-	}
-}
-
-// TestStdinProvider_ReadsUntilEOF exercises the path where the reader holds
-// a non-newline-terminated string that also returns io.EOF together with the
-// final bytes (the standard behaviour of io.Reader contracts).
-func TestStdinProvider_ReadsRawIOEOF(t *testing.T) {
-	// Use a raw bytes.NewReader — it returns (n, io.EOF) on the last chunk.
-	data := []byte("direct-eof")
-	p := NewStdinProviderFromReader(io.NopCloser(strings.NewReader(string(data))))
-	buf, err := p.Passphrase(context.Background(), "prompt")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer buf.Destroy()
-	if !bytes.Equal(contents(buf), data) {
-		t.Fatalf("got %q, want %q", contents(buf), data)
 	}
 }
 

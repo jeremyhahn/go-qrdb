@@ -197,4 +197,7 @@ func TestQuorum_FullBoundSlotsStoreTheUnboundChallengeApart(t *testing.T) {
 	for _, ch := range bound {
 		require.Contains(t, e.svc.system.quorum, ch.ChallengeID, "the bound challenges survive")
 	}
+	_, err = e.svc.BeginQuorum(withPeerCert(t, ctx, a), seal.DomainUnseal, seal.OpSeal, "alice", "")
+	require.NoError(t, err, "the holder's own certificate evicts its oldest challenge")
+	assert.LessOrEqual(t, len(e.svc.system.quorum), maxPendingPerHolderOp)
 }
