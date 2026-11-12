@@ -15,8 +15,16 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, ImbalanceReport, RebalancePlan, RebalanceResult, NodeLoad, RebalanceMove } from "@qrdb/sdk";
-  import type { Column } from "../../components/core/DataTable/types.ts";
+  import type {
+    Client,
+    ImbalanceReport,
+    RebalancePlan,
+    RebalanceResult,
+    NodeLoad,
+    RebalanceMove,
+    ShardStatsResponse,
+  } from "@qrdb/sdk";
+  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { RefreshCw, Play, Zap } from "lucide-svelte";
   import DataTable from "../../components/core/DataTable/DataTable.svelte";
@@ -41,6 +49,11 @@
 
   let showExecuteConfirm: boolean = $state(false);
   let lastResult: RebalanceResult | null = $state(null);
+
+  let selectedShardId: number | null = $state(null);
+  let shardStats: ShardStatsResponse | null = $state(null);
+  let shardStatsLoading: boolean = $state(false);
+  let shardStatsError: string | null = $state(null);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -128,6 +141,28 @@
     }
   }
 
+  /** Loads the per-shard statistics for the clicked move row. */
+  async function loadShardStats(shardId: number): Promise<void> {
+    selectedShardId = shardId;
+    shardStats = null;
+    shardStatsError = null;
+    shardStatsLoading = true;
+    try {
+      const stats = await client.rebalance.getShardStats(shardId);
+      if (selectedShardId === shardId) shardStats = stats;
+    } catch (err: unknown) {
+      if (selectedShardId === shardId) {
+        shardStatsError = err instanceof Error ? err.message : String(err);
+      }
+    } finally {
+      if (selectedShardId === shardId) shardStatsLoading = false;
+    }
+  }
+
+  function handleMoveRowClick(event: RowClickEvent<RebalanceMove>): void {
+    void loadShardStats(event.row.shardId);
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -205,7 +240,38 @@
             columns={moveColumns}
             rowKey={(row) => `${row.shardId}-${row.fromNode}-${row.toNode}`}
             emptyMessage="Cluster is already balanced — no moves required."
+            onrowclick={handleMoveRowClick}
           />
+          {#if plan.moves.length > 0}
+            <p class="text-base-content/60 text-xs">Click a move to view its shard's statistics.</p>
+          {/if}
+          {#if selectedShardId !== null}
+            <div class="rounded-box bg-base-100 p-4" data-testid="shard-stats-panel">
+              <div class="flex items-center justify-between">
+                <h4 class="font-semibold">Shard {selectedShardId} Statistics</h4>
+                <button class="btn btn-ghost btn-xs" onclick={() => (selectedShardId = null)}>Close</button>
+              </div>
+              {#if shardStatsLoading}
+                <div class="flex justify-center py-4" data-testid="shard-stats-loading">
+                  <span class="loading loading-spinner loading-md text-primary"></span>
+                </div>
+              {:else if shardStatsError !== null}
+                <div class="alert alert-error mt-2 text-sm" data-testid="shard-stats-error">
+                  <span>Failed to load shard statistics: {shardStatsError}</span>
+                </div>
+              {:else if shardStats !== null}
+                <table class="table table-sm mt-2">
+                  <tbody>
+                    <tr><th class="w-40">Shard ID</th><td>{shardStats.shardId}</td></tr>
+                    <tr><th>Keys</th><td>{shardStats.keyCount}</td></tr>
+                    <tr><th>Bytes</th><td>{formatBytes(shardStats.byteCount)} ({shardStats.byteCount})</td></tr>
+                    <tr><th>Leader Replica</th><td>{shardStats.leaderId}</td></tr>
+                    <tr><th>Replicas</th><td>{shardStats.replicaCount}</td></tr>
+                  </tbody>
+                </table>
+              {/if}
+            </div>
+          {/if}
           {#if plan.moves.length > 0}
             <div>
               <button class="btn btn-warning btn-sm" onclick={() => (showExecuteConfirm = true)}>
