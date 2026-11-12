@@ -26,6 +26,11 @@ export default ts.config(
       // A string with an escape such as \n cannot be written as a plain
       // attribute value, so its mustache is not useless.
       "svelte/no-useless-mustaches": ["error", { ignoreStringEscape: true }],
+      // Reactive collections here are replaced, never mutated in place: each
+      // update builds a new Map/Set and reassigns the $state (copy-on-write).
+      // The other flagged instances are local temporaries or non-reactive
+      // bookkeeping. SvelteMap/SvelteSet would add tracking nobody reads.
+      "svelte/prefer-svelte-reactivity": "off",
     },
   },
   {
