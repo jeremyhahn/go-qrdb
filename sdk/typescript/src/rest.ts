@@ -90,6 +90,7 @@ import type {
     CompactNamespaceRequest,
     CompactNamespaceResponse,
     CompactionProgress,
+    AggFunc,
     CreateDatabaseRequest,
     CreateNamespaceRequest,
     DaemonStatus,
@@ -1302,13 +1303,7 @@ export class RestClient implements Client {
                 const tagsStr = req.tags
                     ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
                     : undefined;
-                interface RawTSPoint {
-                    metric: string;
-                    value: number;
-                    timestampNs: number;
-                    tags?: Record<string, string>;
-                }
-                const raw = await this.fetchJSON<{ points: RawTSPoint[] }>(`/ts/query${buildQuery({
+                const raw = await this.fetchJSON<{ points: RawTSPoint[] | null }>(`/ts/query${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1317,20 +1312,13 @@ export class RestClient implements Client {
                         descending: req.descending ? 'true' : undefined,
                     })}`,
                 );
-                return {
-                    points: (raw.points ?? []).map((p) => ({
-                        metric: p.metric,
-                        timestampNs: p.timestampNs,
-                        value: p.value,
-                        tags: p.tags
-                            ? Object.entries(p.tags).map(([key, value]) => ({ key, value }))
-                            : [],
-                    })),
-                };
+                return { points: (raw.points ?? []).map(rawTSPointToPoint) };
             },
             aggregate: async (req: TSAggregateRequest): Promise<TSAggregateResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSAggregateResponse>(`/ts/aggregate${buildQuery({
+                const raw = await this.fetchJSON<{
+                    results: { timestamp: number; value: number; count: number }[] | null;
+                }>(`/ts/aggregate${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1338,6 +1326,13 @@ export class RestClient implements Client {
                         interval_ns: req.intervalNs,
                     })}`,
                 );
+                return {
+                    results: (raw.results ?? []).map((r) => ({
+                        timestampNs: r.timestamp,
+                        value: r.value,
+                        count: r.count,
+                    })),
+                };
             },
             writePoint: async (point: TSDataPoint): Promise<void> => {
                 this.ensureConnected();
@@ -1353,28 +1348,85 @@ export class RestClient implements Client {
             },
             richQuery: async (req: TSRichQueryRequest): Promise<TSRichQueryResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSRichQueryResponse>('/ts/rich-query', {
+                const raw = await this.fetchJSON<{
+                    metric: string;
+                    tags?: Record<string, string>;
+                    points: RawTSPoint[] | null;
+                    aggregatedValue?: number;
+                    groupedResults?: {
+                        tags: Record<string, string> | null;
+                        points?: RawTSPoint[] | null;
+                        aggregatedValue?: number;
+                    }[] | null;
+                }>('/ts/query-rich', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    ...jsonBody({
+                        metric: req.metric,
+                        tags: tagsArrayToMap(req.tags),
+                        start_ns: req.startNs,
+                        end_ns: req.endNs,
+                        aggregation: req.aggregation ? aggFuncToString(req.aggregation) : undefined,
+                        interval_ns: req.intervalNs,
+                        group_by: req.groupBy,
+                        limit: req.limit,
+                        percentile: req.percentile,
+                    }),
                 });
+                return {
+                    metric: raw.metric,
+                    tags: tagsMapToArray(raw.tags),
+                    points: (raw.points ?? []).map(rawTSPointToPoint),
+                    aggregatedValue: raw.aggregatedValue,
+                    groupedResults: (raw.groupedResults ?? []).map((g) => ({
+                        tags: tagsMapToArray(g.tags ?? undefined),
+                        points: (g.points ?? []).map(rawTSPointToPoint),
+                        aggregatedValue: g.aggregatedValue,
+                    })),
+                };
             },
             deleteSeries: async (req: TSDeleteRequest): Promise<TSDeleteResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSDeleteResponse>('/ts/delete', {
-                    method: 'POST',
-                    ...jsonBody(req),
-                });
+                const tags = req.tags && req.tags.length > 0
+                    ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
+                    : undefined;
+                await this.fetchJSON<{ status: string }>(`/ts/series/${encodeURIComponent(req.metric)}${buildQuery({
+                        tags,
+                        start_ns: req.startNs || undefined,
+                        end_ns: req.endNs || undefined,
+                    })}`,
+                    { method: 'DELETE' },
+                );
+                return {};
             },
             getRetention: async (req: TSGetRetentionRequest): Promise<TSGetRetentionResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSGetRetentionResponse>(`/ts/retention${buildQuery({ metric: req.metric })}`,
-                );
+                const raw = await this.fetchJSON<{
+                    policy: { durationNs: number; resolutionNs?: number; aggregation?: string } | null;
+                }>(`/ts/series/${encodeURIComponent(req.metric)}/retention`);
+                // The server answers a zero-duration policy for a metric
+                // without one: that is no retention policy.
+                if (!raw.policy || !(raw.policy.durationNs > 0)) {
+                    return { policy: null };
+                }
+                return {
+                    policy: {
+                        durationNs: raw.policy.durationNs,
+                        resolutionNs: raw.policy.resolutionNs,
+                        aggregation: aggFuncFromString(raw.policy.aggregation),
+                    },
+                };
             },
             setRetention: async (req: TSSetRetentionRequest): Promise<void> => {
                 this.ensureConnected();
-                await this.fetchVoid('/ts/retention', {
-                    method: 'POST',
-                    ...jsonBody(req),
+                await this.fetchVoid(`/ts/series/${encodeURIComponent(req.metric)}/retention`, {
+                    method: 'PUT',
+                    ...jsonBody({
+                        duration_ns: req.policy.durationNs,
+                        resolution_ns: req.policy.resolutionNs,
+                        aggregation: req.policy.aggregation
+                            ? aggFuncToString(req.policy.aggregation)
+                            : undefined,
+                    }),
                 });
             },
             listMetrics: async (req: TSListMetricsRequest): Promise<TSListMetricsResponse> => {
@@ -3023,6 +3075,37 @@ function sortTargetToString(target: number | undefined): string | undefined {
 /** Converts a numeric AggFunc to its REST API string. */
 function aggFuncToString(fn: number): string {
     return AGG_FUNC_STRINGS[fn] ?? 'avg';
+}
+
+/** Maps a wire aggregation name back to its AggFunc number (0, none, when unknown). */
+function aggFuncFromString(name: string | undefined): AggFunc | undefined {
+    if (!name) {
+        return undefined;
+    }
+    const entry = Object.entries(AGG_FUNC_STRINGS).find(([, v]) => v === name);
+    return (entry ? Number(entry[0]) : 0) as AggFunc;
+}
+
+/** A time-series point as the REST transport encodes it. */
+interface RawTSPoint {
+    metric: string;
+    value: number;
+    /** Nanoseconds since the epoch. */
+    timestamp: number;
+    tags?: Record<string, string>;
+}
+
+function rawTSPointToPoint(p: RawTSPoint): TSDataPoint {
+    return {
+        metric: p.metric,
+        timestampNs: p.timestamp,
+        value: p.value,
+        tags: tagsMapToArray(p.tags),
+    };
+}
+
+function tagsMapToArray(tags: Record<string, string> | undefined): { key: string; value: string }[] {
+    return tags ? Object.entries(tags).map(([key, value]) => ({ key, value })) : [];
 }
 
 /** Converts a TSTag array to a Record<string, string> map for the REST API. */
