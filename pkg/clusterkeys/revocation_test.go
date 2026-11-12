@@ -137,7 +137,7 @@ func deliveryRequest(t *testing.T, peer *x509.Certificate) *http.Request {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	})
 	if err != nil {
@@ -154,10 +154,8 @@ func deliveryRequest(t *testing.T, peer *x509.Certificate) *http.Request {
 // revocation gate refused" by status code alone.
 func newReceiverWithRevocation(t *testing.T, ca *testCABundle, follower *testNodeBundle, revocation auth.RevocationChecker) *clusterkeys.Receiver {
 	t.Helper()
-	reg, _ := newTestRegistry(t)
 	recv, err := clusterkeys.NewReceiver(
 		newTestKDReceiver(t, follower.key, "follower-node-1"),
-		reg,
 		&staticPlacementGetter{err: errors.New("placement gate reached")},
 		"cluster.local", "follower-node-1",
 		ca.pool, revocation, follower.pem,
@@ -387,7 +385,6 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	p := newTestPlacement(tenantID, "db-main", 1, 2, "follower-node-1", followerDataRoot)
 	recv, err := clusterkeys.NewReceiver(
 		newTestKDReceiver(t, follower.key, "follower-node-1"),
-		followerReg,
 		&staticPlacementGetter{p: p},
 		"cluster.local", "follower-node-1",
 		ca.pool, revocation, follower.pem,
@@ -429,7 +426,7 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	})
 	return followerReg, status, body
 }
@@ -524,7 +521,7 @@ func deliverTo(t *testing.T, sender *clusterkeys.Sender) error {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	return sender.Deliver(context.Background(), target, meta, []byte(`{"root_key":"AA=="}`))
 }

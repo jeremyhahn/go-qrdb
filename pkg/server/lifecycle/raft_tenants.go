@@ -300,7 +300,7 @@ func composeKeyReceiver(c RaftTenantClusterConfig, logger *slog.Logger) *cluster
 		logger.Warn("clusterkeys: key delivery receiver init failed, peer key transport disabled", slog.Any("error", err))
 		return nil
 	}
-	rcv, err := clusterkeys.NewReceiver(kd, c.Barriers, c.Services.PlacementStore, c.TrustDomain, c.RaftAddr,
+	rcv, err := clusterkeys.NewReceiver(kd, c.Services.PlacementStore, c.TrustDomain, c.RaftAddr,
 		c.CACertPool, c.Revocation, identityPEM(c.Identity), logger)
 	if err != nil {
 		logger.Warn("clusterkeys: cluster key receiver init failed, peer key transport disabled", slog.Any("error", err))

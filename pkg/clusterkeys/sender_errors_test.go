@@ -34,7 +34,7 @@ func followerMeta() keydelivery.Meta {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 }
 

@@ -178,6 +178,10 @@ func newTestNonP256CertPEM(t *testing.T, ca *testCABundle, trustDomain, nodeID s
 // and returns the volume.Allocator so callers can Reserve a tenant's
 // Assignment before RegisterVolumeTenant / ImportTenant, which require it
 // to already exist (see seal.BarrierRegistry's doc comments).
+// testUnknownMode is a delivery mode the receiver has no handler for: every
+// envelope sealed with it must be refused with 400 "unknown delivery mode".
+const testUnknownMode keydelivery.Mode = "test-unknown"
+
 func newTestRegistry(t *testing.T) (*seal.BarrierRegistry, volume.Allocator) {
 	t.Helper()
 	sysBarrier := newTestSystemBarrier(t)
@@ -249,33 +253,6 @@ func newTestKDReceiver(t *testing.T, priv *ecdsa.PrivateKey, nodeID string) *key
 // newTestReceiverFull builds a fully configured clusterkeys.Receiver, starts an
 // httptest.Server with the delivery and nodekey routes, and returns both. The
 // server is stopped when t cleans up.
-func newTestReceiverFull(
-	t *testing.T,
-	ca *testCABundle,
-	follower *testNodeBundle,
-	followerNodeID string,
-	reg *seal.BarrierRegistry,
-	placements clusterkeys.PlacementGetter,
-) (*clusterkeys.Receiver, *httptest.Server) {
-	t.Helper()
-	kd := newTestKDReceiver(t, follower.key, followerNodeID)
-	recv, err := clusterkeys.NewReceiver(
-		kd, reg, placements,
-		"cluster.local", followerNodeID,
-		ca.pool, nil, follower.pem,
-		newTestLogger(),
-	)
-	if err != nil {
-		t.Fatalf("clusterkeys.NewReceiver: %v", err)
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
-	mux.HandleFunc("/v1/cluster/keydelivery", recv.Handler())
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return recv, srv
-}
-
 // newTestPlacement builds a Placement with a single follower replica.
 func newTestPlacement(tenantID, database string, shardID, replicaID uint64, nodeID, dataRoot string) *placement.Placement {
 	return &placement.Placement{
@@ -356,30 +333,18 @@ func (c *countingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func TestNewReceiver_NilKD(t *testing.T) {
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, followerCertPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(nil, reg, placements, "cluster.local", "node-1", nil, nil, followerCertPEM, nil)
+	_, err := clusterkeys.NewReceiver(nil, placements, "cluster.local", "node-1", nil, nil, followerCertPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilReceiver) {
 		t.Errorf("expected ErrNilReceiver, got %v", err)
 	}
 }
 
-func TestNewReceiver_NilRegistry(t *testing.T) {
-	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	placements := &staticPlacementGetter{}
-	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, nil, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
-	if !errors.Is(err, clusterkeys.ErrNilRegistry) {
-		t.Errorf("expected ErrNilRegistry, got %v", err)
-	}
-}
-
 func TestNewReceiver_NilPlacements(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg, _ := newTestRegistry(t)
 	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, reg, nil, "cluster.local", "node-1", nil, nil, certPEM, nil)
+	_, err := clusterkeys.NewReceiver(kd, nil, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrNilPlacements) {
 		t.Errorf("expected ErrNilPlacements, got %v", err)
 	}
@@ -387,10 +352,9 @@ func TestNewReceiver_NilPlacements(t *testing.T) {
 
 func TestNewReceiver_EmptySelfNodeID(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
-	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "", nil, nil, certPEM, nil)
+	_, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "", nil, nil, certPEM, nil)
 	if !errors.Is(err, clusterkeys.ErrEmptySelfNodeID) {
 		t.Errorf("expected ErrEmptySelfNodeID, got %v", err)
 	}
@@ -398,9 +362,8 @@ func TestNewReceiver_EmptySelfNodeID(t *testing.T) {
 
 func TestNewReceiver_EmptyDeliveryCertPEM(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	_, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, nil, nil)
+	_, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "node-1", nil, nil, nil, nil)
 	if !errors.Is(err, clusterkeys.ErrEmptyDeliveryCert) {
 		t.Errorf("expected ErrEmptyDeliveryCert, got %v", err)
 	}
@@ -408,10 +371,9 @@ func TestNewReceiver_EmptyDeliveryCertPEM(t *testing.T) {
 
 func TestNewReceiver_NilLogger_UsesDefault(t *testing.T) {
 	kd := newTestKDReceiver(t, mustP256Key(t), "node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
 	_, _, certPEM := simpleNodeCert(t)
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "node-1", nil, nil, certPEM, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -474,9 +436,8 @@ func TestNodeKeyHandler_ServesNodeCert(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -500,9 +461,8 @@ func TestNodeKeyHandler_MethodNotAllowed(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -525,9 +485,8 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -570,7 +529,7 @@ func TestHandler_PlacementNotFound(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -598,7 +557,7 @@ func TestHandler_PlacementGate_WrongReplica(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2, // mismatch: placement has 99
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -626,7 +585,7 @@ func TestHandler_PlacementGate_WrongShard(t *testing.T) {
 			ShardID:      1, // mismatch: placement has 7
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -663,7 +622,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	}
 	body, _ := json.Marshal(env)
@@ -693,7 +652,7 @@ func TestHandler_WrongTargetNode(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "other-node", // deliberate mismatch
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	env, err := keydelivery.Seal(&follower.key.PublicKey, meta, []byte("plaintext-key-material"))
 	if err != nil {
@@ -726,7 +685,7 @@ func TestHandler_TamperedPayload(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	env, err := keydelivery.Seal(&follower.key.PublicKey, meta, []byte("plaintext-key-material"))
 	if err != nil {
@@ -795,7 +754,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	// The plain httptest.Server carries no peer certs, so the handler falls
 	// through to the HPKE + placement gate path (downgrade warning).
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	recv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
+	recv, err := clusterkeys.NewReceiver(kd, &staticPlacementGetter{p: p},
 		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -834,7 +793,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	})
 	assertUnknownDeliveryMode(t, status, body)
 
@@ -886,10 +845,9 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	// Placement lookup returns an error — no entry for this tenant/database.
 	placements := &staticPlacementGetter{err: errors.New("no placement entry")}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -908,7 +866,7 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -929,9 +887,8 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("should not reach")}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -948,7 +905,7 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -1004,7 +961,7 @@ func TestSender_FetchNodeKey_NonP256(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("some-key-material"))
 	if !errors.Is(err, clusterkeys.ErrNonP256NodeKey) {
@@ -1032,7 +989,7 @@ func TestSender_Deliver_ResolveURLFails(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrResolveURL) {
@@ -1082,7 +1039,7 @@ func TestSender_FetchNodeKey_MITMSelfSigned(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "tenant-1", Database: "db-1", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
+		TargetNodeID: "follower-node-1", Mode: testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("secret-key-material"))
 	if !errors.Is(err, clusterkeys.ErrRecipientUntrusted) {
@@ -1126,7 +1083,7 @@ func TestSender_FetchNodeKey_WrongNodeSAN(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
+		TargetNodeID: "follower-node-1", Mode: testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrRecipientNodeMismatch) {
@@ -1169,7 +1126,7 @@ func TestSender_FetchNodeKey_NoSAN(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
-		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
+		TargetNodeID: "follower-node-1", Mode: testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrRecipientUntrusted) {
@@ -1187,7 +1144,6 @@ func TestSender_FetchNodeKey_NoSAN(t *testing.T) {
 func TestErrorSentinels_AreDistinct(t *testing.T) {
 	sentinels := []error{
 		clusterkeys.ErrNilReceiver,
-		clusterkeys.ErrNilRegistry,
 		clusterkeys.ErrNilPlacements,
 		clusterkeys.ErrEmptySelfNodeID,
 		clusterkeys.ErrEmptyDeliveryCert,
@@ -1233,8 +1189,7 @@ func newMinimalReceiver(t *testing.T, follower *testNodeBundle, caPool *x509.Cer
 		placements = &staticPlacementGetter{err: errors.New("no placement")}
 	}
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		caPool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -1330,10 +1285,9 @@ func TestHandler_NilCAPool_NoSAN(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("not reached yet")}
 	// nil caPool: verifyCert skips chain check entirely.
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		nil, nil, selfSignedPEM, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -1360,9 +1314,8 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("not reached")}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -1377,7 +1330,7 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
-			Mode:         keydelivery.ModeSelfManaged,
+			Mode:         testUnknownMode,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
@@ -1398,9 +1351,8 @@ func TestHandler_CorrectNodeSAN_Proceeds(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
 	placements := &staticPlacementGetter{err: errors.New("will not reach")}
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
+	recv, err := clusterkeys.NewReceiver(kd, placements, "cluster.local", "follower-node-1",
 		ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
@@ -1441,7 +1393,7 @@ func TestSender_FetchNodeKey_NonOKStatus(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrNodeKeyFetch) {
@@ -1470,7 +1422,7 @@ func TestSender_FetchNodeKey_InvalidPEM(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrDeliveryCert) {
@@ -1503,7 +1455,7 @@ func TestSender_FetchNodeKey_BadCertDER(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
 	if !errors.Is(err, clusterkeys.ErrDeliveryCert) {
@@ -1544,7 +1496,7 @@ func TestSender_Deliver_PostNonOK(t *testing.T) {
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
-		Mode:         keydelivery.ModeSelfManaged,
+		Mode:         testUnknownMode,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("some-key-material"))
 	if !errors.Is(err, clusterkeys.ErrDelivery) {
