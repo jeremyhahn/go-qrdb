@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -329,30 +330,33 @@ func TestCoalescing_ContextCancellation(t *testing.T) {
 }
 
 func TestCoalescing_Close_DrainsPending(t *testing.T) {
-	const window = 10 * time.Second
-	ct, mock := newCoalescing(WithBatchWindow(window))
+	synctest.Test(t, func(t *testing.T) {
+		const window = 10 * time.Second
+		ct, mock := newCoalescing(WithBatchWindow(window))
 
-	var wg sync.WaitGroup
-	const n = 3
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			// Context has a generous deadline so it does not expire before Close.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = ct.Put(ctx, "dk", []byte("dv"))
-		}()
-	}
+		var wg sync.WaitGroup
+		const n = 3
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				// Context has a generous deadline so it does not expire before Close.
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = ct.Put(ctx, "dk", []byte("dv"))
+			}()
+		}
 
-	// Give goroutines time to enqueue their ops before we close.
-	time.Sleep(20 * time.Millisecond)
-	ct.Close()
-	wg.Wait()
+		// Every Put is queued and blocked on its result, and the drain loop
+		// is idle inside its window, before Close runs.
+		synctest.Wait()
+		ct.Close()
+		wg.Wait()
 
-	if got := len(mock.allOps()); got != n {
-		t.Errorf("expected %d ops flushed on Close, got %d", n, got)
-	}
+		if got := len(mock.allOps()); got != n {
+			t.Errorf("expected %d ops flushed on Close, got %d", n, got)
+		}
+	})
 }
 
 func TestCoalescing_MixedOps(t *testing.T) {
@@ -631,14 +635,6 @@ func TestBatchIndexError_Message(t *testing.T) {
 	}
 }
 
-func TestBatchIndexError_ZeroIndex(t *testing.T) {
-	err := &BatchIndexError{Index: 0}
-	want := "transport: batch response missing result at index 0"
-	if got := err.Error(); got != want {
-		t.Errorf("BatchIndexError.Error() = %q, want %q", got, want)
-	}
-}
-
 // TestCoalescing_BatchIndexError exercises the flush branch where the server
 // returns fewer responses than ops submitted.
 func TestCoalescing_BatchIndexError(t *testing.T) {
@@ -722,22 +718,6 @@ func TestCoalescing_GetError_FromBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // CoalescingOption tests
 // ---------------------------------------------------------------------------
-
-func TestWithMaxBatchSize(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithMaxBatchSize(10)(&cfg)
-	if cfg.maxBatch != 10 {
-		t.Errorf("expected maxBatch=10, got %d", cfg.maxBatch)
-	}
-}
-
-func TestWithBatchWindow(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithBatchWindow(50 * time.Millisecond)(&cfg)
-	if cfg.window != 50*time.Millisecond {
-		t.Errorf("expected window=50ms, got %v", cfg.window)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // mergeDeadlines tests

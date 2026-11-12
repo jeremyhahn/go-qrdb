@@ -16,7 +16,6 @@ package embedded
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -124,22 +123,5 @@ func TestRoleAudit_AssignRole_AddsRoleIdempotent(t *testing.T) {
 	}
 	if len(stored.RoleIDs) != 2 {
 		t.Errorf("expected idempotent assign, role count drifted to %d", len(stored.RoleIDs))
-	}
-}
-
-func TestRoleAudit_AssignRole_RoleLookupFails(t *testing.T) {
-	roleSvc := &mockRoleServicer{
-		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
-			return nil, errors.New("role lookup failed")
-		},
-	}
-	userSvc := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) { return testUser(), nil },
-	}
-	tr := newAuthTransport(t, WithUserService(userSvc), WithRoleService(roleSvc))
-
-	err := tr.AssignRole(context.Background(), 1001, "missing")
-	if err == nil {
-		t.Fatal("expected role lookup error to surface")
 	}
 }

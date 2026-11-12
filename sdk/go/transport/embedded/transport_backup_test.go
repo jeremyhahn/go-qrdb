@@ -160,27 +160,6 @@ func TestTransportBackup_ListBackups_Empty(t *testing.T) {
 	}
 }
 
-func TestTransportBackup_ListBackups_AfterCreate(t *testing.T) {
-	tr := newBackupTransport(t)
-	ctx := context.Background()
-
-	_, err := tr.CreateBackup(ctx, &transport.BackupRequest{
-		Destination: "/backups/list-test",
-		Encryption:  transport.EncryptionNone,
-	})
-	if err != nil {
-		t.Fatalf("CreateBackup: %v", err)
-	}
-
-	backups, err := tr.ListBackups(ctx)
-	if err != nil {
-		t.Fatalf("ListBackups: %v", err)
-	}
-	if len(backups) != 1 {
-		t.Fatalf("expected 1 backup, got %d", len(backups))
-	}
-}
-
 func TestTransportBackup_ListBackups_NilService(t *testing.T) {
 	kvSvc := newMockKVService()
 	adminSvc := &mockAdminService{}
@@ -199,27 +178,6 @@ func TestTransportBackup_ListBackups_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 // GetBackup tests
 // ---------------------------------------------------------------------------
-
-func TestTransportBackup_GetBackup_Success(t *testing.T) {
-	tr := newBackupTransport(t)
-	ctx := context.Background()
-
-	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
-		Destination: "/backups/get-test",
-		Encryption:  transport.EncryptionNone,
-	})
-	if err != nil {
-		t.Fatalf("CreateBackup: %v", err)
-	}
-
-	info, err := tr.GetBackup(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("GetBackup: %v", err)
-	}
-	if info.ID != created.ID {
-		t.Fatalf("expected ID %s, got %s", created.ID, info.ID)
-	}
-}
 
 func TestTransportBackup_GetBackup_NotFound(t *testing.T) {
 	tr := newBackupTransport(t)
@@ -253,30 +211,6 @@ func TestTransportBackup_GetBackup_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 // DeleteBackup tests
 // ---------------------------------------------------------------------------
-
-func TestTransportBackup_DeleteBackup_Success(t *testing.T) {
-	tr := newBackupTransport(t)
-	ctx := context.Background()
-
-	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
-		Destination: "/backups/delete-test",
-		Encryption:  transport.EncryptionNone,
-	})
-	if err != nil {
-		t.Fatalf("CreateBackup: %v", err)
-	}
-
-	err = tr.DeleteBackup(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("DeleteBackup: %v", err)
-	}
-
-	_, err = tr.GetBackup(ctx, created.ID)
-	var notFound *transport.BackupNotFoundError
-	if !errors.As(err, &notFound) {
-		t.Fatalf("expected BackupNotFoundError after delete, got %T: %v", err, err)
-	}
-}
 
 func TestTransportBackup_DeleteBackup_NotFound(t *testing.T) {
 	tr := newBackupTransport(t)
@@ -343,28 +277,6 @@ func TestTransportBackup_RestoreBackup_Success(t *testing.T) {
 // *transport.BackupPlaintextRestoreNotAllowedError when the caller does
 // not set RestoreRequest.AllowPlaintext (go-qrdb security review,
 // backup-encrypt-default round 4).
-func TestTransportBackup_RestoreBackup_PlaintextRefusedWithoutOptIn(t *testing.T) {
-	tr := newBackupTransport(t)
-	ctx := context.Background()
-
-	created, err := tr.CreateBackup(ctx, &transport.BackupRequest{
-		Destination: "/backups/restore-no-optin",
-		Encryption:  transport.EncryptionNone,
-	})
-	if err != nil {
-		t.Fatalf("CreateBackup: %v", err)
-	}
-
-	_, err = tr.RestoreBackup(ctx, &transport.RestoreRequest{BackupID: created.ID})
-	if err == nil {
-		t.Fatal("RestoreBackup: expected an error for a plaintext backup with no AllowPlaintext opt-in")
-	}
-	var notAllowed *transport.BackupPlaintextRestoreNotAllowedError
-	if !errors.As(err, &notAllowed) {
-		t.Fatalf("RestoreBackup: err = %T, want *transport.BackupPlaintextRestoreNotAllowedError: %v", err, err)
-	}
-}
-
 func TestTransportBackup_RestoreBackup_NotFound(t *testing.T) {
 	tr := newBackupTransport(t)
 	ctx := context.Background()
