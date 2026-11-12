@@ -2732,14 +2732,14 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchSecretVoid('/v1/credentials/submit', {
                     method: 'POST',
-                    ...jsonBody({ name, value }),
+                    ...jsonBody({ name, value: encodeBase64Utf8(value) }),
                 }, value !== '');
             },
             store: async (name: string, value: string): Promise<void> => {
                 this.ensureConnected();
                 await this.fetchSecretVoid('/v1/credentials/store', {
                     method: 'POST',
-                    ...jsonBody({ name, value }),
+                    ...jsonBody({ name, value: encodeBase64Utf8(value) }),
                 }, value !== '');
             },
             retrieve: async (name: string): Promise<string> => {
@@ -2747,7 +2747,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/value`,
                 );
-                return resp.value;
+                // The wire field is []byte: base64 on the wire.
+                return decodeBase64Utf8(resp.value);
             },
             list: async (): Promise<string[]> => {
                 this.ensureConnected();
@@ -2774,7 +2775,7 @@ export class RestClient implements Client {
                         method: 'POST',
                         ...jsonBody({
                             name,
-                            newValue,
+                            newValue: encodeBase64Utf8(newValue),
                             gracePeriodSeconds: gracePeriodSeconds ?? 0,
                         }),
                     },
@@ -2793,7 +2794,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
                 );
-                return resp.value;
+                // The wire field is []byte: base64 on the wire.
+                return decodeBase64Utf8(resp.value);
             },
             gcExpired: async (name: string): Promise<number> => {
                 this.ensureConnected();
