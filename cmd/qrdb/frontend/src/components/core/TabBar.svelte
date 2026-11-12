@@ -17,10 +17,10 @@
 <script lang="ts">
   // lucide-svelte icons are legacy Svelte 4 class components incompatible with
   // Svelte 5 Component<T> under exactOptionalPropertyTypes.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   interface Tab {
     id: string;
     label: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     icon?: any;
     badge?: string | number;
   }
