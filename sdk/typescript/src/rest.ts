@@ -2653,7 +2653,7 @@ export class RestClient implements Client {
             },
             list: async (): Promise<ListBackupsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListBackupsResponse>('/v1/backups');
+                return this.fetchJSON<ListBackupsResponse>('/v1/backups/list');
             },
             get: async (id: string): Promise<BackupInfo> => {
                 this.ensureConnected();
@@ -2669,7 +2669,7 @@ export class RestClient implements Client {
             },
             restore: async (req: RestoreRequest): Promise<RestoreResult> => {
                 this.ensureConnected();
-                return this.fetchJSON<RestoreResult>(`/v1/backups/${encodeURIComponent(req.backupId)}/restore`,
+                return this.fetchJSON<RestoreResult>('/v1/backups/restore',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
