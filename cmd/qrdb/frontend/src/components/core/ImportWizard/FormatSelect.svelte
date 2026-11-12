@@ -35,16 +35,12 @@
   // State
   // ---------------------------------------------------------------------------
 
-  let localJsonFormat = $state<JsonFormat>("array");
+  // Follows the prop; local edits hold until the prop changes.
+  let localJsonFormat = $derived(selectedJsonFormat);
 
   // ---------------------------------------------------------------------------
   // Effects
   // ---------------------------------------------------------------------------
-
-  // Sync local state with prop when prop changes
-  $effect(() => {
-    localJsonFormat = selectedJsonFormat;
-  });
 
   // ---------------------------------------------------------------------------
   // Format Definitions

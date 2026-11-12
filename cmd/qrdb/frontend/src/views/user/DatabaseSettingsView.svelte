@@ -53,11 +53,7 @@
 
   /** Local copy of database info — updated when SQL toggles succeed or when
    *  the parent passes a new database prop (e.g. user switches databases). */
-  let database: DatabaseInfo = $state(initialDatabase);
-
-  $effect(() => {
-    database = initialDatabase;
-  });
+  let database: DatabaseInfo = $derived(initialDatabase);
 
   /** Whether a SQL protocol toggle request is in flight. */
   let sqlUpdating: boolean = $state(false);

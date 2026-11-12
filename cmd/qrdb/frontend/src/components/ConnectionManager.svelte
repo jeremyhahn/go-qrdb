@@ -243,17 +243,13 @@
 
   let externalName: string = $state("Remote Server");
   let externalTransport: Transport = $state("grpc");
-  let externalAddress: string = $state(defaultAddresses.grpc);
+  // Follows the transport's default address; the user may still edit it.
+  let externalAddress: string = $derived(defaultAddresses[externalTransport]);
   let externalCaFile: string = $state("");
   let externalCertFile: string = $state("");
   let externalKeyFile: string = $state("");
   let externalSubmitting: boolean = $state(false);
   let externalError: string = $state("");
-
-  // Keep address in sync when transport changes.
-  $effect(() => {
-    externalAddress = defaultAddresses[externalTransport];
-  });
 
   // ---------------------------------------------------------------------------
   // Delete confirmation state
