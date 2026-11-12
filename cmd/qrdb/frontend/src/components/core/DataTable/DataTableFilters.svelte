@@ -279,7 +279,7 @@
     >
       <option value="">All values</option>
       {#if column.filterOptions !== undefined}
-        {#each column.filterOptions as option}
+        {#each column.filterOptions as option, oi (oi)}
           <option value={option}>{option}</option>
         {/each}
       {/if}
