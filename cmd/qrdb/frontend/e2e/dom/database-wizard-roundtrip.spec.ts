@@ -197,11 +197,18 @@ test("five new memory databases each open with no error toast", async ({ page })
   test.setTimeout(180_000);
   daemon = await startDaemon({ seal: "none" });
   // Any 5xx the UI meets, and the daemon's stderr, explain a failing open.
-  // 501 is a capability answer (a memory store keeps no revision), which the
-  // Data tool handles without a toast; a 500 (once seen on /kv/scan) is not.
+  // The one revision probe a memory database gets (501: no revisions) is
+  // counted apart: at most one per database, never a retry.
   const failures: string[] = [];
+  const revisionProbes = new Map<string, number>();
   page.on("response", (res) => {
-    if (res.status() >= 500 && res.status() !== 501) failures.push(`${res.request().method()} ${res.url()} -> ${res.status()}`);
+    const db = res.request().headers()["x-qrdb-database"] ?? "";
+    if (res.url().includes("/kv/revision") && res.status() === 501) {
+      revisionProbes.set(db, (revisionProbes.get(db) ?? 0) + 1);
+      if ((revisionProbes.get(db) ?? 0) > 1) failures.push(`second revision probe for ${db} -> 501`);
+      return;
+    }
+    if (res.status() >= 500) failures.push(`${res.request().method()} ${res.url()} -> ${res.status()}`);
   });
   const serverLog: string[] = [];
   daemon.proc.stderr?.on("data", (chunk: Buffer) => serverLog.push(chunk.toString()));
@@ -214,4 +221,33 @@ test("five new memory databases each open with no error toast", async ({ page })
     await expectOpens(page, name);
     expect(failures, `5xx responses opening ${name}; server log: ${serverLog.join("").slice(-2000)}`).toEqual([]);
   }
+});
+
+test("a memory database asks for its revision once across three opens", async ({ page }) => {
+  test.setTimeout(120_000);
+  daemon = await startDaemon({ seal: "none" });
+  const name = "e2erevmem";
+  const probes: string[] = [];
+  // Answered requests only: a probe the reload in expectOpens aborts got no
+  // answer, so asking again is right.
+  page.on("requestfinished", (req) => {
+    if (req.url().includes("/kv/revision") && req.headers()["x-qrdb-database"] === name) probes.push(req.url());
+  });
+
+  await createThroughWizard(page, name, "memory");
+  await expectOpens(page, name);
+  const aside = page.locator("aside");
+  for (let i = 0; i < 2; i++) {
+    await aside.getByRole("button", { name: "system", exact: true }).first().click();
+    await expect(page.getByText("system / Data")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await aside.getByRole("button", { name, exact: true }).first().click();
+    await expect(page.getByText(`${name} / Data`)).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByText("No data available")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  }
+
+  expect(probes.length, `revision requests for ${name}: ${JSON.stringify(probes)}`).toBeLessThanOrEqual(1);
+  // The revision controls say why they are unavailable instead of vanishing.
+  await expect(page.getByTestId("kv-revisions-unavailable")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Compact to revision" })).toBeDisabled();
+  expect(await page.locator(".toast .alert-error").allInnerTexts()).toEqual([]);
 });

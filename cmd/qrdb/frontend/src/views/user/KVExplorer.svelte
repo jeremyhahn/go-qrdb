@@ -14,6 +14,45 @@
   See the License for the specific language governing permissions and
   limitations under the License.
 -->
+<script lang="ts" module>
+  /**
+   * Databases whose store answered 501 to GET /kv/revision (no revisions).
+   * Kept in sessionStorage so a reload of the tab does not ask again.
+   */
+  const NO_REVISION_KEY = "qrdb.noRevisionDatabases";
+
+  function loadNoRevisionDatabases(): Set<string> {
+    try {
+      const raw = globalThis.sessionStorage?.getItem(NO_REVISION_KEY);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  const noRevisionDatabases = loadNoRevisionDatabases();
+
+  /** Remembers that database's store keeps no revisions. */
+  function rememberNoRevisions(database: string): void {
+    noRevisionDatabases.add(database);
+    try {
+      globalThis.sessionStorage?.setItem(NO_REVISION_KEY, JSON.stringify([...noRevisionDatabases]));
+    } catch {
+      // Storage unavailable: the in-memory set still covers this page load.
+    }
+  }
+
+  /** Reports whether err is the server's 501 Not Implemented answer. */
+  function isNotImplemented(err: unknown): boolean {
+    if (typeof err !== "object" || err === null) return false;
+    const e = err as { statusCode?: unknown; status?: unknown; message?: unknown };
+    if (e.statusCode === 501 || e.status === 501) return true;
+    const msg = typeof e.message === "string" ? e.message : "";
+    return /\b501\b|not implemented|unimplemented/i.test(msg);
+  }
+</script>
+
 <script lang="ts">
   import type {
     Client,
@@ -41,7 +80,15 @@
     RotateCcw,
   } from "lucide-svelte";
 
-  let { client }: { client: Client } = $props();
+  let { client, database = "" }: { client: Client; database?: string } = $props();
+
+  // Set once the database's store answered 501 to the revision probe.
+  // Bumped when a probe adds the database to noRevisionDatabases, so the
+  // derived flag re-reads the (non-reactive) set.
+  let revisionSupportVersion: number = $state(0);
+  const revisionsUnsupported: boolean = $derived(
+    revisionSupportVersion >= 0 && noRevisionDatabases.has(database),
+  );
 
   // ---------------------------------------------------------------------------
   // Types
@@ -204,12 +251,34 @@
     await refreshCurrentRevision();
   }
 
-  /** Reads the store-wide revision; a daemon without MVCC leaves it unknown. */
+  /**
+   * Reads the store-wide revision. A store without revisions answers 501:
+   * that answer is remembered for the database, so later opens do not ask
+   * again, and the revision controls show why they are unavailable.
+   */
   async function refreshCurrentRevision(): Promise<void> {
+    if (revisionsUnsupported) {
+      currentRevision = null;
+      return;
+    }
+    // Loads that overlap share one request instead of each asking.
+    revisionProbe ??= probeCurrentRevision().finally(() => {
+      revisionProbe = null;
+    });
+    await revisionProbe;
+  }
+
+  let revisionProbe: Promise<void> | null = null;
+
+  async function probeCurrentRevision(): Promise<void> {
     try {
       currentRevision = await client.mvcc.currentRevision();
-    } catch {
+    } catch (err: unknown) {
       currentRevision = null;
+      if (isNotImplemented(err)) {
+        rememberNoRevisions(database);
+        revisionSupportVersion++;
+      }
     }
   }
 
@@ -660,6 +729,11 @@
     <span class="text-base-content/70" data-testid="kv-current-revision">
       Current revision: <strong class="font-mono">{currentRevision ?? "—"}</strong>
     </span>
+    {#if revisionsUnsupported}
+      <span class="badge badge-ghost" data-testid="kv-revisions-unavailable">
+        Revisions unavailable: this database's store keeps no revision history
+      </span>
+    {/if}
 
     <div class="join">
       <input
@@ -668,10 +742,16 @@
         class="input join-item input-bordered input-sm w-28 font-mono"
         placeholder="revision"
         aria-label="Compact revision"
+        disabled={revisionsUnsupported}
         bind:value={compactRevisionInput}
         onkeydown={(e) => e.key === "Enter" && requestCompact()}
       />
-      <button class="btn btn-outline btn-sm join-item" onclick={requestCompact}>
+      <button
+        class="btn btn-outline btn-sm join-item"
+        disabled={revisionsUnsupported}
+        title={revisionsUnsupported ? "This database's store keeps no revision history" : undefined}
+        onclick={requestCompact}
+      >
         Compact to revision
       </button>
     </div>
