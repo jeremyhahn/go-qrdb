@@ -110,7 +110,7 @@ func TestManager_Open_LegacyRaftBarrier_OpensSealed(t *testing.T) {
 	if err := os.MkdirAll(mgr.dbDir("", "legacyraft"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), meta); err != nil {
+	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), withTestID(meta)); err != nil {
 		t.Fatalf("catalog Create: %v", err)
 	}
 	db, err := mgr.Open(context.Background(), "", "legacyraft")

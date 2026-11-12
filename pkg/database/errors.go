@@ -581,6 +581,34 @@ type IncarnationError struct {
 	Err error
 }
 
+// DatabaseIDError reports that a new database id could not be generated
+// because the system random source failed.
+type DatabaseIDError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *DatabaseIDError) Error() string {
+	return "database: cannot generate a database id: " + e.Err.Error()
+}
+
+// Unwrap returns the random source's error.
+func (e *DatabaseIDError) Unwrap() error {
+	return e.Err
+}
+
+// DatabaseIDRequiredError is returned by Catalog.Create for a record with no
+// id (DatabaseMeta.ID). Every record outside the catalog names the database
+// by that id, so a record without one could never be placed.
+type DatabaseIDRequiredError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *DatabaseIDRequiredError) Error() string {
+	return "database: catalog record of database " + strconv.Quote(e.Name) + " has no database id"
+}
+
 // Error returns a human-readable description of the failure.
 func (e *IncarnationError) Error() string {
 	return "database: cannot generate a database incarnation: " + e.Err.Error()

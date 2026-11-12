@@ -71,7 +71,7 @@ func TestOwnerResolver_TenantScope(t *testing.T) {
 		t.Fatalf("placement.NewStore: %v", err)
 	}
 	if perr := store.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "appdata", ShardID: 42,
+		TenantID: "acme", DatabaseID: "appdata", Database: "appdata", ShardID: 42,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "n1"}, {ReplicaID: 2, NodeID: "n2"}, {ReplicaID: 3, NodeID: "n3"},
 		},
@@ -102,13 +102,13 @@ func TestOwnerResolver_WholeTenantScope(t *testing.T) {
 		t.Fatalf("placement.NewStore: %v", err)
 	}
 	if perr := store.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "db1", ShardID: 10,
+		TenantID: "acme", DatabaseID: "db1", Database: "db1", ShardID: 10,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1"}, {ReplicaID: 2, NodeID: "n2"}},
 	}); perr != nil {
 		t.Fatalf("Put db1: %v", perr)
 	}
 	if perr := store.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "db2", ShardID: 11,
+		TenantID: "acme", DatabaseID: "db2", Database: "db2", ShardID: 11,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n2"}, {ReplicaID: 2, NodeID: "n3"}},
 	}); perr != nil {
 		t.Fatalf("Put db2: %v", perr)

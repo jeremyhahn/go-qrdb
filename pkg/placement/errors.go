@@ -39,6 +39,10 @@ var (
 	// ErrEmptyDatabase is returned when a database name is empty.
 	ErrEmptyDatabase = errors.New("placement: database name must not be empty")
 
+	// ErrEmptyDatabaseID is returned when a placement entry names no
+	// database id: the table is keyed by the id, never by the name.
+	ErrEmptyDatabaseID = errors.New("placement: database id must not be empty")
+
 	// ErrZeroShard is returned by Place when the requested shard ID is zero.
 	ErrZeroShard = errors.New("placement: shard id must not be zero")
 
@@ -106,8 +110,8 @@ type StoreError struct {
 	// TenantID owns the placement entry.
 	TenantID string
 
-	// Database is the database name.
-	Database string
+	// DatabaseID is the database name.
+	DatabaseID string
 
 	// Op is the failing operation (e.g. "put", "get", "delete", "list").
 	Op string
@@ -118,8 +122,8 @@ type StoreError struct {
 
 // Error implements the error interface.
 func (e *StoreError) Error() string {
-	target := e.TenantID + "/" + e.Database
-	if e.Database == "" {
+	target := e.TenantID + "/" + e.DatabaseID
+	if e.DatabaseID == "" {
 		target = e.TenantID
 	}
 	return "placement: " + e.Op + " " + target + ": " + e.Err.Error()

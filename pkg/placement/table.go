@@ -140,6 +140,13 @@ type Placement struct {
 	// TenantID owns the database.
 	TenantID string `json:"tenant_id"`
 
+	// DatabaseID is the database's opaque, never-reused id
+	// (database.DatabaseMeta.ID), allocated at create and recorded in the
+	// tenant's catalog. The table is keyed by it --
+	// __sys:placement/{tenant}/{dbid} -- so no database name appears in a
+	// placement key.
+	DatabaseID string `json:"database_id"`
+
 	// Database is the database name, unique within the tenant.
 	Database string `json:"database"`
 

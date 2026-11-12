@@ -292,7 +292,7 @@ func TestManager_Drop_PausedDropCannotTearDownItsSuccessor(t *testing.T) {
 			meta, err := cat.Catalog.Get(ctx, "tenant-a", "orders")
 			require.NoError(t, err)
 			require.NoError(t, cat.Catalog.Delete(ctx, "tenant-a", "orders", meta.Incarnation, meta.DropClaim))
-			require.NoError(t, cat.Catalog.Create(ctx, DatabaseMeta{TenantID: "tenant-a", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
+			require.NoError(t, cat.Catalog.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: "tenant-a", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
 			_, err = mgr.ListForTenant(ctx)
 			require.NoError(t, err)
 		}

@@ -128,6 +128,12 @@ func (k *failingGetKV) Get(context.Context, string) ([]byte, error) {
 	return nil, k.err
 }
 
+// Scan fails as Get does: a database's entry is found by name through a scan
+// of the tenant's placements.
+func (k *failingGetKV) Scan(context.Context, string, func(string, []byte) error) error {
+	return k.err
+}
+
 // A placement read that FAILS is not a database that does not exist. On the
 // drop-fence path it must be reported, never collapsed into "unknown" --
 // which the fence reads as "no store to clear" and turns into a successful
@@ -210,7 +216,7 @@ func TestRaftBackendFactory_EvictionPurgesOnlyTheDroppedShard(t *testing.T) {
 	place := func(shardID uint64) {
 		t.Helper()
 		if err := store.Put(ctx, &placement.Placement{
-			TenantID: "rt", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
+			TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{
 				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 			},
@@ -254,7 +260,7 @@ func TestRaftBackendFactory_Services_RefusesOnANodeThatIsNotAReplica(t *testing.
 	registerVolumeTenant(t, reg, "rt")
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5070, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5070, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "elsewhere:1", RaftAddr: "elsewhere:1"}},
 	}); err != nil {
 		t.Fatalf("Put: %v", err)

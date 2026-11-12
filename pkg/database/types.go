@@ -533,6 +533,14 @@ const (
 	// keyspace a standalone node's home store occupies in the tenant barrier,
 	// so reserving the one reserves the other.
 	TenantHomeName = tenant.HomeName
+
+	// TenantHomeID is the placement id of an isolated tenant's home group.
+	// Every other database is placed under the opaque id its catalog record
+	// carries, but the home group has no catalog record: the tenant's catalog
+	// lives in the home store, reached through this placement. Its id is the
+	// reserved home name, which names nothing the tenant chose, and no
+	// allocated id (32 hex digits) can equal it.
+	TenantHomeID = TenantHomeName
 )
 
 // reservedNames is the set of database names that collide with a directory
@@ -713,6 +721,14 @@ type DatabaseMeta struct {
 	// Dropping is false.
 	DropClaim string `json:"drop_claim,omitempty"`
 
+	// ID is the database's opaque, never-reused id (NewDatabaseID),
+	// allocated when the database is created and fixed for its life. The
+	// catalog record is the one place that maps the name to it: every
+	// record outside the tenant's catalog -- the placement table in the
+	// system store above all -- names the database by this id, never by
+	// its name.
+	ID string `json:"id,omitempty"`
+
 	// Incarnation is the database's incarnation (see
 	// Database.Incarnation). Absent in metadata written before incarnations
 	// existed, which reopens the database with an empty one.
@@ -734,8 +750,11 @@ type DatabaseMeta struct {
 
 // DatabaseInfo provides runtime information about a database instance.
 type DatabaseInfo struct {
-	TenantID     string                    `json:"tenant_id,omitempty"`
-	Name         string                    `json:"name"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Name     string `json:"name"`
+	// ID is the database's opaque id (DatabaseMeta.ID): the key of its
+	// placement entry. It is internal routing state, never sent to a client.
+	ID           string                    `json:"-"`
 	Backend      BackendType               `json:"backend"`
 	Status       StatusType                `json:"status"`
 	Protocol     ProtocolConfig            `json:"protocol,omitempty"`

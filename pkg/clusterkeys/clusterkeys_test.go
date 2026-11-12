@@ -280,6 +280,7 @@ func newTestReceiverFull(
 func newTestPlacement(tenantID, database string, shardID, replicaID uint64, nodeID, dataRoot string) *placement.Placement {
 	return &placement.Placement{
 		TenantID:        tenantID,
+		DatabaseID:      database,
 		Database:        database,
 		ShardID:         shardID,
 		RF:              2,
@@ -566,7 +567,7 @@ func TestHandler_PlacementNotFound(t *testing.T) {
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -594,7 +595,7 @@ func TestHandler_PlacementGate_WrongReplica(t *testing.T) {
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2, // mismatch: placement has 99
 			TargetNodeID: "follower-node-1",
@@ -622,7 +623,7 @@ func TestHandler_PlacementGate_WrongShard(t *testing.T) {
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1, // mismatch: placement has 7
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -645,6 +646,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 	// Placement has no replica for "follower-node-1".
 	p := &placement.Placement{
 		TenantID:        "tenant-1",
+		DatabaseID:      "db-1",
 		Database:        "db-1",
 		ShardID:         1,
 		RF:              1,
@@ -659,7 +661,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -689,7 +691,7 @@ func TestHandler_WrongTargetNode(t *testing.T) {
 	// The keydelivery.Receiver checks TargetNodeID != nodeID → ErrWrongTarget.
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
-		Database:     "db-1",
+		DatabaseID:   "db-1",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "other-node", // deliberate mismatch
@@ -722,7 +724,7 @@ func TestHandler_TamperedPayload(t *testing.T) {
 
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
-		Database:     "db-1",
+		DatabaseID:   "db-1",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
@@ -804,6 +806,7 @@ func TestHandler_SelfManaged_RoundTrip(t *testing.T) {
 	}
 	distPlacement := &placement.Placement{
 		TenantID:        "tenant-selfmanaged",
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,
@@ -855,6 +858,7 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 	}
 	distPlacement := &placement.Placement{
 		TenantID:        "tenant-idem",
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,
@@ -919,6 +923,7 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	}
 	distPlacement := &placement.Placement{
 		TenantID:        "tenant-nodl",
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,
@@ -972,7 +977,7 @@ func TestHandler_EvilClusterNode_RejectedAtPlacement(t *testing.T) {
 	body, _ := json.Marshal(&keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -1012,7 +1017,7 @@ func TestHandler_InvalidPeerCert(t *testing.T) {
 	body, _ := json.Marshal(&keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -1068,7 +1073,7 @@ func TestSender_FetchNodeKey_NonP256(t *testing.T) {
 	}
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
-		Database:     "db-1",
+		DatabaseID:   "db-1",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -1096,7 +1101,7 @@ func TestSender_Deliver_ResolveURLFails(t *testing.T) {
 	}
 	meta := keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -1154,6 +1159,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	// follower (replicaID=2, nodeID=follower-node-1).
 	distPlacement := &placement.Placement{
 		TenantID:        "tenant-skip",
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,
@@ -1196,7 +1202,7 @@ func TestDistributeTenantKey_DeliversToFollowersConcurrently(t *testing.T) {
 	allArrived := make(chan struct{})
 	resolver := mapURLResolver{}
 	p := &placement.Placement{
-		TenantID: "tenant-quorum", Database: "__home", ShardID: 7, RF: 4, LeaderReplicaID: 1,
+		TenantID: "tenant-quorum", DatabaseID: "__home", Database: "__home", ShardID: 7, RF: 4, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"}},
 	}
 	for i, id := range followers {
@@ -1250,7 +1256,7 @@ func TestDistributeTenantKey_JoinsEveryFollowerError(t *testing.T) {
 	})
 	resolver := mapURLResolver{"refusing:9000": refusing.URL, "accepting:9000": accepting.URL}
 	p := &placement.Placement{
-		TenantID: "tenant-errs", Database: "db-main", ShardID: 3, RF: 4, LeaderReplicaID: 1,
+		TenantID: "tenant-errs", DatabaseID: "db-main", Database: "db-main", ShardID: 3, RF: 4, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
 			{ReplicaID: 2, NodeID: "refusing", RaftAddr: "refusing:9000"},
@@ -1317,7 +1323,7 @@ func TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 			p := &placement.Placement{
-				TenantID: "tenant-own", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
+				TenantID: "tenant-own", DatabaseID: "db-main", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
 				Replicas: []placement.Replica{
 					{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
 					{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
@@ -1379,7 +1385,7 @@ func TestDistributeTenantKey_Shamir_ShipsNothing(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 			p := &placement.Placement{
-				TenantID: "tenant-shamir", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
+				TenantID: "tenant-shamir", DatabaseID: "db-main", Database: "db-main", ShardID: 3, RF: 2, LeaderReplicaID: 1,
 				Replicas: []placement.Replica{
 					{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
 					{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
@@ -1415,7 +1421,7 @@ func TestDistributeTenantKey_Uninitialized_ShipsNothing(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	p := &placement.Placement{
-		TenantID: "tenant-new", Database: "__home", ShardID: 4, RF: 2, LeaderReplicaID: 1,
+		TenantID: "tenant-new", DatabaseID: "__home", Database: "__home", ShardID: 4, RF: 2, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "leader", RaftAddr: "leader:9000"},
 			{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"},
@@ -1474,7 +1480,7 @@ func TestSender_FetchNodeKey_MITMSelfSigned(t *testing.T) {
 
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
-		TenantID: "tenant-1", Database: "db-1", ShardID: 1, ReplicaID: 2,
+		TenantID: "tenant-1", DatabaseID: "db-1", ShardID: 1, ReplicaID: 2,
 		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("secret-key-material"))
@@ -1518,7 +1524,7 @@ func TestSender_FetchNodeKey_WrongNodeSAN(t *testing.T) {
 
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
-		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
+		TenantID: "t", DatabaseID: "db", ShardID: 1, ReplicaID: 2,
 		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
@@ -1561,7 +1567,7 @@ func TestSender_FetchNodeKey_NoSAN(t *testing.T) {
 
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
-		TenantID: "t", Database: "db", ShardID: 1, ReplicaID: 2,
+		TenantID: "t", DatabaseID: "db", ShardID: 1, ReplicaID: 2,
 		TargetNodeID: "follower-node-1", Mode: keydelivery.ModeSelfManaged,
 	}
 	err = sender.Deliver(context.Background(), replica, meta, []byte("key"))
@@ -1766,7 +1772,7 @@ func TestHandler_TrustDomainMismatch(t *testing.T) {
 	body, _ := json.Marshal(&keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "t",
-			Database:     "db",
+			DatabaseID:   "db",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -1831,7 +1837,7 @@ func TestHandler_SelfManaged_InvalidSealedBlob(t *testing.T) {
 	// them successfully but ImportSealedBlob will refuse them.
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-badjson",
-		Database:     "db-main",
+		DatabaseID:   "db-main",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",
@@ -1877,7 +1883,7 @@ func TestSender_FetchNodeKey_NonOKStatus(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -1906,7 +1912,7 @@ func TestSender_FetchNodeKey_InvalidPEM(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -1939,7 +1945,7 @@ func TestSender_FetchNodeKey_BadCertDER(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -1980,7 +1986,7 @@ func TestSender_Deliver_PostNonOK(t *testing.T) {
 	replica := placement.Replica{ReplicaID: 2, NodeID: "follower", RaftAddr: "follower:9000"}
 	meta := keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",
@@ -2007,6 +2013,7 @@ func TestSender_DeliverSelfManaged_UninitializedBarrier(t *testing.T) {
 	}
 	distPlacement := &placement.Placement{
 		TenantID:        "tenant-uninit",
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,

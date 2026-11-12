@@ -62,6 +62,10 @@ type PlaceRequest struct {
 	// TenantID owns the database. Required.
 	TenantID string
 
+	// DatabaseID is the database's opaque id from its catalog record: the
+	// key the placement is stored under. Required.
+	DatabaseID string
+
 	// Database is the database name. Required.
 	Database string
 
@@ -172,6 +176,9 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	if req.TenantID == "" {
 		return nil, ErrEmptyTenant
 	}
+	if req.DatabaseID == "" {
+		return nil, ErrEmptyDatabaseID
+	}
 	if req.Database == "" {
 		return nil, ErrEmptyDatabase
 	}
@@ -199,6 +206,7 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 
 	return &Placement{
 		TenantID:        req.TenantID,
+		DatabaseID:      req.DatabaseID,
 		Database:        req.Database,
 		ShardID:         req.ShardID,
 		RF:              req.RF,

@@ -123,7 +123,7 @@ func TestPlacementInfoSource_LocalReplicaWins(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 2, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 7777, RF: 2, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
@@ -156,7 +156,7 @@ func TestPlacementInfoSource_RefusesAReplicaPath(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", DataRoot: "/another-node/rt/databases/orders"},
 		},
@@ -212,7 +212,7 @@ func TestPlacementInfoSource_NoLocalReplicaIsRefused(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "remote:1", RaftAddr: "remote:1"},
 		},
@@ -277,7 +277,7 @@ func TestPlacementInfoSource_EmptyDataRootResolvesLocally(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "follower", Database: "orders", ShardID: 9001, RF: 3,
+		TenantID: "follower", DatabaseID: "orders", Database: "orders", ShardID: 9001, RF: 3,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1"},
@@ -326,7 +326,7 @@ func TestPlacementInfoSource_EmptyDataRootNoResolverFallsBack(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "follower", Database: "orders", ShardID: 9001, RF: 2,
+		TenantID: "follower", DatabaseID: "orders", Database: "orders", ShardID: 9001, RF: 2,
 		LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "leader:1", RaftAddr: "leader:1"},
@@ -370,7 +370,7 @@ func TestPlacementInfoSource_PlacementInfoDelegatesToDatabaseAndPlacement(t *tes
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	p := &placement.Placement{
-		TenantID: "rt", Database: "db", ShardID: 5555, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "db", Database: "db", ShardID: 5555, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
@@ -417,7 +417,7 @@ func TestServices_PlacementMemberStart(t *testing.T) {
 
 	store := newPlacementStore(t)
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "pm", Database: "db", ShardID: 1000, RF: 1, LeaderReplicaID: sharedHostReplicaID,
+		TenantID: "pm", DatabaseID: "db", Database: "db", ShardID: 1000, RF: 1, LeaderReplicaID: sharedHostReplicaID,
 		Replicas: []placement.Replica{
 			{
 				ReplicaID: sharedHostReplicaID,
@@ -496,7 +496,7 @@ func TestServices_PlacementMemberStart_JoinFlagFromReplicaState(t *testing.T) {
 
 			store := newPlacementStore(t)
 			if err := store.Put(ctx, &placement.Placement{
-				TenantID: tenantID, Database: "db", ShardID: shardID, RF: 1, LeaderReplicaID: sharedHostReplicaID,
+				TenantID: tenantID, DatabaseID: "db", Database: "db", ShardID: shardID, RF: 1, LeaderReplicaID: sharedHostReplicaID,
 				Replicas: []placement.Replica{
 					{
 						ReplicaID: sharedHostReplicaID,
@@ -532,7 +532,7 @@ func TestPlacementInfoSource_DedicatedWAL(t *testing.T) {
 	store := newPlacementStore(t)
 	ctx := context.Background()
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 7777, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
@@ -610,7 +610,7 @@ func TestRaftBackendFactory_Services_RefusesCachedShardWhenPlacementDropping(t *
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr},
 		},
@@ -653,7 +653,7 @@ func TestRaftBackendFactory_Services_RefusesCachedShardWhenPlacementDeleted(t *t
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5005, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5005, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
@@ -729,7 +729,7 @@ func TestRaftBackendFactory_RefuseIfDropping_RefusesAfterCachedShardIsFenced(t *
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5010, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5010, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
@@ -809,7 +809,7 @@ func TestRaftBackendFactory_Services_RefusesFreshResolutionWhenPlacementDropping
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5002, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5002, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a", RaftAddr: sharedHostRaftAddr},
 		},
@@ -864,7 +864,7 @@ func TestRaftBackendFactory_FenceServicesResolvesADroppingDatabase(t *testing.T)
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5020, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5020, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
@@ -915,7 +915,7 @@ func TestRaftBackendFactory_FenceServicesRefusesAnotherIncarnationsShard(t *test
 	ctx := context.Background()
 
 	if err := store.Put(ctx, &placement.Placement{
-		TenantID: "rt", Database: "orders", ShardID: 5021, RF: 1, LeaderReplicaID: 1,
+		TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: 5021, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		},
@@ -963,7 +963,7 @@ func TestRaftBackendFactory_CachedShardOfADroppedIncarnation(t *testing.T) {
 	place := func(shardID uint64) {
 		t.Helper()
 		if err := store.Put(ctx, &placement.Placement{
-			TenantID: "rt", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
+			TenantID: "rt", DatabaseID: "orders", Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{
 				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 			},

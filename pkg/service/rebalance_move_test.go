@@ -77,6 +77,7 @@ func newTestPlacementStore(t *testing.T, placements ...*placement.Placement) *pl
 func newTestPlacement(tenantID, database string, shardID uint64) *placement.Placement {
 	return &placement.Placement{
 		TenantID:        tenantID,
+		DatabaseID:      database,
 		Database:        database,
 		ShardID:         shardID,
 		RF:              2,
@@ -675,7 +676,7 @@ func TestMoveTenantGroupShard_LeaderRouting_NonMemberAvoidsGuessingTheSource(t *
 // resolveMoveLeader's doc comment, case 2's final paragraph.
 func TestMoveTenantGroupShard_LeaderRouting_NonMemberFallsBackWhenSourceIsOnlyReplica(t *testing.T) {
 	p := &placement.Placement{
-		TenantID: "acme", Database: "db1", ShardID: 10, RF: 1,
+		TenantID: "acme", DatabaseID: "db1", Database: "db1", ShardID: 10, RF: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100", DataRoot: "/data"},
 		},

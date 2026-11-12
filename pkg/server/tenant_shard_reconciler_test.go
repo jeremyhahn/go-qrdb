@@ -360,6 +360,7 @@ func assertConfiguredIntervalDrove(t *testing.T, factory *fakeShardLifecycle, pa
 func placement1(tenantID, db string, shardID uint64) *placement.Placement {
 	return &placement.Placement{
 		TenantID:        tenantID,
+		DatabaseID:      db,
 		Database:        db,
 		ShardID:         shardID,
 		RF:              1,
@@ -426,7 +427,7 @@ func TestTenantShardReconciler_IgnoresUnassigned(t *testing.T) {
 
 	// Placement assigns to "other:1", not "local:1".
 	p := &placement.Placement{
-		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "db", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
@@ -448,7 +449,7 @@ func TestTenantShardReconciler_SkipsLocalBinding(t *testing.T) {
 	factory := newFakeShardLifecycle()
 
 	p := &placement.Placement{
-		TenantID: "acme", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "cache", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Backend: placement.BackendMemory,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
@@ -498,7 +499,7 @@ func TestTenantShardReconciler_DemotionTeardown(t *testing.T) {
 
 	// Place a placement entry that assigns the replica to "other:1" only.
 	demoted := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
 			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
@@ -933,16 +934,17 @@ func TestTenantShardReconciler_HandleEvent_PutDemotion(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	p := &placement.Placement{
-		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "db", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r.handleEvent(context.Background(), placement.Event{
-		Type:      placement.EventPut,
-		TenantID:  "acme",
-		Database:  "db",
-		Placement: p,
+		Type:       placement.EventPut,
+		TenantID:   "acme",
+		DatabaseID: "db",
+		Database:   "db",
+		Placement:  p,
 	})
 
 	if factory.attachCount() != 0 {
@@ -965,16 +967,17 @@ func TestTenantShardReconciler_HandleEvent_PutNoLocalReplica_NotRunning(t *testi
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	p := &placement.Placement{
-		TenantID: "acme", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "db", Database: "db", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "other:1", RaftAddr: "other:1"},
 		},
 	}
 	r.handleEvent(context.Background(), placement.Event{
-		Type:      placement.EventPut,
-		TenantID:  "acme",
-		Database:  "db",
-		Placement: p,
+		Type:       placement.EventPut,
+		TenantID:   "acme",
+		DatabaseID: "db",
+		Database:   "db",
+		Placement:  p,
 	})
 
 	if factory.attachCount() != 0 {
@@ -997,17 +1000,18 @@ func TestTenantShardReconciler_HandleEvent_PutLocalBinding_NeverAttached(t *test
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	p := &placement.Placement{
-		TenantID: "acme", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "cache", Database: "cache", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Backend: placement.BackendMemory,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 		},
 	}
 	r.handleEvent(context.Background(), placement.Event{
-		Type:      placement.EventPut,
-		TenantID:  "acme",
-		Database:  "cache",
-		Placement: p,
+		Type:       placement.EventPut,
+		TenantID:   "acme",
+		DatabaseID: "cache",
+		Database:   "cache",
+		Placement:  p,
 	})
 
 	if factory.attachCount() != 0 {
@@ -1026,10 +1030,11 @@ func TestTenantShardReconciler_HandleEvent_NilPlacement(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	r.handleEvent(context.Background(), placement.Event{
-		Type:      placement.EventPut,
-		TenantID:  "acme",
-		Database:  "db",
-		Placement: nil, // nil must not panic
+		Type:       placement.EventPut,
+		TenantID:   "acme",
+		DatabaseID: "db",
+		Database:   "db",
+		Placement:  nil, // nil must not panic
 	})
 
 	if factory.attachCount() != 0 {
@@ -1181,7 +1186,7 @@ func TestTenantShardReconciler_DemotionPurgesByDefault(t *testing.T) {
 	factory.mu.Unlock()
 
 	demoted := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
 			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
@@ -1207,7 +1212,7 @@ func TestTenantShardReconciler_WithPurgeOnDemotionFalse(t *testing.T) {
 	factory.mu.Unlock()
 
 	demoted := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 2,
 		Replicas: []placement.Replica{
 			{ReplicaID: 2, NodeID: "other:1", RaftAddr: "other:1"},
 		},
@@ -1244,13 +1249,44 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 	r := NewTenantShardReconciler(store, factory, "local:1", nil)
 
 	r.handleEvent(context.Background(), placement.Event{
-		Type:     placement.EventDelete,
-		TenantID: "acme",
-		Database: "orders",
+		Type:       placement.EventDelete,
+		TenantID:   "acme",
+		DatabaseID: "orders",
+		Database:   "orders",
 	})
 
 	if factory.purgeCount() != 1 {
 		t.Errorf("purgeCount() = %d, want 1 (EventDelete purges by default)", factory.purgeCount())
+	}
+}
+
+// TestTenantShardReconciler_EventDelete_ByIDClosesTheNamedShard: the table
+// is keyed by the opaque database id and the watch carries no prior value,
+// so a delete event names only the id. The reconciler closes the shard of
+// the database the entry named when it last saw it.
+func TestTenantShardReconciler_EventDelete_ByIDClosesTheNamedShard(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.mu.Lock()
+	factory.started[raftShardKey{tenantID: "acme", database: "orders"}] = true
+	factory.mu.Unlock()
+
+	store, _ := placement.NewStore(newMemKV())
+	p := placement1("acme", "orders", 1001)
+	p.DatabaseID = "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4"
+	if err := store.Put(context.Background(), p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	r.ReconcileOnce(context.Background())
+
+	r.handleEvent(context.Background(), placement.Event{
+		Type:       placement.EventDelete,
+		TenantID:   "acme",
+		DatabaseID: "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4",
+	})
+
+	if factory.purgeCount() != 1 || factory.isStarted("acme", "orders") {
+		t.Errorf("purgeCount() = %d, started = %v: want the shard of orders closed", factory.purgeCount(), factory.isStarted("acme", "orders"))
 	}
 }
 
@@ -1263,6 +1299,7 @@ func TestTenantShardReconciler_EventDelete_PurgesByDefault(t *testing.T) {
 func joiningPlacement1(tenantID, db string, shardID uint64) *placement.Placement {
 	return &placement.Placement{
 		TenantID:        tenantID,
+		DatabaseID:      db,
 		Database:        db,
 		ShardID:         shardID,
 		RF:              1,
@@ -1392,7 +1429,7 @@ func TestTenantShardReconciler_AnObserverThatNeverStartedIsNotReady(t *testing.T
 	for name, drive := range map[string]func(r *TenantShardReconciler, p *placement.Placement){
 		"poll": func(r *TenantShardReconciler, _ *placement.Placement) { r.ReconcileOnce(context.Background()) },
 		"watch": func(r *TenantShardReconciler, p *placement.Placement) {
-			r.handleEvent(context.Background(), placement.Event{Type: placement.EventPut, TenantID: p.TenantID, Database: p.Database, Placement: p})
+			r.handleEvent(context.Background(), placement.Event{Type: placement.EventPut, TenantID: p.TenantID, DatabaseID: p.Database, Database: p.Database, Placement: p})
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1450,7 +1487,7 @@ func TestTenantShardReconciler_AnObserverThatNeverStartedIsNotReady(t *testing.T
 func TestTenantShardReconciler_ObserverReadyPromotedToActiveByLeader(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	p := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
 			{ReplicaID: 2, NodeID: "remote:1", RaftAddr: "remote:1", State: placement.ReplicaStateObserverReady},
@@ -1547,7 +1584,7 @@ func TestTenantShardReconciler_DroppingPlacement_ObserverNeverPromotedToObserver
 func TestTenantShardReconciler_DroppingPlacement_ReadyObserverNeverPromotedToActive(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	p := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
 		Dropping: true,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1"},
@@ -1638,7 +1675,7 @@ func TestTenantShardReconciler_PromotionCAS_RejectsStaleSnapshot(t *testing.T) {
 func TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	p := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 9,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 9,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
 			{ReplicaID: 9, NodeID: "remote:1", RaftAddr: "remote:1"},
@@ -1679,7 +1716,7 @@ func TestTenantShardReconciler_ObserverReadyNotPromoted_WhenNotLeader(t *testing
 func TestTenantShardReconciler_NoPromoter_ObserverReadyNeverPromoted(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	p := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
 		},
@@ -1704,7 +1741,7 @@ func TestTenantShardReconciler_NoPromoter_ObserverReadyNeverPromoted(t *testing.
 func TestTenantShardReconciler_ObserverReadyPromotion_FailurePreservesState(t *testing.T) {
 	factory := newFakeShardLifecycle()
 	p := &placement.Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "local:1", RaftAddr: "local:1", State: placement.ReplicaStateObserverReady},
 		},
