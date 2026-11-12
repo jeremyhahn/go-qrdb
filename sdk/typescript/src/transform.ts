@@ -25,6 +25,7 @@ import type {
     RestoreKeyChange,
     RestoreRevisionResult,
     VectorIndexType,
+    VectorSearchResult,
     WatchEvent,
 } from './types.js';
 
@@ -331,6 +332,26 @@ export function compactionProgressFromWire(w: WireCompactionProgress): Compactio
         startedAt: w.startedAt ?? 0,
         finishedAt: w.completedAt || undefined,
         error: w.error || undefined,
+    };
+}
+
+/** A REST vector search answer (similar, hybrid, by-id), after snake-to-camel. */
+export interface WireSearchResponse {
+    readonly results?: readonly VectorSearchResult[] | null;
+    readonly queryDuration?: number;
+}
+
+/**
+ * Maps a vector search answer to the SDK shape: result IDs become
+ * strings and query_duration becomes took.
+ */
+export function searchResponseFromWire(w: WireSearchResponse): {
+    results: VectorSearchResult[];
+    took: number;
+} {
+    return {
+        results: (w.results ?? []).map(normalizeVectorIDField),
+        took: w.queryDuration ?? 0,
     };
 }
 
