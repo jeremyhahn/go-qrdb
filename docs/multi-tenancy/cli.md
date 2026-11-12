@@ -336,8 +336,10 @@ and is never sent. An embedded connection is in process and asks no proof.
 A barrier served by several nodes holds its own key on each. A `passphrase`
 init reads the serving nodes from `--server`'s `barrier-status` and is sent to
 every one of them, over `--server`'s transport at the endpoint each node
-publishes, with one result printed per node. Under any other strategy the init
-goes to `--server`'s node and the others initialize their own keys from it.
+publishes, with one result printed per node. When the serving nodes cannot be
+listed (`nodes_unreadable` in the status), the init fails with
+`TenantServingNodesUnknownError` and sends nothing. Under any other strategy the
+init goes to `--server`'s node and the others initialize their own keys from it.
 
 | Flag | Type | Meaning |
 |---|---|---|
@@ -390,7 +392,10 @@ the nodes from `--server`'s barrier status and is sent to every one of them,
 over `--server`'s transport (rest, grpc, quic or mcp) at the endpoint each node
 publishes, with one result printed per node; the command fails naming the
 nodes that refused. A barrier served by one node is unsealed on `--server`'s
-node.
+node. When `--server`'s node cannot list the serving nodes (its status reports
+`nodes_unreadable`), the command fails with `TenantServingNodesUnknownError`
+naming the tenant and sends nothing: unsealing one node could leave the others
+sealed.
 
 | Flag | Type | Meaning |
 |---|---|---|
