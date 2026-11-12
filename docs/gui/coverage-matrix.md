@@ -100,8 +100,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Index | `list` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
 | Index | `query` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
 | Index | `scan` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
-| Invitation | `invite` | components/admin/InviteUserModal.svelte | none (admin-users.spec.ts never opens the invite modal) | no e2e; *verified* |
-| Invitation | `redeem` | none | none | not in UI; *verified* |
+| Invitation | `invite` | components/admin/InviteUserModal.svelte | admin-invitations.spec.ts | *verified* |
+| Invitation | `redeem` | components/RedeemInvitationModal.svelte (from components/ConnectionManager.svelte) | admin-invitations.spec.ts | *verified* |
 | KV | `delete` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
 | KV | `exists` | views/user/KVExplorer.svelte (Go to key) | kv-mvcc.spec.ts | *verified* |
 | KV | `get` | views/user/KVExplorer.svelte (Go to key, keys-only open) | kv-mvcc.spec.ts | *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 198 | 192 |
+| operations | 218 | 199 | 194 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 20. In UI without e2e: 6. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 19. In UI without e2e: 5. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
