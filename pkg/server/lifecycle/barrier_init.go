@@ -227,6 +227,27 @@ func perNodeBarrierKeysRequired(host service.Host) func() error {
 	}
 }
 
+// strictIsolationRequired is the strict-isolation activation check for host,
+// as perNodeBarrierKeysRequired is for per-node-barrier-keys: nil on a host
+// that gates nothing (a standalone node), otherwise one that refuses with
+// *feature.NotActiveError until the cluster has activated the feature. A
+// mixed-version cluster, whose older members do not advertise it, never
+// activates it, so a strict tenant's create and an isolated tenant's
+// placement stay refused there.
+func strictIsolationRequired(host service.Host) func() error {
+	gated, ok := host.(service.FeatureGatedHost)
+	if !ok {
+		return nil
+	}
+	return func() error {
+		// The feature is judged cluster-wide, so no group is named.
+		if gated.FeatureEnabled(0, featuregate.StrictIsolation) {
+			return nil
+		}
+		return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+	}
+}
+
 // UnsupportedBarrierKindError is returned for an init record of a barrier
 // level this node does not yet initialize its own key for from a statement.
 // The watcher retries it on its next poll.

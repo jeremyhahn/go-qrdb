@@ -5,7 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 )
 
@@ -35,7 +37,7 @@ func servingSetStore(t *testing.T) (*placement.Store, *placement.Placement) {
 
 func TestPlacementServingSet_IsolatedTenantIsConfinedToItsHomeGroup(t *testing.T) {
 	store, _ := servingSetStore(t)
-	nodes, confined, err := PlacementServingSet(store)(context.Background(), "iso", "orders")
+	nodes, confined, err := PlacementServingSet(store, nil)(context.Background(), "iso", "orders")
 	if err != nil || !confined {
 		t.Fatalf("serving set of iso = (%v, %v, %v), want confined", nodes, confined, err)
 	}
@@ -44,9 +46,36 @@ func TestPlacementServingSet_IsolatedTenantIsConfinedToItsHomeGroup(t *testing.T
 	}
 }
 
+// strictIsolationInactive is the gate of a cluster that has not activated
+// strict-isolation (a mixed-version cluster).
+func strictIsolationInactive() error {
+	return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+}
+
+// TestPlacementServingSet_InactiveStrictIsolationRefusesIsolatedTenant: until
+// strict-isolation is active an isolated tenant's lookup fails closed with
+// the gate's refusal, never an unconfined placement; a shared tenant and the
+// home group are not gated.
+func TestPlacementServingSet_InactiveStrictIsolationRefusesIsolatedTenant(t *testing.T) {
+	store, _ := servingSetStore(t)
+	serving := PlacementServingSet(store, strictIsolationInactive)
+
+	nodes, confined, err := serving(context.Background(), "iso", "orders")
+	var notActive *feature.NotActiveError
+	if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation {
+		t.Fatalf("serving set of iso before activation = (%v, %v, %v), want NotActiveError(%s)", nodes, confined, err, featuregate.StrictIsolation)
+	}
+	if _, _, err := serving(context.Background(), "iso", database.TenantHomeName); err != nil {
+		t.Fatalf("home group lookup before activation = %v, want unconfined", err)
+	}
+	if _, confined, err := PlacementServingSet(store, func() error { return nil })(context.Background(), "iso", "orders"); err != nil || !confined {
+		t.Fatalf("serving set of iso after activation = (%v, %v), want confined", confined, err)
+	}
+}
+
 func TestPlacementServingSet_SharedTenantAndHomeGroupUnconfined(t *testing.T) {
 	store, _ := servingSetStore(t)
-	serving := PlacementServingSet(store)
+	serving := PlacementServingSet(store, nil)
 	if _, confined, err := serving(context.Background(), "shared", "orders"); err != nil || confined {
 		t.Fatalf("shared tenant: confined=%v err=%v, want unconfined", confined, err)
 	}

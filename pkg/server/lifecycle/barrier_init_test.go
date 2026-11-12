@@ -373,6 +373,32 @@ func TestPerNodeBarrierKeysRequired_FollowsTheGate(t *testing.T) {
 	}
 }
 
+func TestStrictIsolationRequired_NilOnAHostThatGatesNothing(t *testing.T) {
+	for name, host := range map[string]service.Host{"standalone": newStandaloneHost(), "no host": nil} {
+		t.Run(name, func(t *testing.T) {
+			if required := strictIsolationRequired(host); required != nil {
+				t.Fatalf("strictIsolationRequired = %v, want nil: the host gates nothing", required())
+			}
+		})
+	}
+}
+
+// TestStrictIsolationRequired_FollowsTheGate: a mixed-version cluster (the
+// feature not enabled, whatever else is) refuses with a cluster-wide
+// NotActiveError(strict-isolation); an activated cluster passes.
+func TestStrictIsolationRequired_FollowsTheGate(t *testing.T) {
+	mixed := gatedHost{enabled: map[feature.Feature]bool{featuregate.PerNodeBarrierKeys: true}}
+	var notActive *feature.NotActiveError
+	err := strictIsolationRequired(mixed)()
+	if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation || notActive.ShardID != 0 {
+		t.Fatalf("required before activation = %v, want cluster-wide NotActiveError(%s)", err, featuregate.StrictIsolation)
+	}
+	active := gatedHost{enabled: map[feature.Feature]bool{featuregate.StrictIsolation: true}}
+	if err := strictIsolationRequired(active)(); err != nil {
+		t.Fatalf("required after activation = %v, want nil", err)
+	}
+}
+
 // TestBarrierInitClaimer_RecordsNothingBeforeActivation pins that the claimer
 // the tenant service is composed with waits on the same gate: before
 // per-node-barrier-keys is active a statement is refused and not recorded,

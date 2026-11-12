@@ -240,6 +240,15 @@ func WithPlacementStore(store *placement.Store) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.placementStore = store }
 }
 
+// WithStrictIsolationGate sets the strict-isolation activation check
+// (featuregate.StrictIsolation): it returns nil once the feature is active
+// cluster-wide, else the refusal (*feature.NotActiveError). CreateDatabase
+// refuses a strict tenant's database with it until activation. A nil gate
+// (a standalone node, which gates nothing) leaves create ungated.
+func WithStrictIsolationGate(gate func() error) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.strictIsolationGate = gate }
+}
+
 // WithPlacementScheduler sets the load-aware scheduler used to compute a
 // dedicated-raft database's replica Placement at create time and to clamp the
 // requested replication factor to the cluster size. When nil, placement is not
@@ -576,7 +585,12 @@ func deliverTenantKeyToReplicaWithRetry(ctx context.Context, deliverer KeyDistri
 // (database.TenantHomeName); a tenant with no home group (a shared tenant)
 // and the home group itself are unconfined. A table read failure fails the
 // placement closed.
-func PlacementServingSet(ps *placement.Store) placement.ServingSetFunc {
+//
+// active, when non-nil, is the strict-isolation activation check
+// (featuregate.StrictIsolation): until it returns nil an isolated tenant's
+// lookup fails with its refusal, so the scheduler places nothing for the
+// tenant rather than placing it unconfined.
+func PlacementServingSet(ps *placement.Store, active func() error) placement.ServingSetFunc {
 	return func(ctx context.Context, tenantID, name string) ([]string, bool, error) {
 		if ps == nil || database.IsTenantHome(name) {
 			return nil, false, nil
@@ -587,6 +601,11 @@ func PlacementServingSet(ps *placement.Store) placement.ServingSetFunc {
 		}
 		if err != nil {
 			return nil, false, err
+		}
+		if active != nil {
+			if aerr := active(); aerr != nil {
+				return nil, false, aerr
+			}
 		}
 		nodes := make([]string, 0, len(home.Replicas))
 		for _, r := range home.Replicas {
@@ -600,7 +619,9 @@ func PlacementServingSet(ps *placement.Store) placement.ServingSetFunc {
 // *placement.ServingSetError when current belongs to an isolated tenant
 // whose serving set does not contain raftAddr.
 func checkReplicaInServingSet(ctx context.Context, ps *placement.Store, current *placement.Placement, raftAddr string) error {
-	nodes, confined, err := PlacementServingSet(ps)(ctx, current.TenantID, current.Database)
+	// Ungated: this check only ever refuses a replica, and the group it
+	// guards was placed through the gated scheduler lookup.
+	nodes, confined, err := PlacementServingSet(ps, nil)(ctx, current.TenantID, current.Database)
 	if err != nil || !confined {
 		return err
 	}
@@ -925,13 +946,17 @@ type DatabaseService struct {
 	isolationFloor     tenant.ClusterIsolationPolicyReader
 	quotaUsage         QuotaUsageRecorder
 	placementStore     *placement.Store
-	placementScheduler *placement.Scheduler
-	keyDistributor     KeyDistributor
-	barrierLookup      TenantBarrierLookup
-	dataRootResolver   TenantDataRootResolver
-	localNodeID        string
-	raftHost           RaftHost
-	logger             *slog.Logger
+	// strictIsolationGate, when set, refuses a strict tenant's database
+	// create until the strict-isolation feature is active
+	// (WithStrictIsolationGate).
+	strictIsolationGate func() error
+	placementScheduler  *placement.Scheduler
+	keyDistributor      KeyDistributor
+	barrierLookup       TenantBarrierLookup
+	dataRootResolver    TenantDataRootResolver
+	localNodeID         string
+	raftHost            RaftHost
+	logger              *slog.Logger
 
 	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
 	// waitForShardLeaderKnown, called by scaleUp/scaleDown before issuing a
@@ -1819,6 +1844,15 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// than upgraded silently; the entitlement and quota checks below still
 	// apply to the dedicated WAL it does request.
 	if strictTenant {
+		// Strict isolation phases 5 and 6 are judged by the cluster's
+		// strict-isolation activation: until every member runs a binary
+		// that confines and keys a strict tenant's groups, its create is
+		// refused (*feature.NotActiveError) before anything is persisted.
+		if s.strictIsolationGate != nil {
+			if gerr := s.strictIsolationGate(); gerr != nil {
+				return nil, gerr
+			}
+		}
 		if cfg.Backend != database.BackendRaft {
 			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID, Backend: string(cfg.Backend)}
 		}

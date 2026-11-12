@@ -1497,6 +1497,26 @@ the init statement is written through the existing guarded write.
   `per-node-barrier-keys` knows it, so the refusal is seen only transiently
   during a rolling upgrade; nothing activates it by hand.
 
+**`strict-isolation` (`featuregate.StrictIsolation`)** is an activation-based
+feature judged cluster-wide. It adds no Raft command.
+
+- **Why it exists.** From phase 5 a strict tenant's every database is a raft
+  group on a dedicated WAL, and from phase 6 an isolated tenant's database
+  groups are placed only on its serving set (its home group's nodes). A node
+  whose binary predates this neither refuses a shared-WAL database nor
+  confines placement, so a mixed-version cluster would serve the tenant
+  unconfined.
+- **Not yet active:** a strict tenant's database create is refused with
+  `*feature.NotActiveError{Feature: strict-isolation}` (503, retryable after
+  rollout) and writes nothing; the scheduler's serving-set lookup refuses an
+  isolated tenant's placement the same way, failing closed rather than placing
+  it unconfined. A shared tenant and the home group are unaffected.
+- **Active:** once every member advertises the feature, as above; a
+  standalone node gates nothing.
+- **Not gated:** keying placements and key-delivery envelopes by the opaque
+  database id is a format change. Nothing is migrated: pre-release tenants are
+  re-created.
+
 **`tenant-undo` (`featuregate.TenantUndo`)** is a third activation-based
 feature. It adds no Raft command: the undone tombstone and the
 acknowledgements are ordinary metadata writes.

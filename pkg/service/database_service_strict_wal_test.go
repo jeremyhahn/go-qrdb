@@ -5,7 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
@@ -57,6 +59,51 @@ func TestCreateForTenant_StrictTenant_DedicatedWALCreated(t *testing.T) {
 	if f.incWAL != 1 {
 		t.Errorf("dedicated-WAL increment = %d, want 1", f.incWAL)
 	}
+}
+
+// TestCreateDatabase_StrictTenantRefusedUntilStrictIsolationActive: until
+// the cluster activates strict-isolation (a mixed-version cluster), a strict
+// tenant's database create is refused with the gate's *feature.NotActiveError
+// and nothing is persisted or reserved; once the gate passes, today's
+// behaviour (the dedicated-WAL create) holds.
+func TestCreateDatabase_StrictTenantRefusedUntilStrictIsolationActive(t *testing.T) {
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+	cfg := testDBConfig("app")
+	cfg.DedicatedWAL = true
+
+	t.Run("inactive", func(t *testing.T) {
+		f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+		svc := newReplicaDatabaseService(t, strictRaftTenant(), f)
+		WithStrictIsolationGate(func() error {
+			return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+		})(svc.(*DatabaseService))
+
+		_, err := svc.CreateForTenant(ctx, cfg)
+		var notActive *feature.NotActiveError
+		if !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation {
+			t.Fatalf("CreateForTenant before activation = %v, want NotActiveError(%s)", err, featuregate.StrictIsolation)
+		}
+		if f.incWAL != 0 {
+			t.Errorf("dedicated-WAL increment = %d, want 0", f.incWAL)
+		}
+		if got, gerr := svc.GetForTenant(ctx, "app"); gerr == nil {
+			t.Errorf("refused create persisted %+v", got)
+		}
+	})
+
+	t.Run("active", func(t *testing.T) {
+		f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+		svc := newReplicaDatabaseService(t, strictRaftTenant(), f)
+		WithStrictIsolationGate(func() error { return nil })(svc.(*DatabaseService))
+
+		got, err := svc.CreateForTenant(ctx, cfg)
+		if err != nil {
+			t.Fatalf("CreateForTenant after activation: %v", err)
+		}
+		if !got.DedicatedWAL || f.incWAL != 1 {
+			t.Errorf("created DedicatedWAL=%v incWAL=%d, want true, 1", got.DedicatedWAL, f.incWAL)
+		}
+	})
 }
 
 // TestCreateForTenant_StrictTenant_QuotaStillApplies: the strict policy does
