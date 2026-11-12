@@ -89,11 +89,14 @@ async function createInUI(page: Page, key: string, value: string, leaseId?: numb
   if (leaseId !== undefined) {
     await modal.getByPlaceholder("Attach the key to a lease; blank for none").fill(String(leaseId));
   }
+  const text = leaseId !== undefined ? `Created "${key}" with lease ${leaseId}` : `Created "${key}"`;
+  // A toast from an earlier write of the same key may still be shown: wait for
+  // this write's own toast, not a stale one.
+  const toasts = page.locator(".toast .alert").filter({ hasText: text });
+  const before = await toasts.count();
   await modal.getByRole("button", { name: "Create", exact: true }).click();
-  await expectToast(
-    page,
-    leaseId !== undefined ? `Created "${key}" with lease ${leaseId}` : `Created "${key}"`,
-  );
+  await expect(toasts).toHaveCount(before + 1, { timeout: LOAD_TIMEOUT });
+  await expectToast(page, text);
 }
 
 /** Expects the UI's "Current revision" to equal the daemon's. */
