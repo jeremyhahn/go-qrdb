@@ -67,3 +67,47 @@ func TestTenantBarrierUnseal_AnOpenProviderBackedBarrierRerunSucceeds(t *testing
 		t.Fatal("barrier sealed after the rerun")
 	}
 }
+
+// TestTenantBarrierUnseal_AnOpenProviderBackedBarrierRerunUsesTheResolvedStrategy
+// pins that a rerun on an open provider-backed barrier is checked with the
+// strategy the provider returns now, not the one cached at the first unseal:
+// a same-ID strategy that cannot unwrap the root key is refused, and the
+// original strategy restored passes again.
+func TestTenantBarrierUnseal_AnOpenProviderBackedBarrierRerunUsesTheResolvedStrategy(t *testing.T) {
+	device, err := sealtest.NewDeviceStrategy("test-kms")
+	if err != nil {
+		t.Fatalf("NewDeviceStrategy: %v", err)
+	}
+	other, err := sealtest.NewDeviceStrategy("test-kms")
+	if err != nil {
+		t.Fatalf("NewDeviceStrategy: %v", err)
+	}
+	f := newProviderUnsealFixture(t, device)
+	if err := f.unseal(); err != nil {
+		t.Fatalf("first TenantBarrierUnseal: %v", err)
+	}
+	resolve := func(s seal.SealingStrategy) {
+		f.provider.mu.Lock()
+		f.provider.result = &seal.BarrierKeyStrategy{
+			Strategy:   s,
+			Credential: seal.CredentialNone,
+			Custody:    seal.CustodyOwner,
+		}
+		f.provider.mu.Unlock()
+	}
+
+	resolve(other)
+	err = f.unseal()
+	var be *BarrierError
+	if !errors.As(err, &be) || !errors.Is(err, seal.ErrCredentialMismatch) {
+		t.Fatalf("rerun with a same-ID strategy of another key = %v, want BarrierError wrapping ErrCredentialMismatch", err)
+	}
+	if f.barrier(t).IsSealed() {
+		t.Fatal("barrier sealed after the refused rerun")
+	}
+
+	resolve(device)
+	if err := f.unseal(); err != nil {
+		t.Fatalf("rerun with the original strategy: %v", err)
+	}
+}

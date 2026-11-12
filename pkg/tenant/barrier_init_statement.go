@@ -470,15 +470,18 @@ func (s *TenantService) unsealBarrier(ctx context.Context, info *TenantInfo, cre
 	if err != nil {
 		return err
 	}
-	return s.unsealOutcome(ctx, info.ID, creds, s.registry.UnsealTenantWithStrategy(ctx, info.ID, resolved.Strategy, creds))
+	return s.unsealOutcome(ctx, info.ID, resolved.Strategy, creds, s.registry.UnsealTenantWithStrategy(ctx, info.ID, resolved.Strategy, creds))
 }
 
 // unsealOutcome maps the registry's answer to an unseal. A barrier that is
 // already open is not a refusal of creds: a rerun of a partial fan-out, or
 // the recovery of one restarted replica, reaches replicas an earlier run
 // opened. The credential is still checked against the open barrier's root
-// key, so an open barrier never vouches for a wrong secret.
-func (s *TenantService) unsealOutcome(ctx context.Context, tenantID string, creds seal.Credentials, err error) error {
+// key, so an open barrier never vouches for a wrong secret. strategy is the
+// one the unseal used: a provider-backed barrier passes the strategy its
+// provider resolved, so the check uses that exact strategy; nil uses the
+// strategy registered for the persisted root key.
+func (s *TenantService) unsealOutcome(ctx context.Context, tenantID string, strategy seal.SealingStrategy, creds seal.Credentials, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -489,7 +492,12 @@ func (s *TenantService) unsealOutcome(ctx context.Context, tenantID string, cred
 	if err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
 	}
-	if err := tb.Barrier().VerifyCredentials(ctx, creds); err != nil {
+	if strategy == nil {
+		err = tb.Barrier().VerifyCredentials(ctx, creds)
+	} else {
+		err = tb.Barrier().VerifyCredentialsWithStrategy(ctx, strategy, creds)
+	}
+	if err != nil {
 		return &BarrierError{TenantID: tenantID, Op: "unseal", Err: err}
 	}
 	return nil
@@ -515,5 +523,5 @@ func (s *TenantService) migratedOffNone(tenantID string, stated seal.StrategyID)
 // unsealRegistered unseals tenantID's barrier with the strategy registered
 // under its persisted root key's strategy ID.
 func (s *TenantService) unsealRegistered(ctx context.Context, tenantID string, creds seal.Credentials) error {
-	return s.unsealOutcome(ctx, tenantID, creds, s.registry.UnsealTenant(ctx, tenantID, creds))
+	return s.unsealOutcome(ctx, tenantID, nil, creds, s.registry.UnsealTenant(ctx, tenantID, creds))
 }

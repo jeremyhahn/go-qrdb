@@ -785,6 +785,25 @@ func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 // refuses creds outright), or any error encountered loading the persisted
 // blob.
 func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credentials) error {
+	return b.verifyCredentials(ctx, nil, creds)
+}
+
+// VerifyCredentialsWithStrategy is VerifyCredentials with the strategy the
+// caller resolved, not the one registered on the barrier. A provider-backed
+// barrier resolves its strategy on every unseal; checking a rerun against
+// the registered copy would let a strategy the provider no longer returns
+// vouch for creds. The persisted root key must name strategy's ID, else
+// ErrCredentialMismatch; every other return is VerifyCredentials's.
+func (b *StorageBarrier) VerifyCredentialsWithStrategy(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
+	if strategy == nil {
+		return ErrStrategyNotFound
+	}
+	return b.verifyCredentials(ctx, strategy, creds)
+}
+
+// verifyCredentials backs VerifyCredentials (strategy nil: the registered
+// strategy for the persisted ID) and VerifyCredentialsWithStrategy.
+func (b *StorageBarrier) verifyCredentials(ctx context.Context, strategy SealingStrategy, creds Credentials) error {
 	if b.IsSealed() {
 		return ErrSealed
 	}
@@ -799,9 +818,14 @@ func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credential
 		return ErrCorruptRootKey
 	}
 
-	strategy, ok := b.strategyByID(sealed.Strategy)
-	if !ok {
-		return ErrStrategyNotFound
+	if strategy == nil {
+		registered, ok := b.strategyByID(sealed.Strategy)
+		if !ok {
+			return ErrStrategyNotFound
+		}
+		strategy = registered
+	} else if strategy.ID() != sealed.Strategy {
+		return ErrCredentialMismatch
 	}
 
 	live, err := b.barrier.RootKey(ctx)
