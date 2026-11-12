@@ -83,12 +83,12 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
 | Database | `list` | views/MainApp.svelte views/admin/DatabaseManager.svelte views/admin/Dashboard.svelte views/admin/UserDetail.svelte views/admin/RoleDetail.svelte stores/connection-manager.svelte.ts | admin-databases.spec.ts database-switching.spec.ts | *verified* |
 | Database | `scale` | views/admin/DatabaseDetail.svelte  | database-scale.spec.ts  |  |
-| Database | `updateBarrier` | none | none | not in UI; *verified* |
-| Database | `updateCompaction` | none | none | not in UI; *verified* |
-| Database | `updateConnection` | none | none | not in UI; *verified* |
+| Database | `updateBarrier` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateCompaction` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateConnection` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
 | Database | `updateProtocol` | views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte | regression-bugs.spec.ts (UpdateProtocol) | *verified* |
-| Database | `updateRaft` | none | none | not in UI; *verified* |
-| Database | `updateSQL` | none | none | not in UI; *verified* |
+| Database | `updateRaft` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts | gap none |
+| Database | `updateSQL` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte) | database-settings.spec.ts | gap none |
 | EmbeddedServer | `clearSavedConfig` | none | none | not in UI; *verified* |
 | EmbeddedServer | `hasSavedConfig` | none | none | not in UI; *verified* |
 | EmbeddedServer | `isEmbedded` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 156 | 140 |
+| operations | 218 | 161 | 145 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 62. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 57. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
