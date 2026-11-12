@@ -19,7 +19,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
@@ -69,9 +69,9 @@ func TestVlogBinding_CreateRequiresOrigin(t *testing.T) {
 		"empty origin": {Log: "events"},
 	} {
 		_, err := b.Create(req)
-		var ide *vlog.InvalidDescriptorError
+		var ide *sdk.VlogInvalidDescriptorError
 		if !errors.As(err, &ide) {
-			t.Fatalf("%s: err = %v, want *vlog.InvalidDescriptorError", name, err)
+			t.Fatalf("%s: err = %v, want *sdk.VlogInvalidDescriptorError", name, err)
 		}
 		if !strings.Contains(err.Error(), "origin must be non-empty") {
 			t.Errorf("%s: err = %q, want the service's origin refusal", name, err)

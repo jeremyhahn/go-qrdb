@@ -17,7 +17,6 @@ package main
 import (
 	"context"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
@@ -63,7 +62,7 @@ func (b *VlogBinding) Create(req *vlogwire.CreateRequest) (*vlogwire.CreateResul
 	// is required: refuse an empty one with the service's error rather than
 	// derive a default the service would never apply.
 	if req == nil || req.Origin == "" {
-		err := &vlog.InvalidDescriptorError{Reason: "origin must be non-empty UTF-8 without control characters"}
+		err := &sdk.VlogInvalidDescriptorError{Reason: "origin must be non-empty UTF-8 without control characters"}
 		b.logger.Error("Create failed", "error", err)
 		return nil, err
 	}
