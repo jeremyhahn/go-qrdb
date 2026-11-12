@@ -1634,10 +1634,18 @@ phase 5 on.
 > `TestRegisterTenantShell_*`,
 > `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`
 > and `TestBarrierRegistry_ImportTenant_InitializesRegisteredShell`.
-> Not yet built: the serving-set check before a shell is registered, and a
-> node without a cluster identity, which refuses a platform-custody raft
-> tenant and claims nothing for a barrier or volume one (a standalone node
-> composes no signer and needs none).
+> A node without a cluster identity (no CA pool, node certificate or signing
+> key) refuses a platform-custody raft tenant and claims nothing for a barrier
+> or volume one: `wirePlatformInit` wires no platform signer, a raft create
+> then fails with `*tenant.InitStatementRequiredError` and is undone, and a
+> barrier or volume create succeeds unclaimed (a standalone node composes no
+> signer and needs none). Pinned by
+> `TestWirePlatformInit_WiresNothingWithoutItsParts`,
+> `TestCreateTenant_ARefusedPlatformClaimUndoesTheCreate` (`no platform
+> signer`) and `TestCreateTenant_NoPlatformClaim` (`no platform
+> signer/barrier`, `no platform signer/volume`).
+> Not yet built: the serving-set check before a shell is registered (needs
+> `pkg/placement/serving_set.go`, draft PR #1494).
 >
 > **PN-4, owner custody under `none` and `passphrase`.** Every node serving
 > the barrier initialises its own key, and neither key is shipped:
