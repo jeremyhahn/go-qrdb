@@ -351,6 +351,31 @@ func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
 	}
 }
 
+// TestDatabaseLifecycle_CLI_DefaultBackend pins that `database create` with
+// no --backend sends none and the node records its run mode's default
+// backend (the harness node runs in raft mode and names no
+// database_defaults backend), on every transport.
+func TestDatabaseLifecycle_CLI_DefaultBackend(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("dbdefault-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", dbName) })
+
+			out, err := runCLIProto(t, node, proto, "database", "create", dbName)
+			if err != nil {
+				t.Fatalf("[%s] database create %s without --backend: %v\noutput: %s", proto.name, dbName, err, out)
+			}
+			info := cliDatabaseInfo(t, node, proto, dbName)
+			if info.Backend != "raft" {
+				t.Fatalf("[%s] database info %s: Backend = %q, want the raft run mode's default %q", proto.name, dbName, info.Backend, "raft")
+			}
+		})
+	}
+}
+
 // TestDatabaseBarrier_CLI_PerProtocol drives create-with-barrier ->
 // barrier-status -> seal -> barrier-status -> unseal(wrong) ->
 // unseal(right) -> barrier-status -> drop through the CLI binary against

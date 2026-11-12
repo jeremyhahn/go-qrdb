@@ -123,8 +123,7 @@ func toolDatabaseCreate() mcp.Tool {
 			mcp.Description("The database name. Must contain only alphanumeric characters, hyphens, and underscores."),
 		),
 		mcp.WithString("backend",
-			mcp.Required(),
-			mcp.Description("The storage backend type: memory, file, pebble, or raft."),
+			mcp.Description("The storage backend type: memory, file, pebble, or raft. Omitted, the node's database_defaults backend applies, else the run mode's (raft in raft mode, pebble standalone)."),
 		),
 		mcp.WithString("data_dir",
 			mcp.Description("An explicit data directory for the database. System-tenant only."),
@@ -181,10 +180,9 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
+		// An omitted backend stays empty: the node resolves its
+		// database_defaults backend, else the run mode's.
 		backend := mcp.ParseString(req, "backend", "")
-		if backend == "" {
-			return mcp.NewToolResultError("backend is required"), nil
-		}
 
 		cfg := database.DatabaseConfig{
 			Name:     name,
