@@ -205,7 +205,7 @@ func marshalUserRecord(ctx context.Context, lister user.FactorLister, u *user.Us
 // authorize and validate a write that touches RoleIDs, RoleBindings, or
 // Attributes (go-qrdb#192 item 3); every other handler ignores them.
 func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authmw.AuthMiddleware, roleSvc role.RoleServicer) []serverTool {
-	return []serverTool{
+	return withOperatorTenant(authMW, []serverTool{
 		{
 			Tool:    toolUserCreate(),
 			Perm:    permission.UsersCreate,
@@ -276,7 +276,7 @@ func userTools(svc user.UserServicer, factorSvc user.FactorLister, authMW *authm
 			Perm:    permission.UsersUnsuspend,
 			Handler: handleUserUnsuspend(svc),
 		},
-	}
+	})
 }
 
 // toolUserCreate defines the qrdb_user_create tool schema.
