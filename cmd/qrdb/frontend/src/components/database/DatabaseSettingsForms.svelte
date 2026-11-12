@@ -74,7 +74,7 @@
     if (!DURATION_PATTERN.test(text)) return null;
     let total = 0;
     for (const m of text.matchAll(DURATION_TERM)) {
-      total += Number(m[1]) * UNIT_SECONDS[m[2]];
+      total += Number(m[1]) * (UNIT_SECONDS[m[2] ?? ""] ?? 0);
     }
     return total;
   }
