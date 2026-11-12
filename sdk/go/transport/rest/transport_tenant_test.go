@@ -643,6 +643,27 @@ func TestTenantBarrierStatus_DecodesServingNodes(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierStatus_DecodesNodesUnreadable pins the decode of a status
+// whose serving-node source failed, from the server's wire key: the client
+// must report NodesUnreadable, not a standalone barrier the CLI would act on
+// alone.
+func TestTenantBarrierStatus_DecodesNodesUnreadable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenant_id":"acme","sealed":true,"nodes_unreadable":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	rt := newWiredTransport(srv)
+
+	resp, err := rt.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !resp.NodesUnreadable || len(resp.Nodes) != 0 {
+		t.Fatalf("NodesUnreadable = %v, Nodes = %+v; want true and none", resp.NodesUnreadable, resp.Nodes)
+	}
+}
+
 func TestTenantBarrierStatus_NilRequest(t *testing.T) {
 	rt, _, _ := newTenantBarrierTestTransport(t)
 

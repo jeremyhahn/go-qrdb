@@ -1788,6 +1788,31 @@ func TestHandleTenantBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestHandleTenantBarrierStatus_NodesUnreadable pins that a status whose
+// serving-node source failed is encoded as nodes_unreadable with no nodes.
+func TestHandleTenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	svc := &mockTenantService{
+		tenantBarrierStatusFn: func(_ context.Context, tenantID string) (*tenant.TenantBarrierStatus, error) {
+			return &tenant.TenantBarrierStatus{TenantID: tenantID, Sealed: true, NodesUnreadable: true}, nil
+		},
+	}
+	srv := newTenantServer(svc)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/barrier/status", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var raw map[string]any
+	decodeJSON(t, rec, &raw)
+	if raw["nodes_unreadable"] != true {
+		t.Fatalf("wire = %v; want nodes_unreadable true", raw)
+	}
+	if _, ok := raw["nodes"]; ok {
+		t.Fatalf("wire = %v; want no nodes", raw)
+	}
+}
+
 func TestHandleTenantBarrierStatus_NotFound(t *testing.T) {
 	svc := &mockTenantService{
 		tenantBarrierStatusFn: func(_ context.Context, _ string) (*tenant.TenantBarrierStatus, error) {
