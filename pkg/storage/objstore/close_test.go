@@ -15,7 +15,10 @@
 package objstore
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -39,6 +42,108 @@ type closeRecordingStore struct {
 func (s *closeRecordingStore) Close() {
 	s.closes.Add(1)
 	s.Storage.(interface{ Close() }).Close()
+}
+
+// errUseAfterClose is what a closed closeRecordingStore returns for every
+// object operation: an engine that touches a provider it has released fails.
+var errUseAfterClose = errors.New("close-recording provider used after Close")
+
+func (s *closeRecordingStore) open() error {
+	if s.closes.Load() > 0 {
+		return errUseAfterClose
+	}
+	return nil
+}
+
+func (s *closeRecordingStore) Put(key string, data io.Reader) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.Put(key, data)
+}
+
+func (s *closeRecordingStore) PutWithContext(ctx context.Context, key string, data io.Reader) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.PutWithContext(ctx, key, data)
+}
+
+func (s *closeRecordingStore) PutWithMetadata(ctx context.Context, key string, data io.Reader, metadata *objcommon.Metadata) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.PutWithMetadata(ctx, key, data, metadata)
+}
+
+func (s *closeRecordingStore) Get(key string) (io.ReadCloser, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.Get(key)
+}
+
+func (s *closeRecordingStore) GetWithContext(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.GetWithContext(ctx, key)
+}
+
+func (s *closeRecordingStore) GetMetadata(ctx context.Context, key string) (*objcommon.Metadata, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.GetMetadata(ctx, key)
+}
+
+func (s *closeRecordingStore) UpdateMetadata(ctx context.Context, key string, metadata *objcommon.Metadata) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.UpdateMetadata(ctx, key, metadata)
+}
+
+func (s *closeRecordingStore) Delete(key string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.Delete(key)
+}
+
+func (s *closeRecordingStore) DeleteWithContext(ctx context.Context, key string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Storage.DeleteWithContext(ctx, key)
+}
+
+func (s *closeRecordingStore) Exists(ctx context.Context, key string) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Storage.Exists(ctx, key)
+}
+
+func (s *closeRecordingStore) List(prefix string) ([]string, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.List(prefix)
+}
+
+func (s *closeRecordingStore) ListWithContext(ctx context.Context, prefix string) ([]string, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.ListWithContext(ctx, prefix)
+}
+
+func (s *closeRecordingStore) ListWithOptions(ctx context.Context, opts *objcommon.ListOptions) (*objcommon.ListResult, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Storage.ListWithOptions(ctx, opts)
 }
 
 // closeRecorder records every provider a registered provider name creates.
@@ -93,6 +198,15 @@ func TestProviders_CloseReleasesEachProviderOnce(t *testing.T) {
 
 	require.NoError(t, e.Close())
 	assert.Equal(t, []int32{1, 1}, r.closes())
+	r.mu.Lock()
+	created := append([]*closeRecordingStore(nil), r.created...)
+	r.mu.Unlock()
+	for _, s := range created {
+		_, err := s.Exists(context.Background(), "k")
+		assert.ErrorIs(t, err, errUseAfterClose, "a released provider refuses use")
+	}
+	require.NoError(t, e.Close(), "closing twice is safe")
+	assert.Equal(t, []int32{1, 1}, r.closes(), "a second Close releases nothing again")
 }
 
 func TestProviders_DestroyReleasesEachProviderOnce(t *testing.T) {
@@ -110,13 +224,25 @@ func TestProviders_DestroyReleasesEachProviderOnce(t *testing.T) {
 // reopens its root to serve the destroy, and Destroy releases it again.
 func TestProviders_DestroyAfterCloseReleasesAgain(t *testing.T) {
 	r := newCloseRecorder(t)
-	e, err := New(r.name, map[string]string{"path": t.TempDir()}, WithObjectPrefix("db/"))
+	dir := t.TempDir()
+	e, err := New(r.name, map[string]string{"path": dir}, WithObjectPrefix("db/"))
 	require.NoError(t, err)
 	require.NoError(t, e.Set([]byte("k"), []byte("v")))
 
 	require.NoError(t, e.Close())
+	assert.Equal(t, []int32{1, 1}, r.closes())
+	// Destroy after Close (the drop path) never touches the released
+	// providers, which refuse use: it opens a data and a journal provider
+	// of its own and releases each of them once.
 	require.NoError(t, e.Destroy())
-	assert.Equal(t, []int32{2, 2}, r.closes(), "one release per Close and per Destroy")
+	assert.Equal(t, []int32{1, 1, 1, 1}, r.closes(), "one release per provider, the reopened ones included")
+
+	reopened, err := New(r.name, map[string]string{"path": dir}, WithObjectPrefix("db/"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopened.Close() })
+	found, err := reopened.Exists([]byte("k"))
+	require.NoError(t, err)
+	assert.False(t, found, "the destroy removed the data")
 }
 
 func TestProviders_FailedOpenReleasesEachProviderOnce(t *testing.T) {

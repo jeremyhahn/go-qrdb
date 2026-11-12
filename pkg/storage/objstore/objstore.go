@@ -28,8 +28,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +86,16 @@ type Engine struct {
 	journal  objcommon.Storage
 	provider string
 	closed   atomic.Bool
+
+	// providersClosed is set once Close or Destroy has released store and
+	// journal, so they are released once and never used again. It changes
+	// only under journalMu and writeMu.
+	providersClosed bool
+
+	// reopen opens a new engine on this engine's namespace with the
+	// arguments New was given. Destroy after Close uses it, so the destroy
+	// runs on providers of its own rather than on the released ones.
+	reopen func() (*Engine, error)
 
 	// exclusive is set when no other engine can write this namespace while
 	// this one is open, so Exclusive keeps storage.Exclusive's promise: the
@@ -141,6 +153,10 @@ type Engine struct {
 // Destroy: a drop destroys a closed engine, and a provider that reopens on
 // use (go-objstore's local reopens its root) is released again after it.
 func (e *Engine) closeProviders() error {
+	if e.providersClosed {
+		return nil
+	}
+	e.providersClosed = true
 	return closeStores(e.store, e.journal)
 }
 
@@ -308,7 +324,11 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 			}
 		}
 	}
-	e := &Engine{store: store, journal: journal, provider: provider}
+	reopenSettings := maps.Clone(settings)
+	reopenOpts := slices.Clone(opts)
+	e := &Engine{store: store, journal: journal, provider: provider, reopen: func() (*Engine, error) {
+		return New(provider, reopenSettings, reopenOpts...)
+	}}
 	if dataDir != "" {
 		ownerDir, err := ownerRoot(dataDir)
 		if err != nil {
@@ -814,14 +834,22 @@ func (e *Engine) Destroy() error {
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 	e.closed.Store(true)
+	if e.providersClosed {
+		if e.reopen == nil {
+			return &storage.ClosedError{}
+		}
+		// Close released this engine's providers and owner lock: the
+		// destroy runs on a new engine, which takes the lock and opens
+		// providers of its own, and releases both as it returns.
+		fresh, err := e.reopen()
+		if err != nil {
+			return err
+		}
+		return fresh.Destroy()
+	}
 	// The providers are released last, after the owner lock, on every path,
 	// whether or not the destroy completed.
 	defer func() { _ = e.closeProviders() }()
-	if e.ownerPath != "" && e.owner == nil {
-		if err := e.takeOwnership(); err != nil {
-			return err
-		}
-	}
 	defer func() { _ = e.releaseOwnership() }()
 	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
 		return err
