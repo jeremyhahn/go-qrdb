@@ -714,6 +714,29 @@ release-cross:
 	@mkdir -p $(RELEASE_DIR)
 	$(call release-platform,$(PLATFORM))
 
+# test-cross compiles and links every test binary of ONE platform, plain and
+# FIPS, and runs none of them:
+#   make test-cross PLATFORM=linux/arm64
+# -exec /bin/true hands each linked binary to /bin/true instead of running
+# it, so an arm64-only compile failure surfaces on an amd64 host before the
+# once-before-RC arm64 integration run (docs/release/engineering.md). Each
+# variant builds twice over ./...: with RELEASE_TAGS (the unit tests), then
+# with RELEASE_TAGS plus integration (every integration-tagged test, the
+# test/integration suites included), the tags those binaries ship with.
+# GOFIPS140 picks the variant exactly as release-platform does.
+.PHONY: test-cross
+test-cross:
+	@case "$(PLATFORM)" in */*) ;; *) echo "test-cross: set PLATFORM=<goos>/<goarch>, e.g. make test-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
+	@set -e; os=$(word 1,$(subst /, ,$(PLATFORM))); arch=$(word 2,$(subst /, ,$(PLATFORM))); \
+	for fips in off $(RELEASE_FIPS_MODULE); do \
+		for tags in '$(RELEASE_TAGS)' '$(RELEASE_TAGS) integration'; do \
+			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips tags=$$tags"; \
+			GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+				$(GO) test -count=1 -vet=off -exec /bin/true -tags "$$tags" ./...; \
+		done; \
+	done
+	@echo "==> test-cross $(PLATFORM): every test binary compiled, plain and FIPS"
+
 # release-artifacts builds every RELEASE_PLATFORMS entry into a clean
 # $(RELEASE_DIR) and writes SHA256SUMS over the result; release.yml's publish
 # job attaches the whole directory to the release.

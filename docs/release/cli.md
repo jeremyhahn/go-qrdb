@@ -78,6 +78,18 @@ for `linux/arm64`.
 | `RELEASE_PLATFORMS` | `linux/amd64 linux/arm64` | the platforms `release-artifacts` builds |
 | `PLATFORM` | *(required by `release-cross`)* | the one platform `release-cross` builds |
 
+## `make test-cross PLATFORM=<goos>/<goarch>`
+
+Compiles and links every test binary of one platform, plain and FIPS, and
+runs none of them (`go test -exec /bin/true`, `CGO_ENABLED=0`). Each variant
+builds `./...` twice: with the release build tags (the unit tests) and with
+the release build tags plus `integration` (every integration-tagged test, the
+`test/integration` suites included). `GOFIPS140` selects the variant as
+`release-cross` does. `make test-cross PLATFORM=linux/arm64` on an amd64 host
+catches an arm64-only compile failure before the arm64 integration run before
+the RC (engineering.md, "linux/arm64 before the RC"). Without `PLATFORM` it
+prints the usage line and exits 2.
+
 ## `make test-release-alpha`
 
 Runs the `release-alpha` recipe against a local bare remote with a throwaway

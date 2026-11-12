@@ -600,6 +600,28 @@ halves a leg's time; the one outlier, a 195-second race test on the
 production KDF, now uses the cheap test parameters. Rebalance from each leg's "Package results and slowest tests"
 step when a leg's measured time drifts toward its limit.
 
+### linux/arm64 before the RC
+
+The release publishes linux/arm64 binaries, plain and FIPS (`make
+release-cross PLATFORM=linux/arm64`, CI's full tier), but no CI job runs a
+test on arm64. Two steps close that gap:
+
+- `make test-cross PLATFORM=linux/arm64` compiles and links every unit and
+  integration test binary for linux/arm64, plain and FIPS, and runs none. It
+  needs no arm64 host. It is not wired into CI on every pull request: the
+  workflows' routing is Software's (DS-8237), so until a job runs it, a
+  change touching arch-specific code runs it by hand.
+- Once before the RC, the integration suite runs on a linux/arm64 host, from
+  a clean checkout of the RC candidate commit:
+
+  ```sh
+  make test-cross PLATFORM=linux/arm64 && make integration-test
+  ```
+
+  `make integration-test` builds the integration image for the host's
+  architecture and runs every self-spawned qrdbdharness suite
+  (`./test/integration`) in it. A failure blocks the RC like a red `main`.
+
 ### Cluster stage, locally
 
 `make integration-test-cluster` runs the whole `test/integration` package in
