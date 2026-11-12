@@ -126,7 +126,6 @@
     // server's strict decoder refuses a field it does not define.
     const req = {
       name: dbWizardStore.name,
-      mode: dbWizardStore.mode,
       backend: dbWizardStore.backend || "pebble",
       ...(dbWizardStore.mode === "embedded" && dbWizardStore.dataDir
         ? { dataDir: dbWizardStore.dataDir }
