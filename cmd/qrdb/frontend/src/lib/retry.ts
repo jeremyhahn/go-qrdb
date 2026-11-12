@@ -29,14 +29,14 @@
 
 /** Configuration for retry behavior. */
 export interface RetryOptions {
-    /** Maximum number of retry attempts (default: 3). */
-    readonly maxRetries?: number;
-    /** Base delay in milliseconds before the first retry (default: 500). */
-    readonly baseDelayMs?: number;
-    /** Maximum delay cap in milliseconds (default: 5000). */
-    readonly maxDelayMs?: number;
-    /** Jitter factor (0-1) applied to each delay (default: 0.25). */
-    readonly jitter?: number;
+  /** Maximum number of retry attempts (default: 3). */
+  readonly maxRetries?: number;
+  /** Base delay in milliseconds before the first retry (default: 500). */
+  readonly baseDelayMs?: number;
+  /** Maximum delay cap in milliseconds (default: 5000). */
+  readonly maxDelayMs?: number;
+  /** Jitter factor (0-1) applied to each delay (default: 0.25). */
+  readonly jitter?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,15 +45,15 @@ export interface RetryOptions {
 
 /** Patterns that indicate a retryable transient error. */
 const TRANSIENT_PATTERNS: readonly string[] = [
-    'not leader',
-    'leader unknown',
-    'timeout',
-    'unavailable',
-    'connection refused',
-    'temporarily unavailable',
-    'system is closed',
-    'context deadline exceeded',
-    'no connection',
+  "not leader",
+  "leader unknown",
+  "timeout",
+  "unavailable",
+  "connection refused",
+  "temporarily unavailable",
+  "system is closed",
+  "context deadline exceeded",
+  "no connection",
 ] as const;
 
 /**
@@ -61,9 +61,9 @@ const TRANSIENT_PATTERNS: readonly string[] = [
  * may resolve on retry (e.g. Raft leader election in progress).
  */
 export function isTransientError(err: unknown): boolean {
-    const message = err instanceof Error ? err.message : String(err);
-    const lower = message.toLowerCase();
-    return TRANSIENT_PATTERNS.some((pattern) => lower.includes(pattern));
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  return TRANSIENT_PATTERNS.some((pattern) => lower.includes(pattern));
 }
 
 // ---------------------------------------------------------------------------
@@ -72,10 +72,10 @@ export function isTransientError(err: unknown): boolean {
 
 /** Default retry configuration values. */
 const DEFAULTS: Required<RetryOptions> = {
-    maxRetries: 3,
-    baseDelayMs: 500,
-    maxDelayMs: 5000,
-    jitter: 0.25,
+  maxRetries: 3,
+  baseDelayMs: 500,
+  maxDelayMs: 5000,
+  jitter: 0.25,
 } as const;
 
 /**
@@ -91,45 +91,45 @@ const DEFAULTS: Required<RetryOptions> = {
  * @throws The last error if all retries are exhausted, or a non-transient error.
  */
 export async function withRetry<T>(
-    fn: () => Promise<T>,
-    options?: RetryOptions,
+  fn: () => Promise<T>,
+  options?: RetryOptions,
 ): Promise<T> {
-    const opts: Required<RetryOptions> = { ...DEFAULTS, ...options };
-    let lastError: unknown;
+  const opts: Required<RetryOptions> = { ...DEFAULTS, ...options };
+  let lastError: unknown;
 
-    for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
-        try {
-            return await fn();
-        } catch (err: unknown) {
-            lastError = err;
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      lastError = err;
 
-            // Non-transient errors should not be retried.
-            if (!isTransientError(err)) {
-                throw err;
-            }
+      // Non-transient errors should not be retried.
+      if (!isTransientError(err)) {
+        throw err;
+      }
 
-            // Exhausted all retries.
-            if (attempt >= opts.maxRetries) {
-                break;
-            }
+      // Exhausted all retries.
+      if (attempt >= opts.maxRetries) {
+        break;
+      }
 
-            // Exponential backoff with jitter.
-            const exponential = opts.baseDelayMs * Math.pow(2, attempt);
-            const capped = Math.min(exponential, opts.maxDelayMs);
-            const jitterRange = capped * opts.jitter;
-            const jitterOffset = (Math.random() * 2 - 1) * jitterRange;
-            const delay = Math.max(0, capped + jitterOffset);
+      // Exponential backoff with jitter.
+      const exponential = opts.baseDelayMs * Math.pow(2, attempt);
+      const capped = Math.min(exponential, opts.maxDelayMs);
+      const jitterRange = capped * opts.jitter;
+      const jitterOffset = (Math.random() * 2 - 1) * jitterRange;
+      const delay = Math.max(0, capped + jitterOffset);
 
-            await sleep(delay);
-        }
+      await sleep(delay);
     }
+  }
 
-    throw lastError;
+  throw lastError;
 }
 
 /**
  * Returns a promise that resolves after the given number of milliseconds.
  */
 function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

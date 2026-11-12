@@ -134,15 +134,24 @@
     return copy;
   });
 
-  const totalPages = $derived(Math.max(1, Math.ceil(sortedCerts.length / pageSize)));
+  const totalPages = $derived(
+    Math.max(1, Math.ceil(sortedCerts.length / pageSize)),
+  );
 
   const pagedCerts = $derived(
     sortedCerts.slice((currentPage - 1) * pageSize, currentPage * pageSize),
   );
 
   /** True when the issued cert carries a locally-generated private key. */
-  function hasGeneratedKey(cert: EnrolledCert | IssuedCertWithKey | null): cert is IssuedCertWithKey {
-    return cert !== null && "keyPEM" in cert && typeof cert.keyPEM === "string" && cert.keyPEM !== "";
+  function hasGeneratedKey(
+    cert: EnrolledCert | IssuedCertWithKey | null,
+  ): cert is IssuedCertWithKey {
+    return (
+      cert !== null &&
+      "keyPEM" in cert &&
+      typeof cert.keyPEM === "string" &&
+      cert.keyPEM !== ""
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -187,7 +196,9 @@
     const days = Math.floor(ms / 86_400_000);
     if (days >= 1) return `${days} day${days === 1 ? "" : "s"}`;
     const hours = Math.floor(ms / 3_600_000);
-    return hours >= 1 ? `${hours} hour${hours === 1 ? "" : "s"}` : "less than an hour";
+    return hours >= 1
+      ? `${hours} hour${hours === 1 ? "" : "s"}`
+      : "less than an hour";
   }
 
   function formatDate(value: string): string {
@@ -227,11 +238,13 @@
   async function fetchCerts(): Promise<void> {
     try {
       certsLoading = true;
-      const response: ListCertsResponse = await client.certs.list(filterTenantId);
+      const response: ListCertsResponse =
+        await client.certs.list(filterTenantId);
       certs = [...(response.certs ?? [])];
       currentPage = 1;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch certificates";
+      const msg =
+        err instanceof Error ? err.message : "Failed to fetch certificates";
       showToast("error", msg);
     } finally {
       certsLoading = false;
@@ -255,14 +268,20 @@
       return;
     }
     if (issueCSRPEM.trim() === "" && !desktopAvailable) {
-      showToast("warning", "A CSR is required (local key generation is desktop-only)");
+      showToast(
+        "warning",
+        "A CSR is required (local key generation is desktop-only)",
+      );
       return;
     }
 
     try {
       issueLoading = true;
       if (issueCSRPEM.trim() === "") {
-        issuedCert = await client.certs.issueCertWithLocalKey(issueUsername.trim(), issueTTL.trim());
+        issuedCert = await client.certs.issueCertWithLocalKey(
+          issueUsername.trim(),
+          issueTTL.trim(),
+        );
       } else {
         issuedCert = await client.certs.issueCert({
           username: issueUsername.trim(),
@@ -273,7 +292,8 @@
       showToast("success", `Certificate issued for "${issueUsername}"`);
       await fetchCerts();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to issue certificate";
+      const msg =
+        err instanceof Error ? err.message : "Failed to issue certificate";
       showToast("error", msg);
     } finally {
       issueLoading = false;
@@ -299,12 +319,15 @@
       enrolledCert = await client.certs.enrollCert({
         username: enrollUsername.trim(),
         certPEM: enrollCertPEM.trim(),
-        ...(enrollChainPEM.trim() === "" ? {} : { chainPEM: enrollChainPEM.trim() }),
+        ...(enrollChainPEM.trim() === ""
+          ? {}
+          : { chainPEM: enrollChainPEM.trim() }),
       });
       showToast("success", `Certificate enrolled for "${enrollUsername}"`);
       await fetchCerts();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to enroll certificate";
+      const msg =
+        err instanceof Error ? err.message : "Failed to enroll certificate";
       showToast("error", msg);
     } finally {
       enrollLoading = false;
@@ -336,7 +359,8 @@
       exportedData = result;
       showToast("success", "Certificate exported successfully");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to export certificate";
+      const msg =
+        err instanceof Error ? err.message : "Failed to export certificate";
       showToast("error", msg);
     } finally {
       exportLoading = false;
@@ -358,7 +382,8 @@
       showRevokeConfirm = false;
       await fetchCerts();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to revoke certificate";
+      const msg =
+        err instanceof Error ? err.message : "Failed to revoke certificate";
       showToast("error", msg);
     } finally {
       revokeLoading = false;
@@ -374,13 +399,18 @@
   });
 </script>
 
-<PageHeader title="Certificates" description="Issue, enroll, export, and revoke mTLS client certificates" />
+<PageHeader
+  title="Certificates"
+  description="Issue, enroll, export, and revoke mTLS client certificates"
+/>
 
 <div class="flex flex-col gap-6">
   <!-- Tenant filter -->
   <div class="flex items-center gap-3">
     <label class="form-control w-64" for="cert-filter-tenant">
-      <div class="label"><span class="label-text font-semibold">Tenant</span></div>
+      <div class="label">
+        <span class="label-text font-semibold">Tenant</span>
+      </div>
       <TenantSelect
         id="cert-filter-tenant"
         {client}
@@ -395,28 +425,40 @@
   <!-- Tabbed action panel (collapsible) -->
   <div class="card bg-base-200 shadow">
     <!-- Tab bar / toggle header -->
-    <div class="flex items-center gap-1 border-b border-base-content/10 px-4 py-2">
-      <span class="mr-2 text-sm font-semibold text-base-content/70">Actions</span>
+    <div
+      class="flex items-center gap-1 border-b border-base-content/10 px-4 py-2"
+    >
+      <span class="mr-2 text-sm font-semibold text-base-content/70"
+        >Actions</span
+      >
       <button
-        class="btn btn-sm {activeTab === 'issue' && actionPanelOpen ? 'btn-primary' : 'btn-ghost'}"
+        class="btn btn-sm {activeTab === 'issue' && actionPanelOpen
+          ? 'btn-primary'
+          : 'btn-ghost'}"
         onclick={() => openTab("issue")}
       >
         Issue
       </button>
       <button
-        class="btn btn-sm {activeTab === 'enroll' && actionPanelOpen ? 'btn-accent' : 'btn-ghost'}"
+        class="btn btn-sm {activeTab === 'enroll' && actionPanelOpen
+          ? 'btn-accent'
+          : 'btn-ghost'}"
         onclick={() => openTab("enroll")}
       >
         Enroll
       </button>
       <button
-        class="btn btn-sm {activeTab === 'export' && actionPanelOpen ? 'btn-secondary' : 'btn-ghost'}"
+        class="btn btn-sm {activeTab === 'export' && actionPanelOpen
+          ? 'btn-secondary'
+          : 'btn-ghost'}"
         onclick={() => openTab("export")}
       >
         Export PKCS#12
       </button>
       <button
-        class="btn btn-sm {activeTab === 'revoke' && actionPanelOpen ? 'btn-warning' : 'btn-ghost'}"
+        class="btn btn-sm {activeTab === 'revoke' && actionPanelOpen
+          ? 'btn-warning'
+          : 'btn-ghost'}"
         onclick={() => openTab("revoke")}
       >
         Revoke
@@ -429,9 +471,10 @@
         <!-- Issue tab -->
         {#if activeTab === "issue"}
           <p class="text-base-content/70 text-sm">
-            Issues a certificate for an EXISTING account of your own tenant, signed
-            by the tenant's CA. Paste a CSR to keep your key off this machine, or
-            leave it blank{#if desktopAvailable} to generate a key pair locally{/if}.
+            Issues a certificate for an EXISTING account of your own tenant,
+            signed by the tenant's CA. Paste a CSR to keep your key off this
+            machine, or leave it blank{#if desktopAvailable}
+              to generate a key pair locally{/if}.
           </p>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
             <label class="form-control w-full">
@@ -447,15 +490,16 @@
               <div class="label">
                 <span class="label-text">CSR PEM</span>
                 <span class="label-text-alt text-base-content/50">
-                  {desktopAvailable ? "Optional — blank generates a key locally" : "Required"}
+                  {desktopAvailable
+                    ? "Optional — blank generates a key locally"
+                    : "Required"}
                 </span>
               </div>
               <textarea
                 class="textarea textarea-bordered w-full font-mono text-xs"
                 rows="3"
                 placeholder="-----BEGIN CERTIFICATE REQUEST-----"
-                bind:value={issueCSRPEM}
-              ></textarea>
+                bind:value={issueCSRPEM}></textarea>
             </label>
             <label class="form-control w-full">
               <div class="label"><span class="label-text">TTL</span></div>
@@ -470,7 +514,9 @@
           <button
             class="btn btn-primary btn-sm mt-2 w-fit"
             onclick={() => void handleIssue()}
-            disabled={issueLoading || issueUsername.trim() === "" || (issueCSRPEM.trim() === "" && !desktopAvailable)}
+            disabled={issueLoading ||
+              issueUsername.trim() === "" ||
+              (issueCSRPEM.trim() === "" && !desktopAvailable)}
           >
             {#if issueLoading}
               <span class="loading loading-spinner loading-xs"></span>
@@ -482,17 +528,22 @@
             <div class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
               <div>
                 <div class="label">
-                  <span class="label-text text-xs font-semibold">Certificate PEM</span>
+                  <span class="label-text text-xs font-semibold"
+                    >Certificate PEM</span
+                  >
                 </div>
                 <textarea
                   class="textarea textarea-bordered w-full font-mono text-xs"
                   rows="8"
                   readonly
-                  value={issuedCert.certPEM}
-                ></textarea>
+                  value={issuedCert.certPEM}></textarea>
                 <button
                   class="btn btn-ghost btn-xs mt-1"
-                  onclick={() => downloadText(`${issueUsername || "cert"}.crt`, issuedCert?.certPEM ?? "")}
+                  onclick={() =>
+                    downloadText(
+                      `${issueUsername || "cert"}.crt`,
+                      issuedCert?.certPEM ?? "",
+                    )}
                 >
                   Download Certificate
                 </button>
@@ -500,17 +551,22 @@
               {#if hasGeneratedKey(issuedCert)}
                 <div>
                   <div class="label">
-                    <span class="label-text text-xs font-semibold">Private Key PEM (generated locally)</span>
+                    <span class="label-text text-xs font-semibold"
+                      >Private Key PEM (generated locally)</span
+                    >
                   </div>
                   <textarea
                     class="textarea textarea-bordered w-full font-mono text-xs"
                     rows="8"
                     readonly
-                    value={issuedCert.keyPEM}
-                  ></textarea>
+                    value={issuedCert.keyPEM}></textarea>
                   <button
                     class="btn btn-ghost btn-xs mt-1"
-                    onclick={() => downloadText(`${issueUsername || "cert"}.key`, hasGeneratedKey(issuedCert) ? issuedCert.keyPEM : "")}
+                    onclick={() =>
+                      downloadText(
+                        `${issueUsername || "cert"}.key`,
+                        hasGeneratedKey(issuedCert) ? issuedCert.keyPEM : "",
+                      )}
                   >
                     Download Key
                   </button>
@@ -523,9 +579,9 @@
         <!-- Enroll tab -->
         {#if activeTab === "enroll"}
           <p class="text-base-content/70 text-sm">
-            Enrolls a bring-your-own certificate on an EXISTING account of your own
-            tenant. The certificate must chain to one of the tenant's registered
-            trust anchors.
+            Enrolls a bring-your-own certificate on an EXISTING account of your
+            own tenant. The certificate must chain to one of the tenant's
+            registered trust anchors.
           </p>
           <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
             <label class="form-control w-full">
@@ -540,31 +596,36 @@
           </div>
           <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <label class="form-control w-full">
-              <div class="label"><span class="label-text text-xs font-semibold">Certificate PEM</span></div>
+              <div class="label">
+                <span class="label-text text-xs font-semibold"
+                  >Certificate PEM</span
+                >
+              </div>
               <textarea
                 class="textarea textarea-bordered w-full font-mono text-xs"
                 rows="5"
                 placeholder="Paste certificate PEM here (leaf first)"
-                bind:value={enrollCertPEM}
-              ></textarea>
+                bind:value={enrollCertPEM}></textarea>
             </label>
             <label class="form-control w-full">
               <div class="label">
                 <span class="label-text text-xs font-semibold">Chain PEM</span>
-                <span class="label-text-alt text-base-content/50">Optional</span>
+                <span class="label-text-alt text-base-content/50">Optional</span
+                >
               </div>
               <textarea
                 class="textarea textarea-bordered w-full font-mono text-xs"
                 rows="5"
                 placeholder="Paste intermediate chain PEM here"
-                bind:value={enrollChainPEM}
-              ></textarea>
+                bind:value={enrollChainPEM}></textarea>
             </label>
           </div>
           <button
             class="btn btn-accent btn-sm mt-2 w-fit"
             onclick={() => void handleEnroll()}
-            disabled={enrollLoading || enrollUsername.trim() === "" || enrollCertPEM.trim() === ""}
+            disabled={enrollLoading ||
+              enrollUsername.trim() === "" ||
+              enrollCertPEM.trim() === ""}
           >
             {#if enrollLoading}
               <span class="loading loading-spinner loading-xs"></span>
@@ -575,14 +636,15 @@
           {#if enrolledCert !== null}
             <div class="mt-3">
               <div class="label">
-                <span class="label-text text-xs font-semibold">Enrolled Certificate</span>
+                <span class="label-text text-xs font-semibold"
+                  >Enrolled Certificate</span
+                >
               </div>
               <textarea
                 class="textarea textarea-bordered w-full font-mono text-xs"
                 rows="6"
                 readonly
-                value={enrolledCert.certPEM}
-              ></textarea>
+                value={enrolledCert.certPEM}></textarea>
             </div>
           {/if}
         {/if}
@@ -592,25 +654,35 @@
           <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <div class="flex flex-col gap-3">
               <label class="form-control w-full">
-                <div class="label"><span class="label-text text-xs font-semibold">Certificate PEM</span></div>
+                <div class="label">
+                  <span class="label-text text-xs font-semibold"
+                    >Certificate PEM</span
+                  >
+                </div>
                 <textarea
                   class="textarea textarea-bordered w-full font-mono text-xs"
                   rows="5"
                   placeholder="Paste certificate PEM here"
-                  bind:value={exportCertPEM}
-                ></textarea>
+                  bind:value={exportCertPEM}></textarea>
               </label>
               <label class="form-control w-full">
-                <div class="label"><span class="label-text text-xs font-semibold">Private Key PEM</span></div>
+                <div class="label">
+                  <span class="label-text text-xs font-semibold"
+                    >Private Key PEM</span
+                  >
+                </div>
                 <textarea
                   class="textarea textarea-bordered w-full font-mono text-xs"
                   rows="5"
                   placeholder="Paste private key PEM here"
-                  bind:value={exportKeyPEM}
-                ></textarea>
+                  bind:value={exportKeyPEM}></textarea>
               </label>
               <label class="form-control w-full">
-                <div class="label"><span class="label-text text-xs font-semibold">Passphrase</span></div>
+                <div class="label">
+                  <span class="label-text text-xs font-semibold"
+                    >Passphrase</span
+                  >
+                </div>
                 <input
                   type="password"
                   class="input input-bordered input-sm"
@@ -621,12 +693,10 @@
               <button
                 class="btn btn-secondary btn-sm w-fit"
                 onclick={() => void handleExport()}
-                disabled={
-                  exportLoading ||
+                disabled={exportLoading ||
                   exportCertPEM.trim() === "" ||
                   exportKeyPEM.trim() === "" ||
-                  exportPassphrase.trim() === ""
-                }
+                  exportPassphrase.trim() === ""}
               >
                 {#if exportLoading}
                   <span class="loading loading-spinner loading-xs"></span>
@@ -638,14 +708,15 @@
             {#if exportedData !== null}
               <div class="flex flex-col gap-3">
                 <div class="label">
-                  <span class="label-text text-xs font-semibold">PKCS#12 Data (Base64)</span>
+                  <span class="label-text text-xs font-semibold"
+                    >PKCS#12 Data (Base64)</span
+                  >
                 </div>
                 <textarea
                   class="textarea textarea-bordered w-full font-mono text-xs"
                   rows="10"
                   readonly
-                  value={exportedData.pkcs12}
-                ></textarea>
+                  value={exportedData.pkcs12}></textarea>
               </div>
             {/if}
           </div>
@@ -654,11 +725,16 @@
         <!-- Revoke tab -->
         {#if activeTab === "revoke"}
           <p class="text-base-content/70 text-sm">
-            Permanently revokes a certificate by serial number. This action cannot be undone.
+            Permanently revokes a certificate by serial number. This action
+            cannot be undone.
           </p>
           <div class="mt-3 flex flex-col gap-3">
             <label class="form-control w-full max-w-sm">
-              <div class="label"><span class="label-text text-xs font-semibold">Certificate Serial Number</span></div>
+              <div class="label">
+                <span class="label-text text-xs font-semibold"
+                  >Certificate Serial Number</span
+                >
+              </div>
               <input
                 type="text"
                 class="input input-bordered input-sm"
@@ -669,7 +745,9 @@
 
             {#if showRevokeConfirm}
               <div class="alert alert-warning">
-                <span>Are you sure? Revoking serial "{revokeSerial}" is permanent.</span>
+                <span
+                  >Are you sure? Revoking serial "{revokeSerial}" is permanent.</span
+                >
               </div>
               <div class="flex gap-2">
                 <button
@@ -684,7 +762,9 @@
                 </button>
                 <button
                   class="btn btn-ghost btn-sm"
-                  onclick={() => { showRevokeConfirm = false; }}
+                  onclick={() => {
+                    showRevokeConfirm = false;
+                  }}
                 >
                   Cancel
                 </button>
@@ -693,7 +773,9 @@
               <button
                 class="btn btn-warning btn-sm w-fit"
                 title="Permanently revoke this certificate. The certificate will be rejected by the server and cannot be re-activated."
-                onclick={() => { showRevokeConfirm = true; }}
+                onclick={() => {
+                  showRevokeConfirm = true;
+                }}
                 disabled={revokeSerial.trim() === ""}
               >
                 Revoke
@@ -708,7 +790,9 @@
   <!-- Issued certificates table (primary view) -->
   <div class="flex flex-col">
     <!-- Table toolbar -->
-    <div class="flex items-center justify-between rounded-t-lg bg-base-200 px-4 py-3">
+    <div
+      class="flex items-center justify-between rounded-t-lg bg-base-200 px-4 py-3"
+    >
       <div class="flex items-center gap-2">
         <h3 class="text-sm font-semibold">Issued Certificates</h3>
         <span class="badge badge-ghost badge-sm">{certs.length}</span>
@@ -799,13 +883,19 @@
                 <td class="font-mono text-xs">{cert.serial}</td>
                 <td>{cert.username}</td>
                 <td>{cert.tenantID}</td>
-                <td class="whitespace-nowrap text-xs">{formatDate(cert.issuedAt)}</td>
-                <td class="whitespace-nowrap text-xs">{formatDate(cert.expiresAt)}</td>
+                <td class="whitespace-nowrap text-xs"
+                  >{formatDate(cert.issuedAt)}</td
+                >
+                <td class="whitespace-nowrap text-xs"
+                  >{formatDate(cert.expiresAt)}</td
+                >
                 <td>
                   {#if status === "Revoked"}
                     <span class="badge badge-error badge-sm">Revoked</span>
                   {:else if status === "Expiring Soon"}
-                    <span class="badge badge-warning badge-sm">Expiring Soon</span>
+                    <span class="badge badge-warning badge-sm"
+                      >Expiring Soon</span
+                    >
                   {:else}
                     <span class="badge badge-success badge-sm">Active</span>
                   {/if}
@@ -824,7 +914,9 @@
               {#if expandedSerial === cert.serial}
                 <tr id="cert-detail-{cert.serial}" data-testid="cert-detail">
                   <td colspan="7" class="bg-base-200">
-                    <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-xs">
+                    <dl
+                      class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-xs"
+                    >
                       <dt class="font-semibold">Serial</dt>
                       <dd class="font-mono break-all">{cert.serial}</dd>
                       <dt class="font-semibold">Username</dt>
@@ -836,7 +928,9 @@
                       <dt class="font-semibold">Expires at (UTC)</dt>
                       <dd class="font-mono">{cert.expiresAt}</dd>
                       <dt class="font-semibold">Validity remaining</dt>
-                      <dd>{cert.revoked ? "—" : validityRemaining(cert.expiresAt)}</dd>
+                      <dd>
+                        {cert.revoked ? "—" : validityRemaining(cert.expiresAt)}
+                      </dd>
                       <dt class="font-semibold">Status</dt>
                       <dd>{status}</dd>
                     </dl>
@@ -858,7 +952,9 @@
 
       <!-- Pagination footer -->
       {#if totalPages > 1}
-        <div class="flex items-center justify-between rounded-b-lg border-t border-base-content/10 bg-base-200 px-4 py-2">
+        <div
+          class="flex items-center justify-between rounded-b-lg border-t border-base-content/10 bg-base-200 px-4 py-2"
+        >
           <span class="text-base-content/60 text-xs">
             Page {currentPage} of {totalPages} ({certs.length} total)
           </span>
@@ -866,14 +962,18 @@
             <button
               class="join-item btn btn-xs"
               disabled={currentPage === 1}
-              onclick={() => { currentPage = 1; }}
+              onclick={() => {
+                currentPage = 1;
+              }}
             >
               «
             </button>
             <button
               class="join-item btn btn-xs"
               disabled={currentPage === 1}
-              onclick={() => { currentPage -= 1; }}
+              onclick={() => {
+                currentPage -= 1;
+              }}
             >
               ‹
             </button>
@@ -883,14 +983,18 @@
             <button
               class="join-item btn btn-xs"
               disabled={currentPage === totalPages}
-              onclick={() => { currentPage += 1; }}
+              onclick={() => {
+                currentPage += 1;
+              }}
             >
               ›
             </button>
             <button
               class="join-item btn btn-xs"
               disabled={currentPage === totalPages}
-              onclick={() => { currentPage = totalPages; }}
+              onclick={() => {
+                currentPage = totalPages;
+              }}
             >
               »
             </button>

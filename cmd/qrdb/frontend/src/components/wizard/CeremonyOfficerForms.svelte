@@ -61,7 +61,11 @@
   // survive navigating forward to "admin" and back, not just the
   // `officers` array the caller holds onto -- the forms themselves.
   let forms: HolderForm[] = $state(
-    officers.map((o) => ({ username: o.username, role: o.role ?? "so", csrPem: o.csrPem })),
+    officers.map((o) => ({
+      username: o.username,
+      role: o.role ?? "so",
+      csrPem: o.csrPem,
+    })),
   );
 
   // Keep one form per holder when the share count changes, preserving
@@ -125,7 +129,10 @@
             class="input input-bordered input-sm"
             placeholder="alice"
             value={form.username}
-            oninput={(e: Event) => { if (forms[i]) forms[i].username = (e.currentTarget as HTMLInputElement).value; }}
+            oninput={(e: Event) => {
+              if (forms[i])
+                forms[i].username = (e.currentTarget as HTMLInputElement).value;
+            }}
             data-testid={`officer-username-${i}`}
           />
         </div>
@@ -138,7 +145,11 @@
             id={`officer-role-${i}`}
             class="select select-bordered select-sm"
             value={form.role}
-            onchange={(e: Event) => { if (forms[i]) forms[i].role = (e.currentTarget as HTMLSelectElement).value as HolderRole; }}
+            onchange={(e: Event) => {
+              if (forms[i])
+                forms[i].role = (e.currentTarget as HTMLSelectElement)
+                  .value as HolderRole;
+            }}
             data-testid={`officer-role-${i}`}
           >
             <option value="so">Security Officer</option>
@@ -148,7 +159,9 @@
 
         <div class="form-control">
           <label class="label" for={`officer-csr-${i}`}>
-            <span class="label-text text-xs">CSR PEM (the holder's public key, generated offline)</span>
+            <span class="label-text text-xs"
+              >CSR PEM (the holder's public key, generated offline)</span
+            >
           </label>
           <textarea
             id={`officer-csr-${i}`}
@@ -156,13 +169,21 @@
             rows={5}
             placeholder={"-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----"}
             value={form.csrPem}
-            oninput={(e: Event) => { if (forms[i]) forms[i].csrPem = (e.currentTarget as HTMLTextAreaElement).value; }}
-            data-testid={`officer-csr-${i}`}
-          ></textarea>
+            oninput={(e: Event) => {
+              if (forms[i])
+                forms[i].csrPem = (
+                  e.currentTarget as HTMLTextAreaElement
+                ).value;
+            }}
+            data-testid={`officer-csr-${i}`}></textarea>
         </div>
 
         {#if !isComplete(form) && (form.username.trim() !== "" || form.csrPem.trim() !== "")}
-          <div role="alert" class="alert alert-warning py-2 text-xs" data-testid={`officer-incomplete-${i}`}>
+          <div
+            role="alert"
+            class="alert alert-warning py-2 text-xs"
+            data-testid={`officer-incomplete-${i}`}
+          >
             <AlertCircle class="h-3 w-3 shrink-0" />
             <span>Username and CSR PEM are both required.</span>
           </div>

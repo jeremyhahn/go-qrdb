@@ -25,16 +25,17 @@
 // ---------------------------------------------------------------------------
 
 /** Supported import file formats. */
-export type ImportFormat = 'csv' | 'json' | 'archive';
+export type ImportFormat = "csv" | "json" | "archive";
 
 /** Value extraction mode. */
-export type ValueMode = 'field' | 'row';
+export type ValueMode = "field" | "row";
 
 /** JSON format variants. */
-export type JsonFormat = 'object' | 'array' | 'ndjson';
+export type JsonFormat = "object" | "array" | "ndjson";
 
 /** Import wizard steps. */
-export type WizardStep = 'format' | 'upload' | 'mapping' | 'review' | 'progress';
+export type WizardStep =
+  "format" | "upload" | "mapping" | "review" | "progress";
 
 // ---------------------------------------------------------------------------
 // Import Configuration
@@ -85,7 +86,7 @@ export interface ParsedPreview {
 }
 
 /** CSV delimiter characters. */
-export type CsvDelimiter = ',' | ';' | '\t' | '|';
+export type CsvDelimiter = "," | ";" | "\t" | "|";
 
 /**
  * Result of CSV delimiter detection.
@@ -102,7 +103,8 @@ export interface DelimiterDetection {
 // ---------------------------------------------------------------------------
 
 /** Import operation status. */
-export type ImportStatus = 'pending' | 'importing' | 'completed' | 'cancelled' | 'error';
+export type ImportStatus =
+  "pending" | "importing" | "completed" | "cancelled" | "error";
 
 /**
  * Tracks progress of an import operation.
@@ -277,18 +279,18 @@ export const LARGE_IMPORT_THRESHOLD = 1000;
 
 /** Wizard step labels. */
 export const STEP_LABELS: Record<WizardStep, string> = {
-  format: 'Format',
-  upload: 'Upload',
-  mapping: 'Mapping',
-  review: 'Review',
-  progress: 'Import',
+  format: "Format",
+  upload: "Upload",
+  mapping: "Mapping",
+  review: "Review",
+  progress: "Import",
 } as const;
 
 /** Wizard steps in order. */
 export const WIZARD_STEPS: readonly WizardStep[] = [
-  'format',
-  'upload',
-  'mapping',
-  'review',
-  'progress',
+  "format",
+  "upload",
+  "mapping",
+  "review",
+  "progress",
 ] as const;

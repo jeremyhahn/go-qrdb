@@ -15,8 +15,8 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { ImportConfig, ParsedPreview } from './types.ts';
-  import { LARGE_IMPORT_THRESHOLD } from './types.ts';
+  import type { ImportConfig, ParsedPreview } from "./types.ts";
+  import { LARGE_IMPORT_THRESHOLD } from "./types.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -43,27 +43,32 @@
   const isLargeImport = $derived(preview.totalRows > LARGE_IMPORT_THRESHOLD);
 
   const formatLabel = $derived.by(() => {
-    if (config.format === 'json' && config.jsonFormat) {
+    if (config.format === "json" && config.jsonFormat) {
       return `JSON (${config.jsonFormat.toUpperCase()})`;
     }
     return config.format.toUpperCase();
   });
 
   const valueModeLabel = $derived(
-    config.valueMode === 'field' ? 'Specific field' : 'Entire row as JSON'
+    config.valueMode === "field" ? "Specific field" : "Entire row as JSON",
   );
 
   const summaryItems = $derived.by(() => {
-    const items: Array<{ label: string; value: string; highlight?: boolean }> = [
-      { label: 'File', value: config.file?.name ?? 'Unknown' },
-      { label: 'Format', value: formatLabel },
-      { label: 'Total Rows', value: preview.totalRows.toLocaleString(), highlight: isLargeImport },
-      { label: 'Key Field', value: config.keyField },
-      { label: 'Value Mode', value: valueModeLabel },
-    ];
+    const items: Array<{ label: string; value: string; highlight?: boolean }> =
+      [
+        { label: "File", value: config.file?.name ?? "Unknown" },
+        { label: "Format", value: formatLabel },
+        {
+          label: "Total Rows",
+          value: preview.totalRows.toLocaleString(),
+          highlight: isLargeImport,
+        },
+        { label: "Key Field", value: config.keyField },
+        { label: "Value Mode", value: valueModeLabel },
+      ];
 
-    if (config.valueMode === 'field' && config.valueField) {
-      items.push({ label: 'Value Field', value: config.valueField });
+    if (config.valueMode === "field" && config.valueField) {
+      items.push({ label: "Value Field", value: config.valueField });
     }
 
     return items;
@@ -72,16 +77,18 @@
   const optionItems = $derived.by(() => {
     const items: Array<{ label: string; enabled: boolean }> = [];
 
-    if (config.format === 'csv') {
-      items.push({ label: 'Skip header row', enabled: config.skipHeader });
+    if (config.format === "csv") {
+      items.push({ label: "Skip header row", enabled: config.skipHeader });
     }
 
-    items.push({ label: 'Create missing keys', enabled: config.createMissing });
-    items.push({ label: 'Update existing keys', enabled: config.updateExisting });
+    items.push({ label: "Create missing keys", enabled: config.createMissing });
+    items.push({
+      label: "Update existing keys",
+      enabled: config.updateExisting,
+    });
 
     return items;
   });
-
 </script>
 
 <div class="space-y-6">
@@ -198,7 +205,9 @@
       <div class="space-y-3">
         <label
           class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors
-            {transactional ? 'border-primary bg-primary/5' : 'hover:bg-base-200/30'}"
+            {transactional
+            ? 'border-primary bg-primary/5'
+            : 'hover:bg-base-200/30'}"
         >
           <input
             type="radio"
@@ -208,7 +217,8 @@
             onchange={() => onTransactionalChange(true)}
           />
           <div class="flex-1">
-            <span class="block font-medium">Transactional (All-or-nothing)</span>
+            <span class="block font-medium">Transactional (All-or-nothing)</span
+            >
             <span class="text-base-content/60 block text-sm">
               Either all records are imported successfully, or none are.
               Recommended for critical data.
@@ -218,7 +228,9 @@
 
         <label
           class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors
-            {!transactional ? 'border-primary bg-primary/5' : 'hover:bg-base-200/30'}"
+            {!transactional
+            ? 'border-primary bg-primary/5'
+            : 'hover:bg-base-200/30'}"
         >
           <input
             type="radio"
@@ -228,10 +240,12 @@
             onchange={() => onTransactionalChange(false)}
           />
           <div class="flex-1">
-            <span class="block font-medium">Best-effort (Continue on error)</span>
+            <span class="block font-medium"
+              >Best-effort (Continue on error)</span
+            >
             <span class="text-base-content/60 block text-sm">
-              Import as many records as possible, logging failures.
-              Useful for large imports with potential data issues.
+              Import as many records as possible, logging failures. Useful for
+              large imports with potential data issues.
             </span>
           </div>
         </label>
@@ -259,8 +273,8 @@
       <div>
         <h5 class="font-medium">Large Import Warning</h5>
         <p class="text-sm">
-          You are importing {preview.totalRows.toLocaleString()} rows.
-          Large imports may take several minutes to complete.
+          You are importing {preview.totalRows.toLocaleString()} rows. Large imports
+          may take several minutes to complete.
           {#if transactional}
             Consider using best-effort mode for better performance.
           {/if}

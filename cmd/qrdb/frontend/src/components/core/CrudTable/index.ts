@@ -21,4 +21,4 @@
  * and bulk selection support across all data views.
  */
 
-export { default as CrudTable } from './CrudTable.svelte';
+export { default as CrudTable } from "./CrudTable.svelte";

@@ -21,7 +21,7 @@
  * remote), skipping irrelevant configuration steps.
  */
 
-import type { SealMode, EmbeddedSealConfig } from '@qrdb/sdk';
+import type { SealMode, EmbeddedSealConfig } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,109 +29,109 @@ import type { SealMode, EmbeddedSealConfig } from '@qrdb/sdk';
 
 /** All possible step identifiers in the database creation wizard. */
 export type DatabaseWizardStep =
-    | 'name'
-    | 'mode'
-    | 'storage'
-    | 'raft'
-    | 'connection'
-    | 'sql'
-    | 'barrier'
-    | 'summary'
-    | 'creating'
-    | 'holders'
-    | 'complete';
+  | "name"
+  | "mode"
+  | "storage"
+  | "raft"
+  | "connection"
+  | "sql"
+  | "barrier"
+  | "summary"
+  | "creating"
+  | "holders"
+  | "complete";
 
 /** Whether the database is embedded locally or connects to a remote server. */
-export type DatabaseMode = 'embedded' | 'remote';
+export type DatabaseMode = "embedded" | "remote";
 
 /** The type of data engine powering the database. */
-export type EngineType = 'kv' | 'timeseries' | 'vector';
+export type EngineType = "kv" | "timeseries" | "vector";
 
 /** Storage backend for embedded databases. */
-export type StorageBackend = 'memory' | 'file' | 'pebble';
+export type StorageBackend = "memory" | "file" | "pebble";
 
 /** Raft cluster mode for embedded databases. */
-export type RaftClusterMode = 'none' | 'local' | 'distributed';
+export type RaftClusterMode = "none" | "local" | "distributed";
 
 /** Raft cluster configuration for embedded databases. */
 /** Raft group (shard) configuration for databases on clustered servers. */
 export interface RaftGroupsConfig {
-    /** Number of raft groups (shards) for this database. */
-    shardCount: number;
-    /** Replication factor per shard. */
-    replicationFactor: number;
+  /** Number of raft groups (shards) for this database. */
+  shardCount: number;
+  /** Replication factor per shard. */
+  replicationFactor: number;
 }
 
 export interface DatabaseRaftConfig {
-    clusterMode: RaftClusterMode;
-    replicaId: number;
-    raftAddress: string;
-    peers: string[];
-    localNodeCount: number;
-    /** Raft group configuration (only when cluster mode is not 'none'). */
-    raftGroups: RaftGroupsConfig | null;
+  clusterMode: RaftClusterMode;
+  replicaId: number;
+  raftAddress: string;
+  peers: string[];
+  localNodeCount: number;
+  /** Raft group configuration (only when cluster mode is not 'none'). */
+  raftGroups: RaftGroupsConfig | null;
 }
 
 /** Remote connection configuration. */
 export interface DatabaseConnectionConfig {
-    transport: string;
-    address: string;
-    caFile: string;
-    certFile: string;
-    keyFile: string;
+  transport: string;
+  address: string;
+  caFile: string;
+  certFile: string;
+  keyFile: string;
 }
 
 /** Shape of the reactive database wizard state. */
 export interface DatabaseWizardState {
-    /** Current active step in the wizard flow. */
-    currentStep: DatabaseWizardStep;
-    /** Database name (lowercase alphanumeric + hyphens). */
-    name: string;
-    /** Engine type: kv, timeseries, or vector. */
-    engine: EngineType;
-    /** Embedded or remote mode (inherited from the active connection). */
-    mode: DatabaseMode;
-    /** Server topology mode (set by MainApp before opening the wizard). */
-    serverMode: 'standalone' | 'raft';
-    /** Storage backend (embedded only). */
-    backend: StorageBackend;
-    /** Custom data directory (embedded file/pebble only, empty = default). */
-    dataDir: string;
-    /** Raft cluster configuration (embedded only, null when not applicable). */
-    raftConfig: DatabaseRaftConfig | null;
-    /**
-     * Replication factor for a dedicated-raft database (voting replicas per
-     * group). Bounded by the tenant's replica quota and the cluster size.
-     * Defaults to 1 (single replica).
-     */
-    replicas: number;
-    /**
-     * Whether to enable per-database WAL encryption under the tenant's own key.
-     * Only honoured for the raft backend; requires the `allow_dedicated_wal`
-     * entitlement and the `max_dedicated_wal_groups` quota. Defaults to false.
-     */
-    dedicatedWal: boolean;
-    /** Remote connection configuration (remote only, null when not applicable). */
-    connectionConfig: DatabaseConnectionConfig | null;
-    /** Whether MySQL wire protocol is enabled. */
-    sqlMySQL: boolean;
-    /** Whether PostgreSQL wire protocol is enabled. */
-    sqlPostgreSQL: boolean;
-    /** Whether etcd API compatibility is enabled (Raft databases only). */
-    etcdEnabled: boolean;
-    /** Whether the per-database encryption barrier is enabled. */
-    barrierEnabled: boolean;
-    /** Seal mode for the per-database barrier. */
-    sealMode: SealMode;
-    /** Seal configuration (shamir shares, etc.). */
-    sealConfig: EmbeddedSealConfig;
-    /**
-     * The barrier passphrase, held only from the barrier step until the
-     * create request is built: `takeBarrierPassphrase` hands it to the
-     * request and clears it, and `resetDatabaseWizard` (cancel) clears it.
-     * Never persisted, logged or displayed.
-     */
-    barrierPassphrase: string;
+  /** Current active step in the wizard flow. */
+  currentStep: DatabaseWizardStep;
+  /** Database name (lowercase alphanumeric + hyphens). */
+  name: string;
+  /** Engine type: kv, timeseries, or vector. */
+  engine: EngineType;
+  /** Embedded or remote mode (inherited from the active connection). */
+  mode: DatabaseMode;
+  /** Server topology mode (set by MainApp before opening the wizard). */
+  serverMode: "standalone" | "raft";
+  /** Storage backend (embedded only). */
+  backend: StorageBackend;
+  /** Custom data directory (embedded file/pebble only, empty = default). */
+  dataDir: string;
+  /** Raft cluster configuration (embedded only, null when not applicable). */
+  raftConfig: DatabaseRaftConfig | null;
+  /**
+   * Replication factor for a dedicated-raft database (voting replicas per
+   * group). Bounded by the tenant's replica quota and the cluster size.
+   * Defaults to 1 (single replica).
+   */
+  replicas: number;
+  /**
+   * Whether to enable per-database WAL encryption under the tenant's own key.
+   * Only honoured for the raft backend; requires the `allow_dedicated_wal`
+   * entitlement and the `max_dedicated_wal_groups` quota. Defaults to false.
+   */
+  dedicatedWal: boolean;
+  /** Remote connection configuration (remote only, null when not applicable). */
+  connectionConfig: DatabaseConnectionConfig | null;
+  /** Whether MySQL wire protocol is enabled. */
+  sqlMySQL: boolean;
+  /** Whether PostgreSQL wire protocol is enabled. */
+  sqlPostgreSQL: boolean;
+  /** Whether etcd API compatibility is enabled (Raft databases only). */
+  etcdEnabled: boolean;
+  /** Whether the per-database encryption barrier is enabled. */
+  barrierEnabled: boolean;
+  /** Seal mode for the per-database barrier. */
+  sealMode: SealMode;
+  /** Seal configuration (shamir shares, etc.). */
+  sealConfig: EmbeddedSealConfig;
+  /**
+   * The barrier passphrase, held only from the barrier step until the
+   * create request is built: `takeBarrierPassphrase` hands it to the
+   * request and clears it, and `resetDatabaseWizard` (cancel) clears it.
+   * Never persisted, logged or displayed.
+   */
+  barrierPassphrase: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,27 +140,27 @@ export interface DatabaseWizardState {
 
 /** Step sequence for standalone servers — no Raft configuration needed. */
 const standaloneSteps: readonly DatabaseWizardStep[] = [
-    'name',
-    'storage',
-    'sql',
-    'barrier',
-    'summary',
-    'creating',
-    'holders',
-    'complete',
+  "name",
+  "storage",
+  "sql",
+  "barrier",
+  "summary",
+  "creating",
+  "holders",
+  "complete",
 ] as const;
 
 /** Step sequence for Raft cluster servers — includes Raft group configuration. */
 const raftSteps: readonly DatabaseWizardStep[] = [
-    'name',
-    'storage',
-    'raft',
-    'sql',
-    'barrier',
-    'summary',
-    'creating',
-    'holders',
-    'complete',
+  "name",
+  "storage",
+  "raft",
+  "sql",
+  "barrier",
+  "summary",
+  "creating",
+  "holders",
+  "complete",
 ] as const;
 
 /**
@@ -168,7 +168,7 @@ const raftSteps: readonly DatabaseWizardStep[] = [
  * `holders` step enrols after the create.
  */
 export function isShamirDatabase(): boolean {
-    return dbWizardStore.barrierEnabled && dbWizardStore.sealMode === 'shamir';
+  return dbWizardStore.barrierEnabled && dbWizardStore.sealMode === "shamir";
 }
 
 /**
@@ -178,8 +178,9 @@ export function isShamirDatabase(): boolean {
  * `holders` step is part of the sequence only for a Shamir database.
  */
 export function activeSteps(): readonly DatabaseWizardStep[] {
-    const steps = dbWizardStore.serverMode === 'raft' ? raftSteps : standaloneSteps;
-    return isShamirDatabase() ? steps : steps.filter((s) => s !== 'holders');
+  const steps =
+    dbWizardStore.serverMode === "raft" ? raftSteps : standaloneSteps;
+  return isShamirDatabase() ? steps : steps.filter((s) => s !== "holders");
 }
 
 // ---------------------------------------------------------------------------
@@ -188,41 +189,41 @@ export function activeSteps(): readonly DatabaseWizardStep[] {
 
 /** Default seal configuration values. */
 const defaultSealConfig: EmbeddedSealConfig = {
-    mode: 'passphrase',
-    sharesRequired: 3,
-    sharesTotal: 5,
+  mode: "passphrase",
+  sharesRequired: 3,
+  sharesTotal: 5,
 };
 
 /** Default raft configuration. */
 const defaultRaftConfig: DatabaseRaftConfig = {
-    clusterMode: 'none',
-    replicaId: 1,
-    raftAddress: 'localhost:63001',
-    peers: [],
-    localNodeCount: 3,
-    raftGroups: null,
+  clusterMode: "none",
+  replicaId: 1,
+  raftAddress: "localhost:63001",
+  peers: [],
+  localNodeCount: 3,
+  raftGroups: null,
 };
 
 /** Reactive database wizard state. */
 export const dbWizardStore: DatabaseWizardState = $state({
-    currentStep: 'name',
-    name: '',
-    engine: 'kv',
-    mode: 'embedded',
-    serverMode: 'standalone',
-    backend: 'pebble',
-    dataDir: '',
-    raftConfig: { ...defaultRaftConfig },
-    replicas: 1,
-    dedicatedWal: false,
-    connectionConfig: null,
-    sqlMySQL: false,
-    sqlPostgreSQL: false,
-    etcdEnabled: false,
-    barrierEnabled: false,
-    sealMode: 'none',
-    sealConfig: { ...defaultSealConfig },
-    barrierPassphrase: '',
+  currentStep: "name",
+  name: "",
+  engine: "kv",
+  mode: "embedded",
+  serverMode: "standalone",
+  backend: "pebble",
+  dataDir: "",
+  raftConfig: { ...defaultRaftConfig },
+  replicas: 1,
+  dedicatedWal: false,
+  connectionConfig: null,
+  sqlMySQL: false,
+  sqlPostgreSQL: false,
+  etcdEnabled: false,
+  barrierEnabled: false,
+  sealMode: "none",
+  sealConfig: { ...defaultSealConfig },
+  barrierPassphrase: "",
 });
 
 // ---------------------------------------------------------------------------
@@ -234,15 +235,15 @@ export const dbWizardStore: DatabaseWizardState = $state({
  * sequence. No-op when on the final step.
  */
 export function nextStep(): void {
-    const steps = activeSteps();
-    const currentIndex = steps.indexOf(dbWizardStore.currentStep);
-    if (currentIndex === -1 || currentIndex >= steps.length - 1) {
-        return;
-    }
-    const next = steps[currentIndex + 1];
-    if (next !== undefined) {
-        dbWizardStore.currentStep = next;
-    }
+  const steps = activeSteps();
+  const currentIndex = steps.indexOf(dbWizardStore.currentStep);
+  if (currentIndex === -1 || currentIndex >= steps.length - 1) {
+    return;
+  }
+  const next = steps[currentIndex + 1];
+  if (next !== undefined) {
+    dbWizardStore.currentStep = next;
+  }
 }
 
 /**
@@ -250,15 +251,15 @@ export function nextStep(): void {
  * step sequence. No-op when on the first step.
  */
 export function prevStep(): void {
-    const steps = activeSteps();
-    const currentIndex = steps.indexOf(dbWizardStore.currentStep);
-    if (currentIndex <= 0) {
-        return;
-    }
-    const prev = steps[currentIndex - 1];
-    if (prev !== undefined) {
-        dbWizardStore.currentStep = prev;
-    }
+  const steps = activeSteps();
+  const currentIndex = steps.indexOf(dbWizardStore.currentStep);
+  if (currentIndex <= 0) {
+    return;
+  }
+  const prev = steps[currentIndex - 1];
+  if (prev !== undefined) {
+    dbWizardStore.currentStep = prev;
+  }
 }
 
 /**
@@ -266,24 +267,24 @@ export function prevStep(): void {
  * configuration values.
  */
 export function resetDatabaseWizard(): void {
-    dbWizardStore.currentStep = 'name';
-    dbWizardStore.name = '';
-    dbWizardStore.engine = 'kv';
-    dbWizardStore.mode = 'embedded';
-    dbWizardStore.serverMode = 'standalone';
-    dbWizardStore.backend = 'pebble';
-    dbWizardStore.dataDir = '';
-    dbWizardStore.raftConfig = { ...defaultRaftConfig };
-    dbWizardStore.replicas = 1;
-    dbWizardStore.dedicatedWal = false;
-    dbWizardStore.connectionConfig = null;
-    dbWizardStore.sqlMySQL = false;
-    dbWizardStore.sqlPostgreSQL = false;
-    dbWizardStore.etcdEnabled = false;
-    dbWizardStore.barrierEnabled = false;
-    dbWizardStore.sealMode = 'none';
-    dbWizardStore.sealConfig = { ...defaultSealConfig };
-    dbWizardStore.barrierPassphrase = '';
+  dbWizardStore.currentStep = "name";
+  dbWizardStore.name = "";
+  dbWizardStore.engine = "kv";
+  dbWizardStore.mode = "embedded";
+  dbWizardStore.serverMode = "standalone";
+  dbWizardStore.backend = "pebble";
+  dbWizardStore.dataDir = "";
+  dbWizardStore.raftConfig = { ...defaultRaftConfig };
+  dbWizardStore.replicas = 1;
+  dbWizardStore.dedicatedWal = false;
+  dbWizardStore.connectionConfig = null;
+  dbWizardStore.sqlMySQL = false;
+  dbWizardStore.sqlPostgreSQL = false;
+  dbWizardStore.etcdEnabled = false;
+  dbWizardStore.barrierEnabled = false;
+  dbWizardStore.sealMode = "none";
+  dbWizardStore.sealConfig = { ...defaultSealConfig };
+  dbWizardStore.barrierPassphrase = "";
 }
 
 /**
@@ -292,7 +293,7 @@ export function resetDatabaseWizard(): void {
  * leaves no passphrase behind.
  */
 export function clearBarrierPassphrase(): void {
-    dbWizardStore.barrierPassphrase = '';
+  dbWizardStore.barrierPassphrase = "";
 }
 
 /**
@@ -300,7 +301,7 @@ export function clearBarrierPassphrase(): void {
  * the store, so it lives no longer than the request that carries it.
  */
 export function takeBarrierPassphrase(): string {
-    const passphrase = dbWizardStore.barrierPassphrase;
-    dbWizardStore.barrierPassphrase = '';
-    return passphrase;
+  const passphrase = dbWizardStore.barrierPassphrase;
+  dbWizardStore.barrierPassphrase = "";
+  return passphrase;
 }

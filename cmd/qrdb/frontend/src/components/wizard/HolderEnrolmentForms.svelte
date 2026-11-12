@@ -29,14 +29,26 @@
   CLI or the desktop app.
 -->
 <script lang="ts">
-  import type { Client, HolderRole, OfficerRegisterRequest, OfficerRegisterResponse } from "@qrdb/sdk";
-  import { AlertCircle, CheckCircle, Copy, Download, UserPlus } from "lucide-svelte";
+  import type {
+    Client,
+    HolderRole,
+    OfficerRegisterRequest,
+    OfficerRegisterResponse,
+  } from "@qrdb/sdk";
+  import {
+    AlertCircle,
+    CheckCircle,
+    Copy,
+    Download,
+    UserPlus,
+  } from "lucide-svelte";
 
   let {
     client,
     count,
     registeredCount = $bindable(0),
-    enrol = (req: OfficerRegisterRequest) => client.officers.registerOfficer(req),
+    enrol = (req: OfficerRegisterRequest) =>
+      client.officers.registerOfficer(req),
   }: {
     client: Client;
     /** Number of holders to enrol: the Shamir share count (N). */
@@ -59,7 +71,15 @@
   }
 
   function emptyForm(): HolderForm {
-    return { username: "", role: "so", csrPem: "", result: null, error: "", loading: false, certCopied: false };
+    return {
+      username: "",
+      role: "so",
+      csrPem: "",
+      result: null,
+      error: "",
+      loading: false,
+      certCopied: false,
+    };
   }
 
   let forms: HolderForm[] = $state([]);
@@ -105,14 +125,17 @@
     if (form === undefined || form.result === null) return;
     void navigator.clipboard.writeText(form.result.certPem).then(() => {
       const current = forms[index];
-      if (current !== undefined) forms[index] = { ...current, certCopied: true };
+      if (current !== undefined)
+        forms[index] = { ...current, certCopied: true };
     });
   }
 
   function downloadCert(index: number): void {
     const form = forms[index];
     if (form === undefined || form.result === null) return;
-    const blob = new Blob([form.result.certPem], { type: "application/x-pem-file" });
+    const blob = new Blob([form.result.certPem], {
+      type: "application/x-pem-file",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -153,7 +176,9 @@
             Holder {i + 1}
             {#if form.result !== null}
               <span class="text-base-content/60 font-normal">
-                — {form.username} ({form.result.role === "custodian" ? "key custodian" : "Security Officer"})
+                — {form.username} ({form.result.role === "custodian"
+                  ? "key custodian"
+                  : "Security Officer"})
               </span>
             {/if}
           </h3>
@@ -170,7 +195,12 @@
               class="input input-bordered input-sm"
               placeholder="alice"
               value={form.username}
-              oninput={(e: Event) => { if (forms[i]) forms[i].username = (e.currentTarget as HTMLInputElement).value; }}
+              oninput={(e: Event) => {
+                if (forms[i])
+                  forms[i].username = (
+                    e.currentTarget as HTMLInputElement
+                  ).value;
+              }}
               disabled={form.loading}
               data-testid={`officer-username-${i}`}
             />
@@ -184,7 +214,11 @@
               id={`officer-role-${i}`}
               class="select select-bordered select-sm"
               value={form.role}
-              onchange={(e: Event) => { if (forms[i]) forms[i].role = (e.currentTarget as HTMLSelectElement).value as HolderRole; }}
+              onchange={(e: Event) => {
+                if (forms[i])
+                  forms[i].role = (e.currentTarget as HTMLSelectElement)
+                    .value as HolderRole;
+              }}
               disabled={form.loading}
               data-testid={`officer-role-${i}`}
             >
@@ -195,7 +229,9 @@
 
           <div class="form-control">
             <label class="label" for={`officer-csr-${i}`}>
-              <span class="label-text text-xs">CSR PEM (the holder's public key, generated offline)</span>
+              <span class="label-text text-xs"
+                >CSR PEM (the holder's public key, generated offline)</span
+              >
             </label>
             <textarea
               id={`officer-csr-${i}`}
@@ -203,14 +239,22 @@
               rows={5}
               placeholder={"-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----"}
               value={form.csrPem}
-              oninput={(e: Event) => { if (forms[i]) forms[i].csrPem = (e.currentTarget as HTMLTextAreaElement).value; }}
+              oninput={(e: Event) => {
+                if (forms[i])
+                  forms[i].csrPem = (
+                    e.currentTarget as HTMLTextAreaElement
+                  ).value;
+              }}
               disabled={form.loading}
-              data-testid={`officer-csr-${i}`}
-            ></textarea>
+              data-testid={`officer-csr-${i}`}></textarea>
           </div>
 
           {#if form.error}
-            <div role="alert" class="alert alert-error py-2 text-xs" data-testid={`officer-error-${i}`}>
+            <div
+              role="alert"
+              class="alert alert-error py-2 text-xs"
+              data-testid={`officer-error-${i}`}
+            >
               <AlertCircle class="h-3 w-3 shrink-0" />
               <span>{form.error}</span>
             </div>
@@ -219,7 +263,9 @@
           <button
             class="btn btn-primary btn-sm self-end"
             onclick={() => void register(i)}
-            disabled={form.loading || form.username.trim() === "" || form.csrPem.trim() === ""}
+            disabled={form.loading ||
+              form.username.trim() === "" ||
+              form.csrPem.trim() === ""}
             data-testid={`register-officer-btn-${i}`}
           >
             {#if form.loading}
@@ -230,7 +276,9 @@
         {:else}
           <div class="form-control">
             <div class="flex items-center justify-between mb-1">
-              <span class="label-text text-xs font-semibold">Issued Certificate PEM</span>
+              <span class="label-text text-xs font-semibold"
+                >Issued Certificate PEM</span
+              >
               <div class="flex gap-1">
                 <button
                   class="btn btn-ghost btn-xs gap-1"
@@ -257,11 +305,10 @@
               rows={4}
               readonly
               value={form.result.certPem}
-              data-testid={`officer-cert-${i}`}
-            ></textarea>
+              data-testid={`officer-cert-${i}`}></textarea>
             <p class="text-base-content/50 mt-1 text-xs">
-              Hand this certificate to the holder out of band. The holder uses it to claim its
-              envelope from the qrdb CLI or the desktop app.
+              Hand this certificate to the holder out of band. The holder uses
+              it to claim its envelope from the qrdb CLI or the desktop app.
             </p>
           </div>
         {/if}

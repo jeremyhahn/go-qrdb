@@ -76,7 +76,12 @@
         ...(email.trim() ? { email: email.trim() } : {}),
         ...(name.trim() ? { name: name.trim() } : {}),
         ...(roles.trim()
-          ? { roleIDs: roles.split(",").map((r) => r.trim()).filter(Boolean) }
+          ? {
+              roleIDs: roles
+                .split(",")
+                .map((r) => r.trim())
+                .filter(Boolean),
+            }
           : {}),
       });
     } catch (err: unknown) {
@@ -95,7 +100,10 @@
     } catch {
       // Clipboard access can be denied by the environment; the token is
       // still selectable text in the modal, so this is not fatal.
-      showToast("error", "Could not copy automatically -- select and copy the token manually");
+      showToast(
+        "error",
+        "Could not copy automatically -- select and copy the token manually",
+      );
     }
   }
 </script>
@@ -112,16 +120,18 @@
     {#if issued}
       <div class="flex flex-col gap-3">
         <p class="text-sm text-base-content/70">
-          This token is shown <strong>once</strong>. Deliver it to {issued.username} out of
-          band; they redeem it themselves with <code>qrdb enroll</code> -- you never hold a
-          credential for their account.
+          This token is shown <strong>once</strong>. Deliver it to {issued.username}
+          out of band; they redeem it themselves with <code>qrdb enroll</code> --
+          you never hold a credential for their account.
         </p>
         <p class="text-sm">
-          Tenant <code data-testid="invite-tenant">{issued.tenantID}</code> -- the invitee
-          redeems the token in this tenant.
+          Tenant <code data-testid="invite-tenant">{issued.tenantID}</code> -- the
+          invitee redeems the token in this tenant.
         </p>
         <div class="form-control">
-          <div class="label"><span class="label-text">One-time token</span></div>
+          <div class="label">
+            <span class="label-text">One-time token</span>
+          </div>
           <div class="join w-full">
             <input
               type="text"
@@ -130,7 +140,11 @@
               class="input input-bordered input-sm join-item w-full font-mono"
               onclick={(e) => (e.currentTarget as HTMLInputElement).select()}
             />
-            <button type="button" class="btn btn-sm join-item" onclick={copyToken}>
+            <button
+              type="button"
+              class="btn btn-sm join-item"
+              onclick={copyToken}
+            >
               Copy
             </button>
           </div>
@@ -150,7 +164,9 @@
           />
         </label>
         <label class="form-control w-full" for="invite-email">
-          <div class="label"><span class="label-text">Email (canonical login key)</span></div>
+          <div class="label">
+            <span class="label-text">Email (canonical login key)</span>
+          </div>
           <input
             id="invite-email"
             type="email"
@@ -170,7 +186,9 @@
           />
         </label>
         <label class="form-control w-full" for="invite-roles">
-          <div class="label"><span class="label-text">Role IDs (comma-separated)</span></div>
+          <div class="label">
+            <span class="label-text">Role IDs (comma-separated)</span>
+          </div>
           <input
             id="invite-roles"
             type="text"
@@ -180,7 +198,8 @@
           />
         </label>
         <p class="text-xs text-base-content/60">
-          Leaving only Username set re-invites that still-pending account with a fresh token.
+          Leaving only Username set re-invites that still-pending account with a
+          fresh token.
         </p>
       </div>
     {/if}

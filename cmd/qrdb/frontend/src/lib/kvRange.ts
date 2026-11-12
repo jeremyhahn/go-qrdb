@@ -37,18 +37,18 @@
  * the maximum, U+10FFFF -- effectively unreachable for real keys).
  */
 export function prefixEnd(prefix: string): string | undefined {
-    const codePoints = Array.from(prefix);
-    for (let i = codePoints.length - 1; i >= 0; i--) {
-        const unit = codePoints[i];
-        if (unit === undefined) continue;
-        const cp = unit.codePointAt(0);
-        if (cp === undefined) continue;
-        if (cp < 0x10ffff) {
-            const carried = [...codePoints.slice(0, i), String.fromCodePoint(cp + 1)];
-            return carried.join('');
-        }
+  const codePoints = Array.from(prefix);
+  for (let i = codePoints.length - 1; i >= 0; i--) {
+    const unit = codePoints[i];
+    if (unit === undefined) continue;
+    const cp = unit.codePointAt(0);
+    if (cp === undefined) continue;
+    if (cp < 0x10ffff) {
+      const carried = [...codePoints.slice(0, i), String.fromCodePoint(cp + 1)];
+      return carried.join("");
     }
-    return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -64,13 +64,13 @@ export function prefixEnd(prefix: string): string | undefined {
  * begin with an ASCII control character. The end sentinel, the highest valid
  * Unicode code point, sorts after any realistic text key.
  */
-export const KEYSPACE_START = ' ';
-export const KEYSPACE_END = '\u{10FFFF}';
+export const KEYSPACE_START = " ";
+export const KEYSPACE_END = "\u{10FFFF}";
 
 /** The `[start, end)` bounds for an MVCC range query. */
 export interface RangeBounds {
-    readonly start: string;
-    readonly end: string;
+  readonly start: string;
+  readonly end: string;
 }
 
 /**
@@ -78,8 +78,8 @@ export interface RangeBounds {
  * `prefix`, or the full keyspace when `prefix` is empty.
  */
 export function rangeBoundsForPrefix(prefix: string): RangeBounds {
-    if (prefix === '') {
-        return { start: KEYSPACE_START, end: KEYSPACE_END };
-    }
-    return { start: prefix, end: prefixEnd(prefix) ?? KEYSPACE_END };
+  if (prefix === "") {
+    return { start: KEYSPACE_START, end: KEYSPACE_END };
+  }
+  return { start: prefix, end: prefixEnd(prefix) ?? KEYSPACE_END };
 }

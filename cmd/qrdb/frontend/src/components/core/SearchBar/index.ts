@@ -44,35 +44,35 @@
  */
 
 // Main wrapper component
-export { default as SearchBar } from './SearchBar.svelte';
+export { default as SearchBar } from "./SearchBar.svelte";
 
 // Engine-specific components (for direct use if needed)
-export { default as KVSearch } from './KVSearch.svelte';
-export { default as TimeSeriesSearch } from './TimeSeriesSearch.svelte';
-export { default as VectorSearch } from './VectorSearch.svelte';
+export { default as KVSearch } from "./KVSearch.svelte";
+export { default as TimeSeriesSearch } from "./TimeSeriesSearch.svelte";
+export { default as VectorSearch } from "./VectorSearch.svelte";
 
 // Types
 export type {
-    // Search modes and options
-    SearchMode,
-    SearchOptions,
+  // Search modes and options
+  SearchMode,
+  SearchOptions,
 
-    // TimeSeries types
-    TimeSeriesAggregation,
-    TimeSeriesSearchOptions,
-    TimeRangePreset,
+  // TimeSeries types
+  TimeSeriesAggregation,
+  TimeSeriesSearchOptions,
+  TimeRangePreset,
 
-    // Vector types
-    DistanceMetric,
-    VectorSearchMethod,
-    VectorSearchOptions,
+  // Vector types
+  DistanceMetric,
+  VectorSearchMethod,
+  VectorSearchOptions,
 
-    // Engine type
-    SearchEngine,
+  // Engine type
+  SearchEngine,
 
-    // Event types
-    KVSearchEvent,
-    TimeSeriesSearchEvent,
-    VectorSearchEvent,
-    SearchEvent,
-} from './types.ts';
+  // Event types
+  KVSearchEvent,
+  TimeSeriesSearchEvent,
+  VectorSearchEvent,
+  SearchEvent,
+} from "./types.ts";

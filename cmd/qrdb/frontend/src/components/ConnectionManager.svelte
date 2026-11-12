@@ -15,7 +15,12 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, CeremonyHolderCertificate, CeremonyInitializeRequest, CeremonyOfficerRequest } from "@qrdb/sdk";
+  import type {
+    Client,
+    CeremonyHolderCertificate,
+    CeremonyInitializeRequest,
+    CeremonyOfficerRequest,
+  } from "@qrdb/sdk";
   import {
     Database,
     Plus,
@@ -128,7 +133,8 @@
   let embeddedStaticPeers: string = $state(""); // newline-separated
 
   // Barrier step
-  let embeddedBarrierMode: "none" | "passphrase" | "shamir" = $state("passphrase");
+  let embeddedBarrierMode: "none" | "passphrase" | "shamir" =
+    $state("passphrase");
   let embeddedPassphrase: string = $state("");
   let embeddedPassphraseConfirm: string = $state("");
   let embeddedShamirThreshold: number = $state(3);
@@ -140,7 +146,10 @@
   // ceremony.initialize is the ONLY way to establish its custody), so
   // there is no server to register a holder against before that one call.
   let embeddedOfficers: CeremonyOfficerRequest[] = $state([]);
-  let allOfficersFilled = $derived(embeddedOfficers.length === embeddedShamirShares && embeddedShamirShares > 0);
+  let allOfficersFilled = $derived(
+    embeddedOfficers.length === embeddedShamirShares &&
+      embeddedShamirShares > 0,
+  );
 
   // Admin credential step: the same ceremony.initialize call that brings
   // up the barrier also issues the bootstrap admin's certificate, so this
@@ -169,7 +178,10 @@
    * handleApplyAck's "Continue to Server" click. The template checks it
    * directly to show the result panel, so it must be reactive.
    */
-  let pendingConnectState: { profileId: string; connState: ConnectionState } | null = $state(null);
+  let pendingConnectState: {
+    profileId: string;
+    connState: ConnectionState;
+  } | null = $state(null);
 
   // ceremony.initialize's result, shown after applying. Share-free: each
   // holder claims its own sealed envelope; no share and no admin key ever
@@ -482,17 +494,23 @@
    */
   function buildCeremonyRequest(): CeremonyInitializeRequest {
     const barrierFields: Partial<CeremonyInitializeRequest> =
-      embeddedBarrierMode === "passphrase" ? { secret: embeddedPassphrase } :
-      embeddedBarrierMode === "shamir" ? { threshold: embeddedShamirThreshold, officers: embeddedOfficers } :
-      {}; // "none": no secret, no officers.
+      embeddedBarrierMode === "passphrase"
+        ? { secret: embeddedPassphrase }
+        : embeddedBarrierMode === "shamir"
+          ? { threshold: embeddedShamirThreshold, officers: embeddedOfficers }
+          : {}; // "none": no secret, no officers.
 
     const adminFields: Partial<CeremonyInitializeRequest> =
-      embeddedAdminMode === "csr" ? { adminCsrPem: embeddedAdminCsrPem.trim() } :
-      embeddedAdminMode === "byoc" ? {
-        adminCertPem: embeddedAdminCertPem.trim(),
-        ...(embeddedAdminCertPoolPem.trim() !== "" ? { adminCertPoolPem: embeddedAdminCertPoolPem.trim() } : {}),
-      } :
-      { adminGenerate: true };
+      embeddedAdminMode === "csr"
+        ? { adminCsrPem: embeddedAdminCsrPem.trim() }
+        : embeddedAdminMode === "byoc"
+          ? {
+              adminCertPem: embeddedAdminCertPem.trim(),
+              ...(embeddedAdminCertPoolPem.trim() !== ""
+                ? { adminCertPoolPem: embeddedAdminCertPoolPem.trim() }
+                : {}),
+            }
+          : { adminGenerate: true };
 
     return { ...barrierFields, ...adminFields };
   }
@@ -532,8 +550,12 @@
 
       const serverName = embeddedName.trim() || "Local Server";
       // Generate a unique data directory per embedded server to prevent conflicts.
-      const slug = serverName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-      const dataDir = embeddedDataDir.trim() || `~/.config/qrdb/servers/${slug}`;
+      const slug = serverName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "");
+      const dataDir =
+        embeddedDataDir.trim() || `~/.config/qrdb/servers/${slug}`;
 
       const profile: ConnectionProfile = {
         id: crypto.randomUUID(),
@@ -547,13 +569,16 @@
             ? {
                 raftConfig: {
                   discovery: embeddedDiscovery,
-                  ...(embeddedDiscovery === "multicast" && embeddedMulticastSecret
+                  ...(embeddedDiscovery === "multicast" &&
+                  embeddedMulticastSecret
                     ? { multicastSecret: embeddedMulticastSecret }
                     : {}),
                   ...(embeddedDiscovery === "dns" && embeddedDnsDomain
                     ? { dnsDomain: embeddedDnsDomain }
                     : {}),
-                  ...(embeddedDiscovery === "static" && peers !== undefined && peers.length > 0
+                  ...(embeddedDiscovery === "static" &&
+                  peers !== undefined &&
+                  peers.length > 0
                     ? { peers }
                     : {}),
                 },
@@ -632,12 +657,17 @@
   }
 
   /** Marks the failed phase, reports the error and stops the orphaned server. */
-  async function handleApplyFailure(err: unknown, phaseIdx: number, profileId: string): Promise<void> {
+  async function handleApplyFailure(
+    err: unknown,
+    phaseIdx: number,
+    profileId: string,
+  ): Promise<void> {
     console.error("[ConnectionManager] embedded wizard apply error", err);
     if (phaseIdx >= 0 && phaseIdx < applyPhases.length) {
       failApplyPhase(phaseIdx);
     }
-    applyError = err instanceof Error ? err.message : "An unknown error occurred";
+    applyError =
+      err instanceof Error ? err.message : "An unknown error occurred";
     // If we got far enough to start the embedded server, tear it down so a
     // retry can succeed without hitting "connection already active".
     if (profileId !== "") {
@@ -668,7 +698,10 @@
     // initial connectProfile() call (which happened before
     // ceremony.initialize), and clicking the server row would try to
     // reconnect — which the backend used to refuse as already active.
-    const finalState: ConnectionState = { ...pending.connState, status: "connected" };
+    const finalState: ConnectionState = {
+      ...pending.connState,
+      status: "connected",
+    };
     connManagerStore.states = new Map(connManagerStore.states).set(
       pending.profileId,
       finalState,
@@ -724,8 +757,12 @@
           transport: externalTransport,
           address: externalAddress.trim(),
           ...(externalCaFile.trim() ? { caFile: externalCaFile.trim() } : {}),
-          ...(externalCertFile.trim() ? { certFile: externalCertFile.trim() } : {}),
-          ...(externalKeyFile.trim() ? { keyFile: externalKeyFile.trim() } : {}),
+          ...(externalCertFile.trim()
+            ? { certFile: externalCertFile.trim() }
+            : {}),
+          ...(externalKeyFile.trim()
+            ? { keyFile: externalKeyFile.trim() }
+            : {}),
         } satisfies ExternalConnectionConfig,
         createdAt: new Date().toISOString(),
       };
@@ -771,7 +808,7 @@
         <span class="loading loading-spinner loading-lg text-primary"></span>
       </div>
 
-    <!-- Empty state -->
+      <!-- Empty state -->
     {:else if connManagerStore.profiles.length === 0 && activePanel === "none"}
       <div class="flex flex-col items-center justify-center py-20">
         <div class="card bg-base-100 w-full max-w-md shadow-xl">
@@ -780,7 +817,8 @@
             <div>
               <h2 class="card-title justify-center">No servers configured</h2>
               <p class="text-base-content/60 mt-1 text-sm">
-                Create an embedded server or connect to a remote QRDB daemon to get started.
+                Create an embedded server or connect to a remote QRDB daemon to
+                get started.
               </p>
             </div>
             <div class="card-actions flex-col w-full gap-2 mt-2">
@@ -819,7 +857,7 @@
         </div>
       </div>
 
-    <!-- Profile grid -->
+      <!-- Profile grid -->
     {:else if connManagerStore.profiles.length > 0}
       <div class="mb-6 flex items-center justify-between">
         <h2 class="text-lg font-semibold">Servers</h2>
@@ -855,7 +893,9 @@
       <EmbeddedServerPanel
         {client}
         available={connManagerStore.embeddedAvailable}
-        onStartNew={() => { if (activePanel !== "embedded") showEmbeddedPanel(); }}
+        onStartNew={() => {
+          if (activePanel !== "embedded") showEmbeddedPanel();
+        }}
       />
 
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -868,7 +908,9 @@
           <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
           <div
             class="card bg-base-100 shadow transition-shadow
-              {isConnected ? 'cursor-pointer ring-2 ring-success/40 hover:shadow-lg' : 'shadow-sm'}"
+              {isConnected
+              ? 'cursor-pointer ring-2 ring-success/40 hover:shadow-lg'
+              : 'shadow-sm'}"
             onclick={() => handleCardClick(profile)}
             role={isConnected ? "button" : "article"}
             tabindex={isConnected ? 0 : -1}
@@ -883,15 +925,23 @@
               <div class="flex items-start justify-between gap-2">
                 <div class="flex items-center gap-2 min-w-0">
                   {#if profile.type === "embedded"}
-                    <Database class="text-primary h-5 w-5 shrink-0" strokeWidth={2} />
+                    <Database
+                      class="text-primary h-5 w-5 shrink-0"
+                      strokeWidth={2}
+                    />
                   {:else}
-                    <Server class="text-secondary h-5 w-5 shrink-0" strokeWidth={2} />
+                    <Server
+                      class="text-secondary h-5 w-5 shrink-0"
+                      strokeWidth={2}
+                    />
                   {/if}
                   <h3 class="font-semibold truncate">{profile.name}</h3>
                 </div>
                 <span
                   class="badge badge-sm shrink-0
-                    {profile.type === 'embedded' ? 'badge-primary' : 'badge-secondary'}"
+                    {profile.type === 'embedded'
+                    ? 'badge-primary'
+                    : 'badge-secondary'}"
                 >
                   {profile.type === "embedded" ? "Embedded" : "External"}
                 </span>
@@ -901,13 +951,19 @@
               <div class="text-base-content/60 text-xs">
                 {#if profile.type === "external" && profile.external}
                   <span class="font-mono">{profile.external.address}</span>
-                  <span class="ml-1 opacity-60">({profile.external.transport})</span>
+                  <span class="ml-1 opacity-60"
+                    >({profile.external.transport})</span
+                  >
                 {:else if profile.type === "embedded" && profile.embedded}
                   <span class="capitalize">
-                    {profile.serverMode === "raft" ? "Raft Cluster" : "Standalone"}
+                    {profile.serverMode === "raft"
+                      ? "Raft Cluster"
+                      : "Standalone"}
                   </span>
                   {#if profile.embedded.dataDir}
-                    <span class="ml-1 font-mono opacity-60">{profile.embedded.dataDir}</span>
+                    <span class="ml-1 font-mono opacity-60"
+                      >{profile.embedded.dataDir}</span
+                    >
                   {/if}
                 {/if}
               </div>
@@ -936,7 +992,9 @@
 
               <!-- Last used -->
               {#if profile.lastUsed}
-                <div class="text-base-content/40 flex items-center gap-1 text-xs">
+                <div
+                  class="text-base-content/40 flex items-center gap-1 text-xs"
+                >
                   <Clock class="h-3 w-3" />
                   Last used {formatDate(profile.lastUsed)}
                 </div>
@@ -1030,7 +1088,9 @@
               <div class="form-control">
                 <label class="label" for="emb-datadir">
                   <span class="label-text font-semibold">Data Directory</span>
-                  <span class="label-text-alt text-base-content/50">optional</span>
+                  <span class="label-text-alt text-base-content/50"
+                    >optional</span
+                  >
                 </label>
                 <input
                   id="emb-datadir"
@@ -1041,7 +1101,8 @@
                 />
                 <label class="label" for="emb-datadir">
                   <span class="label-text-alt text-base-content/50">
-                    Root directory for all server data. Leave blank for the default location.
+                    Root directory for all server data. Leave blank for the
+                    default location.
                   </span>
                 </label>
               </div>
@@ -1064,7 +1125,7 @@
               </button>
             </div>
 
-          <!-- ---- Step: mode ---- -->
+            <!-- ---- Step: mode ---- -->
           {:else if embeddedStep === "mode"}
             <div class="space-y-4">
               <p class="text-base-content/70 text-sm">
@@ -1078,8 +1139,8 @@
                   type="button"
                   class="card cursor-pointer border-2 p-4 text-left transition-colors
                     {embeddedServerMode === 'standalone'
-                      ? 'border-primary bg-primary/5'
-                      : 'border-base-300 hover:border-primary/50'}"
+                    ? 'border-primary bg-primary/5'
+                    : 'border-base-300 hover:border-primary/50'}"
                   onclick={() => (embeddedServerMode = "standalone")}
                 >
                   <div class="flex items-start gap-3">
@@ -1093,7 +1154,9 @@
                     />
                     <div>
                       <div class="font-semibold">Standalone</div>
-                      <span class="badge badge-sm badge-outline mt-1">Simple</span>
+                      <span class="badge badge-sm badge-outline mt-1"
+                        >Simple</span
+                      >
                       <p class="text-base-content/60 mt-1 text-sm">
                         Single-node server. No distributed consensus. Best for
                         local development and single-user deployments.
@@ -1107,8 +1170,8 @@
                   type="button"
                   class="card cursor-pointer border-2 p-4 text-left transition-colors
                     {embeddedServerMode === 'raft'
-                      ? 'border-primary bg-primary/5'
-                      : 'border-base-300 hover:border-primary/50'}"
+                    ? 'border-primary bg-primary/5'
+                    : 'border-base-300 hover:border-primary/50'}"
                   onclick={() => (embeddedServerMode = "raft")}
                 >
                   <div class="flex items-start gap-3">
@@ -1122,7 +1185,9 @@
                     />
                     <div>
                       <div class="font-semibold">Raft Cluster</div>
-                      <span class="badge badge-sm badge-success mt-1">Production</span>
+                      <span class="badge badge-sm badge-success mt-1"
+                        >Production</span
+                      >
                       <p class="text-base-content/60 mt-1 text-sm">
                         Multi-node Raft consensus with fault tolerance. Requires
                         peer nodes to join the cluster.
@@ -1141,7 +1206,7 @@
               </button>
             </div>
 
-          <!-- ---- Step: discovery (raft only) ---- -->
+            <!-- ---- Step: discovery (raft only) ---- -->
           {:else if embeddedStep === "discovery"}
             <div class="space-y-4">
               <p class="text-base-content/70 text-sm">
@@ -1150,13 +1215,13 @@
 
               <!-- Discovery method cards -->
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {#each (["multicast", "dns", "static"] as const) as method (method)}
+                {#each ["multicast", "dns", "static"] as const as method (method)}
                   <button
                     type="button"
                     class="card cursor-pointer border-2 p-4 text-left transition-colors
                       {embeddedDiscovery === method
-                        ? 'border-primary bg-primary/5'
-                        : 'border-base-300 hover:border-primary/50'}"
+                      ? 'border-primary bg-primary/5'
+                      : 'border-base-300 hover:border-primary/50'}"
                     onclick={() => (embeddedDiscovery = method)}
                   >
                     <div class="flex items-start gap-3">
@@ -1170,15 +1235,22 @@
                       />
                       <div>
                         <div class="font-semibold capitalize">
-                          {method === "dns" ? "DNS SRV" : method === "multicast" ? "Multicast" : "Static"}
+                          {method === "dns"
+                            ? "DNS SRV"
+                            : method === "multicast"
+                              ? "Multicast"
+                              : "Static"}
                         </div>
                         <p class="text-base-content/60 mt-1 text-xs">
                           {#if method === "multicast"}
-                            Automatic LAN discovery via multicast. Requires a shared secret.
+                            Automatic LAN discovery via multicast. Requires a
+                            shared secret.
                           {:else if method === "dns"}
-                            Discover peers via DNS SRV records. Suitable for cloud deployments.
+                            Discover peers via DNS SRV records. Suitable for
+                            cloud deployments.
                           {:else}
-                            Manually specify peer addresses. Most flexible option.
+                            Manually specify peer addresses. Most flexible
+                            option.
                           {/if}
                         </p>
                       </div>
@@ -1191,8 +1263,12 @@
               {#if embeddedDiscovery === "multicast"}
                 <div class="form-control">
                   <label class="label" for="emb-multicast-secret">
-                    <span class="label-text font-semibold">Multicast Secret</span>
-                    <span class="label-text-alt text-base-content/50">optional</span>
+                    <span class="label-text font-semibold"
+                      >Multicast Secret</span
+                    >
+                    <span class="label-text-alt text-base-content/50"
+                      >optional</span
+                    >
                   </label>
                   <input
                     id="emb-multicast-secret"
@@ -1224,7 +1300,8 @@
                   />
                   <label class="label" for="emb-dns-domain">
                     <span class="label-text-alt text-base-content/50">
-                      SRV records must exist at _qrdb._tcp.{embeddedDnsDomain || "domain"}.
+                      SRV records must exist at _qrdb._tcp.{embeddedDnsDomain ||
+                        "domain"}.
                     </span>
                   </label>
                 </div>
@@ -1241,8 +1318,7 @@
                     class="textarea textarea-bordered w-full font-mono text-sm"
                     rows="4"
                     placeholder={"node2.local:63001\nnode3.local:63001"}
-                    bind:value={embeddedStaticPeers}
-                  ></textarea>
+                    bind:value={embeddedStaticPeers}></textarea>
                   <label class="label" for="emb-static-peers">
                     <span class="label-text-alt text-base-content/50">
                       One address per line. Host:port format.
@@ -1260,7 +1336,7 @@
               </button>
             </div>
 
-          <!-- ---- Step: barrier ---- -->
+            <!-- ---- Step: barrier ---- -->
           {:else if embeddedStep === "barrier"}
             <div class="space-y-4">
               <p class="text-base-content/70 text-sm">
@@ -1270,13 +1346,13 @@
 
               <!-- Barrier mode cards -->
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {#each (["none", "passphrase", "shamir"] as const) as mode (mode)}
+                {#each ["none", "passphrase", "shamir"] as const as mode (mode)}
                   <button
                     type="button"
                     class="card cursor-pointer border-2 p-4 text-left transition-colors
                       {embeddedBarrierMode === mode
-                        ? 'border-primary bg-primary/5'
-                        : 'border-base-300 hover:border-primary/50'}"
+                      ? 'border-primary bg-primary/5'
+                      : 'border-base-300 hover:border-primary/50'}"
                     onclick={() => (embeddedBarrierMode = mode)}
                   >
                     <div class="flex items-start gap-3">
@@ -1290,15 +1366,21 @@
                       />
                       <div>
                         <div class="font-semibold capitalize">
-                          {mode === "none" ? "None" : mode === "passphrase" ? "Passphrase" : "Shamir (M-of-N)"}
+                          {mode === "none"
+                            ? "None"
+                            : mode === "passphrase"
+                              ? "Passphrase"
+                              : "Shamir (M-of-N)"}
                         </div>
                         <p class="text-base-content/60 mt-1 text-xs">
                           {#if mode === "none"}
-                            No encryption barrier. Data is stored unencrypted on disk.
+                            No encryption barrier. Data is stored unencrypted on
+                            disk.
                           {:else if mode === "passphrase"}
                             Barrier protected by a single passphrase.
                           {:else}
-                            Split key across multiple holders. Requires M-of-N shares to unseal.
+                            Split key across multiple holders. Requires M-of-N
+                            shares to unseal.
                           {/if}
                         </p>
                       </div>
@@ -1312,8 +1394,9 @@
                 <div role="alert" class="alert alert-warning text-sm">
                   <AlertCircle class="h-5 w-5 shrink-0" />
                   <span>
-                    Without an encryption barrier, all data is stored in plaintext on
-                    disk. Only use this for non-sensitive development environments.
+                    Without an encryption barrier, all data is stored in
+                    plaintext on disk. Only use this for non-sensitive
+                    development environments.
                   </span>
                 </div>
               {/if}
@@ -1335,7 +1418,9 @@
                   </div>
                   <div class="form-control">
                     <label class="label" for="emb-passphrase-confirm">
-                      <span class="label-text font-semibold">Confirm Passphrase</span>
+                      <span class="label-text font-semibold"
+                        >Confirm Passphrase</span
+                      >
                     </label>
                     <input
                       id="emb-passphrase-confirm"
@@ -1354,15 +1439,17 @@
                   <div role="alert" class="alert alert-info text-sm">
                     <AlertCircle class="h-5 w-5 shrink-0" />
                     <span>
-                      The encryption key is split into <strong>N</strong> shares.
-                      Any <strong>M</strong> shares can reconstruct it. Distribute
+                      The encryption key is split into <strong>N</strong>
+                      shares. Any <strong>M</strong> shares can reconstruct it. Distribute
                       shares to different operators for security.
                     </span>
                   </div>
                   <div class="grid grid-cols-2 gap-4">
                     <div class="form-control">
                       <label class="label" for="emb-shamir-threshold">
-                        <span class="label-text font-semibold">Shares Required (M)</span>
+                        <span class="label-text font-semibold"
+                          >Shares Required (M)</span
+                        >
                       </label>
                       <input
                         id="emb-shamir-threshold"
@@ -1375,7 +1462,9 @@
                     </div>
                     <div class="form-control">
                       <label class="label" for="emb-shamir-total">
-                        <span class="label-text font-semibold">Total Shares (N)</span>
+                        <span class="label-text font-semibold"
+                          >Total Shares (N)</span
+                        >
                       </label>
                       <input
                         id="emb-shamir-total"
@@ -1390,8 +1479,11 @@
                   {#if embeddedShamirThreshold > 0 && embeddedShamirShares >= embeddedShamirThreshold}
                     <p class="text-base-content/50 text-xs">
                       {embeddedShamirThreshold}-of-{embeddedShamirShares} scheme.
-                      Tolerates loss of {embeddedShamirShares - embeddedShamirThreshold}
-                      share{embeddedShamirShares - embeddedShamirThreshold !== 1 ? "s" : ""}.
+                      Tolerates loss of {embeddedShamirShares -
+                        embeddedShamirThreshold}
+                      share{embeddedShamirShares - embeddedShamirThreshold !== 1
+                        ? "s"
+                        : ""}.
                     </p>
                   {/if}
                 </div>
@@ -1418,7 +1510,7 @@
               </button>
             </div>
 
-          <!-- ---- Step: officers (shamir only) ---- -->
+            <!-- ---- Step: officers (shamir only) ---- -->
           {:else if embeddedStep === "officers"}
             <div class="space-y-4">
               <p class="text-base-content/70 text-sm">
@@ -1426,14 +1518,21 @@
                 CSR generated offline. The server's CA issues the holder
                 certificate once the server is created (summary step next),
                 which you hand back to the holder out of band. No share exists
-                yet: initialization seals one to each holder, who claims it
-                with its own keys from the qrdb CLI or the desktop app.
+                yet: initialization seals one to each holder, who claims it with
+                its own keys from the qrdb CLI or the desktop app.
               </p>
-              <CeremonyOfficerForms count={embeddedShamirShares} bind:officers={embeddedOfficers} />
+              <CeremonyOfficerForms
+                count={embeddedShamirShares}
+                bind:officers={embeddedOfficers}
+              />
             </div>
 
             <div class="card-actions justify-between mt-2">
-              <button class="btn btn-ghost" onclick={wizardBack} data-testid="embedded-officers-back-btn">Back</button>
+              <button
+                class="btn btn-ghost"
+                onclick={wizardBack}
+                data-testid="embedded-officers-back-btn">Back</button
+              >
               <button
                 class="btn btn-primary"
                 onclick={wizardNext}
@@ -1442,13 +1541,15 @@
               >
                 Next
                 {#if !allOfficersFilled}
-                  <span class="text-xs opacity-70">({embeddedOfficers.length}/{embeddedShamirShares})</span>
+                  <span class="text-xs opacity-70"
+                    >({embeddedOfficers.length}/{embeddedShamirShares})</span
+                  >
                 {/if}
                 <ChevronRight class="h-4 w-4" />
               </button>
             </div>
 
-          <!-- ---- Step: admin credential ---- -->
+            <!-- ---- Step: admin credential ---- -->
           {:else if embeddedStep === "admin"}
             <StepAdminCredential
               bind:mode={embeddedAdminMode}
@@ -1460,7 +1561,7 @@
               onBack={wizardBack}
             />
 
-          <!-- ---- Step: summary ---- -->
+            <!-- ---- Step: summary ---- -->
           {:else if embeddedStep === "summary"}
             <div class="space-y-4">
               <p class="text-base-content/70 text-sm">
@@ -1476,7 +1577,9 @@
 
                 <!-- Data directory -->
                 <div class="flex items-center justify-between px-4 py-3">
-                  <span class="text-base-content/60 text-sm">Data Directory</span>
+                  <span class="text-base-content/60 text-sm"
+                    >Data Directory</span
+                  >
                   <span class="font-mono text-sm">
                     {embeddedDataDir || "~/.config/qrdb/data (default)"}
                   </span>
@@ -1486,7 +1589,9 @@
                 <div class="flex items-center justify-between px-4 py-3">
                   <span class="text-base-content/60 text-sm">Server Mode</span>
                   <span class="font-semibold text-sm capitalize">
-                    {embeddedServerMode === "raft" ? "Raft Cluster" : "Standalone"}
+                    {embeddedServerMode === "raft"
+                      ? "Raft Cluster"
+                      : "Standalone"}
                   </span>
                 </div>
 
@@ -1495,18 +1600,24 @@
                   <div class="flex items-center justify-between px-4 py-3">
                     <span class="text-base-content/60 text-sm">Discovery</span>
                     <span class="font-semibold text-sm capitalize">
-                      {embeddedDiscovery === "dns" ? "DNS SRV" : embeddedDiscovery}
+                      {embeddedDiscovery === "dns"
+                        ? "DNS SRV"
+                        : embeddedDiscovery}
                     </span>
                   </div>
                   {#if embeddedDiscovery === "dns" && embeddedDnsDomain}
                     <div class="flex items-center justify-between px-4 py-3">
-                      <span class="text-base-content/60 text-sm">DNS Domain</span>
+                      <span class="text-base-content/60 text-sm"
+                        >DNS Domain</span
+                      >
                       <span class="font-mono text-sm">{embeddedDnsDomain}</span>
                     </div>
                   {/if}
                   {#if embeddedDiscovery === "static" && parsedStaticPeers().length > 0}
                     <div class="flex items-start justify-between px-4 py-3">
-                      <span class="text-base-content/60 text-sm">Static Peers</span>
+                      <span class="text-base-content/60 text-sm"
+                        >Static Peers</span
+                      >
                       <div class="flex flex-col items-end gap-1">
                         {#each parsedStaticPeers() as peer (peer)}
                           <span class="font-mono text-sm">{peer}</span>
@@ -1518,7 +1629,9 @@
 
                 <!-- Barrier -->
                 <div class="flex items-center justify-between px-4 py-3">
-                  <span class="text-base-content/60 text-sm">Encryption Barrier</span>
+                  <span class="text-base-content/60 text-sm"
+                    >Encryption Barrier</span
+                  >
                   <span class="font-semibold text-sm capitalize">
                     {embeddedBarrierMode === "none"
                       ? "None"
@@ -1530,7 +1643,9 @@
 
                 <!-- Admin credential -->
                 <div class="flex items-center justify-between px-4 py-3">
-                  <span class="text-base-content/60 text-sm">Admin Credential</span>
+                  <span class="text-base-content/60 text-sm"
+                    >Admin Credential</span
+                  >
                   <span class="font-semibold text-sm">
                     {embeddedAdminMode === "csr"
                       ? "CSR"
@@ -1556,9 +1671,9 @@
                 <div role="alert" class="alert alert-warning text-sm">
                   <AlertCircle class="h-5 w-5 shrink-0" />
                   <span>
-                    The generated admin private key will be saved to a local file on
-                    this machine, not shown on any page, and cannot be retrieved
-                    again afterward.
+                    The generated admin private key will be saved to a local
+                    file on this machine, not shown on any page, and cannot be
+                    retrieved again afterward.
                   </span>
                 </div>
               {/if}
@@ -1571,7 +1686,7 @@
               </button>
             </div>
 
-          <!-- ---- Step: applying ---- -->
+            <!-- ---- Step: applying ---- -->
           {:else if embeddedStep === "applying"}
             <div class="space-y-6">
               {#if pendingConnectState !== null && !applyError}
@@ -1585,11 +1700,13 @@
                     <span>
                       Server initialized
                       {#if shamirShareCount > 0}
-                        with a <strong>{embeddedShamirThreshold}-of-{shamirShareCount}</strong>
-                        Shamir scheme. Each holder claims its sealed envelope, once, with
-                        its own keys from the qrdb CLI
-                        (<span class="font-mono">qrdb barrier officer claim</span>) or the
-                        desktop app. No share is ever displayed here.
+                        with a <strong
+                          >{embeddedShamirThreshold}-of-{shamirShareCount}</strong
+                        >
+                        Shamir scheme. Each holder claims its sealed envelope, once,
+                        with its own keys from the qrdb CLI (<span
+                          class="font-mono">qrdb barrier officer claim</span
+                        >) or the desktop app. No share is ever displayed here.
                       {:else}
                         .
                       {/if}
@@ -1598,12 +1715,25 @@
 
                   <div class="form-control">
                     <div class="flex items-center justify-between mb-1">
-                      <span class="label-text font-semibold">Admin Certificate (source: {adminCredentialSource})</span>
+                      <span class="label-text font-semibold"
+                        >Admin Certificate (source: {adminCredentialSource})</span
+                      >
                       <div class="flex gap-1">
-                        <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(issuedAdminCertPem)} aria-label="Copy admin certificate" data-testid="copy-admin-cert-btn">
+                        <button
+                          class="btn btn-ghost btn-xs gap-1"
+                          onclick={() => copyText(issuedAdminCertPem)}
+                          aria-label="Copy admin certificate"
+                          data-testid="copy-admin-cert-btn"
+                        >
                           <Copy class="h-3 w-3" />
                         </button>
-                        <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(issuedAdminCertPem, "admin-cert.pem")} aria-label="Download admin certificate" data-testid="download-admin-cert-btn">
+                        <button
+                          class="btn btn-ghost btn-xs gap-1"
+                          onclick={() =>
+                            downloadText(issuedAdminCertPem, "admin-cert.pem")}
+                          aria-label="Download admin certificate"
+                          data-testid="download-admin-cert-btn"
+                        >
                           <Download class="h-3 w-3" />
                         </button>
                       </div>
@@ -1613,36 +1743,59 @@
                       rows={4}
                       readonly
                       value={issuedAdminCertPem}
-                      data-testid="admin-cert-pem-issued"
-                    ></textarea>
+                      data-testid="admin-cert-pem-issued"></textarea>
                   </div>
 
                   {#if adminKeyPath}
-                    <div role="alert" class="alert alert-warning text-sm" data-testid="admin-key-saved-notice">
+                    <div
+                      role="alert"
+                      class="alert alert-warning text-sm"
+                      data-testid="admin-key-saved-notice"
+                    >
                       <AlertCircle class="h-5 w-5 shrink-0" />
                       <span>
                         The generated admin private key was saved to
-                        <span class="font-mono" data-testid="admin-key-path">{adminKeyPath}</span>
-                        on this machine. It is returned exactly once and is never shown on
-                        this page; this is dev/test/evaluation ONLY.
+                        <span class="font-mono" data-testid="admin-key-path"
+                          >{adminKeyPath}</span
+                        >
+                        on this machine. It is returned exactly once and is never
+                        shown on this page; this is dev/test/evaluation ONLY.
                       </span>
                     </div>
                   {/if}
 
                   {#if issuedHolders.length > 0}
                     <div class="form-control">
-                      <span class="label-text font-semibold mb-2">Holder Certificates</span>
+                      <span class="label-text font-semibold mb-2"
+                        >Holder Certificates</span
+                      >
                       <div class="flex flex-col gap-2">
                         {#each issuedHolders as holder (holder.username)}
                           <div class="card border border-base-300 bg-base-200">
                             <div class="card-body gap-2 p-3">
                               <div class="flex items-center justify-between">
-                                <span class="font-mono text-sm">{holder.username} ({holder.role})</span>
+                                <span class="font-mono text-sm"
+                                  >{holder.username} ({holder.role})</span
+                                >
                                 <div class="flex gap-1">
-                                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => copyText(holder.certPem)} aria-label={`Copy ${holder.username}'s certificate`} data-testid={`copy-holder-cert-${holder.username}`}>
+                                  <button
+                                    class="btn btn-ghost btn-xs gap-1"
+                                    onclick={() => copyText(holder.certPem)}
+                                    aria-label={`Copy ${holder.username}'s certificate`}
+                                    data-testid={`copy-holder-cert-${holder.username}`}
+                                  >
                                     <Copy class="h-3 w-3" />
                                   </button>
-                                  <button class="btn btn-ghost btn-xs gap-1" onclick={() => downloadText(holder.certPem, `holder-${holder.username}-cert.pem`)} aria-label={`Download ${holder.username}'s certificate`} data-testid={`download-holder-cert-${holder.username}`}>
+                                  <button
+                                    class="btn btn-ghost btn-xs gap-1"
+                                    onclick={() =>
+                                      downloadText(
+                                        holder.certPem,
+                                        `holder-${holder.username}-cert.pem`,
+                                      )}
+                                    aria-label={`Download ${holder.username}'s certificate`}
+                                    data-testid={`download-holder-cert-${holder.username}`}
+                                  >
                                     <Download class="h-3 w-3" />
                                   </button>
                                 </div>
@@ -1675,19 +1828,24 @@
                 <!-- Progress display -->
                 <div class="w-full">
                   <progress
-                    class="progress {applyError ? 'progress-error' : 'progress-primary'} w-full"
+                    class="progress {applyError
+                      ? 'progress-error'
+                      : 'progress-primary'} w-full"
                     value={applyProgress}
                     max="100"
                   ></progress>
                   <div class="mt-2 flex justify-between text-sm">
-                    <span class="text-base-content/60">{applyCurrentLabel}</span>
+                    <span class="text-base-content/60">{applyCurrentLabel}</span
+                    >
                     <span class="text-base-content/50">{applyProgress}%</span>
                   </div>
                 </div>
 
                 {#if !applyError}
                   <div class="flex justify-center">
-                    <span class="loading loading-spinner loading-lg text-primary"></span>
+                    <span
+                      class="loading loading-spinner loading-lg text-primary"
+                    ></span>
                   </div>
                 {/if}
 
@@ -1698,14 +1856,19 @@
                       {#if phase.status === "done"}
                         <CheckCircle2 class="h-5 w-5 text-success" />
                       {:else if phase.status === "active"}
-                        <span class="loading loading-spinner loading-sm text-primary"></span>
+                        <span
+                          class="loading loading-spinner loading-sm text-primary"
+                        ></span>
                       {:else if phase.status === "error"}
                         <AlertCircle class="h-5 w-5 text-error" />
                       {:else}
-                        <div class="h-5 w-5 rounded-full border-2 border-base-content/20"></div>
+                        <div
+                          class="h-5 w-5 rounded-full border-2 border-base-content/20"
+                        ></div>
                       {/if}
                       <span
-                        class="text-sm {phase.status === 'done' || phase.status === 'active'
+                        class="text-sm {phase.status === 'done' ||
+                        phase.status === 'active'
                           ? 'text-base-content'
                           : phase.status === 'error'
                             ? 'text-error'
@@ -1806,11 +1969,15 @@
           </div>
 
           <!-- TLS options -->
-          <div class="collapse collapse-arrow border-base-300 border rounded-lg">
+          <div
+            class="collapse collapse-arrow border-base-300 border rounded-lg"
+          >
             <input type="checkbox" />
             <div class="collapse-title text-sm font-medium">
               TLS / mTLS Options
-              <span class="text-base-content/40 ml-1 font-normal">(optional)</span>
+              <span class="text-base-content/40 ml-1 font-normal"
+                >(optional)</span
+              >
             </div>
             <div class="collapse-content space-y-3">
               <div class="form-control">
@@ -1828,7 +1995,8 @@
               </div>
               <div class="form-control">
                 <label class="label" for="ext-cert">
-                  <span class="label-text text-sm">Client Certificate File</span>
+                  <span class="label-text text-sm">Client Certificate File</span
+                  >
                 </label>
                 <input
                   id="ext-cert"
@@ -1889,17 +2057,24 @@
 
 <!-- Delete confirmation modal -->
 {#if pendingDeleteId !== null}
-  {@const profile = connManagerStore.profiles.find((p) => p.id === pendingDeleteId)}
+  {@const profile = connManagerStore.profiles.find(
+    (p) => p.id === pendingDeleteId,
+  )}
   <div class="modal modal-open">
     <div class="modal-box">
       <h3 class="text-lg font-bold">Delete Connection</h3>
       <p class="text-base-content/70 mt-2 text-sm">
         Are you sure you want to delete
-        <strong>{profile?.name ?? "this connection"}</strong>? This action cannot be undone.
+        <strong>{profile?.name ?? "this connection"}</strong>? This action
+        cannot be undone.
       </p>
       <div class="modal-action">
-        <button class="btn btn-ghost" onclick={handleDeleteCancel}>Cancel</button>
-        <button class="btn btn-error" onclick={handleDeleteConfirm}>Delete</button>
+        <button class="btn btn-ghost" onclick={handleDeleteCancel}
+          >Cancel</button
+        >
+        <button class="btn btn-error" onclick={handleDeleteConfirm}
+          >Delete</button
+        >
       </div>
     </div>
     <button
@@ -1911,4 +2086,8 @@
   </div>
 {/if}
 
-<RedeemInvitationModal {client} open={showRedeem} onClose={() => (showRedeem = false)} />
+<RedeemInvitationModal
+  {client}
+  open={showRedeem}
+  onClose={() => (showRedeem = false)}
+/>

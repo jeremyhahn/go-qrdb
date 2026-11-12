@@ -25,18 +25,18 @@
 // ---------------------------------------------------------------------------
 
 /** Supported transport identifiers. */
-export type Transport = 'wails' | 'rest' | 'grpc' | 'unix';
+export type Transport = "wails" | "rest" | "grpc" | "unix";
 
 /** Shape of the reactive connection state. */
 export interface ConnectionState {
-    /** Whether the client is currently connected to a QRDB server. */
-    connected: boolean;
-    /** Server address the client is connected to. */
-    address: string;
-    /** Active transport protocol identifier. */
-    transport: string;
-    /** Last connection error message, or null when healthy. */
-    error: string | null;
+  /** Whether the client is currently connected to a QRDB server. */
+  connected: boolean;
+  /** Server address the client is connected to. */
+  address: string;
+  /** Active transport protocol identifier. */
+  transport: string;
+  /** Last connection error message, or null when healthy. */
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,10 +45,10 @@ export interface ConnectionState {
 
 /** Reactive connection state. */
 export const connectionStore: ConnectionState = $state({
-    connected: false,
-    address: '',
-    transport: '',
-    error: null,
+  connected: false,
+  address: "",
+  transport: "",
+  error: null,
 });
 
 // ---------------------------------------------------------------------------
@@ -62,10 +62,10 @@ export const connectionStore: ConnectionState = $state({
  * @param transport - Transport protocol that established the connection.
  */
 export function setConnected(address: string, transport: string): void {
-    connectionStore.connected = true;
-    connectionStore.address = address;
-    connectionStore.transport = transport;
-    connectionStore.error = null;
+  connectionStore.connected = true;
+  connectionStore.address = address;
+  connectionStore.transport = transport;
+  connectionStore.error = null;
 }
 
 /**
@@ -74,8 +74,8 @@ export function setConnected(address: string, transport: string): void {
  * @param error - Optional error message describing why the connection was lost.
  */
 export function setDisconnected(error?: string): void {
-    connectionStore.connected = false;
-    connectionStore.address = '';
-    connectionStore.transport = '';
-    connectionStore.error = error ?? null;
+  connectionStore.connected = false;
+  connectionStore.address = "";
+  connectionStore.transport = "";
+  connectionStore.error = error ?? null;
 }

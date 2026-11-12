@@ -15,14 +15,20 @@
   limitations under the License.
 -->
 <script lang="ts">
-  let { text, position = "top" }: { text: string; position?: "top" | "bottom" | "left" | "right" } = $props();
+  let {
+    text,
+    position = "top",
+  }: { text: string; position?: "top" | "bottom" | "left" | "right" } =
+    $props();
 </script>
 
 <span
   class="tooltip tooltip-{position} inline-flex cursor-help"
   data-tip={text}
 >
-  <span class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-base-content/20 text-[10px] font-medium text-base-content/40 hover:border-base-content/40 hover:text-base-content/60">
+  <span
+    class="inline-flex h-4 w-4 items-center justify-center rounded-full border border-base-content/20 text-[10px] font-medium text-base-content/40 hover:border-base-content/40 hover:text-base-content/60"
+  >
     ?
   </span>
 </span>

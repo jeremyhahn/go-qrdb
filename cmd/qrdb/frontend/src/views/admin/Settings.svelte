@@ -19,7 +19,10 @@
   import type { Client } from "@qrdb/sdk";
   import { Sun, Moon } from "lucide-svelte";
   import { themeStore, toggleTheme } from "$stores/theme.svelte.ts";
-  import { connManagerStore, disconnectProfile } from "$stores/connection-manager.svelte.ts";
+  import {
+    connManagerStore,
+    disconnectProfile,
+  } from "$stores/connection-manager.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
   let { client }: { client: Client } = $props();
@@ -43,7 +46,8 @@
    */
   const isConnected = $derived(
     clientConnected &&
-      connManagerStore.states.get(connManagerStore.activeProfileId)?.status !== 'disconnected',
+      connManagerStore.states.get(connManagerStore.activeProfileId)?.status !==
+        "disconnected",
   );
   let disconnecting: boolean = $state(false);
   let disconnectError: string | null = $state(null);
@@ -62,9 +66,9 @@
     const profile = connManagerStore.profiles.find(
       (p) => p.id === connManagerStore.activeProfileId,
     );
-    if (profile === undefined) return 'Unknown';
-    if (profile.type === 'embedded') return 'embedded';
-    return profile.external?.transport ?? 'Unknown';
+    if (profile === undefined) return "Unknown";
+    if (profile.type === "embedded") return "embedded";
+    return profile.external?.transport ?? "Unknown";
   });
 
   /**
@@ -75,9 +79,9 @@
     const profile = connManagerStore.profiles.find(
       (p) => p.id === connManagerStore.activeProfileId,
     );
-    if (profile === undefined) return 'Not connected';
-    if (profile.type === 'embedded') return '(embedded)';
-    return profile.external?.address ?? 'Not connected';
+    if (profile === undefined) return "Not connected";
+    if (profile.type === "embedded") return "(embedded)";
+    return profile.external?.address ?? "Not connected";
   });
 
   // ---------------------------------------------------------------------------
@@ -155,7 +159,10 @@
   });
 </script>
 
-<PageHeader title="Settings" description="Connection, appearance, and application information" />
+<PageHeader
+  title="Settings"
+  description="Connection, appearance, and application information"
+/>
 
 <div class="flex flex-col gap-6">
   <!-- Connection section -->
@@ -191,12 +198,18 @@
 
       {#if connManagerStore.states.get(connManagerStore.activeProfileId)?.error !== undefined}
         <div class="alert alert-error mt-3">
-          <span>{connManagerStore.states.get(connManagerStore.activeProfileId)?.error}</span>
+          <span
+            >{connManagerStore.states.get(connManagerStore.activeProfileId)
+              ?.error}</span
+          >
         </div>
       {/if}
 
       {#if disconnectError !== null}
-        <div class="alert alert-error mt-3" data-testid="settings-disconnect-error">
+        <div
+          class="alert alert-error mt-3"
+          data-testid="settings-disconnect-error"
+        >
           <span>{disconnectError}</span>
         </div>
       {/if}
@@ -235,13 +248,19 @@
         <div class="stats bg-base-300 shadow-sm">
           <div class="stat">
             <div class="stat-title">Initialized</div>
-            <div class="stat-value text-xl" data-testid="settings-server-initialized">
+            <div
+              class="stat-value text-xl"
+              data-testid="settings-server-initialized"
+            >
               {serverInitialized ? "Yes" : "No"}
             </div>
           </div>
           <div class="stat">
             <div class="stat-title">Embedded server available</div>
-            <div class="stat-value text-xl" data-testid="settings-server-embedded">
+            <div
+              class="stat-value text-xl"
+              data-testid="settings-server-embedded"
+            >
               {embeddedAvailable ? "Yes" : "No"}
             </div>
           </div>
@@ -255,7 +274,8 @@
     <div class="card-body">
       <h2 class="card-title text-lg">Theme</h2>
       <p class="text-base-content/70 text-sm">
-        Toggle between light and dark mode. Your preference is persisted to local storage.
+        Toggle between light and dark mode. Your preference is persisted to
+        local storage.
       </p>
 
       <div class="mt-3 flex items-center gap-4">

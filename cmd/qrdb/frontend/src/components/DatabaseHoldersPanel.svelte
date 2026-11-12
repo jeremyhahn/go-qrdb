@@ -83,7 +83,9 @@
    * More holders than N are enrolled -- possible before the server refused
    * enrolment past N -- so Initialize, which needs exactly N, cannot run.
    */
-  let overLimit = $derived(!initialized && sharesTotal > 0 && holders.length > sharesTotal);
+  let overLimit = $derived(
+    !initialized && sharesTotal > 0 && holders.length > sharesTotal,
+  );
 
   async function load(): Promise<void> {
     loading = true;
@@ -144,28 +146,43 @@
   <div class="card-body space-y-4">
     <div class="flex items-center justify-between">
       <h3 class="card-title text-base">Share Holders</h3>
-      <button class="btn btn-ghost btn-xs" onclick={() => void load()} data-testid="db-holders-refresh">Refresh</button>
+      <button
+        class="btn btn-ghost btn-xs"
+        onclick={() => void load()}
+        data-testid="db-holders-refresh">Refresh</button
+      >
     </div>
 
     {#if loading}
       <span class="loading loading-spinner loading-sm"></span>
     {:else if error}
-      <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-load-error">
+      <div
+        role="alert"
+        class="alert alert-error text-sm"
+        data-testid="db-holders-load-error"
+      >
         <span>{error}</span>
       </div>
     {:else}
       {#if split !== null}
-        <div class="alert alert-success text-sm" data-testid="db-holders-initialized">
+        <div
+          class="alert alert-success text-sm"
+          data-testid="db-holders-initialized"
+        >
           <span>
             Custody initialized: {split.threshold}-of-{split.totalShares}, {split.shareCount}
             sealed envelopes waiting to be claimed. Each holder claims theirs with
-            <code>qrdb database barrier-officer claim --database {database}</code>.
+            <code
+              >qrdb database barrier-officer claim --database {database}</code
+            >.
           </span>
         </div>
       {/if}
 
       {#if holders.length === 0}
-        <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60">
+        <div
+          class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60"
+        >
           No share holders enrolled.
         </div>
       {:else}
@@ -189,7 +206,11 @@
                   <td class="text-xs">{holder.role}</td>
                   <td class="text-center">{holder.shareIndex}</td>
                   <td class="text-xs">
-                    {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
+                    {holder.claimedAt
+                      ? "Claimed"
+                      : holder.sharePending
+                        ? "Pending"
+                        : "Not claimed"}
                   </td>
                   {#if !initialized}
                     <td class="text-right">
@@ -200,7 +221,8 @@
                         data-testid="db-holder-unenrol-{holder.username}"
                       >
                         {#if unenrolling === holder.username}
-                          <span class="loading loading-spinner loading-xs"></span>
+                          <span class="loading loading-spinner loading-xs"
+                          ></span>
                         {/if}
                         Remove
                       </button>
@@ -212,39 +234,66 @@
           </table>
         </div>
         {#if unenrolError}
-          <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-unenrol-error">
+          <div
+            role="alert"
+            class="alert alert-error text-sm"
+            data-testid="db-holders-unenrol-error"
+          >
             <span>{unenrolError}</span>
           </div>
         {/if}
       {/if}
 
       {#if !initialized && sharesTotal > 0}
-        <div class="border-t border-base-300 space-y-4 pt-4" data-testid="db-holders-resume">
+        <div
+          class="border-t border-base-300 space-y-4 pt-4"
+          data-testid="db-holders-resume"
+        >
           <div role="alert" class="alert alert-warning text-sm">
             <span>
-              Custody is not initialized: <span class="font-mono">{database}</span> stays sealed
-              until all {sharesTotal} holders are enrolled and you initialize; then any
+              Custody is not initialized: <span class="font-mono"
+                >{database}</span
+              >
+              stays sealed until all {sharesTotal} holders are enrolled and you initialize;
+              then any
               {sharesRequired} of them unseal it together.
             </span>
           </div>
           {#if overLimit}
-            <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-over-limit">
+            <div
+              role="alert"
+              class="alert alert-error text-sm"
+              data-testid="db-holders-over-limit"
+            >
               <span>
                 {holders.length} holders are enrolled, but the key of
                 <span class="font-mono">{database}</span> is split to exactly {sharesTotal}.
                 Initialization needs exactly {sharesTotal}: remove
-                {holders.length - sharesTotal} holder{holders.length - sharesTotal === 1 ? "" : "s"}
+                {holders.length - sharesTotal} holder{holders.length -
+                  sharesTotal ===
+                1
+                  ? ""
+                  : "s"}
                 before initializing.
               </span>
             </div>
           {/if}
           {#if remaining > 0}
             {#key formsEpoch}
-              <HolderEnrolmentForms {client} count={remaining} bind:registeredCount={registered} {enrol} />
+              <HolderEnrolmentForms
+                {client}
+                count={remaining}
+                bind:registeredCount={registered}
+                {enrol}
+              />
             {/key}
           {/if}
           {#if initError}
-            <div role="alert" class="alert alert-error text-sm" data-testid="db-holders-init-error">
+            <div
+              role="alert"
+              class="alert alert-error text-sm"
+              data-testid="db-holders-init-error"
+            >
               <span>{initError}</span>
             </div>
           {/if}
@@ -260,7 +309,9 @@
               {/if}
               Initialize
               {#if enrolled !== sharesTotal}
-                <span class="text-xs opacity-70">({enrolled}/{sharesTotal})</span>
+                <span class="text-xs opacity-70"
+                  >({enrolled}/{sharesTotal})</span
+                >
               {/if}
             </button>
           </div>
@@ -269,16 +320,18 @@
         <div class="border-t border-base-300 pt-4">
           <HolderRekeyPanel
             submitCommand="qrdb database barrier-quorum submit --database {database} --op rekey"
-            onStartRekey={(r) => client.officers.startDatabaseRekey({
-              database,
-              threshold: r.threshold,
-              policy: r.policy,
-            })}
-            onRevoke={(r) => client.officers.revokeDatabaseOfficer({
-              database,
-              username: r.username,
-              ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
-            })}
+            onStartRekey={(r) =>
+              client.officers.startDatabaseRekey({
+                database,
+                threshold: r.threshold,
+                policy: r.policy,
+              })}
+            onRevoke={(r) =>
+              client.officers.revokeDatabaseOfficer({
+                database,
+                username: r.username,
+                ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
+              })}
           />
         </div>
       {/if}

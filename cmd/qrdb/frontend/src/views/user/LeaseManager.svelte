@@ -16,7 +16,10 @@
 -->
 <script lang="ts">
   import type { Client, LeaseInfo } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { CrudTable } from "../../components/core/CrudTable";
   import FormModal from "../../components/FormModal.svelte";
   import PageHeader from "../../components/PageHeader.svelte";
@@ -51,9 +54,24 @@
 
   const leaseColumns: Column<LeaseInfo>[] = [
     { id: "id", header: "ID", accessor: "id", sortable: true },
-    { id: "ttl", header: "TTL", accessor: (row: LeaseInfo) => `${row.ttl}s`, sortable: true },
-    { id: "grantedTtl", header: "Granted TTL", accessor: (row: LeaseInfo) => `${row.grantedTtl}s`, sortable: true },
-    { id: "remaining", header: "Remaining", accessor: (row: LeaseInfo) => `${Math.round(ttlPercentage(row))}%`, sortable: true },
+    {
+      id: "ttl",
+      header: "TTL",
+      accessor: (row: LeaseInfo) => `${row.ttl}s`,
+      sortable: true,
+    },
+    {
+      id: "grantedTtl",
+      header: "Granted TTL",
+      accessor: (row: LeaseInfo) => `${row.grantedTtl}s`,
+      sortable: true,
+    },
+    {
+      id: "remaining",
+      header: "Remaining",
+      accessor: (row: LeaseInfo) => `${Math.round(ttlPercentage(row))}%`,
+      sortable: true,
+    },
   ];
 
   // ---------------------------------------------------------------------------
@@ -96,7 +114,10 @@
     grantLoading = true;
     try {
       const lease = await client.lease.grant(ttl);
-      showToast("success", `Lease granted with ID ${lease.id}, TTL ${lease.ttl}s.`);
+      showToast(
+        "success",
+        `Lease granted with ID ${lease.id}, TTL ${lease.ttl}s.`,
+      );
       showGrantModal = false;
       grantTtl = "60";
       await loadLeases();
@@ -171,14 +192,26 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <PageHeader title="Leases" description="Manage TTL-bound keys with lease renewals">
+  <PageHeader
+    title="Leases"
+    description="Manage TTL-bound keys with lease renewals"
+  >
     {#snippet actions()}
       <label class="label cursor-pointer gap-2">
         <span class="label-text text-xs">Auto-refresh</span>
-        <input type="checkbox" class="toggle toggle-primary toggle-xs" bind:checked={autoRefresh} />
+        <input
+          type="checkbox"
+          class="toggle toggle-primary toggle-xs"
+          bind:checked={autoRefresh}
+        />
       </label>
-      <button class="btn btn-outline btn-sm" onclick={loadLeases}>Refresh</button>
-      <button class="btn btn-primary btn-sm" onclick={() => (showGrantModal = true)}>Grant Lease</button>
+      <button class="btn btn-outline btn-sm" onclick={loadLeases}
+        >Refresh</button
+      >
+      <button
+        class="btn btn-primary btn-sm"
+        onclick={() => (showGrantModal = true)}>Grant Lease</button
+      >
     {/snippet}
   </PageHeader>
 
@@ -208,37 +241,58 @@
             <div class="bg-base-300 rounded p-3">
               <table class="table table-sm">
                 <tbody>
-                  <tr><th class="w-28">ID</th><td class="font-mono text-xs">{selectedLease.id}</td></tr>
+                  <tr
+                    ><th class="w-28">ID</th><td class="font-mono text-xs"
+                      >{selectedLease.id}</td
+                    ></tr
+                  >
                   <tr><th>TTL</th><td>{selectedLease.ttl}s</td></tr>
-                  <tr><th>Granted TTL</th><td>{selectedLease.grantedTtl}s</td></tr>
+                  <tr
+                    ><th>Granted TTL</th><td>{selectedLease.grantedTtl}s</td
+                    ></tr
+                  >
                 </tbody>
               </table>
             </div>
             <div>
-              <span class="text-sm font-medium text-base-content/70">Time Remaining</span>
+              <span class="text-sm font-medium text-base-content/70"
+                >Time Remaining</span
+              >
               <div class="flex items-center gap-2 mt-1">
                 <progress
                   class="progress flex-1 {ttlColor(pct)}"
                   value={pct}
                   max="100"
                 ></progress>
-                <span class="font-mono text-xs w-12 text-right">{Math.round(pct)}%</span>
+                <span class="font-mono text-xs w-12 text-right"
+                  >{Math.round(pct)}%</span
+                >
               </div>
               {#if ttlRemaining !== null}
-                <p class="text-xs text-base-content/50 mt-1">{ttlRemaining}s remaining of {selectedLease.grantedTtl}s</p>
+                <p class="text-xs text-base-content/50 mt-1">
+                  {ttlRemaining}s remaining of {selectedLease.grantedTtl}s
+                </p>
               {/if}
             </div>
             <div class="flex gap-1">
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => handleKeepAlive(selectedLease!.id)}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => handleKeepAlive(selectedLease!.id)}
+              >
                 KeepAlive
               </button>
-              <button class="btn btn-error btn-xs flex-1" onclick={() => handleRevoke(selectedLease!.id)}>
+              <button
+                class="btn btn-error btn-xs flex-1"
+                onclick={() => handleRevoke(selectedLease!.id)}
+              >
                 Revoke
               </button>
             </div>
           </div>
         {:else}
-          <p class="text-base-content/50 text-sm">Select a lease to view details.</p>
+          <p class="text-base-content/50 text-sm">
+            Select a lease to view details.
+          </p>
         {/if}
       </div>
     </div>

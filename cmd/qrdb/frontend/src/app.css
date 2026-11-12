@@ -20,7 +20,9 @@
 @import "@fontsource-variable/inter";
 
 @plugin "daisyui" {
-  themes: qrdb-dark --default, qrdb-light;
+  themes:
+    qrdb-dark --default,
+    qrdb-light;
 }
 
 /* ---------------------------------------------------------------------------
@@ -56,13 +58,13 @@
   --color-base-content: oklch(0.88 0.005 250);
 
   /* Feedback */
-  --color-info: oklch(0.70 0.15 230);
+  --color-info: oklch(0.7 0.15 230);
   --color-info-content: oklch(0.15 0.02 230);
   --color-success: oklch(0.72 0.17 155);
   --color-success-content: oklch(0.15 0.02 155);
-  --color-warning: oklch(0.80 0.16 75);
+  --color-warning: oklch(0.8 0.16 75);
   --color-warning-content: oklch(0.15 0.02 75);
-  --color-error: oklch(0.65 0.20 25);
+  --color-error: oklch(0.65 0.2 25);
   --color-error-content: oklch(0.95 0.02 25);
 
   /* Radius */
@@ -84,7 +86,7 @@
   --color-primary-content: oklch(0.98 0.01 230);
 
   /* Secondary: Violet */
-  --color-secondary: oklch(0.50 0.20 280);
+  --color-secondary: oklch(0.5 0.2 280);
   --color-secondary-content: oklch(0.98 0.01 280);
 
   /* Accent: Teal */
@@ -96,17 +98,17 @@
   --color-neutral-content: oklch(0.98 0.01 240);
 
   /* Base: Clean white */
-  --color-base-100: oklch(0.99 0.00 0);
+  --color-base-100: oklch(0.99 0 0);
   --color-base-200: oklch(0.96 0.005 250);
   --color-base-300: oklch(0.92 0.008 250);
-  --color-base-content: oklch(0.20 0.02 240);
+  --color-base-content: oklch(0.2 0.02 240);
 
   /* Feedback */
   --color-info: oklch(0.55 0.18 230);
   --color-info-content: oklch(0.98 0.01 230);
   --color-success: oklch(0.55 0.19 155);
   --color-success-content: oklch(0.98 0.01 155);
-  --color-warning: oklch(0.70 0.18 75);
+  --color-warning: oklch(0.7 0.18 75);
   --color-warning-content: oklch(0.15 0.02 75);
   --color-error: oklch(0.55 0.22 25);
   --color-error-content: oklch(0.98 0.01 25);
@@ -139,7 +141,7 @@
 }
 
 [data-theme="qrdb-light"] .content-bg {
-  background-color: var(--color-base-100, oklch(0.99 0.00 0));
+  background-color: var(--color-base-100, oklch(0.99 0 0));
 }
 
 /* ---------------------------------------------------------------------------
@@ -156,12 +158,12 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: oklch(0.40 0.02 240 / 0.5);
+    background: oklch(0.4 0.02 240 / 0.5);
     border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.50 0.02 240 / 0.7);
+    background: oklch(0.5 0.02 240 / 0.7);
   }
 }
 
@@ -171,7 +173,13 @@
 @layer base {
   /* System font stack */
   html {
-    font-family: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-family:
+      "Inter Variable",
+      "Inter",
+      -apple-system,
+      BlinkMacSystemFont,
+      system-ui,
+      sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -250,7 +258,7 @@
   }
 
   .btn-outline.btn-error {
-    border-color: oklch(0.65 0.20 25 / 0.4);
+    border-color: oklch(0.65 0.2 25 / 0.4);
   }
 
   [data-theme="qrdb-light"] .btn-outline {
@@ -284,7 +292,11 @@
  * Gradient text heading utility
  * --------------------------------------------------------------------------- */
 @utility gradient-text {
-  background: linear-gradient(135deg, oklch(0.65 0.12 220), oklch(0.65 0.18 280));
+  background: linear-gradient(
+    135deg,
+    oklch(0.65 0.12 220),
+    oklch(0.65 0.18 280)
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -303,15 +315,15 @@
  * --------------------------------------------------------------------------- */
 :root {
   /* Data Engines */
-  --color-kv: oklch(0.65 0.18 280);           /* Violet - KV Store */
-  --color-timeseries: oklch(0.72 0.16 55);    /* Orange - TimeSeries */
-  --color-vectors: oklch(0.72 0.14 175);      /* Teal - Vectors */
+  --color-kv: oklch(0.65 0.18 280); /* Violet - KV Store */
+  --color-timeseries: oklch(0.72 0.16 55); /* Orange - TimeSeries */
+  --color-vectors: oklch(0.72 0.14 175); /* Teal - Vectors */
 
   /* Features */
-  --color-transactions: oklch(0.70 0.15 200); /* Cyan - Transactions */
-  --color-batch: oklch(0.70 0.12 240);        /* Blue - Batch */
-  --color-watch: oklch(0.70 0.10 240);        /* Soft blue - Watch */
-  --color-leases: oklch(0.70 0.10 240);       /* Soft blue - Leases */
+  --color-transactions: oklch(0.7 0.15 200); /* Cyan - Transactions */
+  --color-batch: oklch(0.7 0.12 240); /* Blue - Batch */
+  --color-watch: oklch(0.7 0.1 240); /* Soft blue - Watch */
+  --color-leases: oklch(0.7 0.1 240); /* Soft blue - Leases */
   --color-sql: oklch(0.65 0.12 220);
 }
 
@@ -352,7 +364,9 @@
 /* Navigation item with accent - applies left border when active or icon tint */
 .nav-item-accent {
   border-left: 2px solid transparent;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .nav-item-accent.active {

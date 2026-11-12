@@ -18,8 +18,7 @@
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
   import type { StorageBackend } from "$stores/database-wizard.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   interface BackendOption {
     readonly id: StorageBackend;

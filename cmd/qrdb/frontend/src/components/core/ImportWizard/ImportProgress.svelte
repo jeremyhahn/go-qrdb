@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { ImportProgress as ImportProgressType } from './types.ts';
+  import type { ImportProgress as ImportProgressType } from "./types.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -49,46 +49,46 @@
   });
 
   const isComplete = $derived(
-    progress.status === 'completed' ||
-    progress.status === 'cancelled' ||
-    progress.status === 'error'
+    progress.status === "completed" ||
+      progress.status === "cancelled" ||
+      progress.status === "error",
   );
 
-  const isImporting = $derived(progress.status === 'importing');
+  const isImporting = $derived(progress.status === "importing");
 
   const statusMessage = $derived.by(() => {
     switch (progress.status) {
-      case 'pending':
-        return 'Preparing import...';
-      case 'importing':
+      case "pending":
+        return "Preparing import...";
+      case "importing":
         return `Importing records... (${progress.processed.toLocaleString()} of ${progress.total.toLocaleString()})`;
-      case 'completed':
-        return 'Import completed successfully';
-      case 'cancelled':
-        return 'Import was cancelled';
-      case 'error':
-        return 'Import failed with errors';
+      case "completed":
+        return "Import completed successfully";
+      case "cancelled":
+        return "Import was cancelled";
+      case "error":
+        return "Import failed with errors";
       default:
-        return '';
+        return "";
     }
   });
 
   const statusIcon = $derived.by(() => {
     switch (progress.status) {
-      case 'completed':
+      case "completed":
         return {
-          icon: 'M5 13l4 4L19 7',
-          class: 'text-success',
+          icon: "M5 13l4 4L19 7",
+          class: "text-success",
         };
-      case 'cancelled':
+      case "cancelled":
         return {
-          icon: 'M6 18L18 6M6 6l12 12',
-          class: 'text-warning',
+          icon: "M6 18L18 6M6 6l12 12",
+          class: "text-warning",
         };
-      case 'error':
+      case "error":
         return {
-          icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z',
-          class: 'text-error',
+          icon: "M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z",
+          class: "text-error",
         };
       default:
         return null;
@@ -97,14 +97,14 @@
 
   const progressBarClass = $derived.by(() => {
     switch (progress.status) {
-      case 'completed':
-        return 'progress-success';
-      case 'error':
-        return 'progress-error';
-      case 'cancelled':
-        return 'progress-warning';
+      case "completed":
+        return "progress-success";
+      case "error":
+        return "progress-error";
+      case "cancelled":
+        return "progress-warning";
       default:
-        return 'progress-primary';
+        return "progress-primary";
     }
   });
 
@@ -169,12 +169,16 @@
 
     <div class="bg-success/10 rounded-lg p-3 text-center">
       <p class="text-success/70 text-xs uppercase">Succeeded</p>
-      <p class="text-success text-xl font-bold">{progress.succeeded.toLocaleString()}</p>
+      <p class="text-success text-xl font-bold">
+        {progress.succeeded.toLocaleString()}
+      </p>
     </div>
 
     <div class="bg-error/10 rounded-lg p-3 text-center">
       <p class="text-error/70 text-xs uppercase">Failed</p>
-      <p class="text-error text-xl font-bold">{progress.failed.toLocaleString()}</p>
+      <p class="text-error text-xl font-bold">
+        {progress.failed.toLocaleString()}
+      </p>
     </div>
   </div>
 
@@ -185,7 +189,9 @@
         <button
           type="button"
           class="flex w-full items-center justify-between text-left"
-          onclick={() => { errorsExpanded = !errorsExpanded; }}
+          onclick={() => {
+            errorsExpanded = !errorsExpanded;
+          }}
         >
           <h4 class="text-error flex items-center gap-2 text-sm font-semibold">
             <svg
@@ -207,7 +213,9 @@
 
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            class="h-5 w-5 transition-transform {errorsExpanded ? 'rotate-180' : ''}"
+            class="h-5 w-5 transition-transform {errorsExpanded
+              ? 'rotate-180'
+              : ''}"
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"
@@ -225,9 +233,14 @@
           <div class="mt-4 space-y-2">
             {#each displayedErrors as error (error.row)}
               <div class="bg-base-100 flex items-start gap-3 rounded-lg p-3">
-                <span class="badge badge-error badge-sm shrink-0">Row {error.row}</span>
+                <span class="badge badge-error badge-sm shrink-0"
+                  >Row {error.row}</span
+                >
                 <div class="min-w-0 flex-1">
-                  <p class="text-base-content truncate text-sm font-medium" title={error.key}>
+                  <p
+                    class="text-base-content truncate text-sm font-medium"
+                    title={error.key}
+                  >
                     Key: {error.key}
                   </p>
                   <p class="text-base-content/70 text-sm">{error.message}</p>
@@ -239,7 +252,9 @@
               <button
                 type="button"
                 class="btn btn-ghost btn-sm w-full"
-                onclick={() => { errorsExpanded = true; }}
+                onclick={() => {
+                  errorsExpanded = true;
+                }}
               >
                 Show {progress.errors.length - 5} more errors
               </button>
@@ -251,7 +266,7 @@
   {/if}
 
   <!-- Status-Specific Messages -->
-  {#if progress.status === 'completed' && progress.failed === 0}
+  {#if progress.status === "completed" && progress.failed === 0}
     <div class="alert alert-success">
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -267,9 +282,11 @@
           d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
         />
       </svg>
-      <span>All {progress.succeeded.toLocaleString()} records imported successfully.</span>
+      <span
+        >All {progress.succeeded.toLocaleString()} records imported successfully.</span
+      >
     </div>
-  {:else if progress.status === 'completed' && progress.failed > 0}
+  {:else if progress.status === "completed" && progress.failed > 0}
     <div class="alert alert-warning">
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -290,7 +307,7 @@
         {progress.succeeded.toLocaleString()} records imported successfully.
       </span>
     </div>
-  {:else if progress.status === 'cancelled'}
+  {:else if progress.status === "cancelled"}
     <div class="alert alert-warning">
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -307,10 +324,11 @@
         />
       </svg>
       <span>
-        Import was cancelled. {progress.succeeded.toLocaleString()} of {progress.total.toLocaleString()} records were imported before cancellation.
+        Import was cancelled. {progress.succeeded.toLocaleString()} of {progress.total.toLocaleString()}
+        records were imported before cancellation.
       </span>
     </div>
-  {:else if progress.status === 'error'}
+  {:else if progress.status === "error"}
     <div class="alert alert-error">
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -333,11 +351,7 @@
   <!-- Action Buttons -->
   <div class="flex justify-end gap-3">
     {#if isImporting}
-      <button
-        type="button"
-        class="btn btn-warning gap-2"
-        onclick={onCancel}
-      >
+      <button type="button" class="btn btn-warning gap-2" onclick={onCancel}>
         <svg
           xmlns="http://www.w3.org/2000/svg"
           class="h-5 w-5"
@@ -355,11 +369,7 @@
         Cancel Import
       </button>
     {:else}
-      <button
-        type="button"
-        class="btn btn-primary gap-2"
-        onclick={onClose}
-      >
+      <button type="button" class="btn btn-primary gap-2" onclick={onClose}>
         <svg
           xmlns="http://www.w3.org/2000/svg"
           class="h-5 w-5"

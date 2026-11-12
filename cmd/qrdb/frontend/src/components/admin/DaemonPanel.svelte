@@ -56,7 +56,8 @@
       updateStatus(status);
       clearError();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch daemon status";
+      const msg =
+        err instanceof Error ? err.message : "Failed to fetch daemon status";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -70,7 +71,8 @@
       const logs = await client.daemon.daemonLogs(maxLines);
       setLogs(logs);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch daemon logs";
+      const msg =
+        err instanceof Error ? err.message : "Failed to fetch daemon logs";
       showToast("error", msg);
     }
   }
@@ -129,7 +131,8 @@
       await fetchStatus();
       await fetchLogs();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to restart daemon";
+      const msg =
+        err instanceof Error ? err.message : "Failed to restart daemon";
       setError(msg);
       showToast("error", msg);
     } finally {
@@ -223,180 +226,184 @@
     </div>
   </div>
 {:else}
-<div class="flex flex-col gap-6">
+  <div class="flex flex-col gap-6">
+    <!-- Error display -->
+    {#if daemonStore.error !== null}
+      <div class="alert alert-error">
+        <XCircle class="h-6 w-6 shrink-0" />
+        <span>{daemonStore.error}</span>
+        <button class="btn btn-ghost btn-sm" onclick={clearError}
+          >Dismiss</button
+        >
+      </div>
+    {/if}
 
-  <!-- Error display -->
-  {#if daemonStore.error !== null}
-    <div class="alert alert-error">
-      <XCircle class="h-6 w-6 shrink-0" />
-      <span>{daemonStore.error}</span>
-      <button class="btn btn-ghost btn-sm" onclick={clearError}>Dismiss</button>
-    </div>
-  {/if}
-
-  <!-- Status bar -->
-  <div class="stats bg-base-200 shadow">
-    <div class="stat">
-      <div class="stat-title">Daemon Status</div>
-      <div class="stat-value text-xl">
-        {#if statusLoading}
-          <span class="loading loading-spinner loading-sm"></span>
-        {:else}
-          <span class="inline-flex items-center gap-2">
-            <span
-              class="inline-block h-3 w-3 rounded-full"
-              class:bg-success={daemonStore.running}
-              class:animate-pulse={daemonStore.running}
-              class:bg-error={!daemonStore.running}
-            ></span>
-            <span
-              class="badge badge-lg"
-              class:badge-success={daemonStore.running}
-              class:badge-error={!daemonStore.running}
-            >
-              {daemonStore.running ? "Running" : "Stopped"}
+    <!-- Status bar -->
+    <div class="stats bg-base-200 shadow">
+      <div class="stat">
+        <div class="stat-title">Daemon Status</div>
+        <div class="stat-value text-xl">
+          {#if statusLoading}
+            <span class="loading loading-spinner loading-sm"></span>
+          {:else}
+            <span class="inline-flex items-center gap-2">
+              <span
+                class="inline-block h-3 w-3 rounded-full"
+                class:bg-success={daemonStore.running}
+                class:animate-pulse={daemonStore.running}
+                class:bg-error={!daemonStore.running}
+              ></span>
+              <span
+                class="badge badge-lg"
+                class:badge-success={daemonStore.running}
+                class:badge-error={!daemonStore.running}
+              >
+                {daemonStore.running ? "Running" : "Stopped"}
+              </span>
             </span>
-          </span>
-        {/if}
-      </div>
-      <div class="stat-desc">Process lifecycle state</div>
-    </div>
-
-    <div class="stat">
-      <div class="stat-title">PID</div>
-      <div class="stat-value text-xl font-mono">
-        {daemonStore.pid !== null ? daemonStore.pid : "--"}
-      </div>
-      <div class="stat-desc">Process identifier</div>
-    </div>
-
-    <div class="stat">
-      <div class="stat-title">Log File</div>
-      <div class="stat-value text-sm font-mono truncate max-w-xs" title={daemonStore.logFile ?? ""}>
-        {daemonStore.logFile !== null ? daemonStore.logFile : "--"}
-      </div>
-      <div class="stat-desc">Output log path</div>
-    </div>
-  </div>
-
-  <!-- Control buttons -->
-  <div class="card bg-base-200 shadow">
-    <div class="card-body">
-      <h2 class="card-title text-lg">Controls</h2>
-
-      <!-- Config path input -->
-      <div class="form-control">
-        <label class="label" for="daemon-config-path">
-          <span class="label-text">Config Path</span>
-        </label>
-        <input
-          id="daemon-config-path"
-          type="text"
-          class="input input-bordered input-sm font-mono"
-          placeholder="/etc/qrdb/qrdbd.yaml"
-          bind:value={configPath}
-        />
-      </div>
-
-      <!-- Action buttons -->
-      <div class="mt-3 flex flex-wrap gap-2">
-        <button
-          class="btn btn-success btn-sm"
-          onclick={() => void handleStart()}
-          disabled={daemonStore.loading || daemonStore.running}
-        >
-          {#if daemonStore.loading && !daemonStore.running}
-            <span class="loading loading-spinner loading-xs"></span>
-          {:else}
-            <Play class="h-4 w-4" />
           {/if}
-          Start
-        </button>
+        </div>
+        <div class="stat-desc">Process lifecycle state</div>
+      </div>
 
-        <button
-          class="btn btn-error btn-sm"
-          onclick={() => void handleStop()}
-          disabled={daemonStore.loading || !daemonStore.running}
-        >
-          {#if daemonStore.loading && daemonStore.running}
-            <span class="loading loading-spinner loading-xs"></span>
-          {:else}
-            <Square class="h-4 w-4" />
-          {/if}
-          Stop
-        </button>
+      <div class="stat">
+        <div class="stat-title">PID</div>
+        <div class="stat-value text-xl font-mono">
+          {daemonStore.pid !== null ? daemonStore.pid : "--"}
+        </div>
+        <div class="stat-desc">Process identifier</div>
+      </div>
 
-        <button
-          class="btn btn-warning btn-sm"
-          onclick={() => void handleRestart()}
-          disabled={daemonStore.loading || !daemonStore.running}
+      <div class="stat">
+        <div class="stat-title">Log File</div>
+        <div
+          class="stat-value text-sm font-mono truncate max-w-xs"
+          title={daemonStore.logFile ?? ""}
         >
-          <RotateCw class="h-4 w-4" />
-          Restart
-        </button>
-
-        <button
-          class="btn btn-ghost btn-sm"
-          onclick={() => void handleRefresh()}
-          disabled={daemonStore.loading}
-        >
-          {#if daemonStore.loading}
-            <span class="loading loading-spinner loading-xs"></span>
-          {:else}
-            <RefreshCw class="h-4 w-4" />
-          {/if}
-          Refresh Status
-        </button>
+          {daemonStore.logFile !== null ? daemonStore.logFile : "--"}
+        </div>
+        <div class="stat-desc">Output log path</div>
       </div>
     </div>
-  </div>
 
-  <!-- Log viewer -->
-  <div class="card bg-base-200 shadow">
-    <div class="card-body">
-      <div class="flex items-center justify-between">
-        <h2 class="card-title text-lg">Logs</h2>
-        <div class="flex items-center gap-3">
-          <!-- Max lines selector -->
-          <div class="form-control">
-            <select
-              class="select select-bordered select-xs"
-              bind:value={maxLines}
-              onchange={() => void fetchLogs()}
-              aria-label="Max log lines"
-            >
-              {#each maxLinesOptions as opt (opt)}
-                <option value={opt}>{opt} lines</option>
-              {/each}
-            </select>
-          </div>
+    <!-- Control buttons -->
+    <div class="card bg-base-200 shadow">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Controls</h2>
 
-          <!-- Auto-refresh toggle -->
-          <label class="label cursor-pointer gap-2">
-            <span class="label-text text-xs">Auto-refresh</span>
-            <input
-              type="checkbox"
-              class="toggle toggle-xs toggle-primary"
-              bind:checked={autoRefresh}
-            />
+        <!-- Config path input -->
+        <div class="form-control">
+          <label class="label" for="daemon-config-path">
+            <span class="label-text">Config Path</span>
           </label>
+          <input
+            id="daemon-config-path"
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            placeholder="/etc/qrdb/qrdbd.yaml"
+            bind:value={configPath}
+          />
+        </div>
 
-          <!-- Manual refresh -->
+        <!-- Action buttons -->
+        <div class="mt-3 flex flex-wrap gap-2">
           <button
-            class="btn btn-ghost btn-xs"
-            onclick={() => void fetchLogs()}
-            aria-label="Refresh logs"
+            class="btn btn-success btn-sm"
+            onclick={() => void handleStart()}
+            disabled={daemonStore.loading || daemonStore.running}
           >
-            <RefreshCw class="h-3.5 w-3.5" />
+            {#if daemonStore.loading && !daemonStore.running}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <Play class="h-4 w-4" />
+            {/if}
+            Start
+          </button>
+
+          <button
+            class="btn btn-error btn-sm"
+            onclick={() => void handleStop()}
+            disabled={daemonStore.loading || !daemonStore.running}
+          >
+            {#if daemonStore.loading && daemonStore.running}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <Square class="h-4 w-4" />
+            {/if}
+            Stop
+          </button>
+
+          <button
+            class="btn btn-warning btn-sm"
+            onclick={() => void handleRestart()}
+            disabled={daemonStore.loading || !daemonStore.running}
+          >
+            <RotateCw class="h-4 w-4" />
+            Restart
+          </button>
+
+          <button
+            class="btn btn-ghost btn-sm"
+            onclick={() => void handleRefresh()}
+            disabled={daemonStore.loading}
+          >
+            {#if daemonStore.loading}
+              <span class="loading loading-spinner loading-xs"></span>
+            {:else}
+              <RefreshCw class="h-4 w-4" />
+            {/if}
+            Refresh Status
           </button>
         </div>
       </div>
+    </div>
 
-      <pre
-        bind:this={logContainer}
-        class="mt-2 max-h-96 overflow-auto rounded-lg bg-neutral p-4 text-xs leading-relaxed text-neutral-content font-mono"
-      >{daemonStore.logs || "No log output available."}</pre>
+    <!-- Log viewer -->
+    <div class="card bg-base-200 shadow">
+      <div class="card-body">
+        <div class="flex items-center justify-between">
+          <h2 class="card-title text-lg">Logs</h2>
+          <div class="flex items-center gap-3">
+            <!-- Max lines selector -->
+            <div class="form-control">
+              <select
+                class="select select-bordered select-xs"
+                bind:value={maxLines}
+                onchange={() => void fetchLogs()}
+                aria-label="Max log lines"
+              >
+                {#each maxLinesOptions as opt (opt)}
+                  <option value={opt}>{opt} lines</option>
+                {/each}
+              </select>
+            </div>
+
+            <!-- Auto-refresh toggle -->
+            <label class="label cursor-pointer gap-2">
+              <span class="label-text text-xs">Auto-refresh</span>
+              <input
+                type="checkbox"
+                class="toggle toggle-xs toggle-primary"
+                bind:checked={autoRefresh}
+              />
+            </label>
+
+            <!-- Manual refresh -->
+            <button
+              class="btn btn-ghost btn-xs"
+              onclick={() => void fetchLogs()}
+              aria-label="Refresh logs"
+            >
+              <RefreshCw class="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
+
+        <pre
+          bind:this={logContainer}
+          class="mt-2 max-h-96 overflow-auto rounded-lg bg-neutral p-4 text-xs leading-relaxed text-neutral-content font-mono">{daemonStore.logs ||
+            "No log output available."}</pre>
+      </div>
     </div>
   </div>
-</div>
 {/if}

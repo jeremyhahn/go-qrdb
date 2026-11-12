@@ -265,7 +265,8 @@
         <div class="card-body">
           <h3 class="card-title text-base">Database Scope</h3>
           <p class="text-base-content/70 text-sm">
-            Select which databases these permissions apply to. Leave empty for all databases.
+            Select which databases these permissions apply to. Leave empty for
+            all databases.
           </p>
           <div class="flex flex-wrap gap-2 pt-2">
             {#each databases as db (db.name)}
@@ -307,9 +308,7 @@
         {/if}
         {isCreate ? "Create" : "Save"}
       </button>
-      <button class="btn btn-ghost btn-sm" onclick={onBack}>
-        Cancel
-      </button>
+      <button class="btn btn-ghost btn-sm" onclick={onBack}> Cancel </button>
       {#if existingRole !== null && !existingRole.system}
         <button
           class="btn btn-error btn-sm ml-auto"

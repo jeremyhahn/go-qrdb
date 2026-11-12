@@ -16,7 +16,10 @@
 -->
 <script lang="ts">
   import type { Client, LockInfo } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { CrudTable } from "../../components/core/CrudTable";
   import FormModal from "../../components/FormModal.svelte";
   import PageHeader from "../../components/PageHeader.svelte";
@@ -55,12 +58,38 @@
   // ---------------------------------------------------------------------------
 
   const lockColumns: Column<LockInfo>[] = [
-    { id: "key", header: "Key", accessor: "key", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "key",
+      header: "Key",
+      accessor: "key",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
     { id: "holderId", header: "Holder", accessor: "holderId", sortable: true },
-    { id: "fencingToken", header: "Fencing Token", accessor: "fencingToken", sortable: true },
-    { id: "ttl", header: "TTL", accessor: (row: LockInfo) => `${row.ttl}s`, sortable: true },
-    { id: "reentrant", header: "Reentrant", accessor: (row: LockInfo) => (row.reentrant ? "yes" : "no") },
-    { id: "acquireCount", header: "Acquire Count", accessor: "acquireCount", sortable: true },
+    {
+      id: "fencingToken",
+      header: "Fencing Token",
+      accessor: "fencingToken",
+      sortable: true,
+    },
+    {
+      id: "ttl",
+      header: "TTL",
+      accessor: (row: LockInfo) => `${row.ttl}s`,
+      sortable: true,
+    },
+    {
+      id: "reentrant",
+      header: "Reentrant",
+      accessor: (row: LockInfo) => (row.reentrant ? "yes" : "no"),
+    },
+    {
+      id: "acquireCount",
+      header: "Acquire Count",
+      accessor: "acquireCount",
+      sortable: true,
+    },
   ];
 
   // ---------------------------------------------------------------------------
@@ -103,12 +132,17 @@
         key,
         ttl,
         reentrant: acquireReentrant,
-        ...(acquireHolderId.trim() !== "" ? { holder_id: acquireHolderId.trim() } : {}),
+        ...(acquireHolderId.trim() !== ""
+          ? { holder_id: acquireHolderId.trim() }
+          : {}),
       };
       const info = acquireNonBlocking
         ? await client.lock.tryLock(req)
         : await client.lock.acquire(req);
-      showToast("success", `Lock "${info.key}" acquired (fencing token ${info.fencingToken}).`);
+      showToast(
+        "success",
+        `Lock "${info.key}" acquired (fencing token ${info.fencingToken}).`,
+      );
       showAcquireModal = false;
       resetAcquireForm();
       await loadLocks();
@@ -122,7 +156,10 @@
   async function handleRelease(lock: LockInfo): Promise<void> {
     loading = true;
     try {
-      await client.lock.release({ key: lock.key, fencing_token: lock.fencingToken });
+      await client.lock.release({
+        key: lock.key,
+        fencing_token: lock.fencingToken,
+      });
       if (selectedLock !== null && selectedLock.key === lock.key) {
         selectedLock = null;
       }
@@ -137,7 +174,10 @@
 
   async function handleExtend(lock: LockInfo): Promise<void> {
     try {
-      const info = await client.lock.extend({ key: lock.key, fencing_token: lock.fencingToken });
+      const info = await client.lock.extend({
+        key: lock.key,
+        fencing_token: lock.fencingToken,
+      });
       showToast("success", `Lock "${lock.key}" extended.`);
       selectedLock = info;
       await loadLocks();
@@ -182,13 +222,21 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <PageHeader title="Locks" description="Distributed lock management with fencing tokens">
+  <PageHeader
+    title="Locks"
+    description="Distributed lock management with fencing tokens"
+  >
     {#snippet actions()}
       <label class="label cursor-pointer gap-2">
         <span class="label-text text-xs">Auto-refresh</span>
-        <input type="checkbox" class="toggle toggle-primary toggle-xs" bind:checked={autoRefresh} />
+        <input
+          type="checkbox"
+          class="toggle toggle-primary toggle-xs"
+          bind:checked={autoRefresh}
+        />
       </label>
-      <button class="btn btn-outline btn-sm" onclick={loadLocks}>Refresh</button>
+      <button class="btn btn-outline btn-sm" onclick={loadLocks}>Refresh</button
+      >
       <button
         class="btn btn-primary btn-sm"
         onclick={() => {
@@ -214,16 +262,26 @@
 
   <div class="flex items-end gap-3">
     <label class="form-control w-full max-w-xs">
-      <div class="label"><span class="label-text text-xs">Filter by key prefix</span></div>
+      <div class="label">
+        <span class="label-text text-xs">Filter by key prefix</span>
+      </div>
       <input
         type="text"
         class="input input-bordered input-sm w-full"
         placeholder="e.g. jobs/"
         bind:value={filterPrefix}
-        onkeydown={(e) => { if (e.key === "Enter") void loadLocks(); }}
+        onkeydown={(e) => {
+          if (e.key === "Enter") void loadLocks();
+        }}
       />
     </label>
-    <button class="btn btn-ghost btn-sm" onclick={() => { filterPrefix = ""; void loadLocks(); }}>
+    <button
+      class="btn btn-ghost btn-sm"
+      onclick={() => {
+        filterPrefix = "";
+        void loadLocks();
+      }}
+    >
       Clear
     </button>
   </div>
@@ -254,26 +312,52 @@
             <div class="bg-base-300 rounded p-3">
               <table class="table table-sm">
                 <tbody>
-                  <tr><th class="w-32">Key</th><td class="font-mono text-xs break-all">{selectedLock.key}</td></tr>
-                  <tr><th>Holder</th><td class="font-mono text-xs break-all">{selectedLock.holderId}</td></tr>
-                  <tr><th>Fencing Token</th><td>{selectedLock.fencingToken}</td></tr>
+                  <tr
+                    ><th class="w-32">Key</th><td
+                      class="font-mono text-xs break-all">{selectedLock.key}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Holder</th><td class="font-mono text-xs break-all"
+                      >{selectedLock.holderId}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Fencing Token</th><td>{selectedLock.fencingToken}</td
+                    ></tr
+                  >
                   <tr><th>TTL</th><td>{selectedLock.ttl}s</td></tr>
-                  <tr><th>Reentrant</th><td>{selectedLock.reentrant ? "yes" : "no"}</td></tr>
-                  <tr><th>Acquire Count</th><td>{selectedLock.acquireCount}</td></tr>
+                  <tr
+                    ><th>Reentrant</th><td
+                      >{selectedLock.reentrant ? "yes" : "no"}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Acquire Count</th><td>{selectedLock.acquireCount}</td
+                    ></tr
+                  >
                 </tbody>
               </table>
             </div>
             <div class="flex gap-1">
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => handleExtend(selectedLock!)}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => handleExtend(selectedLock!)}
+              >
                 Extend
               </button>
-              <button class="btn btn-error btn-xs flex-1" onclick={() => handleRelease(selectedLock!)}>
+              <button
+                class="btn btn-error btn-xs flex-1"
+                onclick={() => handleRelease(selectedLock!)}
+              >
                 Release
               </button>
             </div>
           </div>
         {:else}
-          <p class="text-base-content/50 text-sm">Select a lock to view details.</p>
+          <p class="text-base-content/50 text-sm">
+            Select a lock to view details.
+          </p>
         {/if}
       </div>
     </div>
@@ -311,7 +395,9 @@
         />
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Holder ID (optional)</span></div>
+        <div class="label">
+          <span class="label-text">Holder ID (optional)</span>
+        </div>
         <input
           type="text"
           class="input input-bordered w-full"
@@ -320,8 +406,14 @@
         />
       </label>
       <label class="label cursor-pointer justify-start gap-2">
-        <input type="checkbox" class="checkbox checkbox-sm" bind:checked={acquireReentrant} />
-        <span class="label-text">Allow re-acquisition by the same holder (reentrant)</span>
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          bind:checked={acquireReentrant}
+        />
+        <span class="label-text"
+          >Allow re-acquisition by the same holder (reentrant)</span
+        >
       </label>
     </div>
   {/snippet}

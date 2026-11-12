@@ -65,7 +65,9 @@
     aria-label={title}
   >
     <!-- Header -->
-    <div class="border-base-content/6 flex items-center justify-between border-b px-6 py-4">
+    <div
+      class="border-base-content/6 flex items-center justify-between border-b px-6 py-4"
+    >
       <h2 class="text-lg font-semibold">{title}</h2>
       <button
         class="btn btn-ghost btn-sm btn-square"

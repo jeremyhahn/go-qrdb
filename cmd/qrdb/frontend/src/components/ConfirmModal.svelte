@@ -45,21 +45,26 @@
 </script>
 
 {#if open}
-<dialog class="modal modal-open">
-  <div class="modal-box border border-base-content/6">
-    <h3 class="text-base font-semibold">
-      {#if variant === "error" || variant === "warning"}<AlertTriangle class="h-5 w-5 text-warning inline mr-2" />{/if}{title}
-    </h3>
-    <p class="py-4">{message}</p>
-    <div class="modal-action">
-      <button class="btn btn-ghost" onclick={oncancel}>{cancelLabel}</button>
-      <button class="btn {btnVariants[variant] ?? 'btn-primary'}" onclick={onconfirm}>
-        {confirmLabel}
-      </button>
+  <dialog class="modal modal-open">
+    <div class="modal-box border border-base-content/6">
+      <h3 class="text-base font-semibold">
+        {#if variant === "error" || variant === "warning"}<AlertTriangle
+            class="h-5 w-5 text-warning inline mr-2"
+          />{/if}{title}
+      </h3>
+      <p class="py-4">{message}</p>
+      <div class="modal-action">
+        <button class="btn btn-ghost" onclick={oncancel}>{cancelLabel}</button>
+        <button
+          class="btn {btnVariants[variant] ?? 'btn-primary'}"
+          onclick={onconfirm}
+        >
+          {confirmLabel}
+        </button>
+      </div>
     </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button onclick={oncancel}>close</button>
-  </form>
-</dialog>
+    <form method="dialog" class="modal-backdrop">
+      <button onclick={oncancel}>close</button>
+    </form>
+  </dialog>
 {/if}

@@ -58,22 +58,22 @@
     /** The profile ID this admin nav is scoped to. */
     profileId: string;
     /** Server topology mode — hides cluster nav for standalone servers. */
-    serverMode?: 'standalone' | 'raft';
+    serverMode?: "standalone" | "raft";
     /**
      * Profile type — hides the Daemon item for embedded ("Local Server")
      * profiles, where qrdbd runs in-process and has no external OS process
      * to start/stop. Defaults to 'embedded' so unscoped callers stay
      * conservative.
      */
-    profileType?: 'embedded' | 'external';
+    profileType?: "embedded" | "external";
     /** When true the nav renders icon-only (sidebar collapsed). */
     collapsed?: boolean;
   }
 
   let {
     profileId,
-    serverMode = 'standalone',
-    profileType = 'embedded',
+    serverMode = "standalone",
+    profileType = "embedded",
     collapsed = false,
   }: Props = $props();
 
@@ -94,40 +94,56 @@
 
   const allSections: AdminSection[] = $derived.by(() => [
     {
-      title: 'Overview',
+      title: "Overview",
       items: [
-        { id: 'dashboard' as AdminView, label: 'Dashboard', icon: LayoutDashboard },
-        ...(serverMode === 'raft'
+        {
+          id: "dashboard" as AdminView,
+          label: "Dashboard",
+          icon: LayoutDashboard,
+        },
+        ...(serverMode === "raft"
           ? [
-              { id: 'cluster' as AdminView, label: 'Cluster', icon: Server },
-              { id: 'topology' as AdminView, label: 'Topology', icon: GitBranch },
-              { id: 'rebalance' as AdminView, label: 'Rebalance', icon: Scale },
+              { id: "cluster" as AdminView, label: "Cluster", icon: Server },
+              {
+                id: "topology" as AdminView,
+                label: "Topology",
+                icon: GitBranch,
+              },
+              { id: "rebalance" as AdminView, label: "Rebalance", icon: Scale },
             ]
           : []),
       ],
     },
     {
-      title: 'Security',
+      title: "Security",
       items: [
-        { id: 'seal-manager',  label: 'Seal Manager',  icon: Lock },
-        { id: 'tenants',       label: 'Tenants',       icon: Building2 },
-        { id: 'users',         label: 'Users',         icon: Users },
-        { id: 'roles',         label: 'Roles',         icon: Shield },
-        { id: 'volume-pools',  label: 'Volume Pools',  icon: Layers },
-        { id: 'certificates',  label: 'Certificates',  icon: FileText },
-        { id: 'credentials' as AdminView, label: 'Credentials', icon: KeyRound },
+        { id: "seal-manager", label: "Seal Manager", icon: Lock },
+        { id: "tenants", label: "Tenants", icon: Building2 },
+        { id: "users", label: "Users", icon: Users },
+        { id: "roles", label: "Roles", icon: Shield },
+        { id: "volume-pools", label: "Volume Pools", icon: Layers },
+        { id: "certificates", label: "Certificates", icon: FileText },
+        {
+          id: "credentials" as AdminView,
+          label: "Credentials",
+          icon: KeyRound,
+        },
       ],
     },
     {
-      title: 'System',
+      title: "System",
       items: [
-        { id: 'databases' as AdminView,  label: 'Databases',  icon: HardDrive },
-        { id: 'backups' as AdminView,    label: 'Backups',    icon: Archive },
-        ...(isDesktop() && profileType === 'external'
-          ? [{ id: 'daemon' as AdminView, label: 'Daemon', icon: Activity }]
+        { id: "databases" as AdminView, label: "Databases", icon: HardDrive },
+        { id: "backups" as AdminView, label: "Backups", icon: Archive },
+        ...(isDesktop() && profileType === "external"
+          ? [{ id: "daemon" as AdminView, label: "Daemon", icon: Activity }]
           : []),
-        { id: 'audit-log' as AdminView,  label: 'Audit Log',  icon: ClipboardList },
-        { id: 'settings' as AdminView,   label: 'Settings',   icon: SettingsIcon },
+        {
+          id: "audit-log" as AdminView,
+          label: "Audit Log",
+          icon: ClipboardList,
+        },
+        { id: "settings" as AdminView, label: "Settings", icon: SettingsIcon },
       ],
     },
   ]);
@@ -138,8 +154,8 @@
 
   /** Whether this server's admin section is the currently active context. */
   const isActiveServer = $derived(
-    navStore.context.type === 'server-admin' &&
-    (navStore.context as { profileId: string }).profileId === profileId,
+    navStore.context.type === "server-admin" &&
+      (navStore.context as { profileId: string }).profileId === profileId,
   );
 
   /** The active admin view for this server, or null. */
@@ -159,7 +175,9 @@
 
 {#each allSections as section (section.title)}
   {#if !collapsed}
-    <div class="text-base-content/40 mt-2 mb-0.5 px-2 text-[9px] font-semibold uppercase tracking-wider">
+    <div
+      class="text-base-content/40 mt-2 mb-0.5 px-2 text-[9px] font-semibold uppercase tracking-wider"
+    >
       {section.title}
     </div>
   {:else}
@@ -171,7 +189,9 @@
     {@const isActive = activeView === item.id}
     <button
       class="nav-item-accent group flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors duration-150
-        {isActive ? 'active text-base-content' : 'text-base-content/60 hover:bg-base-content/5 hover:text-base-content/90'}"
+        {isActive
+        ? 'active text-base-content'
+        : 'text-base-content/60 hover:bg-base-content/5 hover:text-base-content/90'}"
       class:justify-center={collapsed}
       onclick={() => handleItemClick(item.id)}
       title={item.label}

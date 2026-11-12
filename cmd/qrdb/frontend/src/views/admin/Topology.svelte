@@ -43,7 +43,10 @@
       hasError = false;
     } catch (err: unknown) {
       hasError = true;
-      showToast("error", err instanceof Error ? err.message : "Failed to fetch topology");
+      showToast(
+        "error",
+        err instanceof Error ? err.message : "Failed to fetch topology",
+      );
     } finally {
       loading = false;
     }
@@ -82,16 +85,31 @@
 
         <div class="grid grid-cols-2 gap-4 text-sm sm:grid-cols-3">
           <div>
-            <span class="text-base-content/60 block text-xs font-semibold uppercase">Node ID</span>
-            <span class="font-mono" data-testid="topology-node-id">{topology.nodeId}</span>
+            <span
+              class="text-base-content/60 block text-xs font-semibold uppercase"
+              >Node ID</span
+            >
+            <span class="font-mono" data-testid="topology-node-id"
+              >{topology.nodeId}</span
+            >
           </div>
           <div>
-            <span class="text-base-content/60 block text-xs font-semibold uppercase">Raft Address</span>
-            <span class="font-mono" data-testid="topology-raft-address">{topology.raftAddress}</span>
+            <span
+              class="text-base-content/60 block text-xs font-semibold uppercase"
+              >Raft Address</span
+            >
+            <span class="font-mono" data-testid="topology-raft-address"
+              >{topology.raftAddress}</span
+            >
           </div>
           <div>
-            <span class="text-base-content/60 block text-xs font-semibold uppercase">Shard Count</span>
-            <span class="font-mono" data-testid="topology-shard-count">{topology.shardCount}</span>
+            <span
+              class="text-base-content/60 block text-xs font-semibold uppercase"
+              >Shard Count</span
+            >
+            <span class="font-mono" data-testid="topology-shard-count"
+              >{topology.shardCount}</span
+            >
           </div>
         </div>
       </div>
@@ -125,7 +143,9 @@
         </div>
       {:else if hasError && topology === null}
         <div class="alert alert-error mt-2">
-          <span>Failed to load topology. Check the toast notifications for details.</span>
+          <span
+            >Failed to load topology. Check the toast notifications for details.</span
+          >
         </div>
       {:else if topology !== null && topology.shards.length === 0}
         <p class="text-base-content/50 py-4 text-center text-sm">

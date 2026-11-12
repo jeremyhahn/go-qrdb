@@ -171,13 +171,13 @@
           itemStyle: {
             color: accentColor,
           },
-          lineStyle: isScatter ? undefined : {
-            color: accentColor,
-            width: 3,
-          },
-          areaStyle: isArea
-            ? { color: accentColor, opacity: 0.2 }
-            : undefined,
+          lineStyle: isScatter
+            ? undefined
+            : {
+                color: accentColor,
+                width: 3,
+              },
+          areaStyle: isArea ? { color: accentColor, opacity: 0.2 } : undefined,
         },
       ],
     };

@@ -70,7 +70,9 @@
 {#if !collapsed}
   <div class="mt-1 mb-1 flex items-center gap-1.5 px-2">
     <Database class="h-3 w-3 text-base-content/40" />
-    <span class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider">
+    <span
+      class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider"
+    >
       Databases
     </span>
   </div>
@@ -90,7 +92,9 @@
 {#if !collapsed}
   <div class="mt-3 mb-1 flex items-center gap-1.5 px-2">
     <Shield class="h-3 w-3 text-base-content/40" />
-    <span class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider">
+    <span
+      class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider"
+    >
       Server Admin
     </span>
   </div>

@@ -18,8 +18,7 @@
   import { setupWizardStore } from "$stores/setup-wizard.svelte.ts";
   import type { BarrierMode } from "$stores/setup-wizard.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   const barrierModes: readonly {
     readonly id: BarrierMode;
@@ -102,7 +101,9 @@
   /** Whether the current configuration passes validation. */
   let isValid = $derived(
     barrierMode === "none" ||
-      (barrierMode === "passphrase" && passphraseError === null && passphrase.length > 0) ||
+      (barrierMode === "passphrase" &&
+        passphraseError === null &&
+        passphrase.length > 0) ||
       (barrierMode === "shamir" && shamirError === null),
   );
 
@@ -134,8 +135,8 @@
           type="button"
           class="card cursor-pointer border-2 p-4 text-left transition-colors
             {barrierMode === mode.id
-              ? 'border-primary bg-primary/5'
-              : 'border-base-300 hover:border-primary/50'}"
+            ? 'border-primary bg-primary/5'
+            : 'border-base-300 hover:border-primary/50'}"
           onclick={() => (barrierMode = mode.id)}
         >
           <div class="flex items-start gap-3">
@@ -220,8 +221,8 @@
           />
           <label class="label" for="setup-passphrase-confirm">
             <span class="label-text-alt text-base-content/60">
-              The passphrase is required each time the server starts.
-              Store it securely — it cannot be recovered if lost.
+              The passphrase is required each time the server starts. Store it
+              securely — it cannot be recovered if lost.
             </span>
           </label>
         </div>
@@ -274,10 +275,9 @@
             />
           </svg>
           <span class="text-sm">
-            The global barrier key is split into <strong>N</strong> shares.
-            Any <strong>M</strong> of those shares can reconstruct the key and
-            unseal the server. Distribute shares to different operators for
-            operational security.
+            The global barrier key is split into <strong>N</strong> shares. Any
+            <strong>M</strong> of those shares can reconstruct the key and unseal
+            the server. Distribute shares to different operators for operational security.
           </span>
         </div>
 
@@ -342,8 +342,8 @@
 
         {#if shamirError === null && shamirShares > 0}
           <p class="text-base-content/50 text-sm">
-            Configuration: {shamirThreshold}-of-{shamirShares} scheme.
-            The system tolerates the loss of {shamirShares - shamirThreshold}
+            Configuration: {shamirThreshold}-of-{shamirShares} scheme. The system
+            tolerates the loss of {shamirShares - shamirThreshold}
             share{shamirShares - shamirThreshold !== 1 ? "s" : ""}.
           </p>
         {/if}

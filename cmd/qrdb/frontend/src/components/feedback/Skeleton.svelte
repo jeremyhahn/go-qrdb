@@ -15,7 +15,8 @@
   limitations under the License.
 -->
 <script lang="ts">
-  type SkeletonVariant = "text" | "circle" | "rect" | "card" | "table-row" | "table";
+  type SkeletonVariant =
+    "text" | "circle" | "rect" | "card" | "table-row" | "table";
 
   let {
     variant = "text",
@@ -37,7 +38,9 @@
     class?: string;
   } = $props();
 
-  const defaultDimensions: Readonly<Record<SkeletonVariant, { width: string; height: string }>> = {
+  const defaultDimensions: Readonly<
+    Record<SkeletonVariant, { width: string; height: string }>
+  > = {
     text: { width: "100%", height: "1rem" },
     circle: { width: "3rem", height: "3rem" },
     rect: { width: "100%", height: "4rem" },
@@ -46,7 +49,16 @@
     table: { width: "100%", height: "auto" },
   } as const;
 
-  const cellWidths: readonly string[] = ["60%", "80%", "45%", "70%", "55%", "90%", "65%", "75%"] as const;
+  const cellWidths: readonly string[] = [
+    "60%",
+    "80%",
+    "45%",
+    "70%",
+    "55%",
+    "90%",
+    "65%",
+    "75%",
+  ] as const;
 
   function getCellWidth(index: number): string {
     const idx = index % cellWidths.length;
@@ -55,49 +67,10 @@
 
   const computedWidth = $derived(width ?? defaultDimensions[variant].width);
   const computedHeight = $derived(height ?? defaultDimensions[variant].height);
-  const animationClass = $derived(animate ? "skeleton-shimmer" : "skeleton-static");
+  const animationClass = $derived(
+    animate ? "skeleton-shimmer" : "skeleton-static",
+  );
 </script>
-
-<style>
-  .skeleton-base {
-    background-color: var(--skeleton-base);
-    border-radius: var(--radius-md);
-  }
-
-  .skeleton-shimmer {
-    background: linear-gradient(
-      90deg,
-      var(--skeleton-base) 25%,
-      var(--skeleton-highlight) 50%,
-      var(--skeleton-base) 75%
-    );
-    background-size: 200% 100%;
-    animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
-  }
-
-  .skeleton-static {
-    background-color: var(--skeleton-base);
-  }
-
-  @keyframes skeleton-shimmer {
-    0% {
-      background-position: -200% 0;
-    }
-    100% {
-      background-position: 200% 0;
-    }
-  }
-
-  .skeleton-circle {
-    border-radius: var(--radius-full);
-  }
-
-  .skeleton-card-inner {
-    border-radius: var(--radius-lg);
-    border: 1px solid var(--skeleton-base);
-    padding: var(--space-4);
-  }
-</style>
 
 {#if variant === "text"}
   <div
@@ -181,10 +154,53 @@
         {#each Array(columns) as _, colIndex}
           <div
             class="skeleton-base {animationClass} h-4 flex-1"
-            style:max-width={getCellWidth((rowIndex + colIndex) % cellWidths.length)}
+            style:max-width={getCellWidth(
+              (rowIndex + colIndex) % cellWidths.length,
+            )}
           ></div>
         {/each}
       </div>
     {/each}
   </div>
 {/if}
+
+<style>
+  .skeleton-base {
+    background-color: var(--skeleton-base);
+    border-radius: var(--radius-md);
+  }
+
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--skeleton-base) 25%,
+      var(--skeleton-highlight) 50%,
+      var(--skeleton-base) 75%
+    );
+    background-size: 200% 100%;
+    animation: skeleton-shimmer var(--skeleton-duration) ease-in-out infinite;
+  }
+
+  .skeleton-static {
+    background-color: var(--skeleton-base);
+  }
+
+  @keyframes skeleton-shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  .skeleton-circle {
+    border-radius: var(--radius-full);
+  }
+
+  .skeleton-card-inner {
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--skeleton-base);
+    padding: var(--space-4);
+  }
+</style>

@@ -31,10 +31,15 @@
 </script>
 
 <div class="mb-8 flex items-center justify-between">
-  <div class={accentColor ? "border-l-[3px] pl-3" : ""} style={accentColor ? `border-color: ${accentColor}` : ""}>
+  <div
+    class={accentColor ? "border-l-[3px] pl-3" : ""}
+    style={accentColor ? `border-color: ${accentColor}` : ""}
+  >
     <h1 class="text-2xl font-semibold tracking-tight">{title}</h1>
     {#if description}
-      <p class="text-base-content/60 mt-1 text-sm leading-relaxed">{description}</p>
+      <p class="text-base-content/60 mt-1 text-sm leading-relaxed">
+        {description}
+      </p>
     {/if}
   </div>
   {#if actions}

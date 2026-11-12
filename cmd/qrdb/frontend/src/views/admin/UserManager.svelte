@@ -17,7 +17,10 @@
 <script lang="ts">
   import type { Client, User, ListUsersResponse } from "@qrdb/sdk";
   import { TransportError } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
@@ -99,10 +102,16 @@
       });
       users = [...(response.users ?? [])];
     } catch (err: unknown) {
-      if (err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501 || err.statusCode === 503)) {
+      if (
+        err instanceof TransportError &&
+        (err.statusCode === 404 ||
+          err.statusCode === 501 ||
+          err.statusCode === 503)
+      ) {
         users = [];
       } else {
-        const msg = err instanceof Error ? err.message : "Failed to fetch users";
+        const msg =
+          err instanceof Error ? err.message : "Failed to fetch users";
         showToast("error", msg);
       }
     } finally {
@@ -146,7 +155,8 @@
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "No user bound to that thumbprint";
+      const msg =
+        err instanceof Error ? err.message : "No user bound to that thumbprint";
       showToast("error", msg);
     } finally {
       searching = false;
@@ -177,12 +187,17 @@
 {#if showDetail}
   <UserDetail {client} userId={detailUserId} onBack={handleDetailBack} />
 {:else}
-  <PageHeader title="Users" description="Manage user accounts and role assignments" />
+  <PageHeader
+    title="Users"
+    description="Manage user accounts and role assignments"
+  />
   <div class="flex flex-col gap-6">
     <!-- Tenant filter -->
     <div class="flex items-center justify-between gap-3">
       <label class="form-control w-64" for="user-filter-tenant">
-        <div class="label"><span class="label-text font-semibold">Tenant</span></div>
+        <div class="label">
+          <span class="label-text font-semibold">Tenant</span>
+        </div>
         <TenantSelect
           id="user-filter-tenant"
           {client}
@@ -192,7 +207,11 @@
           onchange={handleTenantFilterChange}
         />
       </label>
-      <button type="button" class="btn btn-sm btn-outline" onclick={handleInvite}>
+      <button
+        type="button"
+        class="btn btn-sm btn-outline"
+        onclick={handleInvite}
+      >
         Invite User
       </button>
     </div>
@@ -205,7 +224,9 @@
     >
       <label class="form-control grow">
         <div class="label">
-          <span class="label-text font-semibold">Find user by certificate thumbprint</span>
+          <span class="label-text font-semibold"
+            >Find user by certificate thumbprint</span
+          >
         </div>
         <input
           type="text"

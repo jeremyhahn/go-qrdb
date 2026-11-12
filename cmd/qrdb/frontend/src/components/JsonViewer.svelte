@@ -73,5 +73,6 @@
       </div>
     </div>
   {/if}
-  <pre class="bg-base-300 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg p-3 font-mono text-xs">{formatted}</pre>
+  <pre
+    class="bg-base-300 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg p-3 font-mono text-xs">{formatted}</pre>
 </div>

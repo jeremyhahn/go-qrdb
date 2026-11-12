@@ -33,11 +33,44 @@
   // ---------------------------------------------------------------------------
 
   const columns: Column<AuditEvent>[] = [
-    { id: "timestamp", header: "Timestamp", accessor: "timestamp", sortable: true },
-    { id: "tenantID", header: "Tenant", accessor: (row: AuditEvent) => row.tenantID ?? "", sortable: true, filterable: true, filterType: "text" },
-    { id: "actor", header: "Actor", accessor: "actor", sortable: true, filterable: true, filterType: "text" },
-    { id: "action", header: "Action", accessor: "action", sortable: true, filterable: true, filterType: "text" },
-    { id: "resource", header: "Resource", accessor: "resource", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "timestamp",
+      header: "Timestamp",
+      accessor: "timestamp",
+      sortable: true,
+    },
+    {
+      id: "tenantID",
+      header: "Tenant",
+      accessor: (row: AuditEvent) => row.tenantID ?? "",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
+    {
+      id: "actor",
+      header: "Actor",
+      accessor: "actor",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
+    {
+      id: "action",
+      header: "Action",
+      accessor: "action",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
+    {
+      id: "resource",
+      header: "Resource",
+      accessor: "resource",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
     { id: "outcome", header: "Outcome", accessor: "outcome", sortable: true },
   ];
 
@@ -104,7 +137,8 @@
       // AuditClientUnavailableError, which carries no HTTP status code, so
       // fall back to a message substring check for that path.
       const statusUnavailable =
-        err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501);
+        err instanceof TransportError &&
+        (err.statusCode === 404 || err.statusCode === 501);
       const messageUnavailable =
         message.toLowerCase().includes("not implemented") ||
         message.toLowerCase().includes("no audit client available");
@@ -182,8 +216,13 @@
   <div class="card bg-base-200 shadow">
     <div class="card-body p-5">
       <div class="flex flex-wrap items-end gap-3">
-        <label class="form-control w-full max-w-[180px]" for="audit-filter-tenant">
-          <div class="label"><span class="label-text text-xs">Tenant</span></div>
+        <label
+          class="form-control w-full max-w-[180px]"
+          for="audit-filter-tenant"
+        >
+          <div class="label">
+            <span class="label-text text-xs">Tenant</span>
+          </div>
           <TenantSelect
             id="audit-filter-tenant"
             {client}
@@ -202,7 +241,9 @@
           />
         </label>
         <label class="form-control w-full max-w-[160px]">
-          <div class="label"><span class="label-text text-xs">Resource</span></div>
+          <div class="label">
+            <span class="label-text text-xs">Resource</span>
+          </div>
           <input
             type="text"
             class="input input-bordered input-sm w-full"
@@ -211,7 +252,9 @@
           />
         </label>
         <label class="form-control w-full max-w-[160px]">
-          <div class="label"><span class="label-text text-xs">Action</span></div>
+          <div class="label">
+            <span class="label-text text-xs">Action</span>
+          </div>
           <input
             type="text"
             class="input input-bordered input-sm w-full"
@@ -220,8 +263,13 @@
           />
         </label>
         <label class="form-control w-full max-w-[160px]">
-          <div class="label"><span class="label-text text-xs">Outcome</span></div>
-          <select class="select select-bordered select-sm w-full" bind:value={filterOutcome}>
+          <div class="label">
+            <span class="label-text text-xs">Outcome</span>
+          </div>
+          <select
+            class="select select-bordered select-sm w-full"
+            bind:value={filterOutcome}
+          >
             <option value="">Any</option>
             <option value="success">Success</option>
             <option value="failure">Failure</option>
@@ -263,8 +311,10 @@
   {#if unavailable}
     <div class="alert alert-warning">
       <span>
-        The audit log API is not available on this connection. Configure an audit logger on the
-        server and ensure the connected user has the <code>audit:query</code> permission.
+        The audit log API is not available on this connection. Configure an
+        audit logger on the server and ensure the connected user has the <code
+          >audit:query</code
+        > permission.
       </span>
     </div>
   {:else}
@@ -279,12 +329,17 @@
       onrowclick={handleRowClick}
       emptyMessage="No audit events found."
       pageSize={20}
-      rowKey={(row: AuditEvent) => `${row.timestamp}|${row.requestID ?? ""}|${row.action}|${row.resource}`}
+      rowKey={(row: AuditEvent) =>
+        `${row.timestamp}|${row.requestID ?? ""}|${row.action}|${row.resource}`}
     />
 
     {#if nextCursor !== ""}
       <div class="flex justify-center">
-        <button class="btn btn-outline btn-sm" onclick={() => void loadMore()} disabled={loading}>
+        <button
+          class="btn btn-outline btn-sm"
+          onclick={() => void loadMore()}
+          disabled={loading}
+        >
           Load more
           <ChevronRight class="h-4 w-4" />
         </button>
@@ -300,13 +355,21 @@
 </div>
 
 <!-- Event detail panel -->
-<SlidePanel open={showDetail} title="Audit Event" onclose={() => (showDetail = false)}>
+<SlidePanel
+  open={showDetail}
+  title="Audit Event"
+  onclose={() => (showDetail = false)}
+>
   {#snippet children()}
     {#if selectedEvent !== null}
       <div class="flex flex-col gap-3">
         <table class="table table-sm">
           <tbody>
-            <tr><th class="w-32">Timestamp</th><td class="font-mono text-xs">{selectedEvent.timestamp}</td></tr>
+            <tr
+              ><th class="w-32">Timestamp</th><td class="font-mono text-xs"
+                >{selectedEvent.timestamp}</td
+              ></tr
+            >
             <tr><th>Actor</th><td>{selectedEvent.actor}</td></tr>
             {#if selectedEvent.tenantID}
               <tr><th>Tenant</th><td>{selectedEvent.tenantID}</td></tr>
@@ -318,20 +381,37 @@
             <tr><th>Action</th><td>{selectedEvent.action}</td></tr>
             <tr><th>Outcome</th><td>{selectedEvent.outcome}</td></tr>
             {#if selectedEvent.clientIP}
-              <tr><th>Client IP</th><td class="font-mono text-xs">{selectedEvent.clientIP}</td></tr>
+              <tr
+                ><th>Client IP</th><td class="font-mono text-xs"
+                  >{selectedEvent.clientIP}</td
+                ></tr
+              >
             {/if}
             {#if selectedEvent.requestID}
-              <tr><th>Request ID</th><td class="font-mono text-xs">{selectedEvent.requestID}</td></tr>
+              <tr
+                ><th>Request ID</th><td class="font-mono text-xs"
+                  >{selectedEvent.requestID}</td
+                ></tr
+              >
             {/if}
             {#if selectedEvent.prevHash}
-              <tr><th>Prev Hash</th><td class="font-mono text-xs break-all">{selectedEvent.prevHash}</td></tr>
+              <tr
+                ><th>Prev Hash</th><td class="font-mono text-xs break-all"
+                  >{selectedEvent.prevHash}</td
+                ></tr
+              >
             {/if}
           </tbody>
         </table>
         {#if selectedEvent.attributes && Object.keys(selectedEvent.attributes).length > 0}
           <div>
             <h4 class="text-sm font-semibold mb-1">Attributes</h4>
-            <pre class="bg-base-300 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(selectedEvent.attributes, null, 2)}</pre>
+            <pre
+              class="bg-base-300 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(
+                selectedEvent.attributes,
+                null,
+                2,
+              )}</pre>
           </div>
         {/if}
       </div>

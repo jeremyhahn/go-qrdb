@@ -20,7 +20,7 @@
  * path, recent log output, and operation-in-progress / error state.
  */
 
-import type { DaemonStatus } from '@qrdb/sdk';
+import type { DaemonStatus } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,18 +28,18 @@ import type { DaemonStatus } from '@qrdb/sdk';
 
 /** Shape of the reactive daemon state. */
 export interface DaemonState {
-    /** Whether the daemon is running. */
-    running: boolean;
-    /** Daemon process ID when running. */
-    pid: number | null;
-    /** Path to the daemon log file. */
-    logFile: string | null;
-    /** Recent daemon logs. */
-    logs: string;
-    /** Whether a daemon operation is in progress. */
-    loading: boolean;
-    /** Most recent error message, if any. */
-    error: string | null;
+  /** Whether the daemon is running. */
+  running: boolean;
+  /** Daemon process ID when running. */
+  pid: number | null;
+  /** Path to the daemon log file. */
+  logFile: string | null;
+  /** Recent daemon logs. */
+  logs: string;
+  /** Whether a daemon operation is in progress. */
+  loading: boolean;
+  /** Most recent error message, if any. */
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,12 +48,12 @@ export interface DaemonState {
 
 /** Reactive daemon state. */
 export const daemonStore: DaemonState = $state({
-    running: false,
-    pid: null,
-    logFile: null,
-    logs: '',
-    loading: false,
-    error: null,
+  running: false,
+  pid: null,
+  logFile: null,
+  logs: "",
+  loading: false,
+  error: null,
 });
 
 // ---------------------------------------------------------------------------
@@ -66,9 +66,9 @@ export const daemonStore: DaemonState = $state({
  * @param status - The status returned by `DaemonClient.daemonStatus()`.
  */
 export function updateStatus(status: DaemonStatus): void {
-    daemonStore.running = status.running;
-    daemonStore.pid = status.pid ?? null;
-    daemonStore.logFile = status.logFile ?? null;
+  daemonStore.running = status.running;
+  daemonStore.pid = status.pid ?? null;
+  daemonStore.logFile = status.logFile ?? null;
 }
 
 /**
@@ -77,7 +77,7 @@ export function updateStatus(status: DaemonStatus): void {
  * @param logs - Raw log text from `DaemonClient.daemonLogs()`.
  */
 export function setLogs(logs: string): void {
-    daemonStore.logs = logs;
+  daemonStore.logs = logs;
 }
 
 /**
@@ -86,7 +86,7 @@ export function setLogs(logs: string): void {
  * @param loading - Whether an operation is currently running.
  */
 export function setLoading(loading: boolean): void {
-    daemonStore.loading = loading;
+  daemonStore.loading = loading;
 }
 
 /**
@@ -95,10 +95,10 @@ export function setLoading(loading: boolean): void {
  * @param error - Error message string, or null to clear.
  */
 export function setError(error: string | null): void {
-    daemonStore.error = error;
+  daemonStore.error = error;
 }
 
 /** Clears the current error message. */
 export function clearError(): void {
-    daemonStore.error = null;
+  daemonStore.error = null;
 }

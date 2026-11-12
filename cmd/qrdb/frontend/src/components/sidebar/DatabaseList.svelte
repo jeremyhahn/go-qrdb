@@ -27,7 +27,11 @@
 <script lang="ts">
   import type { DatabaseInfo } from "@qrdb/sdk";
   import { Database, Plus } from "lucide-svelte";
-  import { navStore, navigateToDatabase, navigateToCreateDatabase } from "../../stores/navigation.svelte.ts";
+  import {
+    navStore,
+    navigateToDatabase,
+    navigateToCreateDatabase,
+  } from "../../stores/navigation.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -61,7 +65,7 @@
   /** The name of the currently selected database for this server, or null. */
   const selectedDbName = $derived.by((): string | null => {
     const ctx = navStore.context;
-    if (ctx.type !== 'database') return null;
+    if (ctx.type !== "database") return null;
     if ((ctx as { profileId: string }).profileId !== profileId) return null;
     return (ctx as { dbName: string }).dbName;
   });
@@ -81,7 +85,8 @@
 
 {#if loading}
   <div class="flex justify-center py-3">
-    <span class="loading loading-spinner loading-xs text-base-content/30"></span>
+    <span class="loading loading-spinner loading-xs text-base-content/30"
+    ></span>
   </div>
 {:else if databases.length === 0}
   {#if !collapsed}
@@ -93,13 +98,15 @@
     <button
       class="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors duration-150
         {isSelected
-          ? 'bg-primary/10 text-base-content font-medium'
-          : 'text-base-content/60 hover:bg-base-content/5 hover:text-base-content/90'}"
+        ? 'bg-primary/10 text-base-content font-medium'
+        : 'text-base-content/60 hover:bg-base-content/5 hover:text-base-content/90'}"
       class:justify-center={collapsed}
       onclick={() => handleSelectDatabase(db)}
       title={db.name}
     >
-      <Database class="h-3.5 w-3.5 shrink-0 {isSelected ? 'text-primary' : ''}" />
+      <Database
+        class="h-3.5 w-3.5 shrink-0 {isSelected ? 'text-primary' : ''}"
+      />
       {#if !collapsed}
         <span class="flex-1 truncate text-left">{db.name}</span>
       {/if}

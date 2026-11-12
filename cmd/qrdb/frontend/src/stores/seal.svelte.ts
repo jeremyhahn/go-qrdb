@@ -21,7 +21,7 @@
  * background polling is active.
  */
 
-import type { SealStatus, OfficerStatus } from '@qrdb/sdk';
+import type { SealStatus, OfficerStatus } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,31 +29,31 @@ import type { SealStatus, OfficerStatus } from '@qrdb/sdk';
 
 /** Shape of the reactive seal state. */
 export interface SealState {
-    /** Whether the server's encryption barrier is currently sealed. */
-    sealed: boolean;
-    /** Whether the seal subsystem has been initialized (bootstrap complete). */
-    initialized: boolean;
-    /**
-     * Active sealing strategy: "none", "passphrase", or "shamir". Empty before
-     * initialization. Drives whether the unseal UI prompts for a passphrase or
-     * for Shamir key shares.
-     */
-    strategy: string;
-    /** Number of Shamir shares provided toward the current unseal ceremony. */
-    sharesProvided: number;
-    /** Number of Shamir shares required to unseal (M in M-of-N). */
-    sharesRequired: number;
-    /** Total number of Shamir shares generated (N in M-of-N). */
-    sharesTotal: number;
-    /** Whether background seal status polling is active. */
-    polling: boolean;
-    /**
-     * Registered Security Officers for the system Shamir barrier.
-     * Populated by listOfficers() and refreshed after registrations.
-     */
-    officers: OfficerStatus[];
-    /** Whether officer list is currently being fetched. */
-    officersLoading: boolean;
+  /** Whether the server's encryption barrier is currently sealed. */
+  sealed: boolean;
+  /** Whether the seal subsystem has been initialized (bootstrap complete). */
+  initialized: boolean;
+  /**
+   * Active sealing strategy: "none", "passphrase", or "shamir". Empty before
+   * initialization. Drives whether the unseal UI prompts for a passphrase or
+   * for Shamir key shares.
+   */
+  strategy: string;
+  /** Number of Shamir shares provided toward the current unseal ceremony. */
+  sharesProvided: number;
+  /** Number of Shamir shares required to unseal (M in M-of-N). */
+  sharesRequired: number;
+  /** Total number of Shamir shares generated (N in M-of-N). */
+  sharesTotal: number;
+  /** Whether background seal status polling is active. */
+  polling: boolean;
+  /**
+   * Registered Security Officers for the system Shamir barrier.
+   * Populated by listOfficers() and refreshed after registrations.
+   */
+  officers: OfficerStatus[];
+  /** Whether officer list is currently being fetched. */
+  officersLoading: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,15 +62,15 @@ export interface SealState {
 
 /** Reactive seal state. */
 export const sealStore: SealState = $state({
-    sealed: true,
-    initialized: false,
-    strategy: "",
-    sharesProvided: 0,
-    sharesRequired: 0,
-    sharesTotal: 0,
-    polling: false,
-    officers: [],
-    officersLoading: false,
+  sealed: true,
+  initialized: false,
+  strategy: "",
+  sharesProvided: 0,
+  sharesRequired: 0,
+  sharesTotal: 0,
+  polling: false,
+  officers: [],
+  officersLoading: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -83,17 +83,17 @@ export const sealStore: SealState = $state({
  * @param status - The seal status returned by `SealClient.status()`.
  */
 export function updateSealStatus(status: SealStatus): void {
-    sealStore.sealed = status.sealed;
-    sealStore.strategy = status.strategy ?? "";
-    sealStore.sharesProvided = status.sharesProvided;
-    sealStore.sharesRequired = status.sharesRequired;
-    sealStore.sharesTotal = status.sharesTotal;
+  sealStore.sealed = status.sealed;
+  sealStore.strategy = status.strategy ?? "";
+  sealStore.sharesProvided = status.sharesProvided;
+  sealStore.sharesRequired = status.sharesRequired;
+  sealStore.sharesTotal = status.sharesTotal;
 
-    // Trust the server's `initialized` field. The previous implementation
-    // derived it from `sharesTotal > 0`, which falsely classified passphrase-
-    // and none-mode barriers as "not initialized" because those modes have no
-    // Shamir shares.
-    sealStore.initialized = status.initialized;
+  // Trust the server's `initialized` field. The previous implementation
+  // derived it from `sharesTotal > 0`, which falsely classified passphrase-
+  // and none-mode barriers as "not initialized" because those modes have no
+  // Shamir shares.
+  sealStore.initialized = status.initialized;
 }
 
 /**
@@ -103,7 +103,7 @@ export function updateSealStatus(status: SealStatus): void {
  *   officerClaimStatus().
  */
 export function updateOfficers(officers: OfficerStatus[]): void {
-    sealStore.officers = officers;
+  sealStore.officers = officers;
 }
 
 /**
@@ -113,5 +113,5 @@ export function updateOfficers(officers: OfficerStatus[]): void {
  * @param loading - true while the fetch is outstanding, false on completion.
  */
 export function setOfficersLoading(loading: boolean): void {
-    sealStore.officersLoading = loading;
+  sealStore.officersLoading = loading;
 }

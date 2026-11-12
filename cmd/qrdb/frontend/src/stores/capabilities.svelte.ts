@@ -21,7 +21,7 @@
  * (e.g. hiding the time-series panel when the binary was compiled without it).
  */
 
-import type { AdminClient } from '@qrdb/sdk';
+import type { AdminClient } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,35 +29,35 @@ import type { AdminClient } from '@qrdb/sdk';
 
 /** Known feature flag names matching CapabilitiesResponse fields. */
 export type FeatureName =
-    | 'kv'
-    | 'mvcc'
-    | 'transaction'
-    | 'batch'
-    | 'watch'
-    | 'lease'
-    | 'timeSeries'
-    | 'vector';
+  | "kv"
+  | "mvcc"
+  | "transaction"
+  | "batch"
+  | "watch"
+  | "lease"
+  | "timeSeries"
+  | "vector";
 
 /** Shape of the reactive capabilities state. */
 export interface CapabilitiesState {
-    /** Whether capabilities have been fetched from the server. */
-    loaded: boolean;
-    /** Basic key-value operations. */
-    kv: boolean;
-    /** MVCC revision tracking. */
-    mvcc: boolean;
-    /** Compare-and-swap transactions. */
-    transaction: boolean;
-    /** Atomic batch operations. */
-    batch: boolean;
-    /** Watch event streaming. */
-    watch: boolean;
-    /** Distributed lease management. */
-    lease: boolean;
-    /** Time-series data operations. */
-    timeSeries: boolean;
-    /** Vector database operations. */
-    vector: boolean;
+  /** Whether capabilities have been fetched from the server. */
+  loaded: boolean;
+  /** Basic key-value operations. */
+  kv: boolean;
+  /** MVCC revision tracking. */
+  mvcc: boolean;
+  /** Compare-and-swap transactions. */
+  transaction: boolean;
+  /** Atomic batch operations. */
+  batch: boolean;
+  /** Watch event streaming. */
+  watch: boolean;
+  /** Distributed lease management. */
+  lease: boolean;
+  /** Time-series data operations. */
+  timeSeries: boolean;
+  /** Vector database operations. */
+  vector: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,14 +69,14 @@ export interface CapabilitiesState {
  * dispatch map avoids a switch statement and keeps lookups O(1).
  */
 const featureAccessors: Readonly<Record<FeatureName, () => boolean>> = {
-    kv: () => capabilitiesStore.kv,
-    mvcc: () => capabilitiesStore.mvcc,
-    transaction: () => capabilitiesStore.transaction,
-    batch: () => capabilitiesStore.batch,
-    watch: () => capabilitiesStore.watch,
-    lease: () => capabilitiesStore.lease,
-    timeSeries: () => capabilitiesStore.timeSeries,
-    vector: () => capabilitiesStore.vector,
+  kv: () => capabilitiesStore.kv,
+  mvcc: () => capabilitiesStore.mvcc,
+  transaction: () => capabilitiesStore.transaction,
+  batch: () => capabilitiesStore.batch,
+  watch: () => capabilitiesStore.watch,
+  lease: () => capabilitiesStore.lease,
+  timeSeries: () => capabilitiesStore.timeSeries,
+  vector: () => capabilitiesStore.vector,
 };
 
 // ---------------------------------------------------------------------------
@@ -85,15 +85,15 @@ const featureAccessors: Readonly<Record<FeatureName, () => boolean>> = {
 
 /** Reactive capabilities state. */
 export const capabilitiesStore: CapabilitiesState = $state({
-    loaded: false,
-    kv: true,
-    mvcc: true,
-    transaction: true,
-    batch: true,
-    watch: true,
-    lease: true,
-    timeSeries: false,
-    vector: false,
+  loaded: false,
+  kv: true,
+  mvcc: true,
+  transaction: true,
+  batch: true,
+  watch: true,
+  lease: true,
+  timeSeries: false,
+  vector: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -106,16 +106,16 @@ export const capabilitiesStore: CapabilitiesState = $state({
  * @param client - An AdminClient instance used to query capabilities.
  */
 export async function refreshCapabilities(client: AdminClient): Promise<void> {
-    const caps = await client.capabilities();
-    capabilitiesStore.kv = caps.kv;
-    capabilitiesStore.mvcc = caps.mvcc;
-    capabilitiesStore.transaction = caps.transaction;
-    capabilitiesStore.batch = caps.batch;
-    capabilitiesStore.watch = caps.watch;
-    capabilitiesStore.lease = caps.lease;
-    capabilitiesStore.timeSeries = caps.timeSeries;
-    capabilitiesStore.vector = caps.vector;
-    capabilitiesStore.loaded = true;
+  const caps = await client.capabilities();
+  capabilitiesStore.kv = caps.kv;
+  capabilitiesStore.mvcc = caps.mvcc;
+  capabilitiesStore.transaction = caps.transaction;
+  capabilitiesStore.batch = caps.batch;
+  capabilitiesStore.watch = caps.watch;
+  capabilitiesStore.lease = caps.lease;
+  capabilitiesStore.timeSeries = caps.timeSeries;
+  capabilitiesStore.vector = caps.vector;
+  capabilitiesStore.loaded = true;
 }
 
 /**
@@ -126,9 +126,9 @@ export async function refreshCapabilities(client: AdminClient): Promise<void> {
  *          for unknown feature names).
  */
 export function hasFeature(feature: string): boolean {
-    const accessor = featureAccessors[feature as FeatureName];
-    if (accessor === undefined) {
-        return false;
-    }
-    return accessor();
+  const accessor = featureAccessors[feature as FeatureName];
+  if (accessor === undefined) {
+    return false;
+  }
+  return accessor();
 }

@@ -17,8 +17,7 @@
 <script lang="ts">
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   /** Human-readable engine labels. */
   const engineLabels: Readonly<Record<string, string>> = {
@@ -195,13 +194,21 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-base-content/70">MySQL</span>
-            <span class="badge badge-sm {dbWizardStore.sqlMySQL ? 'badge-success' : 'badge-ghost'}">
+            <span
+              class="badge badge-sm {dbWizardStore.sqlMySQL
+                ? 'badge-success'
+                : 'badge-ghost'}"
+            >
               {dbWizardStore.sqlMySQL ? "Enabled" : "Disabled"}
             </span>
           </div>
           <div class="flex items-center justify-between">
             <span class="text-base-content/70">PostgreSQL</span>
-            <span class="badge badge-sm {dbWizardStore.sqlPostgreSQL ? 'badge-success' : 'badge-ghost'}">
+            <span
+              class="badge badge-sm {dbWizardStore.sqlPostgreSQL
+                ? 'badge-success'
+                : 'badge-ghost'}"
+            >
               {dbWizardStore.sqlPostgreSQL ? "Enabled" : "Disabled"}
             </span>
           </div>

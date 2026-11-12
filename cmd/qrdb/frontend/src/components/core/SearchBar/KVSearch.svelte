@@ -264,14 +264,8 @@
 
   <!-- Options Panel (Collapsible) -->
   <div class="collapse collapse-arrow bg-base-200 rounded-lg">
-    <input
-      type="checkbox"
-      bind:checked={showOptions}
-      class="peer"
-    />
-    <div class="collapse-title font-medium">
-      Advanced Options
-    </div>
+    <input type="checkbox" bind:checked={showOptions} class="peer" />
+    <div class="collapse-title font-medium">Advanced Options</div>
     <div class="collapse-content flex flex-col gap-4">
       <!-- Case Sensitivity -->
       <label class="label cursor-pointer justify-start gap-3">

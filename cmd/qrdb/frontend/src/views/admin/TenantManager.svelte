@@ -29,7 +29,10 @@
     SealMode,
   } from "@qrdb/sdk";
   import { TransportError } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import {
     ChevronLeft,
@@ -134,10 +137,30 @@
     label: string;
     description: string;
   }[] = [
-    { id: "prefix", label: "prefix — namespace prefix only", description: "Shared-store namespace key prefix only. No extra crypto layer." },
-    { id: "barrier", label: "barrier — namespace prefix + encryption barrier", description: "Namespace prefix plus a per-tenant encryption barrier. Requires a daemon volume pool." },
-    { id: "volume", label: "volume — dedicated data volume (+ barrier)", description: "Dedicated filesystem data root per tenant. Dedicated-storage tier; requires a daemon volume pool." },
-    { id: "raft", label: "raft — dedicated Raft group per database", description: "Dedicated Raft group per database on a dedicated data root. Dedicated-storage tier; multi-node replication ships: replicas are placed across cluster nodes (RF configurable)." },
+    {
+      id: "prefix",
+      label: "prefix — namespace prefix only",
+      description:
+        "Shared-store namespace key prefix only. No extra crypto layer.",
+    },
+    {
+      id: "barrier",
+      label: "barrier — namespace prefix + encryption barrier",
+      description:
+        "Namespace prefix plus a per-tenant encryption barrier. Requires a daemon volume pool.",
+    },
+    {
+      id: "volume",
+      label: "volume — dedicated data volume (+ barrier)",
+      description:
+        "Dedicated filesystem data root per tenant. Dedicated-storage tier; requires a daemon volume pool.",
+    },
+    {
+      id: "raft",
+      label: "raft — dedicated Raft group per database",
+      description:
+        "Dedicated Raft group per database on a dedicated data root. Dedicated-storage tier; multi-node replication ships: replicas are placed across cluster nodes (RF configurable).",
+    },
   ] as const;
 
   /** True when the chosen isolation type is a dedicated tier with a barrier. */
@@ -209,7 +232,10 @@
     req: import("@qrdb/sdk").OfficerRegisterRequest,
   ): Promise<import("@qrdb/sdk").OfficerRegisterResponse> {
     const tenantId = holdersTenantId;
-    const resp = await client.officers.registerTenantOfficer({ tenantId, ...req });
+    const resp = await client.officers.registerTenantOfficer({
+      tenantId,
+      ...req,
+    });
     void fetchHolders(tenantId);
     return resp;
   }
@@ -237,7 +263,10 @@
       holdersLoading = true;
       holders = await client.officers.listTenantOfficers(tenantId);
     } catch (err: unknown) {
-      showToast("error", errorText(err, "Failed to list the tenant's share holders"));
+      showToast(
+        "error",
+        errorText(err, "Failed to list the tenant's share holders"),
+      );
     } finally {
       holdersLoading = false;
     }
@@ -288,10 +317,29 @@
   const ENABLE_POLL_MAX_ATTEMPTS = 40;
 
   /** Strategy options for the per-tenant barrier selector. */
-  const barrierStrategies: readonly { id: SealMode; label: string; description: string }[] = [
-    { id: "none", label: "None", description: "No per-tenant encryption barrier; tenant data relies on the system barrier only." },
-    { id: "passphrase", label: "Passphrase", description: "Passphrase-derived per-tenant barrier root key. Required at unseal." },
-    { id: "shamir", label: "Shamir (M-of-N)", description: "Split the tenant barrier key into M-of-N shares; any M reconstruct it." },
+  const barrierStrategies: readonly {
+    id: SealMode;
+    label: string;
+    description: string;
+  }[] = [
+    {
+      id: "none",
+      label: "None",
+      description:
+        "No per-tenant encryption barrier; tenant data relies on the system barrier only.",
+    },
+    {
+      id: "passphrase",
+      label: "Passphrase",
+      description:
+        "Passphrase-derived per-tenant barrier root key. Required at unseal.",
+    },
+    {
+      id: "shamir",
+      label: "Shamir (M-of-N)",
+      description:
+        "Split the tenant barrier key into M-of-N shares; any M reconstruct it.",
+    },
   ] as const;
 
   /** Whether the current barrier-init inputs are valid for the chosen strategy. */
@@ -299,8 +347,11 @@
     barrierStrategy === "none"
       ? true
       : barrierStrategy === "passphrase"
-        ? barrierPassphrase.length >= 8 && barrierPassphrase === barrierPassphraseConfirm
-        : barrierThreshold > 0 && barrierShares > 0 && barrierThreshold <= barrierShares,
+        ? barrierPassphrase.length >= 8 &&
+          barrierPassphrase === barrierPassphraseConfirm
+        : barrierThreshold > 0 &&
+          barrierShares > 0 &&
+          barrierThreshold <= barrierShares,
   );
 
   // ---------------------------------------------------------------------------
@@ -356,7 +407,8 @@
     {
       id: "quotas",
       header: "Quotas",
-      accessor: (row: TenantInfo) => (row.quotas != null ? "Custom" : "Default"),
+      accessor: (row: TenantInfo) =>
+        row.quotas != null ? "Custom" : "Default",
       sortable: false,
       render: (value: unknown) =>
         value === "Custom"
@@ -376,7 +428,12 @@
       const response: ListTenantsResponse = await client.tenants.list();
       tenants = [...(response.tenants ?? [])];
     } catch (err: unknown) {
-      if (err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501 || err.statusCode === 503)) {
+      if (
+        err instanceof TransportError &&
+        (err.statusCode === 404 ||
+          err.statusCode === 501 ||
+          err.statusCode === 503)
+      ) {
         tenants = [];
       } else {
         const msg = errorText(err, "Failed to fetch tenants");
@@ -447,9 +504,13 @@
           ? { adminCsrPem: newAdminCsrPem.trim() }
           : {
               adminCertPem: newAdminCertPem.trim(),
-              ...(newAdminChainPem.trim() === "" ? {} : { adminChainPem: newAdminChainPem.trim() }),
+              ...(newAdminChainPem.trim() === ""
+                ? {}
+                : { adminChainPem: newAdminChainPem.trim() }),
             }),
-        ...(newTrustAnchorsPem.trim() === "" ? {} : { trustAnchorsPem: newTrustAnchorsPem.trim() }),
+        ...(newTrustAnchorsPem.trim() === ""
+          ? {}
+          : { trustAnchorsPem: newTrustAnchorsPem.trim() }),
         // Only meaningful for a dedicated-isolation tenant; harmless otherwise.
         ...(isDedicatedIsolation && newTenantBarrierAutoUnseal
           ? { barrierAutoUnseal: true }
@@ -510,7 +571,10 @@
       }
     }
     if (failed.length === 0) {
-      showToast("success", `Deleted ${deletedCount} tenant${deletedCount !== 1 ? "s" : ""}.`);
+      showToast(
+        "success",
+        `Deleted ${deletedCount} tenant${deletedCount !== 1 ? "s" : ""}.`,
+      );
     } else {
       const msg = `Deleted ${deletedCount} tenant${deletedCount !== 1 ? "s" : ""} (${failed.length} failed: ${failed.join(", ")}).`;
       showToast("error", msg);
@@ -533,7 +597,8 @@
   async function refreshTenantOfficerStatus(tenantId: string): Promise<void> {
     tenantOfficerStatusLoading = true;
     try {
-      tenantOfficerStatuses = await client.officers.listTenantOfficers(tenantId);
+      tenantOfficerStatuses =
+        await client.officers.listTenantOfficers(tenantId);
     } catch {
       // Non-fatal.
     } finally {
@@ -645,7 +710,10 @@
             : "Passphrases do not match.",
         );
       } else {
-        showToast("error", "Shares required must be greater than zero and not exceed total shares.");
+        showToast(
+          "error",
+          "Shares required must be greater than zero and not exceed total shares.",
+        );
       }
       return;
     }
@@ -659,19 +727,27 @@
         strategy: barrierStrategy,
         threshold: barrierStrategy === "shamir" ? barrierThreshold : 0,
         shares: barrierStrategy === "shamir" ? barrierShares : 0,
-        ...(barrierStrategy === "passphrase" ? { passphrase: barrierPassphrase } : {}),
+        ...(barrierStrategy === "passphrase"
+          ? { passphrase: barrierPassphrase }
+          : {}),
       };
       const resp = await client.tenants.barrierInit(req);
       if (barrierStrategy === "shamir") {
         // Share bytes are never returned. Show the officer claim status panel
         // so the admin can monitor which SOs have claimed their shares.
         shamirResult = resp;
-        showToast("success", `Shamir barrier initialized for tenant "${barrierTenantId}".`);
+        showToast(
+          "success",
+          `Shamir barrier initialized for tenant "${barrierTenantId}".`,
+        );
         // Load initial officer claim status.
         await refreshTenantOfficerStatus(barrierTenantId);
         return;
       }
-      showToast("success", `Barrier initialized for tenant "${barrierTenantId}".`);
+      showToast(
+        "success",
+        `Barrier initialized for tenant "${barrierTenantId}".`,
+      );
       showBarrierForm = false;
       barrierTenantId = "";
       resetBarrierForm();
@@ -746,7 +822,9 @@
         strategy: enableStrategy,
         mechanism: enableMechanism,
         availability: enableAvailability,
-        ...(enablePassphrase.trim() === "" ? {} : { passphrase: enablePassphrase }),
+        ...(enablePassphrase.trim() === ""
+          ? {}
+          : { passphrase: enablePassphrase }),
         ...(enableStrategy === "shamir"
           ? { shamirThreshold: enableThreshold, shamirTotal: enableTotal }
           : {}),
@@ -755,7 +833,10 @@
       if (resp.status === "migration_started") {
         enableInProgress = true;
         enablePollAttempts = 0;
-        showToast("info", `Encryption migration started for tenant "${enableTenantId}".`);
+        showToast(
+          "info",
+          `Encryption migration started for tenant "${enableTenantId}".`,
+        );
         startEnablePolling();
       } else {
         showToast("info", resp.status);
@@ -786,7 +867,10 @@
             enableInProgress = false;
             enableSuccess = true;
             enableResultStrategy = status.strategy;
-            showToast("success", `Encryption enabled for tenant "${enableTenantId}".`);
+            showToast(
+              "success",
+              `Encryption enabled for tenant "${enableTenantId}".`,
+            );
             return;
           }
         } catch {
@@ -824,16 +908,16 @@
 </script>
 
 {#if showQuotaDetail}
-  <TenantDetail {client} tenantId={quotaDetailTenantId} onBack={handleQuotaDetailBack} />
-
+  <TenantDetail
+    {client}
+    tenantId={quotaDetailTenantId}
+    onBack={handleQuotaDetailBack}
+  />
 {:else if showCreateForm}
   <!-- Create tenant form -->
   <div class="flex flex-col gap-6">
     <div class="flex items-center gap-3">
-      <button
-        class="btn btn-ghost btn-sm"
-        onclick={handleCancelCreate}
-      >
+      <button class="btn btn-ghost btn-sm" onclick={handleCancelCreate}>
         <ChevronLeft class="h-4 w-4" />
         Back
       </button>
@@ -849,27 +933,36 @@
             <CheckCircle class="text-success h-12 w-12" strokeWidth={1.5} />
             <h2 class="text-xl font-bold">Tenant Created</h2>
             <p class="text-base-content/70 text-sm">
-              Tenant <span class="font-mono">{createdTenantId}</span> was created with admin
+              Tenant <span class="font-mono">{createdTenantId}</span> was
+              created with admin
               <span class="font-mono">{createdAdmin.username}</span>.
               {#if createdAdmin.awaitsBarrierInit}
-                This tenant keeps its identity records behind its own barrier; the admin's
-                account is created once the admin initializes it with this certificate.
+                This tenant keeps its identity records behind its own barrier;
+                the admin's account is created once the admin initializes it
+                with this certificate.
               {/if}
             </p>
           </div>
 
           <label class="form-control w-full">
-            <div class="label"><span class="label-text text-xs font-semibold">Admin Certificate PEM</span></div>
+            <div class="label">
+              <span class="label-text text-xs font-semibold"
+                >Admin Certificate PEM</span
+              >
+            </div>
             <textarea
               class="textarea textarea-bordered w-full font-mono text-xs"
               rows="8"
               readonly
               data-testid="create-tenant-admin-cert-result"
-              value={createdAdmin.certPem}
-            ></textarea>
+              value={createdAdmin.certPem}></textarea>
             <button
               class="btn btn-ghost btn-xs mt-1 w-fit"
-              onclick={() => downloadText(`${createdAdmin?.username ?? "admin"}.crt`, createdAdmin?.certPem ?? "")}
+              onclick={() =>
+                downloadText(
+                  `${createdAdmin?.username ?? "admin"}.crt`,
+                  createdAdmin?.certPem ?? "",
+                )}
             >
               Download Certificate
             </button>
@@ -886,255 +979,285 @@
           </div>
         </div>
       {:else}
-      <div class="card-body gap-4">
-        <div class="form-control">
-          <label class="label" for="tenant-id">
-            <span class="label-text font-semibold">Tenant ID</span>
-          </label>
-          <input
-            id="tenant-id"
-            type="text"
-            class="input input-bordered w-full"
-            placeholder="e.g. acme-corp"
-            bind:value={newTenantId}
-          />
-        </div>
-
-        <div class="form-control">
-          <label class="label" for="tenant-name">
-            <span class="label-text font-semibold">Name</span>
-          </label>
-          <input
-            id="tenant-name"
-            type="text"
-            class="input input-bordered w-full"
-            placeholder="e.g. Acme Corporation"
-            bind:value={newTenantName}
-          />
-        </div>
-
-        <div class="form-control">
-          <label class="label" for="tenant-isolation">
-            <span class="label-text font-semibold">Isolation Type</span>
-            <span class="label-text-alt text-base-content/50">Physical keyspace strategy</span>
-          </label>
-          <select
-            id="tenant-isolation"
-            class="select select-bordered w-full"
-            data-testid="create-tenant-isolation-select"
-            bind:value={newTenantIsolationType}
-          >
-            {#each isolationTypes as it (it.id)}
-              <option value={it.id}>{it.label}</option>
-            {/each}
-          </select>
-          <div class="label">
-            <span class="label-text-alt text-base-content/60">
-              {isolationTypes.find((it) => it.id === newTenantIsolationType)?.description ?? ""}
-            </span>
+        <div class="card-body gap-4">
+          <div class="form-control">
+            <label class="label" for="tenant-id">
+              <span class="label-text font-semibold">Tenant ID</span>
+            </label>
+            <input
+              id="tenant-id"
+              type="text"
+              class="input input-bordered w-full"
+              placeholder="e.g. acme-corp"
+              bind:value={newTenantId}
+            />
           </div>
-          {#if newTenantIsolationType === "volume" || newTenantIsolationType === "raft"}
+
+          <div class="form-control">
+            <label class="label" for="tenant-name">
+              <span class="label-text font-semibold">Name</span>
+            </label>
+            <input
+              id="tenant-name"
+              type="text"
+              class="input input-bordered w-full"
+              placeholder="e.g. Acme Corporation"
+              bind:value={newTenantName}
+            />
+          </div>
+
+          <div class="form-control">
+            <label class="label" for="tenant-isolation">
+              <span class="label-text font-semibold">Isolation Type</span>
+              <span class="label-text-alt text-base-content/50"
+                >Physical keyspace strategy</span
+              >
+            </label>
+            <select
+              id="tenant-isolation"
+              class="select select-bordered w-full"
+              data-testid="create-tenant-isolation-select"
+              bind:value={newTenantIsolationType}
+            >
+              {#each isolationTypes as it (it.id)}
+                <option value={it.id}>{it.label}</option>
+              {/each}
+            </select>
             <div class="label">
-              <span class="label-text-alt text-info">
-                Dedicated-storage tier. Multi-node Raft replication ships: replicas are placed across cluster nodes (RF configurable).
+              <span class="label-text-alt text-base-content/60">
+                {isolationTypes.find((it) => it.id === newTenantIsolationType)
+                  ?.description ?? ""}
               </span>
+            </div>
+            {#if newTenantIsolationType === "volume" || newTenantIsolationType === "raft"}
+              <div class="label">
+                <span class="label-text-alt text-info">
+                  Dedicated-storage tier. Multi-node Raft replication ships:
+                  replicas are placed across cluster nodes (RF configurable).
+                </span>
+              </div>
+            {/if}
+          </div>
+
+          {#if isVolumePoolEligible}
+            <div class="form-control">
+              <label class="label" for="tenant-volume-pool">
+                <span class="label-text font-semibold">Volume Pool</span>
+                <span class="label-text-alt text-base-content/50">Optional</span
+                >
+              </label>
+              {#if volumePoolNames.length > 0}
+                <select
+                  id="tenant-volume-pool"
+                  class="select select-bordered w-full"
+                  data-testid="create-tenant-volume-pool"
+                  bind:value={newTenantVolumePool}
+                >
+                  <option value="">Default pool</option>
+                  {#each volumePoolNames as poolName (poolName)}
+                    <option value={poolName}>{poolName}</option>
+                  {/each}
+                </select>
+              {:else}
+                <input
+                  id="tenant-volume-pool"
+                  type="text"
+                  class="input input-bordered w-full"
+                  placeholder="fast"
+                  data-testid="create-tenant-volume-pool"
+                  bind:value={newTenantVolumePool}
+                />
+              {/if}
+              <div class="label">
+                <span class="label-text-alt text-base-content/60">
+                  The named volume pool to place this tenant on. Leave empty to
+                  use the tenant's default pool.
+                </span>
+              </div>
             </div>
           {/if}
-        </div>
 
-        {#if isVolumePoolEligible}
-          <div class="form-control">
-            <label class="label" for="tenant-volume-pool">
-              <span class="label-text font-semibold">Volume Pool</span>
-              <span class="label-text-alt text-base-content/50">Optional</span>
-            </label>
-            {#if volumePoolNames.length > 0}
-              <select
-                id="tenant-volume-pool"
-                class="select select-bordered w-full"
-                data-testid="create-tenant-volume-pool"
-                bind:value={newTenantVolumePool}
+          {#if isDedicatedIsolation}
+            <div class="form-control">
+              <label
+                class="label cursor-pointer justify-start gap-3"
+                for="tenant-barrier-auto-unseal"
               >
-                <option value="">Default pool</option>
-                {#each volumePoolNames as poolName (poolName)}
-                  <option value={poolName}>{poolName}</option>
-                {/each}
-              </select>
-            {:else}
-              <input
-                id="tenant-volume-pool"
-                type="text"
-                class="input input-bordered w-full"
-                placeholder="fast"
-                data-testid="create-tenant-volume-pool"
-                bind:value={newTenantVolumePool}
-              />
-            {/if}
-            <div class="label">
-              <span class="label-text-alt text-base-content/60">
-                The named volume pool to place this tenant on. Leave empty to use the tenant's default pool.
-              </span>
+                <input
+                  id="tenant-barrier-auto-unseal"
+                  type="checkbox"
+                  class="toggle toggle-primary toggle-sm"
+                  data-testid="create-tenant-barrier-auto-unseal"
+                  bind:checked={newTenantBarrierAutoUnseal}
+                />
+                <span class="label-text font-semibold"
+                  >System-managed barrier auto-unseal</span
+                >
+              </label>
+              <div class="label">
+                <span class="label-text-alt text-base-content/60">
+                  Opt this dedicated-isolation tenant into the system-managed
+                  auto-unseal key-management mode (entitlement-gated). Leave off
+                  for the secure self-managed mode where the tenant admin holds
+                  the key.
+                </span>
+              </div>
             </div>
-          </div>
-        {/if}
+          {/if}
 
-        {#if isDedicatedIsolation}
+          <div class="divider">First Admin</div>
+
           <div class="form-control">
-            <label class="label cursor-pointer justify-start gap-3" for="tenant-barrier-auto-unseal">
-              <input
-                id="tenant-barrier-auto-unseal"
-                type="checkbox"
-                class="toggle toggle-primary toggle-sm"
-                data-testid="create-tenant-barrier-auto-unseal"
-                bind:checked={newTenantBarrierAutoUnseal}
-              />
-              <span class="label-text font-semibold">System-managed barrier auto-unseal</span>
+            <label class="label" for="tenant-admin-username">
+              <span class="label-text font-semibold">Admin Username</span>
+              <span class="label-text-alt text-base-content/50">Required</span>
             </label>
+            <input
+              id="tenant-admin-username"
+              type="text"
+              class="input input-bordered w-full"
+              placeholder="e.g. admin"
+              data-testid="create-tenant-admin-username"
+              bind:value={newAdminUsername}
+            />
             <div class="label">
               <span class="label-text-alt text-base-content/60">
-                Opt this dedicated-isolation tenant into the system-managed auto-unseal key-management mode (entitlement-gated). Leave off for the secure self-managed mode where the tenant admin holds the key.
+                A tenant is created with its first admin's login credential, or
+                not at all.
               </span>
             </div>
           </div>
-        {/if}
 
-        <div class="divider">First Admin</div>
-
-        <div class="form-control">
-          <label class="label" for="tenant-admin-username">
-            <span class="label-text font-semibold">Admin Username</span>
-            <span class="label-text-alt text-base-content/50">Required</span>
-          </label>
-          <input
-            id="tenant-admin-username"
-            type="text"
-            class="input input-bordered w-full"
-            placeholder="e.g. admin"
-            data-testid="create-tenant-admin-username"
-            bind:value={newAdminUsername}
-          />
-          <div class="label">
-            <span class="label-text-alt text-base-content/60">
-              A tenant is created with its first admin's login credential, or not at all.
-            </span>
-          </div>
-        </div>
-
-        <div class="form-control">
-          <span class="label-text font-semibold mb-2">Admin Credential</span>
-          <div class="join">
-            <button
-              type="button"
-              class="join-item btn btn-sm {newAdminCredentialKind === 'csr' ? 'btn-active' : ''}"
-              data-testid="create-tenant-admin-kind-csr"
-              onclick={() => (newAdminCredentialKind = "csr")}
-            >
-              CSR (server-signed)
-            </button>
-            <button
-              type="button"
-              class="join-item btn btn-sm {newAdminCredentialKind === 'cert' ? 'btn-active' : ''}"
-              data-testid="create-tenant-admin-kind-cert"
-              onclick={() => (newAdminCredentialKind = "cert")}
-            >
-              Bring Your Own Certificate
-            </button>
-          </div>
-        </div>
-
-        {#if newAdminCredentialKind === "csr"}
-          <label class="form-control w-full">
-            <div class="label"><span class="label-text text-xs font-semibold">Admin CSR PEM</span></div>
-            <textarea
-              class="textarea textarea-bordered w-full font-mono text-xs"
-              rows="4"
-              placeholder="-----BEGIN CERTIFICATE REQUEST-----"
-              data-testid="create-tenant-admin-csr"
-              bind:value={newAdminCsrPem}
-            ></textarea>
-            <div class="label">
-              <span class="label-text-alt text-base-content/60">
-                Signed by the tenant's own CA; the admin keeps its key — it never leaves their machine.
-              </span>
+          <div class="form-control">
+            <span class="label-text font-semibold mb-2">Admin Credential</span>
+            <div class="join">
+              <button
+                type="button"
+                class="join-item btn btn-sm {newAdminCredentialKind === 'csr'
+                  ? 'btn-active'
+                  : ''}"
+                data-testid="create-tenant-admin-kind-csr"
+                onclick={() => (newAdminCredentialKind = "csr")}
+              >
+                CSR (server-signed)
+              </button>
+              <button
+                type="button"
+                class="join-item btn btn-sm {newAdminCredentialKind === 'cert'
+                  ? 'btn-active'
+                  : ''}"
+                data-testid="create-tenant-admin-kind-cert"
+                onclick={() => (newAdminCredentialKind = "cert")}
+              >
+                Bring Your Own Certificate
+              </button>
             </div>
-          </label>
-        {:else}
-          <label class="form-control w-full">
-            <div class="label"><span class="label-text text-xs font-semibold">Admin Certificate PEM</span></div>
-            <textarea
-              class="textarea textarea-bordered w-full font-mono text-xs"
-              rows="4"
-              placeholder="-----BEGIN CERTIFICATE-----"
-              data-testid="create-tenant-admin-cert"
-              bind:value={newAdminCertPem}
-            ></textarea>
-          </label>
+          </div>
+
+          {#if newAdminCredentialKind === "csr"}
+            <label class="form-control w-full">
+              <div class="label">
+                <span class="label-text text-xs font-semibold"
+                  >Admin CSR PEM</span
+                >
+              </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="4"
+                placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+                data-testid="create-tenant-admin-csr"
+                bind:value={newAdminCsrPem}></textarea>
+              <div class="label">
+                <span class="label-text-alt text-base-content/60">
+                  Signed by the tenant's own CA; the admin keeps its key — it
+                  never leaves their machine.
+                </span>
+              </div>
+            </label>
+          {:else}
+            <label class="form-control w-full">
+              <div class="label">
+                <span class="label-text text-xs font-semibold"
+                  >Admin Certificate PEM</span
+                >
+              </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="4"
+                placeholder="-----BEGIN CERTIFICATE-----"
+                data-testid="create-tenant-admin-cert"
+                bind:value={newAdminCertPem}></textarea>
+            </label>
+            <label class="form-control w-full">
+              <div class="label">
+                <span class="label-text text-xs font-semibold"
+                  >Admin Chain PEM</span
+                >
+                <span class="label-text-alt text-base-content/50">Optional</span
+                >
+              </div>
+              <textarea
+                class="textarea textarea-bordered w-full font-mono text-xs"
+                rows="3"
+                placeholder="Intermediate certificates"
+                data-testid="create-tenant-admin-chain"
+                bind:value={newAdminChainPem}></textarea>
+            </label>
+          {/if}
+
           <label class="form-control w-full">
             <div class="label">
-              <span class="label-text text-xs font-semibold">Admin Chain PEM</span>
+              <span class="label-text text-xs font-semibold"
+                >Trust Anchors PEM</span
+              >
               <span class="label-text-alt text-base-content/50">Optional</span>
             </div>
             <textarea
               class="textarea textarea-bordered w-full font-mono text-xs"
               rows="3"
-              placeholder="Intermediate certificates"
-              data-testid="create-tenant-admin-chain"
-              bind:value={newAdminChainPem}
-            ></textarea>
+              placeholder="CA certificates to register as this tenant's trust anchors"
+              data-testid="create-tenant-trust-anchors"
+              bind:value={newTrustAnchorsPem}></textarea>
+            <div class="label">
+              <span class="label-text-alt text-base-content/60">
+                Registers one or more CA certificates as this tenant's trust
+                anchors, so bring-your-own certificates issued by them can be
+                enrolled later.
+              </span>
+            </div>
           </label>
-        {/if}
 
-        <label class="form-control w-full">
-          <div class="label">
-            <span class="label-text text-xs font-semibold">Trust Anchors PEM</span>
-            <span class="label-text-alt text-base-content/50">Optional</span>
+          <div class="flex justify-end gap-3 pt-2">
+            <button class="btn btn-ghost btn-sm" onclick={handleCancelCreate}
+              >Cancel</button
+            >
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="create-tenant-submit"
+              disabled={createLoading}
+              onclick={handleSubmitCreate}
+            >
+              {#if createLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Create
+            </button>
           </div>
-          <textarea
-            class="textarea textarea-bordered w-full font-mono text-xs"
-            rows="3"
-            placeholder="CA certificates to register as this tenant's trust anchors"
-            data-testid="create-tenant-trust-anchors"
-            bind:value={newTrustAnchorsPem}
-          ></textarea>
-          <div class="label">
-            <span class="label-text-alt text-base-content/60">
-              Registers one or more CA certificates as this tenant's trust anchors, so
-              bring-your-own certificates issued by them can be enrolled later.
-            </span>
-          </div>
-        </label>
-
-        <div class="flex justify-end gap-3 pt-2">
-          <button class="btn btn-ghost btn-sm" onclick={handleCancelCreate}>Cancel</button>
-          <button
-            class="btn btn-primary btn-sm"
-            data-testid="create-tenant-submit"
-            disabled={createLoading}
-            onclick={handleSubmitCreate}
-          >
-            {#if createLoading}
-              <span class="loading loading-spinner loading-xs"></span>
-            {/if}
-            Create
-          </button>
         </div>
-      </div>
       {/if}
     </div>
   </div>
-
 {:else if showBarrierForm}
   <!-- Barrier initialization form -->
   <div class="flex flex-col gap-6">
     <div class="flex items-center gap-3">
-      <button
-        class="btn btn-ghost btn-sm"
-        onclick={handleCancelBarrier}
-      >
+      <button class="btn btn-ghost btn-sm" onclick={handleCancelBarrier}>
         <ChevronLeft class="h-4 w-4" />
         Back
       </button>
-      <h2 class="text-lg font-semibold">Initialize Barrier — {barrierTenantId}</h2>
+      <h2 class="text-lg font-semibold">
+        Initialize Barrier — {barrierTenantId}
+      </h2>
     </div>
 
     <div class="card bg-base-200 w-full max-w-lg shadow">
@@ -1151,11 +1274,16 @@
           <div role="alert" class="alert alert-info text-sm">
             <AlertTriangle class="h-5 w-5 shrink-0" />
             <span>
-              A <strong>{shamirResult.threshold ?? 0}-of-{shamirResult.shareCount ?? shamirResult.totalShares ?? 0}</strong>
-              Shamir scheme has been initialized. Each holder claims its sealed
-              envelope over its own holder certificate from the qrdb CLI
-              (<span class="font-mono">qrdb tenant barrier-officer claim --tenant-id {barrierTenantId}</span>)
-              or the desktop app. No share is shown here.
+              A <strong
+                >{shamirResult.threshold ?? 0}-of-{shamirResult.shareCount ??
+                  shamirResult.totalShares ??
+                  0}</strong
+              >
+              Shamir scheme has been initialized. Each holder claims its sealed envelope
+              over its own holder certificate from the qrdb CLI (<span
+                class="font-mono"
+                >qrdb tenant barrier-officer claim --tenant-id {barrierTenantId}</span
+              >) or the desktop app. No share is shown here.
             </span>
           </div>
 
@@ -1173,10 +1301,15 @@
             </div>
             {#if tenantOfficerStatuses.length === 0}
               <p class="text-xs text-base-content/60">
-                {tenantOfficerStatusLoading ? "Loading..." : "No officers registered yet, or claim status unavailable."}
+                {tenantOfficerStatusLoading
+                  ? "Loading..."
+                  : "No officers registered yet, or claim status unavailable."}
               </p>
             {:else}
-              <table class="table table-xs" data-testid="tenant-officer-claim-status-table">
+              <table
+                class="table table-xs"
+                data-testid="tenant-officer-claim-status-table"
+              >
                 <thead>
                   <tr><th>Officer</th><th>Share #</th><th>Status</th></tr>
                 </thead>
@@ -1187,9 +1320,13 @@
                       <td class="text-center">#{officer.shareIndex}</td>
                       <td>
                         {#if officer.claimedAt}
-                          <span class="badge badge-success badge-sm">Claimed</span>
+                          <span class="badge badge-success badge-sm"
+                            >Claimed</span
+                          >
                         {:else}
-                          <span class="badge badge-warning badge-sm">Pending</span>
+                          <span class="badge badge-warning badge-sm"
+                            >Pending</span
+                          >
                         {/if}
                       </td>
                     </tr>
@@ -1208,125 +1345,132 @@
           </button>
         </div>
       {:else}
-      <div class="card-body gap-4">
-        <p class="text-base-content/70 text-sm">
-          Initialize this tenant's encryption barrier. The tenant admin chooses
-          the protection strategy. A cryptographic barrier requires the daemon to
-          have a storage volume pool configured.
-        </p>
+        <div class="card-body gap-4">
+          <p class="text-base-content/70 text-sm">
+            Initialize this tenant's encryption barrier. The tenant admin
+            chooses the protection strategy. A cryptographic barrier requires
+            the daemon to have a storage volume pool configured.
+          </p>
 
-        <!-- Strategy selector -->
-        <div class="form-control">
-          <span class="label-text font-semibold mb-2">Barrier Strategy</span>
-          <div class="grid grid-cols-3 gap-3">
-            {#each barrierStrategies as strat (strat.id)}
-              <button
-                type="button"
-                data-testid="barrier-strategy-{strat.id}"
-                class="card cursor-pointer border-2 p-3 text-left transition-colors
+          <!-- Strategy selector -->
+          <div class="form-control">
+            <span class="label-text font-semibold mb-2">Barrier Strategy</span>
+            <div class="grid grid-cols-3 gap-3">
+              {#each barrierStrategies as strat (strat.id)}
+                <button
+                  type="button"
+                  data-testid="barrier-strategy-{strat.id}"
+                  class="card cursor-pointer border-2 p-3 text-left transition-colors
                   {barrierStrategy === strat.id
                     ? 'border-primary bg-primary/5'
                     : 'border-base-300 hover:border-primary/50'}"
-                onclick={() => (barrierStrategy = strat.id)}
-              >
-                <span class="font-semibold">{strat.label}</span>
-                <p class="text-base-content/60 mt-1 text-xs">{strat.description}</p>
-              </button>
-            {/each}
+                  onclick={() => (barrierStrategy = strat.id)}
+                >
+                  <span class="font-semibold">{strat.label}</span>
+                  <p class="text-base-content/60 mt-1 text-xs">
+                    {strat.description}
+                  </p>
+                </button>
+              {/each}
+            </div>
           </div>
-        </div>
 
-        {#if barrierStrategy === "passphrase"}
-          <div class="form-control">
-            <label class="label" for="barrier-passphrase">
-              <span class="label-text font-semibold">Passphrase</span>
-              <span class="label-text-alt text-base-content/50">Minimum 8 characters</span>
-            </label>
-            <input
-              id="barrier-passphrase"
-              type="password"
-              class="input input-bordered w-full"
-              placeholder="Enter a strong passphrase"
-              bind:value={barrierPassphrase}
-            />
-          </div>
-          <div class="form-control">
-            <label class="label" for="barrier-passphrase-confirm">
-              <span class="label-text font-semibold">Confirm Passphrase</span>
-            </label>
-            <input
-              id="barrier-passphrase-confirm"
-              type="password"
-              class="input input-bordered w-full"
-              placeholder="Re-enter passphrase"
-              bind:value={barrierPassphraseConfirm}
-            />
-          </div>
-        {:else if barrierStrategy === "shamir"}
-          <div class="alert alert-info text-sm">
-            <span>
-              The tenant barrier key is split into N shares; any M reconstruct
-              it. Security Officers claim their individual shares via the
-              officer claim flow — no shares are returned at initialization.
-              Ensure officers are registered before initializing.
-            </span>
-          </div>
-          <div class="grid grid-cols-2 gap-4">
+          {#if barrierStrategy === "passphrase"}
             <div class="form-control">
-              <label class="label" for="barrier-threshold">
-                <span class="label-text font-semibold">Shares Required (M)</span>
+              <label class="label" for="barrier-passphrase">
+                <span class="label-text font-semibold">Passphrase</span>
+                <span class="label-text-alt text-base-content/50"
+                  >Minimum 8 characters</span
+                >
               </label>
               <input
-                id="barrier-threshold"
-                type="number"
+                id="barrier-passphrase"
+                type="password"
                 class="input input-bordered w-full"
-                min="1"
-                max="10"
-                bind:value={barrierThreshold}
+                placeholder="Enter a strong passphrase"
+                bind:value={barrierPassphrase}
               />
             </div>
             <div class="form-control">
-              <label class="label" for="barrier-shares">
-                <span class="label-text font-semibold">Total Shares (N)</span>
+              <label class="label" for="barrier-passphrase-confirm">
+                <span class="label-text font-semibold">Confirm Passphrase</span>
               </label>
               <input
-                id="barrier-shares"
-                type="number"
+                id="barrier-passphrase-confirm"
+                type="password"
                 class="input input-bordered w-full"
-                min="1"
-                max="10"
-                bind:value={barrierShares}
+                placeholder="Re-enter passphrase"
+                bind:value={barrierPassphraseConfirm}
               />
             </div>
-          </div>
-        {:else}
-          <div class="alert alert-warning text-sm">
-            <span>
-              No per-tenant barrier: this tenant's data relies on the system
-              barrier only.
-            </span>
-          </div>
-        {/if}
+          {:else if barrierStrategy === "shamir"}
+            <div class="alert alert-info text-sm">
+              <span>
+                The tenant barrier key is split into N shares; any M reconstruct
+                it. Security Officers claim their individual shares via the
+                officer claim flow — no shares are returned at initialization.
+                Ensure officers are registered before initializing.
+              </span>
+            </div>
+            <div class="grid grid-cols-2 gap-4">
+              <div class="form-control">
+                <label class="label" for="barrier-threshold">
+                  <span class="label-text font-semibold"
+                    >Shares Required (M)</span
+                  >
+                </label>
+                <input
+                  id="barrier-threshold"
+                  type="number"
+                  class="input input-bordered w-full"
+                  min="1"
+                  max="10"
+                  bind:value={barrierThreshold}
+                />
+              </div>
+              <div class="form-control">
+                <label class="label" for="barrier-shares">
+                  <span class="label-text font-semibold">Total Shares (N)</span>
+                </label>
+                <input
+                  id="barrier-shares"
+                  type="number"
+                  class="input input-bordered w-full"
+                  min="1"
+                  max="10"
+                  bind:value={barrierShares}
+                />
+              </div>
+            </div>
+          {:else}
+            <div class="alert alert-warning text-sm">
+              <span>
+                No per-tenant barrier: this tenant's data relies on the system
+                barrier only.
+              </span>
+            </div>
+          {/if}
 
-        <div class="flex justify-end gap-3 pt-2">
-          <button class="btn btn-ghost btn-sm" onclick={handleCancelBarrier}>Cancel</button>
-          <button
-            class="btn btn-warning btn-sm"
-            title="Initialize the tenant encryption barrier with the chosen strategy."
-            disabled={barrierLoading || !barrierValid}
-            onclick={handleSubmitBarrier}
-          >
-            {#if barrierLoading}
-              <span class="loading loading-spinner loading-xs"></span>
-            {/if}
-            Initialize Barrier
-          </button>
+          <div class="flex justify-end gap-3 pt-2">
+            <button class="btn btn-ghost btn-sm" onclick={handleCancelBarrier}
+              >Cancel</button
+            >
+            <button
+              class="btn btn-warning btn-sm"
+              title="Initialize the tenant encryption barrier with the chosen strategy."
+              disabled={barrierLoading || !barrierValid}
+              onclick={handleSubmitBarrier}
+            >
+              {#if barrierLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Initialize Barrier
+            </button>
+          </div>
         </div>
-      </div>
       {/if}
     </div>
   </div>
-
 {:else if showHoldersPanel}
   <!-- Per-tenant share-holder panel -->
   <div class="flex flex-col gap-6" data-testid="tenant-holders-panel">
@@ -1352,7 +1496,9 @@
             disabled={holdersLoading}
             aria-label="Refresh share holders"
           >
-            <RefreshCw class={`h-4 w-4 ${holdersLoading ? "animate-spin" : ""}`} />
+            <RefreshCw
+              class={`h-4 w-4 ${holdersLoading ? "animate-spin" : ""}`}
+            />
             Refresh
           </button>
         </div>
@@ -1362,7 +1508,9 @@
             <span class="loading loading-spinner loading-sm"></span>
           </div>
         {:else if holders.length === 0}
-          <div class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60">
+          <div
+            class="bg-base-300 rounded-lg p-4 text-center text-sm text-base-content/60"
+          >
             No share holders enrolled.
           </div>
         {:else}
@@ -1383,7 +1531,11 @@
                     <td class="text-xs">{holder.role}</td>
                     <td class="text-center">{holder.shareIndex}</td>
                     <td class="text-xs">
-                      {holder.claimedAt ? "Claimed" : holder.sharePending ? "Pending" : "Not claimed"}
+                      {holder.claimedAt
+                        ? "Claimed"
+                        : holder.sharePending
+                          ? "Pending"
+                          : "Not claimed"}
                     </td>
                   </tr>
                 {/each}
@@ -1392,11 +1544,17 @@
           </div>
         {/if}
 
-        <div class="border-t border-base-300 pt-4" data-testid="tenant-holder-enrol">
+        <div
+          class="border-t border-base-300 pt-4"
+          data-testid="tenant-holder-enrol"
+        >
           <button
             class="btn btn-outline btn-sm"
             data-testid="tenant-holder-enrol-toggle"
-            onclick={() => { showEnrol = !showEnrol; enrolRegistered = 0; }}
+            onclick={() => {
+              showEnrol = !showEnrol;
+              enrolRegistered = 0;
+            }}
           >
             {showEnrol ? "Cancel enrolment" : "Enrol holder"}
           </button>
@@ -1415,22 +1573,23 @@
         <div class="border-t border-base-300 pt-4">
           <HolderRekeyPanel
             submitCommand="qrdb tenant barrier-quorum submit --op rekey"
-            onStartRekey={(r) => client.officers.startTenantRekey({
-              tenantId: holdersTenantId,
-              threshold: r.threshold,
-              policy: r.policy,
-            })}
-            onRevoke={(r) => client.officers.revokeTenantOfficer({
-              tenantId: holdersTenantId,
-              username: r.username,
-              ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
-            })}
+            onStartRekey={(r) =>
+              client.officers.startTenantRekey({
+                tenantId: holdersTenantId,
+                threshold: r.threshold,
+                policy: r.policy,
+              })}
+            onRevoke={(r) =>
+              client.officers.revokeTenantOfficer({
+                tenantId: holdersTenantId,
+                username: r.username,
+                ...(r.threshold > 0 ? { threshold: r.threshold } : {}),
+              })}
           />
         </div>
       </div>
     </div>
   </div>
-
 {:else if showUnsealForm}
   <!-- Per-tenant unseal panel -->
   <div class="flex flex-col gap-6">
@@ -1449,16 +1608,22 @@
             <span class="loading loading-spinner loading-md"></span>
           </div>
         {:else if unsealStatus !== null && !unsealStatus.sealed}
-          <p class="text-base-content/70 text-sm">This tenant's barrier is unsealed.</p>
+          <p class="text-base-content/70 text-sm">
+            This tenant's barrier is unsealed.
+          </p>
         {:else if unsealStatus?.strategy === "shamir"}
           <!-- A Shamir barrier opens through a holder quorum; the holders'
                keys never enter this page. -->
-          <p class="text-base-content/70 text-sm" data-testid="tenant-unseal-quorum">
+          <p
+            class="text-base-content/70 text-sm"
+            data-testid="tenant-unseal-quorum"
+          >
             This barrier is held by its share holders:
-            {unsealStatus.shamirThreshold ?? 0} of {unsealStatus.shamirTotal ?? 0} must
-            submit. Each holder submits from the qrdb CLI
-            (<span class="font-mono">qrdb tenant barrier-quorum submit --op unseal</span>)
-            or the desktop app.
+            {unsealStatus.shamirThreshold ?? 0} of {unsealStatus.shamirTotal ??
+              0} must submit. Each holder submits from the qrdb CLI (<span
+              class="font-mono"
+              >qrdb tenant barrier-quorum submit --op unseal</span
+            >) or the desktop app.
           </p>
           <button
             class="btn btn-outline btn-sm"
@@ -1494,7 +1659,6 @@
       </div>
     </div>
   </div>
-
 {:else if showEnableForm}
   <!-- Per-tenant enable-encryption migration wizard -->
   <div class="flex flex-col gap-6">
@@ -1503,17 +1667,25 @@
         <ChevronLeft class="h-4 w-4" />
         Back
       </button>
-      <h2 class="text-lg font-semibold">Enable Encryption — {enableTenantId}</h2>
+      <h2 class="text-lg font-semibold">
+        Enable Encryption — {enableTenantId}
+      </h2>
     </div>
 
     <div class="card bg-base-200 w-full max-w-lg shadow">
-      <div class="card-body gap-4" data-testid="tenant-enable-encryption-wizard">
+      <div
+        class="card-body gap-4"
+        data-testid="tenant-enable-encryption-wizard"
+      >
         {#if enableSuccess}
-          <div class="alert alert-success" data-testid="tenant-enable-encryption-success">
+          <div
+            class="alert alert-success"
+            data-testid="tenant-enable-encryption-success"
+          >
             <CheckCircle class="h-5 w-5 shrink-0" />
             <span class="text-sm">
-              Encryption enabled for tenant <strong>{enableTenantId}</strong>. Its
-              dedicated barrier now uses the
+              Encryption enabled for tenant <strong>{enableTenantId}</strong>.
+              Its dedicated barrier now uses the
               <strong>{enableResultStrategy}</strong> strategy.
             </span>
           </div>
@@ -1521,23 +1693,28 @@
             Done
           </button>
         {:else if enableInProgress}
-          <div class="alert alert-info" data-testid="tenant-enable-encryption-progress">
+          <div
+            class="alert alert-info"
+            data-testid="tenant-enable-encryption-progress"
+          >
             <span class="loading loading-spinner loading-sm"></span>
             <span class="text-sm">
               Migration in progress — re-encrypting tenant
-              <strong>{enableTenantId}</strong>'s at-rest data. This panel updates
-              automatically when the migration completes.
+              <strong>{enableTenantId}</strong>'s at-rest data. This panel
+              updates automatically when the migration completes.
             </span>
           </div>
         {:else}
           <div class="alert alert-info">
             <Info class="h-5 w-5 shrink-0" />
             <div class="text-sm">
-              <p class="font-semibold">Enable encryption with an online migration.</p>
+              <p class="font-semibold">
+                Enable encryption with an online migration.
+              </p>
               <p class="mt-1">
-                All of this tenant's stored data is re-encrypted under a new keyed
-                strategy on its dedicated barrier. The data plane briefly pauses
-                while the migration runs.
+                All of this tenant's stored data is re-encrypted under a new
+                keyed strategy on its dedicated barrier. The data plane briefly
+                pauses while the migration runs.
               </p>
             </div>
           </div>
@@ -1602,7 +1779,9 @@
             </div>
             <div class="form-control">
               <label class="label" for="tenant-enable-shamir-passphrase">
-                <span class="label-text font-semibold">Passphrase (optional)</span>
+                <span class="label-text font-semibold"
+                  >Passphrase (optional)</span
+                >
               </label>
               <input
                 id="tenant-enable-shamir-passphrase"
@@ -1644,7 +1823,9 @@
           </div>
 
           <div class="flex justify-end gap-3 pt-2">
-            <button class="btn btn-ghost btn-sm" onclick={handleCancelEnable}>Cancel</button>
+            <button class="btn btn-ghost btn-sm" onclick={handleCancelEnable}
+              >Cancel</button
+            >
             <button
               class="btn btn-primary btn-sm"
               data-testid="tenant-enable-encryption-submit"
@@ -1663,10 +1844,12 @@
       </div>
     </div>
   </div>
-
 {:else}
   <!-- Tenant list -->
-  <PageHeader title="Tenants" description="Manage tenant isolation, quotas, and encryption barriers" />
+  <PageHeader
+    title="Tenants"
+    description="Manage tenant isolation, quotas, and encryption barriers"
+  />
   <div class="flex flex-col gap-6">
     <CrudTable
       title="Tenants"

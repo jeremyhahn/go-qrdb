@@ -20,7 +20,7 @@
     ImportFormat,
     ValueMode,
     FieldMappingUpdate,
-  } from './types.ts';
+  } from "./types.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -52,7 +52,7 @@
   // Derived
   // ---------------------------------------------------------------------------
 
-  const showSkipHeader = $derived(format === 'csv');
+  const showSkipHeader = $derived(format === "csv");
 
   const valueFieldOptions = $derived.by(() => {
     // Filter out the key field from value field options
@@ -62,17 +62,17 @@
   const previewData = $derived.by(() => {
     // Show what the key-value pairs will look like
     return preview.rows.map((row) => {
-      const key = row[keyField] ?? '';
+      const key = row[keyField] ?? "";
       let value: string;
 
-      if (valueMode === 'field') {
-        value = row[valueField] ?? '';
+      if (valueMode === "field") {
+        value = row[valueField] ?? "";
       } else {
         // Row mode - entire row as JSON, excluding the key field
         const rowData: Record<string, string> = {};
         for (const header of preview.headers) {
           if (header !== keyField) {
-            rowData[header] = row[header] ?? '';
+            rowData[header] = row[header] ?? "";
           }
         }
         value = JSON.stringify(rowData);
@@ -127,7 +127,9 @@
   <!-- Preview Table -->
   <div class="card bg-base-200/50">
     <div class="card-body p-4">
-      <h4 class="mb-3 text-sm font-semibold">Data Preview (First {preview.rows.length} rows)</h4>
+      <h4 class="mb-3 text-sm font-semibold">
+        Data Preview (First {preview.rows.length} rows)
+      </h4>
 
       <div class="overflow-x-auto">
         <table class="table table-sm">
@@ -137,14 +139,18 @@
                 <th
                   class="
                     {header === keyField ? 'bg-primary/20 text-primary' : ''}
-                    {header === valueField && valueMode === 'field' ? 'bg-secondary/20 text-secondary' : ''}"
+                    {header === valueField && valueMode === 'field'
+                    ? 'bg-secondary/20 text-secondary'
+                    : ''}"
                 >
                   {header}
                   {#if header === keyField}
                     <span class="badge badge-primary badge-xs ml-1">Key</span>
                   {/if}
-                  {#if header === valueField && valueMode === 'field'}
-                    <span class="badge badge-secondary badge-xs ml-1">Value</span>
+                  {#if header === valueField && valueMode === "field"}
+                    <span class="badge badge-secondary badge-xs ml-1"
+                      >Value</span
+                    >
                   {/if}
                 </th>
               {/each}
@@ -157,7 +163,9 @@
                   <td
                     class="max-w-[200px] truncate
                       {header === keyField ? 'bg-primary/10' : ''}
-                      {header === valueField && valueMode === 'field' ? 'bg-secondary/10' : ''}"
+                      {header === valueField && valueMode === 'field'
+                      ? 'bg-secondary/10'
+                      : ''}"
                     title={row[header]}
                   >
                     {row[header]}
@@ -204,24 +212,28 @@
       <p class="label-text mb-2 font-medium">Value Mode</p>
 
       <div class="space-y-2">
-        <label class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-base-200/50">
+        <label
+          class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-base-200/50"
+        >
           <input
             type="radio"
             name="value-mode"
             class="radio radio-sm"
-            checked={valueMode === 'field'}
-            onchange={() => handleValueModeChange('field')}
+            checked={valueMode === "field"}
+            onchange={() => handleValueModeChange("field")}
           />
           <span>Use specific field as value</span>
         </label>
 
-        <label class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-base-200/50">
+        <label
+          class="flex cursor-pointer items-center gap-3 rounded-lg p-2 hover:bg-base-200/50"
+        >
           <input
             type="radio"
             name="value-mode"
             class="radio radio-sm"
-            checked={valueMode === 'row'}
-            onchange={() => handleValueModeChange('row')}
+            checked={valueMode === "row"}
+            onchange={() => handleValueModeChange("row")}
           />
           <span>Use entire row as JSON value</span>
         </label>
@@ -230,7 +242,7 @@
   </div>
 
   <!-- Value Field Selection (only when field mode) -->
-  {#if valueMode === 'field'}
+  {#if valueMode === "field"}
     <div class="form-control max-w-md">
       <label class="label" for="value-field">
         <span class="label-text font-medium">Value Field</span>
@@ -269,9 +281,12 @@
           <tbody>
             {#each previewData as item, index (index)}
               <tr>
-                <td class="font-mono text-sm">{item.key || '(empty)'}</td>
-                <td class="max-w-[400px] truncate font-mono text-sm" title={item.value}>
-                  {item.value || '(empty)'}
+                <td class="font-mono text-sm">{item.key || "(empty)"}</td>
+                <td
+                  class="max-w-[400px] truncate font-mono text-sm"
+                  title={item.value}
+                >
+                  {item.value || "(empty)"}
                 </td>
               </tr>
             {/each}
@@ -286,7 +301,9 @@
 
   <div class="grid gap-4 md:grid-cols-2">
     {#if showSkipHeader}
-      <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30">
+      <label
+        class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30"
+      >
         <input
           type="checkbox"
           class="checkbox checkbox-sm mt-0.5"
@@ -302,7 +319,9 @@
       </label>
     {/if}
 
-    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30">
+    <label
+      class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30"
+    >
       <input
         type="checkbox"
         class="checkbox checkbox-sm mt-0.5"
@@ -317,7 +336,9 @@
       </div>
     </label>
 
-    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30">
+    <label
+      class="flex cursor-pointer items-start gap-3 rounded-lg border p-4 hover:bg-base-200/30"
+    >
       <input
         type="checkbox"
         class="checkbox checkbox-sm mt-0.5"
@@ -334,7 +355,7 @@
   </div>
 
   <!-- Validation Warning -->
-  {#if keyField === ''}
+  {#if keyField === ""}
     <div class="alert alert-warning">
       <svg
         xmlns="http://www.w3.org/2000/svg"

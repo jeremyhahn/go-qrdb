@@ -20,8 +20,7 @@
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
   import type { DatabaseMode } from "$stores/database-wizard.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   interface ModeOption {
     readonly id: DatabaseMode;
@@ -107,8 +106,8 @@
         type="button"
         class="card cursor-pointer border-2 p-6 text-left transition-colors
           {dbWizardStore.mode === mode.id
-            ? 'border-primary bg-primary/5'
-            : 'border-base-300 hover:border-primary/50'}"
+          ? 'border-primary bg-primary/5'
+          : 'border-base-300 hover:border-primary/50'}"
         onclick={() => selectMode(mode.id)}
       >
         <div class="flex items-start gap-3">

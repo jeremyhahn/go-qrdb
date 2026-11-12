@@ -95,14 +95,16 @@
   // Initialize table with useDataTable composable.
   // Props are read inside untrack() because useDataTable captures initial values only;
   // reactive updates are handled via table.setData() in the $effect below.
-  const table = untrack(() => useDataTable({
-    data,
-    columns,
-    pageSize,
-    selectionMode: selectable ? selectionMode : "none",
-    virtualScroll,
-    rowKey,
-  }));
+  const table = untrack(() =>
+    useDataTable({
+      data,
+      columns,
+      pageSize,
+      selectionMode: selectable ? selectionMode : "none",
+      virtualScroll,
+      rowKey,
+    }),
+  );
 
   let containerRef: HTMLDivElement | null = $state(null);
   let activeFilterColumnId = $state<string | null>(null);
@@ -156,14 +158,14 @@
   const activeFilterColumn = $derived(
     activeFilterColumnId !== null
       ? columns.find((c) => c.id === activeFilterColumnId)
-      : undefined
+      : undefined,
   );
 
   /** Gets current filter for active column. */
   const activeColumnFilter = $derived(
     activeFilterColumnId !== null
       ? table.filterState.find((f) => f.columnId === activeFilterColumnId)
-      : undefined
+      : undefined,
   );
 
   /**
@@ -173,7 +175,9 @@
    * appended at the end.
    */
   const renderedColumns = $derived.by(() => {
-    const orderMap = new Map(table.columnOrder.map((id: string, index: number) => [id, index]));
+    const orderMap = new Map(
+      table.columnOrder.map((id: string, index: number) => [id, index]),
+    );
     return [...columns].sort((a, b) => {
       const indexA = orderMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
       const indexB = orderMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
@@ -236,7 +240,7 @@
       activeFilterColumnId = columnId;
       // Find the column header element to anchor the popup
       const th = containerRef?.querySelector(
-        `th[data-column-id="${columnId}"]`
+        `th[data-column-id="${columnId}"]`,
       ) as HTMLElement | null;
       if (th !== null) {
         filterAnchorRect = th.getBoundingClientRect();
@@ -248,7 +252,7 @@
   function handleFilter(
     columnId: string,
     value: import("./types.ts").FilterValue,
-    operator?: import("./types.ts").FilterOperator
+    operator?: import("./types.ts").FilterOperator,
   ): void {
     table.setFilter(columnId, value, operator);
     onfilterchange?.({
@@ -279,19 +283,27 @@
 
     // Handle selection
     if (selectable && selectionMode !== "none") {
-      if (event.shiftKey && selectionMode === "multiple" && lastShiftClickIndex !== null) {
+      if (
+        event.shiftKey &&
+        selectionMode === "multiple" &&
+        lastShiftClickIndex !== null
+      ) {
         // Range selection
-        const absoluteStart = virtualScroll !== undefined
-          ? table.virtualScroll.startIndex + lastShiftClickIndex
-          : (table.pagination.page - 1) * table.pagination.pageSize + lastShiftClickIndex;
-        const absoluteEnd = virtualScroll !== undefined
-          ? table.virtualScroll.startIndex + index
-          : (table.pagination.page - 1) * table.pagination.pageSize + index;
+        const absoluteStart =
+          virtualScroll !== undefined
+            ? table.virtualScroll.startIndex + lastShiftClickIndex
+            : (table.pagination.page - 1) * table.pagination.pageSize +
+              lastShiftClickIndex;
+        const absoluteEnd =
+          virtualScroll !== undefined
+            ? table.virtualScroll.startIndex + index
+            : (table.pagination.page - 1) * table.pagination.pageSize + index;
         table.selectRange(absoluteStart, absoluteEnd);
       } else {
-        const absoluteIndex = virtualScroll !== undefined
-          ? table.virtualScroll.startIndex + index
-          : (table.pagination.page - 1) * table.pagination.pageSize + index;
+        const absoluteIndex =
+          virtualScroll !== undefined
+            ? table.virtualScroll.startIndex + index
+            : (table.pagination.page - 1) * table.pagination.pageSize + index;
         table.toggleRow(absoluteIndex, event.ctrlKey || event.metaKey);
         lastShiftClickIndex = index;
       }
@@ -328,9 +340,10 @@
 
   /** Handles row selection from checkbox. */
   function handleRowSelect(index: number, multi: boolean): void {
-    const absoluteIndex = virtualScroll !== undefined
-      ? table.virtualScroll.startIndex + index
-      : (table.pagination.page - 1) * table.pagination.pageSize + index;
+    const absoluteIndex =
+      virtualScroll !== undefined
+        ? table.virtualScroll.startIndex + index
+        : (table.pagination.page - 1) * table.pagination.pageSize + index;
 
     table.toggleRow(absoluteIndex, multi);
     lastShiftClickIndex = index;
@@ -394,7 +407,10 @@
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
-        focusedRowIndex = Math.min(currentIndex + 1, table.visibleData.length - 1);
+        focusedRowIndex = Math.min(
+          currentIndex + 1,
+          table.visibleData.length - 1,
+        );
         focusRow(focusedRowIndex);
         break;
 
@@ -406,7 +422,10 @@
 
       case "PageDown":
         event.preventDefault();
-        focusedRowIndex = Math.min(currentIndex + 10, table.visibleData.length - 1);
+        focusedRowIndex = Math.min(
+          currentIndex + 10,
+          table.visibleData.length - 1,
+        );
         focusRow(focusedRowIndex);
         break;
 
@@ -466,7 +485,9 @@
 
   /** Focuses a row by index. */
   function focusRow(index: number): void {
-    const row = containerRef?.querySelector(`tr[data-index="${index}"]`) as HTMLElement | null;
+    const row = containerRef?.querySelector(
+      `tr[data-index="${index}"]`,
+    ) as HTMLElement | null;
     row?.focus();
 
     // Scroll into view if using virtual scroll
@@ -477,9 +498,11 @@
 
   /** Checks if a row is selected. */
   function isRowSelected(visibleIndex: number): boolean {
-    const absoluteIndex = virtualScroll !== undefined
-      ? table.virtualScroll.startIndex + visibleIndex
-      : (table.pagination.page - 1) * table.pagination.pageSize + visibleIndex;
+    const absoluteIndex =
+      virtualScroll !== undefined
+        ? table.virtualScroll.startIndex + visibleIndex
+        : (table.pagination.page - 1) * table.pagination.pageSize +
+          visibleIndex;
     return table.selectedRows.has(absoluteIndex);
   }
 
@@ -548,11 +571,15 @@
           <!-- Empty state -->
           <tr>
             <td
-              colspan={columns.length + (selectable && selectionMode !== "none" ? 1 : 0)}
+              colspan={columns.length +
+                (selectable && selectionMode !== "none" ? 1 : 0)}
               class="py-12 text-center"
             >
               <div class="flex flex-col items-center justify-center">
-                <Inbox class="text-base-content/30 mb-4 h-12 w-12" strokeWidth={1.5} />
+                <Inbox
+                  class="text-base-content/30 mb-4 h-12 w-12"
+                  strokeWidth={1.5}
+                />
                 <p class="text-base-content/50 text-sm">{emptyMessage}</p>
               </div>
             </td>
@@ -562,7 +589,8 @@
           {#if virtualScroll !== undefined && table.virtualScroll.offsetY > 0}
             <tr>
               <td
-                colspan={columns.length + (selectable && selectionMode !== "none" ? 1 : 0)}
+                colspan={columns.length +
+                  (selectable && selectionMode !== "none" ? 1 : 0)}
                 style={spacerTopStyle}
               ></td>
             </tr>
@@ -589,7 +617,8 @@
           {#if virtualScroll !== undefined}
             <tr>
               <td
-                colspan={columns.length + (selectable && selectionMode !== "none" ? 1 : 0)}
+                colspan={columns.length +
+                  (selectable && selectionMode !== "none" ? 1 : 0)}
                 style={spacerBottomStyle}
               ></td>
             </tr>

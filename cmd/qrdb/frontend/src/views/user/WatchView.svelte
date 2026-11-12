@@ -85,7 +85,7 @@
       type: event.type,
       key: event.key,
       value: event.value ?? "",
-    }))
+    })),
   );
 
   // ---------------------------------------------------------------------------
@@ -93,9 +93,28 @@
   // ---------------------------------------------------------------------------
 
   const eventColumns: Column<WatchEventRow>[] = [
-    { id: "time", header: "Time", accessor: "time", sortable: true, width: "120px" },
-    { id: "type", header: "Type", accessor: "type", sortable: true, width: "80px" },
-    { id: "key", header: "Key", accessor: "key", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "time",
+      header: "Time",
+      accessor: "time",
+      sortable: true,
+      width: "120px",
+    },
+    {
+      id: "type",
+      header: "Type",
+      accessor: "type",
+      sortable: true,
+      width: "80px",
+    },
+    {
+      id: "key",
+      header: "Key",
+      accessor: "key",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
     { id: "value", header: "Value", accessor: "value", sortable: false },
   ];
 
@@ -128,9 +147,10 @@
     loading = true;
     try {
       const revParsed = parseInt(startRevision, 10);
-      const opts: WatchOptions = !Number.isNaN(revParsed) && revParsed > 0
-        ? { startRevision: revParsed }
-        : {};
+      const opts: WatchOptions =
+        !Number.isNaN(revParsed) && revParsed > 0
+          ? { startRevision: revParsed }
+          : {};
 
       let handle: WatchHandle;
       if (isPrefix) {
@@ -189,11 +209,15 @@
 </script>
 
 <div class="flex flex-col gap-4">
-
-  <PageHeader title="Watch" description="Stream real-time change events for keys/prefixes" />
+  <PageHeader
+    title="Watch"
+    description="Stream real-time change events for keys/prefixes"
+  />
 
   <!-- Zone 1: Compact creation form -->
-  <div class="flex flex-wrap items-center gap-2 rounded-lg bg-base-200 px-4 py-3">
+  <div
+    class="flex flex-wrap items-center gap-2 rounded-lg bg-base-200 px-4 py-3"
+  >
     <input
       type="text"
       class="input input-bordered input-sm w-full max-w-xs"
@@ -208,9 +232,17 @@
     />
     <label class="label cursor-pointer gap-1.5">
       <span class="label-text text-xs">Prefix</span>
-      <input type="checkbox" class="toggle toggle-primary toggle-sm" bind:checked={isPrefix} />
+      <input
+        type="checkbox"
+        class="toggle toggle-primary toggle-sm"
+        bind:checked={isPrefix}
+      />
     </label>
-    <button class="btn btn-primary btn-sm gap-1" onclick={startWatch} disabled={loading}>
+    <button
+      class="btn btn-primary btn-sm gap-1"
+      onclick={startWatch}
+      disabled={loading}
+    >
       {#if loading}
         <span class="loading loading-spinner loading-xs"></span>
       {:else}
@@ -223,9 +255,13 @@
   <!-- Zone 2: Active watches as chips -->
   {#if watchCount > 0}
     <div class="flex flex-wrap items-center gap-2">
-      <span class="text-base-content/50 text-xs font-medium">{watchCount} active watch{watchCount !== 1 ? "es" : ""}</span>
+      <span class="text-base-content/50 text-xs font-medium"
+        >{watchCount} active watch{watchCount !== 1 ? "es" : ""}</span
+      >
       {#each watchStore.watches as w (w.id)}
-        <div class="flex items-center gap-1.5 rounded-full bg-base-200 px-3 py-1 text-xs">
+        <div
+          class="flex items-center gap-1.5 rounded-full bg-base-200 px-3 py-1 text-xs"
+        >
           <span class="font-mono">{truncateKey(w.key)}</span>
           {#if w.isPrefix}
             <span class="badge badge-info badge-xs leading-none">pfx</span>
@@ -239,7 +275,9 @@
           </button>
         </div>
       {/each}
-      <button class="btn btn-ghost btn-xs text-error" onclick={cancelAllWatches}>Cancel All</button>
+      <button class="btn btn-ghost btn-xs text-error" onclick={cancelAllWatches}
+        >Cancel All</button
+      >
     </div>
   {/if}
 

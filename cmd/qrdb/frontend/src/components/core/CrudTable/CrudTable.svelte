@@ -142,7 +142,9 @@
 
 <div class="flex flex-col">
   <!-- Toolbar -->
-  <div class="flex items-center justify-between rounded-t-lg bg-base-200 px-4 py-3">
+  <div
+    class="flex items-center justify-between rounded-t-lg bg-base-200 px-4 py-3"
+  >
     <div class="flex items-center gap-2">
       <h3 class="text-sm font-semibold">{title}</h3>
       <span class="badge badge-sm badge-ghost">{data.length}</span>
@@ -162,10 +164,7 @@
         </button>
       {/if}
       {#if showCreate}
-        <button
-          class="btn btn-primary btn-sm"
-          onclick={handleCreateClick}
-        >
+        <button class="btn btn-primary btn-sm" onclick={handleCreateClick}>
           <Plus class="h-4 w-4" />
           {createLabel}
         </button>
@@ -185,8 +184,10 @@
     {compact}
     {striped}
     selectable={showDelete && ondeleteselected !== undefined}
-    selectionMode={showDelete && ondeleteselected !== undefined ? "multiple" : "none"}
-    onrowclick={onrowclick}
+    selectionMode={showDelete && ondeleteselected !== undefined
+      ? "multiple"
+      : "none"}
+    {onrowclick}
     onselectionchange={handleSelectionChange}
   />
 </div>

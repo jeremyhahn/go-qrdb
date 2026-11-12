@@ -22,8 +22,8 @@
  * - NDJSON: Newline-delimited JSON (one object per line)
  */
 
-import type { ParsedPreview, ParseResult, JsonFormat } from '../types.ts';
-import { PREVIEW_ROWS } from '../types.ts';
+import type { ParsedPreview, ParseResult, JsonFormat } from "../types.ts";
+import { PREVIEW_ROWS } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Type Guards
@@ -34,10 +34,10 @@ import { PREVIEW_ROWS } from '../types.ts';
  */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return (
-    typeof value === 'object' &&
+    typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
-    Object.prototype.toString.call(value) === '[object Object]'
+    Object.prototype.toString.call(value) === "[object Object]"
   );
 }
 
@@ -59,17 +59,19 @@ function isObjectArray(value: unknown): value is Record<string, unknown>[] {
 /**
  * Converts an object's values to strings for consistent handling.
  */
-function normalizeObjectValues(obj: Record<string, unknown>): Record<string, string> {
+function normalizeObjectValues(
+  obj: Record<string, unknown>,
+): Record<string, string> {
   const result: Record<string, string> = {};
 
   for (const key of Object.keys(obj)) {
     const value = obj[key];
 
     if (value === null || value === undefined) {
-      result[key] = '';
-    } else if (typeof value === 'string') {
+      result[key] = "";
+    } else if (typeof value === "string") {
       result[key] = value;
-    } else if (typeof value === 'object') {
+    } else if (typeof value === "object") {
       result[key] = JSON.stringify(value);
     } else {
       result[key] = String(value);
@@ -113,7 +115,7 @@ async function parseSingleObject(content: string): Promise<ParseResult> {
     if (!isPlainObject(parsed)) {
       return {
         success: false,
-        error: 'Expected a JSON object, but found a different type',
+        error: "Expected a JSON object, but found a different type",
       };
     }
 
@@ -123,23 +125,23 @@ async function parseSingleObject(content: string): Promise<ParseResult> {
     if (entries.length === 0) {
       return {
         success: false,
-        error: 'JSON object is empty',
+        error: "JSON object is empty",
       };
     }
 
     // Create rows with key and value columns
     const rows: Record<string, string>[] = entries.map(([key, value]) => ({
       key,
-      value: typeof value === 'string' ? value : JSON.stringify(value),
+      value: typeof value === "string" ? value : JSON.stringify(value),
     }));
 
     const previewRows = rows.slice(0, PREVIEW_ROWS);
 
     const preview: ParsedPreview = {
-      headers: ['key', 'value'],
+      headers: ["key", "value"],
       rows: previewRows,
       totalRows: entries.length,
-      format: 'json',
+      format: "json",
     };
 
     return {
@@ -147,7 +149,7 @@ async function parseSingleObject(content: string): Promise<ParseResult> {
       data: preview,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Invalid JSON';
+    const message = error instanceof Error ? error.message : "Invalid JSON";
     return {
       success: false,
       error: `Failed to parse JSON object: ${message}`,
@@ -169,21 +171,21 @@ async function parseArray(content: string): Promise<ParseResult> {
     if (!Array.isArray(parsed)) {
       return {
         success: false,
-        error: 'Expected a JSON array, but found a different type',
+        error: "Expected a JSON array, but found a different type",
       };
     }
 
     if (parsed.length === 0) {
       return {
         success: false,
-        error: 'JSON array is empty',
+        error: "JSON array is empty",
       };
     }
 
     if (!isObjectArray(parsed)) {
       return {
         success: false,
-        error: 'Expected an array of objects, but found non-object elements',
+        error: "Expected an array of objects, but found non-object elements",
       };
     }
 
@@ -195,7 +197,7 @@ async function parseArray(content: string): Promise<ParseResult> {
       headers,
       rows,
       totalRows: parsed.length,
-      format: 'json',
+      format: "json",
     };
 
     return {
@@ -203,7 +205,7 @@ async function parseArray(content: string): Promise<ParseResult> {
       data: preview,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Invalid JSON';
+    const message = error instanceof Error ? error.message : "Invalid JSON";
     return {
       success: false,
       error: `Failed to parse JSON array: ${message}`,
@@ -222,12 +224,12 @@ async function parseArray(content: string): Promise<ParseResult> {
  */
 async function parseNDJSON(content: string): Promise<ParseResult> {
   try {
-    const lines = content.split('\n').filter((line) => line.trim().length > 0);
+    const lines = content.split("\n").filter((line) => line.trim().length > 0);
 
     if (lines.length === 0) {
       return {
         success: false,
-        error: 'File is empty',
+        error: "File is empty",
       };
     }
 
@@ -259,7 +261,7 @@ async function parseNDJSON(content: string): Promise<ParseResult> {
     }
 
     if (objects.length === 0) {
-      const errorSummary = errors.slice(0, 3).join('; ');
+      const errorSummary = errors.slice(0, 3).join("; ");
       return {
         success: false,
         error: `No valid objects found. ${errorSummary}`,
@@ -274,7 +276,7 @@ async function parseNDJSON(content: string): Promise<ParseResult> {
       headers,
       rows,
       totalRows: objects.length,
-      format: 'json',
+      format: "json",
     };
 
     return {
@@ -282,7 +284,7 @@ async function parseNDJSON(content: string): Promise<ParseResult> {
       data: preview,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const message = error instanceof Error ? error.message : "Unknown error";
     return {
       success: false,
       error: `Failed to parse NDJSON: ${message}`,
@@ -303,7 +305,7 @@ async function parseNDJSON(content: string): Promise<ParseResult> {
  */
 export async function parseJSON(
   file: File,
-  format: JsonFormat
+  format: JsonFormat,
 ): Promise<ParseResult> {
   try {
     const content = await file.text();
@@ -311,18 +313,18 @@ export async function parseJSON(
     if (content.trim().length === 0) {
       return {
         success: false,
-        error: 'File is empty',
+        error: "File is empty",
       };
     }
 
     switch (format) {
-      case 'object':
+      case "object":
         return await parseSingleObject(content);
 
-      case 'array':
+      case "array":
         return await parseArray(content);
 
-      case 'ndjson':
+      case "ndjson":
         return await parseNDJSON(content);
 
       default: {
@@ -335,7 +337,7 @@ export async function parseJSON(
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
+    const message = error instanceof Error ? error.message : "Unknown error";
     return {
       success: false,
       error: `Failed to read file: ${message}`,
@@ -364,13 +366,13 @@ export async function detectJSONFormat(file: File): Promise<JsonFormat | null> {
     }
 
     // Check for NDJSON (multiple lines, each starting with {)
-    const lines = trimmed.split('\n').filter((line) => line.trim().length > 0);
+    const lines = trimmed.split("\n").filter((line) => line.trim().length > 0);
     if (lines.length > 1) {
-      const allLinesStartWithBrace = lines.every(
-        (line) => line.trim().startsWith('{')
+      const allLinesStartWithBrace = lines.every((line) =>
+        line.trim().startsWith("{"),
       );
       if (allLinesStartWithBrace) {
-        return 'ndjson';
+        return "ndjson";
       }
     }
 
@@ -379,18 +381,18 @@ export async function detectJSONFormat(file: File): Promise<JsonFormat | null> {
       const parsed = JSON.parse(trimmed);
 
       if (Array.isArray(parsed)) {
-        return 'array';
+        return "array";
       }
 
       if (isPlainObject(parsed)) {
-        return 'object';
+        return "object";
       }
 
       return null;
     } catch {
       // If single JSON parse fails but we have multiple lines, likely NDJSON
       if (lines.length > 1) {
-        return 'ndjson';
+        return "ndjson";
       }
       return null;
     }
@@ -404,9 +406,9 @@ export async function detectJSONFormat(file: File): Promise<JsonFormat | null> {
  */
 export function getJSONFormatDescription(format: JsonFormat): string {
   const descriptions: Record<JsonFormat, string> = {
-    object: 'Single JSON object with key-value pairs',
-    array: 'Array of JSON objects',
-    ndjson: 'Newline-delimited JSON (one object per line)',
+    object: "Single JSON object with key-value pairs",
+    array: "Array of JSON objects",
+    ndjson: "Newline-delimited JSON (one object per line)",
   };
   return descriptions[format];
 }

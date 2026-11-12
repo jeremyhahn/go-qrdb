@@ -15,7 +15,13 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, Op, OpType, BatchResponse, ImportResult } from "@qrdb/sdk";
+  import type {
+    Client,
+    Op,
+    OpType,
+    BatchResponse,
+    ImportResult,
+  } from "@qrdb/sdk";
   import type { Column } from "../../components/core/DataTable/types.ts";
   import { CrudTable } from "../../components/core/CrudTable";
   import { ChevronUp, ChevronDown, FileUp } from "lucide-svelte";
@@ -81,19 +87,35 @@
 
   const resultTableData: BatchResultRow[] = $derived(
     response !== null
-      ? ((response as BatchResponse).responses ?? []).map((result: import("@qrdb/sdk").OpResponse, i: number) => ({
-          index: i + 1,
-          type: ops[i] !== undefined ? opTypeLabels[ops[i].type] : "?",
-          key: ops[i]?.key ?? "?",
-          result: JSON.stringify(result),
-        }))
-      : []
+      ? ((response as BatchResponse).responses ?? []).map(
+          (result: import("@qrdb/sdk").OpResponse, i: number) => ({
+            index: i + 1,
+            type: ops[i] !== undefined ? opTypeLabels[ops[i].type] : "?",
+            key: ops[i]?.key ?? "?",
+            result: JSON.stringify(result),
+          }),
+        )
+      : [],
   );
 
   const resultColumns: Column<BatchResultRow>[] = [
-    { id: "index", header: "#", accessor: "index", sortable: true, width: "60px", align: "center" },
+    {
+      id: "index",
+      header: "#",
+      accessor: "index",
+      sortable: true,
+      width: "60px",
+      align: "center",
+    },
     { id: "type", header: "Type", accessor: "type", sortable: true },
-    { id: "key", header: "Key", accessor: "key", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "key",
+      header: "Key",
+      accessor: "key",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
     { id: "result", header: "Result", accessor: "result", sortable: false },
   ];
 
@@ -106,7 +128,10 @@
   }
 
   function addOp(): void {
-    ops = [...ops, { id: allocId(), type: OP_PUT, key: "", value: "", rangeEnd: "" }];
+    ops = [
+      ...ops,
+      { id: allocId(), type: OP_PUT, key: "", value: "", rangeEnd: "" },
+    ];
   }
 
   function removeOp(id: number): void {
@@ -201,21 +226,26 @@
   let codecsFallback: boolean = $state(false);
 
   onMount(() => {
-    client.batch.availableCodecs().then((list) => {
-      codecs = list.length > 0 ? list : FALLBACK_CODECS;
-      codecsFallback = list.length === 0;
-    }).catch((err: unknown) => {
-      codecs = FALLBACK_CODECS;
-      codecsFallback = true;
-      showToast("error", err instanceof Error ? err.message : String(err));
-    });
+    client.batch
+      .availableCodecs()
+      .then((list) => {
+        codecs = list.length > 0 ? list : FALLBACK_CODECS;
+        codecsFallback = list.length === 0;
+      })
+      .catch((err: unknown) => {
+        codecs = FALLBACK_CODECS;
+        codecsFallback = true;
+        showToast("error", err instanceof Error ? err.message : String(err));
+      });
   });
 
   // ---------------------------------------------------------------------------
   // Import tab — derived
   // ---------------------------------------------------------------------------
 
-  const importDisabled: boolean = $derived(importFilePath.trim() === "" || importLoading);
+  const importDisabled: boolean = $derived(
+    importFilePath.trim() === "" || importLoading,
+  );
 
   interface ImportErrorRow {
     row: number;
@@ -225,17 +255,33 @@
 
   const importErrorRows: ImportErrorRow[] = $derived(
     importResult !== null
-      ? ((importResult as ImportResult).errors ?? []).map((e: import("@qrdb/sdk").ImportError) => ({
-          row: e.row,
-          key: e.key,
-          message: e.message,
-        }))
-      : []
+      ? ((importResult as ImportResult).errors ?? []).map(
+          (e: import("@qrdb/sdk").ImportError) => ({
+            row: e.row,
+            key: e.key,
+            message: e.message,
+          }),
+        )
+      : [],
   );
 
   const importErrorColumns: Column<ImportErrorRow>[] = [
-    { id: "row", header: "Row", accessor: "row", sortable: true, width: "80px", align: "center" },
-    { id: "key", header: "Key", accessor: "key", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "row",
+      header: "Row",
+      accessor: "row",
+      sortable: true,
+      width: "80px",
+      align: "center",
+    },
+    {
+      id: "key",
+      header: "Key",
+      accessor: "key",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
     { id: "message", header: "Error", accessor: "message", sortable: false },
   ];
 
@@ -245,11 +291,14 @@
 
   $effect(() => {
     if (activeTab === "import" && availableFormats.length === 0) {
-      client.batch.availableImportFormats().then((formats) => {
-        availableFormats = formats;
-      }).catch((err: unknown) => {
-        showToast("error", err instanceof Error ? err.message : String(err));
-      });
+      client.batch
+        .availableImportFormats()
+        .then((formats) => {
+          availableFormats = formats;
+        })
+        .catch((err: unknown) => {
+          showToast("error", err instanceof Error ? err.message : String(err));
+        });
     }
   });
 
@@ -273,19 +322,29 @@
         format: importFormat,
         key_field: importKeyField,
         value_mode: importValueMode,
-        ...(importValueMode === "field" ? { value_field: importValueField } : {}),
+        ...(importValueMode === "field"
+          ? { value_field: importValueField }
+          : {}),
         skip_header: importSkipHeader,
         transactional: importTransactional,
-        ...(importTarget === "collection" ? {
-          database: importDatabase,
-          collection: importCollection,
-        } : {}),
+        ...(importTarget === "collection"
+          ? {
+              database: importDatabase,
+              collection: importCollection,
+            }
+          : {}),
       };
       importResult = await client.batch.importFile(importFilePath.trim(), opts);
       if (importResult.failed === 0) {
-        showToast("success", `Imported ${String(importResult.succeeded)} of ${String(importResult.total)} records.`);
+        showToast(
+          "success",
+          `Imported ${String(importResult.succeeded)} of ${String(importResult.total)} records.`,
+        );
       } else {
-        showToast("warning", `Imported ${String(importResult.succeeded)} of ${String(importResult.total)} records (${String(importResult.failed)} failed).`);
+        showToast(
+          "warning",
+          `Imported ${String(importResult.succeeded)} of ${String(importResult.total)} records (${String(importResult.failed)} failed).`,
+        );
       }
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
@@ -310,19 +369,31 @@
 </script>
 
 <div class="flex flex-col gap-4">
-  <PageHeader title="Batch" description="Execute multiple KV operations atomically" />
+  <PageHeader
+    title="Batch"
+    description="Execute multiple KV operations atomically"
+  />
 
   <!-- Value codecs supported by the server -->
-  <div class="flex flex-wrap items-center gap-2 text-sm" data-testid="batch-codecs">
+  <div
+    class="flex flex-wrap items-center gap-2 text-sm"
+    data-testid="batch-codecs"
+  >
     <span class="font-medium flex items-center gap-1">
       Value codecs
-      <HelpTip text="Codecs the server can encode and decode batch values with (batch.availableCodecs)." />
+      <HelpTip
+        text="Codecs the server can encode and decode batch values with (batch.availableCodecs)."
+      />
     </span>
     {#each codecs as codec (codec)}
       <span class="badge badge-outline" data-testid="batch-codec">{codec}</span>
     {/each}
     {#if codecsFallback}
-      <span class="text-base-content/50 text-xs" data-testid="batch-codecs-fallback">(server list unavailable; default shown)</span>
+      <span
+        class="text-base-content/50 text-xs"
+        data-testid="batch-codecs-fallback"
+        >(server list unavailable; default shown)</span
+      >
     {/if}
   </div>
 
@@ -332,7 +403,9 @@
       role="tab"
       class="tab"
       class:tab-active={activeTab === "operations"}
-      onclick={() => { activeTab = "operations"; }}
+      onclick={() => {
+        activeTab = "operations";
+      }}
     >
       Operations
     </button>
@@ -340,7 +413,9 @@
       role="tab"
       class="tab"
       class:tab-active={activeTab === "import"}
-      onclick={() => { activeTab = "import"; }}
+      onclick={() => {
+        activeTab = "import";
+      }}
     >
       <span class="flex items-center gap-1">
         <FileUp class="h-3.5 w-3.5" />
@@ -358,21 +433,36 @@
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-5">
           <div class="flex items-center justify-between">
-            <h3 class="card-title text-base font-semibold">Batch Operations ({ops.length})</h3>
-            <button class="btn btn-outline btn-sm" onclick={addOp}>Add Operation</button>
+            <h3 class="card-title text-base font-semibold">
+              Batch Operations ({ops.length})
+            </h3>
+            <button class="btn btn-outline btn-sm" onclick={addOp}
+              >Add Operation</button
+            >
           </div>
           {#if ops.length === 0}
-            <p class="text-base-content/50 text-sm">No operations defined. Click "Add Operation" to begin.</p>
+            <p class="text-base-content/50 text-sm">
+              No operations defined. Click "Add Operation" to begin.
+            </p>
           {:else}
             <div class="flex flex-col gap-2 mt-2">
               {#each ops as op, index (op.id)}
-                <div class="bg-base-300 flex flex-wrap items-end gap-2 rounded p-3">
-                  <span class="text-base-content/50 self-center text-xs font-mono w-6">
+                <div
+                  class="bg-base-300 flex flex-wrap items-end gap-2 rounded p-3"
+                >
+                  <span
+                    class="text-base-content/50 self-center text-xs font-mono w-6"
+                  >
                     {index + 1}.
                   </span>
                   <label class="form-control w-36">
-                    <div class="label"><span class="label-text text-xs">Type</span></div>
-                    <select class="select select-bordered select-sm w-full" bind:value={op.type}>
+                    <div class="label">
+                      <span class="label-text text-xs">Type</span>
+                    </div>
+                    <select
+                      class="select select-bordered select-sm w-full"
+                      bind:value={op.type}
+                    >
                       <option value={OP_PUT}>put</option>
                       <option value={OP_GET}>get</option>
                       <option value={OP_DELETE}>delete</option>
@@ -380,7 +470,9 @@
                     </select>
                   </label>
                   <label class="form-control w-full max-w-48">
-                    <div class="label"><span class="label-text text-xs">Key</span></div>
+                    <div class="label">
+                      <span class="label-text text-xs">Key</span>
+                    </div>
                     <input
                       type="text"
                       class="input input-bordered input-sm w-full"
@@ -390,7 +482,9 @@
                   </label>
                   {#if op.type === OP_PUT}
                     <label class="form-control w-full max-w-48">
-                      <div class="label"><span class="label-text text-xs">Value</span></div>
+                      <div class="label">
+                        <span class="label-text text-xs">Value</span>
+                      </div>
                       <input
                         type="text"
                         class="input input-bordered input-sm w-full"
@@ -401,7 +495,9 @@
                   {/if}
                   {#if op.type === OP_RANGE}
                     <label class="form-control w-full max-w-48">
-                      <div class="label"><span class="label-text text-xs">Range End</span></div>
+                      <div class="label">
+                        <span class="label-text text-xs">Range End</span>
+                      </div>
                       <input
                         type="text"
                         class="input input-bordered input-sm w-full"
@@ -444,13 +540,18 @@
 
       <!-- Execute / Reset -->
       <div class="flex gap-2">
-        <button class="btn btn-primary btn-sm" onclick={handleExecute} disabled={opsLoading}>
+        <button
+          class="btn btn-primary btn-sm"
+          onclick={handleExecute}
+          disabled={opsLoading}
+        >
           {#if opsLoading}
             <span class="loading loading-spinner loading-xs"></span>
           {/if}
           Execute Batch
         </button>
-        <button class="btn btn-outline btn-sm" onclick={resetForm}>Reset</button>
+        <button class="btn btn-outline btn-sm" onclick={resetForm}>Reset</button
+        >
       </div>
 
       <!-- Results -->
@@ -468,7 +569,7 @@
       {/if}
     </div>
 
-  <!-- ======================================================================
+    <!-- ======================================================================
        Import tab
        ====================================================================== -->
   {:else}
@@ -495,9 +596,13 @@
           <!-- Format -->
           <div class="form-control mt-3">
             <label class="label" for="import-format">
-              <span class="label-text text-xs font-medium flex items-center gap-1">
+              <span
+                class="label-text text-xs font-medium flex items-center gap-1"
+              >
                 Format
-                <HelpTip text="Auto-detect determines the format from the file extension. Override manually if detection fails." />
+                <HelpTip
+                  text="Auto-detect determines the format from the file extension. Override manually if detection fails."
+                />
               </span>
             </label>
             <select
@@ -518,9 +623,13 @@
           <!-- Key Field -->
           <div class="form-control mt-3">
             <label class="label" for="import-key-field">
-              <span class="label-text text-xs font-medium flex items-center gap-1">
+              <span
+                class="label-text text-xs font-medium flex items-center gap-1"
+              >
                 Key Field
-                <HelpTip text="The field name to use as the key for each record. For CSV, this is the column name. For JSON, this is the object property name." />
+                <HelpTip
+                  text="The field name to use as the key for each record. For CSV, this is the column name. For JSON, this is the object property name."
+                />
               </span>
             </label>
             <input
@@ -534,9 +643,13 @@
 
           <!-- Value Mode -->
           <div class="form-control mt-3">
-            <span class="label-text text-xs font-medium flex items-center gap-1 mb-1">
+            <span
+              class="label-text text-xs font-medium flex items-center gap-1 mb-1"
+            >
               Value Mode
-              <HelpTip text="Entire Row stores the full record as the value. Specific Field stores only one field's value." />
+              <HelpTip
+                text="Entire Row stores the full record as the value. Specific Field stores only one field's value."
+              />
             </span>
             <div class="flex items-center gap-6">
               <label class="label cursor-pointer gap-2">
@@ -566,9 +679,13 @@
           {#if importValueMode === "field"}
             <div class="form-control mt-2">
               <label class="label" for="import-value-field">
-                <span class="label-text text-xs font-medium flex items-center gap-1">
+                <span
+                  class="label-text text-xs font-medium flex items-center gap-1"
+                >
                   Value Field
-                  <HelpTip text="The field name whose value will be stored. Only used when Value Mode is Specific Field." />
+                  <HelpTip
+                    text="The field name whose value will be stored. Only used when Value Mode is Specific Field."
+                  />
                 </span>
               </label>
               <input
@@ -648,7 +765,9 @@
               />
               <span class="label-text text-sm flex items-center gap-1">
                 Skip Header
-                <HelpTip text="Skip the first row in CSV files (header row). Does not apply to JSON/YAML." />
+                <HelpTip
+                  text="Skip the first row in CSV files (header row). Does not apply to JSON/YAML."
+                />
               </span>
             </label>
           </div>
@@ -663,7 +782,9 @@
               />
               <span class="label-text text-sm flex items-center gap-1">
                 Transactional
-                <HelpTip text="When enabled, the entire import fails if any single record fails. When disabled, successful records are imported and failures are reported." />
+                <HelpTip
+                  text="When enabled, the entire import fails if any single record fails. When disabled, successful records are imported and failures are reported."
+                />
               </span>
             </label>
           </div>
@@ -682,7 +803,9 @@
           {/if}
           Import
         </button>
-        <button class="btn btn-outline btn-sm" onclick={resetImport}>Reset</button>
+        <button class="btn btn-outline btn-sm" onclick={resetImport}
+          >Reset</button
+        >
       </div>
 
       <!-- Results panel -->
@@ -697,7 +820,9 @@
               <span class="font-semibold">{importResult.total}</span>
               records
               {#if importResult.failed > 0}
-                (<span class="text-error font-semibold">{importResult.failed} failed</span>)
+                (<span class="text-error font-semibold"
+                  >{importResult.failed} failed</span
+                >)
               {/if}.
             </p>
 

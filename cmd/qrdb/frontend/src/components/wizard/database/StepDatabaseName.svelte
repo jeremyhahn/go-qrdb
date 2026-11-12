@@ -108,7 +108,8 @@
       {:else}
         <label class="label" for="db-name">
           <span class="label-text-alt text-base-content/60">
-            Lowercase letters, numbers, and hyphens. Must start with a letter or number.
+            Lowercase letters, numbers, and hyphens. Must start with a letter or
+            number.
           </span>
         </label>
       {/if}
@@ -125,8 +126,8 @@
             type="button"
             class="card cursor-pointer border-2 p-4 text-left transition-colors
               {dbWizardStore.engine === engine.id
-                ? 'border-primary bg-primary/5'
-                : 'border-base-300 hover:border-primary/50'}"
+              ? 'border-primary bg-primary/5'
+              : 'border-base-300 hover:border-primary/50'}"
             onclick={() => selectEngine(engine.id)}
           >
             <div class="flex flex-col gap-2">

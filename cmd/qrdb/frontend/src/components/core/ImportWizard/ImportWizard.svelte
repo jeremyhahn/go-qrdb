@@ -24,16 +24,16 @@
     ParsedPreview,
     ImportProgress as ImportProgressType,
     FieldMappingUpdate,
-  } from './types.ts';
-  import { WIZARD_STEPS, STEP_LABELS, MAX_FILE_SIZE } from './types.ts';
-  import { parseCSV } from './parsers/csv.ts';
-  import { parseJSON } from './parsers/json.ts';
-  import { parseArchive } from './parsers/archive.ts';
-  import FormatSelect from './FormatSelect.svelte';
-  import FileUpload from './FileUpload.svelte';
-  import FieldMapping from './FieldMapping.svelte';
-  import ImportReview from './ImportReview.svelte';
-  import ImportProgressComponent from './ImportProgress.svelte';
+  } from "./types.ts";
+  import { WIZARD_STEPS, STEP_LABELS, MAX_FILE_SIZE } from "./types.ts";
+  import { parseCSV } from "./parsers/csv.ts";
+  import { parseJSON } from "./parsers/json.ts";
+  import { parseArchive } from "./parsers/archive.ts";
+  import FormatSelect from "./FormatSelect.svelte";
+  import FileUpload from "./FileUpload.svelte";
+  import FieldMapping from "./FieldMapping.svelte";
+  import ImportReview from "./ImportReview.svelte";
+  import ImportProgressComponent from "./ImportProgress.svelte";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -53,12 +53,12 @@
   // State
   // ---------------------------------------------------------------------------
 
-  let currentStep = $state<WizardStep>('format');
+  let currentStep = $state<WizardStep>("format");
   let showCancelConfirm = $state(false);
 
   // Format step state
   let selectedFormat = $state<ImportFormat | null>(null);
-  let selectedJsonFormat = $state<JsonFormat>('array');
+  let selectedJsonFormat = $state<JsonFormat>("array");
 
   // Upload step state
   let selectedFile = $state<File | null>(null);
@@ -67,9 +67,9 @@
   let parsedPreview = $state<ParsedPreview | null>(null);
 
   // Mapping step state
-  let keyField = $state('');
-  let valueMode = $state<ValueMode>('row');
-  let valueField = $state('');
+  let keyField = $state("");
+  let valueMode = $state<ValueMode>("row");
+  let valueField = $state("");
   let skipHeader = $state(true);
   let createMissing = $state(true);
   let updateExisting = $state(true);
@@ -84,32 +84,32 @@
     succeeded: 0,
     failed: 0,
     errors: [],
-    status: 'pending',
+    status: "pending",
   });
 
   // ---------------------------------------------------------------------------
   // Derived
   // ---------------------------------------------------------------------------
 
-  const currentStepIndex = $derived(
-    WIZARD_STEPS.indexOf(currentStep)
-  );
+  const currentStepIndex = $derived(WIZARD_STEPS.indexOf(currentStep));
 
   const canGoBack = $derived(
-    currentStepIndex > 0 && currentStep !== 'progress'
+    currentStepIndex > 0 && currentStep !== "progress",
   );
 
   const canGoNext = $derived.by(() => {
     switch (currentStep) {
-      case 'format':
+      case "format":
         return selectedFormat !== null;
-      case 'upload':
-        return selectedFile !== null && parsedPreview !== null && parseError === null;
-      case 'mapping':
-        return keyField !== '';
-      case 'review':
+      case "upload":
+        return (
+          selectedFile !== null && parsedPreview !== null && parseError === null
+        );
+      case "mapping":
+        return keyField !== "";
+      case "review":
         return true;
-      case 'progress':
+      case "progress":
         return false;
       default:
         return false;
@@ -117,20 +117,20 @@
   });
 
   const stepLabels = $derived(
-    WIZARD_STEPS.filter((s) => s !== 'progress').map((s) => STEP_LABELS[s])
+    WIZARD_STEPS.filter((s) => s !== "progress").map((s) => STEP_LABELS[s]),
   );
 
   const displayStepIndex = $derived(
-    currentStep === 'progress' ? 4 : currentStepIndex
+    currentStep === "progress" ? 4 : currentStepIndex,
   );
 
   const importConfig = $derived<ImportConfig>({
-    format: selectedFormat ?? 'csv',
-    jsonFormat: selectedFormat === 'json' ? selectedJsonFormat : undefined,
+    format: selectedFormat ?? "csv",
+    jsonFormat: selectedFormat === "json" ? selectedJsonFormat : undefined,
     file: selectedFile,
     keyField,
     valueMode,
-    valueField: valueMode === 'field' ? valueField : undefined,
+    valueField: valueMode === "field" ? valueField : undefined,
     skipHeader,
     createMissing,
     updateExisting,
@@ -153,17 +153,17 @@
   // ---------------------------------------------------------------------------
 
   function resetWizard(): void {
-    currentStep = 'format';
+    currentStep = "format";
     showCancelConfirm = false;
     selectedFormat = null;
-    selectedJsonFormat = 'array';
+    selectedJsonFormat = "array";
     selectedFile = null;
     parseLoading = false;
     parseError = null;
     parsedPreview = null;
-    keyField = '';
-    valueMode = 'row';
-    valueField = '';
+    keyField = "";
+    valueMode = "row";
+    valueField = "";
     skipHeader = true;
     createMissing = true;
     updateExisting = true;
@@ -174,7 +174,7 @@
       succeeded: 0,
       failed: 0,
       errors: [],
-      status: 'pending',
+      status: "pending",
     };
   }
 
@@ -194,17 +194,17 @@
       let result;
 
       switch (selectedFormat) {
-        case 'csv':
+        case "csv":
           result = await parseCSV(file);
           break;
-        case 'json':
+        case "json":
           result = await parseJSON(file, selectedJsonFormat);
           break;
-        case 'archive':
+        case "archive":
           result = await parseArchive(file);
           break;
         default:
-          parseError = 'Unknown format selected';
+          parseError = "Unknown format selected";
           parseLoading = false;
           return;
       }
@@ -213,19 +213,19 @@
         parsedPreview = result.data;
         // Auto-select first header as key field if not set
         const firstHeader = result.data.headers[0];
-        if (firstHeader !== undefined && keyField === '') {
+        if (firstHeader !== undefined && keyField === "") {
           keyField = firstHeader;
         }
         // Auto-select second header as value field if available
         const secondHeader = result.data.headers[1];
-        if (secondHeader !== undefined && valueField === '') {
+        if (secondHeader !== undefined && valueField === "") {
           valueField = secondHeader;
         }
       } else {
         parseError = result.error;
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : "Unknown error";
       parseError = `Failed to parse file: ${message}`;
     } finally {
       parseLoading = false;
@@ -236,7 +236,10 @@
   // Event Handlers
   // ---------------------------------------------------------------------------
 
-  function handleFormatSelect(format: ImportFormat, jsonFormat?: JsonFormat): void {
+  function handleFormatSelect(
+    format: ImportFormat,
+    jsonFormat?: JsonFormat,
+  ): void {
     selectedFormat = format;
     if (jsonFormat !== undefined) {
       selectedJsonFormat = jsonFormat;
@@ -252,8 +255,8 @@
     selectedFile = null;
     parsedPreview = null;
     parseError = null;
-    keyField = '';
-    valueField = '';
+    keyField = "";
+    valueField = "";
   }
 
   function handleMappingChange(update: FieldMappingUpdate): void {
@@ -286,27 +289,27 @@
       return;
     }
 
-    currentStep = 'progress';
+    currentStep = "progress";
     importProgress = {
       total: parsedPreview.totalRows,
       processed: 0,
       succeeded: 0,
       failed: 0,
       errors: [],
-      status: 'importing',
+      status: "importing",
     };
 
     try {
       await onImport(importConfig, parsedPreview);
-      importProgress.status = 'completed';
+      importProgress.status = "completed";
       importProgress.processed = importProgress.total;
       importProgress.succeeded = importProgress.total - importProgress.failed;
     } catch (error) {
-      importProgress.status = 'error';
+      importProgress.status = "error";
       if (error instanceof Error) {
         importProgress.errors.push({
           row: 0,
-          key: 'Import',
+          key: "Import",
           message: error.message,
         });
       }
@@ -314,7 +317,7 @@
   }
 
   function handleCancelImport(): void {
-    importProgress.status = 'cancelled';
+    importProgress.status = "cancelled";
   }
 
   function handleProgressClose(): void {
@@ -336,7 +339,7 @@
       return;
     }
 
-    if (currentStep === 'review') {
+    if (currentStep === "review") {
       handleStartImport();
       return;
     }
@@ -351,9 +354,9 @@
   }
 
   function handleCancelClick(): void {
-    if (currentStep === 'progress' && importProgress.status === 'importing') {
+    if (currentStep === "progress" && importProgress.status === "importing") {
       showCancelConfirm = true;
-    } else if (currentStep !== 'format' || selectedFile !== null) {
+    } else if (currentStep !== "format" || selectedFile !== null) {
       showCancelConfirm = true;
     } else {
       onClose();
@@ -362,7 +365,7 @@
 
   function handleConfirmCancel(): void {
     showCancelConfirm = false;
-    if (importProgress.status === 'importing') {
+    if (importProgress.status === "importing") {
       handleCancelImport();
     }
     onClose();
@@ -403,13 +406,10 @@
     </div>
 
     <!-- Step Indicator -->
-    {#if currentStep !== 'progress'}
+    {#if currentStep !== "progress"}
       <ul class="steps mb-8 w-full">
         {#each stepLabels as label, i (label)}
-          <li
-            class="step"
-            class:step-primary={i <= displayStepIndex}
-          >
+          <li class="step" class:step-primary={i <= displayStepIndex}>
             {label}
           </li>
         {/each}
@@ -418,15 +418,15 @@
 
     <!-- Step Content -->
     <div class="min-h-[400px]">
-      {#if currentStep === 'format'}
+      {#if currentStep === "format"}
         <FormatSelect
           {selectedFormat}
           {selectedJsonFormat}
           onSelect={handleFormatSelect}
         />
-      {:else if currentStep === 'upload'}
+      {:else if currentStep === "upload"}
         <FileUpload
-          format={selectedFormat ?? 'csv'}
+          format={selectedFormat ?? "csv"}
           jsonFormat={selectedJsonFormat}
           file={selectedFile}
           loading={parseLoading}
@@ -434,7 +434,7 @@
           onFileSelect={handleFileSelect}
           onFileRemove={handleFileRemove}
         />
-      {:else if currentStep === 'mapping' && parsedPreview !== null}
+      {:else if currentStep === "mapping" && parsedPreview !== null}
         <FieldMapping
           preview={parsedPreview}
           {keyField}
@@ -443,10 +443,10 @@
           {skipHeader}
           {createMissing}
           {updateExisting}
-          format={selectedFormat ?? 'csv'}
+          format={selectedFormat ?? "csv"}
           onChange={handleMappingChange}
         />
-      {:else if currentStep === 'review' && parsedPreview !== null}
+      {:else if currentStep === "review" && parsedPreview !== null}
         <ImportReview
           config={importConfig}
           preview={parsedPreview}
@@ -454,7 +454,7 @@
           onTransactionalChange={handleTransactionalChange}
           onStartImport={handleStartImport}
         />
-      {:else if currentStep === 'progress'}
+      {:else if currentStep === "progress"}
         <ImportProgressComponent
           progress={importProgress}
           onCancel={handleCancelImport}
@@ -464,28 +464,20 @@
     </div>
 
     <!-- Footer Navigation -->
-    {#if currentStep !== 'progress'}
+    {#if currentStep !== "progress"}
       <div class="modal-action mt-6 flex justify-between">
-        <button
-          type="button"
-          class="btn btn-ghost"
-          onclick={handleCancelClick}
-        >
+        <button type="button" class="btn btn-ghost" onclick={handleCancelClick}>
           Cancel
         </button>
 
         <div class="flex gap-2">
           {#if canGoBack}
-            <button
-              type="button"
-              class="btn btn-outline"
-              onclick={handleBack}
-            >
+            <button type="button" class="btn btn-outline" onclick={handleBack}>
               Back
             </button>
           {/if}
 
-          {#if currentStep !== 'review'}
+          {#if currentStep !== "review"}
             <button
               type="button"
               class="btn btn-primary"
@@ -510,9 +502,9 @@
   <div class="modal-box">
     <h3 class="text-lg font-bold">Cancel Import?</h3>
     <p class="py-4">
-      {#if importProgress.status === 'importing'}
-        The import is still in progress. Are you sure you want to cancel?
-        Any partially imported data will remain.
+      {#if importProgress.status === "importing"}
+        The import is still in progress. Are you sure you want to cancel? Any
+        partially imported data will remain.
       {:else}
         Are you sure you want to cancel? Your progress will be lost.
       {/if}

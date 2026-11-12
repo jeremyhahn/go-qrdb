@@ -76,7 +76,10 @@
   // Pure parse helpers — no side effects, safe to call from $derived
   // ---------------------------------------------------------------------------
 
-  function parseVector(input: string): { value: number[] | null; error: string } {
+  function parseVector(input: string): {
+    value: number[] | null;
+    error: string;
+  } {
     if (!input.trim()) return { value: null, error: "" };
     try {
       const values = input
@@ -91,7 +94,10 @@
       if (values.length === 0) return { value: null, error: "" };
       return { value: values, error: "" };
     } catch (e) {
-      return { value: null, error: e instanceof Error ? e.message : "Invalid vector format" };
+      return {
+        value: null,
+        error: e instanceof Error ? e.message : "Invalid vector format",
+      };
     }
   }
 
@@ -116,12 +122,19 @@
     if (!input.trim()) return { value: null, error: "" };
     try {
       const parsed = JSON.parse(input);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         throw new Error("Metadata must be a JSON object");
       }
       return { value: parsed as Record<string, unknown>, error: "" };
     } catch (e) {
-      return { value: null, error: e instanceof Error ? e.message : "Invalid JSON" };
+      return {
+        value: null,
+        error: e instanceof Error ? e.message : "Invalid JSON",
+      };
     }
   }
 
@@ -133,7 +146,9 @@
   const parsedVector = $derived(_vectorParse.value);
   const vectorError = $derived(_vectorParse.error);
 
-  const _metadataParse = $derived(parseMetadata(metadataInput, useJsonBuilder, metadataFields));
+  const _metadataParse = $derived(
+    parseMetadata(metadataInput, useJsonBuilder, metadataFields),
+  );
   const parsedMetadata = $derived(_metadataParse.value);
   const metadataError = $derived(_metadataParse.error);
 
@@ -315,8 +330,7 @@
           class:textarea-error={vectorError.length > 0}
           placeholder="Enter comma-separated values, e.g.: 0.1, 0.5, -0.3, 0.8"
           bind:value={vectorInput}
-          disabled={loading}
-        ></textarea>
+          disabled={loading}></textarea>
         {#if vectorError}
           <div class="label">
             <span class="label-text-alt text-error">{vectorError}</span>
@@ -449,8 +463,7 @@
               class:textarea-error={metadataError.length > 0}
               placeholder={`{"field": "value", "count": 5}`}
               bind:value={metadataInput}
-              disabled={loading}
-            ></textarea>
+              disabled={loading}></textarea>
             {#if metadataError}
               <div class="label">
                 <span class="label-text-alt text-error">{metadataError}</span>

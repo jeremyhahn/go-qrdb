@@ -28,9 +28,7 @@
   import type { DatabaseInfo } from "@qrdb/sdk";
   import { Plus } from "lucide-svelte";
   import { navStore } from "../../stores/navigation.svelte.ts";
-  import {
-    connManagerStore,
-  } from "../../stores/connection-manager.svelte.ts";
+  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
   import type { ConnectionState } from "../../stores/connection-manager.svelte.ts";
   import { databaseStore } from "../../stores/database.svelte.ts";
   import ServerNode from "./ServerNode.svelte";
@@ -86,7 +84,6 @@
   style="border-radius: 0;"
 >
   <nav class="flex-1 space-y-0.5 p-2">
-
     <!-- ======================================================================
          SERVER TREE: shared between desktop and web modes.
          In web mode the "This Server" built-in profile is always present so
@@ -98,7 +95,9 @@
     <!-- Servers header (expanded state) -->
     {#if !navStore.sidebarCollapsed}
       <div class="mt-1 mb-2 flex items-center justify-between px-2">
-        <span class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider">
+        <span
+          class="text-base-content/40 text-[10px] font-semibold uppercase tracking-wider"
+        >
           Servers
         </span>
         <button
@@ -114,11 +113,14 @@
     <!-- Server list -->
     {#if connManagerStore.loading}
       <div class="flex justify-center py-4">
-        <span class="loading loading-spinner loading-sm text-base-content/30"></span>
+        <span class="loading loading-spinner loading-sm text-base-content/30"
+        ></span>
       </div>
     {:else if connManagerStore.profiles.length === 0}
       {#if !navStore.sidebarCollapsed}
-        <p class="text-base-content/40 px-3 py-2 text-xs">No servers configured.</p>
+        <p class="text-base-content/40 px-3 py-2 text-xs">
+          No servers configured.
+        </p>
       {/if}
     {:else}
       {#each connManagerStore.profiles as profile (profile.id)}
@@ -150,6 +152,5 @@
         </button>
       </div>
     {/if}
-
   </nav>
 </aside>

@@ -24,7 +24,10 @@
     RebalanceMove,
     ShardStatsResponse,
   } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { RefreshCw, Play, Zap } from "lucide-svelte";
   import DataTable from "../../components/core/DataTable/DataTable.svelte";
@@ -62,17 +65,36 @@
   const nodeColumns: Column<NodeLoad>[] = [
     { id: "nodeId", header: "Node", accessor: "nodeId", sortable: true },
     { id: "address", header: "Address", accessor: "address" },
-    { id: "shardCount", header: "Shards", accessor: "shardCount", sortable: true },
-    { id: "leaderCount", header: "Leaders", accessor: "leaderCount", sortable: true },
+    {
+      id: "shardCount",
+      header: "Shards",
+      accessor: "shardCount",
+      sortable: true,
+    },
+    {
+      id: "leaderCount",
+      header: "Leaders",
+      accessor: "leaderCount",
+      sortable: true,
+    },
     { id: "totalKeys", header: "Keys", accessor: "totalKeys", sortable: true },
-    { id: "totalBytes", header: "Bytes", accessor: (row: NodeLoad) => formatBytes(row.totalBytes), sortable: true },
+    {
+      id: "totalBytes",
+      header: "Bytes",
+      accessor: (row: NodeLoad) => formatBytes(row.totalBytes),
+      sortable: true,
+    },
   ];
 
   const moveColumns: Column<RebalanceMove>[] = [
     { id: "shardId", header: "Shard", accessor: "shardId", sortable: true },
     { id: "fromNode", header: "From", accessor: "fromNode" },
     { id: "toNode", header: "To", accessor: "toNode" },
-    { id: "estimatedBytes", header: "Est. Size", accessor: (row: RebalanceMove) => formatBytes(row.estimatedBytes) },
+    {
+      id: "estimatedBytes",
+      header: "Est. Size",
+      accessor: (row: RebalanceMove) => formatBytes(row.estimatedBytes),
+    },
   ];
 
   // ---------------------------------------------------------------------------
@@ -117,7 +139,10 @@
         dryRun: true,
       });
       lastResult = null;
-      showToast("success", `Plan generated: ${plan.moves.length} move(s), est. ${plan.estimatedDuration}.`);
+      showToast(
+        "success",
+        `Plan generated: ${plan.moves.length} move(s), est. ${plan.estimatedDuration}.`,
+      );
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -173,9 +198,16 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <PageHeader title="Rebalance" description="Shard rebalancing and cluster load distribution">
+  <PageHeader
+    title="Rebalance"
+    description="Shard rebalancing and cluster load distribution"
+  >
     {#snippet actions()}
-      <button class="btn btn-outline btn-sm" onclick={() => void loadReport()} disabled={reportLoading}>
+      <button
+        class="btn btn-outline btn-sm"
+        onclick={() => void loadReport()}
+        disabled={reportLoading}
+      >
         {#if reportLoading}
           <span class="loading loading-spinner loading-xs"></span>
         {:else}
@@ -188,7 +220,11 @@
 
   {#if report !== null}
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-      <StatCard label="Imbalance Score" value={report.imbalanceScore.toFixed(3)} icon={Zap} />
+      <StatCard
+        label="Imbalance Score"
+        value={report.imbalanceScore.toFixed(3)}
+        icon={Zap}
+      />
       <StatCard label="Nodes" value={report.nodes.length} />
       <StatCard label="Hotspots" value={(report.hotspots ?? []).length} />
     </div>
@@ -202,7 +238,12 @@
     <div class="card bg-base-200 shadow">
       <div class="card-body p-5">
         <h3 class="card-title text-base">Node Load</h3>
-        <DataTable data={report.nodes} columns={nodeColumns} rowKey="nodeId" emptyMessage="No node data." />
+        <DataTable
+          data={report.nodes}
+          columns={nodeColumns}
+          rowKey="nodeId"
+          emptyMessage="No node data."
+        />
       </div>
     </div>
   {/if}
@@ -213,14 +254,34 @@
       <h3 class="card-title text-base">Rebalance Plan</h3>
       <div class="flex flex-wrap items-end gap-3">
         <label class="form-control w-full max-w-[160px]">
-          <div class="label"><span class="label-text text-xs">Max Moves</span></div>
-          <input type="number" class="input input-bordered input-sm w-full" min="1" bind:value={maxMoves} />
+          <div class="label">
+            <span class="label-text text-xs">Max Moves</span>
+          </div>
+          <input
+            type="number"
+            class="input input-bordered input-sm w-full"
+            min="1"
+            bind:value={maxMoves}
+          />
         </label>
         <label class="form-control w-full max-w-[160px]">
-          <div class="label"><span class="label-text text-xs">Target Balance</span></div>
-          <input type="number" class="input input-bordered input-sm w-full" min="0" max="1" step="0.01" bind:value={targetBalance} />
+          <div class="label">
+            <span class="label-text text-xs">Target Balance</span>
+          </div>
+          <input
+            type="number"
+            class="input input-bordered input-sm w-full"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={targetBalance}
+          />
         </label>
-        <button class="btn btn-primary btn-sm" onclick={() => void handleCreatePlan()} disabled={planLoading}>
+        <button
+          class="btn btn-primary btn-sm"
+          onclick={() => void handleCreatePlan()}
+          disabled={planLoading}
+        >
           {#if planLoading}
             <span class="loading loading-spinner loading-xs"></span>
           {/if}
@@ -231,8 +292,15 @@
       {#if plan !== null}
         <div class="mt-4 flex flex-col gap-3">
           <div class="flex gap-6 text-sm">
-            <span>Current imbalance: <strong>{plan.currentImbalance.toFixed(3)}</strong></span>
-            <span>Estimated duration: <strong>{plan.estimatedDuration}</strong></span>
+            <span
+              >Current imbalance: <strong
+                >{plan.currentImbalance.toFixed(3)}</strong
+              ></span
+            >
+            <span
+              >Estimated duration: <strong>{plan.estimatedDuration}</strong
+              ></span
+            >
             <span>Moves: <strong>{plan.moves.length}</strong></span>
           </div>
           <DataTable
@@ -243,29 +311,57 @@
             onrowclick={handleMoveRowClick}
           />
           {#if plan.moves.length > 0}
-            <p class="text-base-content/60 text-xs">Click a move to view its shard's statistics.</p>
+            <p class="text-base-content/60 text-xs">
+              Click a move to view its shard's statistics.
+            </p>
           {/if}
           {#if selectedShardId !== null}
-            <div class="rounded-box bg-base-100 p-4" data-testid="shard-stats-panel">
+            <div
+              class="rounded-box bg-base-100 p-4"
+              data-testid="shard-stats-panel"
+            >
               <div class="flex items-center justify-between">
-                <h4 class="font-semibold">Shard {selectedShardId} Statistics</h4>
-                <button class="btn btn-ghost btn-xs" onclick={() => (selectedShardId = null)}>Close</button>
+                <h4 class="font-semibold">
+                  Shard {selectedShardId} Statistics
+                </h4>
+                <button
+                  class="btn btn-ghost btn-xs"
+                  onclick={() => (selectedShardId = null)}>Close</button
+                >
               </div>
               {#if shardStatsLoading}
-                <div class="flex justify-center py-4" data-testid="shard-stats-loading">
-                  <span class="loading loading-spinner loading-md text-primary"></span>
+                <div
+                  class="flex justify-center py-4"
+                  data-testid="shard-stats-loading"
+                >
+                  <span class="loading loading-spinner loading-md text-primary"
+                  ></span>
                 </div>
               {:else if shardStatsError !== null}
-                <div class="alert alert-error mt-2 text-sm" data-testid="shard-stats-error">
-                  <span>Failed to load shard statistics: {shardStatsError}</span>
+                <div
+                  class="alert alert-error mt-2 text-sm"
+                  data-testid="shard-stats-error"
+                >
+                  <span>Failed to load shard statistics: {shardStatsError}</span
+                  >
                 </div>
               {:else if shardStats !== null}
                 <table class="table table-sm mt-2">
                   <tbody>
-                    <tr><th class="w-40">Shard ID</th><td>{shardStats.shardId}</td></tr>
+                    <tr
+                      ><th class="w-40">Shard ID</th><td
+                        >{shardStats.shardId}</td
+                      ></tr
+                    >
                     <tr><th>Keys</th><td>{shardStats.keyCount}</td></tr>
-                    <tr><th>Bytes</th><td>{formatBytes(shardStats.byteCount)} ({shardStats.byteCount})</td></tr>
-                    <tr><th>Leader Replica</th><td>{shardStats.leaderId}</td></tr>
+                    <tr
+                      ><th>Bytes</th><td
+                        >{formatBytes(shardStats.byteCount)} ({shardStats.byteCount})</td
+                      ></tr
+                    >
+                    <tr
+                      ><th>Leader Replica</th><td>{shardStats.leaderId}</td></tr
+                    >
                     <tr><th>Replicas</th><td>{shardStats.replicaCount}</td></tr>
                   </tbody>
                 </table>
@@ -274,7 +370,10 @@
           {/if}
           {#if plan.moves.length > 0}
             <div>
-              <button class="btn btn-warning btn-sm" onclick={() => (showExecuteConfirm = true)}>
+              <button
+                class="btn btn-warning btn-sm"
+                onclick={() => (showExecuteConfirm = true)}
+              >
                 <Play class="h-4 w-4" />
                 Execute Plan
               </button>
@@ -291,10 +390,18 @@
         <h3 class="card-title text-base">Last Execution Result</h3>
         <table class="table table-sm">
           <tbody>
-            <tr><th class="w-40">Moves Completed</th><td>{lastResult.movesCompleted}</td></tr>
+            <tr
+              ><th class="w-40">Moves Completed</th><td
+                >{lastResult.movesCompleted}</td
+              ></tr
+            >
             <tr><th>Moves Failed</th><td>{lastResult.movesFailed}</td></tr>
             <tr><th>Duration</th><td>{lastResult.duration}</td></tr>
-            <tr><th>Final Imbalance</th><td>{lastResult.finalImbalance.toFixed(3)}</td></tr>
+            <tr
+              ><th>Final Imbalance</th><td
+                >{lastResult.finalImbalance.toFixed(3)}</td
+              ></tr
+            >
           </tbody>
         </table>
       </div>
@@ -306,7 +413,9 @@
 <ConfirmModal
   open={showExecuteConfirm}
   title="Execute Rebalance Plan"
-  message={plan !== null ? `Execute ${plan.moves.length} shard move(s)? This will transfer live data between nodes.` : ""}
+  message={plan !== null
+    ? `Execute ${plan.moves.length} shard move(s)? This will transfer live data between nodes.`
+    : ""}
   confirmLabel="Execute"
   variant="warning"
   onconfirm={() => void handleExecute()}

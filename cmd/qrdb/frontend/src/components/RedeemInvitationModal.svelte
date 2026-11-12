@@ -84,7 +84,11 @@
     try {
       saving = true;
       enrolled = await client.invitations.redeem(
-        { tenantID: tenantID.trim(), token: token.trim(), csrPEM: csrPEM.trim() },
+        {
+          tenantID: tenantID.trim(),
+          token: token.trim(),
+          csrPEM: csrPEM.trim(),
+        },
         {
           server: server.trim(),
           transport,
@@ -104,7 +108,10 @@
       await navigator.clipboard.writeText(enrolled.certPEM);
       showToast("success", "Certificate copied to clipboard");
     } catch {
-      showToast("error", "Could not copy automatically -- select and copy the certificate manually");
+      showToast(
+        "error",
+        "Could not copy automatically -- select and copy the certificate manually",
+      );
     }
   }
 </script>
@@ -121,20 +128,24 @@
     {#if enrolled}
       <div class="flex flex-col gap-3" data-testid="redeem-result">
         <p class="text-sm text-base-content/70">
-          Enrolled <strong data-testid="redeem-username">{enrolled.username}</strong>
-          (user ID <code data-testid="redeem-user-id">{enrolled.userID}</code>) in tenant
-          <code>{enrolled.tenantID}</code>. Pair this certificate with the private key that
-          signed the CSR to connect.
+          Enrolled <strong data-testid="redeem-username"
+            >{enrolled.username}</strong
+          >
+          (user ID <code data-testid="redeem-user-id">{enrolled.userID}</code>)
+          in tenant
+          <code>{enrolled.tenantID}</code>. Pair this certificate with the
+          private key that signed the CSR to connect.
         </p>
         <div class="form-control">
-          <div class="label"><span class="label-text">Certificate PEM</span></div>
+          <div class="label">
+            <span class="label-text">Certificate PEM</span>
+          </div>
           <textarea
             readonly
             class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
             rows="6"
             data-testid="redeem-cert-pem"
-            value={enrolled.certPEM}
-          ></textarea>
+            value={enrolled.certPEM}></textarea>
         </div>
         <button type="button" class="btn btn-sm self-start" onclick={copyCert}>
           Copy certificate
@@ -165,7 +176,9 @@
           </select>
         </label>
         <label class="form-control w-full" for="redeem-ca-file">
-          <div class="label"><span class="label-text">CA file (optional)</span></div>
+          <div class="label">
+            <span class="label-text">CA file (optional)</span>
+          </div>
           <input
             id="redeem-ca-file"
             type="text"
@@ -185,7 +198,9 @@
           />
         </label>
         <label class="form-control w-full" for="redeem-token">
-          <div class="label"><span class="label-text">Invitation token</span></div>
+          <div class="label">
+            <span class="label-text">Invitation token</span>
+          </div>
           <input
             id="redeem-token"
             type="text"
@@ -195,18 +210,23 @@
         </label>
         <label class="form-control w-full" for="redeem-csr">
           <div class="label">
-            <span class="label-text">CSR PEM (your public key, generated offline)</span>
+            <span class="label-text"
+              >CSR PEM (your public key, generated offline)</span
+            >
           </div>
           <textarea
             id="redeem-csr"
             bind:value={csrPEM}
             class="textarea textarea-bordered textarea-sm w-full font-mono text-xs"
             rows="5"
-            placeholder="-----BEGIN CERTIFICATE REQUEST-----"
-          ></textarea>
+            placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
         </label>
         {#if error}
-          <div class="alert alert-error text-sm" role="alert" data-testid="redeem-error">
+          <div
+            class="alert alert-error text-sm"
+            role="alert"
+            data-testid="redeem-error"
+          >
             {error}
           </div>
         {/if}

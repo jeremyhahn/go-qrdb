@@ -16,7 +16,10 @@
 -->
 <script lang="ts">
   import type { Client, BackupInfo, VerifyResult } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { RefreshCw, ShieldCheck } from "lucide-svelte";
   import { CrudTable } from "../../components/core/CrudTable";
@@ -70,10 +73,32 @@
 
   const columns: Column<BackupInfo>[] = [
     { id: "id", header: "ID", accessor: "id", sortable: true },
-    { id: "timestamp", header: "Created", accessor: "timestamp", sortable: true },
-    { id: "shardCount", header: "Shards", accessor: "shardCount", sortable: true },
-    { id: "size", header: "Size", accessor: (row: BackupInfo) => formatBytes(row.size), sortable: true },
-    { id: "status", header: "Status", accessor: "status", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "timestamp",
+      header: "Created",
+      accessor: "timestamp",
+      sortable: true,
+    },
+    {
+      id: "shardCount",
+      header: "Shards",
+      accessor: "shardCount",
+      sortable: true,
+    },
+    {
+      id: "size",
+      header: "Size",
+      accessor: (row: BackupInfo) => formatBytes(row.size),
+      sortable: true,
+    },
+    {
+      id: "status",
+      header: "Status",
+      accessor: "status",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
   ];
 
   // ---------------------------------------------------------------------------
@@ -173,7 +198,9 @@
       const result = await client.backups.restore({
         backupId: selectedBackup.id,
         validateFirst: restoreValidateFirst,
-        ...(restoreDecryptionKeyRef.trim() !== "" ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() } : {}),
+        ...(restoreDecryptionKeyRef.trim() !== ""
+          ? { decryptionKeyRef: restoreDecryptionKeyRef.trim() }
+          : {}),
       });
       const errorCount = (result.errors ?? []).length;
       showToast(
@@ -240,9 +267,16 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <PageHeader title="Backups" description="Create, restore, and verify cluster backups">
+  <PageHeader
+    title="Backups"
+    description="Create, restore, and verify cluster backups"
+  >
     {#snippet actions()}
-      <button class="btn btn-outline btn-sm" onclick={() => void loadBackups()} disabled={loading}>
+      <button
+        class="btn btn-outline btn-sm"
+        onclick={() => void loadBackups()}
+        disabled={loading}
+      >
         {#if loading}
           <span class="loading loading-spinner loading-xs"></span>
         {:else}
@@ -250,7 +284,13 @@
         {/if}
         Refresh
       </button>
-      <button class="btn btn-primary btn-sm" onclick={() => { resetCreateForm(); showCreateModal = true; }}>
+      <button
+        class="btn btn-primary btn-sm"
+        onclick={() => {
+          resetCreateForm();
+          showCreateModal = true;
+        }}
+      >
         Create Backup
       </button>
     {/snippet}
@@ -278,31 +318,71 @@
         {#if selectedBackup !== null}
           <div class="flex flex-col gap-3">
             {#if detailLoading}
-              <div class="flex items-center gap-2 text-xs" data-testid="backup-detail-loading">
+              <div
+                class="flex items-center gap-2 text-xs"
+                data-testid="backup-detail-loading"
+              >
                 <span class="loading loading-spinner loading-xs"></span>
                 Loading backup detail...
               </div>
             {/if}
             {#if detailError !== null}
-              <div class="alert alert-error py-2 text-xs" data-testid="backup-detail-error">
+              <div
+                class="alert alert-error py-2 text-xs"
+                data-testid="backup-detail-error"
+              >
                 <span>Could not load backup detail: {detailError}</span>
               </div>
             {/if}
             <div class="bg-base-300 rounded p-3" data-testid="backup-detail">
               <table class="table table-sm">
                 <tbody>
-                  <tr><th class="w-24">ID</th><td class="font-mono text-xs break-all">{selectedBackup.id}</td></tr>
-                  <tr><th>Created</th><td class="text-xs">{selectedBackup.timestamp}</td></tr>
+                  <tr
+                    ><th class="w-24">ID</th><td
+                      class="font-mono text-xs break-all"
+                      >{selectedBackup.id}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Created</th><td class="text-xs"
+                      >{selectedBackup.timestamp}</td
+                    ></tr
+                  >
                   <tr><th>Shards</th><td>{selectedBackup.shardCount}</td></tr>
-                  <tr><th>Size</th><td>{formatBytes(selectedBackup.size)}</td></tr>
+                  <tr
+                    ><th>Size</th><td>{formatBytes(selectedBackup.size)}</td
+                    ></tr
+                  >
                   <tr><th>Status</th><td>{selectedBackup.status}</td></tr>
-                  <tr><th>Checksum</th><td class="font-mono text-xs break-all">{selectedBackup.checksum}</td></tr>
-                  <tr><th>Destination</th><td class="font-mono text-xs break-all">{selectedBackup.destination}</td></tr>
-                  <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
-                  <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
-                  <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
+                  <tr
+                    ><th>Checksum</th><td class="font-mono text-xs break-all"
+                      >{selectedBackup.checksum}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Destination</th><td class="font-mono text-xs break-all"
+                      >{selectedBackup.destination}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Compression</th><td>{selectedBackup.compression}</td
+                    ></tr
+                  >
+                  <tr
+                    ><th>Encryption</th><td>{selectedBackup.encryption}</td></tr
+                  >
+                  <tr
+                    ><th>Key Provider</th><td
+                      class="font-mono text-xs break-all"
+                      >{selectedBackup.keyProviderId ?? ""}</td
+                    ></tr
+                  >
                   <tr><th>Duration</th><td>{selectedBackup.duration}</td></tr>
-                  <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
+                  <tr
+                    ><th>Error</th><td class="text-xs break-all"
+                      >{selectedBackup.errorMessage}</td
+                    ></tr
+                  >
                   <tr>
                     <th>Metadata</th>
                     <td class="font-mono text-xs break-all">
@@ -316,10 +396,16 @@
             </div>
 
             {#if lastVerifyResult !== null}
-              <div class="alert {lastVerifyResult.valid ? 'alert-success' : 'alert-error'} py-2 text-xs">
+              <div
+                class="alert {lastVerifyResult.valid
+                  ? 'alert-success'
+                  : 'alert-error'} py-2 text-xs"
+              >
                 <ShieldCheck class="h-4 w-4" />
                 <span>
-                  {lastVerifyResult.valid ? "Checksum verified." : "Checksum mismatch."}
+                  {lastVerifyResult.valid
+                    ? "Checksum verified."
+                    : "Checksum mismatch."}
                   {#if (lastVerifyResult.errors ?? []).length > 0}
                     {(lastVerifyResult.errors ?? []).join("; ")}
                   {/if}
@@ -328,19 +414,30 @@
             {/if}
 
             <div class="flex flex-wrap gap-1">
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => void handleVerify(selectedBackup!)}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => void handleVerify(selectedBackup!)}
+              >
                 Verify
               </button>
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => (showRestoreModal = true)}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => (showRestoreModal = true)}
+              >
                 Restore
               </button>
-              <button class="btn btn-error btn-xs flex-1" onclick={() => (showDeleteConfirm = true)}>
+              <button
+                class="btn btn-error btn-xs flex-1"
+                onclick={() => (showDeleteConfirm = true)}
+              >
                 Delete
               </button>
             </div>
           </div>
         {:else}
-          <p class="text-base-content/50 text-sm">Select a backup to view details.</p>
+          <p class="text-base-content/50 text-sm">
+            Select a backup to view details.
+          </p>
         {/if}
       </div>
     </div>
@@ -369,7 +466,10 @@
       </label>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Compression</span></div>
-        <select class="select select-bordered w-full" bind:value={newCompression}>
+        <select
+          class="select select-bordered w-full"
+          bind:value={newCompression}
+        >
           <option value="none">None</option>
           <option value="gzip">gzip</option>
           <option value="zstd">zstd</option>
@@ -377,7 +477,10 @@
       </label>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Encryption</span></div>
-        <select class="select select-bordered w-full" bind:value={newEncryption}>
+        <select
+          class="select select-bordered w-full"
+          bind:value={newEncryption}
+        >
           <option value="aes256">AES-256-GCM (default)</option>
           <option value="none">None (plaintext)</option>
         </select>
@@ -393,17 +496,18 @@
           />
           <div class="label">
             <span class="label-text-alt">
-              The name of a key file inside the server's own configured key directory, resolved by
-              the key-wrap provider -- not a path, and not a secret value typed here.
+              The name of a key file inside the server's own configured key
+              directory, resolved by the key-wrap provider -- not a path, and
+              not a secret value typed here.
             </span>
           </div>
         </label>
       {:else}
         <div class="alert alert-warning py-2 text-xs">
           <span>
-            This backup will be written in plaintext. If it covers the system shard (the default
-            when no shard filter is used), it carries the cluster CA and every tenant's login CA
-            key material in the clear.
+            This backup will be written in plaintext. If it covers the system
+            shard (the default when no shard filter is used), it carries the
+            cluster CA and every tenant's login CA key material in the clear.
           </span>
         </div>
       {/if}
@@ -424,16 +528,24 @@
     <div class="flex flex-col gap-4">
       {#if selectedBackup !== null}
         <p class="text-sm">
-          Restoring backup <span class="font-mono">{selectedBackup.id}</span> will overwrite existing
-          shard data. This action cannot be undone.
+          Restoring backup <span class="font-mono">{selectedBackup.id}</span> will
+          overwrite existing shard data. This action cannot be undone.
         </p>
       {/if}
       <label class="label cursor-pointer justify-start gap-2">
-        <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreValidateFirst} />
-        <span class="label-text">Validate backup integrity before restoring</span>
+        <input
+          type="checkbox"
+          class="checkbox checkbox-sm"
+          bind:checked={restoreValidateFirst}
+        />
+        <span class="label-text"
+          >Validate backup integrity before restoring</span
+        >
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Key File Name Override (optional)</span></div>
+        <div class="label">
+          <span class="label-text">Key File Name Override (optional)</span>
+        </div>
         <input
           type="text"
           class="input input-bordered w-full font-mono text-xs"
@@ -449,7 +561,9 @@
 <ConfirmModal
   open={showDeleteConfirm}
   title="Delete Backup"
-  message={selectedBackup !== null ? `Delete backup "${selectedBackup.id}"? This action cannot be undone.` : ""}
+  message={selectedBackup !== null
+    ? `Delete backup "${selectedBackup.id}"? This action cannot be undone.`
+    : ""}
   confirmLabel="Delete"
   variant="error"
   onconfirm={() => void handleDelete()}

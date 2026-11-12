@@ -23,8 +23,7 @@
   import { connManagerStore } from "$stores/connection-manager.svelte.ts";
   import { AlertCircle, Info } from "lucide-svelte";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   // ---------------------------------------------------------------------------
   // Derived server topology from connection manager
@@ -59,17 +58,20 @@
     {
       id: "none",
       label: "None — standard replication",
-      description: "No dedicated Raft group for this database. Uses the server's standard multi-group Raft placement.",
+      description:
+        "No dedicated Raft group for this database. Uses the server's standard multi-group Raft placement.",
     },
     {
       id: "local",
       label: "Local — single-node dedicated group",
-      description: "A dedicated Raft group confined to this node. Suitable for local development or single-node dedicated storage.",
+      description:
+        "A dedicated Raft group confined to this node. Suitable for local development or single-node dedicated storage.",
     },
     {
       id: "distributed",
       label: "Distributed — multi-node placement",
-      description: "A dedicated Raft group with replicas placed across cluster nodes automatically.",
+      description:
+        "A dedicated Raft group with replicas placed across cluster nodes automatically.",
     },
   ] as const;
 
@@ -190,12 +192,14 @@
         <div>
           <p class="font-semibold">Raft Cluster Detected</p>
           <p class="text-sm mt-1">
-            The server manages node assignment automatically. Configure how
-            this database's data is partitioned across the cluster.
+            The server manages node assignment automatically. Configure how this
+            database's data is partitioned across the cluster.
           </p>
           {#if connManagerStore.activeClusterNodeCount > 0}
             <p class="text-sm mt-1">
-              Cluster size: <strong>{connManagerStore.activeClusterNodeCount} nodes</strong>.
+              Cluster size: <strong
+                >{connManagerStore.activeClusterNodeCount} nodes</strong
+              >.
             </p>
           {/if}
         </div>
@@ -221,7 +225,8 @@
         </select>
         <div class="label">
           <span class="label-text-alt text-base-content/60">
-            {clusterModeOptions.find((opt) => opt.id === clusterMode)?.description ?? ""}
+            {clusterModeOptions.find((opt) => opt.id === clusterMode)
+              ?.description ?? ""}
           </span>
         </div>
       </div>
@@ -230,8 +235,8 @@
         <div role="alert" class="alert alert-info text-sm">
           <Info class="h-5 w-5 shrink-0" strokeWidth={2} />
           <span>
-            This database will use the server's standard replication instead
-            of a dedicated Raft group.
+            This database will use the server's standard replication instead of
+            a dedicated Raft group.
           </span>
         </div>
       {:else}
@@ -239,9 +244,9 @@
 
         <div class="rounded-box bg-base-200/50 space-y-4 p-4">
           <p class="text-base-content/60 text-sm">
-            Configure how this database's data is partitioned across the cluster.
-            Each raft group is a replicated shard. The server assigns node
-            membership automatically.
+            Configure how this database's data is partitioned across the
+            cluster. Each raft group is a replicated shard. The server assigns
+            node membership automatically.
           </p>
 
           {#if clusterMode === "local"}
@@ -269,7 +274,9 @@
           <div class="grid grid-cols-2 gap-4">
             <div class="form-control">
               <label class="label" for="db-replication-factor">
-                <span class="label-text font-semibold">Replication Factor (Replicas)</span>
+                <span class="label-text font-semibold"
+                  >Replication Factor (Replicas)</span
+                >
               </label>
               <input
                 id="db-replication-factor"
@@ -283,8 +290,9 @@
               <label class="label" for="db-replication-factor">
                 <span class="label-text-alt text-base-content/60">
                   Voting replicas per shard ({raftGroupReplicationFactor}
-                  replica{raftGroupReplicationFactor !== 1 ? "s" : ""}). Min 1, max {maxReplicationFactor}.
-                  Bounded by the tenant's replica quota and the cluster size.
+                  replica{raftGroupReplicationFactor !== 1 ? "s" : ""}). Min 1,
+                  max {maxReplicationFactor}. Bounded by the tenant's replica
+                  quota and the cluster size.
                 </span>
               </label>
             </div>
@@ -303,8 +311,10 @@
               />
               <label class="label" for="db-shard-count">
                 <span class="label-text-alt text-base-content/60">
-                  Data is partitioned across {raftGroupShardCount} raft
-                  group{raftGroupShardCount !== 1 ? "s" : ""}.
+                  Data is partitioned across {raftGroupShardCount} raft group{raftGroupShardCount !==
+                  1
+                    ? "s"
+                    : ""}.
                 </span>
               </label>
             </div>
@@ -338,12 +348,17 @@
         </div>
 
         {#if clusterMode === "distributed"}
-          <div role="alert" class="alert alert-success text-sm" data-testid="raft-multinode-ready">
+          <div
+            role="alert"
+            class="alert alert-success text-sm"
+            data-testid="raft-multinode-ready"
+          >
             <AlertCircle class="h-5 w-5 shrink-0" />
             <span>
               Multi-node placement of dedicated-raft groups is production-ready.
-              Replicas are distributed across cluster nodes automatically; RF&gt;1 is
-              fully supported, quota-metered, and placed at create time.
+              Replicas are distributed across cluster nodes automatically;
+              RF&gt;1 is fully supported, quota-metered, and placed at create
+              time.
             </span>
           </div>
         {/if}

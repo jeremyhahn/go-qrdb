@@ -54,7 +54,7 @@
 
   /** Display value for the cell. */
   const displayValue = $derived(
-    rendered !== undefined ? rendered : formatValue(value)
+    rendered !== undefined ? rendered : formatValue(value),
   );
 
   /** Alignment class. */
@@ -63,7 +63,7 @@
       ? "text-center"
       : align === "right"
         ? "text-right"
-        : "text-left"
+        : "text-left",
   );
 
   /** Style object for cell dimensions. */

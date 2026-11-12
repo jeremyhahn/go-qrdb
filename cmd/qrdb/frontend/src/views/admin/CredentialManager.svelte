@@ -16,9 +16,19 @@
 -->
 <script lang="ts">
   import type { Client, CredentialVersionInfo } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
-  import { RefreshCw, Eye, EyeOff, RotateCw, Trash2, Sparkles } from "lucide-svelte";
+  import {
+    RefreshCw,
+    Eye,
+    EyeOff,
+    RotateCw,
+    Trash2,
+    Sparkles,
+  } from "lucide-svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import FormModal from "../../components/FormModal.svelte";
   import ConfirmModal from "../../components/ConfirmModal.svelte";
@@ -76,7 +86,14 @@
   // ---------------------------------------------------------------------------
 
   const columns: Column<CredentialRow>[] = [
-    { id: "name", header: "Name", accessor: "name", sortable: true, filterable: true, filterType: "text" },
+    {
+      id: "name",
+      header: "Name",
+      accessor: "name",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
   ];
 
   // ---------------------------------------------------------------------------
@@ -178,7 +195,10 @@
       } else {
         await client.credentials.submit(name, createValue);
       }
-      showToast("success", `Credential "${name}" ${createMethod === "store" ? "stored" : "submitted"}.`);
+      showToast(
+        "success",
+        `Credential "${name}" ${createMethod === "store" ? "stored" : "submitted"}.`,
+      );
       showCreateModal = false;
       resetCreateForm();
       await loadCredentials();
@@ -220,7 +240,10 @@
     if (selectedName === "") return;
     try {
       const reaped = await client.credentials.gcExpired(selectedName);
-      showToast("success", `Reaped ${reaped} expired version(s) for "${selectedName}".`);
+      showToast(
+        "success",
+        `Reaped ${reaped} expired version(s) for "${selectedName}".`,
+      );
       await loadVersions(selectedName);
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
@@ -259,12 +282,19 @@
 </script>
 
 <div class="flex flex-col gap-6">
-  <PageHeader title="Credentials" description="Named-credential submission, storage, and versioned rotation">
+  <PageHeader
+    title="Credentials"
+    description="Named-credential submission, storage, and versioned rotation"
+  >
     {#snippet actions()}
       {#if strategy !== ""}
         <StatusBadge label={`Strategy: ${strategy}`} variant="info" />
       {/if}
-      <button class="btn btn-outline btn-sm" onclick={() => void loadCredentials()} disabled={loading}>
+      <button
+        class="btn btn-outline btn-sm"
+        onclick={() => void loadCredentials()}
+        disabled={loading}
+      >
         {#if loading}
           <span class="loading loading-spinner loading-xs"></span>
         {:else}
@@ -272,7 +302,13 @@
         {/if}
         Refresh
       </button>
-      <button class="btn btn-primary btn-sm" onclick={() => { resetCreateForm(); showCreateModal = true; }}>
+      <button
+        class="btn btn-primary btn-sm"
+        onclick={() => {
+          resetCreateForm();
+          showCreateModal = true;
+        }}
+      >
         New Credential
       </button>
     {/snippet}
@@ -299,13 +335,17 @@
         <h3 class="card-title text-base font-semibold">Credential Detail</h3>
         {#if selectedName !== ""}
           <div class="flex flex-col gap-3">
-            <div class="bg-base-300 rounded p-3 flex items-center justify-between gap-2">
+            <div
+              class="bg-base-300 rounded p-3 flex items-center justify-between gap-2"
+            >
               <span class="font-mono text-sm break-all">{selectedName}</span>
             </div>
 
             <div>
               <div class="flex items-center justify-between mb-1">
-                <span class="text-sm font-medium text-base-content/70">Value</span>
+                <span class="text-sm font-medium text-base-content/70"
+                  >Value</span
+                >
                 <button
                   class="btn btn-ghost btn-xs"
                   onclick={() => void handleReveal()}
@@ -322,24 +362,40 @@
                 </button>
               </div>
               {#if revealedValue !== null}
-                <div class="font-mono text-xs bg-base-300 rounded px-3 py-2 break-all">{revealedValue}</div>
+                <div
+                  class="font-mono text-xs bg-base-300 rounded px-3 py-2 break-all"
+                >
+                  {revealedValue}
+                </div>
               {:else}
-                <div class="font-mono text-xs bg-base-300 rounded px-3 py-2 text-base-content/40">•••••••••••</div>
+                <div
+                  class="font-mono text-xs bg-base-300 rounded px-3 py-2 text-base-content/40"
+                >
+                  •••••••••••
+                </div>
               {/if}
             </div>
 
             <div>
-              <span class="text-sm font-medium text-base-content/70">Version History</span>
+              <span class="text-sm font-medium text-base-content/70"
+                >Version History</span
+              >
               {#if versionsLoading}
                 <div class="flex justify-center py-3">
                   <span class="loading loading-spinner loading-sm"></span>
                 </div>
               {:else if versions.length === 0}
-                <p class="text-xs text-base-content/50 mt-1">No version history available.</p>
+                <p class="text-xs text-base-content/50 mt-1">
+                  No version history available.
+                </p>
               {:else}
                 <table class="table table-xs mt-1">
                   <thead>
-                    <tr><th>Version</th><th>Current</th><th>Created</th><th>Grace Until</th><th>Value</th></tr>
+                    <tr
+                      ><th>Version</th><th>Current</th><th>Created</th><th
+                        >Grace Until</th
+                      ><th>Value</th></tr
+                    >
                   </thead>
                   <tbody>
                     {#each versions as v (v.version)}
@@ -351,24 +407,39 @@
                         <td>
                           <div class="flex items-center gap-1">
                             {#if revealedVersions[v.version] !== undefined}
-                              <span class="font-mono text-xs break-all" data-testid="credential-version-value-{v.version}">{revealedVersions[v.version]}</span>
+                              <span
+                                class="font-mono text-xs break-all"
+                                data-testid="credential-version-value-{v.version}"
+                                >{revealedVersions[v.version]}</span
+                              >
                             {:else}
-                              <span class="font-mono text-xs text-base-content/40" data-testid="credential-version-value-{v.version}">•••••</span>
+                              <span
+                                class="font-mono text-xs text-base-content/40"
+                                data-testid="credential-version-value-{v.version}"
+                                >•••••</span
+                              >
                             {/if}
                             <button
                               class="btn btn-ghost btn-xs"
-                              aria-label="{revealedVersions[v.version] !== undefined ? 'Hide' : 'Reveal'} version {v.version}"
-                              onclick={() => void handleRevealVersion(v.version)}
+                              aria-label="{revealedVersions[v.version] !==
+                              undefined
+                                ? 'Hide'
+                                : 'Reveal'} version {v.version}"
+                              onclick={() =>
+                                void handleRevealVersion(v.version)}
                               disabled={versionRevealLoading !== null}
                             >
                               {#if versionRevealLoading === v.version}
-                                <span class="loading loading-spinner loading-xs"></span>
+                                <span class="loading loading-spinner loading-xs"
+                                ></span>
                               {:else if revealedVersions[v.version] !== undefined}
                                 <EyeOff class="h-3 w-3" />
                               {:else}
                                 <Eye class="h-3 w-3" />
                               {/if}
-                              {revealedVersions[v.version] !== undefined ? "Hide" : "Reveal"}
+                              {revealedVersions[v.version] !== undefined
+                                ? "Hide"
+                                : "Reveal"}
                             </button>
                           </div>
                         </td>
@@ -380,22 +451,33 @@
             </div>
 
             <div class="flex flex-wrap gap-1">
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => (showRotateModal = true)}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => (showRotateModal = true)}
+              >
                 <RotateCw class="h-3.5 w-3.5" />
                 Rotate
               </button>
-              <button class="btn btn-outline btn-xs flex-1" onclick={() => void handleGCExpired()}>
+              <button
+                class="btn btn-outline btn-xs flex-1"
+                onclick={() => void handleGCExpired()}
+              >
                 <Sparkles class="h-3.5 w-3.5" />
                 GC Expired
               </button>
-              <button class="btn btn-error btn-xs flex-1" onclick={() => (showDeleteConfirm = true)}>
+              <button
+                class="btn btn-error btn-xs flex-1"
+                onclick={() => (showDeleteConfirm = true)}
+              >
                 <Trash2 class="h-3.5 w-3.5" />
                 Delete
               </button>
             </div>
           </div>
         {:else}
-          <p class="text-base-content/50 text-sm">Select a credential to view details.</p>
+          <p class="text-base-content/50 text-sm">
+            Select a credential to view details.
+          </p>
         {/if}
       </div>
     </div>
@@ -417,7 +499,9 @@
         <div class="label"><span class="label-text">Method</span></div>
         <select class="select select-bordered w-full" bind:value={createMethod}>
           <option value="store">Store — persist under the given name</option>
-          <option value="submit">Submit — notify blocked retrievers (manual strategy)</option>
+          <option value="submit"
+            >Submit — notify blocked retrievers (manual strategy)</option
+          >
         </select>
       </label>
       <label class="form-control w-full">
@@ -454,7 +538,8 @@
   {#snippet body()}
     <div class="flex flex-col gap-4">
       <p class="text-sm">
-        Rotating <span class="font-mono">{selectedName}</span> atomically replaces its current value.
+        Rotating <span class="font-mono">{selectedName}</span> atomically replaces
+        its current value.
       </p>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">New Value</span></div>
@@ -466,7 +551,9 @@
         />
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Grace Period (seconds)</span></div>
+        <div class="label">
+          <span class="label-text">Grace Period (seconds)</span>
+        </div>
         <input
           type="number"
           class="input input-bordered w-full"
@@ -483,7 +570,9 @@
 <ConfirmModal
   open={showDeleteConfirm}
   title="Delete Credential"
-  message={selectedName !== "" ? `Delete credential "${selectedName}" and all of its historical versions? This action cannot be undone.` : ""}
+  message={selectedName !== ""
+    ? `Delete credential "${selectedName}" and all of its historical versions? This action cannot be undone.`
+    : ""}
   confirmLabel="Delete"
   variant="error"
   onconfirm={() => void handleDelete()}

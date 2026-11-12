@@ -77,7 +77,7 @@
 
   /** Row style for fixed height. */
   const rowStyle = $derived(
-    rowHeight !== undefined ? `height: ${rowHeight}px` : ""
+    rowHeight !== undefined ? `height: ${rowHeight}px` : "",
   );
 
   // ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@
   function getRenderedValue(
     value: unknown,
     row: T,
-    column: Column<T>
+    column: Column<T>,
   ): string | undefined {
     if (column.render !== undefined) {
       return column.render(value, row);

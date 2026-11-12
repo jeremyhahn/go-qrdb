@@ -66,7 +66,7 @@
 
   /** Gets the sort state for a column. */
   function getSortInfo(
-    columnId: string
+    columnId: string,
   ): { direction: "asc" | "desc"; priority: number } | null {
     const index = sortState.findIndex((s) => s.columnId === columnId);
     if (index === -1) {
@@ -151,10 +151,7 @@
   // ---------------------------------------------------------------------------
 
   /** Handles mouse down on resize handle. */
-  function handleResizeStart(
-    columnId: string,
-    event: MouseEvent
-  ): void {
+  function handleResizeStart(columnId: string, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
 
@@ -269,7 +266,9 @@
               {/if}
             </span>
           {:else if isSortable}
-            <span class="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-30">
+            <span
+              class="h-4 w-4 opacity-0 transition-opacity group-hover:opacity-30"
+            >
               <ArrowUpDown class="h-4 w-4" />
             </span>
           {/if}

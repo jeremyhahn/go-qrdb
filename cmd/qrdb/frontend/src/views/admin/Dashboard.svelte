@@ -39,7 +39,9 @@
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Capability entries derived from the capabilities response. */
-  let capabilityEntries = $derived<ReadonlyArray<{ name: string; enabled: boolean }>>(
+  let capabilityEntries = $derived<
+    ReadonlyArray<{ name: string; enabled: boolean }>
+  >(
     capabilities !== null
       ? [
           { name: "KV", enabled: capabilities.kv },
@@ -115,7 +117,10 @@
       }
     } catch (err: unknown) {
       hasError = true;
-      showToast("error", err instanceof Error ? err.message : "Failed to fetch dashboard data");
+      showToast(
+        "error",
+        err instanceof Error ? err.message : "Failed to fetch dashboard data",
+      );
     } finally {
       loading = false;
     }
@@ -177,7 +182,8 @@
       if (isNotImplemented(err)) {
         metricsUnavailable = true;
       } else {
-        const msg = err instanceof Error ? err.message : "Failed to fetch metrics";
+        const msg =
+          err instanceof Error ? err.message : "Failed to fetch metrics";
         metricsError = msg;
         showToast("error", `Metrics: ${msg}`);
       }
@@ -218,7 +224,11 @@
   description="Cluster health, node status, and capabilities at a glance"
 >
   {#snippet actions()}
-    <button class="btn btn-ghost btn-sm" onclick={() => void fetchDashboardData()} disabled={loading}>
+    <button
+      class="btn btn-ghost btn-sm"
+      onclick={() => void fetchDashboardData()}
+      disabled={loading}
+    >
       {#if loading}
         <span class="loading loading-spinner loading-xs"></span>
       {:else}
@@ -236,7 +246,9 @@
 {:else if hasError && health === null}
   <div class="alert alert-error">
     <XCircle class="h-6 w-6 shrink-0" />
-    <span>Failed to load dashboard data. Check the toast notifications for details.</span>
+    <span
+      >Failed to load dashboard data. Check the toast notifications for details.</span
+    >
     <button class="btn btn-sm" onclick={() => void fetchDashboardData()}>
       <RefreshCw class="h-4 w-4" />
       Retry
@@ -250,7 +262,11 @@
         <div class="stat-title">Health</div>
         <div class="stat-value text-xl">
           {#if health !== null}
-            <span class="badge" class:badge-success={health.status === "ok"} class:badge-error={health.status !== "ok"}>
+            <span
+              class="badge"
+              class:badge-success={health.status === "ok"}
+              class:badge-error={health.status !== "ok"}
+            >
               {health.status}
             </span>
           {:else}
@@ -278,7 +294,11 @@
         <div class="stat-title">Leader</div>
         <div class="stat-value text-xl">
           {#if status !== null}
-            <span class="badge" class:badge-primary={status.isLeader} class:badge-ghost={!status.isLeader}>
+            <span
+              class="badge"
+              class:badge-primary={status.isLeader}
+              class:badge-ghost={!status.isLeader}
+            >
               {status.isLeader ? "Yes" : "No"}
             </span>
           {:else}
@@ -304,7 +324,11 @@
         <div class="stat-title">Draining</div>
         <div class="stat-value text-xl">
           {#if status !== null}
-            <span class="badge" class:badge-warning={status.isDraining} class:badge-success={!status.isDraining}>
+            <span
+              class="badge"
+              class:badge-warning={status.isDraining}
+              class:badge-success={!status.isDraining}
+            >
               {status.isDraining ? "Yes" : "No"}
             </span>
           {:else}
@@ -338,7 +362,12 @@
       <div class="card-body p-5">
         <h2 class="card-title text-lg">Shards</h2>
         {#if shardsView.kind === "empty"}
-          <p class="text-base-content/50 py-4 text-sm" data-testid="dashboard-shards-empty">none</p>
+          <p
+            class="text-base-content/50 py-4 text-sm"
+            data-testid="dashboard-shards-empty"
+          >
+            none
+          </p>
         {:else if shardsView.kind === "rows"}
           <div class="overflow-x-auto">
             <table class="table table-sm" data-testid="dashboard-shards-table">
@@ -361,7 +390,9 @@
             </table>
           </div>
         {:else}
-          <pre class="bg-base-300 rounded p-3 text-xs overflow-x-auto" data-testid="dashboard-shards-json">{shardsView.text}</pre>
+          <pre
+            class="bg-base-300 rounded p-3 text-xs overflow-x-auto"
+            data-testid="dashboard-shards-json">{shardsView.text}</pre>
         {/if}
       </div>
     </div>
@@ -371,7 +402,9 @@
       <div class="card-body p-5">
         <h2 class="card-title text-lg">Databases</h2>
         {#if databases.length === 0}
-          <p class="text-base-content/50 py-4 text-sm">No databases found. Create one in the Databases view.</p>
+          <p class="text-base-content/50 py-4 text-sm">
+            No databases found. Create one in the Databases view.
+          </p>
         {:else}
           <div class="overflow-x-auto">
             <table class="table table-sm">
@@ -428,7 +461,10 @@
           {/if}
         </div>
         {#if metricsUnavailable}
-          <p class="text-base-content/50 py-4 text-sm" data-testid="metrics-unavailable">
+          <p
+            class="text-base-content/50 py-4 text-sm"
+            data-testid="metrics-unavailable"
+          >
             Metrics are not available on desktop.
           </p>
         {:else}
@@ -441,9 +477,16 @@
             bind:value={metricsFilter}
           />
           {#if metricsError !== null && !metricsLoaded}
-            <p class="text-error py-4 text-sm" data-testid="metrics-error">{metricsError}</p>
+            <p class="text-error py-4 text-sm" data-testid="metrics-error">
+              {metricsError}
+            </p>
           {:else if metricsLoaded && filteredMetrics.length === 0}
-            <p class="text-base-content/50 py-4 text-sm" data-testid="metrics-empty">No metrics match.</p>
+            <p
+              class="text-base-content/50 py-4 text-sm"
+              data-testid="metrics-empty"
+            >
+              No metrics match.
+            </p>
           {:else if metricsLoaded}
             <div class="overflow-x-auto">
               <table class="table table-sm" data-testid="metrics-table">
@@ -473,9 +516,15 @@
                         </button>
                         {fam.name}
                       </td>
-                      <td><span class="badge badge-sm badge-ghost">{fam.type}</span></td>
+                      <td
+                        ><span class="badge badge-sm badge-ghost"
+                          >{fam.type}</span
+                        ></td
+                      >
                       <td class="text-xs">{fam.help}</td>
-                      <td class="text-right font-mono text-xs">{fam.samples.length}</td>
+                      <td class="text-right font-mono text-xs"
+                        >{fam.samples.length}</td
+                      >
                     </tr>
                     {#if expandedFamilies[fam.name]}
                       <tr data-testid="metrics-samples" data-family={fam.name}>
@@ -484,8 +533,12 @@
                             <tbody>
                               {#each fam.samples as sample, i (i)}
                                 <tr data-testid="metrics-sample">
-                                  <td class="font-mono text-xs">{sample.name}{labelText(sample.labels)}</td>
-                                  <td class="text-right font-mono text-xs">{valueText(sample.value)}</td>
+                                  <td class="font-mono text-xs"
+                                    >{sample.name}{labelText(sample.labels)}</td
+                                  >
+                                  <td class="text-right font-mono text-xs"
+                                    >{valueText(sample.value)}</td
+                                  >
                                 </tr>
                               {/each}
                             </tbody>

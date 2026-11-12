@@ -129,7 +129,7 @@
           index: i + 1,
           response: JSON.stringify(resp),
         }))
-      : []
+      : [],
   );
 
   // ---------------------------------------------------------------------------
@@ -176,7 +176,13 @@
   function addCompare(): void {
     compares = [
       ...compares,
-      { id: allocId(), key: "", target: CT_VERSION, result: CR_EQUAL, targetValue: "" },
+      {
+        id: allocId(),
+        key: "",
+        target: CT_VERSION,
+        result: CR_EQUAL,
+        targetValue: "",
+      },
     ];
   }
 
@@ -189,7 +195,10 @@
   // ---------------------------------------------------------------------------
 
   function addSuccessOp(): void {
-    successOps = [...successOps, { id: allocId(), type: OP_PUT, key: "", value: "" }];
+    successOps = [
+      ...successOps,
+      { id: allocId(), type: OP_PUT, key: "", value: "" },
+    ];
   }
 
   function removeSuccessOp(id: number): void {
@@ -197,7 +206,10 @@
   }
 
   function addFailureOp(): void {
-    failureOps = [...failureOps, { id: allocId(), type: OP_PUT, key: "", value: "" }];
+    failureOps = [
+      ...failureOps,
+      { id: allocId(), type: OP_PUT, key: "", value: "" },
+    ];
   }
 
   function removeFailureOp(id: number): void {
@@ -241,7 +253,10 @@
       return;
     }
     if (successOps.length === 0 && failureOps.length === 0) {
-      showToast("warning", "At least one success or failure operation is required.");
+      showToast(
+        "warning",
+        "At least one success or failure operation is required.",
+      );
       return;
     }
     loading = true;
@@ -252,7 +267,12 @@
         failureOps: buildOps(failureOps),
       };
       response = await client.transaction.execute(req);
-      showToast("success", response.succeeded ? "Transaction succeeded." : "Transaction condition failed; failure ops executed.");
+      showToast(
+        "success",
+        response.succeeded
+          ? "Transaction succeeded."
+          : "Transaction condition failed; failure ops executed.",
+      );
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -269,10 +289,16 @@
 </script>
 
 <div class="flex flex-col gap-6">
-
-  <PageHeader title="Transactions" description="Run multi-key transactions with compare-and-swap semantics">
+  <PageHeader
+    title="Transactions"
+    description="Run multi-key transactions with compare-and-swap semantics"
+  >
     {#snippet actions()}
-      <button class="btn btn-primary btn-sm" onclick={handleExecute} disabled={executeDisabled}>
+      <button
+        class="btn btn-primary btn-sm"
+        onclick={handleExecute}
+        disabled={executeDisabled}
+      >
         {#if loading}
           <span class="loading loading-spinner loading-xs"></span>
         {/if}
@@ -290,7 +316,10 @@
           <span class="badge badge-lg badge-neutral font-bold">1</span>
           <div>
             <h3 class="text-base font-semibold">Conditions</h3>
-            <p class="text-base-content/50 text-xs">Define conditions that must be true for the transaction to succeed.</p>
+            <p class="text-base-content/50 text-xs">
+              Define conditions that must be true for the transaction to
+              succeed.
+            </p>
           </div>
         </div>
         <button class="btn btn-outline btn-sm gap-1" onclick={addCompare}>
@@ -299,14 +328,18 @@
         </button>
       </div>
       {#if compares.length === 0}
-        <p class="text-base-content/50 mt-2 text-sm">No conditions defined. Add at least one condition.</p>
+        <p class="text-base-content/50 mt-2 text-sm">
+          No conditions defined. Add at least one condition.
+        </p>
       {:else}
         <div class="mt-3 flex flex-col gap-3">
           {#each compares as compare (compare.id)}
             <div class="bg-base-300 rounded-lg p-4">
               <div class="flex flex-wrap items-end gap-2">
                 <label class="form-control w-full max-w-40">
-                  <div class="label"><span class="label-text text-xs">Key</span></div>
+                  <div class="label">
+                    <span class="label-text text-xs">Key</span>
+                  </div>
                   <input
                     type="text"
                     class="input input-bordered input-sm w-full"
@@ -315,8 +348,13 @@
                   />
                 </label>
                 <label class="form-control w-36">
-                  <div class="label"><span class="label-text text-xs">Property</span></div>
-                  <select class="select select-bordered select-sm w-full" bind:value={compare.target}>
+                  <div class="label">
+                    <span class="label-text text-xs">Property</span>
+                  </div>
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    bind:value={compare.target}
+                  >
                     <option value={CT_VERSION}>Version</option>
                     <option value={CT_CREATE}>Create Revision</option>
                     <option value={CT_MOD}>Mod Revision</option>
@@ -324,8 +362,13 @@
                   </select>
                 </label>
                 <label class="form-control w-36">
-                  <div class="label"><span class="label-text text-xs">Comparison</span></div>
-                  <select class="select select-bordered select-sm w-full" bind:value={compare.result}>
+                  <div class="label">
+                    <span class="label-text text-xs">Comparison</span>
+                  </div>
+                  <select
+                    class="select select-bordered select-sm w-full"
+                    bind:value={compare.result}
+                  >
                     <option value={CR_EQUAL}>Equals</option>
                     <option value={CR_NOT_EQUAL}>Not Equals</option>
                     <option value={CR_GREATER}>Greater Than</option>
@@ -333,15 +376,24 @@
                   </select>
                 </label>
                 <label class="form-control w-full max-w-40">
-                  <div class="label"><span class="label-text text-xs">Expected Value</span></div>
+                  <div class="label">
+                    <span class="label-text text-xs">Expected Value</span>
+                  </div>
                   <input
                     type="text"
-                    class="input input-bordered input-sm w-full {compare.target !== CT_VALUE && compare.targetValue.trim() !== '' && Number.isNaN(parseInt(compare.targetValue, 10)) ? 'input-error' : ''}"
+                    class="input input-bordered input-sm w-full {compare.target !==
+                      CT_VALUE &&
+                    compare.targetValue.trim() !== '' &&
+                    Number.isNaN(parseInt(compare.targetValue, 10))
+                      ? 'input-error'
+                      : ''}"
                     placeholder="Expected value"
                     bind:value={compare.targetValue}
                   />
                   {#if compare.target !== CT_VALUE && compare.targetValue.trim() !== "" && Number.isNaN(parseInt(compare.targetValue, 10))}
-                    <span class="text-error mt-1 text-xs">Must be a whole number.</span>
+                    <span class="text-error mt-1 text-xs"
+                      >Must be a whole number.</span
+                    >
                   {/if}
                 </label>
                 <button
@@ -353,7 +405,9 @@
                 </button>
               </div>
               {#if describeCond(compare)}
-                <p class="text-base-content/40 mt-2 text-xs italic">{describeCond(compare)}</p>
+                <p class="text-base-content/40 mt-2 text-xs italic">
+                  {describeCond(compare)}
+                </p>
               {/if}
             </div>
           {/each}
@@ -370,7 +424,9 @@
           <span class="badge badge-lg badge-success font-bold">2</span>
           <div>
             <h3 class="text-base font-semibold">If Conditions Pass</h3>
-            <p class="text-base-content/50 text-xs">Operations that execute atomically when all conditions are met.</p>
+            <p class="text-base-content/50 text-xs">
+              Operations that execute atomically when all conditions are met.
+            </p>
           </div>
         </div>
         <button class="btn btn-outline btn-sm gap-1" onclick={addSuccessOp}>
@@ -379,20 +435,31 @@
         </button>
       </div>
       {#if successOps.length === 0}
-        <p class="text-base-content/50 mt-2 text-sm">No success operations defined.</p>
+        <p class="text-base-content/50 mt-2 text-sm">
+          No success operations defined.
+        </p>
       {:else}
         <div class="mt-3 flex flex-col gap-2">
           {#each successOps as op (op.id)}
-            <div class="bg-base-300 flex flex-wrap items-end gap-2 rounded-lg p-3">
+            <div
+              class="bg-base-300 flex flex-wrap items-end gap-2 rounded-lg p-3"
+            >
               <label class="form-control w-28">
-                <div class="label"><span class="label-text text-xs">Type</span></div>
-                <select class="select select-bordered select-sm w-full" bind:value={op.type}>
+                <div class="label">
+                  <span class="label-text text-xs">Type</span>
+                </div>
+                <select
+                  class="select select-bordered select-sm w-full"
+                  bind:value={op.type}
+                >
                   <option value={OP_PUT}>PUT</option>
                   <option value={OP_DELETE}>DELETE</option>
                 </select>
               </label>
               <label class="form-control w-full max-w-48">
-                <div class="label"><span class="label-text text-xs">Key</span></div>
+                <div class="label">
+                  <span class="label-text text-xs">Key</span>
+                </div>
                 <input
                   type="text"
                   class="input input-bordered input-sm w-full"
@@ -402,7 +469,9 @@
               </label>
               {#if op.type === OP_PUT}
                 <label class="form-control w-full max-w-48">
-                  <div class="label"><span class="label-text text-xs">Value</span></div>
+                  <div class="label">
+                    <span class="label-text text-xs">Value</span>
+                  </div>
                   <input
                     type="text"
                     class="input input-bordered input-sm w-full"
@@ -433,7 +502,9 @@
           <span class="badge badge-lg badge-error font-bold">3</span>
           <div>
             <h3 class="text-base font-semibold">If Conditions Fail</h3>
-            <p class="text-base-content/50 text-xs">Operations that execute when any condition is not met.</p>
+            <p class="text-base-content/50 text-xs">
+              Operations that execute when any condition is not met.
+            </p>
           </div>
           <span class="badge badge-ghost badge-sm">Optional</span>
         </div>
@@ -443,20 +514,31 @@
         </button>
       </div>
       {#if failureOps.length === 0}
-        <p class="text-base-content/50 mt-2 text-sm">No failure operations defined.</p>
+        <p class="text-base-content/50 mt-2 text-sm">
+          No failure operations defined.
+        </p>
       {:else}
         <div class="mt-3 flex flex-col gap-2">
           {#each failureOps as op (op.id)}
-            <div class="bg-base-300 flex flex-wrap items-end gap-2 rounded-lg p-3">
+            <div
+              class="bg-base-300 flex flex-wrap items-end gap-2 rounded-lg p-3"
+            >
               <label class="form-control w-28">
-                <div class="label"><span class="label-text text-xs">Type</span></div>
-                <select class="select select-bordered select-sm w-full" bind:value={op.type}>
+                <div class="label">
+                  <span class="label-text text-xs">Type</span>
+                </div>
+                <select
+                  class="select select-bordered select-sm w-full"
+                  bind:value={op.type}
+                >
                   <option value={OP_PUT}>PUT</option>
                   <option value={OP_DELETE}>DELETE</option>
                 </select>
               </label>
               <label class="form-control w-full max-w-48">
-                <div class="label"><span class="label-text text-xs">Key</span></div>
+                <div class="label">
+                  <span class="label-text text-xs">Key</span>
+                </div>
                 <input
                   type="text"
                   class="input input-bordered input-sm w-full"
@@ -466,7 +548,9 @@
               </label>
               {#if op.type === OP_PUT}
                 <label class="form-control w-full max-w-48">
-                  <div class="label"><span class="label-text text-xs">Value</span></div>
+                  <div class="label">
+                    <span class="label-text text-xs">Value</span>
+                  </div>
                   <input
                     type="text"
                     class="input input-bordered input-sm w-full"

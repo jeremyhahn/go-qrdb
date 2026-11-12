@@ -25,26 +25,26 @@
 // ---------------------------------------------------------------------------
 
 /** Search mode for KV operations. */
-export type SearchMode = 'prefix' | 'range' | 'exact';
+export type SearchMode = "prefix" | "range" | "exact";
 
 /**
  * Options for KV/MVCC search operations.
  */
 export interface SearchOptions {
-    /** Key prefix for prefix search mode. */
-    prefix?: string | undefined;
-    /** Start key for range search mode (inclusive). */
-    startKey?: string | undefined;
-    /** End key for range search mode (exclusive). */
-    endKey?: string | undefined;
-    /** Maximum number of results to return. */
-    limit?: number | undefined;
-    /** Whether to perform case-sensitive matching. */
-    caseSensitive?: boolean | undefined;
-    /** MVCC revision to query at (omit for latest). */
-    revision?: number | undefined;
-    /** Whether to include deleted keys in results. */
-    includeDeleted?: boolean | undefined;
+  /** Key prefix for prefix search mode. */
+  prefix?: string | undefined;
+  /** Start key for range search mode (inclusive). */
+  startKey?: string | undefined;
+  /** End key for range search mode (exclusive). */
+  endKey?: string | undefined;
+  /** Maximum number of results to return. */
+  limit?: number | undefined;
+  /** Whether to perform case-sensitive matching. */
+  caseSensitive?: boolean | undefined;
+  /** MVCC revision to query at (omit for latest). */
+  revision?: number | undefined;
+  /** Whether to include deleted keys in results. */
+  includeDeleted?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,55 +52,57 @@ export interface SearchOptions {
 // ---------------------------------------------------------------------------
 
 /** Aggregation functions for time series data. */
-export type TimeSeriesAggregation = 'none' | 'avg' | 'sum' | 'min' | 'max' | 'count';
+export type TimeSeriesAggregation =
+  "none" | "avg" | "sum" | "min" | "max" | "count";
 
 /**
  * Options for time series search operations.
  */
 export interface TimeSeriesSearchOptions {
-    /** Metric name to query. */
-    metric: string;
-    /** Start of the time range (inclusive). */
-    startTime?: Date | undefined;
-    /** End of the time range (inclusive). */
-    endTime?: Date | undefined;
-    /** Tag filters as key-value pairs. */
-    tags?: Record<string, string> | undefined;
-    /** Aggregation function to apply. */
-    aggregation?: TimeSeriesAggregation | undefined;
-    /** Aggregation interval (e.g., "1m", "5m", "1h"). */
-    interval?: string | undefined;
+  /** Metric name to query. */
+  metric: string;
+  /** Start of the time range (inclusive). */
+  startTime?: Date | undefined;
+  /** End of the time range (inclusive). */
+  endTime?: Date | undefined;
+  /** Tag filters as key-value pairs. */
+  tags?: Record<string, string> | undefined;
+  /** Aggregation function to apply. */
+  aggregation?: TimeSeriesAggregation | undefined;
+  /** Aggregation interval (e.g., "1m", "5m", "1h"). */
+  interval?: string | undefined;
 }
 
 /** Quick time range presets for time series queries. */
-export type TimeRangePreset = '5m' | '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'custom';
+export type TimeRangePreset =
+  "5m" | "15m" | "1h" | "6h" | "24h" | "7d" | "30d" | "custom";
 
 // ---------------------------------------------------------------------------
 // Vector Search Options
 // ---------------------------------------------------------------------------
 
 /** Distance metrics for vector similarity search. */
-export type DistanceMetric = 'cosine' | 'euclidean' | 'dot';
+export type DistanceMetric = "cosine" | "euclidean" | "dot";
 
 /** Search method for vector queries. */
-export type VectorSearchMethod = 'vector' | 'id' | 'metadata';
+export type VectorSearchMethod = "vector" | "id" | "metadata";
 
 /**
  * Options for vector similarity search operations.
  */
 export interface VectorSearchOptions {
-    /** Namespace containing the vectors. */
-    namespace: string;
-    /** Raw vector for similarity search. */
-    vector?: number[] | undefined;
-    /** Vector ID to search by. */
-    vectorId?: string | undefined;
-    /** Number of nearest neighbors to return. */
-    topK?: number | undefined;
-    /** Metadata filter conditions. */
-    metadataFilter?: Record<string, unknown> | undefined;
-    /** Distance metric for similarity calculation. */
-    distanceMetric?: DistanceMetric | undefined;
+  /** Namespace containing the vectors. */
+  namespace: string;
+  /** Raw vector for similarity search. */
+  vector?: number[] | undefined;
+  /** Vector ID to search by. */
+  vectorId?: string | undefined;
+  /** Number of nearest neighbors to return. */
+  topK?: number | undefined;
+  /** Metadata filter conditions. */
+  metadataFilter?: Record<string, unknown> | undefined;
+  /** Distance metric for similarity calculation. */
+  distanceMetric?: DistanceMetric | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +110,7 @@ export interface VectorSearchOptions {
 // ---------------------------------------------------------------------------
 
 /** Supported search engines. */
-export type SearchEngine = 'kv' | 'timeseries' | 'vector';
+export type SearchEngine = "kv" | "timeseries" | "vector";
 
 // ---------------------------------------------------------------------------
 // Event Types
@@ -118,29 +120,29 @@ export type SearchEngine = 'kv' | 'timeseries' | 'vector';
  * Event payload for KV search.
  */
 export interface KVSearchEvent {
-    mode: SearchMode;
-    options: SearchOptions;
+  mode: SearchMode;
+  options: SearchOptions;
 }
 
 /**
  * Event payload for TimeSeries search.
  */
 export interface TimeSeriesSearchEvent {
-    options: TimeSeriesSearchOptions;
+  options: TimeSeriesSearchOptions;
 }
 
 /**
  * Event payload for Vector search.
  */
 export interface VectorSearchEvent {
-    method: VectorSearchMethod;
-    options: VectorSearchOptions;
+  method: VectorSearchMethod;
+  options: VectorSearchOptions;
 }
 
 /**
  * Union type for all search events.
  */
 export type SearchEvent =
-    | { engine: 'kv'; data: KVSearchEvent }
-    | { engine: 'timeseries'; data: TimeSeriesSearchEvent }
-    | { engine: 'vector'; data: VectorSearchEvent };
+  | { engine: "kv"; data: KVSearchEvent }
+  | { engine: "timeseries"; data: TimeSeriesSearchEvent }
+  | { engine: "vector"; data: VectorSearchEvent };

@@ -16,7 +16,10 @@
 -->
 <script lang="ts">
   import type { Client, Role, ListRolesResponse } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
@@ -141,7 +144,9 @@
     <!-- Tenant filter -->
     <div class="flex items-center gap-3">
       <label class="form-control w-64" for="role-filter-tenant">
-        <div class="label"><span class="label-text font-semibold">Tenant</span></div>
+        <div class="label">
+          <span class="label-text font-semibold">Tenant</span>
+        </div>
         <TenantSelect
           id="role-filter-tenant"
           {client}

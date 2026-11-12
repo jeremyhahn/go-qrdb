@@ -31,8 +31,15 @@
   import { isDesktop } from "@qrdb/sdk";
   import { showToast } from "../stores/toast.svelte.ts";
   import { toggleTheme, themeStore } from "../stores/theme.svelte.ts";
-  import { databaseStore, setDatabases, setLoading } from "../stores/database.svelte.ts";
-  import { dbWizardStore, resetDatabaseWizard } from "../stores/database-wizard.svelte.ts";
+  import {
+    databaseStore,
+    setDatabases,
+    setLoading,
+  } from "../stores/database.svelte.ts";
+  import {
+    dbWizardStore,
+    resetDatabaseWizard,
+  } from "../stores/database-wizard.svelte.ts";
   import { sealStore, updateSealStatus } from "../stores/seal.svelte.ts";
   import { withRetry } from "../lib/retry.ts";
   import {
@@ -58,13 +65,7 @@
   } from "../stores/connection-manager.svelte.ts";
   import type { ConnectionState } from "../stores/connection-manager.svelte.ts";
 
-  import {
-    Database,
-    Server,
-    Sun,
-    Moon,
-    Menu,
-  } from "lucide-svelte";
+  import { Database, Server, Sun, Moon, Menu } from "lucide-svelte";
   import logo from "../assets/logo.svg";
 
   // Layout components
@@ -114,7 +115,8 @@
    * Settings view always agree, regardless of how the connection was made.
    */
   const connected = $derived(
-    connManagerStore.states.get(connManagerStore.activeProfileId)?.status === 'connected',
+    connManagerStore.states.get(connManagerStore.activeProfileId)?.status ===
+      "connected",
   );
 
   /**
@@ -126,7 +128,7 @@
     isDesktop() &&
       connManagerStore.profiles.find(
         (p) => p.id === connManagerStore.activeProfileId,
-      )?.type === 'external',
+      )?.type === "external",
   );
   let showAddServerModal: boolean = $state(false);
 
@@ -136,7 +138,9 @@
    * expanding a second server shows its databases without clobbering the
    * active server's list.
    */
-  let perServerDatabases: Map<string, readonly DatabaseInfo[]> = $state(new Map());
+  let perServerDatabases: Map<string, readonly DatabaseInfo[]> = $state(
+    new Map(),
+  );
 
   // ---------------------------------------------------------------------------
   // Derived: breadcrumb
@@ -148,21 +152,24 @@
       const profile = connManagerStore.profiles.find(
         (p) => p.id === connManagerStore.activeProfileId,
       );
-      return profile?.name ?? 'QRDB';
+      return profile?.name ?? "QRDB";
     };
 
     switch (ctx.type) {
-      case 'none':
-        return { server: 'QRDB', page: '' };
-      case 'server-admin':
+      case "none":
+        return { server: "QRDB", page: "" };
+      case "server-admin":
         return { server: serverName(), page: ADMIN_VIEW_LABELS[ctx.view] };
-      case 'database': {
+      case "database": {
         const db = databaseStore.databases.find((d) => d.name === ctx.dbName);
         const toolLabel = DB_TOOL_LABELS[ctx.tool];
-        return { server: serverName(), page: db ? `${db.name} / ${toolLabel}` : ctx.dbName };
+        return {
+          server: serverName(),
+          page: db ? `${db.name} / ${toolLabel}` : ctx.dbName,
+        };
       }
-      case 'create-database':
-        return { server: serverName(), page: 'New Database' };
+      case "create-database":
+        return { server: serverName(), page: "New Database" };
     }
   });
 
@@ -172,7 +179,7 @@
 
   const currentDatabase = $derived.by((): DatabaseInfo | null => {
     const ctx = navStore.context;
-    if (ctx.type !== 'database') return null;
+    if (ctx.type !== "database") return null;
     return databaseStore.databases.find((d) => d.name === ctx.dbName) ?? null;
   });
 
@@ -183,21 +190,27 @@
   async function handleConnect(profileId: string): Promise<void> {
     try {
       const state = await connectProfile(client, profileId);
-      if (state.status === 'connected') {
+      if (state.status === "connected") {
         await setActiveProfile(client, profileId);
         await loadDatabases();
         await loadMetadata();
         expandServer(profileId);
-        navigateToAdmin(profileId, 'dashboard');
-      } else if (state.status === 'sealed') {
-        showToast('warning', 'Server is sealed. Use Seal Manager to unseal.');
-      } else if (state.status === 'needs-init') {
-        showToast('warning', 'Server needs initialization. Use the CLI: qrdb barrier init');
-      } else if (state.status === 'error') {
-        showToast('error', state.error ?? 'Connection failed');
+        navigateToAdmin(profileId, "dashboard");
+      } else if (state.status === "sealed") {
+        showToast("warning", "Server is sealed. Use Seal Manager to unseal.");
+      } else if (state.status === "needs-init") {
+        showToast(
+          "warning",
+          "Server needs initialization. Use the CLI: qrdb barrier init",
+        );
+      } else if (state.status === "error") {
+        showToast("error", state.error ?? "Connection failed");
       }
     } catch (err: unknown) {
-      showToast('error', err instanceof Error ? err.message : 'Connection failed');
+      showToast(
+        "error",
+        err instanceof Error ? err.message : "Connection failed",
+      );
     }
   }
 
@@ -210,7 +223,10 @@
         navigateToNone();
       }
     } catch (err: unknown) {
-      showToast('error', err instanceof Error ? err.message : 'Disconnect failed');
+      showToast(
+        "error",
+        err instanceof Error ? err.message : "Disconnect failed",
+      );
     }
   }
 
@@ -224,14 +240,16 @@
   // Add-server modal
   // ---------------------------------------------------------------------------
 
-  async function handleAddServerComplete(state: ConnectionState): Promise<void> {
+  async function handleAddServerComplete(
+    state: ConnectionState,
+  ): Promise<void> {
     showAddServerModal = false;
     await loadProfiles(client);
-    if (state.status === 'connected') {
+    if (state.status === "connected") {
       await loadDatabases();
       await loadMetadata();
       expandServer(state.profileId);
-      navigateToAdmin(state.profileId, 'dashboard');
+      navigateToAdmin(state.profileId, "dashboard");
     }
   }
 
@@ -246,18 +264,18 @@
    */
   $effect(() => {
     const ctx = navStore.context;
-    if (ctx.type !== 'create-database') return;
+    if (ctx.type !== "create-database") return;
     const profileId = ctx.profileId;
     resetDatabaseWizard();
     const profile = connManagerStore.profiles.find((p) => p.id === profileId);
-    if (profile?.type === 'external' || !isDesktop()) {
-      dbWizardStore.mode = 'remote';
+    if (profile?.type === "external" || !isDesktop()) {
+      dbWizardStore.mode = "remote";
       dbWizardStore.raftConfig = null;
     } else {
-      dbWizardStore.mode = 'embedded';
+      dbWizardStore.mode = "embedded";
     }
     dbWizardStore.serverMode =
-      connManagerStore.activeServerMode === 'raft' ? 'raft' : 'standalone';
+      connManagerStore.activeServerMode === "raft" ? "raft" : "standalone";
   });
 
   function handleWizardComplete(): void {
@@ -265,7 +283,9 @@
     void loadDatabases().then(() => {
       const profileId = connManagerStore.activeProfileId;
       if (createdName) {
-        const created = databaseStore.databases.find((db) => db.name === createdName);
+        const created = databaseStore.databases.find(
+          (db) => db.name === createdName,
+        );
         if (created) {
           navigateToDatabase(profileId, created.name);
           return;
@@ -289,7 +309,7 @@
       const list = await withRetry(() => client.database.list());
       const databases = list as DatabaseInfo[];
       setDatabases(databases);
-      if (connManagerStore.activeProfileId !== '') {
+      if (connManagerStore.activeProfileId !== "") {
         perServerDatabases = new Map(perServerDatabases).set(
           connManagerStore.activeProfileId,
           databases,
@@ -298,7 +318,10 @@
     } catch (err: unknown) {
       setDatabases([]);
       if (connected) {
-        showToast('error', err instanceof Error ? err.message : 'Failed to load databases');
+        showToast(
+          "error",
+          err instanceof Error ? err.message : "Failed to load databases",
+        );
       }
     } finally {
       setLoading(false);
@@ -317,9 +340,9 @@
       const version = client.connection.getVersion();
       transportInfo = Object.entries(version)
         .map(([k, v]) => `${k}: ${v}`)
-        .join(' | ');
+        .join(" | ");
     } catch {
-      transportInfo = 'disconnected';
+      transportInfo = "disconnected";
     }
   }
 
@@ -335,9 +358,9 @@
     // the already-populated store to set the initial navigation state.
     // Both desktop and web modes share the same profile-driven flow.
     const activeId = connManagerStore.activeProfileId;
-    if (activeId !== '') {
+    if (activeId !== "") {
       expandServer(activeId);
-      navigateToAdmin(activeId, 'dashboard');
+      navigateToAdmin(activeId, "dashboard");
     } else if (connManagerStore.profiles.length === 0) {
       // First launch with no profiles: auto-open the Add Server modal.
       showAddServerModal = true;
@@ -346,13 +369,13 @@
 </script>
 
 <div class="flex h-screen flex-col overflow-hidden">
-
   <!-- ======================================================================
        HEADER
        ====================================================================== -->
-  <header class="bg-base-200/80 border-base-300/50 z-20 border-b backdrop-blur-sm">
+  <header
+    class="bg-base-200/80 border-base-300/50 z-20 border-b backdrop-blur-sm"
+  >
     <div class="flex h-12 items-center px-4">
-
       <!-- Left: Brand + sidebar toggle -->
       <div class="flex items-center gap-3">
         <button
@@ -364,8 +387,8 @@
         </button>
         <img src={logo} alt="QRDB" class="h-7" />
         <StatusBadge
-          label={connected ? 'Connected' : 'Disconnected'}
-          variant={connected ? 'success' : 'error'}
+          label={connected ? "Connected" : "Disconnected"}
+          variant={connected ? "success" : "error"}
           pulse={!connected}
         />
       </div>
@@ -391,14 +414,13 @@
           onclick={() => toggleTheme()}
           aria-label="Toggle theme"
         >
-          {#if themeStore.theme === 'dark'}
+          {#if themeStore.theme === "dark"}
             <Sun class="h-5 w-5" />
           {:else}
             <Moon class="h-5 w-5" />
           {/if}
         </button>
       </div>
-
     </div>
   </header>
 
@@ -406,7 +428,6 @@
        MAIN: sidebar + content
        ====================================================================== -->
   <div class="flex flex-1 overflow-hidden">
-
     <!-- Primary sidebar -->
     <Sidebar
       {perServerDatabases}
@@ -418,7 +439,6 @@
 
     <!-- Content area: overflow-y-auto allows long views (e.g. wizard) to scroll. -->
     <main class="content-bg flex-1 overflow-y-auto">
-
       {#if connManagerStore.profiles.length === 0 && !connManagerStore.loading}
         <!-- ── First-run: no servers configured ─────────────────────── -->
         <div class="flex h-full items-center justify-center">
@@ -430,8 +450,7 @@
             onaction={() => (showAddServerModal = true)}
           />
         </div>
-
-      {:else if navStore.context.type === 'create-database'}
+      {:else if navStore.context.type === "create-database"}
         <!-- ── New database wizard ───────────────────────────────────── -->
         <div class="mx-auto max-w-3xl p-6">
           <DatabaseWizard
@@ -440,8 +459,7 @@
             onCancel={handleWizardCancel}
           />
         </div>
-
-      {:else if navStore.context.type === 'database'}
+      {:else if navStore.context.type === "database"}
         <!-- ── Database workspace (secondary rail + tool view) ───────── -->
         {#if currentDatabase !== null}
           <DatabaseWorkspace {client} database={currentDatabase} />
@@ -455,45 +473,43 @@
             />
           </div>
         {/if}
-
-      {:else if navStore.context.type === 'server-admin'}
+      {:else if navStore.context.type === "server-admin"}
         <!-- ── Server admin views ────────────────────────────────────── -->
         <div class="w-full p-6">
-          {#if navStore.context.view === 'dashboard'}
+          {#if navStore.context.view === "dashboard"}
             <Dashboard {client} />
-          {:else if navStore.context.view === 'cluster'}
+          {:else if navStore.context.view === "cluster"}
             <Cluster {client} />
-          {:else if navStore.context.view === 'topology'}
+          {:else if navStore.context.view === "topology"}
             <Topology {client} />
-          {:else if navStore.context.view === 'seal-manager'}
+          {:else if navStore.context.view === "seal-manager"}
             <SealManager {client} />
-          {:else if navStore.context.view === 'tenants'}
+          {:else if navStore.context.view === "tenants"}
             <TenantManager {client} />
-          {:else if navStore.context.view === 'users'}
+          {:else if navStore.context.view === "users"}
             <UserManager {client} />
-          {:else if navStore.context.view === 'roles'}
+          {:else if navStore.context.view === "roles"}
             <RoleManager {client} />
-          {:else if navStore.context.view === 'volume-pools'}
+          {:else if navStore.context.view === "volume-pools"}
             <VolumePoolManager {client} />
-          {:else if navStore.context.view === 'certificates'}
+          {:else if navStore.context.view === "certificates"}
             <CertManager {client} />
-          {:else if navStore.context.view === 'databases'}
+          {:else if navStore.context.view === "databases"}
             <DatabaseManager {client} />
-          {:else if navStore.context.view === 'backups'}
+          {:else if navStore.context.view === "backups"}
             <BackupManager {client} />
-          {:else if navStore.context.view === 'rebalance'}
+          {:else if navStore.context.view === "rebalance"}
             <RebalancePanel {client} />
-          {:else if navStore.context.view === 'credentials'}
+          {:else if navStore.context.view === "credentials"}
             <CredentialManager {client} />
-          {:else if navStore.context.view === 'audit-log'}
+          {:else if navStore.context.view === "audit-log"}
             <AuditLog {client} />
-          {:else if navStore.context.view === 'daemon' && daemonAvailable}
+          {:else if navStore.context.view === "daemon" && daemonAvailable}
             <DaemonPanel {client} />
-          {:else if navStore.context.view === 'settings'}
+          {:else if navStore.context.view === "settings"}
             <Settings {client} />
           {/if}
         </div>
-
       {:else}
         <!-- ── No context (none): select or add a server ────────────── -->
         <div class="flex h-full items-center justify-center">
@@ -506,23 +522,24 @@
           />
         </div>
       {/if}
-
     </main>
   </div>
 
   <!-- ======================================================================
        STATUS BAR
        ====================================================================== -->
-  <footer class="bg-base-300/80 border-base-300/50 flex items-center justify-between border-t px-4 py-2 text-xs backdrop-blur-sm">
+  <footer
+    class="bg-base-300/80 border-base-300/50 flex items-center justify-between border-t px-4 py-2 text-xs backdrop-blur-sm"
+  >
     <span class="text-base-content/50">
-      {transportInfo || 'loading...'}
+      {transportInfo || "loading..."}
     </span>
     <div class="flex items-center gap-3">
       {#if sealStatus !== null}
-        {#if sealStore.strategy === 'passphrase' || sealStore.strategy === 'shamir'}
+        {#if sealStore.strategy === "passphrase" || sealStore.strategy === "shamir"}
           <StatusBadge
-            label={sealStore.sealed ? 'Sealed' : 'Unsealed'}
-            variant={sealStore.sealed ? 'warning' : 'success'}
+            label={sealStore.sealed ? "Sealed" : "Unsealed"}
+            variant={sealStore.sealed ? "warning" : "success"}
           />
         {:else}
           <StatusBadge label="Not encrypted" variant="warning" />
@@ -530,7 +547,6 @@
       {/if}
     </div>
   </footer>
-
 </div>
 
 <!-- ======================================================================

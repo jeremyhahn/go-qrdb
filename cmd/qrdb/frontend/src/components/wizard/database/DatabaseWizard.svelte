@@ -74,9 +74,7 @@
   let indicatorLabels = $derived(visibleSteps.map((s) => stepLabels[s]));
 
   /** Current index within the visible step sequence. */
-  let currentIndex = $derived(
-    visibleSteps.indexOf(dbWizardStore.currentStep),
-  );
+  let currentIndex = $derived(visibleSteps.indexOf(dbWizardStore.currentStep));
 
   // -------------------------------------------------------------------------
   // Navigation handlers
@@ -133,7 +131,7 @@
     <!-- Step indicator -->
     {#if dbWizardStore.currentStep !== "complete"}
       <div class="mb-8">
-        <StepIndicator steps={indicatorLabels} currentIndex={currentIndex} />
+        <StepIndicator steps={indicatorLabels} {currentIndex} />
       </div>
     {/if}
 
@@ -157,7 +155,11 @@
         {:else if dbWizardStore.currentStep === "creating"}
           <StepDatabaseCreating {client} onComplete={handleCreatingComplete} />
         {:else if dbWizardStore.currentStep === "holders"}
-          <StepDatabaseHolders {client} onDone={handleHoldersDone} onLeave={handleHoldersLeave} />
+          <StepDatabaseHolders
+            {client}
+            onDone={handleHoldersDone}
+            onLeave={handleHoldersLeave}
+          />
         {:else if dbWizardStore.currentStep === "complete"}
           <div class="flex flex-col items-center gap-4 py-8">
             <svg
@@ -176,7 +178,9 @@
             </svg>
             <h2 class="text-2xl font-bold">Database Created</h2>
             <p class="text-base-content/70">
-              Your database <span class="font-mono font-semibold">{dbWizardStore.name}</span> is ready.
+              Your database <span class="font-mono font-semibold"
+                >{dbWizardStore.name}</span
+              > is ready.
             </p>
           </div>
         {/if}

@@ -56,12 +56,22 @@
   });
 
   const sortedFields = $derived(
-    Object.entries(mergedSchema).sort(([a], [b]) => a.localeCompare(b))
+    Object.entries(mergedSchema).sort(([a], [b]) => a.localeCompare(b)),
   );
 
-  const addFieldTypes = ["VARCHAR", "DOUBLE", "BIGINT", "BOOLEAN", "JSON"] as const;
+  const addFieldTypes = [
+    "VARCHAR",
+    "DOUBLE",
+    "BIGINT",
+    "BOOLEAN",
+    "JSON",
+  ] as const;
 
-  function handleFieldChange(name: string, sqlType: string, rawValue: unknown): void {
+  function handleFieldChange(
+    name: string,
+    sqlType: string,
+    rawValue: unknown,
+  ): void {
     const parsed = parseValue(sqlType, rawValue);
     onchange({ ...value, [name]: parsed });
   }
@@ -106,12 +116,17 @@
     }
   }
 
-  function getDisplayValue(name: string, sqlType: string): string | number | boolean {
+  function getDisplayValue(
+    name: string,
+    sqlType: string,
+  ): string | number | boolean {
     const val = fields[name];
     if (val === undefined || val === null) return "";
     const upper = sqlType.toUpperCase();
     if (upper === "JSON") {
-      return typeof val === "object" ? JSON.stringify(val, null, 2) : String(val);
+      return typeof val === "object"
+        ? JSON.stringify(val, null, 2)
+        : String(val);
     }
     if (upper === "BOOLEAN") return Boolean(val);
     return val as string | number;
@@ -169,7 +184,8 @@
       <div class="flex items-center justify-between">
         <label class="label" for="field-{name}">
           <span class="label-text font-medium">{name}</span>
-          <span class="label-text-alt text-base-content/40 ml-2">{sqlType}</span>
+          <span class="label-text-alt text-base-content/40 ml-2">{sqlType}</span
+          >
         </label>
         {#if !disabled}
           <button
@@ -190,7 +206,8 @@
             class="toggle toggle-primary"
             checked={Boolean(getDisplayValue(name, sqlType))}
             {disabled}
-            onchange={(e) => handleFieldChange(name, sqlType, e.currentTarget.checked)}
+            onchange={(e) =>
+              handleFieldChange(name, sqlType, e.currentTarget.checked)}
           />
           <span class="label-text text-base-content/60">
             {Boolean(getDisplayValue(name, sqlType)) ? "true" : "false"}
@@ -207,8 +224,7 @@
             const raw = e.currentTarget.value;
             validateJsonField(name, raw);
             handleFieldChange(name, sqlType, raw);
-          }}
-        ></textarea>
+          }}></textarea>
         {#if jsonErrors[name]}
           <div class="label">
             <span class="label-text-alt text-error">{jsonErrors[name]}</span>
@@ -222,7 +238,8 @@
           class="input input-bordered w-full"
           {disabled}
           value={getDisplayValue(name, sqlType)}
-          oninput={(e) => handleFieldChange(name, sqlType, e.currentTarget.value)}
+          oninput={(e) =>
+            handleFieldChange(name, sqlType, e.currentTarget.value)}
         />
       {:else if upper === "BIGINT"}
         <input
@@ -232,7 +249,8 @@
           class="input input-bordered w-full"
           {disabled}
           value={getDisplayValue(name, sqlType)}
-          oninput={(e) => handleFieldChange(name, sqlType, e.currentTarget.value)}
+          oninput={(e) =>
+            handleFieldChange(name, sqlType, e.currentTarget.value)}
         />
       {:else}
         <input
@@ -241,7 +259,8 @@
           class="input input-bordered w-full"
           {disabled}
           value={String(getDisplayValue(name, sqlType))}
-          oninput={(e) => handleFieldChange(name, sqlType, e.currentTarget.value)}
+          oninput={(e) =>
+            handleFieldChange(name, sqlType, e.currentTarget.value)}
         />
       {/if}
     </div>

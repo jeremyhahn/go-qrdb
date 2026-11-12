@@ -26,22 +26,22 @@
  * - Parse each file according to its format
  */
 
-import type { ParsedPreview, ParseResult } from '../types.ts';
+import type { ParsedPreview, ParseResult } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Supported archive extensions. */
-export const ARCHIVE_EXTENSIONS = ['.zip', '.tar.gz', '.tgz'] as const;
+export const ARCHIVE_EXTENSIONS = [".zip", ".tar.gz", ".tgz"] as const;
 
 /** Archive MIME types. */
 export const ARCHIVE_MIME_TYPES = [
-  'application/zip',
-  'application/x-zip-compressed',
-  'application/gzip',
-  'application/x-gzip',
-  'application/x-tar',
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/gzip",
+  "application/x-gzip",
+  "application/x-tar",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ export interface ArchiveEntry {
   /** Whether this is a directory. */
   readonly isDirectory: boolean;
   /** Detected file format (csv, json, etc.). */
-  readonly format: 'csv' | 'json' | 'unknown';
+  readonly format: "csv" | "json" | "unknown";
 }
 
 /** Archive analysis result (for future implementation). */
@@ -91,13 +91,13 @@ export async function parseArchive(file: File): Promise<ParseResult> {
   // Validate file extension
   const fileName = file.name.toLowerCase();
   const isValidExtension = ARCHIVE_EXTENSIONS.some((ext) =>
-    fileName.endsWith(ext)
+    fileName.endsWith(ext),
   );
 
   if (!isValidExtension) {
     return {
       success: false,
-      error: `Unsupported archive format. Expected: ${ARCHIVE_EXTENSIONS.join(', ')}`,
+      error: `Unsupported archive format. Expected: ${ARCHIVE_EXTENSIONS.join(", ")}`,
     };
   }
 
@@ -105,26 +105,26 @@ export async function parseArchive(file: File): Promise<ParseResult> {
   if (file.size === 0) {
     return {
       success: false,
-      error: 'Archive file is empty',
+      error: "Archive file is empty",
     };
   }
 
   // MVP: Return placeholder preview
   // In a full implementation, this would extract and list files
 
-  const archiveType = fileName.endsWith('.zip') ? 'ZIP' : 'TAR.GZ';
+  const archiveType = fileName.endsWith(".zip") ? "ZIP" : "TAR.GZ";
 
   const preview: ParsedPreview = {
-    headers: ['file', 'type', 'status'],
+    headers: ["file", "type", "status"],
     rows: [
       {
         file: file.name,
         type: archiveType,
-        status: 'Ready for import',
+        status: "Ready for import",
       },
     ],
     totalRows: 1,
-    format: 'archive',
+    format: "archive",
   };
 
   return {
@@ -144,7 +144,7 @@ export function isArchiveFile(file: File): boolean {
 
   // Check by extension
   const hasValidExtension = ARCHIVE_EXTENSIONS.some((ext) =>
-    fileName.endsWith(ext)
+    fileName.endsWith(ext),
   );
 
   if (hasValidExtension) {
@@ -166,9 +166,9 @@ export function isArchiveFile(file: File): boolean {
  */
 export function getArchiveImportDescription(): string {
   return (
-    'Archive import will process all supported files (CSV, JSON) within ' +
-    'the archive. Each file will be imported using its detected format. ' +
-    'Nested directories within the archive are supported.'
+    "Archive import will process all supported files (CSV, JSON) within " +
+    "the archive. Each file will be imported using its detected format. " +
+    "Nested directories within the archive are supported."
   );
 }
 
@@ -178,10 +178,7 @@ export function getArchiveImportDescription(): string {
  * @returns Array of format descriptions.
  */
 export function getSupportedArchiveFormats(): string[] {
-  return [
-    'ZIP (.zip)',
-    'Gzipped TAR (.tar.gz, .tgz)',
-  ];
+  return ["ZIP (.zip)", "Gzipped TAR (.tar.gz, .tgz)"];
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +194,7 @@ export function getSupportedArchiveFormats(): string[] {
  * @returns Promise resolving to archive analysis.
  */
 export async function listArchiveContents(
-  _file: File
+  _file: File,
 ): Promise<ArchiveAnalysis> {
   // TODO: Implement actual archive listing using JSZip for ZIP files
   // and pako/tar-stream for TAR.GZ files
@@ -220,7 +217,7 @@ export async function listArchiveContents(
  */
 export async function extractArchiveFile(
   _archive: File,
-  _path: string
+  _path: string,
 ): Promise<string | null> {
   // TODO: Implement actual file extraction
 

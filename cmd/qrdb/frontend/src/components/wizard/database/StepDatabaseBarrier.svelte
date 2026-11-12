@@ -35,9 +35,7 @@
   let sharesRequired: number = $state(
     dbWizardStore.sealConfig.sharesRequired ?? 3,
   );
-  let sharesTotal: number = $state(
-    dbWizardStore.sealConfig.sharesTotal ?? 5,
-  );
+  let sharesTotal: number = $state(dbWizardStore.sealConfig.sharesTotal ?? 5);
 
   // The passphrase and its confirmation live in this step only; the
   // passphrase reaches the store on Next, and the create step takes it from
@@ -108,7 +106,8 @@
 
   /** The error shows once the user has typed, not on an untouched form. */
   let showPassphraseError = $derived(
-    passphraseError !== null && (passphrase.length > 0 || passphraseConfirm.length > 0),
+    passphraseError !== null &&
+      (passphrase.length > 0 || passphraseConfirm.length > 0),
   );
 
   let isValid = $derived(shamirValid && passphraseError === null);
@@ -120,11 +119,16 @@
     if (!isValid) return;
     dbWizardStore.sealMode = sealMode;
     dbWizardStore.barrierEnabled = sealMode !== "none";
-    dbWizardStore.barrierPassphrase = sealMode === "passphrase" ? passphrase : "";
+    dbWizardStore.barrierPassphrase =
+      sealMode === "passphrase" ? passphrase : "";
     passphrase = "";
     passphraseConfirm = "";
     if (sealMode === "shamir") {
-      dbWizardStore.sealConfig = { mode: "shamir", sharesRequired, sharesTotal };
+      dbWizardStore.sealConfig = {
+        mode: "shamir",
+        sharesRequired,
+        sharesTotal,
+      };
     } else {
       dbWizardStore.sealConfig = { mode: sealMode };
     }
@@ -142,10 +146,11 @@
   </div>
 
   <div class="w-full max-w-2xl space-y-6">
-
     <!-- Seal mode cards -->
     <div>
-      <p class="text-sm font-semibold text-base-content/80 mb-3">Per-Database Barrier</p>
+      <p class="text-sm font-semibold text-base-content/80 mb-3">
+        Per-Database Barrier
+      </p>
       <div class="grid grid-cols-3 gap-4">
         {#each sealModeOptions as mode (mode.id)}
           <button
@@ -153,8 +158,8 @@
             data-testid={`db-seal-mode-${mode.id}`}
             class="card border-2 p-4 text-left transition-colors cursor-pointer
               {sealMode === mode.id
-                ? 'border-primary bg-primary/5'
-                : 'border-base-300 hover:border-primary/50'}"
+              ? 'border-primary bg-primary/5'
+              : 'border-base-300 hover:border-primary/50'}"
             onclick={() => (sealMode = mode.id)}
           >
             <div class="flex items-start gap-3">
@@ -213,7 +218,11 @@
           per-database barrier needs the database's own data directory, set in
           the Storage step.
         </p>
-        <p class="text-error min-h-5 text-sm" role="alert" data-testid="db-barrier-passphrase-error">
+        <p
+          class="text-error min-h-5 text-sm"
+          role="alert"
+          data-testid="db-barrier-passphrase-error"
+        >
           {showPassphraseError ? passphraseError : ""}
         </p>
       </div>
@@ -243,9 +252,9 @@
             The database encryption key is split into <strong>N</strong> shares,
             one per share holder, and any <strong>M</strong> of them unseal the
             database together. The database is created sealed; you then enrol
-            its <strong>N</strong> holders here, each from a certificate request
-            they generated, and initialize. Holders claim their shares, and
-            later unseal, with their own keys and the qrdb CLI.
+            its <strong>N</strong> holders here, each from a certificate request they
+            generated, and initialize. Holders claim their shares, and later unseal,
+            with their own keys and the qrdb CLI.
           </span>
         </div>
 

@@ -26,12 +26,12 @@
 // ---------------------------------------------------------------------------
 
 /** Supported theme values. */
-export type Theme = 'light' | 'dark';
+export type Theme = "light" | "dark";
 
 /** Shape of the reactive theme state. */
 export interface ThemeState {
-    /** Currently active DaisyUI theme. */
-    theme: Theme;
+  /** Currently active DaisyUI theme. */
+  theme: Theme;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,10 +39,10 @@ export interface ThemeState {
 // ---------------------------------------------------------------------------
 
 /** localStorage key used to persist the theme preference. */
-const STORAGE_KEY = 'qrdb-theme';
+const STORAGE_KEY = "qrdb-theme";
 
 /** Default theme when no persisted preference exists. */
-const DEFAULT_THEME: Theme = 'dark';
+const DEFAULT_THEME: Theme = "dark";
 
 // ---------------------------------------------------------------------------
 // Store
@@ -50,7 +50,7 @@ const DEFAULT_THEME: Theme = 'dark';
 
 /** Reactive theme state. */
 export const themeStore: ThemeState = $state({
-    theme: DEFAULT_THEME,
+  theme: DEFAULT_THEME,
 });
 
 // ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ export const themeStore: ThemeState = $state({
  * Validates that a string is a supported theme value.
  */
 function isValidTheme(value: string): value is Theme {
-    return value === 'light' || value === 'dark';
+  return value === "light" || value === "dark";
 }
 
 /**
@@ -69,9 +69,9 @@ function isValidTheme(value: string): value is Theme {
  * attribute. Safe to call during SSR (no-ops when `document` is unavailable).
  */
 function applyTheme(theme: Theme): void {
-    if (typeof document !== 'undefined') {
-        document.documentElement.dataset['theme'] = theme;
-    }
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset["theme"] = theme;
+  }
 }
 
 /**
@@ -79,9 +79,9 @@ function applyTheme(theme: Theme): void {
  * (no-ops when `localStorage` is unavailable).
  */
 function persistTheme(theme: Theme): void {
-    if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_KEY, theme);
-    }
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(STORAGE_KEY, theme);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -93,10 +93,10 @@ function persistTheme(theme: Theme): void {
  * localStorage, and applies the change to the document root.
  */
 export function toggleTheme(): void {
-    const next: Theme = themeStore.theme === 'dark' ? 'light' : 'dark';
-    themeStore.theme = next;
-    persistTheme(next);
-    applyTheme(next);
+  const next: Theme = themeStore.theme === "dark" ? "light" : "dark";
+  themeStore.theme = next;
+  persistTheme(next);
+  applyTheme(next);
 }
 
 /**
@@ -105,15 +105,15 @@ export function toggleTheme(): void {
  * application initialization.
  */
 export function initTheme(): void {
-    let theme: Theme = DEFAULT_THEME;
+  let theme: Theme = DEFAULT_THEME;
 
-    if (typeof localStorage !== 'undefined') {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored !== null && isValidTheme(stored)) {
-            theme = stored;
-        }
+  if (typeof localStorage !== "undefined") {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored !== null && isValidTheme(stored)) {
+      theme = stored;
     }
+  }
 
-    themeStore.theme = theme;
-    applyTheme(theme);
+  themeStore.theme = theme;
+  applyTheme(theme);
 }

@@ -205,7 +205,10 @@
         await client.users.disable(userId!);
       }
       existingUser = await client.users.get(userId!);
-      showToast("success", `User "${username}" ${enable ? "enabled" : "disabled"}`);
+      showToast(
+        "success",
+        `User "${username}" ${enable ? "enabled" : "disabled"}`,
+      );
     } catch (err: unknown) {
       const msg = errorText(err, "Failed to change user state");
       showToast("error", msg);
@@ -244,7 +247,11 @@
     }
     try {
       busy = true;
-      existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
+      existingUser = await client.users.addCertBinding(
+        userId!,
+        thumbprint,
+        notAfterUnix,
+      );
       if (!certBindings.includes(thumbprint)) {
         certBindings = [...certBindings, thumbprint];
       }
@@ -356,7 +363,8 @@
             <div class="divider text-xs">Metadata</div>
             <div class="grid grid-cols-2 gap-2 text-xs">
               <div>
-                <span class="text-base-content/60 font-semibold">Lifecycle</span>
+                <span class="text-base-content/60 font-semibold">Lifecycle</span
+                >
                 <p class="font-mono">{existingUser.lifecycle}</p>
               </div>
               <div>
@@ -381,7 +389,9 @@
           {:else}
             <div class="flex flex-col gap-1 max-h-80 overflow-y-auto">
               {#each availableRoles as role (role.id)}
-                <label class="label cursor-pointer justify-start gap-3 rounded px-2 hover:bg-base-300">
+                <label
+                  class="label cursor-pointer justify-start gap-3 rounded px-2 hover:bg-base-300"
+                >
                   <input
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
@@ -392,11 +402,15 @@
                   <div class="flex flex-col">
                     <span class="text-sm">{role.name}</span>
                     <span class="text-base-content/50 text-xs">
-                      {role.tenantId} &middot; {role.permissions.length} permission{role.permissions.length !== 1 ? "s" : ""}
+                      {role.tenantId} &middot; {role.permissions.length} permission{role
+                        .permissions.length !== 1
+                        ? "s"
+                        : ""}
                     </span>
                   </div>
                   {#if role.system}
-                    <span class="badge badge-xs badge-info ml-auto">System</span>
+                    <span class="badge badge-xs badge-info ml-auto">System</span
+                    >
                   {/if}
                 </label>
               {/each}
@@ -421,7 +435,9 @@
               </span>
             {/each}
             {#if accessibleDatabases.length === 0}
-              <span class="text-base-content/50 text-sm">No database access.</span>
+              <span class="text-base-content/50 text-sm"
+                >No database access.</span
+              >
             {/if}
           </div>
         </div>
@@ -438,7 +454,9 @@
           </p>
           <div class="flex flex-wrap items-end gap-2">
             <label class="form-control grow">
-              <div class="label"><span class="label-text">Thumbprint</span></div>
+              <div class="label">
+                <span class="label-text">Thumbprint</span>
+              </div>
               <input
                 type="text"
                 class="input input-bordered input-sm w-full font-mono"
@@ -448,7 +466,9 @@
               />
             </label>
             <label class="form-control">
-              <div class="label"><span class="label-text">Expires (optional)</span></div>
+              <div class="label">
+                <span class="label-text">Expires (optional)</span>
+              </div>
               <input
                 type="datetime-local"
                 class="input input-bordered input-sm"
@@ -476,7 +496,10 @@
           {#if certBindings.length > 0}
             <ul class="flex flex-col gap-1 pt-2">
               {#each certBindings as tp (tp)}
-                <li class="flex items-center gap-2" data-testid="user-binding-row">
+                <li
+                  class="flex items-center gap-2"
+                  data-testid="user-binding-row"
+                >
                   <span class="font-mono text-xs break-all">{tp}</span>
                   <button
                     class="btn btn-ghost btn-xs ml-auto"
@@ -506,9 +529,7 @@
         {/if}
         {isCreate ? "Create" : "Save"}
       </button>
-      <button class="btn btn-ghost btn-sm" onclick={onBack}>
-        Cancel
-      </button>
+      <button class="btn btn-ghost btn-sm" onclick={onBack}> Cancel </button>
       {#if existingUser !== null && !existingUser.system}
         {#if existingUser.lifecycle === "disabled"}
           <button

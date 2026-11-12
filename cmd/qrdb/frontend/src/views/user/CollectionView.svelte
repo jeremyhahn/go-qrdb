@@ -16,8 +16,16 @@
 -->
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { Client, DatabaseInfo, IndexQueryResponse, IndexScanResponse } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Client,
+    DatabaseInfo,
+    IndexQueryResponse,
+    IndexScanResponse,
+  } from "@qrdb/sdk";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
   import PageHeader from "../../components/PageHeader.svelte";
@@ -37,7 +45,8 @@
     RefreshCw,
   } from "lucide-svelte";
 
-  let { client, database }: { client: Client; database: DatabaseInfo } = $props();
+  let { client, database }: { client: Client; database: DatabaseInfo } =
+    $props();
 
   // ---------------------------------------------------------------------------
   // Types
@@ -76,20 +85,32 @@
       collection: string;
       page_size?: number;
       page_token?: string;
-    }): Promise<{ documents: DocumentResponse[]; next_page_token?: string; total_count?: number }>;
+    }): Promise<{
+      documents: DocumentResponse[];
+      next_page_token?: string;
+      total_count?: number;
+    }>;
     insertDocument(req: {
       database: string;
       collection: string;
       document: Record<string, unknown>;
     }): Promise<{ id: string }>;
-    getDocument(database: string, collection: string, id: string): Promise<DocumentResponse>;
+    getDocument(
+      database: string,
+      collection: string,
+      id: string,
+    ): Promise<DocumentResponse>;
     updateDocument(req: {
       database: string;
       collection: string;
       id: string;
       document: Record<string, unknown>;
     }): Promise<void>;
-    deleteDocument(database: string, collection: string, id: string): Promise<void>;
+    deleteDocument(
+      database: string,
+      collection: string,
+      id: string,
+    ): Promise<void>;
     get(database: string, name: string): Promise<CollectionInfo>;
   }
 
@@ -98,7 +119,8 @@
   // ---------------------------------------------------------------------------
 
   const collectionClient = $derived(
-    (client as unknown as Record<string, unknown>).collection as CollectionClient | undefined
+    (client as unknown as Record<string, unknown>).collection as
+      CollectionClient | undefined,
   );
 
   // ---------------------------------------------------------------------------
@@ -166,8 +188,10 @@
 
   const collectionFieldNames = $derived(
     collectionIndexes.map((name) =>
-      name.startsWith(collectionIndexPrefix) ? name.slice(collectionIndexPrefix.length) : name
-    )
+      name.startsWith(collectionIndexPrefix)
+        ? name.slice(collectionIndexPrefix.length)
+        : name,
+    ),
   );
 
   // Create index modal
@@ -224,7 +248,9 @@
       }
     }
 
-    const fieldColumns: Column<Record<string, unknown>>[] = Array.from(fieldKeys)
+    const fieldColumns: Column<Record<string, unknown>>[] = Array.from(
+      fieldKeys,
+    )
       .sort()
       .map((key) => ({
         id: `field_${key}`,
@@ -253,7 +279,7 @@
     documents.map((doc) => ({
       id: doc.id,
       document: doc.document,
-    }))
+    })),
   );
 
   // ---------------------------------------------------------------------------
@@ -262,12 +288,17 @@
 
   async function loadCollections(): Promise<void> {
     if (collectionClient === undefined) {
-      showToast("warning", "Collection API is not available in the current SDK.");
+      showToast(
+        "warning",
+        "Collection API is not available in the current SDK.",
+      );
       return;
     }
     collectionsLoading = true;
     try {
-      collections = await withRetry(() => collectionClient!.list(database.name));
+      collections = await withRetry(() =>
+        collectionClient!.list(database.name),
+      );
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
       collections = [];
@@ -290,7 +321,10 @@
       return;
     }
     if (createIdStrategy === "field_hash" && createFieldHash.trim() === "") {
-      showToast("warning", "Field hash is required when using the field_hash ID strategy.");
+      showToast(
+        "warning",
+        "Field hash is required when using the field_hash ID strategy.",
+      );
       return;
     }
 
@@ -300,7 +334,9 @@
         database: database.name,
         name: createName,
         id_strategy: createIdStrategy,
-        ...(createIdStrategy === "field_hash" ? { field_hash: createFieldHash } : {}),
+        ...(createIdStrategy === "field_hash"
+          ? { field_hash: createFieldHash }
+          : {}),
       });
       showToast("success", `Collection "${createName}" created.`);
       showCreateCollectionPanel = false;
@@ -349,7 +385,7 @@
         collectionClient!.listDocuments({
           database: database.name,
           collection: selectedCollection!.name,
-        })
+        }),
       );
       documents = resp.documents ?? [];
     } catch (err: unknown) {
@@ -386,7 +422,11 @@
   function validateJson(value: string): boolean {
     try {
       const parsed = JSON.parse(value);
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        Array.isArray(parsed)
+      ) {
         documentJsonError = "Document must be a JSON object.";
         return false;
       }
@@ -440,12 +480,18 @@
   // not the possibly stale list row; a failed fetch is an error toast and
   // the panel stays closed. documentFetchToken drops a superseded response.
   let documentFetchToken = 0;
-  async function handleDocumentRowClick(event: RowClickEvent<Record<string, unknown>>): Promise<void> {
+  async function handleDocumentRowClick(
+    event: RowClickEvent<Record<string, unknown>>,
+  ): Promise<void> {
     if (collectionClient === undefined || selectedCollection === null) return;
     const id = event.row.id as string;
     const token = ++documentFetchToken;
     try {
-      const doc = await collectionClient.getDocument(database.name, selectedCollection.name, id);
+      const doc = await collectionClient.getDocument(
+        database.name,
+        selectedCollection.name,
+        id,
+      );
       if (token !== documentFetchToken) return;
       selectedDocument = doc;
     } catch (err: unknown) {
@@ -459,12 +505,21 @@
   }
 
   async function confirmDeleteDocument(): Promise<void> {
-    if (collectionClient === undefined || selectedCollection === null || deleteDocumentTarget === null) return;
+    if (
+      collectionClient === undefined ||
+      selectedCollection === null ||
+      deleteDocumentTarget === null
+    )
+      return;
     const id = deleteDocumentTarget.id;
     deleteDocumentTarget = null;
     documentsLoading = true;
     try {
-      await collectionClient.deleteDocument(database.name, selectedCollection.name, id);
+      await collectionClient.deleteDocument(
+        database.name,
+        selectedCollection.name,
+        id,
+      );
       showToast("success", `Document ${id} deleted.`);
       if (selectedDocument?.id === id) {
         selectedDocument = null;
@@ -478,7 +533,9 @@
     }
   }
 
-  async function handleBulkDeleteDocuments(indices: Set<number>): Promise<void> {
+  async function handleBulkDeleteDocuments(
+    indices: Set<number>,
+  ): Promise<void> {
     if (collectionClient === undefined || selectedCollection === null) return;
     documentsLoading = true;
     const docsToDelete: DocumentResponse[] = [];
@@ -489,7 +546,11 @@
     let failCount = 0;
     for (const doc of docsToDelete) {
       try {
-        await collectionClient.deleteDocument(database.name, selectedCollection.name, doc.id);
+        await collectionClient.deleteDocument(
+          database.name,
+          selectedCollection.name,
+          doc.id,
+        );
         successCount++;
       } catch {
         failCount++;
@@ -524,7 +585,10 @@
   async function refreshSelectedCollection(): Promise<void> {
     if (collectionClient === undefined || selectedCollection === null) return;
     try {
-      const info = await collectionClient.get(database.name, selectedCollection.name);
+      const info = await collectionClient.get(
+        database.name,
+        selectedCollection.name,
+      );
       if (info !== undefined) {
         selectedCollection = info;
         const idx = collections.findIndex((c) => c.name === info.name);
@@ -548,10 +612,14 @@
     try {
       const result = await client.index.list();
       const prefix = `${database.name}.${selectedCollection.name}.`;
-      collectionIndexes = (result.names ?? []).filter((n) => n.startsWith(prefix));
+      collectionIndexes = (result.names ?? []).filter((n) =>
+        n.startsWith(prefix),
+      );
       // Reset query/scan selections when indexes change
-      if (!collectionIndexes.includes(selectedQueryIndex)) selectedQueryIndex = "";
-      if (!collectionIndexes.includes(selectedScanIndex)) selectedScanIndex = "";
+      if (!collectionIndexes.includes(selectedQueryIndex))
+        selectedQueryIndex = "";
+      if (!collectionIndexes.includes(selectedScanIndex))
+        selectedScanIndex = "";
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
       collectionIndexes = [];
@@ -626,7 +694,10 @@
     queryLoading = true;
     queryResults = null;
     try {
-      queryResults = await client.index.query(selectedQueryIndex, queryValue.trim());
+      queryResults = await client.index.query(
+        selectedQueryIndex,
+        queryValue.trim(),
+      );
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -635,14 +706,22 @@
   }
 
   async function scanCollectionIndex(): Promise<void> {
-    if (selectedScanIndex === "" || scanStart.trim() === "" || scanEnd.trim() === "") {
+    if (
+      selectedScanIndex === "" ||
+      scanStart.trim() === "" ||
+      scanEnd.trim() === ""
+    ) {
       showToast("warning", "Select an index and provide start and end values.");
       return;
     }
     scanLoading = true;
     scanResults = null;
     try {
-      scanResults = await client.index.scan(selectedScanIndex, scanStart.trim(), scanEnd.trim());
+      scanResults = await client.index.scan(
+        selectedScanIndex,
+        scanStart.trim(),
+        scanEnd.trim(),
+      );
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -654,8 +733,10 @@
   // Help tip text (stored as constants to avoid Svelte template brace escaping)
   // ---------------------------------------------------------------------------
 
-  const helpFieldName = 'The JSON field name in your documents to index. For example, if your documents have {"email": "user@example.com"}, enter email.';
-  const helpIndexName = "Index names are automatically generated as database.collection.field to ensure uniqueness across your system.";
+  const helpFieldName =
+    'The JSON field name in your documents to index. For example, if your documents have {"email": "user@example.com"}, enter email.';
+  const helpIndexName =
+    "Index names are automatically generated as database.collection.field to ensure uniqueness across your system.";
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -694,7 +775,11 @@
 >
   {#snippet actions()}
     <div class="flex items-center gap-2">
-      <button class="btn btn-ghost btn-sm" onclick={loadCollections} disabled={collectionsLoading}>
+      <button
+        class="btn btn-ghost btn-sm"
+        onclick={loadCollections}
+        disabled={collectionsLoading}
+      >
         {#if collectionsLoading}
           <span class="loading loading-spinner loading-xs"></span>
         {:else}
@@ -708,10 +793,13 @@
 
 <!-- Two-panel layout -->
 <div class="flex gap-6" style="min-height: 500px;">
-
   <!-- Left Panel: Collection List -->
-  <div class="surface-panel flex w-80 shrink-0 flex-col rounded-xl border border-base-content/6">
-    <div class="flex items-center justify-between border-b border-base-content/6 px-4 py-3">
+  <div
+    class="surface-panel flex w-80 shrink-0 flex-col rounded-xl border border-base-content/6"
+  >
+    <div
+      class="flex items-center justify-between border-b border-base-content/6 px-4 py-3"
+    >
       <div class="flex items-center gap-2 text-sm font-semibold">
         <FolderOpen class="h-4 w-4 text-base-content/60" />
         Collections
@@ -743,7 +831,10 @@
               <button
                 class="flex w-full items-center justify-between rounded-lg px-3 py-2"
                 class:active={selectedCollection?.name === collection.name}
-                onclick={() => { selectedCollection = collection; loadDocuments(); }}
+                onclick={() => {
+                  selectedCollection = collection;
+                  loadDocuments();
+                }}
               >
                 <div class="flex flex-col items-start gap-0.5">
                   <span class="font-medium">{collection.name}</span>
@@ -758,8 +849,16 @@
                   tabindex="0"
                   class="btn btn-ghost btn-xs text-error opacity-0 group-hover:opacity-100 hover:opacity-100"
                   title="Drop collection {collection.name} — permanently deletes all documents"
-                  onclick={(e: MouseEvent) => { e.stopPropagation(); requestDropCollection(collection); }}
-                  onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter') { e.stopPropagation(); requestDropCollection(collection); } }}
+                  onclick={(e: MouseEvent) => {
+                    e.stopPropagation();
+                    requestDropCollection(collection);
+                  }}
+                  onkeydown={(e: KeyboardEvent) => {
+                    if (e.key === "Enter") {
+                      e.stopPropagation();
+                      requestDropCollection(collection);
+                    }
+                  }}
                   aria-label="Drop collection {collection.name}"
                 >
                   <Trash2 class="h-3 w-3" />
@@ -775,7 +874,9 @@
   <!-- Right Panel: Collection Detail with inner tabs -->
   <div class="flex flex-1 flex-col gap-4">
     {#if selectedCollection === null}
-      <div class="surface-panel flex flex-1 items-center justify-center rounded-xl border border-base-content/6">
+      <div
+        class="surface-panel flex flex-1 items-center justify-center rounded-xl border border-base-content/6"
+      >
         <EmptyState
           icon={FileText}
           title="Select a Collection"
@@ -784,11 +885,17 @@
       </div>
     {:else}
       <!-- Collection header -->
-      <div class="surface-panel flex items-center justify-between rounded-xl border border-base-content/6 px-4 py-3">
+      <div
+        class="surface-panel flex items-center justify-between rounded-xl border border-base-content/6 px-4 py-3"
+      >
         <div class="flex items-center gap-3">
           <h3 class="text-sm font-semibold">{selectedCollection.name}</h3>
-          <span class="badge badge-ghost badge-sm">{documents.length} documents</span>
-          <span class="badge badge-outline badge-sm">{selectedCollection.id_strategy}</span>
+          <span class="badge badge-ghost badge-sm"
+            >{documents.length} documents</span
+          >
+          <span class="badge badge-outline badge-sm"
+            >{selectedCollection.id_strategy}</span
+          >
         </div>
       </div>
 
@@ -798,7 +905,9 @@
           role="tab"
           class="tab"
           class:tab-active={collectionDetailTab === "documents"}
-          onclick={() => { collectionDetailTab = "documents"; }}
+          onclick={() => {
+            collectionDetailTab = "documents";
+          }}
         >
           Documents
         </button>
@@ -806,13 +915,19 @@
           role="tab"
           class="tab"
           class:tab-active={collectionDetailTab === "indexes"}
-          onclick={() => { collectionDetailTab = "indexes"; }}
+          onclick={() => {
+            collectionDetailTab = "indexes";
+          }}
         >
           <span class="flex items-center gap-1">
             Indexes
-            <HelpTip text="Secondary indexes speed up queries on specific document fields. Create an index on a field you frequently search by." />
+            <HelpTip
+              text="Secondary indexes speed up queries on specific document fields. Create an index on a field you frequently search by."
+            />
             {#if collectionIndexes.length > 0}
-              <span class="badge badge-info badge-sm ml-0.5">{collectionIndexes.length}</span>
+              <span class="badge badge-info badge-sm ml-0.5"
+                >{collectionIndexes.length}</span
+              >
             {/if}
           </span>
         </button>
@@ -823,9 +938,15 @@
       <!-- ------------------------------------------------------------------ -->
       {#if collectionDetailTab === "documents"}
         <!-- Document toolbar -->
-        <div class="surface-panel flex items-center justify-end rounded-xl border border-base-content/6 px-4 py-2">
+        <div
+          class="surface-panel flex items-center justify-end rounded-xl border border-base-content/6 px-4 py-2"
+        >
           <div class="flex items-center gap-2">
-            <button class="btn btn-ghost btn-xs" onclick={loadDocuments} disabled={documentsLoading}>
+            <button
+              class="btn btn-ghost btn-xs"
+              onclick={loadDocuments}
+              disabled={documentsLoading}
+            >
               {#if documentsLoading}
                 <span class="loading loading-spinner loading-xs"></span>
               {:else}
@@ -843,7 +964,9 @@
         </div>
 
         <!-- Document table -->
-        <div class="surface-panel overflow-hidden rounded-xl border border-base-content/6">
+        <div
+          class="surface-panel overflow-hidden rounded-xl border border-base-content/6"
+        >
           <CrudTable
             title="Documents"
             data={documentTableData}
@@ -864,8 +987,9 @@
       <!-- Indexes tab                                                         -->
       <!-- ------------------------------------------------------------------ -->
       {#if collectionDetailTab === "indexes"}
-        <div class="surface-panel flex flex-col gap-0 rounded-xl border border-base-content/6">
-
+        <div
+          class="surface-panel flex flex-col gap-0 rounded-xl border border-base-content/6"
+        >
           <!-- Manage / Query / Scan inner tabs -->
           <div class="border-b border-base-content/6 px-4 pt-3">
             <div role="tablist" class="tabs tabs-bordered">
@@ -873,7 +997,9 @@
                 role="tab"
                 class="tab"
                 class:tab-active={indexActiveTab === "manage"}
-                onclick={() => { indexActiveTab = "manage"; }}
+                onclick={() => {
+                  indexActiveTab = "manage";
+                }}
               >
                 Manage
               </button>
@@ -881,7 +1007,9 @@
                 role="tab"
                 class="tab"
                 class:tab-active={indexActiveTab === "query"}
-                onclick={() => { indexActiveTab = "query"; }}
+                onclick={() => {
+                  indexActiveTab = "query";
+                }}
               >
                 Query
               </button>
@@ -889,7 +1017,9 @@
                 role="tab"
                 class="tab"
                 class:tab-active={indexActiveTab === "scan"}
-                onclick={() => { indexActiveTab = "scan"; }}
+                onclick={() => {
+                  indexActiveTab = "scan";
+                }}
               >
                 Scan
               </button>
@@ -897,7 +1027,6 @@
           </div>
 
           <div class="p-4">
-
             <!-- -------------------------------------------------------------- -->
             <!-- Manage sub-tab                                                  -->
             <!-- -------------------------------------------------------------- -->
@@ -919,7 +1048,10 @@
                       {/if}
                       Refresh
                     </button>
-                    <button class="btn btn-primary btn-xs" onclick={openCreateIndexModal}>
+                    <button
+                      class="btn btn-primary btn-xs"
+                      onclick={openCreateIndexModal}
+                    >
                       <Plus class="h-3 w-3" />
                       Create Index
                     </button>
@@ -931,11 +1063,16 @@
                     <span class="loading loading-spinner loading-sm"></span>
                   </div>
                 {:else if collectionIndexes.length === 0}
-                  <div class="rounded-lg border border-base-content/6 bg-base-200 px-4 py-6 text-center text-sm text-base-content/50">
-                    No indexes defined. Create an index on a frequently queried field to speed up lookups.
+                  <div
+                    class="rounded-lg border border-base-content/6 bg-base-200 px-4 py-6 text-center text-sm text-base-content/50"
+                  >
+                    No indexes defined. Create an index on a frequently queried
+                    field to speed up lookups.
                   </div>
                 {:else}
-                  <div class="overflow-x-auto rounded-lg border border-base-content/6">
+                  <div
+                    class="overflow-x-auto rounded-lg border border-base-content/6"
+                  >
                     <table class="table table-sm w-full">
                       <thead>
                         <tr>
@@ -947,8 +1084,12 @@
                       <tbody>
                         {#each collectionIndexes as name, i (name)}
                           <tr class="hover">
-                            <td class="font-mono text-sm font-medium">{collectionFieldNames[i]}</td>
-                            <td class="font-mono text-xs text-base-content/60">{name}</td>
+                            <td class="font-mono text-sm font-medium"
+                              >{collectionFieldNames[i]}</td
+                            >
+                            <td class="font-mono text-xs text-base-content/60"
+                              >{name}</td
+                            >
                             <td class="text-right">
                               <button
                                 class="btn btn-error btn-xs"
@@ -972,12 +1113,16 @@
             <!-- -------------------------------------------------------------- -->
             {#if indexActiveTab === "query"}
               <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-end gap-3 rounded-lg bg-base-200 px-4 py-3">
+                <div
+                  class="flex flex-wrap items-end gap-3 rounded-lg bg-base-200 px-4 py-3"
+                >
                   <label class="form-control w-full max-w-xs">
                     <div class="label">
                       <span class="label-text text-xs flex items-center gap-1">
                         Index
-                        <HelpTip text="Select which index to query. Each index corresponds to a field in your documents." />
+                        <HelpTip
+                          text="Select which index to query. Each index corresponds to a field in your documents."
+                        />
                       </span>
                     </div>
                     <select
@@ -994,7 +1139,9 @@
                     <div class="label">
                       <span class="label-text text-xs flex items-center gap-1">
                         Value
-                        <HelpTip text="The exact field value to search for. For example, if you indexed the 'email' field, enter an email address like 'user@example.com'." />
+                        <HelpTip
+                          text="The exact field value to search for. For example, if you indexed the 'email' field, enter an email address like 'user@example.com'."
+                        />
                       </span>
                     </div>
                     <input
@@ -1021,9 +1168,13 @@
                   {#if queryResults === null}
                     <p class="text-sm text-base-content/50">No results</p>
                   {:else if queryResults.keys.length === 0}
-                    <p class="text-sm text-base-content/50">No matching entries found.</p>
+                    <p class="text-sm text-base-content/50">
+                      No matching entries found.
+                    </p>
                   {:else}
-                    <div class="overflow-x-auto rounded-lg border border-base-content/6">
+                    <div
+                      class="overflow-x-auto rounded-lg border border-base-content/6"
+                    >
                       <table class="table table-sm w-full">
                         <thead>
                           <tr>
@@ -1034,8 +1185,12 @@
                         <tbody>
                           {#each queryResults.keys as key, i (key)}
                             <tr class="hover">
-                              <td class="text-xs text-base-content/50">{i + 1}</td>
-                              <td class="font-mono text-sm">{extractDocId(key)}</td>
+                              <td class="text-xs text-base-content/50"
+                                >{i + 1}</td
+                              >
+                              <td class="font-mono text-sm"
+                                >{extractDocId(key)}</td
+                              >
                             </tr>
                           {/each}
                         </tbody>
@@ -1051,8 +1206,12 @@
             <!-- -------------------------------------------------------------- -->
             {#if indexActiveTab === "scan"}
               <div class="flex flex-col gap-4">
-                <div class="flex flex-wrap items-end gap-3 rounded-lg bg-base-200 px-4 py-3">
-                  <div class="w-full mb-1 text-xs text-base-content/50 flex items-center gap-1">
+                <div
+                  class="flex flex-wrap items-end gap-3 rounded-lg bg-base-200 px-4 py-3"
+                >
+                  <div
+                    class="w-full mb-1 text-xs text-base-content/50 flex items-center gap-1"
+                  >
                     Scan Index Range
                     <HelpTip
                       text="Scans a range of indexed values in lexicographic (alphabetical) order. Returns all documents whose indexed field value falls within the range [start, end)."
@@ -1063,7 +1222,9 @@
                     <div class="label">
                       <span class="label-text text-xs flex items-center gap-1">
                         Index
-                        <HelpTip text="Select which index to query. Each index corresponds to a field in your documents." />
+                        <HelpTip
+                          text="Select which index to query. Each index corresponds to a field in your documents."
+                        />
                       </span>
                     </div>
                     <select
@@ -1080,7 +1241,9 @@
                     <div class="label">
                       <span class="label-text text-xs flex items-center gap-1">
                         Start value
-                        <HelpTip text="The beginning of the range (inclusive). For example, 'a' to find all values starting from 'a'." />
+                        <HelpTip
+                          text="The beginning of the range (inclusive). For example, 'a' to find all values starting from 'a'."
+                        />
                       </span>
                     </div>
                     <input
@@ -1094,7 +1257,9 @@
                     <div class="label">
                       <span class="label-text text-xs flex items-center gap-1">
                         End value
-                        <HelpTip text="The end of the range (exclusive). For example, 'd' with start 'a' returns values 'a', 'b', 'c' but not 'd'." />
+                        <HelpTip
+                          text="The end of the range (exclusive). For example, 'd' with start 'a' returns values 'a', 'b', 'c' but not 'd'."
+                        />
                       </span>
                     </div>
                     <input
@@ -1117,7 +1282,9 @@
                 </div>
 
                 {#if scanResults !== null}
-                  <div class="overflow-x-auto rounded-lg border border-base-content/6">
+                  <div
+                    class="overflow-x-auto rounded-lg border border-base-content/6"
+                  >
                     <table class="table table-sm w-full">
                       <thead>
                         <tr>
@@ -1128,7 +1295,10 @@
                       <tbody>
                         {#if scanResults.entries.length === 0}
                           <tr>
-                            <td colspan="2" class="py-6 text-center text-sm text-base-content/50">
+                            <td
+                              colspan="2"
+                              class="py-6 text-center text-sm text-base-content/50"
+                            >
                               No entries in range
                             </td>
                           </tr>
@@ -1136,7 +1306,9 @@
                           {#each scanResults.entries as entry (entry.value)}
                             <tr class="hover">
                               <td class="font-mono text-sm">{entry.value}</td>
-                              <td class="font-mono text-sm">{entry.keys.map(extractDocId).join(", ")}</td>
+                              <td class="font-mono text-sm"
+                                >{entry.keys.map(extractDocId).join(", ")}</td
+                              >
                             </tr>
                           {/each}
                         {/if}
@@ -1144,11 +1316,12 @@
                     </table>
                   </div>
                 {:else}
-                  <p class="text-sm text-base-content/50">No entries in range</p>
+                  <p class="text-sm text-base-content/50">
+                    No entries in range
+                  </p>
                 {/if}
               </div>
             {/if}
-
           </div>
         </div>
       {/if}
@@ -1166,17 +1339,33 @@
     {#if selectedDocument}
       <div class="space-y-5">
         <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1">Document ID</span>
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">{selectedDocument.id}</div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Document ID</span
+          >
+          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+            {selectedDocument.id}
+          </div>
         </div>
         <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1">Document Body</span>
-          <pre class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap" data-testid="document-detail-body">{JSON.stringify(selectedDocument.document, null, 2)}</pre>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Document Body</span
+          >
+          <pre
+            class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap"
+            data-testid="document-detail-body">{JSON.stringify(
+              selectedDocument.document,
+              null,
+              2,
+            )}</pre>
         </div>
         {#if selectedCollection}
           <div>
-            <span class="text-sm font-medium text-base-content/70 block mb-1">Collection</span>
-            <div class="text-sm bg-base-200 rounded px-3 py-2">{selectedCollection.name}</div>
+            <span class="text-sm font-medium text-base-content/70 block mb-1"
+              >Collection</span
+            >
+            <div class="text-sm bg-base-200 rounded px-3 py-2">
+              {selectedCollection.name}
+            </div>
           </div>
         {/if}
       </div>
@@ -1227,7 +1416,10 @@
 
       <label class="form-control w-full">
         <div class="label"><span class="label-text">ID Strategy</span></div>
-        <select class="select select-bordered w-full" bind:value={createIdStrategy}>
+        <select
+          class="select select-bordered w-full"
+          bind:value={createIdStrategy}
+        >
           <option value="unix_nano">unix_nano</option>
           <option value="increment">increment</option>
           <option value="field_hash">field_hash</option>
@@ -1285,13 +1477,19 @@
             value={String(documentEditId)}
             disabled
           />
-          <div class="label"><span class="label-text-alt text-base-content/50">ID cannot be changed</span></div>
+          <div class="label">
+            <span class="label-text-alt text-base-content/50"
+              >ID cannot be changed</span
+            >
+          </div>
         </label>
       {/if}
 
       <div class="join mb-4">
         <button
-          class="btn btn-xs join-item {documentFormMode ? 'btn-primary' : 'btn-ghost'}"
+          class="btn btn-xs join-item {documentFormMode
+            ? 'btn-primary'
+            : 'btn-ghost'}"
           onclick={() => {
             if (!documentFormMode) {
               try {
@@ -1306,7 +1504,9 @@
           Form
         </button>
         <button
-          class="btn btn-xs join-item {!documentFormMode ? 'btn-primary' : 'btn-ghost'}"
+          class="btn btn-xs join-item {!documentFormMode
+            ? 'btn-primary'
+            : 'btn-ghost'}"
           onclick={() => {
             if (documentFormMode) {
               documentJson = JSON.stringify(documentFormFields, null, 2);
@@ -1323,14 +1523,19 @@
           <SchemaForm
             schema={selectedCollection?.schema ?? {}}
             value={documentFormFields}
-            onchange={(fields) => { documentFormFields = fields; documentJson = JSON.stringify(fields, null, 2); }}
+            onchange={(fields) => {
+              documentFormFields = fields;
+              documentJson = JSON.stringify(fields, null, 2);
+            }}
             disabled={documentPanelLoading}
           />
         {/key}
       </div>
       <div class:hidden={documentFormMode}>
         <label class="form-control w-full">
-          <div class="label"><span class="label-text">Document Body (JSON)</span></div>
+          <div class="label">
+            <span class="label-text">Document Body (JSON)</span>
+          </div>
           <textarea
             class="textarea textarea-bordered w-full font-mono h-64"
             placeholder={'{"key": "value"}'}
@@ -1339,8 +1544,7 @@
               if (validateJson(documentJson)) {
                 documentFormFields = JSON.parse(documentJson);
               }
-            }}
-          ></textarea>
+            }}></textarea>
           {#if documentJsonError !== ""}
             <div class="label">
               <span class="label-text-alt text-error">{documentJsonError}</span>
@@ -1364,8 +1568,13 @@
   {#snippet body()}
     <div class="space-y-4">
       {#if selectedCollection}
-        <div class="rounded-lg bg-base-200 px-3 py-2 text-xs text-base-content/60 flex items-center gap-1.5">
-          Index name: <span class="font-mono font-medium">{database.name}.{selectedCollection.name}.<em>fieldName</em>{newNumeric ? " (numeric)" : ""}</span>
+        <div
+          class="rounded-lg bg-base-200 px-3 py-2 text-xs text-base-content/60 flex items-center gap-1.5"
+        >
+          Index name: <span class="font-mono font-medium"
+            >{database.name}.{selectedCollection.name}.<em>fieldName</em
+            >{newNumeric ? " (numeric)" : ""}</span
+          >
           <HelpTip text={helpIndexName} position="right" />
         </div>
       {/if}
@@ -1386,7 +1595,9 @@
       <label class="form-control w-full">
         <div class="label">
           <span class="label-text">Value Type</span>
-          <HelpTip text="String indexes use lexicographic ordering (alphabetical). Numeric indexes use integer ordering so range scans like [1, 222) correctly exclude 1234." />
+          <HelpTip
+            text="String indexes use lexicographic ordering (alphabetical). Numeric indexes use integer ordering so range scans like [1, 222) correctly exclude 1234."
+          />
         </div>
         <select class="select select-bordered w-full" bind:value={newNumeric}>
           <option value={false}>String (lexicographic)</option>
@@ -1397,16 +1608,28 @@
         <label class="label cursor-pointer gap-2">
           <span class="label-text flex items-center gap-1">
             Unique
-            <HelpTip text="Enforces that no two documents can have the same value for this field. Use for fields like email addresses or usernames." />
+            <HelpTip
+              text="Enforces that no two documents can have the same value for this field. Use for fields like email addresses or usernames."
+            />
           </span>
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={newUnique} />
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={newUnique}
+          />
         </label>
         <label class="label cursor-pointer gap-2">
           <span class="label-text flex items-center gap-1">
             Sparse
-            <HelpTip text="Only indexes documents that contain this field. Documents missing the field are skipped. Useful when a field is optional and you only want to query documents that have it." />
+            <HelpTip
+              text="Only indexes documents that contain this field. Documents missing the field are skipped. Useful when a field is optional and you only want to query documents that have it."
+            />
           </span>
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={newSparse} />
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={newSparse}
+          />
         </label>
       </div>
     </div>

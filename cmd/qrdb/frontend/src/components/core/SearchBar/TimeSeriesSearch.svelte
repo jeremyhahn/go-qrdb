@@ -105,7 +105,7 @@
   $effect(() => {
     if (metric.length > 0 && availableMetrics.length > 0) {
       const filtered = availableMetrics.filter((m) =>
-        m.toLowerCase().includes(metric.toLowerCase())
+        m.toLowerCase().includes(metric.toLowerCase()),
       );
       metricSuggestions = filtered.slice(0, 10);
     } else {
@@ -117,7 +117,10 @@
   // Helper Functions
   // ---------------------------------------------------------------------------
 
-  function getTimeRange(): { startTime: Date | undefined; endTime: Date | undefined } {
+  function getTimeRange(): {
+    startTime: Date | undefined;
+    endTime: Date | undefined;
+  } {
     const now = new Date();
 
     if (selectedPreset === "custom") {

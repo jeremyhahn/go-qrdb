@@ -57,53 +57,56 @@
  */
 
 // Main component
-export { default as DataTable } from './DataTable.svelte';
+export { default as DataTable } from "./DataTable.svelte";
 
 // Sub-components (for advanced customization)
-export { default as DataTableHeader } from './DataTableHeader.svelte';
-export { default as DataTableRow } from './DataTableRow.svelte';
-export { default as DataTableCell } from './DataTableCell.svelte';
-export { default as DataTableFooter } from './DataTableFooter.svelte';
-export { default as DataTableFilters } from './DataTableFilters.svelte';
+export { default as DataTableHeader } from "./DataTableHeader.svelte";
+export { default as DataTableRow } from "./DataTableRow.svelte";
+export { default as DataTableCell } from "./DataTableCell.svelte";
+export { default as DataTableFooter } from "./DataTableFooter.svelte";
+export { default as DataTableFilters } from "./DataTableFilters.svelte";
 
 // Composable
-export { useDataTable } from './useDataTable.svelte.ts';
-export type { UseDataTableOptions, UseDataTableReturn } from './useDataTable.svelte.ts';
+export { useDataTable } from "./useDataTable.svelte.ts";
+export type {
+  UseDataTableOptions,
+  UseDataTableReturn,
+} from "./useDataTable.svelte.ts";
 
 // Types
 export type {
-    // Column configuration
-    Column,
-    FilterType,
-    TextFilterOperator,
-    NumericFilterOperator,
-    FilterOperator,
-    CellAlignment,
-    SortDirection,
+  // Column configuration
+  Column,
+  FilterType,
+  TextFilterOperator,
+  NumericFilterOperator,
+  FilterOperator,
+  CellAlignment,
+  SortDirection,
 
-    // State types
-    SortState,
-    FilterState,
-    FilterValue,
-    PaginationState,
-    SelectionMode,
-    DataTableState,
+  // State types
+  SortState,
+  FilterState,
+  FilterValue,
+  PaginationState,
+  SelectionMode,
+  DataTableState,
 
-    // Virtual scroll
-    VirtualScrollConfig,
-    VirtualScrollState,
+  // Virtual scroll
+  VirtualScrollConfig,
+  VirtualScrollState,
 
-    // Export
-    ExportFormat,
-    ExportConfig,
+  // Export
+  ExportFormat,
+  ExportConfig,
 
-    // Events
-    RowClickEvent,
-    CellClickEvent,
-    SelectionChangeEvent,
-    SortChangeEvent,
-    FilterChangeEvent,
-    PaginationChangeEvent,
-    ColumnResizeEvent,
-    ColumnReorderEvent,
-} from './types.ts';
+  // Events
+  RowClickEvent,
+  CellClickEvent,
+  SelectionChangeEvent,
+  SortChangeEvent,
+  FilterChangeEvent,
+  PaginationChangeEvent,
+  ColumnResizeEvent,
+  ColumnReorderEvent,
+} from "./types.ts";

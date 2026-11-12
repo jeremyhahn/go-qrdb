@@ -16,7 +16,10 @@
 -->
 <script lang="ts">
   import type { Client, DatabaseInfo } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import { CrudTable } from "../../components/core/CrudTable";
@@ -72,7 +75,8 @@
       const list: DatabaseInfo[] = await client.database.list();
       databases = [...list];
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch databases";
+      const msg =
+        err instanceof Error ? err.message : "Failed to fetch databases";
       showToast("error", msg);
     } finally {
       loading = false;
@@ -113,9 +117,16 @@
 </script>
 
 {#if showDetail}
-  <DatabaseDetail {client} databaseName={detailDatabaseName} onBack={handleDetailBack} />
+  <DatabaseDetail
+    {client}
+    databaseName={detailDatabaseName}
+    onBack={handleDetailBack}
+  />
 {:else}
-  <PageHeader title="Databases" description="Create, manage, and monitor databases" />
+  <PageHeader
+    title="Databases"
+    description="Create, manage, and monitor databases"
+  />
 
   <CrudTable
     title="Databases"

@@ -110,7 +110,8 @@
       appState = "app";
     } catch (err: unknown) {
       console.error("[App] initialize: error", err);
-      const msg = err instanceof Error ? err.message : "An unknown error occurred";
+      const msg =
+        err instanceof Error ? err.message : "An unknown error occurred";
       errorMessage = msg;
       showToast("error", msg);
       appState = "error";
@@ -195,10 +196,8 @@
       <p class="text-base-content/70 text-sm">Initializing QRDB...</p>
     </div>
   </div>
-
 {:else if appState === "init" && client !== null}
   <ServerInitWizard {client} onComplete={initialize} />
-
 {:else if appState === "unseal" && client !== null}
   <div class="flex min-h-screen items-center justify-center px-4">
     <div class="card bg-base-100 w-full max-w-md shadow-xl">
@@ -221,14 +220,16 @@
           <div class="mt-4 space-y-3 text-sm">
             {#if sealStatus !== null && sealStatus.sharesRequired > 0}
               <p class="text-base-content/80">
-                Unsealing needs <span class="font-mono">{sealStatus.sharesRequired}</span>
+                Unsealing needs <span class="font-mono"
+                  >{sealStatus.sharesRequired}</span
+                >
                 of <span class="font-mono">{sealStatus.sharesTotal}</span> share holders.
               </p>
             {/if}
             <p class="text-base-content/60">
-              Each holder submits from the qrdb CLI
-              (<code class="font-mono">qrdb barrier quorum submit --op unseal</code>)
-              or the desktop app. This page continues once the quorum is met.
+              Each holder submits from the qrdb CLI (<code class="font-mono"
+                >qrdb barrier quorum submit --op unseal</code
+              >) or the desktop app. This page continues once the quorum is met.
             </p>
             <button class="btn btn-outline btn-block" onclick={initialize}>
               Check again
@@ -279,7 +280,6 @@
       </div>
     </div>
   </div>
-
 {:else if appState === "error"}
   <div class="flex min-h-screen items-center justify-center">
     <div class="card bg-base-200 w-96 shadow-xl">
@@ -292,7 +292,6 @@
       </div>
     </div>
   </div>
-
 {:else if appState === "app" && client !== null}
   <MainApp {client} />
 {/if}

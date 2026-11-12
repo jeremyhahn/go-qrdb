@@ -15,8 +15,8 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { ImportFormat, JsonFormat } from './types.ts';
-  import { MAX_FILE_SIZE } from './types.ts';
+  import type { ImportFormat, JsonFormat } from "./types.ts";
+  import { MAX_FILE_SIZE } from "./types.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -53,46 +53,46 @@
 
   const acceptedExtensions = $derived.by(() => {
     switch (format) {
-      case 'csv':
-        return '.csv,.tsv,.txt';
-      case 'json':
-        return '.json,.ndjson,.jsonl';
-      case 'archive':
-        return '.zip,.tar.gz,.tgz';
+      case "csv":
+        return ".csv,.tsv,.txt";
+      case "json":
+        return ".json,.ndjson,.jsonl";
+      case "archive":
+        return ".zip,.tar.gz,.tgz";
       default:
-        return '*';
+        return "*";
     }
   });
 
   const formatLabel = $derived.by(() => {
     switch (format) {
-      case 'csv':
-        return 'CSV';
-      case 'json':
-        return jsonFormat ? `JSON (${jsonFormat.toUpperCase()})` : 'JSON';
-      case 'archive':
-        return 'Archive';
+      case "csv":
+        return "CSV";
+      case "json":
+        return jsonFormat ? `JSON (${jsonFormat.toUpperCase()})` : "JSON";
+      case "archive":
+        return "Archive";
       default:
-        return 'File';
+        return "File";
     }
   });
 
   const formatDescription = $derived.by(() => {
     switch (format) {
-      case 'csv':
-        return 'Accepts .csv, .tsv, or .txt files';
-      case 'json':
-        return 'Accepts .json, .ndjson, or .jsonl files';
-      case 'archive':
-        return 'Accepts .zip, .tar.gz, or .tgz files';
+      case "csv":
+        return "Accepts .csv, .tsv, or .txt files";
+      case "json":
+        return "Accepts .json, .ndjson, or .jsonl files";
+      case "archive":
+        return "Accepts .zip, .tar.gz, or .tgz files";
       default:
-        return '';
+        return "";
     }
   });
 
   const fileSizeFormatted = $derived.by(() => {
     if (file === null) {
-      return '';
+      return "";
     }
     return formatFileSize(file.size);
   });
@@ -105,14 +105,14 @@
 
   function formatFileSize(bytes: number): string {
     if (bytes === 0) {
-      return '0 Bytes';
+      return "0 Bytes";
     }
 
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const sizes = ["Bytes", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
 
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   }
 
   function validateFile(f: File): string | null {
@@ -123,7 +123,7 @@
 
     // Check file extension
     const fileName = f.name.toLowerCase();
-    const extensions = acceptedExtensions.split(',');
+    const extensions = acceptedExtensions.split(",");
     const hasValidExtension = extensions.some((ext) => {
       const trimmed = ext.trim();
       return fileName.endsWith(trimmed);
@@ -137,25 +137,25 @@
   }
 
   function getFileIcon(f: File): string {
-    const ext = f.name.split('.').pop()?.toLowerCase() ?? '';
+    const ext = f.name.split(".").pop()?.toLowerCase() ?? "";
 
-    if (['csv', 'tsv', 'txt'].includes(ext)) {
+    if (["csv", "tsv", "txt"].includes(ext)) {
       // Table/spreadsheet icon
-      return 'M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z';
+      return "M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z";
     }
 
-    if (['json', 'ndjson', 'jsonl'].includes(ext)) {
+    if (["json", "ndjson", "jsonl"].includes(ext)) {
       // Code/brackets icon
-      return 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4';
+      return "M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4";
     }
 
-    if (['zip', 'gz', 'tgz'].includes(ext)) {
+    if (["zip", "gz", "tgz"].includes(ext)) {
       // Archive icon
-      return 'M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4';
+      return "M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4";
     }
 
     // Generic file icon
-    return 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z';
+    return "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z";
   }
 
   // ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@
     }
 
     // Reset input so the same file can be selected again
-    target.value = '';
+    target.value = "";
   }
 
   function processFile(f: File): void {
@@ -227,7 +227,7 @@
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' || event.key === ' ') {
+    if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       handleBrowseClick();
     }
@@ -247,8 +247,8 @@
     <div
       class="relative flex min-h-[240px] cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed p-8 transition-all duration-200
         {dragOver
-          ? 'border-primary bg-primary/5'
-          : 'border-base-300 hover:border-primary/50 hover:bg-base-200/30'}"
+        ? 'border-primary bg-primary/5'
+        : 'border-base-300 hover:border-primary/50 hover:bg-base-200/30'}"
       role="button"
       tabindex="0"
       ondragover={handleDragOver}
@@ -302,12 +302,12 @@
     </div>
   {:else}
     <!-- File Selected -->
-    <div
-      class="card border-success bg-success/5 border-2"
-    >
+    <div class="card border-success bg-success/5 border-2">
       <div class="card-body flex-row items-center gap-4 p-4">
         <!-- File Icon -->
-        <div class="bg-success/20 flex h-14 w-14 shrink-0 items-center justify-center rounded-lg">
+        <div
+          class="bg-success/20 flex h-14 w-14 shrink-0 items-center justify-center rounded-lg"
+        >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             class="text-success h-7 w-7"

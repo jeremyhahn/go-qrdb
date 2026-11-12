@@ -18,14 +18,16 @@
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
   import { connManagerStore } from "$stores/connection-manager.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   let sqlMySQL: boolean = $state(dbWizardStore.sqlMySQL);
   let sqlPostgreSQL: boolean = $state(dbWizardStore.sqlPostgreSQL);
   let etcdEnabled: boolean = $state(dbWizardStore.etcdEnabled);
 
-  let isRaft = $derived(connManagerStore.activeServerMode === "raft" || dbWizardStore.serverMode === "raft");
+  let isRaft = $derived(
+    connManagerStore.activeServerMode === "raft" ||
+      dbWizardStore.serverMode === "raft",
+  );
 
   function handleNext(): void {
     dbWizardStore.sqlMySQL = sqlMySQL;
@@ -37,7 +39,9 @@
 
 <div class="flex flex-col items-center gap-6">
   <div class="text-center">
-    <h2 class="text-2xl font-bold">{isRaft ? "Protocols" : "SQL Wire Protocols"}</h2>
+    <h2 class="text-2xl font-bold">
+      {isRaft ? "Protocols" : "SQL Wire Protocols"}
+    </h2>
     <p class="text-base-content/70 mt-2">
       Enable compatible wire protocols for
       <span class="font-mono font-semibold">{dbWizardStore.name}</span>.
@@ -47,8 +51,8 @@
   <div class="w-full max-w-2xl space-y-6">
     <div class="bg-base-200 rounded-lg p-6">
       <p class="text-base-content/70 mb-4 text-sm">
-        Wire protocols allow external clients to connect using standard
-        database drivers. This is optional and can be changed later.
+        Wire protocols allow external clients to connect using standard database
+        drivers. This is optional and can be changed later.
       </p>
 
       <div class="flex flex-col gap-4">
@@ -97,8 +101,8 @@
               <span class="font-semibold">etcd</span>
               <span class="badge badge-sm badge-outline ml-1">Raft only</span>
               <p class="text-base-content/60 text-sm">
-                etcd-compatible API for this database's Raft group. Enables
-                etcd clients, watches, and leases over the distributed KV store.
+                etcd-compatible API for this database's Raft group. Enables etcd
+                clients, watches, and leases over the distributed KV store.
               </p>
             </div>
           </label>
@@ -123,8 +127,8 @@
           />
         </svg>
         <span class="text-sm">
-          No wire protocols selected. The database will be accessible via
-          the native REST/gRPC API and the built-in query browser.
+          No wire protocols selected. The database will be accessible via the
+          native REST/gRPC API and the built-in query browser.
         </span>
       </div>
     {/if}

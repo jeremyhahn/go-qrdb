@@ -28,25 +28,25 @@
 
 /** All possible step identifiers in the server setup wizard. */
 export type SetupWizardStep =
-    | 'welcome'
-    | 'serverMode'
-    | 'clusterConfig'
-    | 'globalBarrier'
-    | 'summary'
-    | 'applying'
-    | 'complete';
+  | "welcome"
+  | "serverMode"
+  | "clusterConfig"
+  | "globalBarrier"
+  | "summary"
+  | "applying"
+  | "complete";
 
 /** Whether the server runs as a single node or a distributed Raft cluster. */
-export type ServerMode = 'standalone' | 'clustered';
+export type ServerMode = "standalone" | "clustered";
 
 /** Peer discovery method for distributed clusters. */
-export type DiscoveryMethod = 'multicast' | 'dns' | 'static';
+export type DiscoveryMethod = "multicast" | "dns" | "static";
 
 /** Whether the cluster runs on localhost (dev) or across multiple hosts (prod). */
-export type ClusterType = 'local' | 'distributed';
+export type ClusterType = "local" | "distributed";
 
 /** Encryption barrier mode for the global server barrier. */
-export type BarrierMode = 'none' | 'passphrase' | 'shamir';
+export type BarrierMode = "none" | "passphrase" | "shamir";
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -54,46 +54,46 @@ export type BarrierMode = 'none' | 'passphrase' | 'shamir';
 
 /** Cluster configuration for clustered server mode. */
 export interface ClusterConfig {
-    /** Whether the cluster is a local dev cluster or a distributed production cluster. */
-    clusterType: ClusterType;
-    /** Peer discovery method (distributed clusters only). */
-    discoveryMethod: DiscoveryMethod;
-    /** Shared secret for multicast peer discovery. */
-    multicastSecret: string;
-    /** SRV DNS domain for DNS-based peer discovery. */
-    dnsDomain: string;
-    /** Static peer list in replicaID=host:port format (static discovery). */
-    staticPeers: string[];
-    /** Number of nodes in a local dev cluster (3, 5, or 7). */
-    localNodeCount: number;
-    /** Unique replica ID for this node within the cluster. */
-    replicaId: number;
-    /** QUIC transport address other nodes use to reach this replica. */
-    raftAddress: string;
+  /** Whether the cluster is a local dev cluster or a distributed production cluster. */
+  clusterType: ClusterType;
+  /** Peer discovery method (distributed clusters only). */
+  discoveryMethod: DiscoveryMethod;
+  /** Shared secret for multicast peer discovery. */
+  multicastSecret: string;
+  /** SRV DNS domain for DNS-based peer discovery. */
+  dnsDomain: string;
+  /** Static peer list in replicaID=host:port format (static discovery). */
+  staticPeers: string[];
+  /** Number of nodes in a local dev cluster (3, 5, or 7). */
+  localNodeCount: number;
+  /** Unique replica ID for this node within the cluster. */
+  replicaId: number;
+  /** QUIC transport address other nodes use to reach this replica. */
+  raftAddress: string;
 }
 
 /** Global encryption barrier configuration. */
 export interface BarrierConfig {
-    /** Barrier mode: none, passphrase, or shamir. */
-    mode: BarrierMode;
-    /** Passphrase for passphrase-based barrier. */
-    passphrase: string;
-    /** Minimum number of Shamir shares required to unseal (M). */
-    shamirThreshold: number;
-    /** Total number of Shamir shares generated (N). */
-    shamirShares: number;
+  /** Barrier mode: none, passphrase, or shamir. */
+  mode: BarrierMode;
+  /** Passphrase for passphrase-based barrier. */
+  passphrase: string;
+  /** Minimum number of Shamir shares required to unseal (M). */
+  shamirThreshold: number;
+  /** Total number of Shamir shares generated (N). */
+  shamirShares: number;
 }
 
 /** Shape of the reactive server setup wizard state. */
 export interface SetupWizardState {
-    /** Current active step in the wizard flow. */
-    currentStep: SetupWizardStep;
-    /** Server deployment mode: standalone or clustered. */
-    serverMode: ServerMode;
-    /** Cluster configuration (clustered mode only). */
-    clusterConfig: ClusterConfig;
-    /** Global encryption barrier configuration. */
-    barrierConfig: BarrierConfig;
+  /** Current active step in the wizard flow. */
+  currentStep: SetupWizardStep;
+  /** Server deployment mode: standalone or clustered. */
+  serverMode: ServerMode;
+  /** Cluster configuration (clustered mode only). */
+  clusterConfig: ClusterConfig;
+  /** Global encryption barrier configuration. */
+  barrierConfig: BarrierConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,32 +102,32 @@ export interface SetupWizardState {
 
 /** Step sequence for standalone (single-node) server mode. */
 const standaloneSteps: readonly SetupWizardStep[] = [
-    'welcome',
-    'serverMode',
-    'globalBarrier',
-    'summary',
-    'applying',
-    'complete',
+  "welcome",
+  "serverMode",
+  "globalBarrier",
+  "summary",
+  "applying",
+  "complete",
 ] as const;
 
 /** Step sequence for clustered (multi-node Raft) server mode. */
 const clusteredSteps: readonly SetupWizardStep[] = [
-    'welcome',
-    'serverMode',
-    'clusterConfig',
-    'globalBarrier',
-    'summary',
-    'applying',
-    'complete',
+  "welcome",
+  "serverMode",
+  "clusterConfig",
+  "globalBarrier",
+  "summary",
+  "applying",
+  "complete",
 ] as const;
 
 /**
  * Returns the active step sequence based on the current server mode.
  */
 export function activeSteps(): readonly SetupWizardStep[] {
-    return setupWizardStore.serverMode === 'clustered'
-        ? clusteredSteps
-        : standaloneSteps;
+  return setupWizardStore.serverMode === "clustered"
+    ? clusteredSteps
+    : standaloneSteps;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,30 +136,30 @@ export function activeSteps(): readonly SetupWizardStep[] {
 
 /** Default cluster configuration values. */
 const defaultClusterConfig: ClusterConfig = {
-    clusterType: 'local',
-    discoveryMethod: 'multicast',
-    multicastSecret: '',
-    dnsDomain: '',
-    staticPeers: [],
-    localNodeCount: 3,
-    replicaId: 1,
-    raftAddress: 'localhost:63001',
+  clusterType: "local",
+  discoveryMethod: "multicast",
+  multicastSecret: "",
+  dnsDomain: "",
+  staticPeers: [],
+  localNodeCount: 3,
+  replicaId: 1,
+  raftAddress: "localhost:63001",
 };
 
 /** Default barrier configuration values. */
 const defaultBarrierConfig: BarrierConfig = {
-    mode: 'passphrase',
-    passphrase: '',
-    shamirThreshold: 3,
-    shamirShares: 5,
+  mode: "passphrase",
+  passphrase: "",
+  shamirThreshold: 3,
+  shamirShares: 5,
 };
 
 /** Reactive server setup wizard state. */
 export const setupWizardStore: SetupWizardState = $state({
-    currentStep: 'welcome',
-    serverMode: 'standalone',
-    clusterConfig: { ...defaultClusterConfig },
-    barrierConfig: { ...defaultBarrierConfig },
+  currentStep: "welcome",
+  serverMode: "standalone",
+  clusterConfig: { ...defaultClusterConfig },
+  barrierConfig: { ...defaultBarrierConfig },
 });
 
 // ---------------------------------------------------------------------------
@@ -171,15 +171,15 @@ export const setupWizardStore: SetupWizardState = $state({
  * step sequence. No-op when on the final step.
  */
 export function nextStep(): void {
-    const steps = activeSteps();
-    const currentIndex = steps.indexOf(setupWizardStore.currentStep);
-    if (currentIndex === -1 || currentIndex >= steps.length - 1) {
-        return;
-    }
-    const next = steps[currentIndex + 1];
-    if (next !== undefined) {
-        setupWizardStore.currentStep = next;
-    }
+  const steps = activeSteps();
+  const currentIndex = steps.indexOf(setupWizardStore.currentStep);
+  if (currentIndex === -1 || currentIndex >= steps.length - 1) {
+    return;
+  }
+  const next = steps[currentIndex + 1];
+  if (next !== undefined) {
+    setupWizardStore.currentStep = next;
+  }
 }
 
 /**
@@ -187,15 +187,15 @@ export function nextStep(): void {
  * mode's step sequence. No-op when on the first step.
  */
 export function prevStep(): void {
-    const steps = activeSteps();
-    const currentIndex = steps.indexOf(setupWizardStore.currentStep);
-    if (currentIndex <= 0) {
-        return;
-    }
-    const prev = steps[currentIndex - 1];
-    if (prev !== undefined) {
-        setupWizardStore.currentStep = prev;
-    }
+  const steps = activeSteps();
+  const currentIndex = steps.indexOf(setupWizardStore.currentStep);
+  if (currentIndex <= 0) {
+    return;
+  }
+  const prev = steps[currentIndex - 1];
+  if (prev !== undefined) {
+    setupWizardStore.currentStep = prev;
+  }
 }
 
 /**
@@ -203,8 +203,8 @@ export function prevStep(): void {
  * configuration values.
  */
 export function resetSetupWizard(): void {
-    setupWizardStore.currentStep = 'welcome';
-    setupWizardStore.serverMode = 'standalone';
-    setupWizardStore.clusterConfig = { ...defaultClusterConfig };
-    setupWizardStore.barrierConfig = { ...defaultBarrierConfig };
+  setupWizardStore.currentStep = "welcome";
+  setupWizardStore.serverMode = "standalone";
+  setupWizardStore.clusterConfig = { ...defaultClusterConfig };
+  setupWizardStore.barrierConfig = { ...defaultBarrierConfig };
 }

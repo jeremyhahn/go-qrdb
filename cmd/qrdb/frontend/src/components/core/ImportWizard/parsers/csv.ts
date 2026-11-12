@@ -28,15 +28,15 @@ import type {
   ParseResult,
   CsvDelimiter,
   DelimiterDetection,
-} from '../types.ts';
-import { PREVIEW_ROWS } from '../types.ts';
+} from "../types.ts";
+import { PREVIEW_ROWS } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** Supported CSV delimiters in order of preference. */
-const DELIMITERS: readonly CsvDelimiter[] = [',', ';', '\t', '|'] as const;
+const DELIMITERS: readonly CsvDelimiter[] = [",", ";", "\t", "|"] as const;
 
 /** Minimum sample lines for delimiter detection. */
 const MIN_SAMPLE_LINES = 3;
@@ -58,18 +58,23 @@ const DETECTION_SAMPLE_SIZE = 8192;
  * @returns Detected delimiter with confidence score.
  */
 function detectDelimiter(content: string): DelimiterDetection {
-  const lines = content.split('\n').filter((line) => line.trim().length > 0);
-  const sampleLines = lines.slice(0, Math.min(lines.length, MIN_SAMPLE_LINES + 2));
+  const lines = content.split("\n").filter((line) => line.trim().length > 0);
+  const sampleLines = lines.slice(
+    0,
+    Math.min(lines.length, MIN_SAMPLE_LINES + 2),
+  );
 
   if (sampleLines.length < 2) {
-    return { delimiter: ',', confidence: 0.5 };
+    return { delimiter: ",", confidence: 0.5 };
   }
 
-  let bestDelimiter: CsvDelimiter = ',';
+  let bestDelimiter: CsvDelimiter = ",";
   let bestScore = 0;
 
   for (const delimiter of DELIMITERS) {
-    const counts = sampleLines.map((line) => countFieldsWithDelimiter(line, delimiter));
+    const counts = sampleLines.map((line) =>
+      countFieldsWithDelimiter(line, delimiter),
+    );
     const score = calculateConsistencyScore(counts);
 
     if (score > bestScore) {
@@ -87,7 +92,10 @@ function detectDelimiter(content: string): DelimiterDetection {
 /**
  * Counts fields in a line using a specific delimiter, respecting quotes.
  */
-function countFieldsWithDelimiter(line: string, delimiter: CsvDelimiter): number {
+function countFieldsWithDelimiter(
+  line: string,
+  delimiter: CsvDelimiter,
+): number {
   const fields = parseCSVLine(line, delimiter);
   return fields.length;
 }
@@ -132,7 +140,7 @@ function calculateConsistencyScore(counts: number[]): number {
  */
 function parseCSVLine(line: string, delimiter: CsvDelimiter): string[] {
   const fields: string[] = [];
-  let current = '';
+  let current = "";
   let inQuotes = false;
   let i = 0;
 
@@ -167,7 +175,7 @@ function parseCSVLine(line: string, delimiter: CsvDelimiter): string[] {
       } else if (char === delimiter) {
         // End of field
         fields.push(current.trim());
-        current = '';
+        current = "";
         i++;
         continue;
       } else {
@@ -192,7 +200,7 @@ function parseCSVLine(line: string, delimiter: CsvDelimiter): string[] {
  * @returns Array of parsed rows as string arrays.
  */
 function parseCSVContent(content: string, delimiter: CsvDelimiter): string[][] {
-  const lines = content.split('\n');
+  const lines = content.split("\n");
   const rows: string[][] = [];
 
   for (const line of lines) {
@@ -217,12 +225,12 @@ function parseCSVContent(content: string, delimiter: CsvDelimiter): string[][] {
  */
 function rowsToRecords(
   headers: string[],
-  rows: string[][]
+  rows: string[][],
 ): Record<string, string>[] {
   return rows.map((row) => {
     const record: Record<string, string> = {};
     headers.forEach((header, index) => {
-      record[header] = row[index] ?? '';
+      record[header] = row[index] ?? "";
     });
     return record;
   });
@@ -251,7 +259,7 @@ export async function parseCSV(file: File): Promise<ParseResult> {
     if (content.trim().length === 0) {
       return {
         success: false,
-        error: 'File is empty',
+        error: "File is empty",
       };
     }
 
@@ -265,7 +273,7 @@ export async function parseCSV(file: File): Promise<ParseResult> {
     if (allRows.length === 0) {
       return {
         success: false,
-        error: 'No valid rows found in file',
+        error: "No valid rows found in file",
       };
     }
 
@@ -274,7 +282,7 @@ export async function parseCSV(file: File): Promise<ParseResult> {
     if (headers === undefined || headers.length === 0) {
       return {
         success: false,
-        error: 'No columns found in file',
+        error: "No columns found in file",
       };
     }
 
@@ -288,7 +296,7 @@ export async function parseCSV(file: File): Promise<ParseResult> {
       headers,
       rows: records,
       totalRows: dataRows.length,
-      format: 'csv',
+      format: "csv",
     };
 
     return {
@@ -296,7 +304,8 @@ export async function parseCSV(file: File): Promise<ParseResult> {
       data: preview,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error parsing CSV';
+    const message =
+      error instanceof Error ? error.message : "Unknown error parsing CSV";
     return {
       success: false,
       error: `Failed to parse CSV: ${message}`,
@@ -315,7 +324,7 @@ export async function parseCSV(file: File): Promise<ParseResult> {
  */
 export async function parseCSVWithDelimiter(
   file: File,
-  delimiter: CsvDelimiter
+  delimiter: CsvDelimiter,
 ): Promise<ParseResult> {
   try {
     const content = await file.text();
@@ -323,7 +332,7 @@ export async function parseCSVWithDelimiter(
     if (content.trim().length === 0) {
       return {
         success: false,
-        error: 'File is empty',
+        error: "File is empty",
       };
     }
 
@@ -332,7 +341,7 @@ export async function parseCSVWithDelimiter(
     if (allRows.length === 0) {
       return {
         success: false,
-        error: 'No valid rows found in file',
+        error: "No valid rows found in file",
       };
     }
 
@@ -340,7 +349,7 @@ export async function parseCSVWithDelimiter(
     if (headers === undefined || headers.length === 0) {
       return {
         success: false,
-        error: 'No columns found in file',
+        error: "No columns found in file",
       };
     }
 
@@ -353,7 +362,7 @@ export async function parseCSVWithDelimiter(
       headers,
       rows: records,
       totalRows: dataRows.length,
-      format: 'csv',
+      format: "csv",
     };
 
     return {
@@ -361,7 +370,8 @@ export async function parseCSVWithDelimiter(
       data: preview,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error parsing CSV';
+    const message =
+      error instanceof Error ? error.message : "Unknown error parsing CSV";
     return {
       success: false,
       error: `Failed to parse CSV: ${message}`,
@@ -377,10 +387,12 @@ export async function parseCSVWithDelimiter(
  * @param file - CSV file to analyze.
  * @returns Promise resolving to delimiter detection result.
  */
-export async function detectCSVDelimiter(file: File): Promise<DelimiterDetection> {
+export async function detectCSVDelimiter(
+  file: File,
+): Promise<DelimiterDetection> {
   const reader = file.stream().getReader();
   const decoder = new TextDecoder();
-  let sample = '';
+  let sample = "";
 
   while (sample.length < DETECTION_SAMPLE_SIZE) {
     const { done, value } = await reader.read();
@@ -399,10 +411,10 @@ export async function detectCSVDelimiter(file: File): Promise<DelimiterDetection
  */
 export function getDelimiterName(delimiter: CsvDelimiter): string {
   const names: Record<CsvDelimiter, string> = {
-    ',': 'Comma',
-    ';': 'Semicolon',
-    '\t': 'Tab',
-    '|': 'Pipe',
+    ",": "Comma",
+    ";": "Semicolon",
+    "\t": "Tab",
+    "|": "Pipe",
   };
   return names[delimiter];
 }

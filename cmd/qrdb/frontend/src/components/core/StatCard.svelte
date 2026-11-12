@@ -39,7 +39,7 @@
   } = $props();
 
   const accentStyle = $derived(
-    accentColor ? `border-left: 3px solid ${accentColor}` : ""
+    accentColor ? `border-left: 3px solid ${accentColor}` : "",
   );
 </script>
 
@@ -53,7 +53,9 @@
     {/if}
 
     <div class="flex flex-col gap-1">
-      <span class="text-base-content/50 text-xs font-medium uppercase tracking-wider">
+      <span
+        class="text-base-content/50 text-xs font-medium uppercase tracking-wider"
+      >
         {label}
       </span>
 
@@ -65,9 +67,15 @@
       </div>
 
       {#if trend && trendValue}
-        {@const trendClass = trend === "up" ? "text-success" : trend === "down" ? "text-error" : "text-base-content/50"}
-        <div class="mt-0.5 flex items-center gap-1 text-xs font-medium {trendClass}">
-
+        {@const trendClass =
+          trend === "up"
+            ? "text-success"
+            : trend === "down"
+              ? "text-error"
+              : "text-base-content/50"}
+        <div
+          class="mt-0.5 flex items-center gap-1 text-xs font-medium {trendClass}"
+        >
           {#if trend === "up"}
             <TrendingUp class="h-3.5 w-3.5" />
           {:else if trend === "down"}

@@ -22,7 +22,10 @@
 -->
 <script lang="ts">
   import type { Client } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { onMount } from "svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
@@ -36,7 +39,9 @@
   type Pools = Client["volumePools"];
   type VolumePool = Awaited<ReturnType<Pools["list"]>>["pools"][number];
   type VolumePoolDetail = Awaited<ReturnType<Pools["get"]>>;
-  type VolumePoolTenant = Awaited<ReturnType<Pools["listTenants"]>>["tenants"][number];
+  type VolumePoolTenant = Awaited<
+    ReturnType<Pools["listTenants"]>
+  >["tenants"][number];
   type CreateVolumePoolRequest = Parameters<Pools["create"]>[0];
   type UpdateVolumePoolRequest = Parameters<Pools["update"]>[1];
 
@@ -106,13 +111,52 @@
   // ---------------------------------------------------------------------------
 
   const columns: Column<VolumePool>[] = [
-    { id: "name", header: "Name", accessor: "name", sortable: true, filterable: true, filterType: "text" },
-    { id: "provider", header: "Provider", accessor: "provider", sortable: true },
-    { id: "capacity", header: "Capacity", accessor: (row: VolumePool) => formatCapacity(row.capacityBytes), sortable: true },
-    { id: "reserved", header: "Reserved", accessor: (row: VolumePool) => formatBytes(row.reservedBytes), sortable: true },
-    { id: "used", header: "Used", accessor: (row: VolumePool) => formatBytes(row.usedBytes), sortable: true },
-    { id: "tenants", header: "Tenants", accessor: (row: VolumePool) => String(row.tenantCount), sortable: true, align: "center" },
-    { id: "overcommit", header: "Overcommit", accessor: (row: VolumePool) => `${row.overcommit}x`, sortable: true, align: "center" },
+    {
+      id: "name",
+      header: "Name",
+      accessor: "name",
+      sortable: true,
+      filterable: true,
+      filterType: "text",
+    },
+    {
+      id: "provider",
+      header: "Provider",
+      accessor: "provider",
+      sortable: true,
+    },
+    {
+      id: "capacity",
+      header: "Capacity",
+      accessor: (row: VolumePool) => formatCapacity(row.capacityBytes),
+      sortable: true,
+    },
+    {
+      id: "reserved",
+      header: "Reserved",
+      accessor: (row: VolumePool) => formatBytes(row.reservedBytes),
+      sortable: true,
+    },
+    {
+      id: "used",
+      header: "Used",
+      accessor: (row: VolumePool) => formatBytes(row.usedBytes),
+      sortable: true,
+    },
+    {
+      id: "tenants",
+      header: "Tenants",
+      accessor: (row: VolumePool) => String(row.tenantCount),
+      sortable: true,
+      align: "center",
+    },
+    {
+      id: "overcommit",
+      header: "Overcommit",
+      accessor: (row: VolumePool) => `${row.overcommit}x`,
+      sortable: true,
+      align: "center",
+    },
     {
       id: "nodes",
       header: "Nodes (ready/total)",
@@ -161,9 +205,15 @@
     const req: CreateVolumePoolRequest = {
       name,
       ...(createProvider.trim() ? { provider: createProvider.trim() } : {}),
-      ...(createDescription.trim() ? { description: createDescription.trim() } : {}),
-      ...(fieldText(createCapacity) ? { capacityBytes: Number(createCapacity) } : {}),
-      ...(fieldText(createOvercommit) ? { overcommit: Number(createOvercommit) } : {}),
+      ...(createDescription.trim()
+        ? { description: createDescription.trim() }
+        : {}),
+      ...(fieldText(createCapacity)
+        ? { capacityBytes: Number(createCapacity) }
+        : {}),
+      ...(fieldText(createOvercommit)
+        ? { overcommit: Number(createOvercommit) }
+        : {}),
     };
     try {
       creating = true;
@@ -230,11 +280,18 @@
       capacityBytes?: number;
       overcommit?: number;
     } = {};
-    if (editDescription !== (detail.description ?? "")) req.description = editDescription;
-    if (fieldText(editCapacity) !== "" && Number(editCapacity) !== detail.capacityBytes) {
+    if (editDescription !== (detail.description ?? ""))
+      req.description = editDescription;
+    if (
+      fieldText(editCapacity) !== "" &&
+      Number(editCapacity) !== detail.capacityBytes
+    ) {
       req.capacityBytes = Number(editCapacity);
     }
-    if (fieldText(editOvercommit) !== "" && Number(editOvercommit) !== detail.overcommit) {
+    if (
+      fieldText(editOvercommit) !== "" &&
+      Number(editOvercommit) !== detail.overcommit
+    ) {
       req.overcommit = Number(editOvercommit);
     }
     if (Object.keys(req).length === 0) {
@@ -243,7 +300,10 @@
     }
     try {
       saving = true;
-      await client.volumePools.update(detail.name, req as UpdateVolumePoolRequest);
+      await client.volumePools.update(
+        detail.name,
+        req as UpdateVolumePoolRequest,
+      );
       showToast("success", `Volume pool "${detail.name}" updated`);
       await openDetail(detail.name);
     } catch (err: unknown) {
@@ -279,10 +339,16 @@
 {#if detail}
   <div class="flex flex-col gap-6" data-testid="volume-pool-detail">
     <div class="flex items-center gap-3">
-      <button class="btn btn-ghost btn-sm" data-testid="volume-pool-back" onclick={closeDetail}>
+      <button
+        class="btn btn-ghost btn-sm"
+        data-testid="volume-pool-back"
+        onclick={closeDetail}
+      >
         ← Back
       </button>
-      <h2 class="text-xl font-semibold" data-testid="volume-pool-detail-name">{detail.name}</h2>
+      <h2 class="text-xl font-semibold" data-testid="volume-pool-detail-name">
+        {detail.name}
+      </h2>
       <span class="badge badge-outline">{detail.provider}</span>
       <div class="flex-1"></div>
       <button
@@ -297,11 +363,15 @@
     <div class="stats shadow" data-testid="volume-pool-stats">
       <div class="stat">
         <div class="stat-title">Capacity</div>
-        <div class="stat-value text-lg" data-testid="volume-pool-capacity">{formatCapacity(detail.capacityBytes)}</div>
+        <div class="stat-value text-lg" data-testid="volume-pool-capacity">
+          {formatCapacity(detail.capacityBytes)}
+        </div>
       </div>
       <div class="stat">
         <div class="stat-title">Reserved</div>
-        <div class="stat-value text-lg">{formatBytes(detail.reservedBytes)}</div>
+        <div class="stat-value text-lg">
+          {formatBytes(detail.reservedBytes)}
+        </div>
       </div>
       <div class="stat">
         <div class="stat-title">Used</div>
@@ -309,7 +379,9 @@
       </div>
       <div class="stat">
         <div class="stat-title">Overcommit</div>
-        <div class="stat-value text-lg" data-testid="volume-pool-overcommit">{detail.overcommit}x</div>
+        <div class="stat-value text-lg" data-testid="volume-pool-overcommit">
+          {detail.overcommit}x
+        </div>
       </div>
       <div class="stat">
         <div class="stat-title">Tenants</div>
@@ -317,7 +389,9 @@
       </div>
     </div>
     {#if detail.description}
-      <p class="text-sm opacity-80" data-testid="volume-pool-description">{detail.description}</p>
+      <p class="text-sm opacity-80" data-testid="volume-pool-description">
+        {detail.description}
+      </p>
     {/if}
 
     <div class="card bg-base-200">
@@ -325,20 +399,36 @@
         <h3 class="card-title text-base">Node reports</h3>
         <table class="table table-sm" data-testid="volume-pool-nodes">
           <thead>
-            <tr><th>Node</th><th>State</th><th>Size</th><th>Free</th><th>Detail</th><th>Reported</th></tr>
+            <tr
+              ><th>Node</th><th>State</th><th>Size</th><th>Free</th><th
+                >Detail</th
+              ><th>Reported</th></tr
+            >
           </thead>
           <tbody>
             {#each detail.nodeReports ?? [] as r (r.nodeId)}
               <tr>
                 <td>{r.nodeId}</td>
                 <td>{r.state}</td>
-                <td>{r.sizeBytes !== undefined ? formatBytes(r.sizeBytes) : "—"}</td>
-                <td>{r.freeBytes !== undefined ? formatBytes(r.freeBytes) : "—"}</td>
+                <td
+                  >{r.sizeBytes !== undefined
+                    ? formatBytes(r.sizeBytes)
+                    : "—"}</td
+                >
+                <td
+                  >{r.freeBytes !== undefined
+                    ? formatBytes(r.freeBytes)
+                    : "—"}</td
+                >
                 <td>{r.detail ?? ""}</td>
                 <td>{r.reportedAt ?? ""}</td>
               </tr>
             {:else}
-              <tr><td colspan="6" class="text-center opacity-60">No node has reported this pool.</td></tr>
+              <tr
+                ><td colspan="6" class="text-center opacity-60"
+                  >No node has reported this pool.</td
+                ></tr
+              >
             {/each}
           </tbody>
         </table>
@@ -359,36 +449,81 @@
                 <td>{formatBytes(t.reservedBytes)}</td>
               </tr>
             {:else}
-              <tr><td colspan="2" class="text-center opacity-60">No tenants are assigned to this pool.</td></tr>
+              <tr
+                ><td colspan="2" class="text-center opacity-60"
+                  >No tenants are assigned to this pool.</td
+                ></tr
+              >
             {/each}
           </tbody>
         </table>
         {#if tenantsNextToken}
-          <button class="btn btn-sm btn-ghost self-start" data-testid="volume-pool-tenants-more" onclick={loadMoreTenants}>
+          <button
+            class="btn btn-sm btn-ghost self-start"
+            data-testid="volume-pool-tenants-more"
+            onclick={loadMoreTenants}
+          >
             Load more
           </button>
         {/if}
       </div>
     </div>
 
-    <form class="card bg-base-200" data-testid="volume-pool-edit-form" onsubmit={submitUpdate}>
+    <form
+      class="card bg-base-200"
+      data-testid="volume-pool-edit-form"
+      onsubmit={submitUpdate}
+    >
       <div class="card-body gap-3">
         <h3 class="card-title text-base">Edit pool</h3>
-        <p class="text-xs opacity-70">The provider is immutable. Lowering capacity below the current reservation is refused.</p>
+        <p class="text-xs opacity-70">
+          The provider is immutable. Lowering capacity below the current
+          reservation is refused.
+        </p>
         <label class="form-control" for="volume-pool-edit-description">
-          <div class="label"><span class="label-text font-semibold">Description</span></div>
-          <input id="volume-pool-edit-description" class="input input-bordered input-sm" bind:value={editDescription} />
+          <div class="label">
+            <span class="label-text font-semibold">Description</span>
+          </div>
+          <input
+            id="volume-pool-edit-description"
+            class="input input-bordered input-sm"
+            bind:value={editDescription}
+          />
         </label>
         <label class="form-control" for="volume-pool-edit-capacity">
-          <div class="label"><span class="label-text font-semibold">Capacity (bytes, 0 = derived)</span></div>
-          <input id="volume-pool-edit-capacity" type="number" min="0" class="input input-bordered input-sm" bind:value={editCapacity} />
+          <div class="label">
+            <span class="label-text font-semibold"
+              >Capacity (bytes, 0 = derived)</span
+            >
+          </div>
+          <input
+            id="volume-pool-edit-capacity"
+            type="number"
+            min="0"
+            class="input input-bordered input-sm"
+            bind:value={editCapacity}
+          />
         </label>
         <label class="form-control" for="volume-pool-edit-overcommit">
-          <div class="label"><span class="label-text font-semibold">Overcommit (≥ 1.0)</span></div>
-          <input id="volume-pool-edit-overcommit" type="number" min="1" step="0.1" class="input input-bordered input-sm" bind:value={editOvercommit} />
+          <div class="label">
+            <span class="label-text font-semibold">Overcommit (≥ 1.0)</span>
+          </div>
+          <input
+            id="volume-pool-edit-overcommit"
+            type="number"
+            min="1"
+            step="0.1"
+            class="input input-bordered input-sm"
+            bind:value={editOvercommit}
+          />
         </label>
         <div class="card-actions justify-end">
-          <button type="submit" class="btn btn-primary btn-sm" data-testid="volume-pool-save" disabled={saving}>
+          <button
+            type="submit"
+            class="btn btn-primary btn-sm"
+            data-testid="volume-pool-save"
+            disabled={saving}
+          >
             Save Changes
           </button>
         </div>
@@ -406,38 +541,95 @@
     />
   </div>
 {:else}
-  <PageHeader title="Volume Pools" description="Manage the cluster's volume pool catalog" />
+  <PageHeader
+    title="Volume Pools"
+    description="Manage the cluster's volume pool catalog"
+  />
   <div class="flex flex-col gap-6">
     {#if showCreate}
-      <form class="card bg-base-200" data-testid="volume-pool-create-form" onsubmit={submitCreate}>
+      <form
+        class="card bg-base-200"
+        data-testid="volume-pool-create-form"
+        onsubmit={submitCreate}
+      >
         <div class="card-body gap-3">
           <h3 class="card-title text-base">Create volume pool</h3>
           <p class="text-xs opacity-70">
-            The pool is not served until each node maps it in its own configuration and restarts or reloads.
+            The pool is not served until each node maps it in its own
+            configuration and restarts or reloads.
           </p>
           <label class="form-control" for="volume-pool-name">
-            <div class="label"><span class="label-text font-semibold">Name</span></div>
-            <input id="volume-pool-name" class="input input-bordered input-sm" bind:value={createName} required />
+            <div class="label">
+              <span class="label-text font-semibold">Name</span>
+            </div>
+            <input
+              id="volume-pool-name"
+              class="input input-bordered input-sm"
+              bind:value={createName}
+              required
+            />
           </label>
           <label class="form-control" for="volume-pool-provider">
-            <div class="label"><span class="label-text font-semibold">Provider</span></div>
-            <input id="volume-pool-provider" class="input input-bordered input-sm" bind:value={createProvider} />
+            <div class="label">
+              <span class="label-text font-semibold">Provider</span>
+            </div>
+            <input
+              id="volume-pool-provider"
+              class="input input-bordered input-sm"
+              bind:value={createProvider}
+            />
           </label>
           <label class="form-control" for="volume-pool-description">
-            <div class="label"><span class="label-text font-semibold">Description</span></div>
-            <input id="volume-pool-description" class="input input-bordered input-sm" bind:value={createDescription} />
+            <div class="label">
+              <span class="label-text font-semibold">Description</span>
+            </div>
+            <input
+              id="volume-pool-description"
+              class="input input-bordered input-sm"
+              bind:value={createDescription}
+            />
           </label>
           <label class="form-control" for="volume-pool-capacity">
-            <div class="label"><span class="label-text font-semibold">Capacity (bytes, empty = derived)</span></div>
-            <input id="volume-pool-capacity" type="number" min="0" class="input input-bordered input-sm" bind:value={createCapacity} />
+            <div class="label">
+              <span class="label-text font-semibold"
+                >Capacity (bytes, empty = derived)</span
+              >
+            </div>
+            <input
+              id="volume-pool-capacity"
+              type="number"
+              min="0"
+              class="input input-bordered input-sm"
+              bind:value={createCapacity}
+            />
           </label>
           <label class="form-control" for="volume-pool-overcommit">
-            <div class="label"><span class="label-text font-semibold">Overcommit (≥ 1.0, empty = 1.0)</span></div>
-            <input id="volume-pool-overcommit" type="number" min="1" step="0.1" class="input input-bordered input-sm" bind:value={createOvercommit} />
+            <div class="label">
+              <span class="label-text font-semibold"
+                >Overcommit (≥ 1.0, empty = 1.0)</span
+              >
+            </div>
+            <input
+              id="volume-pool-overcommit"
+              type="number"
+              min="1"
+              step="0.1"
+              class="input input-bordered input-sm"
+              bind:value={createOvercommit}
+            />
           </label>
           <div class="card-actions justify-end">
-            <button type="button" class="btn btn-ghost btn-sm" onclick={() => (showCreate = false)}>Cancel</button>
-            <button type="submit" class="btn btn-primary btn-sm" data-testid="volume-pool-create-submit" disabled={creating}>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              onclick={() => (showCreate = false)}>Cancel</button
+            >
+            <button
+              type="submit"
+              class="btn btn-primary btn-sm"
+              data-testid="volume-pool-create-submit"
+              disabled={creating}
+            >
               Create Pool
             </button>
           </div>
@@ -455,7 +647,8 @@
       showDelete={false}
       createLabel="Create Pool"
       oncreateclick={openCreate}
-      onrowclick={(event: RowClickEvent<VolumePool>) => void openDetail(event.row.name)}
+      onrowclick={(event: RowClickEvent<VolumePool>) =>
+        void openDetail(event.row.name)}
       rowKey="name"
       emptyMessage="No volume pools in the catalog."
     />

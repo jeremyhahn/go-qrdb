@@ -31,22 +31,22 @@
  * Each value maps 1:1 to an existing admin view component.
  */
 export type AdminView =
-    | 'dashboard'
-    | 'cluster'
-    | 'topology'
-    | 'seal-manager'
-    | 'tenants'
-    | 'users'
-    | 'roles'
-    | 'volume-pools'
-    | 'certificates'
-    | 'databases'
-    | 'backups'
-    | 'rebalance'
-    | 'credentials'
-    | 'audit-log'
-    | 'daemon'
-    | 'settings';
+  | "dashboard"
+  | "cluster"
+  | "topology"
+  | "seal-manager"
+  | "tenants"
+  | "users"
+  | "roles"
+  | "volume-pools"
+  | "certificates"
+  | "databases"
+  | "backups"
+  | "rebalance"
+  | "credentials"
+  | "audit-log"
+  | "daemon"
+  | "settings";
 
 /**
  * The set of per-database tool views.
@@ -55,18 +55,18 @@ export type AdminView =
  * filtering.
  */
 export type DbTool =
-    | 'data'
-    | 'collections'
-    | 'indexes'
-    | 'transactions'
-    | 'batch'
-    | 'watch'
-    | 'leases'
-    | 'locks'
-    | 'timeseries'
-    | 'vector'
-    | 'sql'
-    | 'db-settings';
+  | "data"
+  | "collections"
+  | "indexes"
+  | "transactions"
+  | "batch"
+  | "watch"
+  | "leases"
+  | "locks"
+  | "timeseries"
+  | "vector"
+  | "sql"
+  | "db-settings";
 
 /**
  * A discriminated union describing what the content area is currently
@@ -79,66 +79,75 @@ export type DbTool =
  *   create-database - The new-database wizard is open for a server.
  */
 export type NavContext =
-    | { readonly type: 'none' }
-    | { readonly type: 'server-admin'; readonly profileId: string; readonly view: AdminView }
-    | { readonly type: 'database'; readonly profileId: string; readonly dbName: string; readonly tool: DbTool }
-    | { readonly type: 'create-database'; readonly profileId: string };
+  | { readonly type: "none" }
+  | {
+      readonly type: "server-admin";
+      readonly profileId: string;
+      readonly view: AdminView;
+    }
+  | {
+      readonly type: "database";
+      readonly profileId: string;
+      readonly dbName: string;
+      readonly tool: DbTool;
+    }
+  | { readonly type: "create-database"; readonly profileId: string };
 
 /** Human-readable labels for admin views used in breadcrumbs and tooltips. */
 export const ADMIN_VIEW_LABELS: Readonly<Record<AdminView, string>> = {
-    'dashboard': 'Dashboard',
-    'cluster': 'Cluster',
-    'topology': 'Topology',
-    'seal-manager': 'Seal Manager',
-    'tenants': 'Tenants',
-    'users': 'Users',
-    'roles': 'Roles',
-    'volume-pools': 'Volume Pools',
-    'certificates': 'Certificates',
-    'databases': 'Databases',
-    'backups': 'Backups',
-    'rebalance': 'Rebalance',
-    'credentials': 'Credentials',
-    'audit-log': 'Audit Log',
-    'daemon': 'Daemon',
-    'settings': 'Settings',
+  dashboard: "Dashboard",
+  cluster: "Cluster",
+  topology: "Topology",
+  "seal-manager": "Seal Manager",
+  tenants: "Tenants",
+  users: "Users",
+  roles: "Roles",
+  "volume-pools": "Volume Pools",
+  certificates: "Certificates",
+  databases: "Databases",
+  backups: "Backups",
+  rebalance: "Rebalance",
+  credentials: "Credentials",
+  "audit-log": "Audit Log",
+  daemon: "Daemon",
+  settings: "Settings",
 } as const;
 
 /** Human-readable labels for database tool views. */
 export const DB_TOOL_LABELS: Readonly<Record<DbTool, string>> = {
-    'data': 'Data',
-    'collections': 'Collections',
-    'indexes': 'Indexes',
-    'transactions': 'Transactions',
-    'batch': 'Batch',
-    'watch': 'Watch',
-    'leases': 'Leases',
-    'locks': 'Locks',
-    'timeseries': 'Time Series',
-    'vector': 'Vectors',
-    'sql': 'SQL Browser',
-    'db-settings': 'Settings',
+  data: "Data",
+  collections: "Collections",
+  indexes: "Indexes",
+  transactions: "Transactions",
+  batch: "Batch",
+  watch: "Watch",
+  leases: "Leases",
+  locks: "Locks",
+  timeseries: "Time Series",
+  vector: "Vectors",
+  sql: "SQL Browser",
+  "db-settings": "Settings",
 } as const;
 
 /** Shape of the full reactive navigation state. */
 export interface NavigationState {
-    /** The current navigation context driving the content area. */
-    context: NavContext;
-    /** Set of profile IDs whose server tree nodes are expanded in the sidebar. */
-    expandedServers: ReadonlySet<string>;
-    /** Whether the primary sidebar is collapsed to icon-rail mode. */
-    sidebarCollapsed: boolean;
-    /**
-     * The profile ID to restore to after a create-database wizard is cancelled.
-     * Used to return to the previous context without losing server state.
-     */
-    priorProfileId: string;
-    /**
-     * The tool that was active before the create-database wizard opened,
-     * used to restore the database workspace if the wizard is cancelled.
-     */
-    priorDbName: string;
-    priorTool: DbTool;
+  /** The current navigation context driving the content area. */
+  context: NavContext;
+  /** Set of profile IDs whose server tree nodes are expanded in the sidebar. */
+  expandedServers: ReadonlySet<string>;
+  /** Whether the primary sidebar is collapsed to icon-rail mode. */
+  sidebarCollapsed: boolean;
+  /**
+   * The profile ID to restore to after a create-database wizard is cancelled.
+   * Used to return to the previous context without losing server state.
+   */
+  priorProfileId: string;
+  /**
+   * The tool that was active before the create-database wizard opened,
+   * used to restore the database workspace if the wizard is cancelled.
+   */
+  priorDbName: string;
+  priorTool: DbTool;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +156,12 @@ export interface NavigationState {
 
 /** Reactive navigation state. Mutated only through the exported functions. */
 export const navStore: NavigationState = $state({
-    context: { type: 'none' },
-    expandedServers: new Set<string>(),
-    sidebarCollapsed: false,
-    priorProfileId: '',
-    priorDbName: '',
-    priorTool: 'data',
+  context: { type: "none" },
+  expandedServers: new Set<string>(),
+  sidebarCollapsed: false,
+  priorProfileId: "",
+  priorDbName: "",
+  priorTool: "data",
 });
 
 // ---------------------------------------------------------------------------
@@ -168,8 +177,11 @@ export const navStore: NavigationState = $state({
  * @param profileId - The profile whose admin view to show.
  * @param view      - The admin view to activate. Defaults to 'dashboard'.
  */
-export function navigateToAdmin(profileId: string, view: AdminView = 'dashboard'): void {
-    navStore.context = { type: 'server-admin', profileId, view };
+export function navigateToAdmin(
+  profileId: string,
+  view: AdminView = "dashboard",
+): void {
+  navStore.context = { type: "server-admin", profileId, view };
 }
 
 /**
@@ -183,17 +195,21 @@ export function navigateToAdmin(profileId: string, view: AdminView = 'dashboard'
  * @param dbName    - The database name.
  * @param tool      - The tool to activate. Defaults to 'data'.
  */
-export function navigateToDatabase(profileId: string, dbName: string, tool: DbTool = 'data'): void {
-    const ctx = navStore.context;
-    // Preserve current tool when re-clicking the already-active database.
-    if (
-        ctx.type === 'database' &&
-        ctx.profileId === profileId &&
-        ctx.dbName === dbName
-    ) {
-        return;
-    }
-    navStore.context = { type: 'database', profileId, dbName, tool };
+export function navigateToDatabase(
+  profileId: string,
+  dbName: string,
+  tool: DbTool = "data",
+): void {
+  const ctx = navStore.context;
+  // Preserve current tool when re-clicking the already-active database.
+  if (
+    ctx.type === "database" &&
+    ctx.profileId === profileId &&
+    ctx.dbName === dbName
+  ) {
+    return;
+  }
+  navStore.context = { type: "database", profileId, dbName, tool };
 }
 
 /**
@@ -204,9 +220,14 @@ export function navigateToDatabase(profileId: string, dbName: string, tool: DbTo
  * @param tool - The tool to activate.
  */
 export function selectDbTool(tool: DbTool): void {
-    const ctx = navStore.context;
-    if (ctx.type !== 'database') return;
-    navStore.context = { type: 'database', profileId: ctx.profileId, dbName: ctx.dbName, tool };
+  const ctx = navStore.context;
+  if (ctx.type !== "database") return;
+  navStore.context = {
+    type: "database",
+    profileId: ctx.profileId,
+    dbName: ctx.dbName,
+    tool,
+  };
 }
 
 /**
@@ -216,16 +237,19 @@ export function selectDbTool(tool: DbTool): void {
  * @param profileId - The profile to create the database under.
  */
 export function navigateToCreateDatabase(profileId: string): void {
-    const ctx = navStore.context;
-    navStore.priorProfileId = ctx.type !== 'none' ? (ctx as { profileId?: string }).profileId ?? '' : '';
-    if (ctx.type === 'database') {
-        navStore.priorDbName = ctx.dbName;
-        navStore.priorTool = ctx.tool;
-    } else {
-        navStore.priorDbName = '';
-        navStore.priorTool = 'data';
-    }
-    navStore.context = { type: 'create-database', profileId };
+  const ctx = navStore.context;
+  navStore.priorProfileId =
+    ctx.type !== "none"
+      ? ((ctx as { profileId?: string }).profileId ?? "")
+      : "";
+  if (ctx.type === "database") {
+    navStore.priorDbName = ctx.dbName;
+    navStore.priorTool = ctx.tool;
+  } else {
+    navStore.priorDbName = "";
+    navStore.priorTool = "data";
+  }
+  navStore.context = { type: "create-database", profileId };
 }
 
 /**
@@ -234,21 +258,30 @@ export function navigateToCreateDatabase(profileId: string): void {
  * tool are restored. Otherwise falls back to the server dashboard.
  */
 export function cancelCreateDatabase(): void {
-    const { priorProfileId, priorDbName, priorTool } = navStore;
-    if (priorDbName !== '' && priorProfileId !== '') {
-        navStore.context = { type: 'database', profileId: priorProfileId, dbName: priorDbName, tool: priorTool };
-    } else if (priorProfileId !== '') {
-        navStore.context = { type: 'server-admin', profileId: priorProfileId, view: 'dashboard' };
-    } else {
-        navStore.context = { type: 'none' };
-    }
+  const { priorProfileId, priorDbName, priorTool } = navStore;
+  if (priorDbName !== "" && priorProfileId !== "") {
+    navStore.context = {
+      type: "database",
+      profileId: priorProfileId,
+      dbName: priorDbName,
+      tool: priorTool,
+    };
+  } else if (priorProfileId !== "") {
+    navStore.context = {
+      type: "server-admin",
+      profileId: priorProfileId,
+      view: "dashboard",
+    };
+  } else {
+    navStore.context = { type: "none" };
+  }
 }
 
 /**
  * Transitions to the no-context state, shown when no server is connected.
  */
 export function navigateToNone(): void {
-    navStore.context = { type: 'none' };
+  navStore.context = { type: "none" };
 }
 
 /**
@@ -257,13 +290,13 @@ export function navigateToNone(): void {
  * @param profileId - The profile whose tree node to toggle.
  */
 export function toggleServerExpanded(profileId: string): void {
-    const next = new Set(navStore.expandedServers);
-    if (next.has(profileId)) {
-        next.delete(profileId);
-    } else {
-        next.add(profileId);
-    }
-    navStore.expandedServers = next;
+  const next = new Set(navStore.expandedServers);
+  if (next.has(profileId)) {
+    next.delete(profileId);
+  } else {
+    next.add(profileId);
+  }
+  navStore.expandedServers = next;
 }
 
 /**
@@ -274,10 +307,10 @@ export function toggleServerExpanded(profileId: string): void {
  * @param profileId - The profile to expand.
  */
 export function expandServer(profileId: string): void {
-    if (navStore.expandedServers.has(profileId)) return;
-    const next = new Set(navStore.expandedServers);
-    next.add(profileId);
-    navStore.expandedServers = next;
+  if (navStore.expandedServers.has(profileId)) return;
+  const next = new Set(navStore.expandedServers);
+  next.add(profileId);
+  navStore.expandedServers = next;
 }
 
 /**
@@ -287,19 +320,22 @@ export function expandServer(profileId: string): void {
  * @param profileId - The profile to collapse and remove from active context.
  */
 export function collapseServer(profileId: string): void {
-    const next = new Set(navStore.expandedServers);
-    next.delete(profileId);
-    navStore.expandedServers = next;
-    // If this server owns the current context, reset to none.
-    const ctx = navStore.context;
-    if (ctx.type !== 'none' && (ctx as { profileId?: string }).profileId === profileId) {
-        navStore.context = { type: 'none' };
-    }
+  const next = new Set(navStore.expandedServers);
+  next.delete(profileId);
+  navStore.expandedServers = next;
+  // If this server owns the current context, reset to none.
+  const ctx = navStore.context;
+  if (
+    ctx.type !== "none" &&
+    (ctx as { profileId?: string }).profileId === profileId
+  ) {
+    navStore.context = { type: "none" };
+  }
 }
 
 /**
  * Toggles the primary sidebar between expanded and icon-rail (collapsed) mode.
  */
 export function toggleSidebar(): void {
-    navStore.sidebarCollapsed = !navStore.sidebarCollapsed;
+  navStore.sidebarCollapsed = !navStore.sidebarCollapsed;
 }

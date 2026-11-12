@@ -45,7 +45,8 @@
   // Props
   // ---------------------------------------------------------------------------
 
-  let { client, database }: { client: Client; database: DatabaseInfo } = $props();
+  let { client, database }: { client: Client; database: DatabaseInfo } =
+    $props();
 
   // Data-engine views operate on a client scoped to this database, so every
   // KV/MVCC/transaction/batch/watch/lease/index/time-series/vector request
@@ -66,23 +67,23 @@
 
   /** Tabs for every database; each database exposes every engine. */
   const DB_TABS: readonly TabDef[] = [
-    { id: 'data',         label: 'Data' },
-    { id: 'collections',  label: 'Collections' },
-    { id: 'indexes',      label: 'Indexes' },
-    { id: 'transactions', label: 'Transactions' },
-    { id: 'batch',        label: 'Batch' },
-    { id: 'watch',        label: 'Watch' },
-    { id: 'leases',       label: 'Leases' },
-    { id: 'locks',        label: 'Locks' },
-    { id: 'timeseries',   label: 'Time Series' },
-    { id: 'vector',       label: 'Vectors' },
+    { id: "data", label: "Data" },
+    { id: "collections", label: "Collections" },
+    { id: "indexes", label: "Indexes" },
+    { id: "transactions", label: "Transactions" },
+    { id: "batch", label: "Batch" },
+    { id: "watch", label: "Watch" },
+    { id: "leases", label: "Leases" },
+    { id: "locks", label: "Locks" },
+    { id: "timeseries", label: "Time Series" },
+    { id: "vector", label: "Vectors" },
   ];
 
   /** SQL Browser tab — injected when SQL protocols are enabled. */
-  const SQL_TAB: TabDef = { id: 'sql', label: 'SQL Browser' };
+  const SQL_TAB: TabDef = { id: "sql", label: "SQL Browser" };
 
   /** Settings tab — always last. */
-  const SETTINGS_TAB: TabDef = { id: 'db-settings', label: 'Settings' };
+  const SETTINGS_TAB: TabDef = { id: "db-settings", label: "Settings" };
 
   // ---------------------------------------------------------------------------
   // Derived: active tool and visible tabs
@@ -90,12 +91,13 @@
 
   const activeTool = $derived.by((): DbTool => {
     const ctx = navStore.context;
-    if (ctx.type !== 'database') return 'data';
+    if (ctx.type !== "database") return "data";
     return (ctx as { tool: DbTool }).tool;
   });
 
   const hasSql = $derived(
-    (database.protocol?.mysql ?? false) || (database.protocol?.postgresql ?? false),
+    (database.protocol?.mysql ?? false) ||
+      (database.protocol?.postgresql ?? false),
   );
 
   const visibleTabs = $derived.by((): readonly TabDef[] => {
@@ -107,7 +109,6 @@
 </script>
 
 <div class="flex h-full flex-col overflow-hidden">
-
   <!-- Horizontal tab bar. The nav wraps the tablist for landmark semantics;
        the inner div carries role="tablist" to satisfy ARIA constraints. -->
   <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
@@ -121,8 +122,8 @@
       <button
         class="-mb-px shrink-0 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors duration-150
           {isActive
-            ? 'border-primary text-primary'
-            : 'border-transparent text-base-content/55 hover:text-base-content/80 hover:border-base-content/20'}"
+          ? 'border-primary text-primary'
+          : 'border-transparent text-base-content/55 hover:text-base-content/80 hover:border-base-content/20'}"
         role="tab"
         aria-selected={isActive}
         aria-controls="tabpanel-{tab.id}"
@@ -134,32 +135,35 @@
   </nav>
 
   <!-- Tool view -->
-  <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
-    {#if activeTool === 'data'}
+  <div
+    class="flex-1 overflow-y-auto p-6"
+    id="tabpanel-{activeTool}"
+    role="tabpanel"
+  >
+    {#if activeTool === "data"}
       <KVExplorer client={dbClient} />
-    {:else if activeTool === 'collections'}
+    {:else if activeTool === "collections"}
       <CollectionView {client} {database} />
-    {:else if activeTool === 'indexes'}
+    {:else if activeTool === "indexes"}
       <IndexManager client={dbClient} />
-    {:else if activeTool === 'transactions'}
+    {:else if activeTool === "transactions"}
       <TransactionView client={dbClient} />
-    {:else if activeTool === 'batch'}
+    {:else if activeTool === "batch"}
       <BatchView client={dbClient} />
-    {:else if activeTool === 'watch'}
+    {:else if activeTool === "watch"}
       <WatchView client={dbClient} />
-    {:else if activeTool === 'leases'}
+    {:else if activeTool === "leases"}
       <LeaseManager client={dbClient} />
-    {:else if activeTool === 'locks'}
+    {:else if activeTool === "locks"}
       <LockManager client={dbClient} />
-    {:else if activeTool === 'timeseries'}
+    {:else if activeTool === "timeseries"}
       <TimeSeriesView client={dbClient} />
-    {:else if activeTool === 'vector'}
+    {:else if activeTool === "vector"}
       <VectorView client={dbClient} />
-    {:else if activeTool === 'sql'}
+    {:else if activeTool === "sql"}
       <SQLBrowserScoped {client} {database} />
-    {:else if activeTool === 'db-settings'}
+    {:else if activeTool === "db-settings"}
       <DatabaseSettingsView {client} {database} />
     {/if}
   </div>
-
 </div>

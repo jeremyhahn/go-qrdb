@@ -17,7 +17,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Client } from "@qrdb/sdk";
-  import { dbWizardStore, takeBarrierPassphrase } from "$stores/database-wizard.svelte.ts";
+  import {
+    dbWizardStore,
+    takeBarrierPassphrase,
+  } from "$stores/database-wizard.svelte.ts";
 
   let {
     client,
@@ -39,7 +42,7 @@
 
   let currentLabel = $derived(
     currentPhaseIndex >= 0 && currentPhaseIndex < phases.length
-      ? phases[currentPhaseIndex]?.label ?? "Creating..."
+      ? (phases[currentPhaseIndex]?.label ?? "Creating...")
       : errorMessage
         ? "Database creation failed"
         : "Preparing...",
@@ -151,14 +154,21 @@
             },
           }
         : {}),
-      ...(dbWizardStore.mode === "remote" && dbWizardStore.connectionConfig !== null
+      ...(dbWizardStore.mode === "remote" &&
+      dbWizardStore.connectionConfig !== null
         ? {
             connection: {
               transport: dbWizardStore.connectionConfig.transport,
               address: dbWizardStore.connectionConfig.address,
-              ...(dbWizardStore.connectionConfig.caFile ? { caFile: dbWizardStore.connectionConfig.caFile } : {}),
-              ...(dbWizardStore.connectionConfig.certFile ? { certFile: dbWizardStore.connectionConfig.certFile } : {}),
-              ...(dbWizardStore.connectionConfig.keyFile ? { keyFile: dbWizardStore.connectionConfig.keyFile } : {}),
+              ...(dbWizardStore.connectionConfig.caFile
+                ? { caFile: dbWizardStore.connectionConfig.caFile }
+                : {}),
+              ...(dbWizardStore.connectionConfig.certFile
+                ? { certFile: dbWizardStore.connectionConfig.certFile }
+                : {}),
+              ...(dbWizardStore.connectionConfig.keyFile
+                ? { keyFile: dbWizardStore.connectionConfig.keyFile }
+                : {}),
             },
           }
         : {}),
@@ -276,7 +286,9 @@
     <!-- Progress bar -->
     <div class="w-full">
       <progress
-        class="progress {errorMessage ? 'progress-error' : 'progress-primary'} w-full"
+        class="progress {errorMessage
+          ? 'progress-error'
+          : 'progress-primary'} w-full"
         value={progressPercent}
         max="100"
       ></progress>
@@ -313,8 +325,7 @@
               />
             </svg>
           {:else if phase.status === "active"}
-            <span
-              class="loading loading-spinner loading-sm text-primary"
+            <span class="loading loading-spinner loading-sm text-primary"
             ></span>
           {:else if phase.status === "error"}
             <svg

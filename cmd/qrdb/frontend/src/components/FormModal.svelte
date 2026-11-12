@@ -37,38 +37,38 @@
 </script>
 
 {#if open}
-<dialog class="modal modal-open">
-  <div class="modal-box border border-base-content/6">
-    <h3 class="text-base font-semibold">{title}</h3>
-    <div class="py-6">
-      {#if body}
-        {@render body()}
-      {/if}
-    </div>
-    <div class="modal-action">
-      <button
-        type="button"
-        class="btn btn-ghost"
-        onclick={oncancel}
-        disabled={loading}
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="btn btn-primary"
-        onclick={onsubmit}
-        disabled={loading}
-      >
-        {#if loading}
-          <span class="loading loading-spinner loading-sm"></span>
+  <dialog class="modal modal-open">
+    <div class="modal-box border border-base-content/6">
+      <h3 class="text-base font-semibold">{title}</h3>
+      <div class="py-6">
+        {#if body}
+          {@render body()}
         {/if}
-        {submitLabel}
-      </button>
+      </div>
+      <div class="modal-action">
+        <button
+          type="button"
+          class="btn btn-ghost"
+          onclick={oncancel}
+          disabled={loading}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          onclick={onsubmit}
+          disabled={loading}
+        >
+          {#if loading}
+            <span class="loading loading-spinner loading-sm"></span>
+          {/if}
+          {submitLabel}
+        </button>
+      </div>
     </div>
-  </div>
-  <form method="dialog" class="modal-backdrop">
-    <button onclick={oncancel}>close</button>
-  </form>
-</dialog>
+    <form method="dialog" class="modal-backdrop">
+      <button onclick={oncancel}>close</button>
+    </form>
+  </dialog>
 {/if}

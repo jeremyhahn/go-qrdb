@@ -38,13 +38,16 @@
   } = $props();
 </script>
 
-<div class="border-base-content/6 flex items-center gap-1 border-b" role="tablist">
+<div
+  class="border-base-content/6 flex items-center gap-1 border-b"
+  role="tablist"
+>
   {#each tabs as tab}
     <button
       class="-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium transition-colors
              {tab.id === activeTab
-               ? 'border-current text-base-content'
-               : 'border-transparent text-base-content/50 hover:text-base-content/70'}"
+        ? 'border-current text-base-content'
+        : 'border-transparent text-base-content/50 hover:text-base-content/70'}"
       style={tab.id === activeTab && accentColor ? `color: ${accentColor}` : ""}
       role="tab"
       aria-selected={tab.id === activeTab}

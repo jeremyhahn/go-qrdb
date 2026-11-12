@@ -27,7 +27,11 @@
   no holder key enters this page, and it runs no cryptography.
 -->
 <script lang="ts">
-  import type { Client, DatabaseShamirInitializeResponse, OfficerRegisterRequest } from "@qrdb/sdk";
+  import type {
+    Client,
+    DatabaseShamirInitializeResponse,
+    OfficerRegisterRequest,
+  } from "@qrdb/sdk";
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
   import HolderEnrolmentForms from "../HolderEnrolmentForms.svelte";
 
@@ -75,37 +79,64 @@
   <div class="text-center">
     <h2 class="text-2xl font-bold">Share Holders</h2>
     <p class="text-base-content/70 mt-2">
-      <span class="font-mono font-semibold">{database}</span> is created and sealed. Enrol its
+      <span class="font-mono font-semibold">{database}</span> is created and
+      sealed. Enrol its
       {total} holders and initialize; then any {required} of them unseal it together.
     </p>
   </div>
 
   <div class="w-full max-w-2xl space-y-6">
     {#if split === null}
-      <HolderEnrolmentForms {client} count={total} bind:registeredCount={registered} {enrol} />
+      <HolderEnrolmentForms
+        {client}
+        count={total}
+        bind:registeredCount={registered}
+        {enrol}
+      />
       {#if error}
-        <div role="alert" class="alert alert-error" data-testid="db-holders-error">
+        <div
+          role="alert"
+          class="alert alert-error"
+          data-testid="db-holders-error"
+        >
           <span>{error}</span>
         </div>
       {/if}
       {#if confirmLeave}
-        <div role="alert" class="alert alert-warning" data-testid="db-holders-leave-warning">
+        <div
+          role="alert"
+          class="alert alert-warning"
+          data-testid="db-holders-leave-warning"
+        >
           <span class="text-sm">
-            <span class="font-mono">{database}</span> stays sealed, and nothing it holds is usable,
-            until all {total} holders are enrolled and its custody is initialized. You can finish
-            later in the database's view, under Share Holders, or with
-            <code>qrdb database barrier-officer register --database {database}</code>
-            and <code>qrdb database barrier-init-shamir --database {database}</code>.
+            <span class="font-mono">{database}</span> stays sealed, and nothing
+            it holds is usable, until all {total} holders are enrolled and its custody
+            is initialized. You can finish later in the database's view, under Share
+            Holders, or with
+            <code
+              >qrdb database barrier-officer register --database {database}</code
+            >
+            and
+            <code>qrdb database barrier-init-shamir --database {database}</code
+            >.
           </span>
         </div>
       {/if}
       <div class="flex justify-between">
         {#if confirmLeave}
-          <button class="btn btn-ghost" onclick={onLeave} data-testid="db-holders-leave-confirm">
+          <button
+            class="btn btn-ghost"
+            onclick={onLeave}
+            data-testid="db-holders-leave-confirm"
+          >
             Close and finish later
           </button>
         {:else}
-          <button class="btn btn-ghost" onclick={() => (confirmLeave = true)} data-testid="db-holders-leave">
+          <button
+            class="btn btn-ghost"
+            onclick={() => (confirmLeave = true)}
+            data-testid="db-holders-leave"
+          >
             Finish later
           </button>
         {/if}
@@ -131,17 +162,26 @@
           sealed envelopes waiting to be claimed.
         </span>
       </div>
-      <div class="bg-base-200 rounded-lg p-4 text-sm space-y-2" data-testid="db-holders-next">
+      <div
+        class="bg-base-200 rounded-lg p-4 text-sm space-y-2"
+        data-testid="db-holders-next"
+      >
         <p>
-          Each holder claims their envelope once, on their own machine, with their own
-          certificate key and the qrdb CLI (the desktop app's binary):
+          Each holder claims their envelope once, on their own machine, with
+          their own certificate key and the qrdb CLI (the desktop app's binary):
         </p>
-        <pre class="font-mono text-xs whitespace-pre-wrap">qrdb database barrier-officer claim --database {database} --username &lt;holder&gt; --key &lt;holder.key&gt; --out &lt;holder.envelope&gt;</pre>
+        <pre
+          class="font-mono text-xs whitespace-pre-wrap">qrdb database barrier-officer claim --database {database} --username &lt;holder&gt; --key &lt;holder.key&gt; --out &lt;holder.envelope&gt;</pre>
         <p>Then {split.threshold} of them unseal the database:</p>
-        <pre class="font-mono text-xs whitespace-pre-wrap">qrdb database barrier-quorum submit --database {database} --op unseal --username &lt;holder&gt; --envelope &lt;holder.envelope&gt; --key &lt;holder.key&gt;</pre>
+        <pre
+          class="font-mono text-xs whitespace-pre-wrap">qrdb database barrier-quorum submit --database {database} --op unseal --username &lt;holder&gt; --envelope &lt;holder.envelope&gt; --key &lt;holder.key&gt;</pre>
       </div>
       <div class="flex justify-end">
-        <button class="btn btn-primary" onclick={onDone} data-testid="db-holders-done">Finish</button>
+        <button
+          class="btn btn-primary"
+          onclick={onDone}
+          data-testid="db-holders-done">Finish</button
+        >
       </div>
     {/if}
   </div>

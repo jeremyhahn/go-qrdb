@@ -15,8 +15,19 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, DatabaseInfo, CreateDatabaseRequest, DatabaseProtocolConfig } from "@qrdb/sdk";
-  import { ChevronLeft, Server, HardDrive, MemoryStick, Network } from "lucide-svelte";
+  import type {
+    Client,
+    DatabaseInfo,
+    CreateDatabaseRequest,
+    DatabaseProtocolConfig,
+  } from "@qrdb/sdk";
+  import {
+    ChevronLeft,
+    Server,
+    HardDrive,
+    MemoryStick,
+    Network,
+  } from "lucide-svelte";
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
@@ -166,7 +177,7 @@
       const req: CreateDatabaseRequest = {
         name: name.trim(),
         backend,
-        ...((sqlMySQL || sqlPostgreSQL)
+        ...(sqlMySQL || sqlPostgreSQL
           ? { protocol: { mysql: sqlMySQL, postgresql: sqlPostgreSQL } }
           : {}),
       };
@@ -201,20 +212,34 @@
   }
 
   /** Toggles a SQL wire protocol on an existing database. */
-  async function handleSQLToggle(protocol: "mysql" | "postgresql", enabled: boolean): Promise<void> {
+  async function handleSQLToggle(
+    protocol: "mysql" | "postgresql",
+    enabled: boolean,
+  ): Promise<void> {
     if (existingDb === null) return;
 
     const updated: DatabaseProtocolConfig = {
-      mysql: protocol === "mysql" ? enabled : (existingDb.protocol?.mysql ?? false),
-      postgresql: protocol === "postgresql" ? enabled : (existingDb.protocol?.postgresql ?? false),
+      mysql:
+        protocol === "mysql" ? enabled : (existingDb.protocol?.mysql ?? false),
+      postgresql:
+        protocol === "postgresql"
+          ? enabled
+          : (existingDb.protocol?.postgresql ?? false),
     };
 
     try {
       sqlUpdating = true;
-      existingDb = await client.database.updateProtocol(existingDb.name, updated);
-      showToast("success", `${protocol === "mysql" ? "MySQL" : "PostgreSQL"} ${enabled ? "enabled" : "disabled"}`);
+      existingDb = await client.database.updateProtocol(
+        existingDb.name,
+        updated,
+      );
+      showToast(
+        "success",
+        `${protocol === "mysql" ? "MySQL" : "PostgreSQL"} ${enabled ? "enabled" : "disabled"}`,
+      );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to update SQL config";
+      const msg =
+        err instanceof Error ? err.message : "Failed to update SQL config";
       showToast("error", msg);
     } finally {
       sqlUpdating = false;
@@ -228,9 +253,13 @@
     try {
       scaling = true;
       existingDb = await client.database.scale(existingDb.name, targetReplicas);
-      showToast("success", `Database "${existingDb.name}" scaled to ${targetReplicas} replicas`);
+      showToast(
+        "success",
+        `Database "${existingDb.name}" scaled to ${targetReplicas} replicas`,
+      );
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to scale database";
+      const msg =
+        err instanceof Error ? err.message : "Failed to scale database";
       showToast("error", msg);
     } finally {
       scaling = false;
@@ -299,7 +328,9 @@
           <p class="text-base-content/70 text-sm">
             Choose the storage backend for this database.
           </p>
-          <div class="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2 lg:grid-cols-4">
+          <div
+            class="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2 lg:grid-cols-4"
+          >
             {#each BACKEND_OPTIONS as opt (opt.value)}
               <button
                 type="button"
@@ -322,7 +353,8 @@
                   {/if}
                   <span class="font-semibold">{opt.label}</span>
                   {#if opt.recommended}
-                    <span class="badge badge-xs badge-success">Recommended</span>
+                    <span class="badge badge-xs badge-success">Recommended</span
+                    >
                   {/if}
                 </div>
                 <p class="text-base-content/70 mt-2 text-xs leading-relaxed">
@@ -349,7 +381,9 @@
                 bind:checked={sqlMySQL}
               />
               <span class="text-sm font-medium">MySQL</span>
-              <span class="text-base-content/50 text-xs">MySQL wire protocol (port 3306)</span>
+              <span class="text-base-content/50 text-xs"
+                >MySQL wire protocol (port 3306)</span
+              >
             </label>
             <label class="flex items-center gap-3 cursor-pointer">
               <input
@@ -358,7 +392,9 @@
                 bind:checked={sqlPostgreSQL}
               />
               <span class="text-sm font-medium">PostgreSQL</span>
-              <span class="text-base-content/50 text-xs">PostgreSQL wire protocol (port 5432)</span>
+              <span class="text-base-content/50 text-xs"
+                >PostgreSQL wire protocol (port 5432)</span
+              >
             </label>
           </div>
         </div>
@@ -388,17 +424,23 @@
     <div class="card bg-base-200 shadow">
       <div class="card-body">
         <h3 class="card-title text-base">Database Info</h3>
-        <div class="grid grid-cols-2 gap-x-6 gap-y-4 pt-2 text-sm md:grid-cols-3">
+        <div
+          class="grid grid-cols-2 gap-x-6 gap-y-4 pt-2 text-sm md:grid-cols-3"
+        >
           <div>
             <span class="text-base-content/60 text-xs font-semibold">Name</span>
             <p class="font-mono">{existingDb.name}</p>
           </div>
           <div>
-            <span class="text-base-content/60 text-xs font-semibold">Backend</span>
+            <span class="text-base-content/60 text-xs font-semibold"
+              >Backend</span
+            >
             <p>{existingDb.backend}</p>
           </div>
           <div>
-            <span class="text-base-content/60 text-xs font-semibold">Status</span>
+            <span class="text-base-content/60 text-xs font-semibold"
+              >Status</span
+            >
             <p>
               <StatusBadge
                 label={existingDb.status}
@@ -409,23 +451,37 @@
           </div>
           {#if existingDb.dataDir}
             <div>
-              <span class="text-base-content/60 text-xs font-semibold">Data Directory</span>
+              <span class="text-base-content/60 text-xs font-semibold"
+                >Data Directory</span
+              >
               <p class="font-mono text-xs break-all">{existingDb.dataDir}</p>
             </div>
           {/if}
           {#if existingDb.shardId !== undefined}
             <div>
-              <span class="text-base-content/60 text-xs font-semibold">Shard ID</span>
+              <span class="text-base-content/60 text-xs font-semibold"
+                >Shard ID</span
+              >
               <p class="font-mono">{existingDb.shardId}</p>
             </div>
           {/if}
           <div>
-            <span class="text-base-content/60 text-xs font-semibold">SQL Protocols</span>
+            <span class="text-base-content/60 text-xs font-semibold"
+              >SQL Protocols</span
+            >
             <div class="flex items-center gap-2 mt-1">
-              <span class="badge badge-sm {existingDb.protocol?.mysql ? 'badge-success' : 'badge-ghost'}">
+              <span
+                class="badge badge-sm {existingDb.protocol?.mysql
+                  ? 'badge-success'
+                  : 'badge-ghost'}"
+              >
                 MySQL {existingDb.protocol?.mysql ? "on" : "off"}
               </span>
-              <span class="badge badge-sm {existingDb.protocol?.postgresql ? 'badge-success' : 'badge-ghost'}">
+              <span
+                class="badge badge-sm {existingDb.protocol?.postgresql
+                  ? 'badge-success'
+                  : 'badge-ghost'}"
+              >
                 PostgreSQL {existingDb.protocol?.postgresql ? "on" : "off"}
               </span>
             </div>
@@ -447,7 +503,9 @@
       {client}
       database={existingDb}
       sections={["sql", "compaction", "raft", "barrier", "connection"]}
-      onUpdated={(db) => { existingDb = db; }}
+      onUpdated={(db) => {
+        existingDb = db;
+      }}
     />
 
     <!-- SQL Wire Protocol Toggles -->
@@ -465,7 +523,10 @@
               checked={existingDb.protocol?.mysql ?? false}
               disabled={sqlUpdating}
               onchange={(e: Event) => {
-                void handleSQLToggle("mysql", (e.target as HTMLInputElement).checked);
+                void handleSQLToggle(
+                  "mysql",
+                  (e.target as HTMLInputElement).checked,
+                );
               }}
             />
             <span class="text-sm font-medium">MySQL</span>
@@ -480,7 +541,10 @@
               checked={existingDb.protocol?.postgresql ?? false}
               disabled={sqlUpdating}
               onchange={(e: Event) => {
-                void handleSQLToggle("postgresql", (e.target as HTMLInputElement).checked);
+                void handleSQLToggle(
+                  "postgresql",
+                  (e.target as HTMLInputElement).checked,
+                );
               }}
             />
             <span class="text-sm font-medium">PostgreSQL</span>
@@ -498,8 +562,10 @@
         <div class="card-body">
           <h3 class="card-title text-base">Replication</h3>
           <p class="text-base-content/70 text-sm">
-            Change the replication factor of this dedicated-raft database. Current
-            replication factor: <span class="font-mono">{existingDb.replicas}</span>.
+            Change the replication factor of this dedicated-raft database.
+            Current replication factor: <span class="font-mono"
+              >{existingDb.replicas}</span
+            >.
           </p>
           <div class="flex items-end gap-3 pt-2">
             <label class="form-control w-full max-w-[10rem]">
@@ -537,7 +603,9 @@
         {#if confirmDrop}
           <div class="flex items-center justify-between gap-4">
             <span class="text-sm">
-              Drop database <strong class="font-mono">"{existingDb.name}"</strong>? This action cannot be undone.
+              Drop database <strong class="font-mono"
+                >"{existingDb.name}"</strong
+              >? This action cannot be undone.
             </span>
             <div class="flex gap-2">
               <button

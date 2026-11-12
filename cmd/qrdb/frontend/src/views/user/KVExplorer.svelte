@@ -21,7 +21,10 @@
     RestoreRevisionRequest,
     RestoreRevisionResult,
   } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { showToast } from "../../stores/toast.svelte.ts";
   import { withRetry } from "../../lib/retry.ts";
   import { rangeBoundsForPrefix } from "../../lib/kvRange.ts";
@@ -150,7 +153,9 @@
 
   // Keys-only listing has no values, so the Value column is dropped.
   const visibleColumns = $derived(
-    keysOnly && asOfRevision === null ? browseColumns.filter((c) => c.id === "key") : browseColumns,
+    keysOnly && asOfRevision === null
+      ? browseColumns.filter((c) => c.id === "key")
+      : browseColumns,
   );
 
   const restoreModalTitle = $derived(
@@ -165,7 +170,9 @@
     if (restorePhase === "form") return "Preview";
     if (restorePhase === "preview") return "Confirm & Apply";
     const outcome: RestoreRevisionResult | null = restoreOutcome;
-    return outcome !== null && outcome.conflicted > 0 ? "Retry with Force" : "Close";
+    return outcome !== null && outcome.conflicted > 0
+      ? "Retry with Force"
+      : "Close";
   });
 
   // ---------------------------------------------------------------------------
@@ -221,7 +228,10 @@
       return;
     }
     if (currentRevision !== null && revision > currentRevision) {
-      showToast("warning", `Revision ${revision} is beyond the current revision ${currentRevision}.`);
+      showToast(
+        "warning",
+        `Revision ${revision} is beyond the current revision ${currentRevision}.`,
+      );
       return;
     }
     compactTarget = revision;
@@ -348,7 +358,10 @@
     editMode = true;
     modalKey = entry.key;
     modalValue = entry.value;
-    modalLeaseId = entryMeta && entryMeta.key === entry.key && entryMeta.leaseId ? String(entryMeta.leaseId) : "";
+    modalLeaseId =
+      entryMeta && entryMeta.key === entry.key && entryMeta.leaseId
+        ? String(entryMeta.leaseId)
+        : "";
     showCreatePanel = true;
   }
 
@@ -379,7 +392,9 @@
       const verb = editMode ? "Updated" : "Created";
       showToast(
         "success",
-        leaseId > 0 ? `${verb} "${modalKey}" with lease ${leaseId}` : `${verb} "${modalKey}"`,
+        leaseId > 0
+          ? `${verb} "${modalKey}" with lease ${leaseId}`
+          : `${verb} "${modalKey}"`,
       );
       showCreatePanel = false;
       await loadEntries();
@@ -511,7 +526,9 @@
     if (scope === null) {
       showToast(
         "warning",
-        restoreScopeType === "prefix" ? "Enter a key prefix." : "Enter at least one key.",
+        restoreScopeType === "prefix"
+          ? "Enter a key prefix."
+          : "Enter at least one key.",
       );
       return;
     }
@@ -543,7 +560,10 @@
     if (restoreRequestBase === null) return;
     restoreBusy = true;
     try {
-      const outcome = await client.mvcc.restoreToRevision({ ...restoreRequestBase, force });
+      const outcome = await client.mvcc.restoreToRevision({
+        ...restoreRequestBase,
+        force,
+      });
       restoreOutcome = outcome;
       restoreForce = force;
       restorePhase = "result";
@@ -553,7 +573,10 @@
           `Restored ${outcome.applied}, skipped ${outcome.skipped}; ${outcome.conflicted} key(s) left unrestored due to conflicts.`,
         );
       } else {
-        showToast("success", `Restore applied: ${outcome.applied} key(s) updated.`);
+        showToast(
+          "success",
+          `Restore applied: ${outcome.applied} key(s) updated.`,
+        );
       }
       await loadEntries();
     } catch (err: unknown) {
@@ -596,11 +619,18 @@
 >
   {#snippet actions()}
     <div class="flex items-center gap-2">
-      <button class="btn btn-outline btn-sm gap-1" onclick={() => openRestoreModal()}>
+      <button
+        class="btn btn-outline btn-sm gap-1"
+        onclick={() => openRestoreModal()}
+      >
         <History class="h-4 w-4" />
         Restore...
       </button>
-      <button class="btn btn-ghost btn-sm" onclick={loadEntries} disabled={loading}>
+      <button
+        class="btn btn-ghost btn-sm"
+        onclick={loadEntries}
+        disabled={loading}
+      >
         {#if loading}
           <span class="loading loading-spinner loading-xs"></span>
         {:else}
@@ -624,14 +654,21 @@
           bind:value={prefixFilter}
           onkeydown={(e) => e.key === "Enter" && loadEntries()}
         />
-        <button class="btn btn-sm join-item" onclick={loadEntries} disabled={loading} aria-label="Search">
+        <button
+          class="btn btn-sm join-item"
+          onclick={loadEntries}
+          disabled={loading}
+          aria-label="Search"
+        >
           <Search class="h-4 w-4" />
         </button>
       </div>
     </div>
 
     <div class="flex items-center gap-2">
-      <label class="text-base-content/60 text-xs" for="kv-as-of-revision">As of revision</label>
+      <label class="text-base-content/60 text-xs" for="kv-as-of-revision"
+        >As of revision</label
+      >
       <input
         id="kv-as-of-revision"
         type="number"
@@ -642,9 +679,17 @@
         onkeydown={(e) => e.key === "Enter" && viewAsOf()}
       />
       {#if !isHistorical}
-        <button class="btn btn-outline btn-sm" onclick={viewAsOf} disabled={loading}>View</button>
+        <button
+          class="btn btn-outline btn-sm"
+          onclick={viewAsOf}
+          disabled={loading}>View</button
+        >
       {:else}
-        <button class="btn btn-ghost btn-sm gap-1" onclick={clearAsOf} disabled={loading}>
+        <button
+          class="btn btn-ghost btn-sm gap-1"
+          onclick={clearAsOf}
+          disabled={loading}
+        >
           <RotateCcw class="h-3.5 w-3.5" />
           Back to Live
         </button>
@@ -658,7 +703,9 @@
 
   <div class="mt-3 flex flex-wrap items-center gap-3 text-sm">
     <span class="text-base-content/70" data-testid="kv-current-revision">
-      Current revision: <strong class="font-mono">{currentRevision ?? "—"}</strong>
+      Current revision: <strong class="font-mono"
+        >{currentRevision ?? "—"}</strong
+      >
     </span>
 
     <div class="join">
@@ -686,7 +733,11 @@
         disabled={isHistorical}
         onkeydown={(e) => e.key === "Enter" && goToKey()}
       />
-      <button class="btn btn-sm join-item" onclick={goToKey} disabled={isHistorical}>Go</button>
+      <button
+        class="btn btn-sm join-item"
+        onclick={goToKey}
+        disabled={isHistorical}>Go</button
+      >
     </div>
 
     <label class="label cursor-pointer gap-2">
@@ -706,9 +757,9 @@
     <div role="alert" class="alert alert-warning mt-3 py-2 text-sm">
       <Clock class="h-4 w-4 shrink-0" />
       <span>
-        Viewing historical state as of revision <strong>{asOfRevision}</strong> (read-only). Create,
-        edit, and delete are disabled here; use <strong>Restore...</strong> to write this state forward
-        as new revisions.
+        Viewing historical state as of revision <strong>{asOfRevision}</strong>
+        (read-only). Create, edit, and delete are disabled here; use
+        <strong>Restore...</strong> to write this state forward as new revisions.
       </span>
     </div>
   {/if}
@@ -717,7 +768,9 @@
 <!-- Main Content -->
 <div class="surface-panel rounded-xl overflow-hidden">
   <CrudTable
-    title={isHistorical ? `Key-Value Entries (as of revision ${asOfRevision})` : "Key-Value Entries"}
+    title={isHistorical
+      ? `Key-Value Entries (as of revision ${asOfRevision})`
+      : "Key-Value Entries"}
     data={entries}
     columns={visibleColumns}
     {loading}
@@ -749,34 +802,66 @@
           </div>
         {/if}
         <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1">Key</span>
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all">{selectedEntry.key}</div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Key</span
+          >
+          <div
+            class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all"
+          >
+            {selectedEntry.key}
+          </div>
         </div>
         <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1">Value</span>
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap">{selectedEntry.value}</div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Value</span
+          >
+          <div
+            class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap"
+          >
+            {selectedEntry.value}
+          </div>
         </div>
         <div data-testid="kv-entry-revision">
-          <span class="text-sm font-medium text-base-content/70 block mb-1">Latest revision</span>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Latest revision</span
+          >
           {#if entryMeta}
-            <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2">
+            <dl
+              class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2"
+            >
               <dt class="text-base-content/60">Create revision</dt>
-              <dd class="font-mono" data-testid="kv-create-revision">{entryMeta.createRevision ?? "—"}</dd>
+              <dd class="font-mono" data-testid="kv-create-revision">
+                {entryMeta.createRevision ?? "—"}
+              </dd>
               <dt class="text-base-content/60">Mod revision</dt>
-              <dd class="font-mono" data-testid="kv-mod-revision">{entryMeta.modRevision ?? "—"}</dd>
+              <dd class="font-mono" data-testid="kv-mod-revision">
+                {entryMeta.modRevision ?? "—"}
+              </dd>
               <dt class="text-base-content/60">Version</dt>
-              <dd class="font-mono" data-testid="kv-version">{entryMeta.version ?? "—"}</dd>
+              <dd class="font-mono" data-testid="kv-version">
+                {entryMeta.version ?? "—"}
+              </dd>
               <dt class="text-base-content/60">Lease</dt>
-              <dd class="font-mono" data-testid="kv-lease">{entryMeta.leaseId ? entryMeta.leaseId : "none"}</dd>
+              <dd class="font-mono" data-testid="kv-lease">
+                {entryMeta.leaseId ? entryMeta.leaseId : "none"}
+              </dd>
             </dl>
           {:else if entryMetaError}
-            <div class="text-error text-xs" data-testid="kv-entry-revision-error">{entryMetaError}</div>
+            <div
+              class="text-error text-xs"
+              data-testid="kv-entry-revision-error"
+            >
+              {entryMetaError}
+            </div>
           {:else}
             <span class="loading loading-spinner loading-xs"></span>
           {/if}
         </div>
         <div>
-          <label class="text-sm font-medium text-base-content/70 block mb-1" for="kv-at-revision">
+          <label
+            class="text-sm font-medium text-base-content/70 block mb-1"
+            for="kv-at-revision"
+          >
             Value at revision
           </label>
           <div class="join w-full">
@@ -789,7 +874,11 @@
               bind:value={atRevisionInput}
               onkeydown={(e) => e.key === "Enter" && lookupAtRevision()}
             />
-            <button class="btn btn-sm join-item" onclick={lookupAtRevision} disabled={atRevisionBusy}>
+            <button
+              class="btn btn-sm join-item"
+              onclick={lookupAtRevision}
+              disabled={atRevisionBusy}
+            >
               Look up
             </button>
           </div>
@@ -797,9 +886,16 @@
             <div
               class="mt-2 font-mono text-sm bg-base-200 rounded px-3 py-2 break-all whitespace-pre-wrap"
               data-testid="kv-at-revision-value"
-            >{atRevisionResult.value}</div>
+            >
+              {atRevisionResult.value}
+            </div>
           {:else if atRevisionError}
-            <div class="mt-2 text-error text-xs" data-testid="kv-at-revision-error">{atRevisionError}</div>
+            <div
+              class="mt-2 text-error text-xs"
+              data-testid="kv-at-revision-error"
+            >
+              {atRevisionError}
+            </div>
           {/if}
         </div>
       </div>
@@ -858,7 +954,11 @@
           disabled={editMode}
         />
         {#if editMode}
-          <div class="label"><span class="label-text-alt text-base-content/50">Key cannot be changed</span></div>
+          <div class="label">
+            <span class="label-text-alt text-base-content/50"
+              >Key cannot be changed</span
+            >
+          </div>
         {/if}
       </label>
       <label class="form-control w-full">
@@ -866,11 +966,12 @@
         <textarea
           class="textarea textarea-bordered w-full font-mono h-32"
           placeholder="Enter value (supports JSON)"
-          bind:value={modalValue}
-        ></textarea>
+          bind:value={modalValue}></textarea>
       </label>
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Lease ID (optional)</span></div>
+        <div class="label">
+          <span class="label-text">Lease ID (optional)</span>
+        </div>
         <input
           type="text"
           inputmode="numeric"
@@ -918,12 +1019,16 @@
     {#if restorePhase === "form"}
       <div class="space-y-5">
         <p class="text-base-content/60 text-xs">
-          Restore returns a bounded set of keys to the value they held at an earlier MVCC
-          revision by proposing new writes -- a logical undo, never a Raft rewind. This
-          requires the target daemon to run <code class="font-mono">raft.sm_type: mvcc</code>.
+          Restore returns a bounded set of keys to the value they held at an
+          earlier MVCC revision by proposing new writes -- a logical undo, never
+          a Raft rewind. This requires the target daemon to run <code
+            class="font-mono">raft.sm_type: mvcc</code
+          >.
         </p>
         <label class="form-control w-full">
-          <div class="label"><span class="label-text">Target revision</span></div>
+          <div class="label">
+            <span class="label-text">Target revision</span>
+          </div>
           <input
             type="number"
             min="1"
@@ -937,14 +1042,18 @@
           <div class="join">
             <button
               type="button"
-              class="btn btn-sm join-item {restoreScopeType === 'prefix' ? 'btn-active' : ''}"
+              class="btn btn-sm join-item {restoreScopeType === 'prefix'
+                ? 'btn-active'
+                : ''}"
               onclick={() => (restoreScopeType = "prefix")}
             >
               By Prefix
             </button>
             <button
               type="button"
-              class="btn btn-sm join-item {restoreScopeType === 'keys' ? 'btn-active' : ''}"
+              class="btn btn-sm join-item {restoreScopeType === 'keys'
+                ? 'btn-active'
+                : ''}"
               onclick={() => (restoreScopeType = "keys")}
             >
               By Keys
@@ -953,7 +1062,11 @@
         </div>
         {#if restoreScopeType === "prefix"}
           <label class="form-control w-full">
-            <div class="label"><span class="label-text-alt">Every key beginning with this prefix</span></div>
+            <div class="label">
+              <span class="label-text-alt"
+                >Every key beginning with this prefix</span
+              >
+            </div>
             <input
               type="text"
               class="input input-bordered w-full font-mono"
@@ -963,16 +1076,23 @@
           </label>
         {:else}
           <label class="form-control w-full">
-            <div class="label"><span class="label-text-alt">One key per line (or comma-separated)</span></div>
+            <div class="label">
+              <span class="label-text-alt"
+                >One key per line (or comma-separated)</span
+              >
+            </div>
             <textarea
               class="textarea textarea-bordered w-full font-mono h-24"
               placeholder={"users/1\nusers/2"}
-              bind:value={restoreScopeKeysText}
-            ></textarea>
+              bind:value={restoreScopeKeysText}></textarea>
           </label>
         {/if}
         <label class="label cursor-pointer justify-start gap-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={restoreForce} />
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={restoreForce}
+          />
           <span class="label-text">
             Force -- overwrite keys modified since the plan was computed
           </span>
@@ -987,7 +1107,9 @@
             {restorePlan.changes.length} change(s) as new revisions.
           </span>
         </div>
-        <div class="max-h-72 overflow-auto rounded border border-base-content/10">
+        <div
+          class="max-h-72 overflow-auto rounded border border-base-content/10"
+        >
           <table class="table table-xs table-pin-rows">
             <thead>
               <tr>
@@ -1010,7 +1132,8 @@
           </table>
         </div>
         <p class="text-base-content/60 text-xs">
-          Revision {restorePlan.revision} &middot; {restorePlan.changes.length} planned change(s) &middot;
+          Revision {restorePlan.revision} &middot; {restorePlan.changes.length} planned
+          change(s) &middot;
           {restorePlan.skipped} already match and will be skipped
           {restoreForce ? " · Force is ON" : ""}
         </p>
@@ -1021,9 +1144,10 @@
           <div role="alert" class="alert alert-warning py-2 text-sm">
             <AlertTriangle class="h-4 w-4 shrink-0" />
             <span>
-              {restoreOutcome.conflicted} key(s) changed since the plan was computed and were left
-              untouched. Click "Retry with Force" to overwrite them, or close and re-run the
-              restore once you've confirmed the newer value should be discarded.
+              {restoreOutcome.conflicted} key(s) changed since the plan was computed
+              and were left untouched. Click "Retry with Force" to overwrite them,
+              or close and re-run the restore once you've confirmed the newer value
+              should be discarded.
             </span>
           </div>
         {:else}
@@ -1031,7 +1155,9 @@
             <span>Restore applied with no conflicts.</span>
           </div>
         {/if}
-        <div class="stats stats-horizontal shadow-none border border-base-content/10 w-full">
+        <div
+          class="stats stats-horizontal shadow-none border border-base-content/10 w-full"
+        >
           <div class="stat py-2">
             <div class="stat-title text-xs">Applied</div>
             <div class="stat-value text-lg">{restoreOutcome.applied}</div>
@@ -1046,7 +1172,9 @@
           </div>
         </div>
         {#if restoreOutcome.conflicts && restoreOutcome.conflicts.length > 0}
-          <div class="max-h-56 overflow-auto rounded border border-base-content/10">
+          <div
+            class="max-h-56 overflow-auto rounded border border-base-content/10"
+          >
             <table class="table table-xs table-pin-rows">
               <thead>
                 <tr>
@@ -1059,7 +1187,11 @@
               <tbody>
                 {#each restoreOutcome.conflicts as change (change.key)}
                   <tr>
-                    <td><span class="badge badge-sm badge-warning">{change.action}</span></td>
+                    <td
+                      ><span class="badge badge-sm badge-warning"
+                        >{change.action}</span
+                      ></td
+                    >
                     <td class="font-mono break-all">{change.key}</td>
                     <td>{change.fromRevision || "-"}</td>
                     <td>{change.toRevision || "-"}</td>

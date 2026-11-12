@@ -28,7 +28,7 @@ export {
   parseCSVWithDelimiter,
   detectCSVDelimiter,
   getDelimiterName,
-} from './csv.ts';
+} from "./csv.ts";
 
 // JSON parser
 export {
@@ -36,7 +36,7 @@ export {
   detectJSONFormat,
   getJSONFormatDescription,
   getJSONFormatExample,
-} from './json.ts';
+} from "./json.ts";
 
 // Archive parser
 export {
@@ -50,4 +50,4 @@ export {
   ARCHIVE_MIME_TYPES,
   type ArchiveEntry,
   type ArchiveAnalysis,
-} from './archive.ts';
+} from "./archive.ts";

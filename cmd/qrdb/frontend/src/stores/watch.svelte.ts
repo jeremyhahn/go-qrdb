@@ -27,36 +27,36 @@
 
 /** Represents a single active watch subscription. */
 export interface ActiveWatch {
-    /** Server-assigned watch identifier. */
-    readonly id: number;
-    /** Key or key prefix being watched. */
-    readonly key: string;
-    /** Whether this watch matches keys by prefix. */
-    readonly isPrefix: boolean;
+  /** Server-assigned watch identifier. */
+  readonly id: number;
+  /** Key or key prefix being watched. */
+  readonly key: string;
+  /** Whether this watch matches keys by prefix. */
+  readonly isPrefix: boolean;
 }
 
 /** A buffered watch event for UI display. */
 export interface BufferedWatchEvent {
-    /** Watch subscription that received this event. */
-    readonly watchId: number;
-    /** Unix timestamp in milliseconds when the event was received. */
-    readonly timestamp: number;
-    /** Event type string (e.g. "PUT", "DELETE"). */
-    readonly type: string;
-    /** Key affected by the event. */
-    readonly key: string;
-    /** New value after the event, if applicable. */
-    readonly value?: string | undefined;
+  /** Watch subscription that received this event. */
+  readonly watchId: number;
+  /** Unix timestamp in milliseconds when the event was received. */
+  readonly timestamp: number;
+  /** Event type string (e.g. "PUT", "DELETE"). */
+  readonly type: string;
+  /** Key affected by the event. */
+  readonly key: string;
+  /** New value after the event, if applicable. */
+  readonly value?: string | undefined;
 }
 
 /** Shape of the reactive watch state. */
 export interface WatchState {
-    /** Currently active watch subscriptions. */
-    watches: ActiveWatch[];
-    /** Buffered events received across all active watches. */
-    events: BufferedWatchEvent[];
-    /** Maximum number of events to retain in the buffer. */
-    maxEvents: number;
+  /** Currently active watch subscriptions. */
+  watches: ActiveWatch[];
+  /** Buffered events received across all active watches. */
+  events: BufferedWatchEvent[];
+  /** Maximum number of events to retain in the buffer. */
+  maxEvents: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,9 +65,9 @@ export interface WatchState {
 
 /** Reactive watch state. */
 export const watchStore: WatchState = $state({
-    watches: [] as ActiveWatch[],
-    events: [] as BufferedWatchEvent[],
-    maxEvents: 1000,
+  watches: [] as ActiveWatch[],
+  events: [] as BufferedWatchEvent[],
+  maxEvents: 1000,
 });
 
 // ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ export const watchStore: WatchState = $state({
  * @param watch - The watch subscription to track.
  */
 export function addWatch(watch: ActiveWatch): void {
-    watchStore.watches = [...watchStore.watches, watch];
+  watchStore.watches = [...watchStore.watches, watch];
 }
 
 /**
@@ -89,7 +89,7 @@ export function addWatch(watch: ActiveWatch): void {
  * @param id - Watch identifier to remove.
  */
 export function removeWatch(id: number): void {
-    watchStore.watches = watchStore.watches.filter((w) => w.id !== id);
+  watchStore.watches = watchStore.watches.filter((w) => w.id !== id);
 }
 
 /**
@@ -100,29 +100,33 @@ export function removeWatch(id: number): void {
  * @param events  - Raw events to buffer.
  */
 export function pushEvents(
-    watchId: number,
-    events: ReadonlyArray<{ readonly type: string; readonly key: string; readonly value?: string }>,
+  watchId: number,
+  events: ReadonlyArray<{
+    readonly type: string;
+    readonly key: string;
+    readonly value?: string;
+  }>,
 ): void {
-    const now = Date.now();
-    const buffered: BufferedWatchEvent[] = events.map((e) => ({
-        watchId,
-        timestamp: now,
-        type: e.type,
-        key: e.key,
-        value: e.value,
-    }));
+  const now = Date.now();
+  const buffered: BufferedWatchEvent[] = events.map((e) => ({
+    watchId,
+    timestamp: now,
+    type: e.type,
+    key: e.key,
+    value: e.value,
+  }));
 
-    const combined = [...watchStore.events, ...buffered];
+  const combined = [...watchStore.events, ...buffered];
 
-    // Trim oldest events when the buffer exceeds the configured maximum.
-    if (combined.length > watchStore.maxEvents) {
-        watchStore.events = combined.slice(combined.length - watchStore.maxEvents);
-    } else {
-        watchStore.events = combined;
-    }
+  // Trim oldest events when the buffer exceeds the configured maximum.
+  if (combined.length > watchStore.maxEvents) {
+    watchStore.events = combined.slice(combined.length - watchStore.maxEvents);
+  } else {
+    watchStore.events = combined;
+  }
 }
 
 /** Clears all buffered events while leaving active watches intact. */
 export function clearEvents(): void {
-    watchStore.events = [];
+  watchStore.events = [];
 }

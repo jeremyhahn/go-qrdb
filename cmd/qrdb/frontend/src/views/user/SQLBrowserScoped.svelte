@@ -20,7 +20,8 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
-  let { client, database }: { client: Client; database: DatabaseInfo } = $props();
+  let { client, database }: { client: Client; database: DatabaseInfo } =
+    $props();
 
   const DEFAULT_QUERY = "SELECT * FROM kv";
 
@@ -91,7 +92,8 @@
 <PageHeader title="SQL Browser" description="Query databases using SQL">
   {#snippet actions()}
     <div class="flex items-center gap-2">
-      <span class="badge badge-sm badge-outline font-mono">{database.name}</span>
+      <span class="badge badge-sm badge-outline font-mono">{database.name}</span
+      >
       <button
         class="btn btn-ghost btn-sm"
         onclick={clearResults}
@@ -128,12 +130,9 @@
       placeholder="Enter SQL query..."
       bind:value={query}
       onkeydown={handleKeydown}
-      disabled={executing}
-    ></textarea>
+      disabled={executing}></textarea>
 
-    <div class="text-xs text-base-content/50 mt-1">
-      Ctrl+Enter to execute
-    </div>
+    <div class="text-xs text-base-content/50 mt-1">Ctrl+Enter to execute</div>
   </div>
 </div>
 

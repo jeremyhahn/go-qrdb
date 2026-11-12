@@ -64,22 +64,26 @@
     {
       id: "prefix",
       label: "prefix",
-      description: "Shared-store namespace key prefix only. No extra crypto layer.",
+      description:
+        "Shared-store namespace key prefix only. No extra crypto layer.",
     },
     {
       id: "barrier",
       label: "barrier",
-      description: "Namespace prefix plus a per-tenant encryption barrier for IAM data.",
+      description:
+        "Namespace prefix plus a per-tenant encryption barrier for IAM data.",
     },
     {
       id: "volume",
       label: "volume",
-      description: "Dedicated filesystem data root per tenant (plus a barrier). Dedicated-storage tier; requires a daemon volume pool.",
+      description:
+        "Dedicated filesystem data root per tenant (plus a barrier). Dedicated-storage tier; requires a daemon volume pool.",
     },
     {
       id: "raft",
       label: "raft",
-      description: "Dedicated Raft group per database on a dedicated data root. Dedicated-storage tier; multi-node replication ships: replicas are placed across cluster nodes (RF configurable).",
+      description:
+        "Dedicated Raft group per database on a dedicated data root. Dedicated-storage tier; multi-node replication ships: replicas are placed across cluster nodes (RF configurable).",
     },
   ] as const;
 
@@ -166,9 +170,13 @@
       showToast("success", `Tenant "${tenantId}" updated.`);
     } catch (err: unknown) {
       if (err instanceof TransportError && err.statusCode === 409) {
-        showToast("error", "Cannot change isolation type: tenant already has data.");
+        showToast(
+          "error",
+          "Cannot change isolation type: tenant already has data.",
+        );
       } else {
-        const msg = err instanceof Error ? err.message : "Failed to update tenant";
+        const msg =
+          err instanceof Error ? err.message : "Failed to update tenant";
         showToast("error", msg);
       }
     } finally {
@@ -197,10 +205,13 @@
   }
 
   /** Copies existing entitlement values into the editable form fields. */
-  function populateEntitlements(entitlements: TenantEntitlements | undefined): void {
+  function populateEntitlements(
+    entitlements: TenantEntitlements | undefined,
+  ): void {
     allowDedicatedRaft = entitlements?.allowDedicatedRaft ?? false;
     allowVolumeStorage = entitlements?.allowVolumeStorage ?? false;
-    allowSystemManagedBarrier = entitlements?.allowSystemManagedBarrier ?? false;
+    allowSystemManagedBarrier =
+      entitlements?.allowSystemManagedBarrier ?? false;
     allowDedicatedWal = entitlements?.allowDedicatedWal ?? false;
     allowedIsolationModes = [
       ...((entitlements?.allowedIsolationModes ?? []) as TenantIsolationType[]),
@@ -223,7 +234,8 @@
       const resp = await client.tenants.listTrustAnchors(tenantId);
       trustAnchors = [...resp.anchors];
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load trust anchors";
+      const msg =
+        err instanceof Error ? err.message : "Failed to load trust anchors";
       trustAnchorsError = msg;
       showToast("error", msg);
     } finally {
@@ -265,7 +277,8 @@
       populateQuotas(response.tenant.quotas);
       showToast("success", `Quotas updated for tenant "${tenantId}".`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to update quotas";
+      const msg =
+        err instanceof Error ? err.message : "Failed to update quotas";
       showToast("error", msg);
     } finally {
       saving = false;
@@ -295,7 +308,8 @@
       populateEntitlements(response.tenant.entitlements);
       showToast("success", `Entitlements updated for tenant "${tenantId}".`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to update entitlements";
+      const msg =
+        err instanceof Error ? err.message : "Failed to update entitlements";
       showToast("error", msg);
     } finally {
       savingEntitlements = false;
@@ -310,13 +324,17 @@
     }
     try {
       addTrustAnchorLoading = true;
-      const resp = await client.tenants.addTrustAnchors(tenantId, newTrustAnchorsPem.trim());
+      const resp = await client.tenants.addTrustAnchors(
+        tenantId,
+        newTrustAnchorsPem.trim(),
+      );
       trustAnchors = [...resp.anchors];
       trustAnchorsError = "";
       newTrustAnchorsPem = "";
       showToast("success", `Trust anchor(s) added for tenant "${tenantId}".`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to add trust anchors";
+      const msg =
+        err instanceof Error ? err.message : "Failed to add trust anchors";
       showToast("error", msg);
     } finally {
       addTrustAnchorLoading = false;
@@ -331,7 +349,8 @@
       trustAnchors = trustAnchors.filter((a) => a.fingerprint !== fingerprint);
       showToast("success", "Trust anchor removed.");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to remove trust anchor";
+      const msg =
+        err instanceof Error ? err.message : "Failed to remove trust anchor";
       showToast("error", msg);
     } finally {
       removingFingerprint = "";
@@ -434,20 +453,23 @@
             </select>
             <div class="label">
               <span class="label-text-alt text-base-content/60">
-                {isolationTypes.find((it) => it.id === editIsolationType)?.description ?? ""}
+                {isolationTypes.find((it) => it.id === editIsolationType)
+                  ?.description ?? ""}
               </span>
             </div>
             {#if editIsolationType === "volume" || editIsolationType === "raft"}
               <div class="label">
                 <span class="label-text-alt text-info">
-                  Dedicated-storage tier. Multi-node Raft replication ships: replicas are placed across cluster nodes (RF configurable).
+                  Dedicated-storage tier. Multi-node Raft replication ships:
+                  replicas are placed across cluster nodes (RF configurable).
                 </span>
               </div>
             {/if}
             {#if editIsolationType !== (tenant.isolationType ?? "prefix")}
               <div class="label">
                 <span class="label-text-alt text-warning">
-                  Warning: changing isolation type on a tenant with existing data will return 409 Conflict.
+                  Warning: changing isolation type on a tenant with existing
+                  data will return 409 Conflict.
                 </span>
               </div>
             {/if}
@@ -471,12 +493,13 @@
 
     <!-- Quota form -->
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-3">
-
       <!-- Storage group -->
       <div class="card bg-base-200 shadow">
         <div class="card-body gap-4">
           <h3 class="card-title text-base">Storage</h3>
-          <p class="text-base-content/60 text-xs">-1 = unlimited &nbsp;&middot;&nbsp; 0 = system default</p>
+          <p class="text-base-content/60 text-xs">
+            -1 = unlimited &nbsp;&middot;&nbsp; 0 = system default
+          </p>
 
           <label class="form-control w-full">
             <div class="label">
@@ -590,8 +613,8 @@
             />
             <div class="label">
               <span class="label-text-alt text-base-content/60">
-                Bytes this isolated tenant may use via the shared system barrier.
-                0 = option unavailable &middot; -1 = unlimited.
+                Bytes this isolated tenant may use via the shared system
+                barrier. 0 = option unavailable &middot; -1 = unlimited.
               </span>
             </div>
           </label>
@@ -602,7 +625,9 @@
       <div class="card bg-base-200 shadow">
         <div class="card-body gap-4">
           <h3 class="card-title text-base">Access</h3>
-          <p class="text-base-content/60 text-xs">-1 = unlimited &nbsp;&middot;&nbsp; 0 = system default</p>
+          <p class="text-base-content/60 text-xs">
+            -1 = unlimited &nbsp;&middot;&nbsp; 0 = system default
+          </p>
 
           <label class="form-control w-full">
             <div class="label">
@@ -643,7 +668,9 @@
       <div class="card bg-base-200 shadow">
         <div class="card-body gap-4">
           <h3 class="card-title text-base">Data</h3>
-          <p class="text-base-content/60 text-xs">-1 = unlimited &nbsp;&middot;&nbsp; 0 = system default</p>
+          <p class="text-base-content/60 text-xs">
+            -1 = unlimited &nbsp;&middot;&nbsp; 0 = system default
+          </p>
 
           <label class="form-control w-full">
             <div class="label">
@@ -702,8 +729,9 @@
         <h3 class="card-title text-base">Entitlements</h3>
         <p class="text-base-content/60 text-xs">
           Feature entitlements gate which isolation tiers and dedicated-storage
-          features this tenant's plan permits. Multi-node Raft replication ships —
-          dedicated-raft databases are replicated across cluster nodes (RF configurable).
+          features this tenant's plan permits. Multi-node Raft replication ships
+          — dedicated-raft databases are replicated across cluster nodes (RF
+          configurable).
         </p>
 
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -750,7 +778,8 @@
 
         <div class="form-control">
           <div class="label">
-            <span class="label-text font-semibold">Allowed Isolation Modes</span>
+            <span class="label-text font-semibold">Allowed Isolation Modes</span
+            >
           </div>
           <div class="flex flex-wrap gap-3">
             {#each isolationTypes as it (it.id)}
@@ -781,9 +810,10 @@
           />
           <div class="label">
             <span class="label-text-alt text-base-content/60">
-              Comma-separated dedicated-barrier sealing strategies this tenant may
-              select (e.g. none, passphrase, shamir, or an xkms hardware id like
-              tpm2). Empty = built-in software defaults; hardware must be listed.
+              Comma-separated dedicated-barrier sealing strategies this tenant
+              may select (e.g. none, passphrase, shamir, or an xkms hardware id
+              like tpm2). Empty = built-in software defaults; hardware must be
+              listed.
             </span>
           </div>
         </label>
@@ -818,14 +848,23 @@
             <span class="loading loading-spinner loading-md"></span>
           </div>
         {:else if trustAnchorsError !== ""}
-          <p class="text-error text-sm" role="alert" data-testid="trust-anchors-error">
+          <p
+            class="text-error text-sm"
+            role="alert"
+            data-testid="trust-anchors-error"
+          >
             Trust anchors could not be loaded: {trustAnchorsError}
           </p>
         {:else if trustAnchors.length === 0}
-          <p class="text-base-content/50 text-sm">No trust anchors registered.</p>
+          <p class="text-base-content/50 text-sm">
+            No trust anchors registered.
+          </p>
         {:else}
           <div class="overflow-x-auto">
-            <table class="table table-sm w-full" data-testid="trust-anchors-table">
+            <table
+              class="table table-sm w-full"
+              data-testid="trust-anchors-table"
+            >
               <thead>
                 <tr>
                   <th>Fingerprint</th>
@@ -840,17 +879,20 @@
                   <tr>
                     <td class="font-mono text-xs">{anchor.fingerprint}</td>
                     <td class="text-xs">{anchor.subject}</td>
-                    <td class="whitespace-nowrap text-xs">{anchor.notBefore}</td>
+                    <td class="whitespace-nowrap text-xs">{anchor.notBefore}</td
+                    >
                     <td class="whitespace-nowrap text-xs">{anchor.notAfter}</td>
                     <td>
                       <button
                         class="btn btn-ghost btn-xs text-error"
                         title="Withdraw this trust anchor"
                         disabled={removingFingerprint === anchor.fingerprint}
-                        onclick={() => void handleRemoveTrustAnchor(anchor.fingerprint)}
+                        onclick={() =>
+                          void handleRemoveTrustAnchor(anchor.fingerprint)}
                       >
                         {#if removingFingerprint === anchor.fingerprint}
-                          <span class="loading loading-spinner loading-xs"></span>
+                          <span class="loading loading-spinner loading-xs"
+                          ></span>
                         {:else}
                           <Trash2 class="h-3.5 w-3.5" />
                         {/if}
@@ -865,15 +907,15 @@
 
         <label class="form-control w-full">
           <div class="label">
-            <span class="label-text font-semibold">Add Trust Anchors (PEM)</span>
+            <span class="label-text font-semibold">Add Trust Anchors (PEM)</span
+            >
           </div>
           <textarea
             class="textarea textarea-bordered w-full font-mono text-xs"
             rows="4"
             placeholder="-----BEGIN CERTIFICATE-----"
             data-testid="add-trust-anchors-input"
-            bind:value={newTrustAnchorsPem}
-          ></textarea>
+            bind:value={newTrustAnchorsPem}></textarea>
         </label>
         <div class="flex gap-2 pt-1">
           <button

@@ -26,24 +26,24 @@
 // ---------------------------------------------------------------------------
 
 /** Visual severity of a toast notification. */
-export type ToastType = 'success' | 'error' | 'info' | 'warning';
+export type ToastType = "success" | "error" | "info" | "warning";
 
 /** A single toast notification. */
 export interface Toast {
-    /** Unique identifier for this toast instance. */
-    readonly id: number;
-    /** Visual severity level. */
-    readonly type: ToastType;
-    /** Human-readable notification message. */
-    readonly message: string;
-    /** Duration in milliseconds before automatic dismissal. */
-    readonly duration: number;
+  /** Unique identifier for this toast instance. */
+  readonly id: number;
+  /** Visual severity level. */
+  readonly type: ToastType;
+  /** Human-readable notification message. */
+  readonly message: string;
+  /** Duration in milliseconds before automatic dismissal. */
+  readonly duration: number;
 }
 
 /** Shape of the reactive toast state. */
 export interface ToastState {
-    /** Active toast notifications, ordered by creation time. */
-    toasts: Toast[];
+  /** Active toast notifications, ordered by creation time. */
+  toasts: Toast[];
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ const timers = new Map<number, ReturnType<typeof setTimeout>>();
 
 /** Reactive toast state. */
 export const toastStore: ToastState = $state({
-    toasts: [] as Toast[],
+  toasts: [] as Toast[],
 });
 
 // ---------------------------------------------------------------------------
@@ -82,24 +82,28 @@ const DEFAULT_DURATION_MS = 5000;
  * @param message  - Notification message.
  * @param duration - Time in milliseconds before auto-dismiss (defaults to 5000).
  */
-export function showToast(type: ToastType, message: string, duration?: number): void {
-    const id = nextId++;
-    const resolvedDuration = duration ?? DEFAULT_DURATION_MS;
+export function showToast(
+  type: ToastType,
+  message: string,
+  duration?: number,
+): void {
+  const id = nextId++;
+  const resolvedDuration = duration ?? DEFAULT_DURATION_MS;
 
-    const toast: Toast = {
-        id,
-        type,
-        message,
-        duration: resolvedDuration,
-    };
+  const toast: Toast = {
+    id,
+    type,
+    message,
+    duration: resolvedDuration,
+  };
 
-    toastStore.toasts = [...toastStore.toasts, toast];
+  toastStore.toasts = [...toastStore.toasts, toast];
 
-    // Schedule automatic dismissal.
-    const timer = setTimeout(() => {
-        dismissToast(id);
-    }, resolvedDuration);
-    timers.set(id, timer);
+  // Schedule automatic dismissal.
+  const timer = setTimeout(() => {
+    dismissToast(id);
+  }, resolvedDuration);
+  timers.set(id, timer);
 }
 
 /**
@@ -109,10 +113,10 @@ export function showToast(type: ToastType, message: string, duration?: number): 
  * @param id - Toast identifier to dismiss.
  */
 export function dismissToast(id: number): void {
-    const timer = timers.get(id);
-    if (timer !== undefined) {
-        clearTimeout(timer);
-        timers.delete(id);
-    }
-    toastStore.toasts = toastStore.toasts.filter((t) => t.id !== id);
+  const timer = timers.get(id);
+  if (timer !== undefined) {
+    clearTimeout(timer);
+    timers.delete(id);
+  }
+  toastStore.toasts = toastStore.toasts.filter((t) => t.id !== id);
 }

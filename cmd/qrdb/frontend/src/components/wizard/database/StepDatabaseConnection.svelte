@@ -17,8 +17,7 @@
 <script lang="ts">
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
 
-  let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
-    $props();
+  let { onNext, onBack }: { onNext: () => void; onBack: () => void } = $props();
 
   interface ProtocolOption {
     readonly id: string;
@@ -60,18 +59,10 @@
   let transport: string = $state(
     dbWizardStore.connectionConfig?.transport ?? "unix",
   );
-  let address: string = $state(
-    dbWizardStore.connectionConfig?.address ?? "",
-  );
-  let caFile: string = $state(
-    dbWizardStore.connectionConfig?.caFile ?? "",
-  );
-  let certFile: string = $state(
-    dbWizardStore.connectionConfig?.certFile ?? "",
-  );
-  let keyFile: string = $state(
-    dbWizardStore.connectionConfig?.keyFile ?? "",
-  );
+  let address: string = $state(dbWizardStore.connectionConfig?.address ?? "");
+  let caFile: string = $state(dbWizardStore.connectionConfig?.caFile ?? "");
+  let certFile: string = $state(dbWizardStore.connectionConfig?.certFile ?? "");
+  let keyFile: string = $state(dbWizardStore.connectionConfig?.keyFile ?? "");
 
   /** Returns the placeholder for the currently selected protocol. */
   let currentPlaceholder = $derived(
@@ -84,9 +75,7 @@
   );
 
   /** Validation: address must be non-empty (or uses placeholder). */
-  let isValid = $derived(
-    (address.length > 0) || (currentPlaceholder.length > 0),
-  );
+  let isValid = $derived(address.length > 0 || currentPlaceholder.length > 0);
 
   function handleProtocolChange(id: string): void {
     transport = id;

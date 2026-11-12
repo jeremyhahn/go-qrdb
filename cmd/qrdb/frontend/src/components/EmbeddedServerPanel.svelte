@@ -73,7 +73,10 @@
 </script>
 
 {#if available}
-  <div class="card bg-base-100 mb-6 shadow-sm" data-testid="embedded-server-panel">
+  <div
+    class="card bg-base-100 mb-6 shadow-sm"
+    data-testid="embedded-server-panel"
+  >
     <div class="card-body gap-3 p-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h3 class="font-semibold">Embedded server</h3>
@@ -94,13 +97,21 @@
       </div>
 
       {#if error}
-        <div class="alert alert-error py-2 text-sm" role="alert" data-testid="embedded-error">
+        <div
+          class="alert alert-error py-2 text-sm"
+          role="alert"
+          data-testid="embedded-error"
+        >
           {error}
         </div>
       {/if}
 
       <div class="flex flex-wrap gap-2">
-        <button class="btn btn-sm btn-outline" onclick={onStartNew} disabled={busy}>
+        <button
+          class="btn btn-sm btn-outline"
+          onclick={onStartNew}
+          disabled={busy}
+        >
           Start new
         </button>
         <button
@@ -127,11 +138,19 @@
       </div>
 
       {#if confirmClear}
-        <div class="alert alert-warning py-2 text-sm" role="alertdialog" data-testid="embedded-clear-confirm">
+        <div
+          class="alert alert-warning py-2 text-sm"
+          role="alertdialog"
+          data-testid="embedded-clear-confirm"
+        >
           <span>Clear the saved embedded server configuration?</span>
           <div class="flex gap-2">
-            <button class="btn btn-xs" onclick={() => (confirmClear = false)}>Cancel</button>
-            <button class="btn btn-xs btn-error" onclick={handleClearConfirm}>Confirm clear</button>
+            <button class="btn btn-xs" onclick={() => (confirmClear = false)}
+              >Cancel</button
+            >
+            <button class="btn btn-xs btn-error" onclick={handleClearConfirm}
+              >Confirm clear</button
+            >
           </div>
         </div>
       {/if}

@@ -27,16 +27,16 @@
 
 /** Shape of the reactive identity state. */
 export interface IdentityState {
-    /** Whether identity information has been loaded. */
-    loaded: boolean;
-    /** Username from the X.509 certificate CN field. */
-    username: string;
-    /** Tenant identifier extracted from the certificate OU field. */
-    tenantId: string;
-    /** Roles assigned to the current user. */
-    roles: string[];
-    /** Flat list of permissions derived from the user's roles. */
-    permissions: string[];
+  /** Whether identity information has been loaded. */
+  loaded: boolean;
+  /** Username from the X.509 certificate CN field. */
+  username: string;
+  /** Tenant identifier extracted from the certificate OU field. */
+  tenantId: string;
+  /** Roles assigned to the current user. */
+  roles: string[];
+  /** Flat list of permissions derived from the user's roles. */
+  permissions: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +45,11 @@ export interface IdentityState {
 
 /** Reactive identity state. */
 export const identityStore: IdentityState = $state({
-    loaded: false,
-    username: '',
-    tenantId: '',
-    roles: [] as string[],
-    permissions: [] as string[],
+  loaded: false,
+  username: "",
+  tenantId: "",
+  roles: [] as string[],
+  permissions: [] as string[],
 });
 
 // ---------------------------------------------------------------------------
@@ -65,16 +65,16 @@ export const identityStore: IdentityState = $state({
  * @param permissions - Permissions derived from the user's roles.
  */
 export function setIdentity(
-    username: string,
-    tenantId: string,
-    roles: string[],
-    permissions: string[],
+  username: string,
+  tenantId: string,
+  roles: string[],
+  permissions: string[],
 ): void {
-    identityStore.loaded = true;
-    identityStore.username = username;
-    identityStore.tenantId = tenantId;
-    identityStore.roles = roles;
-    identityStore.permissions = permissions;
+  identityStore.loaded = true;
+  identityStore.username = username;
+  identityStore.tenantId = tenantId;
+  identityStore.roles = roles;
+  identityStore.permissions = permissions;
 }
 
 /**
@@ -84,14 +84,14 @@ export function setIdentity(
  * @returns `true` when the user's permission set includes the given value.
  */
 export function hasPermission(permission: string): boolean {
-    return identityStore.permissions.includes(permission);
+  return identityStore.permissions.includes(permission);
 }
 
 /** Resets the identity store to its initial unauthenticated state. */
 export function clearIdentity(): void {
-    identityStore.loaded = false;
-    identityStore.username = '';
-    identityStore.tenantId = '';
-    identityStore.roles = [];
-    identityStore.permissions = [];
+  identityStore.loaded = false;
+  identityStore.username = "";
+  identityStore.tenantId = "";
+  identityStore.roles = [];
+  identityStore.permissions = [];
 }

@@ -96,7 +96,6 @@
     Array.from(filteredGroupMap.keys()).sort(),
   );
 
-
   // ---------------------------------------------------------------------------
   // Selection helpers
   // ---------------------------------------------------------------------------
@@ -108,7 +107,10 @@
   }
 
   function isCategoryAllSelected(cat: PermissionCategory): boolean {
-    return cat.permissions.length > 0 && cat.permissions.every((p) => selectionSet.has(p));
+    return (
+      cat.permissions.length > 0 &&
+      cat.permissions.every((p) => selectionSet.has(p))
+    );
   }
 
   function isCategoryPartiallySelected(cat: PermissionCategory): boolean {
@@ -250,7 +252,10 @@
         {@const groupPerms = groupCats.flatMap((c) => c.permissions)}
         {@const groupHit = groupPerms.filter((p) => isSelected(p)).length}
 
-        <details class="group border-base-300 overflow-hidden rounded-lg border bg-base-200" open>
+        <details
+          class="group border-base-300 overflow-hidden rounded-lg border bg-base-200"
+          open
+        >
           <summary
             class="hover:bg-base-200/70 flex cursor-pointer select-none list-none items-center gap-3 px-4 py-2.5"
           >
@@ -290,10 +295,14 @@
             {#each groupCats as cat (cat.name)}
               {@const catSelected = isCategoryAllSelected(cat)}
               {@const catIndeterminate = isCategoryPartiallySelected(cat)}
-              {@const catHit = cat.permissions.filter((p) => isSelected(p)).length}
+              {@const catHit = cat.permissions.filter((p) =>
+                isSelected(p),
+              ).length}
 
-              <details class="group/cat border-base-300 border-b last:border-b-0">
-                      <summary
+              <details
+                class="group/cat border-base-300 border-b last:border-b-0"
+              >
+                <summary
                   class="hover:bg-base-300/40 flex cursor-pointer select-none list-none items-center gap-3 px-4 py-2"
                 >
                   <svg

@@ -38,7 +38,8 @@
   } from "@qrdb/sdk";
   import { showToast } from "../../stores/toast.svelte.ts";
 
-  export type SettingsSection = "sql" | "compaction" | "raft" | "barrier" | "connection";
+  export type SettingsSection =
+    "sql" | "compaction" | "raft" | "barrier" | "connection";
 
   let {
     client,
@@ -62,7 +63,7 @@
   const UNIT_SECONDS: Record<string, number> = {
     ns: 1e-9,
     us: 1e-6,
-    "µs": 1e-6,
+    µs: 1e-6,
     ms: 1e-3,
     s: 1,
     m: 60,
@@ -88,13 +89,20 @@
   }
 
   /** Whether a number input holds a whole number of at least `min`. */
-  function isIntAtLeast(v: number | null | undefined, min: number): v is number {
+  function isIntAtLeast(
+    v: number | null | undefined,
+    min: number,
+  ): v is number {
     return typeof v === "number" && Number.isInteger(v) && v >= min;
   }
 
   /** Whether a number input is empty. */
   function isBlank(v: number | null | undefined): boolean {
-    return v === null || v === undefined || (typeof v === "number" && Number.isNaN(v));
+    return (
+      v === null ||
+      v === undefined ||
+      (typeof v === "number" && Number.isNaN(v))
+    );
   }
 
   /** Splits a peers list on commas, whitespace and newlines. */
@@ -175,7 +183,12 @@
     connCaFile = db.connection?.caFile ?? "";
     connCertFile = db.connection?.certFile ?? "";
     connKeyFile = db.connection?.keyFile ?? "";
-    sqlOutcome = compactionOutcome = raftOutcome = barrierOutcome = connOutcome = null;
+    sqlOutcome =
+      compactionOutcome =
+      raftOutcome =
+      barrierOutcome =
+      connOutcome =
+        null;
   }
 
   // Plain (non-reactive) marker: reload the fields only when the database
@@ -193,12 +206,16 @@
   // ---------------------------------------------------------------------------
 
   let compactionError = $derived.by((): string => {
-    if (compactionMode === "revision" && !isIntAtLeast(compactionRevisions, 1)) {
+    if (
+      compactionMode === "revision" &&
+      !isIntAtLeast(compactionRevisions, 1)
+    ) {
       return "Revisions to keep must be a whole number of at least 1.";
     }
     if (compactionMode === "period") {
       const secs = durationSeconds(compactionPeriod.trim());
-      if (secs === null) return 'Retention period must be a duration such as "24h" or "90m".';
+      if (secs === null)
+        return 'Retention period must be a duration such as "24h" or "90m".';
       if (secs < 1) return "Retention period must be at least 1s.";
     }
     return "";
@@ -228,7 +245,10 @@
     if (!isIntAtLeast(barrierSharesTotal, 2)) {
       return "Total shares must be a whole number of at least 2.";
     }
-    if (!isIntAtLeast(barrierSharesRequired, 1) || barrierSharesRequired > barrierSharesTotal) {
+    if (
+      !isIntAtLeast(barrierSharesRequired, 1) ||
+      barrierSharesRequired > barrierSharesTotal
+    ) {
       return "Required shares must be between 1 and the total shares.";
     }
     return "";
@@ -254,9 +274,12 @@
     sqlOutcome = null;
     try {
       sqlSaving = true;
-      const db = sqlConcurrency === ""
-        ? await client.database.updateSQL(database.name)
-        : await client.database.updateSQL(database.name, { concurrency: sqlConcurrency });
+      const db =
+        sqlConcurrency === ""
+          ? await client.database.updateSQL(database.name)
+          : await client.database.updateSQL(database.name, {
+              concurrency: sqlConcurrency,
+            });
       onUpdated(db);
       sqlOutcome = { kind: "success", message: "SQL settings saved." };
       showToast("success", "SQL settings saved");
@@ -274,17 +297,24 @@
     compactionOutcome = null;
     let policy: DatabaseCompactionConfig | undefined;
     if (compactionMode === "revision") {
-      policy = { mode: "revision", retainRevisions: compactionRevisions as number };
+      policy = {
+        mode: "revision",
+        retainRevisions: compactionRevisions as number,
+      };
     } else if (compactionMode === "period") {
       policy = { mode: "period", retainPeriod: compactionPeriod.trim() };
     }
     try {
       compactionSaving = true;
-      const db = policy === undefined
-        ? await client.database.updateCompaction(database.name)
-        : await client.database.updateCompaction(database.name, policy);
+      const db =
+        policy === undefined
+          ? await client.database.updateCompaction(database.name)
+          : await client.database.updateCompaction(database.name, policy);
       onUpdated(db);
-      compactionOutcome = { kind: "success", message: "Compaction policy saved." };
+      compactionOutcome = {
+        kind: "success",
+        message: "Compaction policy saved.",
+      };
       showToast("success", "Compaction policy saved");
     } catch (err: unknown) {
       const msg = errorMessage(err, "Failed to update compaction policy");
@@ -304,7 +334,9 @@
       ...(isBlank(raftReplicaId) ? {} : { replicaId: raftReplicaId as number }),
       ...(raftAddress.trim() === "" ? {} : { raftAddress: raftAddress.trim() }),
       ...(peers.length === 0 ? {} : { peers }),
-      ...(isBlank(raftLocalNodeCount) ? {} : { localNodeCount: raftLocalNodeCount as number }),
+      ...(isBlank(raftLocalNodeCount)
+        ? {}
+        : { localNodeCount: raftLocalNodeCount as number }),
       ...(raftDiscovery === "" ? {} : { discovery: raftDiscovery }),
     };
     try {
@@ -338,7 +370,10 @@
     try {
       barrierSaving = true;
       onUpdated(await client.database.updateBarrier(database.name, barrier));
-      barrierOutcome = { kind: "success", message: "Barrier configuration saved." };
+      barrierOutcome = {
+        kind: "success",
+        message: "Barrier configuration saved.",
+      };
       showToast("success", "Barrier configuration saved");
     } catch (err: unknown) {
       const msg = errorMessage(err, "Failed to update barrier configuration");
@@ -361,11 +396,19 @@
     };
     try {
       connSaving = true;
-      onUpdated(await client.database.updateConnection(database.name, connection));
-      connOutcome = { kind: "success", message: "Connection configuration saved." };
+      onUpdated(
+        await client.database.updateConnection(database.name, connection),
+      );
+      connOutcome = {
+        kind: "success",
+        message: "Connection configuration saved.",
+      };
       showToast("success", "Connection configuration saved");
     } catch (err: unknown) {
-      const msg = errorMessage(err, "Failed to update connection configuration");
+      const msg = errorMessage(
+        err,
+        "Failed to update connection configuration",
+      );
       connOutcome = { kind: "error", message: msg };
       showToast("error", msg);
     } finally {
@@ -384,7 +427,9 @@
 {#snippet outcome(o: Outcome)}
   {#if o !== null}
     <div
-      class="alert alert-sm py-2 text-sm {o.kind === 'success' ? 'alert-success' : 'alert-error'}"
+      class="alert alert-sm py-2 text-sm {o.kind === 'success'
+        ? 'alert-success'
+        : 'alert-error'}"
       role={o.kind === "success" ? "status" : "alert"}
       data-testid="outcome-{o.kind}"
     >
@@ -400,7 +445,11 @@
 {/snippet}
 
 {#snippet saveButton(saving: boolean, disabled: boolean, label: string)}
-  <button type="submit" class="btn btn-primary btn-sm w-fit" disabled={saving || disabled}>
+  <button
+    type="submit"
+    class="btn btn-primary btn-sm w-fit"
+    disabled={saving || disabled}
+  >
     {#if saving}
       <span class="loading loading-spinner loading-xs"></span>
     {/if}
@@ -409,7 +458,11 @@
 {/snippet}
 
 {#if sections.includes("sql")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-sql" onsubmit={submit(saveSQL)}>
+  <form
+    class="card bg-base-200 shadow"
+    data-testid="db-settings-sql"
+    onsubmit={submit(saveSQL)}
+  >
     <div class="card-body gap-3">
       <h3 class="card-title text-base">SQL Settings</h3>
       <p class="text-base-content/70 text-sm">
@@ -417,7 +470,11 @@
       </p>
       <label class="form-control w-full max-w-xs">
         <span class="label-text text-xs">Concurrency</span>
-        <select class="select select-bordered select-sm" bind:value={sqlConcurrency} disabled={sqlSaving}>
+        <select
+          class="select select-bordered select-sm"
+          bind:value={sqlConcurrency}
+          disabled={sqlSaving}
+        >
           <option value="">Default (optimistic)</option>
           <option value="optimistic">Optimistic</option>
           <option value="pessimistic">Pessimistic</option>
@@ -430,19 +487,30 @@
 {/if}
 
 {#if sections.includes("compaction")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-compaction" onsubmit={submit(saveCompaction)}>
+  <form
+    class="card bg-base-200 shadow"
+    data-testid="db-settings-compaction"
+    onsubmit={submit(saveCompaction)}
+  >
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Scheduled Compaction</h3>
       <p class="text-base-content/70 text-sm">
-        Compact this database's revision history automatically, by revision count or by age.
+        Compact this database's revision history automatically, by revision
+        count or by age.
       </p>
       {#if database.compactionUnavailable}
-        <p class="text-warning text-xs">Compaction is unavailable on this database's state machine.</p>
+        <p class="text-warning text-xs">
+          Compaction is unavailable on this database's state machine.
+        </p>
       {/if}
       <div class="flex flex-wrap items-end gap-3">
         <label class="form-control w-full max-w-[12rem]">
           <span class="label-text text-xs">Mode</span>
-          <select class="select select-bordered select-sm" bind:value={compactionMode} disabled={compactionSaving}>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={compactionMode}
+            disabled={compactionSaving}
+          >
             <option value="off">Off</option>
             <option value="revision">Keep last N revisions</option>
             <option value="period">Keep history newer than</option>
@@ -475,23 +543,37 @@
         {/if}
       </div>
       {@render fieldError(compactionError)}
-      {@render saveButton(compactionSaving, compactionError !== "", "Save Compaction Policy")}
+      {@render saveButton(
+        compactionSaving,
+        compactionError !== "",
+        "Save Compaction Policy",
+      )}
       {@render outcome(compactionOutcome)}
     </div>
   </form>
 {/if}
 
 {#if sections.includes("raft")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-raft" onsubmit={submit(saveRaft)}>
+  <form
+    class="card bg-base-200 shadow"
+    data-testid="db-settings-raft"
+    onsubmit={submit(saveRaft)}
+  >
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Raft Consensus</h3>
       <p class="text-base-content/70 text-sm">
-        How this database replicates: no consensus, a local multi-node group, or a distributed cluster.
+        How this database replicates: no consensus, a local multi-node group, or
+        a distributed cluster.
       </p>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
         <label class="form-control">
           <span class="label-text text-xs">Cluster mode</span>
-          <select class="select select-bordered select-sm" aria-label="Cluster mode" bind:value={raftClusterMode} disabled={raftSaving}>
+          <select
+            class="select select-bordered select-sm"
+            aria-label="Cluster mode"
+            bind:value={raftClusterMode}
+            disabled={raftSaving}
+          >
             <option value="none">None</option>
             <option value="local">Local</option>
             <option value="distributed">Distributed</option>
@@ -499,19 +581,45 @@
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Replica ID</span>
-          <input type="number" min="1" class="input input-bordered input-sm" aria-label="Replica ID" bind:value={raftReplicaId} disabled={raftSaving} />
+          <input
+            type="number"
+            min="1"
+            class="input input-bordered input-sm"
+            aria-label="Replica ID"
+            bind:value={raftReplicaId}
+            disabled={raftSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Raft address</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Raft address" placeholder="10.0.0.1:7000" bind:value={raftAddress} disabled={raftSaving} />
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            aria-label="Raft address"
+            placeholder="10.0.0.1:7000"
+            bind:value={raftAddress}
+            disabled={raftSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Local node count</span>
-          <input type="number" min="1" class="input input-bordered input-sm" aria-label="Local node count" bind:value={raftLocalNodeCount} disabled={raftSaving} />
+          <input
+            type="number"
+            min="1"
+            class="input input-bordered input-sm"
+            aria-label="Local node count"
+            bind:value={raftLocalNodeCount}
+            disabled={raftSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Discovery</span>
-          <select class="select select-bordered select-sm" aria-label="Discovery" bind:value={raftDiscovery} disabled={raftSaving}>
+          <select
+            class="select select-bordered select-sm"
+            aria-label="Discovery"
+            bind:value={raftDiscovery}
+            disabled={raftSaving}
+          >
             <option value="">None</option>
             <option value="static">Static</option>
             <option value="multicast">Multicast</option>
@@ -520,33 +628,59 @@
           </select>
         </label>
         <label class="form-control md:col-span-3">
-          <span class="label-text text-xs">Peers (host:port, one per line)</span>
-          <textarea class="textarea textarea-bordered textarea-sm font-mono" rows="2" aria-label="Peers" bind:value={raftPeers} disabled={raftSaving}></textarea>
+          <span class="label-text text-xs">Peers (host:port, one per line)</span
+          >
+          <textarea
+            class="textarea textarea-bordered textarea-sm font-mono"
+            rows="2"
+            aria-label="Peers"
+            bind:value={raftPeers}
+            disabled={raftSaving}></textarea>
         </label>
       </div>
       {@render fieldError(raftError)}
-      {@render saveButton(raftSaving, raftError !== "", "Save Raft Configuration")}
+      {@render saveButton(
+        raftSaving,
+        raftError !== "",
+        "Save Raft Configuration",
+      )}
       {@render outcome(raftOutcome)}
     </div>
   </form>
 {/if}
 
 {#if sections.includes("barrier")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-barrier" onsubmit={submit(saveBarrier)}>
+  <form
+    class="card bg-base-200 shadow"
+    data-testid="db-settings-barrier"
+    onsubmit={submit(saveBarrier)}
+  >
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Encryption Barrier</h3>
       <p class="text-base-content/70 text-sm">
-        Encrypt this database at rest under a passphrase or an M-of-N Shamir split.
+        Encrypt this database at rest under a passphrase or an M-of-N Shamir
+        split.
       </p>
       <label class="flex cursor-pointer items-center gap-3">
-        <input type="checkbox" class="toggle toggle-sm toggle-primary" aria-label="Barrier enabled" bind:checked={barrierEnabled} disabled={barrierSaving} />
+        <input
+          type="checkbox"
+          class="toggle toggle-sm toggle-primary"
+          aria-label="Barrier enabled"
+          bind:checked={barrierEnabled}
+          disabled={barrierSaving}
+        />
         <span class="text-sm font-medium">Enabled</span>
       </label>
       {#if barrierEnabled}
         <div class="flex flex-wrap items-end gap-3">
           <label class="form-control w-full max-w-[12rem]">
             <span class="label-text text-xs">Mode</span>
-            <select class="select select-bordered select-sm" aria-label="Barrier mode" bind:value={barrierMode} disabled={barrierSaving}>
+            <select
+              class="select select-bordered select-sm"
+              aria-label="Barrier mode"
+              bind:value={barrierMode}
+              disabled={barrierSaving}
+            >
               <option value="passphrase">Passphrase</option>
               <option value="shamir">Shamir</option>
             </select>
@@ -554,24 +688,46 @@
           {#if barrierMode === "shamir"}
             <label class="form-control w-full max-w-[10rem]">
               <span class="label-text text-xs">Required shares (M)</span>
-              <input type="number" min="1" class="input input-bordered input-sm" aria-label="Required shares" bind:value={barrierSharesRequired} disabled={barrierSaving} />
+              <input
+                type="number"
+                min="1"
+                class="input input-bordered input-sm"
+                aria-label="Required shares"
+                bind:value={barrierSharesRequired}
+                disabled={barrierSaving}
+              />
             </label>
             <label class="form-control w-full max-w-[10rem]">
               <span class="label-text text-xs">Total shares (N)</span>
-              <input type="number" min="2" class="input input-bordered input-sm" aria-label="Total shares" bind:value={barrierSharesTotal} disabled={barrierSaving} />
+              <input
+                type="number"
+                min="2"
+                class="input input-bordered input-sm"
+                aria-label="Total shares"
+                bind:value={barrierSharesTotal}
+                disabled={barrierSaving}
+              />
             </label>
           {/if}
         </div>
       {/if}
       {@render fieldError(barrierError)}
-      {@render saveButton(barrierSaving, barrierError !== "", "Save Barrier Configuration")}
+      {@render saveButton(
+        barrierSaving,
+        barrierError !== "",
+        "Save Barrier Configuration",
+      )}
       {@render outcome(barrierOutcome)}
     </div>
   </form>
 {/if}
 
 {#if sections.includes("connection")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-connection" onsubmit={submit(saveConnection)}>
+  <form
+    class="card bg-base-200 shadow"
+    data-testid="db-settings-connection"
+    onsubmit={submit(saveConnection)}
+  >
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Remote Connection</h3>
       <p class="text-base-content/70 text-sm">
@@ -580,7 +736,12 @@
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <label class="form-control">
           <span class="label-text text-xs">Transport</span>
-          <select class="select select-bordered select-sm" aria-label="Transport" bind:value={connTransport} disabled={connSaving}>
+          <select
+            class="select select-bordered select-sm"
+            aria-label="Transport"
+            bind:value={connTransport}
+            disabled={connSaving}
+          >
             <option value="grpc">gRPC</option>
             <option value="rest">REST</option>
             <option value="quic">QUIC</option>
@@ -589,19 +750,46 @@
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Address</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            aria-label="Address"
+            placeholder={connTransport === "unix"
+              ? "/run/qrdb/qrdb.sock"
+              : "db.example.com:9090"}
+            bind:value={connAddress}
+            disabled={connSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">CA file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="CA file" bind:value={connCaFile} disabled={connSaving} />
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            aria-label="CA file"
+            bind:value={connCaFile}
+            disabled={connSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Client certificate file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Client certificate file" bind:value={connCertFile} disabled={connSaving} />
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            aria-label="Client certificate file"
+            bind:value={connCertFile}
+            disabled={connSaving}
+          />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Client key file</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Client key file" bind:value={connKeyFile} disabled={connSaving} />
+          <input
+            type="text"
+            class="input input-bordered input-sm font-mono"
+            aria-label="Client key file"
+            bind:value={connKeyFile}
+            disabled={connSaving}
+          />
         </label>
       </div>
       {@render fieldError(connError)}

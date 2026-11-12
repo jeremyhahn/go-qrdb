@@ -29,12 +29,12 @@ import type { DatabaseInfo } from "@qrdb/sdk";
 
 /** Shape of the reactive database state. */
 export interface DatabaseState {
-    /** Available databases fetched from the server. */
-    databases: DatabaseInfo[];
-    /** Currently selected database, or null if none. */
-    selectedDatabase: DatabaseInfo | null;
-    /** Whether the database list is being loaded. */
-    loading: boolean;
+  /** Available databases fetched from the server. */
+  databases: DatabaseInfo[];
+  /** Currently selected database, or null if none. */
+  selectedDatabase: DatabaseInfo | null;
+  /** Whether the database list is being loaded. */
+  loading: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,9 +43,9 @@ export interface DatabaseState {
 
 /** Reactive database state. */
 export const databaseStore: DatabaseState = $state({
-    databases: [] as DatabaseInfo[],
-    selectedDatabase: null,
-    loading: false,
+  databases: [] as DatabaseInfo[],
+  selectedDatabase: null,
+  loading: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ export const databaseStore: DatabaseState = $state({
  * @param databases - The full list of databases from the server.
  */
 export function setDatabases(databases: DatabaseInfo[]): void {
-    databaseStore.databases = databases;
+  databaseStore.databases = databases;
 }
 
 /**
@@ -67,7 +67,7 @@ export function setDatabases(databases: DatabaseInfo[]): void {
  * @param database - The database to select.
  */
 export function selectDatabase(database: DatabaseInfo): void {
-    databaseStore.selectedDatabase = database;
+  databaseStore.selectedDatabase = database;
 }
 
 /**
@@ -81,17 +81,17 @@ export function selectDatabase(database: DatabaseInfo): void {
  * @param database - The updated database snapshot from the server.
  */
 export function updateDatabase(database: DatabaseInfo): void {
-    databaseStore.databases = databaseStore.databases.map((d) =>
-        d.name === database.name ? database : d,
-    );
-    if (databaseStore.selectedDatabase?.name === database.name) {
-        databaseStore.selectedDatabase = database;
-    }
+  databaseStore.databases = databaseStore.databases.map((d) =>
+    d.name === database.name ? database : d,
+  );
+  if (databaseStore.selectedDatabase?.name === database.name) {
+    databaseStore.selectedDatabase = database;
+  }
 }
 
 /** Clears the current database selection. */
 export function clearSelection(): void {
-    databaseStore.selectedDatabase = null;
+  databaseStore.selectedDatabase = null;
 }
 
 /**
@@ -100,5 +100,5 @@ export function clearSelection(): void {
  * @param loading - Whether databases are currently being fetched.
  */
 export function setLoading(loading: boolean): void {
-    databaseStore.loading = loading;
+  databaseStore.loading = loading;
 }

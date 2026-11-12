@@ -15,8 +15,15 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, IndexQueryResponse, IndexScanResponse } from "@qrdb/sdk";
-  import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
+  import type {
+    Client,
+    IndexQueryResponse,
+    IndexScanResponse,
+  } from "@qrdb/sdk";
+  import type {
+    Column,
+    RowClickEvent,
+  } from "../../components/core/DataTable/types.ts";
   import { CrudTable } from "../../components/core/CrudTable";
   import FormModal from "../../components/FormModal.svelte";
   import ConfirmModal from "../../components/ConfirmModal.svelte";
@@ -226,17 +233,23 @@
 </script>
 
 <div class="flex flex-col gap-6">
-
-  <PageHeader title="Indexes" description="Manage secondary indexes for this database">
+  <PageHeader
+    title="Indexes"
+    description="Manage secondary indexes for this database"
+  >
     {#snippet actions()}
-      <button class="btn btn-outline btn-sm" onclick={loadIndexes}>Refresh</button>
-      <button class="btn btn-primary btn-sm" onclick={() => (showCreateModal = true)}>Create Index</button>
+      <button class="btn btn-outline btn-sm" onclick={loadIndexes}
+        >Refresh</button
+      >
+      <button
+        class="btn btn-primary btn-sm"
+        onclick={() => (showCreateModal = true)}>Create Index</button
+      >
     {/snippet}
   </PageHeader>
 
   <!-- Index list + query/scan panels -->
   <div class="flex gap-6">
-
     <!-- Index list CrudTable -->
     <div class="flex-1">
       <CrudTable
@@ -253,10 +266,16 @@
       <!-- Per-row drop button below selection hint -->
       {#if selectedName !== null}
         <div class="mt-3 flex items-center gap-3">
-          <span class="text-sm text-base-content/70">Selected: <span class="font-mono font-semibold">{selectedName}</span></span>
+          <span class="text-sm text-base-content/70"
+            >Selected: <span class="font-mono font-semibold"
+              >{selectedName}</span
+            ></span
+          >
           <button
             class="btn btn-error btn-xs"
-            onclick={() => { dropTarget = selectedName; }}
+            onclick={() => {
+              dropTarget = selectedName;
+            }}
           >
             Drop Index
           </button>
@@ -266,17 +285,20 @@
 
     <!-- Query / Scan side panel -->
     <div class="flex flex-col gap-4 w-80">
-
       <!-- Query panel -->
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-5">
-          <h3 class="card-title text-base font-semibold flex items-center gap-2">
+          <h3
+            class="card-title text-base font-semibold flex items-center gap-2"
+          >
             <Search class="h-4 w-4" />
             Query
           </h3>
           <div class="flex flex-col gap-2">
             <label class="form-control w-full">
-              <div class="label py-0"><span class="label-text text-xs">Index Name</span></div>
+              <div class="label py-0">
+                <span class="label-text text-xs">Index Name</span>
+              </div>
               <select
                 class="select select-bordered select-xs w-full font-mono"
                 bind:value={queryIndexName}
@@ -288,7 +310,9 @@
               </select>
             </label>
             <label class="form-control w-full">
-              <div class="label py-0"><span class="label-text text-xs">Value</span></div>
+              <div class="label py-0">
+                <span class="label-text text-xs">Value</span>
+              </div>
               <input
                 type="text"
                 class="input input-bordered input-xs w-full font-mono"
@@ -331,13 +355,17 @@
       <!-- Scan panel -->
       <div class="card bg-base-200 shadow-sm">
         <div class="card-body p-5">
-          <h3 class="card-title text-base font-semibold flex items-center gap-2">
+          <h3
+            class="card-title text-base font-semibold flex items-center gap-2"
+          >
             <ScanLine class="h-4 w-4" />
             Scan Range
           </h3>
           <div class="flex flex-col gap-2">
             <label class="form-control w-full">
-              <div class="label py-0"><span class="label-text text-xs">Index Name</span></div>
+              <div class="label py-0">
+                <span class="label-text text-xs">Index Name</span>
+              </div>
               <select
                 class="select select-bordered select-xs w-full font-mono"
                 bind:value={scanIndexName}
@@ -349,7 +377,9 @@
               </select>
             </label>
             <label class="form-control w-full">
-              <div class="label py-0"><span class="label-text text-xs">Start (inclusive)</span></div>
+              <div class="label py-0">
+                <span class="label-text text-xs">Start (inclusive)</span>
+              </div>
               <input
                 type="text"
                 class="input input-bordered input-xs w-full font-mono"
@@ -358,7 +388,9 @@
               />
             </label>
             <label class="form-control w-full">
-              <div class="label py-0"><span class="label-text text-xs">End (exclusive)</span></div>
+              <div class="label py-0">
+                <span class="label-text text-xs">End (exclusive)</span>
+              </div>
               <input
                 type="text"
                 class="input input-bordered input-xs w-full font-mono"
@@ -384,14 +416,20 @@
               </p>
               <div class="bg-base-300 rounded p-2 max-h-36 overflow-y-auto">
                 {#if scanResult.entries.length === 0}
-                  <p class="text-xs text-base-content/50">No entries in range.</p>
+                  <p class="text-xs text-base-content/50">
+                    No entries in range.
+                  </p>
                 {:else}
                   {#each scanResult.entries as entry (entry.value)}
                     <div class="mb-1">
-                      <span class="font-mono text-xs font-semibold">{entry.value}</span>
+                      <span class="font-mono text-xs font-semibold"
+                        >{entry.value}</span
+                      >
                       <ul class="ml-3 space-y-0.5">
                         {#each entry.keys as key (key)}
-                          <li class="font-mono text-xs text-base-content/70">{key}</li>
+                          <li class="font-mono text-xs text-base-content/70">
+                            {key}
+                          </li>
                         {/each}
                       </ul>
                     </div>
@@ -402,7 +440,6 @@
           {/if}
         </div>
       </div>
-
     </div>
   </div>
 </div>
@@ -414,7 +451,10 @@
   submitLabel="Create"
   loading={createLoading}
   onsubmit={() => void handleCreate()}
-  oncancel={() => { showCreateModal = false; resetCreateForm(); }}
+  oncancel={() => {
+    showCreateModal = false;
+    resetCreateForm();
+  }}
 >
   {#snippet body()}
     <div class="flex flex-col gap-3">
@@ -438,15 +478,28 @@
       </label>
       <div class="flex flex-col gap-2 pt-1">
         <label class="label cursor-pointer justify-start gap-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={createUnique} />
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={createUnique}
+          />
           <span class="label-text">Unique — enforce unique values</span>
         </label>
         <label class="label cursor-pointer justify-start gap-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={createSparse} />
-          <span class="label-text">Sparse — skip entries missing the field</span>
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={createSparse}
+          />
+          <span class="label-text">Sparse — skip entries missing the field</span
+          >
         </label>
         <label class="label cursor-pointer justify-start gap-3">
-          <input type="checkbox" class="checkbox checkbox-sm" bind:checked={createNumeric} />
+          <input
+            type="checkbox"
+            class="checkbox checkbox-sm"
+            bind:checked={createNumeric}
+          />
           <span class="label-text">Numeric — fixed-width integer encoding</span>
         </label>
       </div>
@@ -458,9 +511,12 @@
 <ConfirmModal
   open={dropTarget !== null}
   title="Drop Index"
-  message="Drop index &quot;{dropTarget ?? ''}&quot;? This action cannot be undone."
+  message="Drop index &quot;{dropTarget ??
+    ''}&quot;? This action cannot be undone."
   confirmLabel="Drop"
   variant="error"
   onconfirm={() => void handleDrop()}
-  oncancel={() => { dropTarget = null; }}
+  oncancel={() => {
+    dropTarget = null;
+  }}
 />

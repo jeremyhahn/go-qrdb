@@ -35,7 +35,10 @@
     Shield,
     LogOut,
   } from "lucide-svelte";
-  import type { ConnectionProfile, ConnectionState } from "../../stores/connection-manager.svelte.ts";
+  import type {
+    ConnectionProfile,
+    ConnectionState,
+  } from "../../stores/connection-manager.svelte.ts";
   import {
     navStore,
     toggleServerExpanded,
@@ -87,19 +90,25 @@
   // ---------------------------------------------------------------------------
 
   const isExpanded = $derived(navStore.expandedServers.has(profile.id));
-  const isConnected = $derived(connState?.status === 'connected');
-  const isSealed = $derived(connState?.status === 'sealed');
-  const isConnecting = $derived(connState?.status === 'connecting');
-  const ProfileIcon = $derived(profile.type === 'embedded' ? HardDrive : Server);
+  const isConnected = $derived(connState?.status === "connected");
+  const isSealed = $derived(connState?.status === "sealed");
+  const isConnecting = $derived(connState?.status === "connecting");
+  const ProfileIcon = $derived(
+    profile.type === "embedded" ? HardDrive : Server,
+  );
 
   /** CSS class for the status indicator dot. */
   const statusDotClass = $derived.by((): string => {
     switch (connState?.status) {
-      case 'connected':   return 'bg-success';
-      case 'sealed':
-      case 'needs-init':  return 'bg-warning';
-      case 'connecting':  return 'bg-base-content/30 animate-pulse';
-      default:            return 'bg-base-content/20';
+      case "connected":
+        return "bg-success";
+      case "sealed":
+      case "needs-init":
+        return "bg-warning";
+      case "connecting":
+        return "bg-base-content/30 animate-pulse";
+      default:
+        return "bg-base-content/20";
     }
   });
 
@@ -112,7 +121,7 @@
       if (!isActive) {
         // Switch active server then expand.
         await onactivate(profile.id);
-        navigateToAdmin(profile.id, 'dashboard');
+        navigateToAdmin(profile.id, "dashboard");
         expandServer(profile.id);
       } else {
         // Toggle expand/collapse on already-active server.
@@ -143,8 +152,8 @@
 <button
   class="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition-colors duration-150
     {isActive && isConnected
-      ? 'bg-primary/8 text-base-content'
-      : 'text-base-content/70 hover:bg-base-content/5 hover:text-base-content/90'}"
+    ? 'bg-primary/8 text-base-content'
+    : 'text-base-content/70 hover:bg-base-content/5 hover:text-base-content/90'}"
   class:justify-center={collapsed}
   onclick={handleServerRowClick}
   title={collapsed ? profile.name : undefined}
@@ -162,19 +171,27 @@
 
   <!-- Server name + status -->
   {#if !collapsed}
-    <span class="flex-1 truncate text-left text-xs font-medium">{profile.name}</span>
+    <span class="flex-1 truncate text-left text-xs font-medium"
+      >{profile.name}</span
+    >
 
     {#if isConnecting}
-      <span class="loading loading-spinner loading-xs shrink-0 text-base-content/40"></span>
+      <span
+        class="loading loading-spinner loading-xs shrink-0 text-base-content/40"
+      ></span>
     {:else}
       <span class="h-1.5 w-1.5 shrink-0 rounded-full {statusDotClass}"></span>
     {/if}
   {:else}
     <!-- Collapsed: status dot only -->
     {#if isConnecting}
-      <span class="loading loading-spinner loading-xs absolute bottom-0.5 right-0.5 h-1.5 w-1.5 text-base-content/40"></span>
+      <span
+        class="loading loading-spinner loading-xs absolute bottom-0.5 right-0.5 h-1.5 w-1.5 text-base-content/40"
+      ></span>
     {:else}
-      <span class="absolute bottom-0.5 right-0.5 h-1.5 w-1.5 rounded-full {statusDotClass}"></span>
+      <span
+        class="absolute bottom-0.5 right-0.5 h-1.5 w-1.5 rounded-full {statusDotClass}"
+      ></span>
     {/if}
   {/if}
 </button>
@@ -182,7 +199,6 @@
 <!-- Expanded subtree (hidden when collapsed or not expanded) -->
 {#if isExpanded && !collapsed}
   <div class="ml-4 border-l border-base-content/8 pl-2">
-
     {#if isConnected || isSealed}
       <!-- ── Databases section (only when fully connected) ────────── -->
       {#if isConnected}
@@ -190,7 +206,11 @@
           class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40 hover:text-base-content/60 transition-colors"
           onclick={toggleDbSection}
         >
-          <ChevronRight class="h-2.5 w-2.5 transition-transform {dbSectionOpen ? 'rotate-90' : ''}" />
+          <ChevronRight
+            class="h-2.5 w-2.5 transition-transform {dbSectionOpen
+              ? 'rotate-90'
+              : ''}"
+          />
           <Database class="h-3 w-3" />
           Databases
         </button>
@@ -213,7 +233,11 @@
         class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40 hover:text-base-content/60 transition-colors"
         onclick={toggleAdminSection}
       >
-        <ChevronRight class="h-2.5 w-2.5 transition-transform {adminSectionOpen ? 'rotate-90' : ''}" />
+        <ChevronRight
+          class="h-2.5 w-2.5 transition-transform {adminSectionOpen
+            ? 'rotate-90'
+            : ''}"
+        />
         <Shield class="h-3 w-3" />
         Server Admin
       </button>
@@ -222,7 +246,7 @@
         <div class="ml-1 mt-0.5 mb-1">
           <AdminNav
             profileId={profile.id}
-            serverMode={profile.serverMode ?? 'standalone'}
+            serverMode={profile.serverMode ?? "standalone"}
             profileType={profile.type}
             collapsed={false}
           />
@@ -239,7 +263,6 @@
           <span>Disconnect</span>
         </button>
       {/if}
-
     {:else}
       <!-- Not connected — show connect affordance -->
       <button
@@ -250,6 +273,5 @@
         <span>Connect</span>
       </button>
     {/if}
-
   </div>
 {/if}

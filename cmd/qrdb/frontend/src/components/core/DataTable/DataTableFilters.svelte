@@ -39,11 +39,13 @@
     column: Column<T>;
     currentFilter?: FilterState | undefined;
     anchorRect?: DOMRect | undefined;
-    onfilter?: ((
-      columnId: string,
-      value: FilterValue,
-      operator?: FilterOperator
-    ) => void) | undefined;
+    onfilter?:
+      | ((
+          columnId: string,
+          value: FilterValue,
+          operator?: FilterOperator,
+        ) => void)
+      | undefined;
     onclear?: ((columnId: string) => void) | undefined;
     onclose?: (() => void) | undefined;
   } = $props();
@@ -165,7 +167,8 @@
 
       case "date": {
         const from = dateFrom !== "" ? new Date(dateFrom) : new Date(0);
-        const to = dateTo !== "" ? new Date(dateTo) : new Date(8640000000000000);
+        const to =
+          dateTo !== "" ? new Date(dateTo) : new Date(8640000000000000);
         value = [from, to];
         operator = "between";
         break;
@@ -212,10 +215,7 @@
 <!-- Backdrop -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="fixed inset-0 z-40"
-  onclick={handleBackdropClick}
-></div>
+<div class="fixed inset-0 z-40" onclick={handleBackdropClick}></div>
 
 <!-- Filter popup -->
 <div
@@ -347,11 +347,7 @@
     >
       Clear
     </button>
-    <button
-      type="button"
-      class="btn btn-primary btn-sm"
-      onclick={applyFilter}
-    >
+    <button type="button" class="btn btn-primary btn-sm" onclick={applyFilter}>
       Apply
     </button>
   </div>
