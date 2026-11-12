@@ -185,8 +185,9 @@ func fullTierJob(name string) bool {
 // prTriggerTypes are the pull_request activity types ci.yml must declare.
 // `labeled` is deliberately absent (#853): Gitea maps every label change to it,
 // so each `task:*` or `code-review` change started a run that cancelled the
-// PR's run in progress.
-var prTriggerTypes = []string{"opened", "synchronize", "reopened"}
+// PR's run in progress. `ready_for_review` starts the run when a draft, which
+// runs no CI, is marked ready (ci-template v1.35.3).
+var prTriggerTypes = []string{"opened", "synchronize", "reopened", "ready_for_review"}
 
 // checkLine matches one call of ci-gate's check function:
 // `check <job> "$RESULT_X" <tier>`.
@@ -528,7 +529,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 env:
   CI_FULL_TIER: ${{ ` + fullTierIf + ` }}
@@ -596,8 +597,9 @@ func TestCITierProblems_CanFail(t *testing.T) {
 		return strings.Replace(tierFixture, old, new, 1)
 	}
 	cases := map[string]string{
-		"pull_request with labeled":     replace("synchronize, reopened]", "synchronize, reopened, labeled]"),
-		"pull_request without reopened": replace("synchronize, reopened]", "synchronize]"),
+		"pull_request with labeled":             replace("ready_for_review]", "ready_for_review, labeled]"),
+		"pull_request without reopened":         replace("reopened, ready_for_review]", "ready_for_review]"),
+		"pull_request without ready_for_review": replace("reopened, ready_for_review]", "reopened]"),
 		"full job with a different if": replace("    if: "+fullTierIf+"\n    needs: [build]",
 			"    if: github.event_name == 'push'\n    needs: [build]"),
 		"full job with no if":  replace("    if: "+fullTierIf+"\n    needs: [build]", "    needs: [build]"),

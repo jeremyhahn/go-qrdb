@@ -31,6 +31,11 @@ are not reconstructed here — their history is in the git log.
   whole (every read, write, list, scan, watch and transaction is refused), so no
   KV writer can forge one. Deleting a tenant deletes its policies, and a mint for
   a tenant that is deleted or retired is refused with `TenantNotFoundError`.
+- **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
+- **CI verifies commit signatures.** A Signatures job from ci-template
+  v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
+  and CI Gate requires it.
+
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
