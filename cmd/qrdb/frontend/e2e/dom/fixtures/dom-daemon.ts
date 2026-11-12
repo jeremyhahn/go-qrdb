@@ -25,7 +25,7 @@
  */
 
 import { spawn, type ChildProcess } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -86,6 +86,15 @@ export interface StartDaemonOptions {
    * so the lock spec boots with "mvcc".
    */
   sm?: "mvcc";
+  /**
+   * Volume pool names to map to local "dir" mounts (storage.volume_pools).
+   * Each pool gets a directory at <dataDir>-pools/<name>: config validation
+   * refuses a pool path inside the node's data directory. The pools are
+   * also granted to new tenants (tenant.default_entitlements: volume
+   * isolation and allowed_volume_pools). The volume service is built only
+   * over a barrier, so pair this with a seal other than "none".
+   */
+  volumePools?: string[];
 }
 
 export interface DomDaemon {
@@ -108,6 +117,24 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
       lines.push(`  shamir_threshold: ${opts.shamirThreshold ?? 2}`);
       lines.push(`  shamir_total: ${opts.shamirTotal ?? 3}`);
     }
+  }
+  if (opts.volumePools !== undefined && opts.volumePools.length > 0) {
+    const poolRoot = `${dirname(path)}-pools`;
+    lines.push("storage:", "  volume_pools:");
+    for (const name of opts.volumePools) {
+      const poolDir = join(poolRoot, name);
+      mkdirSync(poolDir, { recursive: true, mode: 0o700 });
+      lines.push(`    - name: "${name}"`, `      path: "${poolDir}"`, '      provider: "dir"');
+    }
+    // Entitlements are fail-closed and a create request carries none, so a
+    // new tenant may use the pools only through the operator defaults.
+    lines.push(
+      "tenant:",
+      "  default_entitlements:",
+      '    allowed_isolation_modes: ["prefix", "barrier", "volume"]',
+      "    allow_volume_storage: true",
+      `    allowed_volume_pools: [${opts.volumePools.map((n) => `"${n}"`).join(", ")}]`,
+    );
   }
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
