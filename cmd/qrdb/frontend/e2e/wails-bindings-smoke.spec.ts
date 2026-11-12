@@ -93,6 +93,7 @@ const EXPECTED_BINDINGS = [
   "LockBinding",
   "CredentialBinding",
   "AuditBinding",
+  "VolumePoolBinding",
   "DaemonBinding",
 ] as const;
 
@@ -198,6 +199,7 @@ test.describe("Wails Binding Registration — method presence", () => {
       "GCExpired",
     ],
     AuditBinding: ["Query"],
+    VolumePoolBinding: ["List", "Get", "Create", "Update", "Delete", "ListTenants"],
     UserBinding: ["List", "Get", "Create", "Update", "Delete"],
     RoleBinding: ["List", "Get", "Create", "Update", "Delete"],
     CertBinding: ["List", "Issue", "Enroll", "Export", "Revoke"],
