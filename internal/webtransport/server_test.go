@@ -335,10 +335,14 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 	// still established when the second CONNECT arrives.
 	release := make(chan struct{})
 	defer close(release)
+	upgradeErrs := make(chan error, 1)
 	s.H3.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := s.Upgrade(w, r); err == nil {
+		_, err := s.Upgrade(w, r)
+		if err == nil {
 			<-release
+			return
 		}
+		upgradeErrs <- err
 	})
 
 	udpConn, err := net.ListenUDP("udp", nil)
@@ -381,6 +385,8 @@ func TestServerRejectsPooledSessionWithoutFlowControl(t *testing.T) {
 	require.ErrorAs(t, err, &streamErr)
 	require.True(t, streamErr.Remote)
 	require.Equal(t, quic.StreamErrorCode(http3.ErrCodeRequestRejected), streamErr.ErrorCode)
+	// Upgrade reset the stream itself: the caller must not answer.
+	require.ErrorIs(t, <-upgradeErrs, webtransport.ErrUpgradeResponded)
 }
 
 func TestImmediateClose(t *testing.T) {

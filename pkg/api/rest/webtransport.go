@@ -116,7 +116,15 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	// caller check above already ran. Server.Close closes every QUIC
 	// connection and its session manager, ending each session's context and
 	// streams, before it closes H3 and waits for ServeQUICConn to return.
+	// An error satisfying errors.Is(err, webtransport.ErrUpgradeResponded)
+	// (a second session on a connection without WebTransport flow control,
+	// or a failed stream takeover after the 200 header) means Upgrade has
+	// already reset or answered the request stream: under quic-go v0.65.0
+	// WriteHeader after HTTPStream panics, so nothing more is written.
 	sess, err := s.webTransport.wt.Upgrade(w, r)
+	if errors.Is(err, webtransport.ErrUpgradeResponded) {
+		return
+	}
 	if err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})
 		return

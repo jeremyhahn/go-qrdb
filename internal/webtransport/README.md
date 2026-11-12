@@ -42,7 +42,8 @@ Return to the upstream module once a release fixes all six.
    came first. `Upgrade` writes the 200 header and then takes over the
    stream. If `HTTPStream` fails, the session is refused with the error. A
    second session without flow control is refused before any header is
-   written.
+   written. Both refusals wrap `ErrUpgradeResponded`: Upgrade has reset or
+   answered the stream, so the caller writes no response.
 2. **Bounded pre-session buffering** (`session_manager.go`). A connection
    buffers at most 16 streams per unknown session
    (`maxBufferedStreamsPerSession`) and 64 in total

@@ -389,8 +389,18 @@ func (s *Server) Close() error {
 	return err
 }
 
-var errMultipleSessionsWithoutFlowControl = errors.New("webtransport: multiple sessions require flow control")
+// ErrUpgradeResponded marks an Upgrade failure after which Upgrade has
+// answered or reset the request stream: the caller must not write a
+// response. Test it with errors.Is.
+var ErrUpgradeResponded = errors.New("webtransport: Upgrade has answered or reset the request stream; the caller must not write a response")
 
+var errMultipleSessionsWithoutFlowControl = fmt.Errorf("%w: multiple sessions require flow control", ErrUpgradeResponded)
+
+// Upgrade accepts the extended CONNECT request r as a WebTransport session.
+// On an error that satisfies errors.Is(err, ErrUpgradeResponded), Upgrade
+// has already reset the request stream or sent the 200 response, and the
+// caller must write nothing to w; on any other error the caller may still
+// answer the request.
 func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, error) {
 	if err := s.initialize(); err != nil {
 		return nil, err
@@ -475,7 +485,7 @@ func (s *Server) Upgrade(w http.ResponseWriter, r *http.Request) (*Session, erro
 	str, err := streamer.HTTPStream()
 	if err != nil {
 		// The 200 response was not sent, so no session exists: refuse it.
-		return nil, fmt.Errorf("webtransport: taking over the request stream: %w", err)
+		return nil, fmt.Errorf("%w: taking over the request stream: %w", ErrUpgradeResponded, err)
 	}
 	sessID := sessionID(str.StreamID())
 

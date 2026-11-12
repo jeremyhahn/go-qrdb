@@ -711,36 +711,129 @@ func rawWTConnect(t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
+	cc, err := rawWTDial(ctx, t, srv, pool, hs)
+	if err != nil {
+		return 0, "", err
+	}
+	return rawWTRequest(ctx, t, cc, srv, hs)
+}
+
+// rawWTDial opens a bare HTTP/3 client connection to srv whose SETTINGS
+// and transport parameters follow hs. It advertises no WebTransport flow
+// control, so the server allows one session on it.
+func rawWTDial(ctx context.Context, t *testing.T, srv *Server, pool *x509.CertPool, hs wtHandshake) (*http3.ClientConn, error) {
+	t.Helper()
 	conn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
 		EnableDatagrams:                  hs.quicDatagram,
 		EnableStreamResetPartialDelivery: hs.resetStreamAt,
 	})
 	if err != nil {
-		return 0, "", err
+		return nil, err
 	}
 	t.Cleanup(func() { _ = conn.CloseWithError(0, "") })
 	settings := map[uint64]uint64{}
 	if hs.wtEnabled {
 		settings[settingsWTEnabled] = 1
 	}
-	cc := (&http3.Transport{EnableDatagrams: hs.h3Datagram, AdditionalSettings: settings}).NewClientConn(conn)
+	return (&http3.Transport{EnableDatagrams: hs.h3Datagram, AdditionalSettings: settings}).NewClientConn(conn), nil
+}
+
+// rawWTRequest sends one authenticated extended CONNECT over cc and returns
+// the response status and, for a refusal, its body.
+func rawWTRequest(ctx context.Context, t *testing.T, cc *http3.ClientConn, srv *Server, hs wtHandshake) (int, string, error) {
+	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodConnect, "https://"+srv.Addr()+wtTestPath, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Proto = hs.protocol
 	req.Header.Set("Authorization", "Bearer good")
-	resp, err := cc.RoundTrip(req)
+	// Not cc.RoundTrip: for a request without a body it closes the send
+	// side of the CONNECT stream, which ends an accepted session at once.
+	str, err := cc.OpenRequestStream(ctx)
 	if err != nil {
 		return 0, "", err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	if err := str.SendRequestHeader(req); err != nil {
+		return 0, "", err
+	}
+	resp, err := str.ReadResponse()
+	if err != nil {
+		return 0, "", err
+	}
 	if resp.StatusCode == http.StatusOK {
-		// The body of an accepted CONNECT is the session stream.
+		// The body of an accepted CONNECT is the session stream: it stays
+		// open until the test ends.
+		t.Cleanup(func() { _ = resp.Body.Close() })
 		return resp.StatusCode, "", nil
 	}
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body), err
+}
+
+func TestWebTransport_SecondSessionWithoutFlowControlRefused(t *testing.T) {
+	var calls atomic.Int32
+	sessions := make(chan *WebTransportSession, 2)
+	release := make(chan struct{})
+	handler := func(sess *WebTransportSession, _ *auth.Identity, _ string) {
+		calls.Add(1)
+		sessions <- sess
+		<-release
+		_ = sess.CloseWithError(0, "")
+	}
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, handler))
+	// Registered after startWTServer, so this runs before the server stops.
+	t.Cleanup(func() { close(release) })
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	cc, err := rawWTDial(ctx, t, srv, pool, validWTHandshake)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if status, body, err := rawWTRequest(ctx, t, cc, srv, validWTHandshake); err != nil || status != http.StatusOK {
+		t.Fatalf("first CONNECT: status %d (%s), err %v; want 200", status, body, err)
+	}
+	var first *WebTransportSession
+	select {
+	case first = <-sessions:
+	case <-ctx.Done():
+		t.Fatal("the first session never reached the handler")
+	}
+
+	// The second CONNECT on the same connection: Upgrade resets its stream
+	// with H3_REQUEST_REJECTED, and REST must not then write a 400.
+	status, body, err := rawWTRequest(ctx, t, cc, srv, validWTHandshake)
+	var streamErr *quic.StreamError
+	var h3Err *http3.Error
+	switch {
+	case errors.As(err, &streamErr):
+		if !streamErr.Remote || streamErr.ErrorCode != quic.StreamErrorCode(http3.ErrCodeRequestRejected) {
+			t.Fatalf("second CONNECT: %v; want the server's H3_REQUEST_REJECTED reset", err)
+		}
+	case errors.As(err, &h3Err):
+		if !h3Err.Remote || h3Err.ErrorCode != http3.ErrCodeRequestRejected {
+			t.Fatalf("second CONNECT: %v; want the server's H3_REQUEST_REJECTED reset", err)
+		}
+	default:
+		t.Fatalf("second CONNECT: status %d (%s), err %v; want an H3_REQUEST_REJECTED reset", status, body, err)
+	}
+
+	// The first session is untouched: it still opens a stream.
+	str, err := first.OpenUniStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("first session OpenUniStreamSync after the refusal: %v", err)
+	}
+	if _, err := str.Write([]byte("still here")); err != nil {
+		t.Fatalf("write on the first session's stream: %v", err)
+	}
+	if err := str.Close(); err != nil {
+		t.Fatalf("close the first session's stream: %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("handler ran %d times, want once: the refused CONNECT must not reach it", n)
+	}
 }
 
 // TestWebTransport_NegotiationFailureOpensNoSession starts from a handshake
