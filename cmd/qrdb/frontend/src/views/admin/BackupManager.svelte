@@ -199,6 +199,9 @@
       restoreDecryptionKeyRef = "";
       restoreAllowPlaintext = false;
       restoreTargetShards = "";
+      // A restore rewrites shard state; reload the list so it shows the
+      // server's view afterwards.
+      await loadBackups();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
