@@ -60,6 +60,11 @@ are not reconstructed here — their history is in the git log.
   a failed `objstore.New` release the engine's data and journal providers (the
   local provider's `os.Root` and lifecycle goroutine), and a dropped database
   leaves the server's dedicated-store service cache (#1404).
+- **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
+- **CI verifies commit signatures.** A Signatures job from ci-template
+  v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
+  and CI Gate requires it.
+
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
