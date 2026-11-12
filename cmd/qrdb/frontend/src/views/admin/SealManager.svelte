@@ -339,6 +339,26 @@
     }
   }
 
+  /**
+   * Whether an initialization ceremony exists: a server awaiting `qrdb init`
+   * (or reporting no state) has none, so no CA and no SPKI pin.
+   */
+  function hasCeremony(status: CeremonyStatusResponse): boolean {
+    return status.state !== "" && status.state !== "awaiting_init";
+  }
+
+  /** Copies the ceremony CA's SPKI pin to the clipboard. */
+  async function copySpkiPin(): Promise<void> {
+    const pin = ceremonyStatus?.spkiPin ?? "";
+    if (pin === "") return;
+    try {
+      await navigator.clipboard.writeText(pin);
+      showToast("success", "SPKI pin copied");
+    } catch {
+      showToast("error", "Failed to copy the SPKI pin");
+    }
+  }
+
   /** Signs a holder CSR through the ceremony CA under the SO PIN. */
   async function handleSignCSR(): Promise<void> {
     if (csrUsername.trim() === "" || csrSoPin === "" || csrPem.trim() === "") {
@@ -1712,16 +1732,34 @@
         </button>
       </div>
       {#if ceremonyError}
-        <div class="alert alert-error text-sm" data-testid="ceremony-error">
-          <AlertCircle class="h-4 w-4 shrink-0" />
-          <span>{ceremonyError}</span>
+        <div role="alert" class="alert alert-warning text-sm" data-testid="ceremony-error">
+          <AlertTriangle class="h-4 w-4 shrink-0" />
+          <span>Ceremony status unavailable: {ceremonyError}</span>
         </div>
+      {:else if ceremonyStatus && !hasCeremony(ceremonyStatus)}
+        <p class="text-base-content/70 text-sm" data-testid="ceremony-none">
+          No ceremony: this server has not been initialized
+          (<span class="font-mono">qrdb init</span>).
+        </p>
       {:else if ceremonyStatus}
-        <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+        <dl class="grid grid-cols-[max-content_1fr] items-center gap-x-4 gap-y-1 text-sm">
           <dt class="text-base-content/70">State</dt>
           <dd class="font-mono" data-testid="ceremony-state">{ceremonyStatus.state}</dd>
           <dt class="text-base-content/70">CA SPKI pin</dt>
-          <dd class="font-mono break-all" data-testid="ceremony-spki-pin">{ceremonyStatus.spkiPin ?? "none"}</dd>
+          <dd class="flex items-center gap-2">
+            <span class="font-mono break-all select-all" data-testid="ceremony-spki-pin">{ceremonyStatus.spkiPin ?? "none"}</span>
+            {#if ceremonyStatus.spkiPin}
+              <button
+                class="btn btn-ghost btn-xs"
+                onclick={() => void copySpkiPin()}
+                aria-label="Copy SPKI pin"
+                title="Copy SPKI pin"
+                data-testid="ceremony-spki-copy"
+              >
+                <Copy class="h-3 w-3" />
+              </button>
+            {/if}
+          </dd>
         </dl>
       {/if}
 

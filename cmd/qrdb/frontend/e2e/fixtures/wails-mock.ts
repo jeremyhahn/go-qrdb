@@ -87,6 +87,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -777,6 +782,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
