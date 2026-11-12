@@ -284,12 +284,41 @@ test.describe("Admin - Role Management", () => {
       // Click the row
       await page.getByText("auditor").click();
 
-      // Should show the edit form
+      // Should show the edit form, and the click copied nothing
       await expect(page.getByText("Edit Role")).toBeVisible();
+      await expect(page.locator('[role="alert"]')).toHaveCount(0);
 
       // Name field should be populated
       const nameInput = page.getByPlaceholder("Enter role name");
       await expect(nameInput).toHaveValue("auditor");
+    });
+
+    test("a refused clipboard is an info toast and opens no row", async ({
+      page,
+    }) => {
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: () => Promise.reject(new Error("NotAllowedError")),
+          },
+        });
+      });
+      await navigateToRoles(page);
+      await seedRole(page, "copied-role");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Roles").click();
+      const cell = page.getByRole("cell", { name: "copied-role" });
+      await expect(cell).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await cell.hover();
+      await cell.getByTestId("cell-copy").click();
+
+      const alert = page.locator('[role="alert"]');
+      await expect(alert).toContainText("Clipboard unavailable");
+      await expect(alert).toHaveClass(/alert-info/);
+      await expect(page.locator(".alert-error")).toHaveCount(0);
+      await expect(page.getByText("Edit Role")).toHaveCount(0);
     });
 
     test("back button returns to role list from edit form", async ({

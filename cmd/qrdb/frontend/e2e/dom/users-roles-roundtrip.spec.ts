@@ -64,7 +64,8 @@ async function createRole(page: Page, name: string): Promise<void> {
   await page.getByRole("button", { name: "Create Role" }).click();
   await expect(page.getByRole("heading", { name: "Create Role" })).toBeVisible();
   await page.getByPlaceholder("Enter role name").fill(name);
-  await page.locator("#role-detail-tenant").selectOption("system");
+  // A fresh daemon has no "default" tenant: the form starts on System.
+  await expect(page.locator("#role-detail-tenant")).toHaveValue("system");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectToast(page, `Role "${name}" created`);
 }
@@ -72,6 +73,8 @@ async function createRole(page: Page, name: string): Promise<void> {
 /** Opens the detail view of the named row in the current list. */
 async function openRow(page: Page, text: string): Promise<void> {
   await page.getByRole("cell", { name: text, exact: true }).first().click();
+  // A row click opens the row; it never copies, so no clipboard toast.
+  await expect(page.locator(".toast .alert-error")).toHaveCount(0);
 }
 
 /** Opens the user's detail view after a reload. */
@@ -82,6 +85,8 @@ async function openUser(page: Page): Promise<void> {
 }
 
 test("roles + users create, assign, reassign, delete round-trip (UI ↔ live daemon)", async ({ page }) => {
+  // Some twenty page loads against a live daemon: past the 30 s default.
+  test.setTimeout(120_000);
   expect(daemon).not.toBeNull();
 
   // --- 1. Two custom roles ---------------------------------------------------
@@ -103,7 +108,7 @@ test("roles + users create, assign, reassign, delete round-trip (UI ↔ live dae
   await page.getByRole("button", { name: "Create User" }).click();
   await page.getByPlaceholder("Enter username").fill(USER);
   await page.getByTestId("user-email").fill(`${USER}@example.test`);
-  await page.locator("#user-detail-tenant").selectOption("system");
+  await expect(page.locator("#user-detail-tenant")).toHaveValue("system");
   await page.getByTestId(`user-role-${ROLE_A}`).check();
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectToast(page, `User "${USER}" created`);
