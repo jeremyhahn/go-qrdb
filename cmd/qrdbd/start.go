@@ -343,6 +343,9 @@ type startFlags struct {
 	// draw from when allocating a per-tenant Pebble. When no config
 	// file is provided, the empty default applies (no pools).
 	storageConfig qrdbconfig.StorageConfig
+	// databaseDefaults is the node's database_defaults block, filled into
+	// a database record at creation.
+	databaseDefaults qrdbconfig.DatabaseDefaults
 
 	// allowDegradedVolumeBoot mirrors storageConfig.AllowDegradedVolumeBoot
 	// but is bound to its own CLI flag (--allow-degraded-volume-boot) so a
@@ -1041,6 +1044,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// --allow-degraded-volume-boot flag: an explicit flag wins over the
 	// config file's allow_degraded_volume_boot.
 	f.storageConfig = cfg.Storage
+	f.databaseDefaults = cfg.DatabaseDefaults
 	if cmd.Flags().Changed("allow-degraded-volume-boot") {
 		f.storageConfig.AllowDegradedVolumeBoot = f.allowDegradedVolumeBoot
 	}
@@ -1513,7 +1517,8 @@ func runStart(f *startFlags) (err error) {
 	// from the replicated store, and its record is kept in the replicated
 	// catalog (lifecycle.BuildServices wires both and opens every recorded
 	// database), never in anything on this node's disk.
-	dbManager := database.NewManager(slog.Default(), f.dataDir)
+	dbManager := database.NewManager(slog.Default(), f.dataDir,
+		database.WithDefaults(database.DefaultsFromConfig(f.databaseDefaults)))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.
