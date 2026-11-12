@@ -577,6 +577,17 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
+    // A transport closed by connection.disconnect() (Settings' Disconnect)
+    // is reopened here: the REST client always targets the page origin, as
+    // App.svelte's initialize does. Without this the probe below fails with
+    // "not connected" and the profile can only recover by a page reload.
+    if (!client.connection.isConnected()) {
+        try {
+            await client.connection.connect(window.location.origin);
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
     const state = await resolveWebConnectionState(client, profile);
     connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 

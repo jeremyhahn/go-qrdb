@@ -97,6 +97,17 @@
     }
   }
 
+  /**
+   * Re-reads the client's transport status whenever the active profile's
+   * connection state (or the client itself) changes, so a reconnect from the
+   * header or connection manager while Settings is open shows Connected again.
+   */
+  $effect(() => {
+    void client;
+    void connManagerStore.states.get(connManagerStore.activeProfileId)?.status;
+    refreshConnected();
+  });
+
   /** Reads the live connection status from the SDK client. */
   function refreshConnected(): void {
     try {
