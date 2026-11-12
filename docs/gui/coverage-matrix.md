@@ -40,43 +40,43 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Cert | `issueCertWithLocalKey` | views/admin/CertManager.svelte | admin-certs.spec.ts (blank-CSR issue) | *verified* |
 | Cert | `list` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
 | Cert | `revoke` | views/admin/CertManager.svelte | admin-certs.spec.ts | *verified* |
-| Collection | `create` | views/admin/UserDetail.svelte views/user/IndexManager.svelte views/admin/RoleDetail.svelte  | admin-roles.spec.ts bulk-delete.spec.ts  |  |
-| Collection | `deleteDocument` | views/user/CollectionView.svelte  | none | no e2e |
-| Collection | `drop` | views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte views/user/CollectionView.svelte  | collection.spec.ts admin-databases.spec.ts  |  |
-| Collection | `get` | views/admin/UserDetail.svelte views/admin/Settings.svelte views/user/WatchView.svelte  | vector-namespace-fix.spec.ts timeseries-chart-fix.spec.ts  |  |
-| Collection | `getDocument` | none | none | not in UI |
-| Collection | `insertDocument` | views/user/CollectionView.svelte  | bulk-delete.spec.ts index.spec.ts  |  |
+| Collection | `create` | views/user/CollectionView.svelte (via `collectionClient`) | collections-crud.spec.ts | *verified* |
+| Collection | `deleteDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts collection-advanced.spec.ts | *verified* |
+| Collection | `drop` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
+| Collection | `get` | views/user/CollectionView.svelte | collections-crud.spec.ts (runs on collection select; not asserted alone) | UI *verified* |
+| Collection | `getDocument` | none | none | not in UI; *verified* |
+| Collection | `insertDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
 | Collection | `list` | views/admin/UserDetail.svelte views/admin/UserManager.svelte stores/connection-manager.svelte.ts  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
-| Collection | `listDocuments` | views/user/CollectionView.svelte  | none | no e2e |
-| Collection | `updateDocument` | views/user/CollectionView.svelte  | none | no e2e |
-| Connection | `connect` | App.svelte stores/connection-manager.svelte.ts  | ceremony-init-wizard.spec.ts web-mode-server-init-wizard.spec.ts  |  |
-| Connection | `disconnect` | stores/connection-manager.svelte.ts components/core/DataTable/DataTableCell.svelte  | embedded-wizard-barrier-already-initialized.spec.ts  |  |
+| Collection | `listDocuments` | views/user/CollectionView.svelte | collections-crud.spec.ts (documents appear in the list) | *verified* |
+| Collection | `updateDocument` | views/user/CollectionView.svelte | collection-advanced.spec.ts | *verified* |
+| Connection | `connect` | App.svelte | web-mode-smoke.spec.ts (boot path) | UI *verified* |
+| Connection | `disconnect` | none (hits are `connectionManager.disconnect`) | none | not in UI; *verified* |
 | Connection | `getVersion` | views/admin/Settings.svelte views/MainApp.svelte  | real-backend/sdk-wire-format.spec.ts  |  |
-| Connection | `isConnected` | none | none | not in UI |
-| ConnectionManager | `connect` | stores/connection-manager.svelte.ts App.svelte  | web-mode-server-init-wizard.spec.ts fixtures/web-mode-mock.ts  |  |
-| ConnectionManager | `deleteProfile` | stores/connection-manager.svelte.ts  | none | no e2e |
-| ConnectionManager | `disconnect` | stores/connection-manager.svelte.ts components/core/DataTable/DataTableCell.svelte  | embedded-wizard-barrier-already-initialized.spec.ts  |  |
-| ConnectionManager | `getActiveProfileId` | stores/connection-manager.svelte.ts  | none | no e2e |
-| ConnectionManager | `getState` | stores/connection-manager.svelte.ts  | vector-namespace-fix.spec.ts vector-database.spec.ts  |  |
-| ConnectionManager | `isEmbeddedAvailable` | stores/connection-manager.svelte.ts  | none | no e2e |
-| ConnectionManager | `listProfiles` | stores/connection-manager.svelte.ts  | none | no e2e |
-| ConnectionManager | `saveProfile` | components/ConnectionManager.svelte  | none | no e2e |
-| ConnectionManager | `setActive` | stores/connection-manager.svelte.ts  | none | no e2e |
-| Credential | `delete` | stores/toast.svelte.ts stores/connection-manager.svelte.ts views/admin/BackupManager.svelte  | collection.spec.ts admin-roles.spec.ts  |  |
-| Credential | `gcExpired` | views/admin/CredentialManager.svelte  | none | no e2e |
-| Credential | `list` | stores/connection-manager.svelte.ts views/MainApp.svelte views/admin/RoleManager.svelte  | tenant-barrier-unseal.spec.ts collection.spec.ts  |  |
-| Credential | `listVersions` | views/admin/CredentialManager.svelte  | none | no e2e |
-| Credential | `retrieve` | views/admin/CredentialManager.svelte  | none | no e2e |
-| Credential | `retrieveVersion` | none | none | not in UI |
+| Connection | `isConnected` | none | none | not in UI; *verified* |
+| ConnectionManager | `connect` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts | *verified* |
+| ConnectionManager | `deleteProfile` | stores/connection-manager.svelte.ts | none (the spec only checks the built-in profile has no delete button) | no e2e; *verified* |
+| ConnectionManager | `disconnect` | stores/connection-manager.svelte.ts | none | no e2e; *verified* |
+| ConnectionManager | `getActiveProfileId` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (boot path, not asserted) | *verified* |
+| ConnectionManager | `getState` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (Connected badge) | *verified* |
+| ConnectionManager | `isEmbeddedAvailable` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (no Embedded option in web mode) | *verified* |
+| ConnectionManager | `listProfiles` | stores/connection-manager.svelte.ts | web-mode-connection-manager.spec.ts (server tree) | *verified* |
+| ConnectionManager | `saveProfile` | components/ConnectionManager.svelte | none (Add Server dialog opened, never saved) | no e2e; *verified* |
+| ConnectionManager | `setActive` | stores/connection-manager.svelte.ts | none | no e2e; *verified* |
+| Credential | `delete` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
+| Credential | `gcExpired` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
+| Credential | `list` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
+| Credential | `listVersions` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (version history) | *verified* |
+| Credential | `retrieve` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (reveal) | *verified* |
+| Credential | `retrieveVersion` | none | none | not in UI; *verified* |
 | Credential | `rotate` | views/admin/CredentialManager.svelte  | credential-manager.spec.ts  |  |
-| Credential | `store` | views/admin/CredentialManager.svelte  | admin-dashboard.spec.ts admin-views.spec.ts  |  |
-| Credential | `strategy` | views/admin/CredentialManager.svelte  | collection.spec.ts admin-seal-officers.spec.ts  |  |
-| Credential | `submit` | views/admin/CredentialManager.svelte  | tenant-barrier-unseal.spec.ts admin-seal-officers.spec.ts  |  |
-| Daemon | `daemonLogs` | stores/daemon.svelte.ts components/admin/DaemonPanel.svelte  | none | no e2e |
-| Daemon | `daemonStatus` | stores/daemon.svelte.ts components/admin/DaemonPanel.svelte  | none | no e2e |
-| Daemon | `restartDaemon` | components/admin/DaemonPanel.svelte  | none | no e2e |
-| Daemon | `startDaemon` | components/admin/DaemonPanel.svelte  | dom/kv-explorer-roundtrip.spec.ts dom/tenant-management.spec.ts  |  |
-| Daemon | `stopDaemon` | components/admin/DaemonPanel.svelte  | dom/tenant-management.spec.ts dom/sql-browser-roundtrip.spec.ts  |  |
+| Credential | `store` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
+| Credential | `strategy` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (strategy badge) | *verified* |
+| Credential | `submit` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
+| Daemon | `daemonLogs` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts (log viewer) | *verified* |
+| Daemon | `daemonStatus` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
+| Daemon | `restartDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
+| Daemon | `startDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
+| Daemon | `stopDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Database | `barrierStatus` | views/admin/TenantManager.svelte components/DatabaseHoldersPanel.svelte  | none | no e2e |
 | Database | `create` | views/user/IndexManager.svelte views/admin/UserDetail.svelte views/admin/DatabaseDetail.svelte  | collection.spec.ts database-switching.spec.ts  |  |
 | Database | `drop` | views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte views/user/CollectionView.svelte  | admin-databases.spec.ts index.spec.ts  |  |
