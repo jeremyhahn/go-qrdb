@@ -116,8 +116,10 @@ test.describe("Database Creation Wizard", () => {
     await openCreateWizard(page);
     await fillNameAndAdvance(page, "test-pebble-pass");
 
-    // Storage Backend -- Pebble (default)
+    // Storage Backend -- Pebble (default); a per-database barrier needs the
+    // database's own data directory.
     await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible();
+    await page.locator("#data-dir-input").fill("/tmp/qrdb-e2e-test-pebble-pass");
     await page.getByRole("button", { name: "Next" }).click();
 
     // SQL Wire Protocols step -- Raft step skipped for standalone

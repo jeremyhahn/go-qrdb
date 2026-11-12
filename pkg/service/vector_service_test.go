@@ -1353,12 +1353,12 @@ func TestVectorService_SearchByMetadata_Success(t *testing.T) {
 	require.NoError(t, storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        1,
 		Embedding: []float32{1.0, 2.0, 3.0},
-		Metadata:  map[string]string{"category": "A"},
+		Metadata:  map[string]string{"category": `"A"`},
 	}))
 	require.NoError(t, storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 		ID:        2,
 		Embedding: []float32{4.0, 5.0, 6.0},
-		Metadata:  map[string]string{"category": "B"},
+		Metadata:  map[string]string{"category": `"B"`},
 	}))
 
 	req := &SearchByMetadataRequest{
@@ -2047,7 +2047,7 @@ func TestVectorService_SearchByMetadata_WithPagination(t *testing.T) {
 		_ = storage.UpsertVector(ctx, testScopedNS("test-namespace"), &vector.VectorValue{
 			ID:        uint64(i + 1),
 			Embedding: []float32{float32(i), float32(i), float32(i)},
-			Metadata:  map[string]string{"category": "A"},
+			Metadata:  map[string]string{"category": `"A"`},
 		})
 	}
 

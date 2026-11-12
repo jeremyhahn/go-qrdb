@@ -64,10 +64,13 @@ test.describe("Settings view on an unsealed server (seal none)", () => {
   test("shows the server's version, connected and initialized state", async ({ page, request }) => {
     await openSettings(page);
 
-    const status = await getV1<{ node_id: string }>(request, "/status");
+    // The About table's server version is the build version GET /status
+    // reports (what `qrdbd version` prints), not the node id.
+    const status = await getV1<{ version: string; node_id: string }>(request, "/status");
     expect(status.status).toBe(200);
-    expect(status.body.node_id).not.toBe("");
-    await expect(versionCell(page, "server")).toHaveText(status.body.node_id, { timeout: LOAD_TIMEOUT });
+    expect(status.body.version).not.toBe("");
+    expect(status.body.version).not.toBe(status.body.node_id);
+    await expect(versionCell(page, "server")).toHaveText(status.body.version, { timeout: LOAD_TIMEOUT });
     await expect(versionCell(page, "sdk")).not.toBeEmpty();
 
     await expect(page.getByTestId("settings-connection-status")).toHaveText("Connected", { timeout: LOAD_TIMEOUT });

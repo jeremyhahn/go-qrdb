@@ -163,3 +163,18 @@ func probeCodecs(data []byte) (string, bool) {
 	}
 	return "", false
 }
+
+// importFormats is the one list of batch import file formats: "auto"
+// detects the format from the filename and content (DetectFormat), the
+// rest name a format explicitly.
+var importFormats = []string{"auto", "csv", "json", "ndjson", "yaml", "archive"}
+
+// ImportFormats returns the batch import file formats, "auto" first. The
+// REST route GET /batch/import/formats and the desktop binding's
+// AvailableImportFormats both report this list. The caller owns the
+// returned slice.
+func ImportFormats() []string {
+	out := make([]string, len(importFormats))
+	copy(out, importFormats)
+	return out
+}

@@ -471,11 +471,11 @@ func TestConvertToStringMap(t *testing.T) {
 			"nil":    nil,
 		}
 		result := convertToStringMap(input)
-		assert.Equal(t, "hello", result["string"])
+		assert.Equal(t, `"hello"`, result["string"])
 		assert.Equal(t, "42", result["int"])
 		assert.Equal(t, "3.14", result["float"])
 		assert.Equal(t, "true", result["bool"])
-		assert.Equal(t, "<nil>", result["nil"])
+		assert.Equal(t, "null", result["nil"])
 	})
 }
 
@@ -1264,7 +1264,7 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify vector was updated in storage
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		assert.Equal(t, "new_value", updatedVec.Metadata["new_key"])
+		assert.Equal(t, `"new_value"`, updatedVec.Metadata["new_key"])
 		// old_key should NOT be present since Merge=false
 		_, hasOldKey := updatedVec.Metadata["old_key"]
 		assert.False(t, hasOldKey)
@@ -1311,9 +1311,9 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify merged metadata
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		assert.Equal(t, "new_value", updatedVec.Metadata["new_key"])
+		assert.Equal(t, `"new_value"`, updatedVec.Metadata["new_key"])
 		assert.Equal(t, "old_value", updatedVec.Metadata["old_key"]) // Preserved
-		assert.Equal(t, "updated", updatedVec.Metadata["keep"])      // Updated
+		assert.Equal(t, `"updated"`, updatedVec.Metadata["keep"])    // Updated
 	})
 
 	t.Run("update metadata on nonexistent vector returns error", func(t *testing.T) {

@@ -199,6 +199,9 @@
       restoreDecryptionKeyRef = "";
       restoreAllowPlaintext = false;
       restoreTargetShards = "";
+      // A restore rewrites shard state; reload the list so it shows the
+      // server's view afterwards.
+      await loadBackups();
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -318,7 +321,7 @@
                   <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
                   <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
                   <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
-                  <tr><th>Duration</th><td>{selectedBackup.duration}</td></tr>
+                  <tr><th>Duration</th><td>{selectedBackup.durationMs} ms</td></tr>
                   <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
                   <tr>
                     <th>Metadata</th>

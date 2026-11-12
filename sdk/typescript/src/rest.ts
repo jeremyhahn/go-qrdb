@@ -666,7 +666,7 @@ export class RestClient implements Client {
                 // Attempt to retrieve server version from status endpoint.
                 try {
                     const status = await this.fetchJSON<StatusResponse>('/status');
-                    this.serverVersion = status.nodeId ?? '';
+                    this.serverVersion = status.version ?? '';
                 } catch {
                     // Non-fatal: version remains empty.
                 }
@@ -1020,6 +1020,9 @@ export class RestClient implements Client {
                 value_field: opts.value_field ?? '',
                 skip_header: opts.skip_header ?? false,
                 transactional: opts.transactional ?? false,
+                // The server refuses a non-empty collection (batch import
+                // writes the KV keyspace only) rather than dropping it.
+                ...(opts.collection ? { collection: opts.collection } : {}),
             }),
         });
         const base = `/batch/import/${encodeURIComponent(begin.sessionId)}`;
@@ -1674,7 +1677,6 @@ export class RestClient implements Client {
                 }>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
-                        offset: req.offset,
                         cursor: req.cursor,
                         shard_id: req.shardId,
                     })}`,
@@ -2653,12 +2655,15 @@ export class RestClient implements Client {
                 // top level and adds an "admin" key (the Go handler's
                 // createTenantResponse anonymously embeds *tenantResponse);
                 // split them apart to match the SDK's {tenant, admin} contract.
-                const raw = await this.fetchJSON<TenantInfo & { admin: TenantAdminCredential }>('/v1/tenants', {
+                const raw = await this.fetchJSON<TenantInfo & {
+                    admin: TenantAdminCredential;
+                    so?: TenantAdminCredential;
+                }>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
-                const { admin, ...tenant } = raw;
-                return { tenant, admin };
+                const { admin, so, ...tenant } = raw;
+                return so === undefined ? { tenant, admin } : { tenant, admin, so };
             },
             get: async (tenantId: string): Promise<GetTenantResponse> => {
                 this.ensureConnected();

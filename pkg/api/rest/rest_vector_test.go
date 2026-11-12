@@ -505,6 +505,29 @@ func TestHandleVectorUpsert_Success(t *testing.T) {
 	}
 }
 
+// TestHandleVectorUpsert_ReportsCreated proves the upsert response carries the
+// service's created flag on the wire under "created", true and false alike.
+func TestHandleVectorUpsert_ReportsCreated(t *testing.T) {
+	for _, created := range []bool{true, false} {
+		srv := newVectorServer(&mockVectorService{
+			upsertVectorFn: func(_ context.Context, req *service.UpsertVectorRequest) (*service.UpsertVectorResponse, error) {
+				return &service.UpsertVectorResponse{ID: req.ID, Version: 1, Success: true, Created: created}, nil
+			},
+		})
+		body := `{"namespace":"ns","id":1,"vector":[1.0,2.0,3.0]}`
+		req := httptest.NewRequest(http.MethodPost, "/vector/upsert", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.dispatch(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+
+		var raw map[string]interface{}
+		decodeJSON(t, rec, &raw)
+		if got, ok := raw["created"].(bool); !ok || got != created {
+			t.Fatalf("created = %v (%T), want %v", raw["created"], raw["created"], created)
+		}
+	}
+}
+
 func TestHandleVectorUpsert_NilService(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 	body := `{"namespace":"ns","id":1,"vector":[1.0]}`
@@ -1201,6 +1224,26 @@ func TestHandleVectorGetIndexStats_Success(t *testing.T) {
 	decodeJSON(t, rec, &resp)
 	if resp.VectorCount != 100 {
 		t.Fatalf("vector_count = %d, want 100", resp.VectorCount)
+	}
+}
+
+// TestHandleVectorGetIndexStats_ReportsDistanceMetric proves the index stats
+// response carries the namespace's distance metric under "distance_metric".
+func TestHandleVectorGetIndexStats_ReportsDistanceMetric(t *testing.T) {
+	srv := newVectorServer(&mockVectorService{
+		getIndexStatsFn: func(_ context.Context, req *service.GetIndexStatsRequest) (*service.GetIndexStatsResponse, error) {
+			return &service.GetIndexStatsResponse{Namespace: req.Namespace, IndexType: "HNSW", DistanceMetric: "euclidean"}, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/vector/index/stats?namespace=ns", nil)
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var raw map[string]interface{}
+	decodeJSON(t, rec, &raw)
+	if raw["distance_metric"] != "euclidean" {
+		t.Fatalf("distance_metric = %v, want euclidean", raw["distance_metric"])
 	}
 }
 

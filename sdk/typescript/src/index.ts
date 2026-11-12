@@ -253,6 +253,7 @@ export type {
     // User management
     User,
     CreateUserRequest,
+    RoleBinding,
     UpdateUserRequest,
     AddCertBindingRequest,
     CertBinding,
@@ -386,6 +387,7 @@ export type {
     // Tenant management
     TenantIsolationType,
     TenantInfo,
+    TenantStatus,
     CreateTenantRequest,
     CreateTenantResponse,
     GetTenantResponse,

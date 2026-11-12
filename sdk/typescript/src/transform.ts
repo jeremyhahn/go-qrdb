@@ -59,6 +59,7 @@ export function snakeToCamelKey(key: string): string {
  */
 const USER_MAP_KEYS: ReadonlySet<string> = new Set([
     'metadata',
+    'attributes',
     'filter',
     'filters',
     'metadataFilter',

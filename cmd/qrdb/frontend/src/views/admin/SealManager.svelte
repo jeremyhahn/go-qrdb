@@ -45,7 +45,13 @@
 
   /** Status refused with 503 SEALED: the gate is closed on an unsealed barrier. */
   function isClusterHeldError(err: unknown): boolean {
-    return err instanceof TransportError && err.statusCode === 503 && err.message.includes('"code":"SEALED"');
+    // The SDK reduces the server's {"error":"barrier sealed","code":"SEALED"}
+    // body to its error text, so the refusal reads "...: barrier sealed".
+    return (
+      err instanceof TransportError &&
+      err.statusCode === 503 &&
+      (err.message.endsWith(": barrier sealed") || err.message.includes('"code":"SEALED"'))
+    );
   }
 
   // Change passphrase form state (passphrase-held barriers).
