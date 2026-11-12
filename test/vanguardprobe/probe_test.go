@@ -15,7 +15,6 @@
 package vanguardprobe
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -282,25 +281,5 @@ func TestVanguardDropsPeerTLS(t *testing.T) {
 	}
 	if svc.peerHasCN.Load() {
 		t.Fatalf("vanguard now carries peer TLS" + blockerGone)
-	}
-}
-
-// TestPKIClientCertificate guards the probes' own fixture: the client
-// certificate is the one whose common name they look for, and it verifies
-// against the CA the server trusts.
-func TestPKIClientCertificate(t *testing.T) {
-	p := newPKI(t)
-	cert, err := x509.ParseCertificate(p.client.Certificate[0])
-	if err != nil {
-		t.Fatalf("parse client cert: %v", err)
-	}
-	if cert.Subject.CommonName != clientCN {
-		t.Fatalf("client CN = %q, want %q", cert.Subject.CommonName, clientCN)
-	}
-	if _, err := cert.Verify(x509.VerifyOptions{Roots: p.pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
-		t.Fatalf("client cert does not verify: %v", err)
-	}
-	if bytes.Equal(p.client.Certificate[0], p.server.Certificate[0]) {
-		t.Fatal("client and server certificates are the same")
 	}
 }

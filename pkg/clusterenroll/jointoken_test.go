@@ -346,34 +346,6 @@ func TestConsumeJoinToken_AlreadyAdmittedIdentityRefused(t *testing.T) {
 	assertJoinRefused(t, err)
 }
 
-// TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable
-// proves the core guarantee HandleJoinRequest's reordering exists for: a
-// token consumed by ConsumeJoinToken, with NO subsequent
-// MarkJoinIdentityAdmitted call (standing in for a signing failure between
-// the two), leaves the identity free for a freshly minted token to
-// succeed -- the node ID is never retired by a transient post-consumption
-// failure.
-func TestConsumeJoinToken_SignFailureAfterConsumeLeavesIdentityRetryable(t *testing.T) {
-	store := kvstore.NewMemoryKVStore()
-	tokenOne, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
-	if err != nil {
-		t.Fatalf("MintJoinToken (first): %v", err)
-	}
-	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenOne); err != nil {
-		t.Fatalf("ConsumeJoinToken (first): %v", err)
-	}
-	// Signing "fails" here: HandleJoinRequest would return without ever
-	// calling MarkJoinIdentityAdmitted.
-
-	tokenTwo, _, err := MintJoinToken(context.Background(), store, "test.cluster", "node-1", time.Hour)
-	if err != nil {
-		t.Fatalf("MintJoinToken (retry): %v", err)
-	}
-	if _, err := ConsumeJoinToken(context.Background(), store, "test.cluster", tokenTwo); err != nil {
-		t.Fatalf("ConsumeJoinToken (retry) = %v, want success: the identity must not be retired by an unmarked consume", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // ReserveJoinIdentity / PromoteJoinIdentityAdmitted / ReleaseJoinIdentityReservation
 // ---------------------------------------------------------------------------

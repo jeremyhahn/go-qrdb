@@ -362,15 +362,3 @@ func TestGuardedMemoryStore_PutAllIfAllUnchanged_RollsBackAnOverwriteOnMidBatchW
 		t.Fatalf("Get(widget/b) after a rolled-back batch = %q, %v; want absent", v, getErr)
 	}
 }
-
-func TestGuardedMemoryStore_IsAlsoAPlainKVStore(t *testing.T) {
-	var s kvstore.KVStore = NewGuardedMemoryStore()
-	ctx := context.Background()
-	if err := s.Put(ctx, "k", []byte("v")); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	v, err := s.Get(ctx, "k")
-	if err != nil || string(v) != "v" {
-		t.Fatalf("Get = %q, %v; want %q, nil", v, err, "v")
-	}
-}

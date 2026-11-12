@@ -168,46 +168,6 @@ func TestNewServer_DefaultValues(t *testing.T) {
 	assert.Nil(t, s.sqlEngine)
 }
 
-func TestNewServer_WithDatabaseName(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithDatabaseName("mydb"))
-
-	assert.Equal(t, "mydb", s.dbName)
-}
-
-func TestNewServer_WithTLS(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS13}
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithTLS(tlsCfg))
-
-	assert.Equal(t, tlsCfg, s.tlsConfig)
-}
-
-func TestNewServer_WithAuthMiddleware(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithAuthMiddleware(mw))
-
-	assert.NotNil(t, s.authMW)
-}
-
-func TestNewServer_WithLogger(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-	logger := slog.Default()
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithLogger(logger))
-
-	assert.Equal(t, logger, s.logger)
-}
-
 func TestNewServer_MultipleOptions(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
@@ -302,30 +262,6 @@ func TestStart_InvalidAddress(t *testing.T) {
 // WithDatabaseManager option tests
 // ---------------------------------------------------------------------------
 
-func TestNewServer_WithDatabaseManager(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-
-	dataDir := t.TempDir()
-	mgr := databasetest.NewManager(slog.Default(), dataDir)
-	defer func() { _ = mgr.Close() }()
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithDatabaseManager(mgr))
-
-	require.NotNil(t, s)
-	assert.Equal(t, mgr, s.dbManager)
-}
-
-func TestNewServer_WithDatabaseManager_Nil(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithDatabaseManager(nil))
-
-	require.NotNil(t, s)
-	assert.Nil(t, s.dbManager)
-}
-
 func TestStartStop_WithDatabaseManager(t *testing.T) {
 	kvSvc := &mockKVService{}
 	adminSvc := &mockAdminService{}
@@ -375,37 +311,11 @@ func TestStartStop_WithoutDatabaseManager(t *testing.T) {
 // DefaultDBName constant test
 // ---------------------------------------------------------------------------
 
-func TestDefaultDBName(t *testing.T) {
-	assert.Equal(t, "qrdb", defaultDBName)
-}
-
 // ---------------------------------------------------------------------------
 // Phase 9a: WithServiceRegistry / WithCollectionService / WithIndex option
 // tests, and Start()-based proof that they reach the provider serving real
 // connections rather than merely being accepted and ignored.
 // ---------------------------------------------------------------------------
-
-func TestNewServer_WithServiceRegistry(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-	reg := sqltest.NewHarness().Registry
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithServiceRegistry(reg))
-
-	require.NotNil(t, s.registry)
-	assert.Same(t, reg, s.registry)
-}
-
-func TestNewServer_WithCollectionService(t *testing.T) {
-	kvSvc := &mockKVService{}
-	adminSvc := &mockAdminService{}
-	collSvc := &sqltest.FakeCollectionService{}
-
-	s := NewServer(kvSvc, adminSvc, "127.0.0.1:3306", WithCollectionService(collSvc))
-
-	require.NotNil(t, s.collectionSvc)
-	assert.Same(t, collSvc, s.collectionSvc)
-}
 
 func TestNewServer_WithIndex(t *testing.T) {
 	kvSvc := &mockKVService{}

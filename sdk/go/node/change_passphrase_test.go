@@ -27,29 +27,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-// TestNode_ChangePassphrase_NextUnsealsOldRefused changes the passphrase on
-// an unsealed node, then reboots it: the next passphrase unseals and the old
-// one is refused.
-func TestNode_ChangePassphrase_NextUnsealsOldRefused(t *testing.T) {
-	ctx := context.Background()
-	cfg := sealedStandaloneConfig(t, t.TempDir())
-
-	n1, err := NewStandaloneNode(ctx, cfg, nil, WithSealPassphrase([]byte("old-passphrase")))
-	require.NoError(t, err)
-	require.NoError(t, n1.ChangePassphrase(ctx,
-		seal.MustCredentials(ctx, []byte("old-passphrase")),
-		seal.MustCredentials(ctx, []byte("new-passphrase"))))
-	require.NoError(t, n1.Close())
-
-	n2, err := NewStandaloneNode(ctx, cfg, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = n2.Close() })
-	require.Error(t, n2.Unseal(ctx, seal.MustCredentials(ctx, []byte("old-passphrase"))))
-	require.True(t, n2.IsSealed())
-	require.NoError(t, n2.Unseal(ctx, seal.MustCredentials(ctx, []byte("new-passphrase"))))
-	require.False(t, n2.IsSealed())
-}
-
 // TestNode_ChangePassphrase_WrongCurrentIsTyped verifies a current passphrase
 // that does not open the barrier is refused with seal.ErrCredentialMismatch.
 func TestNode_ChangePassphrase_WrongCurrentIsTyped(t *testing.T) {

@@ -38,14 +38,6 @@ func TestKeyNotFoundError_Error_ContainsKey(t *testing.T) {
 	}
 }
 
-func TestKeyNotFoundError_Error_EmptyKey(t *testing.T) {
-	e := &KeyNotFoundError{Key: ""}
-	got := e.Error()
-	if !strings.Contains(got, "mvcc: key not found:") {
-		t.Errorf("Error: expected prefix for empty key, got %q", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RevisionCompactedError
 // ---------------------------------------------------------------------------
@@ -64,14 +56,6 @@ func TestRevisionCompactedError_Error_ContainsRevisions(t *testing.T) {
 	}
 }
 
-func TestRevisionCompactedError_Error_ZeroRevisions(t *testing.T) {
-	e := &RevisionCompactedError{Requested: 0, Compacted: 0}
-	got := e.Error()
-	if !strings.Contains(got, "0") {
-		t.Errorf("Error: expected 0 in message, got %q", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RevisionNotFoundError
 // ---------------------------------------------------------------------------
@@ -87,14 +71,6 @@ func TestRevisionNotFoundError_Error_ContainsFields(t *testing.T) {
 	}
 	if !strings.Contains(got, "not found") {
 		t.Errorf("Error: expected 'not found', got %q", got)
-	}
-}
-
-func TestRevisionNotFoundError_Error_EmptyKeyZeroRevision(t *testing.T) {
-	e := &RevisionNotFoundError{Key: "", Revision: 0}
-	got := e.Error()
-	if !strings.Contains(got, "revision 0") {
-		t.Errorf("Error: expected 'revision 0', got %q", got)
 	}
 }
 
@@ -117,35 +93,11 @@ func TestStoreError_Error_ContainsOpAndErr(t *testing.T) {
 	}
 }
 
-func TestStoreError_Error_DifferentOp(t *testing.T) {
-	inner := errors.New("timeout")
-	e := &StoreError{Op: "get meta", Err: inner}
-	got := e.Error()
-	if !strings.Contains(got, "get meta") {
-		t.Errorf("Error: expected op 'get meta', got %q", got)
-	}
-	if !strings.Contains(got, "timeout") {
-		t.Errorf("Error: expected inner error 'timeout', got %q", got)
-	}
-}
-
 func TestStoreError_Unwrap_ReturnsInnerError(t *testing.T) {
 	inner := io.ErrUnexpectedEOF
 	e := &StoreError{Op: "load revision", Err: inner}
 	if !errors.Is(e, io.ErrUnexpectedEOF) {
 		t.Error("Unwrap: errors.Is failed for inner error")
-	}
-}
-
-func TestStoreError_Unwrap_MatchesAs(t *testing.T) {
-	inner := errors.New("wrapped")
-	e := &StoreError{Op: "test", Err: inner}
-	var target *StoreError
-	if !errors.As(e, &target) {
-		t.Error("Unwrap: errors.As failed for StoreError")
-	}
-	if target.Op != "test" {
-		t.Errorf("Unwrap: Op got %q, want %q", target.Op, "test")
 	}
 }
 
@@ -161,14 +113,6 @@ func TestEncodingError_Error_ContainsReason(t *testing.T) {
 	}
 	if !strings.Contains(got, "encoding error") {
 		t.Errorf("Error: expected prefix, got %q", got)
-	}
-}
-
-func TestEncodingError_Error_EmptyReason(t *testing.T) {
-	e := &EncodingError{Reason: ""}
-	got := e.Error()
-	if !strings.Contains(got, "mvcc: encoding error:") {
-		t.Errorf("Error: expected prefix for empty reason, got %q", got)
 	}
 }
 
@@ -188,29 +132,11 @@ func TestCompactionError_Error_ContainsInnerErr(t *testing.T) {
 	}
 }
 
-func TestCompactionError_Error_DifferentInnerErr(t *testing.T) {
-	inner := errors.New("permission denied")
-	e := &CompactionError{Err: inner}
-	got := e.Error()
-	if !strings.Contains(got, "permission denied") {
-		t.Errorf("Error: expected 'permission denied', got %q", got)
-	}
-}
-
 func TestCompactionError_Unwrap_ReturnsInnerError(t *testing.T) {
 	inner := io.EOF
 	e := &CompactionError{Err: inner}
 	if !errors.Is(e, io.EOF) {
 		t.Error("Unwrap: errors.Is failed for inner error")
-	}
-}
-
-func TestCompactionError_Unwrap_MatchesAs(t *testing.T) {
-	inner := errors.New("inner")
-	e := &CompactionError{Err: inner}
-	var target *CompactionError
-	if !errors.As(e, &target) {
-		t.Error("Unwrap: errors.As failed for CompactionError")
 	}
 }
 
@@ -225,13 +151,6 @@ func TestKeyNotFoundError_KeyNotFound_ReturnsKey(t *testing.T) {
 	}
 }
 
-func TestKeyNotFoundError_KeyNotFound_EmptyKey(t *testing.T) {
-	e := &KeyNotFoundError{Key: ""}
-	if got := e.KeyNotFound(); got != "" {
-		t.Errorf("KeyNotFound: got %q, want empty", got)
-	}
-}
-
 func TestRevisionCompactedError_RevisionCompacted_ReturnsFields(t *testing.T) {
 	e := &RevisionCompactedError{Requested: 3, Compacted: 10}
 	requested, compacted := e.RevisionCompacted()
@@ -243,14 +162,6 @@ func TestRevisionCompactedError_RevisionCompacted_ReturnsFields(t *testing.T) {
 	}
 }
 
-func TestRevisionCompactedError_RevisionCompacted_ZeroValues(t *testing.T) {
-	e := &RevisionCompactedError{Requested: 0, Compacted: 0}
-	requested, compacted := e.RevisionCompacted()
-	if requested != 0 || compacted != 0 {
-		t.Errorf("RevisionCompacted: got (%d, %d), want (0, 0)", requested, compacted)
-	}
-}
-
 func TestRevisionNotFoundError_RevisionNotFound_ReturnsFields(t *testing.T) {
 	e := &RevisionNotFoundError{Key: "mykey", Revision: 42}
 	key, revision := e.RevisionNotFound()
@@ -259,17 +170,6 @@ func TestRevisionNotFoundError_RevisionNotFound_ReturnsFields(t *testing.T) {
 	}
 	if revision != 42 {
 		t.Errorf("RevisionNotFound: revision got %d, want 42", revision)
-	}
-}
-
-func TestRevisionNotFoundError_RevisionNotFound_EmptyKeyZeroRevision(t *testing.T) {
-	e := &RevisionNotFoundError{Key: "", Revision: 0}
-	key, revision := e.RevisionNotFound()
-	if key != "" {
-		t.Errorf("RevisionNotFound: key got %q, want empty", key)
-	}
-	if revision != 0 {
-		t.Errorf("RevisionNotFound: revision got %d, want 0", revision)
 	}
 }
 

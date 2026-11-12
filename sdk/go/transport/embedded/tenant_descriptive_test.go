@@ -82,26 +82,6 @@ func TestEmbedded_UpdateTenant_DescriptionAndMetadataRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEmbedded_UpdateTenant_EmptyMetadataClears(t *testing.T) {
-	tr := descriptiveEmbeddedTransport(t)
-	ctx := context.Background()
-	desc := "to clear"
-	if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{
-		TenantID: "acme", Description: &desc, Metadata: map[string]string{"env": "prod"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	empty := ""
-	resp, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "acme", Description: &empty, Metadata: map[string]string{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Tenant.Description != "" || len(resp.Tenant.Metadata) != 0 {
-		t.Fatalf("cleared tenant = %q, %v; want both empty", resp.Tenant.Description, resp.Tenant.Metadata)
-	}
-}
-
 func TestEmbedded_UpdateTenant_OverLimitIsInvalidArgument(t *testing.T) {
 	tr := descriptiveEmbeddedTransport(t)
 	_, err := tr.UpdateTenant(context.Background(), &transport.UpdateTenantRequest{

@@ -70,18 +70,6 @@ func TestScope_String_UnknownValue(t *testing.T) {
 	}
 }
 
-// TestLookupScope_DeclaredSelfIsSelf verifies that a permission declared
-// ScopeSelf resolves to ScopeSelf — because it was declared so, not because
-// nothing else was said about it.
-func TestLookupScope_DeclaredSelfIsSelf(t *testing.T) {
-	// KVPut is a built-in permission declared ScopeSelf in self_scope.go.
-	// Before go-qrdb#504 it had no declaration and answered ScopeSelf by
-	// default; the answer is the same, the reason is not.
-	if got := mustScope(t, KVPut); got != ScopeSelf {
-		t.Errorf("LookupScope(KVPut) = %v, want %v", got, ScopeSelf)
-	}
-}
-
 // TestLookupScope_UndeclaredIsAnError pins go-qrdb#504: a permission with no
 // declared scope is refused, not defaulted. The previous version of this
 // test asserted the opposite — "an entirely unknown permission must also

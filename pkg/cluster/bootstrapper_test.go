@@ -350,31 +350,6 @@ func TestBootstrapper_SingleNodeCluster(t *testing.T) {
 	}
 }
 
-func TestAddSelfToPeers_NotPresent(t *testing.T) {
-	peers := []discovery.Peer{
-		{NodeID: 2, Address: "10.0.0.2:5000"},
-	}
-	self := discovery.Peer{NodeID: 1, Address: "10.0.0.1:5000"}
-
-	result := addSelfToPeers(peers, self)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 peers, got %d", len(result))
-	}
-}
-
-func TestAddSelfToPeers_AlreadyPresent(t *testing.T) {
-	peers := []discovery.Peer{
-		{NodeID: 1, Address: "10.0.0.1:5000"},
-		{NodeID: 2, Address: "10.0.0.2:5000"},
-	}
-	self := discovery.Peer{NodeID: 1, Address: "10.0.0.1:5000"}
-
-	result := addSelfToPeers(peers, self)
-	if len(result) != 2 {
-		t.Fatalf("expected 2 peers (no duplicate), got %d", len(result))
-	}
-}
-
 func TestBootstrapper_InvalidAddressRejected(t *testing.T) {
 	disc := &mockDiscovery{
 		peers: []discovery.Peer{
@@ -485,17 +460,5 @@ func TestDuplicateAddressError_Format(t *testing.T) {
 	want := "bootstrap: duplicate address 10.0.0.1:5000 for NodeIDs 1 and 2"
 	if e.Error() != want {
 		t.Errorf("Error() = %q, want %q", e.Error(), want)
-	}
-}
-
-func TestAddSelfToPeers_EmptyPeers(t *testing.T) {
-	self := discovery.Peer{NodeID: 1, Address: "10.0.0.1:5000"}
-
-	result := addSelfToPeers(nil, self)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 peer, got %d", len(result))
-	}
-	if result[0].NodeID != 1 {
-		t.Errorf("NodeID = %d, want 1", result[0].NodeID)
 	}
 }

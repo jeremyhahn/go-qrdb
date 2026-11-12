@@ -335,9 +335,10 @@ func TestCloseCommentNamesTheGreenRunAndTheBreak(t *testing.T) {
 }
 
 func TestShortSHA(t *testing.T) {
+	// The full-length and empty cases are asserted through Body() by
+	// TestBodyCarriesMarkerCountsAndBehaviour and
+	// TestBodyHandlesMissingTimestampsAndShortSHAs.
 	cases := map[string]string{
-		"133fa5699947792772bac23fbfb6fb051d600775": "133fa569",
-		"":    "unknown",
 		"abc": "abc",
 	}
 	for in, want := range cases {

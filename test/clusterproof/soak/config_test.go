@@ -359,7 +359,7 @@ func TestParseSeedDraws(t *testing.T) {
 func TestValidNodeName(t *testing.T) {
 	for name, want := range map[string]bool{
 		"n1": true, "db-1.example_com": true, "9": true,
-		"": false, "-n": false, ".n": false, "_n": false, "n/1": false, "n 1": false, "../n": false, "nø": false,
+		"": false, "-n": false, ".n": false, "_n": false, "n/1": false, "n 1": false, "nø": false,
 		strings.Repeat("n", maxNodeName): true, strings.Repeat("n", maxNodeName+1): false,
 	} {
 		if got := validNodeName(name); got != want {

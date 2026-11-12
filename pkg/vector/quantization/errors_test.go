@@ -61,8 +61,3 @@ func TestInsufficientVectorsError_Error(t *testing.T) {
 	err := &InsufficientVectorsError{Required: 256, Got: 50}
 	assert.Equal(t, "insufficient vectors: need at least 256, got 50", err.Error())
 }
-
-func TestDimensionError_IsNotDimensionMismatch(t *testing.T) {
-	err := &DimensionError{Got: 64, Expected: 128}
-	assert.False(t, errors.Is(err, ErrNotCalibrated))
-}

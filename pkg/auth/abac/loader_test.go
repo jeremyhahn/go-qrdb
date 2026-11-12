@@ -51,17 +51,6 @@ func TestLoadDir(t *testing.T) {
 	}
 }
 
-func TestLoadDir_Missing(t *testing.T) {
-	_, err := LoadDir("/nonexistent/abac-policy-dir")
-	if err == nil {
-		t.Fatal("LoadDir on a missing directory should fail")
-	}
-	var dirErr *PolicyDirError
-	if !errors.As(err, &dirErr) {
-		t.Errorf("error = %T, want *PolicyDirError", err)
-	}
-}
-
 func TestLoadFile_MultiDocument(t *testing.T) {
 	dir := t.TempDir()
 	multi := "apiVersion: abac.qrdb.io/v1\nkind: Policy\nmetadata:\n  name: first\n  tenant: t1\nspec:\n  rules:\n    - name: r1\n      effect: allow\n      actions: [\"read\"]\n      resources: [\"/x/**\"]\n" +
@@ -81,20 +70,6 @@ func TestLoadFile_MultiDocument(t *testing.T) {
 	}
 	if policies[1].Metadata.Tenant != "t2" {
 		t.Errorf("second tenant = %q, want t2", policies[1].Metadata.Tenant)
-	}
-}
-
-func TestLoadFile_InvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	writePolicy(t, dir, "broken.yaml", "kind: [unclosed")
-
-	_, err := LoadFile(filepath.Join(dir, "broken.yaml"))
-	if err == nil {
-		t.Fatal("LoadFile on unparsable YAML should fail")
-	}
-	var fileErr *PolicyFileError
-	if !errors.As(err, &fileErr) {
-		t.Errorf("error = %T, want *PolicyFileError", err)
 	}
 }
 

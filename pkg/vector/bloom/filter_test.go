@@ -46,30 +46,6 @@ func TestBloomFilter_AddAndContainsLargeIDs(t *testing.T) {
 	}
 }
 
-func TestBloomFilter_NotContains(t *testing.T) {
-	bf := NewVectorBloomFilter(10000, 0.001)
-
-	// Add known IDs.
-	for i := uint64(0); i < 1000; i++ {
-		bf.Add(i)
-	}
-
-	// Check IDs that were NOT added. Most should return false.
-	falsePositives := 0
-	total := 1000
-	for i := uint64(10000); i < uint64(10000+total); i++ {
-		if bf.Contains(i) {
-			falsePositives++
-		}
-	}
-
-	// With 0.1% FP rate, expect very few false positives.
-	fpRate := float64(falsePositives) / float64(total)
-	if fpRate > 0.05 { // Allow generous margin.
-		t.Errorf("false positive rate too high: %.4f", fpRate)
-	}
-}
-
 func TestBloomFilter_NotContainsEmpty(t *testing.T) {
 	bf := NewVectorBloomFilter(100, 0.01)
 	if bf.Contains(42) {
@@ -198,14 +174,6 @@ func TestBloomFilter_Clear(t *testing.T) {
 	}
 	if bf.Contains(100) {
 		t.Error("expected Contains(100) to return false after Clear")
-	}
-}
-
-func TestBloomFilter_ClearEmpty(t *testing.T) {
-	bf := NewVectorBloomFilter(100, 0.01)
-	bf.Clear()
-	if bf.Count() != 0 {
-		t.Errorf("expected count 0 after clearing empty filter, got %d", bf.Count())
 	}
 }
 
@@ -383,25 +351,11 @@ func TestIncompatibleFilterError(t *testing.T) {
 	}
 }
 
-func TestIncompatibleFilterError_EmptyReason(t *testing.T) {
-	err := &IncompatibleFilterError{Reason: ""}
-	if err.Error() != "incompatible bloom filter: " {
-		t.Errorf("unexpected error message: %q", err.Error())
-	}
-}
-
 func TestInvalidParameterError(t *testing.T) {
 	err := &InvalidParameterError{Parameter: "other", Reason: "cannot be nil"}
 	expected := "invalid bloom filter parameter other: cannot be nil"
 	if err.Error() != expected {
 		t.Errorf("expected %q, got %q", expected, err.Error())
-	}
-}
-
-func TestInvalidParameterError_EmptyFields(t *testing.T) {
-	err := &InvalidParameterError{Parameter: "", Reason: ""}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
 	}
 }
 

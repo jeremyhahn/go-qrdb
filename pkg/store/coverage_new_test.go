@@ -22,7 +22,6 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
 	"github.com/jeremyhahn/go-quicraft/pkg/sm/kv"
@@ -263,87 +262,6 @@ func TestPebbleStateMachine_MVCCDeleteWithLessor_DetachKey(t *testing.T) {
 	_, err := s.Lookup(context.Background(), []byte("lease-key"))
 	if err == nil {
 		t.Fatal("expected error for deleted key")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// PebbleStateMachine: pebbleHandleTSWrite — no time-series storage
-// ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_TSWrite_NoTS(t *testing.T) {
-	s := openExtendedStore(t)
-
-	now := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWrite("metric", now, 1.0, nil))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TS write without TS storage")
-	}
-}
-
-func TestPebbleStateMachine_TSWriteBatch_NoTS(t *testing.T) {
-	s := openExtendedStore(t)
-
-	now := time.Now().UnixNano()
-	points := []protocol.TSWriteParams{
-		{Metric: "m1", Timestamp: now, Value: 1.0},
-	}
-	cmd := mustEncode(protocol.EncodeTSWriteBatch(points))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TSWriteBatch without TS storage")
-	}
-}
-
-func TestPebbleStateMachine_TSWritePoint_NoTS(t *testing.T) {
-	s := openExtendedStore(t)
-
-	now := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSWritePoint("m1", now, 2.0, nil))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TSWritePoint without TS storage")
-	}
-}
-
-func TestPebbleStateMachine_TSDeleteSeries_NoTS(t *testing.T) {
-	s := openExtendedStore(t)
-
-	now := time.Now().UnixNano()
-	cmd := mustEncode(protocol.EncodeTSDeleteSeries("metric", now-1000, now+1000, nil))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TSDeleteSeries without TS storage")
-	}
-}
-
-func TestPebbleStateMachine_TSSetRetention_NoTS(t *testing.T) {
-	s := openExtendedStore(t)
-
-	cmd := mustEncode(protocol.EncodeTSSetRetention("metric", int64(24*time.Hour), int64(time.Minute), 1))
-	entries := []sm.Entry{{Index: 1, Cmd: cmd}}
-	results := make([]sm.Result, 1)
-	if err := s.Update(context.Background(), entries, results); err != nil {
-		t.Fatalf("Update must not return a fatal error without TS storage: %v", err)
-	}
-	if _, ok := protocol.DecodeAppError(results[0].Data); !ok {
-		t.Fatal("expected app-error payload for TSSetRetention without TS storage")
 	}
 }
 

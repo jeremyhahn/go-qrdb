@@ -276,21 +276,10 @@ func TestGRPCMVCC_AllMethods_Success(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	t.Run("PutWithLease", func(t *testing.T) {
-		if _, err := tr.PutWithLease(ctx, "k", []byte("v"), 1); err != nil {
-			t.Fatalf("PutWithLease: %v", err)
-		}
-	})
-	t.Run("GetRevision", func(t *testing.T) {
-		if _, err := tr.GetRevision(ctx, "k"); err != nil {
-			t.Fatalf("GetRevision: %v", err)
-		}
-	})
-	t.Run("GetAtRevision", func(t *testing.T) {
-		if _, err := tr.GetAtRevision(ctx, "k", 1); err != nil {
-			t.Fatalf("GetAtRevision: %v", err)
-		}
-	})
+	// PutWithLease runs over a real gRPC node in conformance's
+	// TestCoordinationFamilies_SameOnStandaloneAndRaft "lease" subtest, and
+	// GetRevision, GetAtRevision, CurrentRevision and Compact in
+	// TestCompaction_NeverCrossesTenantsOnEveryTransport.
 	t.Run("Range", func(t *testing.T) {
 		resp, err := tr.Range(ctx, []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10})
 		if err != nil {
@@ -304,16 +293,6 @@ func TestGRPCMVCC_AllMethods_Success(t *testing.T) {
 		}
 		if resp.Revision != 42 {
 			t.Fatalf("Revision = %d, want 42", resp.Revision)
-		}
-	})
-	t.Run("Compact", func(t *testing.T) {
-		if err := tr.Compact(ctx, 1); err != nil {
-			t.Fatalf("Compact: %v", err)
-		}
-	})
-	t.Run("CurrentRevision", func(t *testing.T) {
-		if _, err := tr.CurrentRevision(ctx); err != nil {
-			t.Fatalf("CurrentRevision: %v", err)
 		}
 	})
 	t.Run("RestoreToRevision", func(t *testing.T) {

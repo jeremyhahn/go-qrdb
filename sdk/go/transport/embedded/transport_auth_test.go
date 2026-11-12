@@ -1999,53 +1999,6 @@ func TestStringsToPermissions_EmptySlice(t *testing.T) {
 // WithUserService / WithRoleService / WithCertProvider option tests
 // ---------------------------------------------------------------------------
 
-func TestWithUserService_Option(t *testing.T) {
-	mock := &mockUserServicer{
-		getUserFn: func(_ context.Context, _ uint64) (*user.User, error) {
-			return testUser(), nil
-		},
-	}
-	tr := newAuthTransport(t, WithUserService(mock))
-
-	u, err := tr.GetUser(context.Background(), 1001)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u.ID != 1001 {
-		t.Errorf("expected ID 1001, got %d", u.ID)
-	}
-}
-
-func TestWithRoleService_Option(t *testing.T) {
-	mock := &mockRoleServicer{
-		getRoleFn: func(_ context.Context, _ string) (*role.Role, error) {
-			return testRole(), nil
-		},
-	}
-	tr := newAuthTransport(t, WithRoleService(mock))
-
-	rl, err := tr.GetRole(context.Background(), "role-001")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rl.ID != "role-001" {
-		t.Errorf("expected ID 'role-001', got %q", rl.ID)
-	}
-}
-
-func TestWithCertProvider_Option(t *testing.T) {
-	mock := &mockCertProvider{
-		revokeCertFn: func(_ context.Context, serial string) (*cert.RevokeResult, error) {
-			return &cert.RevokeResult{Serial: serial}, nil
-		},
-	}
-	tr := newAuthTransport(t, WithCertProvider(mock))
-
-	if _, err := tr.RevokeCert(context.Background(), "abc123"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func (m *mockRoleServicer) ReconcileBuiltInRoles(ctx context.Context, tenantID string) (*role.ReconcileReport, error) {
 	if m.reconcileFn != nil {
 		return m.reconcileFn(ctx, tenantID)

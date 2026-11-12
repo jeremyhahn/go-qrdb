@@ -271,35 +271,6 @@ func TestRESTScan_AfterClose(t *testing.T) {
 	}
 }
 
-func TestRESTExists_True(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		_, _ = w.Write([]byte("v"))
-	})
-	ok, err := rt.Exists(context.Background(), "k")
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if !ok {
-		t.Error("expected true")
-	}
-}
-
-func TestRESTExists_False(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "not found", http.StatusNotFound)
-	})
-	ok, err := rt.Exists(context.Background(), "k")
-	if err != nil {
-		t.Fatalf("Exists: %v", err)
-	}
-	if ok {
-		t.Error("expected false")
-	}
-}
-
 func TestRESTExists_AfterClose(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()

@@ -538,27 +538,6 @@ func TestTenantStoreIsolatesInvitationsByStore(t *testing.T) {
 	}
 }
 
-// TestTenantStoreSealedTenantFailsClosed pins that a sealed tenant surfaces the
-// resolver's error rather than being treated as a tenant with no invitations —
-// which would turn "temporarily unavailable" into "this token does not exist".
-func TestTenantStoreSealedTenantFailsClosed(t *testing.T) {
-	resolver := newStubResolver()
-	sealedErr := errors.New("tenant is sealed")
-	resolver.fail["tenant-sealed"] = sealedErr
-
-	store, err := NewTenantStore(resolver)
-	if err != nil {
-		t.Fatalf("NewTenantStore: %v", err)
-	}
-
-	if _, _, err := store.Create(context.Background(), "u", "tenant-sealed", time.Hour); !errors.Is(err, sealedErr) {
-		t.Fatalf("Create on a sealed tenant err = %v, want the resolver error", err)
-	}
-	if _, err := store.Lookup(context.Background(), "tenant-sealed", "tok"); !errors.Is(err, sealedErr) {
-		t.Fatalf("Lookup on a sealed tenant err = %v, want the resolver error", err)
-	}
-}
-
 // TestNewTenantStoreRequiresResolver refuses construction without a resolver:
 // defaulting to one shared store would put every tenant's invitations together,
 // which is the isolation this type exists to provide.

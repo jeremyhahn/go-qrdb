@@ -81,35 +81,6 @@ func TestInitialize_BYOTLS_SPKIPinFromServerCert(t *testing.T) {
 	assert.Equal(t, adminLeaf, result.AdminCertPEM)
 }
 
-// TestInitialize_BYOTLS_NoServerCertRefuses covers the failure half: a
-// BYO-TLS node (nil CeremonyCA) whose composer never set
-// CeremonyConfig.ServerCertPEM has nothing to compute a pin from and is
-// refused with a typed error rather than panicking or silently returning
-// an empty pin. The admin-credential selection itself must be a VALID BYOC
-// certificate chaining to ClientCACertPEM, not a placeholder: Initialize
-// validates admin-credential inputs before resolving the TLS certificate
-// (go-qrdb#548 review: B3, "init is atomic"), so a bogus certificate would
-// be refused there first and this test would never reach the check it is
-// actually about.
-func TestInitialize_BYOTLS_NoServerCertRefuses(t *testing.T) {
-	operatorCA := newMockCA(t)
-	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})
-	adminLeaf := adminLeafPEM(t, operatorCA, testTrustDomain)
-
-	cfg := byoTLSConfig(nil, clientCACertPEM)
-	svc := newTestCeremonyService(t, cfg, testBarrier(t))
-
-	_, err := svc.Initialize(context.Background(), nil, &InitializeOptions{
-		SOPin:        "test-so-pin",
-		UserPin:      "test-user-pin",
-		AdminCertPEM: adminLeaf,
-	})
-	var noCert *NoServerCertificateError
-	require.ErrorAs(t, err, &noCert)
-	assert.Contains(t, noCert.Error(), "no CeremonyCA configured and no server certificate available")
-	assert.Nil(t, errors.Unwrap(noCert), "an absent (not malformed) ServerCertPEM carries no Cause")
-}
-
 // TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect is the
 // go-qrdb#560 review item 8 regression: NoServerCertificateError was
 // raised AFTER PIN provisioning and system-barrier initialization had
@@ -138,6 +109,8 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 	})
 	var noCert *NoServerCertificateError
 	require.ErrorAs(t, err, &noCert)
+	assert.Contains(t, noCert.Error(), "no CeremonyCA configured and no server certificate available")
+	assert.Nil(t, errors.Unwrap(noCert), "an absent (not malformed) ServerCertPEM carries no Cause")
 
 	assert.False(t, svc.pins.SOPINSet(), "the SO PIN must not be provisioned on a refused Initialize")
 	assert.False(t, svc.pins.UserPINSet(), "the user PIN must not be provisioned on a refused Initialize")
@@ -151,7 +124,7 @@ func TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect(t *testing.T) 
 // of NoServerCertificateError: a BYO-TLS node whose ServerCertPEM is PRESENT
 // but does not parse as a certificate is refused the same way, with the
 // parse failure as its Cause -- distinct from the empty-ServerCertPEM case
-// TestInitialize_BYOTLS_NoServerCertRefuses covers.
+// TestInitialize_BYOTLS_NoServerCertRefusesBeforeAnySideEffect covers.
 func TestInitialize_BYOTLS_UnparseableServerCertRefuses(t *testing.T) {
 	operatorCA := newMockCA(t)
 	clientCACertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: operatorCA.certDER})

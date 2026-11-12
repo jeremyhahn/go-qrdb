@@ -155,10 +155,3 @@ func TestSealError(t *testing.T) {
 		t.Fatalf("Error() on a bare SealError = %q, want it to mention the op", bare.Error())
 	}
 }
-
-func TestStaticMaterialError(t *testing.T) {
-	err := staticMaterialError("boom")
-	if err.Error() != "boom" {
-		t.Fatalf("Error() = %q, want %q", err.Error(), "boom")
-	}
-}

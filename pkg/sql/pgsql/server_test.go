@@ -84,51 +84,6 @@ func TestNewServer_WithOptions(t *testing.T) {
 	assert.NotNil(t, s.logger)
 }
 
-func TestWithTLS(t *testing.T) {
-	s := &Server{}
-	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
-	WithTLS(cfg)(s)
-	assert.Equal(t, cfg, s.tlsConfig)
-}
-
-func TestWithTLS_Nil(t *testing.T) {
-	s := &Server{}
-	WithTLS(nil)(s)
-	assert.Nil(t, s.tlsConfig)
-}
-
-func TestWithAuthMiddleware(t *testing.T) {
-	s := &Server{}
-	mw := authmw.New(&auth.NoopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
-	WithAuthMiddleware(mw)(s)
-	assert.NotNil(t, s.authMW)
-}
-
-func TestWithAuthMiddleware_Nil(t *testing.T) {
-	s := &Server{}
-	WithAuthMiddleware(nil)(s)
-	assert.Nil(t, s.authMW)
-}
-
-func TestWithDatabaseName(t *testing.T) {
-	s := &Server{}
-	WithDatabaseName("mydb")(s)
-	assert.Equal(t, "mydb", s.dbName)
-}
-
-func TestWithDatabaseName_Empty(t *testing.T) {
-	s := &Server{dbName: "original"}
-	WithDatabaseName("")(s)
-	assert.Equal(t, "", s.dbName)
-}
-
-func TestWithLogger(t *testing.T) {
-	s := &Server{}
-	logger := slog.Default()
-	WithLogger(logger)(s)
-	assert.Equal(t, logger, s.logger)
-}
-
 func TestServer_StartAndStop(t *testing.T) {
 	kvSvc := &mockKVService{
 		scanData: map[string][]byte{},
@@ -181,22 +136,6 @@ func TestDefaultDBName(t *testing.T) {
 // ---------------------------------------------------------------------------
 // WithDatabaseManager option tests
 // ---------------------------------------------------------------------------
-
-func TestWithDatabaseManager(t *testing.T) {
-	dataDir := t.TempDir()
-	mgr := databasetest.NewManager(slog.Default(), dataDir)
-	defer func() { _ = mgr.Close() }()
-
-	s := &Server{}
-	WithDatabaseManager(mgr)(s)
-	assert.Equal(t, mgr, s.dbManager)
-}
-
-func TestWithDatabaseManager_Nil(t *testing.T) {
-	s := &Server{}
-	WithDatabaseManager(nil)(s)
-	assert.Nil(t, s.dbManager)
-}
 
 func TestServer_StartStop_WithDatabaseManager(t *testing.T) {
 	kvSvc := &mockKVService{scanData: map[string][]byte{}}
@@ -625,28 +564,6 @@ func (l *errorListener) Addr() net.Addr {
 // tests, and Start()-based proof that they reach the provider serving real
 // sessions rather than merely being accepted and ignored.
 // ---------------------------------------------------------------------------
-
-func TestNewServer_WithServiceRegistry(t *testing.T) {
-	kvSvc := &mockKVService{scanData: map[string][]byte{}}
-	adminSvc := &mockAdminService{}
-	reg := sqltest.NewHarness().Registry
-
-	s := NewServer(kvSvc, adminSvc, ":5432", WithServiceRegistry(reg))
-
-	require.NotNil(t, s.registry)
-	assert.Same(t, reg, s.registry)
-}
-
-func TestNewServer_WithCollectionService(t *testing.T) {
-	kvSvc := &mockKVService{scanData: map[string][]byte{}}
-	adminSvc := &mockAdminService{}
-	collSvc := &sqltest.FakeCollectionService{}
-
-	s := NewServer(kvSvc, adminSvc, ":5432", WithCollectionService(collSvc))
-
-	require.NotNil(t, s.collectionSvc)
-	assert.Same(t, collSvc, s.collectionSvc)
-}
 
 func TestNewServer_WithIndex(t *testing.T) {
 	kvSvc := &mockKVService{scanData: map[string][]byte{}}

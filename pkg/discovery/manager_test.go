@@ -339,42 +339,6 @@ func TestManager_DefaultRetryInterval(t *testing.T) {
 	}
 }
 
-// TestManager_MethodOrderMatters verifies that methods are tried in order
-// and the first successful one is used.
-func TestManager_MethodOrderMatters(t *testing.T) {
-	m1 := &mockMethod{
-		name: "first",
-		err:  &NoPeersError{Method: "first"},
-	}
-	m2 := &mockMethod{
-		name:  "second",
-		peers: []Peer{{NodeID: 2, Address: "10.0.0.2:5000"}},
-	}
-	m3 := &mockMethod{
-		name:  "third",
-		peers: []Peer{{NodeID: 3, Address: "10.0.0.3:5000"}},
-	}
-
-	mgr := NewManager(ManagerConfig{
-		Methods: []Method{m1, m2, m3},
-	})
-
-	peers, err := mgr.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should get peers from m2 (second method), not m3.
-	if len(peers) != 1 || peers[0].NodeID != 2 {
-		t.Errorf("expected peer from second method, got %+v", peers)
-	}
-
-	// m3 should not have been called.
-	if m3.callCnt.Load() != 0 {
-		t.Error("third method should not be called when second succeeds")
-	}
-}
-
 // TestManager_PeersAfterMultipleDiscoveries verifies that Peers() returns
 // the most recent discovery result.
 func TestManager_PeersAfterMultipleDiscoveries(t *testing.T) {
@@ -505,69 +469,5 @@ func TestManager_DiscoverContextDeadlineExceeded(t *testing.T) {
 
 	if elapsed >= time.Second {
 		t.Errorf("Discover took %v, expected quick deadline expiry", elapsed)
-	}
-}
-
-// TestManager_DiscoverSucceedsWithActiveContext verifies that Discover
-// works normally when the context is not cancelled.
-func TestManager_DiscoverSucceedsWithActiveContext(t *testing.T) {
-	callCount := atomic.Int32{}
-	m := &eventualMethod{
-		callCount:    &callCount,
-		successAfter: 3,
-		peers:        []Peer{{NodeID: 1, Address: "10.0.0.1:5000"}},
-	}
-
-	mgr := NewManager(ManagerConfig{
-		Methods:       []Method{m},
-		RetryInterval: time.Millisecond,
-		MaxRetries:    5,
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	peers, err := mgr.Discover(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(peers) != 1 || peers[0].NodeID != 1 {
-		t.Errorf("expected peer NodeID=1, got %+v", peers)
-	}
-}
-
-// TestManager_DiscoverAlreadyCancelledContext verifies that Discover
-// returns immediately when given an already-cancelled context.
-func TestManager_DiscoverAlreadyCancelledContext(t *testing.T) {
-	m1 := &mockMethod{
-		name:  "m1",
-		peers: []Peer{{NodeID: 1, Address: "10.0.0.1:5000"}},
-	}
-
-	mgr := NewManager(ManagerConfig{
-		Methods:       []Method{m1},
-		RetryInterval: time.Second,
-		MaxRetries:    3,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately.
-
-	// First attempt should succeed since context check happens before methods
-	// only on retry attempts. But the first attempt runs methods directly.
-	// With an already-cancelled context, the first attempt should still
-	// succeed if the method returns peers.
-	peers, err := mgr.Discover(ctx)
-	if err != nil {
-		// If the context check fires before methods on attempt 0, this is
-		// expected. Either outcome is acceptable.
-		var ce *CancelledError
-		if !errors.As(err, &ce) {
-			t.Fatalf("expected *CancelledError, got %T: %v", err, err)
-		}
-		return
-	}
-	if len(peers) != 1 {
-		t.Errorf("expected 1 peer, got %d", len(peers))
 	}
 }

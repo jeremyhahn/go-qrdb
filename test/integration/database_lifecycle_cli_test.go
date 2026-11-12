@@ -27,8 +27,8 @@
 // This file deliberately does NOT duplicate database_barrier_cli_test.go's
 // deep dedicated-store barrier lifecycle proof (plaintext-never-on-disk,
 // restart survival, etc.) -- that semantic depth is already covered on REST.
-// TestDatabaseBarrier_CLI_PerProtocol here only proves the same lifecycle is
-// reachable and correct over every OTHER transport too.
+// The same lifecycle over every transport is proven by
+// TestCLI_DatabaseBarrier_PassphraseLifecycle_AllTransports.
 package integration_test
 
 import (
@@ -301,104 +301,4 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 			t.Fatalf("database drop %s: %v\noutput: %s", dbName, err, out)
 		}
 	})
-}
-
-// TestDatabaseBarrier_CLI_PerProtocol drives create-with-barrier ->
-// barrier-status -> seal -> barrier-status -> unseal(wrong) ->
-// unseal(right) -> barrier-status -> drop through the CLI binary against
-// every transport, mirroring TestAdminDrain_PerProtocol's isolated-resource-
-// per-protocol pattern: each subtest creates its OWN dedicated-store
-// database (a fresh --data-dir) so protocols never contend over the same
-// barrier.
-func TestDatabaseBarrier_CLI_PerProtocol(t *testing.T) {
-	t.Parallel()
-	node := startMultiProtocolNode(t)
-
-	for _, proto := range multiProtocols {
-		proto := proto
-		t.Run(proto.name, func(t *testing.T) {
-			testDatabaseBarrierOverProtocol(t, node, proto)
-		})
-	}
-}
-
-// cliDatabaseBarrierStatusProto runs `database barrier-status <name>` over
-// the given protocol with JSON output and decodes the result.
-func cliDatabaseBarrierStatusProto(t *testing.T, node *multiProtoNode, proto multiProtocol, name string) cliBarrierStatusJSON {
-	t.Helper()
-	out, err := runCLIProto(t, node, proto, "--output", "json", "database", "barrier-status", name)
-	if err != nil {
-		t.Fatalf("[%s] database barrier-status %s: %v\noutput: %s", proto.name, name, err, out)
-	}
-	var status cliBarrierStatusJSON
-	if jerr := json.Unmarshal([]byte(out), &status); jerr != nil {
-		t.Fatalf("[%s] decode `database barrier-status` JSON: %v\noutput: %s", proto.name, jerr, out)
-	}
-	return status
-}
-
-// testDatabaseBarrierOverProtocol exercises the per-database encryption
-// barrier lifecycle against a single protocol.
-func testDatabaseBarrierOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
-	t.Helper()
-
-	dbName := fmt.Sprintf("dbbarrier-%s-%d", proto.name, time.Now().UnixNano())
-	dataDir := t.TempDir()
-	const passphrase = "db-barrier-cli-mp-passphrase"
-	t.Cleanup(func() {
-		_, _ = runCLIProto(t, node, proto, "database", "drop", dbName)
-	})
-
-	out, err := runCLIProto(t, node, proto, "database", "create", dbName,
-		"--data-dir", dataDir,
-		"--barrier-enabled",
-		"--barrier-strategy", "passphrase",
-		"--barrier-passphrase", passphrase,
-	)
-	if err != nil {
-		t.Fatalf("[%s] database create %s (barrier-enabled): %v\noutput: %s", proto.name, dbName, err, out)
-	}
-
-	status := cliDatabaseBarrierStatusProto(t, node, proto, dbName)
-	if status.Sealed {
-		t.Fatalf("[%s] barrier-status after create = %+v, want sealed=false", proto.name, status)
-	}
-	if status.Strategy != "passphrase" {
-		t.Fatalf("[%s] barrier-status after create: strategy = %q, want %q", proto.name, status.Strategy, "passphrase")
-	}
-
-	out, err = runCLIProto(t, node, proto, "database", "seal", dbName)
-	if err != nil {
-		t.Fatalf("[%s] database seal %s: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-	if !strings.Contains(out, "OK") {
-		t.Fatalf("[%s] database seal %s: expected OK, got: %s", proto.name, dbName, out)
-	}
-	status = cliDatabaseBarrierStatusProto(t, node, proto, dbName)
-	if !status.Sealed {
-		t.Fatalf("[%s] barrier-status after seal = %+v, want sealed=true", proto.name, status)
-	}
-
-	// Wrong secret must fail and leave the barrier sealed.
-	out, err = runCLIProto(t, node, proto, "database", "unseal", dbName, "--secret", "definitely-the-wrong-secret")
-	if err == nil {
-		t.Fatalf("[%s] database unseal %s with wrong secret succeeded, want error (output: %s)", proto.name, dbName, out)
-	}
-	status = cliDatabaseBarrierStatusProto(t, node, proto, dbName)
-	if !status.Sealed {
-		t.Fatalf("[%s] barrier-status after failed unseal = %+v, want sealed=true (still sealed)", proto.name, status)
-	}
-
-	// Correct secret unseals.
-	out, err = runCLIProto(t, node, proto, "database", "unseal", dbName, "--secret", passphrase)
-	if err != nil {
-		t.Fatalf("[%s] database unseal %s with correct secret: %v\noutput: %s", proto.name, dbName, err, out)
-	}
-	if !strings.Contains(out, "OK") {
-		t.Fatalf("[%s] database unseal %s: expected OK, got: %s", proto.name, dbName, out)
-	}
-	status = cliDatabaseBarrierStatusProto(t, node, proto, dbName)
-	if status.Sealed {
-		t.Fatalf("[%s] barrier-status after correct-secret unseal = %+v, want sealed=false", proto.name, status)
-	}
 }

@@ -42,31 +42,9 @@ func TestNewVectorStandardAdapter_WrapsStateMachine(t *testing.T) {
 	}
 }
 
-func TestNewVectorStandardAdapter_ImplementsStateMachine(t *testing.T) {
-	log := newTestLogger()
-	inner := NewVectorConsensusFSM(1, 1, log)
-	adapter := NewVectorStandardAdapter(inner)
-	// Compile-time assertion already exists; also verify at runtime.
-	var _ sm.StateMachine = adapter
-}
-
 // ---------------------------------------------------------------------------
 // NewVectorRegularCreateFunc (0% coverage)
 // ---------------------------------------------------------------------------
-
-func TestNewVectorRegularCreateFunc_CreatesStateMachine(t *testing.T) {
-	log := newTestLogger()
-
-	storageFactory := func(shardID, replicaID uint64) vectorStorage.Storage {
-		// Return nil storage; NewVectorConsensusFSMWithStorage accepts nil.
-		return nil
-	}
-
-	createFunc := NewVectorRegularCreateFunc(storageFactory, log)
-	if createFunc == nil {
-		t.Fatal("expected non-nil create function")
-	}
-}
 
 func TestNewVectorRegularCreateFunc_ProducesAdapter(t *testing.T) {
 	log := newTestLogger()

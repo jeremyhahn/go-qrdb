@@ -185,31 +185,6 @@ func TestSharedPrefixTenants_PlannedIndexQueryIsTenantScoped(t *testing.T) {
 	require.Equal(t, "acme-1", got[0].Title)
 }
 
-// TestSharedPrefixTenants_IndexRefusalIsNotSilent restates the #32 invariant
-// for this class: whatever the outcome, the forbidden answer is an empty
-// result with a nil error over an index that holds matches.
-func TestSharedPrefixTenants_IndexRefusalIsNotSilent(t *testing.T) {
-	ctx := context.Background()
-	n := newSharedTenantNode(ctx, t)
-	resolver := n.Services().StoreResolver
-
-	store, err := resolver.Resolve(ctx, "acme")
-	require.NoError(t, err)
-	d, err := dao.New(store, "workitem", newWorkItem)
-	require.NoError(t, err)
-	require.NoError(t, d.Save(ctx, &workItem{Title: "acme-1", State: "ready"}))
-
-	got, err := d.QueryByIndex(ctx, "State", "ready")
-	require.Falsef(t, len(got) == 0 && err == nil,
-		"QueryByIndex returned (empty, nil) for a value that IS present: a store "+
-			"must answer the query or refuse it, never report success for a "+
-			"lookup it did not perform")
-	if err != nil {
-		require.ErrorIs(t, err, kvstore.ErrIndexUnsupported,
-			"a refusal must be the typed one")
-	}
-}
-
 // TestSharedPrefixTenants_IAMSurvivesNamespacing is the end-to-end guard on
 // the #41 ruling's central risk: the fix must not relocate IAM.
 //

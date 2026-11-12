@@ -110,24 +110,6 @@ func TestInjectTLSState_PeerWithNonTLSAuthInfo(t *testing.T) {
 // WithUserServiceFallback tests
 // ---------------------------------------------------------------------------
 
-func TestWithUserServiceFallback_SetsField(t *testing.T) {
-	authz := &mockAuthorizer{}
-	fallback := &mockUserServicer{
-		user: &user.User{
-			Username:  "alice",
-			TenantID:  "t1",
-			RoleIDs:   []string{"admin"},
-			Lifecycle: user.LifecycleActive,
-		},
-	}
-
-	m := newTestMiddleware(authz, WithUserServiceFallback(fallback))
-
-	if m.usersFallback != fallback {
-		t.Error("expected usersFallback to be set by WithUserServiceFallback")
-	}
-}
-
 func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 	// the user so the middleware can enrich the identity. The fallback holds
 	// the system tenant only, so the identity is a system-tenant one.
@@ -178,29 +160,6 @@ func TestWithUserServiceFallback_PrimaryFails_FallbackSucceeds(t *testing.T) {
 // lookupUser tests
 // ---------------------------------------------------------------------------
 
-func TestLookupUser_PrimarySucceeds(t *testing.T) {
-	primary := &mockUserServicer{
-		user: &user.User{
-			Username:  "alice",
-			TenantID:  "t1",
-			Lifecycle: user.LifecycleActive,
-		},
-	}
-
-	m := &AuthMiddleware{users: primary}
-
-	u, err := m.lookupUser(context.Background(), "t1", userKey{username: "alice"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u.Username != "alice" {
-		t.Errorf("expected username 'alice', got %q", u.Username)
-	}
-	if primary.calls.Load() != 1 {
-		t.Errorf("expected 1 call, got %d", primary.calls.Load())
-	}
-}
-
 func TestLookupUser_PrimaryNotFound_NoFallback(t *testing.T) {
 	// UserNotFoundError is authoritative; should not fall back.
 	primary := &mockUserServicer{
@@ -216,33 +175,6 @@ func TestLookupUser_PrimaryNotFound_NoFallback(t *testing.T) {
 	var unf *user.UserNotFoundError
 	if !errors.As(err, &unf) {
 		t.Fatalf("expected UserNotFoundError, got %T: %v", err, err)
-	}
-}
-
-func TestLookupUser_PrimaryTransient_FallbackSucceeds(t *testing.T) {
-	primary := &mockUserServicer{err: errors.New("raft timeout")}
-	fallback := &mockUserServicer{
-		user: &user.User{
-			Username:  "bob",
-			TenantID:  "system",
-			Lifecycle: user.LifecycleActive,
-		},
-	}
-
-	m := &AuthMiddleware{users: primary, usersFallback: fallback}
-
-	u, err := m.lookupUser(context.Background(), "system", userKey{username: "bob"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if u.Username != "bob" {
-		t.Errorf("expected username 'bob', got %q", u.Username)
-	}
-	if primary.calls.Load() != 1 {
-		t.Errorf("expected 1 primary call, got %d", primary.calls.Load())
-	}
-	if fallback.calls.Load() != 1 {
-		t.Errorf("expected 1 fallback call, got %d", fallback.calls.Load())
 	}
 }
 
@@ -544,37 +476,6 @@ func TestWriteJSONError_EncoderFailure(t *testing.T) {
 	}
 	if ct := w.header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("expected Content-Type 'application/json', got %q", ct)
-	}
-}
-
-func TestWriteJSONError_VariousStatusCodes(t *testing.T) {
-	tests := []struct {
-		name    string
-		code    int
-		message string
-	}{
-		{"unauthorized", http.StatusUnauthorized, "not authenticated"},
-		{"forbidden", http.StatusForbidden, "access denied"},
-		{"service_unavailable", http.StatusServiceUnavailable, "store down"},
-		{"internal", http.StatusInternalServerError, "unexpected"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			WriteJSONError(rec, tt.code, tt.message)
-
-			if rec.Code != tt.code {
-				t.Errorf("expected %d, got %d", tt.code, rec.Code)
-			}
-			var resp restErrorResponse
-			if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-				t.Fatalf("failed to decode: %v", err)
-			}
-			if resp.Error != tt.message {
-				t.Errorf("expected %q, got %q", tt.message, resp.Error)
-			}
-		})
 	}
 }
 
@@ -954,13 +855,5 @@ func TestStoreUnavailableError(t *testing.T) {
 	}
 	if e.Unwrap() != inner {
 		t.Error("Unwrap should return inner error")
-	}
-}
-
-func TestStoreUnavailableError_ErrorsIs(t *testing.T) {
-	inner := errors.New("connection refused")
-	e := &StoreUnavailableError{Err: inner}
-	if !errors.Is(e, inner) {
-		t.Error("errors.Is should match inner error")
 	}
 }

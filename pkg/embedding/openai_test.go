@@ -211,15 +211,6 @@ func TestOpenAIProvider_Embed_ServerError(t *testing.T) {
 // Dimensions / Name
 // ---------------------------------------------------------------------------
 
-func TestOpenAIProvider_Dimensions_KnownModel(t *testing.T) {
-	srv, _ := embeddingServer(t, openaiProviderHandler(1536, "text-embedding-3-small"))
-	cfg := newOpenAIProviderConfig(srv.URL)
-	p, _ := NewOpenAIProvider(cfg)
-	if p.Dimensions() != 1536 {
-		t.Errorf("expected 1536, got %d", p.Dimensions())
-	}
-}
-
 func TestOpenAIProvider_Name(t *testing.T) {
 	srv, _ := embeddingServer(t, openaiProviderHandler(1536, "m"))
 	cfg := newOpenAIProviderConfig(srv.URL)

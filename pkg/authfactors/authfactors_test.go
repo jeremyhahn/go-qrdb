@@ -15,7 +15,6 @@
 package authfactors_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -130,31 +129,6 @@ func TestFactorMismatchError_Error(t *testing.T) {
 	}
 }
 
-func TestFactorMismatchError_NamesBothFactors(t *testing.T) {
-	err := &authfactors.FactorMismatchError{EnrollmentID: "e8", Enrolled: "fido2", Requested: "pkcs11"}
-	msg := err.Error()
-	for _, part := range []string{"e8", "fido2", "pkcs11"} {
-		if !strings.Contains(msg, part) {
-			t.Errorf("Error() = %q, missing %q", msg, part)
-		}
-	}
-}
-
-func TestSentinelErrors(t *testing.T) {
-	if authfactors.ErrFactorDisabled == nil {
-		t.Error("ErrFactorDisabled must not be nil")
-	}
-	if authfactors.ErrHardwareUnavailable == nil {
-		t.Error("ErrHardwareUnavailable must not be nil")
-	}
-	if authfactors.ErrFactorDisabled.Error() == "" {
-		t.Error("ErrFactorDisabled must have a non-empty message")
-	}
-	if authfactors.ErrHardwareUnavailable.Error() == "" {
-		t.Error("ErrHardwareUnavailable must have a non-empty message")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // NewEnrollmentID / NewChallengeID tests
 // ---------------------------------------------------------------------------
@@ -184,14 +158,5 @@ func TestNewChallengeID_uniqueness(t *testing.T) {
 			t.Fatalf("iteration %d: duplicate challenge ID %q", i, id)
 		}
 		ids[id] = struct{}{}
-	}
-}
-
-func TestNewEnrollmentID_differentFromChallengeID(t *testing.T) {
-	eid := authfactors.NewEnrollmentID()
-	cid := authfactors.NewChallengeID()
-	// UUIDs should differ (not guaranteed, but astronomically unlikely to collide).
-	if eid == cid {
-		t.Errorf("NewEnrollmentID() == NewChallengeID(): %q (unexpected collision)", eid)
 	}
 }

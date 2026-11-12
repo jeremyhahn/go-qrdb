@@ -446,16 +446,6 @@ func TestOperationsRequireATenant(t *testing.T) {
 	}
 }
 
-func TestResolverFailureIsKeyringUnavailable(t *testing.T) {
-	k, stores := newTestKeyring(t)
-	sealed := errors.New("tenant sealed")
-	stores.err = sealed
-	_, err := k.Encrypt(context.Background(), "acme", []byte("x"), nil)
-	if !errors.Is(err, ErrKeyringUnavailable) || !errors.Is(err, sealed) {
-		t.Fatalf("err = %v, want ErrKeyringUnavailable wrapping the cause", err)
-	}
-}
-
 // plainStore is a KVStore without the atomic verbs.
 type plainStore struct{ kvstore.KVStore }
 

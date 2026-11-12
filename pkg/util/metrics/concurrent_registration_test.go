@@ -27,9 +27,12 @@ import (
 // callers asking for the same metric concurrently is the ordinary case: both
 // must get the one registered metric, and neither may panic with a duplicate
 // registration.
+// concurrentCallers is how many goroutines registerConcurrently starts.
+const concurrentCallers = 64
+
 func registerConcurrently(t *testing.T, register func()) {
 	t.Helper()
-	const callers = 64
+	const callers = concurrentCallers
 	start := make(chan struct{})
 	panics := make(chan any, callers)
 	var wg sync.WaitGroup
@@ -60,6 +63,10 @@ func Test_NewCounter_concurrentSameMetric(t *testing.T) {
 		registerConcurrently(t, func() {
 			NewCounter(CounterOpts{Namespace: "test", Name: "concurrent_counter_total", Help: "h"}).Inc()
 		})
+		c := NewCounter(CounterOpts{Namespace: "test", Name: "concurrent_counter_total", Help: "h"})
+		if got := counterValue(c.counter); got != concurrentCallers {
+			t.Fatalf("shared counter = %v, want %d", got, concurrentCallers)
+		}
 	}
 }
 
@@ -69,6 +76,10 @@ func Test_NewGauge_concurrentSameMetric(t *testing.T) {
 		registerConcurrently(t, func() {
 			NewGauge(GaugeOpts{Namespace: "test", Name: "concurrent_gauge", Help: "h"}).Inc()
 		})
+		g := NewGauge(GaugeOpts{Namespace: "test", Name: "concurrent_gauge", Help: "h"})
+		if got := gaugeValue(g.gauge); got != concurrentCallers {
+			t.Fatalf("shared gauge = %v, want %d", got, concurrentCallers)
+		}
 	}
 }
 
@@ -78,5 +89,9 @@ func Test_NewHistogram_concurrentSameMetric(t *testing.T) {
 		registerConcurrently(t, func() {
 			NewHistogram(HistogramOpts{Namespace: "test", Name: "concurrent_histogram", Help: "h"}).Observe(1)
 		})
+		h := NewHistogram(HistogramOpts{Namespace: "test", Name: "concurrent_histogram", Help: "h"})
+		if got := histogramCount(h.histogram); got != concurrentCallers {
+			t.Fatalf("shared histogram count = %d, want %d", got, concurrentCallers)
+		}
 	}
 }

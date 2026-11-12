@@ -37,19 +37,6 @@ func TestTypeStringValues(t *testing.T) {
 	}
 }
 
-func TestTypeCanBeUsedAsMapKey(t *testing.T) {
-	m := map[Type]int{
-		TypeKV:         1,
-		TypeVector:     2,
-		TypeTimeSeries: 3,
-		TypeSystem:     4,
-		TypeUser:       5,
-	}
-	if len(m) != 5 {
-		t.Errorf("expected 5 entries in type map, got %d", len(m))
-	}
-}
-
 func TestShardIDConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -66,17 +53,6 @@ func TestShardIDConstants(t *testing.T) {
 				t.Errorf("%s = %d, want %d", tt.name, tt.got, tt.want)
 			}
 		})
-	}
-}
-
-func TestShardIDConstantsAreUnique(t *testing.T) {
-	ids := []uint64{ShardKV, ShardVector, ShardTimeSeries}
-	seen := make(map[uint64]bool, len(ids))
-	for _, id := range ids {
-		if seen[id] {
-			t.Errorf("duplicate shard ID constant: %d", id)
-		}
-		seen[id] = true
 	}
 }
 
@@ -100,26 +76,5 @@ func TestReservedRangeConstants(t *testing.T) {
 				t.Errorf("%s = %d, want %d", tt.name, tt.got, tt.want)
 			}
 		})
-	}
-}
-
-func TestReservedRangesDoNotOverlap(t *testing.T) {
-	if CoreEngineMax >= SystemMin {
-		t.Errorf("CoreEngine range overlaps with System range: %d >= %d", CoreEngineMax, SystemMin)
-	}
-	if SystemMax >= InfraMin {
-		t.Errorf("System range overlaps with Infra range: %d >= %d", SystemMax, InfraMin)
-	}
-	if InfraMax >= UserMin {
-		t.Errorf("Infra range overlaps with User range: %d >= %d", InfraMax, UserMin)
-	}
-}
-
-func TestCoreEngineIDsWithinRange(t *testing.T) {
-	coreIDs := []uint64{ShardKV, ShardVector, ShardTimeSeries}
-	for _, id := range coreIDs {
-		if id < CoreEngineMin || id > CoreEngineMax {
-			t.Errorf("core engine shard ID %d is outside range [%d, %d]", id, CoreEngineMin, CoreEngineMax)
-		}
 	}
 }

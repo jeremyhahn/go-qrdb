@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/clienttrust"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
-	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 )
 
 // composerCertProvider is an embedder's own login CA.
@@ -76,11 +75,6 @@ func TestWithCertProvider_ReplacesTheNodesLoginCA(t *testing.T) {
 	require.Equal(t, "composer", recs[0].Username)
 }
 
-func TestWithCertProvider_AbsentKeepsTheBuiltInLoginCA(t *testing.T) {
-	n := newSeamNode(t, nil)
-	require.IsType(t, &cert.DefaultCertProvider{}, n.Services().CertProv)
-}
-
 func TestWithCertKeyProviderFactory_ReachesTheBuiltInLoginCA(t *testing.T) {
 	f := &countingKeyFactory{}
 	n := newSeamNode(t, nil, WithCertKeyProviderFactory(f))
@@ -89,28 +83,6 @@ func TestWithCertKeyProviderFactory_ReachesTheBuiltInLoginCA(t *testing.T) {
 	_, err := src.CACertPEMs(context.Background())
 	require.NoError(t, err)
 	require.Positive(t, f.enumerated.Load(), "the login CA never enumerated the composer's factory")
-}
-
-func TestWithCertKeyProviderFactory_AndWithCertProviderConflict(t *testing.T) {
-	cfg := newTenantIsolationConfig(t)
-	n, err := NewStandaloneNode(context.Background(), cfg, nil,
-		WithCertProvider(composerCertProvider{}), WithCertKeyProviderFactory(&countingKeyFactory{}))
-	if n != nil {
-		_ = n.Close()
-	}
-	var conflict *lifecycle.CertProviderConflictError
-	require.ErrorAs(t, err, &conflict)
-}
-
-func TestMergeSeamOptions_FoldsTheCertSeams(t *testing.T) {
-	f := &countingKeyFactory{}
-	o := &nodeOptions{}
-	WithCertKeyProviderFactory(f)(o)
-	WithCertProvider(composerCertProvider{})(o)
-
-	got := server.ResolveCryptoOptions(mergeSeamOptions(*o, nil)...)
-	require.Same(t, f, got.CertKeyProviderFactory)
-	require.Equal(t, composerCertProvider{}, got.CertProvider)
 }
 
 func TestMergeSeamOptions_UnsetCertProviderLeavesTheBuiltInOnTheServer(t *testing.T) {
@@ -131,19 +103,4 @@ func TestMergeSeamOptions_SetCertProviderReachesTheServer(t *testing.T) {
 
 	opts := buildServerOpts(n.Services(), nil, nil, mergeSeamOptions(*o, nil), true)
 	require.Equal(t, composerCertProvider{}, server.ResolveCryptoOptions(opts...).CertProvider)
-}
-
-func TestWithCryptoInfra_ForwardsTheCertSeams(t *testing.T) {
-	f := &countingKeyFactory{}
-	infra, err := withCryptoInfra(lifecycle.Infra{}, nil, []server.ServerOption{
-		server.WithCertKeyProviderFactory(f), server.WithCertProvider(composerCertProvider{}),
-	})
-	require.NoError(t, err)
-	require.Same(t, f, infra.CertKeyProviderFactory)
-	require.Equal(t, composerCertProvider{}, infra.CertProvider)
-
-	infra, err = withCryptoInfra(lifecycle.Infra{}, nil, nil)
-	require.NoError(t, err)
-	require.Nil(t, infra.CertKeyProviderFactory)
-	require.Nil(t, infra.CertProvider)
 }

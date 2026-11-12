@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -127,22 +126,6 @@ func TestStartDynamicMembership_EmbeddedNewError(t *testing.T) {
 // start.go: resolveCreateFunc with backend qualifier (mirrors the test in
 // coverage_boost_test.go which requires extra build tags)
 // ---------------------------------------------------------------------------
-
-func TestResolveCreateFunc_UnknownType_WithBackend_IncludesBoth(t *testing.T) {
-	_, err := resolveCreateFunc("unknown-sm-type", "mybackend", statemachine.StorageConfig{})
-	require.Error(t, err)
-	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr))
-	assert.Equal(t, "unknown-sm-type:mybackend", smErr.Name)
-}
-
-func TestResolveCreateFunc_UnknownType_NoBackend_IncludesType(t *testing.T) {
-	_, err := resolveCreateFunc("totally-unknown-sm", "", statemachine.StorageConfig{})
-	require.Error(t, err)
-	var smErr *UnknownSMError
-	require.True(t, errors.As(err, &smErr))
-	assert.Equal(t, "totally-unknown-sm", smErr.Name)
-}
 
 // ---------------------------------------------------------------------------
 // start.go: init — state machine type registrations exercised from init()
