@@ -218,12 +218,12 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
 | Vector | `updateMetadata` | none | none | not in UI; *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
-| VolumePool | `create` | none (no `volumePools` call in src; tenants take a pool name only) | none | not in UI; *verified* |
-| VolumePool | `delete` | none | none | not in UI; *verified* |
-| VolumePool | `get` | none | none | not in UI; *verified* |
-| VolumePool | `list` | none | none | not in UI; *verified* |
-| VolumePool | `listTenants` | none | none | not in UI; *verified* |
-| VolumePool | `update` | none | none | not in UI; *verified* |
+| VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `get` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `list` | views/admin/VolumePoolManager.svelte views/admin/TenantManager.svelte (pool picker) | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `listTenants` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
+| VolumePool | `update` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | Watch | `watch` | views/user/WatchView.svelte | watch.spec.ts watch-advanced.spec.ts | *verified* |
 | Watch | `watchPrefix` | views/user/WatchView.svelte | watch-advanced.spec.ts real-backend/watch-events-real.spec.ts | *verified* |
 
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 178 | 162 |
+| operations | 218 | 184 | 168 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 40. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 34. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
