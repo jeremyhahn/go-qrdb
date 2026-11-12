@@ -152,6 +152,34 @@ test("advanced vector operations round-trip through VectorView against the live 
     const got = await getVector(request, vb, id);
     expect(got.status, JSON.stringify(got.body)).toBe(200);
   }
+  // --- Namespace cards and the Dimensions column follow the server. -----
+  const infoResp = await request.get(`${vb.base}/vector/namespace/info?namespace=docs`, {
+    headers: vb.headers,
+    ignoreHTTPSErrors: true,
+  });
+  expect(infoResp.status()).toBe(200);
+  const info = (await infoResp.json()) as {
+    dimension: number;
+    vector_count: number;
+    distance_metric: string;
+    index_type: string;
+  };
+  expect(info).toMatchObject({ dimension: 4, vector_count: 3, distance_metric: "COSINE", index_type: "HNSW" });
+  const statCard = (label: string) =>
+    page
+      .locator(".surface-panel")
+      .filter({ has: page.getByText(label, { exact: true }) })
+      .locator("span.font-mono")
+      .first();
+  await expect(statCard("Vectors")).toHaveText(String(info.vector_count), { timeout: LOAD_TIMEOUT });
+  await expect(statCard("Dimensions")).toHaveText(String(info.dimension));
+  await expect(statCard("Distance Metric")).toHaveText(/^cosine$/i);
+  await expect(statCard("Index Type")).toHaveText(info.index_type);
+  const dimCells = page.locator("table tbody tr");
+  await expect(dimCells).toHaveCount(3, { timeout: LOAD_TIMEOUT });
+  for (const row of await dimCells.all()) {
+    await expect(row.locator("td").filter({ hasText: new RegExp(`^\\s*${info.dimension}\\s*$`) })).toHaveCount(1);
+  }
 
   // --- getVector: open vector 12; the detail panel loads it by id. -------
   const table = page.locator("table");
