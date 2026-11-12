@@ -368,7 +368,16 @@
             <div class="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <span class="text-base-content/60 font-semibold">Lifecycle</span>
-                <p class="font-mono">{existingUser.lifecycle}</p>
+                <p>
+                  <span
+                    class="badge badge-sm {existingUser.lifecycle === 'active'
+                      ? 'badge-success'
+                      : existingUser.lifecycle === 'disabled'
+                        ? 'badge-error'
+                        : 'badge-warning'}"
+                    data-testid="user-lifecycle-badge">{existingUser.lifecycle}</span
+                  >
+                </p>
               </div>
               <div>
                 <span class="text-base-content/60 font-semibold">Created</span>
