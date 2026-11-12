@@ -974,6 +974,46 @@ func TestDeliverTenantKeyToReplicaWithRetry_SucceedsAfterTransientFailures(t *te
 	}
 }
 
+// metaValidatingKeyDistributor refuses a placement without a DatabaseID, as
+// keydelivery.Meta.validate refuses delivery metadata without one, and
+// records the placement it was given.
+type metaValidatingKeyDistributor struct {
+	got *placement.Placement
+}
+
+func (d *metaValidatingKeyDistributor) DistributeTenantKey(_ context.Context, p *placement.Placement, _ *seal.StorageBarrier, _ string) error {
+	d.got = p
+	if p.DatabaseID == "" {
+		return errors.New("keydelivery: invalid metadata: empty database id")
+	}
+	return nil
+}
+
+// TestDeliverTenantKeyToReplica_CarriesDatabaseID: the single-replica
+// placement a scale-out or rebalance delivery sends carries the source
+// placement's DatabaseID, so the delivery metadata validates.
+func TestDeliverTenantKeyToReplica_CarriesDatabaseID(t *testing.T) {
+	t.Parallel()
+
+	dist := &metaValidatingKeyDistributor{}
+	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
+	p := &placement.Placement{TenantID: scaleTenantID, DatabaseID: "5be13a05b2a87c5c23b40057416db0id", Database: "db1", ShardID: 1000}
+	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
+
+	if err := deliverTenantKeyToReplica(scaleCtx(), dist, lookup, p, dst, "node1"); err != nil {
+		t.Fatalf("deliverTenantKeyToReplica error = %v, want nil", err)
+	}
+	if dist.got == nil {
+		t.Fatal("the distributor was never called")
+	}
+	if dist.got.DatabaseID != p.DatabaseID {
+		t.Errorf("delivered DatabaseID = %q, want %q", dist.got.DatabaseID, p.DatabaseID)
+	}
+	if len(dist.got.Replicas) != 1 || dist.got.Replicas[0] != dst {
+		t.Errorf("delivered replicas = %v, want only %v", dist.got.Replicas, dst)
+	}
+}
+
 // TestDeliverTenantKeyToReplicaWithRetry_GivesUpAfterMaxAttempts verifies
 // that a KeyDistributor which never succeeds is retried exactly
 // scaleUpKeyDeliveryMaxAttempts times and the final error is returned (so

@@ -472,12 +472,15 @@ func deliverTenantKeyToReplica(ctx context.Context, deliverer KeyDistributor, lo
 		return nil
 	}
 
+	// DatabaseID is the delivery's identity (keydelivery.Meta): a
+	// placement without it is refused as invalid metadata.
 	singleReplica := &placement.Placement{
-		TenantID: p.TenantID,
-		Database: p.Database,
-		ShardID:  p.ShardID,
-		RF:       1,
-		Replicas: []placement.Replica{dst},
+		TenantID:   p.TenantID,
+		DatabaseID: p.DatabaseID,
+		Database:   p.Database,
+		ShardID:    p.ShardID,
+		RF:         1,
+		Replicas:   []placement.Replica{dst},
 	}
 	return deliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), selfNodeID)
 }
