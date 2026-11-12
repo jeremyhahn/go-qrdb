@@ -23,6 +23,7 @@
     ListVectorsResponse,
     SearchSimilarResponse,
     SearchByMetadataResponse,
+    VectorData,
   } from "@qrdb/sdk";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import type { VectorSearchEvent } from "../../components/core/SearchBar/types.ts";
@@ -106,6 +107,11 @@
   let showUpsertPanel: boolean = $state(false);
   let showVectorDetailPanel: boolean = $state(false);
   let selectedVector: unknown = $state(null);
+  /** Authoritative copy of the selected vector, fetched with getVector. */
+  let detailVector: VectorData | null = $state(null);
+  let detailMetadata: string = $state("{}");
+  let detailLoading: boolean = $state(false);
+  let detailError: string = $state("");
 
   // ---------------------------------------------------------------------------
   // Search state
@@ -720,7 +726,83 @@
 
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
     selectedVector = event.row.raw;
+    detailVector = null;
+    detailMetadata = JSON.stringify(
+      ((event.row.raw as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {},
+      null,
+      2,
+    );
     showVectorDetailPanel = true;
+    void loadVectorDetail(event.row.id);
+  }
+
+  function closeVectorDetail(): void {
+    showVectorDetailPanel = false;
+    selectedVector = null;
+    detailVector = null;
+    detailError = "";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vector detail: getVector + updateMetadata
+  // ---------------------------------------------------------------------------
+
+  async function loadVectorDetail(id: string): Promise<void> {
+    if (client.vector === null || selectedNamespace.trim() === "" || id === "") return;
+    detailLoading = true;
+    detailError = "";
+    try {
+      const v: VectorData = await client.vector.getVector({ namespace: selectedNamespace, id });
+      detailVector = v;
+      detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
+    } catch (err: unknown) {
+      detailVector = null;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      detailLoading = false;
+    }
+  }
+
+  function parseJsonObjectStrict(raw: string, what: string): Record<string, unknown> | null {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // fall through
+    }
+    showToast("warning", `${what} must be a JSON object.`);
+    return null;
+  }
+
+  async function handleSaveMetadata(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    const id = detailVector?.id ?? ((selectedVector as Record<string, unknown> | null)?.id as string | undefined) ?? "";
+    if (selectedNamespace.trim() === "" || id === "") {
+      showToast("warning", "Namespace and vector ID are required.");
+      return;
+    }
+    const metadata = parseJsonObjectStrict(detailMetadata, "Metadata");
+    if (metadata === null) return;
+    detailLoading = true;
+    try {
+      await client.vector.updateMetadata({
+        namespace: selectedNamespace,
+        id,
+        metadata,
+      });
+      showToast("success", `Metadata of vector "${id}" updated.`);
+      await loadVectorDetail(id);
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      detailLoading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1105,17 +1187,42 @@
   <SlidePanel
     open={showVectorDetailPanel}
     title="Vector Details"
-    onclose={() => { showVectorDetailPanel = false; selectedVector = null; }}
+    onclose={closeVectorDetail}
   >
     {#snippet children()}
       {#if selectedVector !== null}
-        {@const v = selectedVector as Record<string, unknown>}
+        {@const v = (detailVector ?? selectedVector) as Record<string, unknown>}
         {@const vec = v.vector as number[] | undefined}
-        <div class="flex flex-col gap-5">
+        <div class="flex flex-col gap-5" data-testid="vector-detail">
+          {#if detailLoading}
+            <span class="loading loading-spinner loading-sm" data-testid="vector-detail-loading"></span>
+          {/if}
+          {#if detailError}
+            <div class="alert alert-error text-sm" role="alert" data-testid="vector-detail-error">
+              Could not load vector: {detailError}
+            </div>
+          {/if}
           <div class="grid grid-cols-2 gap-6">
             <StatCard label="ID" value={(v.id as string) ?? "N/A"} icon={Hash} accentColor={accent} />
             <StatCard label="Dimensions" value={vec?.length ?? 0} icon={Ruler} accentColor={accent} />
           </div>
+
+          {#if detailVector}
+            <dl class="grid grid-cols-3 gap-2 text-sm" data-testid="vector-detail-meta">
+              <div>
+                <dt class="text-base-content/50 text-xs">Version</dt>
+                <dd class="font-mono" data-testid="vector-detail-version">{detailVector.version}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Created</dt>
+                <dd class="font-mono" data-testid="vector-detail-created">{detailVector.createdAt}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Updated</dt>
+                <dd class="font-mono" data-testid="vector-detail-updated">{detailVector.updatedAt}</dd>
+              </div>
+            </dl>
+          {/if}
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Vector Values</h4>
@@ -1126,9 +1233,23 @@
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Metadata</h4>
-            <div class="bg-base-300 rounded p-2">
-              <pre class="font-mono text-xs whitespace-pre-wrap">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
-            </div>
+            <pre class="bg-base-300 rounded p-2 font-mono text-xs whitespace-pre-wrap" data-testid="vector-detail-metadata-json">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
+            <label class="form-control mt-3 w-full">
+              <div class="label"><span class="label-text">Edit metadata (JSON)</span></div>
+              <textarea
+                class="textarea textarea-bordered h-24 w-full font-mono text-sm"
+                aria-label="Edit metadata"
+                data-testid="vector-detail-metadata-input"
+                bind:value={detailMetadata}
+              ></textarea>
+            </label>
+            <button
+              class="btn btn-primary btn-sm mt-2"
+              onclick={handleSaveMetadata}
+              disabled={detailLoading}
+            >
+              Save metadata
+            </button>
           </div>
         </div>
       {/if}
@@ -1146,7 +1267,7 @@
           <Trash2 class="h-3.5 w-3.5" />
           Delete
         </button>
-        <button class="btn btn-ghost btn-sm" onclick={() => { showVectorDetailPanel = false; selectedVector = null; }}>
+        <button class="btn btn-ghost btn-sm" onclick={closeVectorDetail}>
           Close
         </button>
       </div>
