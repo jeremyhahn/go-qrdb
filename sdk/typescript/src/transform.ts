@@ -49,6 +49,19 @@ export function snakeToCamelKey(key: string): string {
  * IPC so that SDK consumers always see the camelCase field names declared in
  * types.ts, regardless of the server's snake_case JSON serialization.
  */
+/**
+ * Keys whose values are user-supplied maps (vector metadata, metadata
+ * filters). Their own keys are the user's data and cross the wire as
+ * typed: neither deep conversion renames them.
+ */
+const USER_MAP_KEYS: ReadonlySet<string> = new Set([
+    'metadata',
+    'filter',
+    'filters',
+    'metadataFilter',
+    'metadata_filter',
+]);
+
 export function deepSnakeToCamel(value: unknown): unknown {
     if (Array.isArray(value)) {
         return value.map(deepSnakeToCamel);
@@ -56,7 +69,7 @@ export function deepSnakeToCamel(value: unknown): unknown {
     if (value !== null && typeof value === 'object') {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            out[snakeToCamelKey(k)] = deepSnakeToCamel(v);
+            out[snakeToCamelKey(k)] = USER_MAP_KEYS.has(k) ? v : deepSnakeToCamel(v);
         }
         return out;
     }
@@ -83,7 +96,7 @@ export function deepCamelToSnake(value: unknown): unknown {
     if (value !== null && typeof value === 'object') {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            out[camelToSnakeKey(k)] = deepCamelToSnake(v);
+            out[camelToSnakeKey(k)] = USER_MAP_KEYS.has(k) ? v : deepCamelToSnake(v);
         }
         return out;
     }
