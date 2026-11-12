@@ -77,7 +77,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Daemon | `restartDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `startDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `stopDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
-| Database | `barrierStatus` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Database | `barrierStatus` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Database | `create` | views/admin/DatabaseDetail.svelte components/wizard/database/StepDatabaseCreating.svelte | admin-databases.spec.ts database-wizard-full-flow.spec.ts | *verified* |
 | Database | `drop` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
 | Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
@@ -126,21 +126,21 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | MVCC | `putWithLease` | views/user/KVExplorer.svelte (lease id on save) | kv-mvcc.spec.ts | *verified* |
 | MVCC | `range` | views/user/KVExplorer.svelte (as-of revision browse) | kv-explorer-restore.spec.ts | *verified* |
 | MVCC | `restoreToRevision` | views/user/KVExplorer.svelte | kv-explorer-restore.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
-| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
-| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts | *verified* |
+| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Officer | `listOfficers` | views/admin/SealManager.svelte components/ServerInitWizard.svelte | admin-seal-officers.spec.ts dom/barrier-shamir.spec.ts | *verified* |
 | Officer | `listTenantOfficers` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
+| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts | *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
 | Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
-| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Officer | `startRekey` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `startTenantRekey` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Rebalance | `createPlan` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
@@ -198,8 +198,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
 | User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | User | `update` | views/admin/UserDetail.svelte | admin-users.spec.ts (edit form; save not asserted) | *verified* |
-| Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
-| Vector | `batchUpsert` | none | none | not in UI; *verified* |
+| Vector | `batchDeleteVectors` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `batchUpsert` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
 | Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `createNamespace` | views/user/VectorView.svelte  | vector.spec.ts vector-namespace-fix.spec.ts  |  |
 | Vector | `deleteNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
@@ -208,15 +208,15 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `getIndexStats` | views/user/VectorView.svelte | vector.spec.ts (load stats) | *verified* |
 | Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
 | Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
-| Vector | `getVector` | none | none | not in UI; *verified* |
-| Vector | `hybridSearch` | none | none | not in UI; *verified* |
+| Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
+| Vector | `hybridSearch` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
 | Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByID` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByMetadata` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
-| Vector | `updateMetadata` | none | none | not in UI; *verified* |
+| Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts | *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
 | VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 184 | 168 |
+| operations | 218 | 189 | 180 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 34. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 29. In UI without e2e: 9. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
