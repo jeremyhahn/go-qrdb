@@ -159,10 +159,10 @@ test.describe("Time-Series Operations", () => {
 
   test("shows error alert when write fails", async ({ page }) => {
     await navigateToTimeSeries(page);
-    // The component calls client.timeSeries.writePoint → TimeSeriesBinding.WritePoint
+    // The component calls client.timeSeries.write → TimeSeriesBinding.Write
     await injectError(
       page,
-      "TimeSeriesBinding.WritePoint",
+      "TimeSeriesBinding.Write",
       "write pipeline full",
     );
 
@@ -184,7 +184,7 @@ test.describe("Time-Series Operations", () => {
       }
     }
 
-    await clearError(page, "TimeSeriesBinding.WritePoint");
+    await clearError(page, "TimeSeriesBinding.Write");
   });
 
   test("shows error when listing metrics fails", async ({ page }) => {

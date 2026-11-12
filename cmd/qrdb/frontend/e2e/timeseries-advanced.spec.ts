@@ -85,9 +85,15 @@ async function injectStatefulTimeSeriesBinding(
       clearInterval(waitForGo);
 
       go.main.TimeSeriesBinding = {
-        Write: async (metric: string, value: number, timestampNs: number) => {
+        Write: async (point: Record<string, unknown>) => {
+          // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
           maybeReject("TimeSeriesBinding.Write");
-          tsPoints.push({ metric, value, timestampNs });
+          tsPoints.push({
+            metric: point["metric"] as string,
+            value: point["value"] as number,
+            timestampNs: (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number,
+            tags: point["tags"] as { key: string; value: string }[] | undefined,
+          });
         },
         WriteBatch: async (points: TSDataPoint[]) => {
           maybeReject("TimeSeriesBinding.WriteBatch");
@@ -289,12 +295,12 @@ test.describe("TimeSeries Advanced", () => {
     await injectStatefulTimeSeriesBinding(page);
     await navigateToTimeSeries(page);
 
-    await injectError(page, "TimeSeriesBinding.WritePoint", "write quota exceeded");
+    await injectError(page, "TimeSeriesBinding.Write", "write quota exceeded");
 
     await writePointViaUI(page, "err.metric", "1.0");
     await expect(page.getByText("write quota exceeded")).toBeVisible({ timeout: 5_000 });
 
-    await clearError(page, "TimeSeriesBinding.WritePoint");
+    await clearError(page, "TimeSeriesBinding.Write");
   });
 
   test("error on delete series shows error toast", async ({ page }) => {

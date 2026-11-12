@@ -281,7 +281,7 @@
     if (s === "") return null;
     const m = /^(\d+(?:\.\d+)?)\s*(ns|ms|s|m|h|d)?$/.exec(s);
     if (m === null) return null;
-    const n = parseFloat(m[1]);
+    const n = parseFloat(m[1] ?? "");
     const unit = m[2] ?? "ns";
     if (unit === "ns") return Math.round(n);
     const u = DURATION_UNITS.find((d) => d.suffix === unit);
@@ -527,17 +527,17 @@
     const points: TSDataPoint[] = [];
     const lines = raw.split("\n");
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
+      const line = (lines[i] ?? "").trim();
       if (line === "") continue;
       const parts = line.split(",");
       if (parts.length < 2 || parts.length > 3) {
         return `Line ${i + 1}: expected timestamp,value[,k=v;k=v].`;
       }
-      const tsRaw = parts[0].trim();
+      const tsRaw = (parts[0] ?? "").trim();
       if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
-      const value = parseFloat(parts[1].trim());
+      const value = parseFloat((parts[1] ?? "").trim());
       if (Number.isNaN(value)) return `Line ${i + 1}: value must be a valid number.`;
-      const tags = parts.length === 3 ? parseTags(parts[2].replaceAll(";", ",")) : [];
+      const tags = parts.length === 3 ? parseTags((parts[2] ?? "").replaceAll(";", ",")) : [];
       points.push({
         metric,
         value,
