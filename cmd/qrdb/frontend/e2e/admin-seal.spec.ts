@@ -617,6 +617,19 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
     });
   });
 
+  test.describe("no ceremony", () => {
+    test.use({ mockState: { ...passphraseState, ceremonyStatus: { state: "awaiting_init" } } });
+
+    test("a server awaiting init shows no ceremony", async ({ page }) => {
+      await navigateToSealManager(page);
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-none")).toContainText("No ceremony", { timeout: LOAD_TIMEOUT });
+      await expect(card.getByTestId("ceremony-state")).toHaveCount(0);
+      await expect(card.getByTestId("ceremony-spki-pin")).toHaveCount(0);
+      await expect(card.getByTestId("ceremony-spki-copy")).toHaveCount(0);
+    });
+  });
+
   test.describe("ceremony", () => {
     test.use({ mockState: passphraseState });
 
@@ -625,6 +638,35 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
       const card = page.getByTestId("ceremony-card");
       await expect(card.getByTestId("ceremony-state")).toHaveText("operational", { timeout: LOAD_TIMEOUT });
       await expect(card.getByTestId("ceremony-spki-pin")).toHaveText("mockpin");
+      await expect(card.getByTestId("ceremony-spki-pin")).toHaveClass(/font-mono/);
+      await expect(card.getByTestId("ceremony-none")).toHaveCount(0);
+    });
+
+    test("copies the SPKI pin", async ({ page, context }) => {
+      await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+      await navigateToSealManager(page);
+      const card = page.getByTestId("ceremony-card");
+      await expect(card.getByTestId("ceremony-spki-pin")).toHaveText("mockpin", { timeout: LOAD_TIMEOUT });
+
+      await card.getByTestId("ceremony-spki-copy").click();
+
+      const toast = page.locator('[role="alert"]').filter({ hasText: "SPKI pin copied" });
+      await expect(toast).toBeVisible({ timeout: 5_000 });
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("mockpin");
+    });
+
+    test("ceremony status error is a warning, not a crash", async ({ page }) => {
+      await page.goto("/");
+      await expect(page.locator(".breadcrumbs").getByText("Dashboard")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await injectError(page, "CeremonyBinding.Status", "ceremony status unavailable");
+      await page.locator("aside").getByText("Seal Manager").click();
+
+      const warning = page.getByTestId("ceremony-error");
+      await expect(warning).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(warning).toHaveClass(/alert-warning/);
+      // The rest of the page still renders.
+      await expect(page.getByTestId("csr-sign-btn")).toBeVisible();
+      await expect(page.getByText("Seal Status")).toBeVisible();
     });
 
     test("ceremony status error is shown in the card", async ({ page }) => {
