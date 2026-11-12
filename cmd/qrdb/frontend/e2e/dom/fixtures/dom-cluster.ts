@@ -128,6 +128,9 @@ function writeClusterConfig(path: string): void {
     '  wire_codec: "json"',
     "seal:",
     "  enabled: false",
+    // auth.enabled requires seal.enabled, so a seal-off cluster runs auth-off.
+    "auth:",
+    "  enabled: false",
   ];
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
@@ -187,6 +190,14 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
     .map((p, i) => `${i + 1}=127.0.0.1:${p.raft}`)
     .join(",");
 
+  // quicraft admits a member only with its transport identity: every node is
+  // told the identities (`qrdbd node-identity`) of the other replicas.
+  const identities = nodeCerts.map((c, i) => {
+    const out = execFileSync(qrdbdBin(), ["node-identity", "--cert", c.certPath]).toString().trim();
+    const id = out.split(/\s+/).find((t) => t.startsWith("spki:")) ?? out;
+    return `${i + 1}=${id}`;
+  });
+
   const procs: ChildProcess[] = [];
   const dataDirs: string[] = [];
   const stderrBufs: Buffer[][] = [];
@@ -210,6 +221,9 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
       "--tls-client-auth=none",
       "--discovery", "static",
       "--peers", peersFlag,
+      ...(nodeCount > 1
+        ? ["--member-identities", identities.filter((_, j) => j !== i).join(",")]
+        : []),
       "--shard-id", "1",
       "--replica-id", String(i + 1),
       "--cluster-trust-domain", CLUSTER_TRUST_DOMAIN,
