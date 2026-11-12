@@ -79,79 +79,79 @@ func containsControlBytes(s string) bool {
 	return false
 }
 
-// TestVectorCountMetric_LabelsAreLogicalAndTenantOnCreate verifies that after
-// CreateNamespace the qrdb_vector_vector_count gauge is emitted with
-// {namespace=<logical>, tenant=<tenantID>} and contains no control bytes.
-func TestVectorCountMetric_LabelsAreLogicalAndTenantOnCreate(t *testing.T) {
+// TestVectorMetrics_NoNamespaceNameInLabels verifies that a /metrics scrape
+// after vector writes in named namespaces shows no qrdb_vector_* label named
+// "namespace" and no label value carrying a tenant's namespace name
+// (strict-tenant-isolation phase 10).
+func TestVectorMetrics_NoNamespaceNameInLabels(t *testing.T) {
 	reg := isolatedRegistry(t)
 
-	storage := newMockVectorStorage()
-	logger := newMockLogger()
-
-	svc, err := NewVectorService(storage, logger)
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
 
 	ctx := tenant.WithTenantID(context.Background(), "acme")
-	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "embeddings",
-		Dimension: 4,
-	})
+	names := []string{"embeddings", "secret-project"}
+	for i, name := range names {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+		require.NoError(t, err)
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+			Namespace: name,
+			ID:        uint64(i + 1),
+			Vector:    []float32{1.0, 2.0},
+		})
+		require.NoError(t, err)
+	}
+
+	mfs, err := reg.Gather()
 	require.NoError(t, err)
-
-	mf := gatherGaugeVec(t, reg, "qrdb_vector_vector_count")
-	require.NotNil(t, mf, "qrdb_vector_vector_count metric family must be present")
-	require.NotEmpty(t, mf.GetMetric())
-
-	m := mf.GetMetric()[0]
-	ns := labelValue(m, "namespace")
-	ten := labelValue(m, "tenant")
-
-	assert.Equal(t, "embeddings", ns, "namespace label must be the logical name")
-	assert.Equal(t, "acme", ten, "tenant label must be the tenant ID")
-	assert.False(t, containsControlBytes(ns), "namespace label must not contain control bytes")
-	assert.False(t, containsControlBytes(ten), "tenant label must not contain control bytes")
-	assert.False(t, strings.ContainsRune(ns, '\x1f'), "namespace label must not contain the scoping separator")
+	seen := 0
+	for _, mf := range mfs {
+		if !strings.HasPrefix(mf.GetName(), "qrdb_vector_") {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			seen++
+			for _, lp := range m.GetLabel() {
+				assert.NotEqual(t, "namespace", lp.GetName(), "%s must not carry a namespace label", mf.GetName())
+				for _, name := range names {
+					assert.NotContains(t, lp.GetValue(), name,
+						"%s label %s leaks the tenant's namespace name", mf.GetName(), lp.GetName())
+				}
+			}
+		}
+	}
+	require.NotZero(t, seen, "qrdb_vector_* series must be present")
 }
 
-// TestVectorCountMetric_LabelsAreLogicalAndTenantOnUpsert verifies that after
-// UpsertVector the counter is incremented and carries the correct two-label set.
-func TestVectorCountMetric_LabelsAreLogicalAndTenantOnUpsert(t *testing.T) {
+// TestVectorCountMetric_AggregatesPerTenant verifies that the vector count of
+// every namespace a tenant owns lands in one series labelled only by tenant ID.
+func TestVectorCountMetric_AggregatesPerTenant(t *testing.T) {
 	reg := isolatedRegistry(t)
 
-	storage := newMockVectorStorage()
-	logger := newMockLogger()
-
-	svc, err := NewVectorService(storage, logger)
+	svc, err := NewVectorService(newMockVectorStorage(), newMockLogger())
 	require.NoError(t, err)
 
 	ctx := tenant.WithTenantID(context.Background(), "tenant-x")
-	_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{
-		Namespace: "vecs",
-		Dimension: 2,
-	})
-	require.NoError(t, err)
-
-	_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
-		Namespace: "vecs",
-		ID:        42,
-		Vector:    []float32{1.0, 2.0},
-	})
-	require.NoError(t, err)
+	for i, name := range []string{"vecs-a", "vecs-b"} {
+		_, err = svc.CreateNamespace(ctx, &CreateNamespaceRequest{Namespace: name, Dimension: 2})
+		require.NoError(t, err)
+		_, err = svc.UpsertVector(ctx, &UpsertVectorRequest{
+			Namespace: name,
+			ID:        uint64(i + 1),
+			Vector:    []float32{1.0, 2.0},
+		})
+		require.NoError(t, err)
+	}
 
 	mf := gatherGaugeVec(t, reg, "qrdb_vector_vector_count")
 	require.NotNil(t, mf)
+	require.Len(t, mf.GetMetric(), 1, "one series per tenant, not per namespace")
 
-	found := false
-	for _, m := range mf.GetMetric() {
-		ns := labelValue(m, "namespace")
-		ten := labelValue(m, "tenant")
-		if ns == "vecs" && ten == "tenant-x" {
-			found = true
-			assert.False(t, containsControlBytes(ns), "namespace label must not contain control bytes")
-			assert.False(t, containsControlBytes(ten), "tenant label must not contain control bytes")
-		}
-	}
-	assert.True(t, found, "expected metric with {namespace=vecs, tenant=tenant-x}")
+	m := mf.GetMetric()[0]
+	require.Len(t, m.GetLabel(), 1)
+	assert.Equal(t, "tenant-x", labelValue(m, "tenant"))
+	assert.False(t, containsControlBytes(labelValue(m, "tenant")))
+	assert.Equal(t, float64(2), m.GetGauge().GetValue(), "the tenant total sums its namespaces")
 }
 
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
@@ -178,12 +178,10 @@ func TestVectorCountMetric_SystemTenantLabel(t *testing.T) {
 	require.NotEmpty(t, mf.GetMetric())
 
 	m := mf.GetMetric()[0]
-	ns := labelValue(m, "namespace")
 	ten := labelValue(m, "tenant")
 
-	assert.Equal(t, "global", ns)
+	assert.Empty(t, labelValue(m, "namespace"), "no namespace label")
 	assert.Equal(t, tenantid.System, ten, "system tenant must appear as its canonical ID, not empty string")
-	assert.False(t, containsControlBytes(ns))
 	assert.False(t, containsControlBytes(ten))
 }
 
