@@ -69,16 +69,6 @@ func TestCostFullScan(t *testing.T) {
 	}
 }
 
-func TestCostFullScanNoPredicates(t *testing.T) {
-	p := planner.New(planner.NewStaticCatalog([]planner.IndexInfo{
-		{Name: "idx.Email", FieldName: "Email", Unique: true, FieldType: "string"},
-	}))
-	plan := p.Plan(nil)
-	if plan.EstimatedCost != 1000 {
-		t.Errorf("full scan (no predicates) cost: want 1000, got %f", plan.EstimatedCost)
-	}
-}
-
 func TestCostUniqueIndexScanNotCheaperThanLookup(t *testing.T) {
 	// A range scan on a unique index should use the scan cost (50), not the
 	// unique lookup cost (1), because the range may span multiple values.

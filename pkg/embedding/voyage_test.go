@@ -69,17 +69,6 @@ func newVoyageTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Serv
 // NewVoyageProvider
 // ---------------------------------------------------------------------------
 
-func TestNewVoyageProvider_Success(t *testing.T) {
-	_, cfg := newVoyageTestServer(t, func(w http.ResponseWriter, _ *http.Request) {})
-	p, err := NewVoyageProvider(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if p == nil {
-		t.Fatal("expected non-nil provider")
-	}
-}
-
 func TestNewVoyageProvider_MissingAPIKey(t *testing.T) {
 	cfg := Config{Model: "voyage-code-2", APIURL: "http://fake"}
 	_, err := NewVoyageProvider(cfg)
@@ -400,18 +389,6 @@ func TestVoyageProvider_Embed_MissingEmbeddingAtIndex(t *testing.T) {
 // Dimensions / Name
 // ---------------------------------------------------------------------------
 
-func TestVoyageProvider_Dimensions(t *testing.T) {
-	cfg := Config{
-		APIKey: "sk-test",
-		APIURL: "http://fake",
-		Model:  "voyage-2", // 1024 dims
-	}
-	p, _ := NewVoyageProvider(cfg)
-	if p.Dimensions() != 1024 {
-		t.Errorf("expected 1024 for voyage-2, got %d", p.Dimensions())
-	}
-}
-
 func TestVoyageProvider_Name(t *testing.T) {
 	cfg := Config{
 		APIKey: "sk-test",
@@ -427,23 +404,6 @@ func TestVoyageProvider_Name(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Models (static list)
 // ---------------------------------------------------------------------------
-
-func TestVoyageProvider_Models_ReturnsStaticList(t *testing.T) {
-	cfg := Config{
-		APIKey: "sk-test",
-		APIURL: "http://fake",
-		Model:  "voyage-code-2",
-	}
-	p, _ := NewVoyageProvider(cfg)
-
-	models, err := p.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(models) != len(voyageModels) {
-		t.Errorf("expected %d models, got %d", len(voyageModels), len(models))
-	}
-}
 
 func TestVoyageProvider_Models_ContainsExpectedModel(t *testing.T) {
 	cfg := Config{

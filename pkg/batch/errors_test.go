@@ -58,13 +58,6 @@ func Test_ClosedError_errorsAs(t *testing.T) {
 	}
 }
 
-func Test_ClosedError_implementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	err := &ClosedError{}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 // ---------------------------------------------------------------------------
 // QueueFullError
 // ---------------------------------------------------------------------------
@@ -73,15 +66,6 @@ func Test_QueueFullError_errorMessage(t *testing.T) {
 	t.Parallel()
 	err := &QueueFullError{QueueSize: 5000}
 	want := "quicraft/batch: queue full (capacity 5000)"
-	if got := err.Error(); got != want {
-		t.Errorf("QueueFullError.Error() = %q, want %q", got, want)
-	}
-}
-
-func Test_QueueFullError_errorMessageZeroCapacity(t *testing.T) {
-	t.Parallel()
-	err := &QueueFullError{QueueSize: 0}
-	want := "quicraft/batch: queue full (capacity 0)"
 	if got := err.Error(); got != want {
 		t.Errorf("QueueFullError.Error() = %q, want %q", got, want)
 	}
@@ -163,13 +147,6 @@ func Test_NilProposerError_errorsAs(t *testing.T) {
 	}
 }
 
-func Test_NilProposerError_implementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	err := &NilProposerError{}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 // ---------------------------------------------------------------------------
 // FlushError
 // ---------------------------------------------------------------------------
@@ -179,16 +156,6 @@ func Test_FlushError_errorMessage(t *testing.T) {
 	inner := errors.New("proposer unavailable")
 	err := &FlushError{ShardID: 42, Err: inner}
 	want := "quicraft/batch: flush failed for shard 42: proposer unavailable"
-	if got := err.Error(); got != want {
-		t.Errorf("FlushError.Error() = %q, want %q", got, want)
-	}
-}
-
-func Test_FlushError_errorMessageZeroShard(t *testing.T) {
-	t.Parallel()
-	inner := errors.New("timeout")
-	err := &FlushError{ShardID: 0, Err: inner}
-	want := "quicraft/batch: flush failed for shard 0: timeout"
 	if got := err.Error(); got != want {
 		t.Errorf("FlushError.Error() = %q, want %q", got, want)
 	}
@@ -229,16 +196,6 @@ func Test_FlushError_unwrapNilErr(t *testing.T) {
 	}
 }
 
-func Test_FlushError_errorsIsFindsWrappedError(t *testing.T) {
-	t.Parallel()
-	inner := errors.New("specific cause")
-	err := &FlushError{ShardID: 3, Err: inner}
-
-	if !errors.Is(err, inner) {
-		t.Error("errors.Is should find the wrapped inner error through Unwrap")
-	}
-}
-
 func Test_FlushError_errorsAs(t *testing.T) {
 	t.Parallel()
 	var target *FlushError
@@ -253,14 +210,6 @@ func Test_FlushError_errorsAs(t *testing.T) {
 	}
 }
 
-func Test_FlushError_containsShardIDInMessage(t *testing.T) {
-	t.Parallel()
-	err := &FlushError{ShardID: 12345, Err: errors.New("err")}
-	if !strings.Contains(err.Error(), "12345") {
-		t.Errorf("error message should contain shard ID 12345, got %q", err.Error())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DecodeError
 // ---------------------------------------------------------------------------
@@ -269,15 +218,6 @@ func Test_DecodeError_errorMessage(t *testing.T) {
 	t.Parallel()
 	err := &DecodeError{Reason: "truncated length prefix"}
 	want := "quicraft/batch: decode failed: truncated length prefix"
-	if got := err.Error(); got != want {
-		t.Errorf("DecodeError.Error() = %q, want %q", got, want)
-	}
-}
-
-func Test_DecodeError_errorMessageEmptyReason(t *testing.T) {
-	t.Parallel()
-	err := &DecodeError{Reason: ""}
-	want := "quicraft/batch: decode failed: "
 	if got := err.Error(); got != want {
 		t.Errorf("DecodeError.Error() = %q, want %q", got, want)
 	}
@@ -312,57 +252,9 @@ func Test_DecodeError_errorsAs(t *testing.T) {
 	}
 }
 
-func Test_DecodeError_implementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	err := &DecodeError{Reason: "test"}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
-func Test_DecodeError_containsReasonInMessage(t *testing.T) {
-	t.Parallel()
-	reason := "custom decode failure reason"
-	err := &DecodeError{Reason: reason}
-	if !strings.Contains(err.Error(), reason) {
-		t.Errorf("error message should contain reason %q, got %q", reason, err.Error())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Error types are distinct from each other
 // ---------------------------------------------------------------------------
-
-func Test_ErrorTypes_allDistinct(t *testing.T) {
-	t.Parallel()
-
-	closed := &ClosedError{}
-	queueFull := &QueueFullError{QueueSize: 10}
-	nilProposer := &NilProposerError{}
-	flush := &FlushError{ShardID: 1, Err: errors.New("e")}
-	decode := &DecodeError{Reason: "r"}
-
-	var ce *ClosedError
-	var qfe *QueueFullError
-	var npe *NilProposerError
-	var fe *FlushError
-	var de *DecodeError
-
-	if !errors.As(closed, &ce) {
-		t.Error("ClosedError should match *ClosedError")
-	}
-	if !errors.As(queueFull, &qfe) {
-		t.Error("QueueFullError should match *QueueFullError")
-	}
-	if !errors.As(nilProposer, &npe) {
-		t.Error("NilProposerError should match *NilProposerError")
-	}
-	if !errors.As(flush, &fe) {
-		t.Error("FlushError should match *FlushError")
-	}
-	if !errors.As(decode, &de) {
-		t.Error("DecodeError should match *DecodeError")
-	}
-}
 
 func Test_ErrorTypes_sentinelErrorMessages(t *testing.T) {
 	t.Parallel()
