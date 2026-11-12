@@ -242,7 +242,7 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | shard balance (`rebalance.getImbalanceReport`) | imbalance score, nodes, hotspots | views/admin/RebalancePanel.svelte (stat cards) | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | seal state (`seal.status`) | sealed, initialized, strategy, sharesRequired, sharesProvided, sharesTotal | App.svelte (unseal gate), views/admin/SealManager.svelte (stats) | admin-seal.spec.ts unseal.spec.ts | *verified* |
 | cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local, clusterMigration (target, generation, owners confirmed/total, per-owner step and phase) | views/admin/SealManager.svelte (all fields) | admin-seal.spec.ts | *verified* |
-| ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
+| ceremony state (`ceremony.status`) | state, spkiPin | views/admin/SealManager.svelte (ceremony card: state, copyable SPKI pin, "No ceremony" before init, a warning on a load error) | admin-seal.spec.ts | *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
 | metrics (/metrics, `admin.metrics`) | families[].name, help, type, samples[].name, labels, value | views/admin/Dashboard.svelte (Metrics card) | admin-metrics.spec.ts | *verified* |
 
@@ -272,6 +272,6 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 | | total | in UI | with e2e |
 |---|---|---|---|
 | operations | 219 | 219 | 219 |
-| displays | 11 | 10 | 10 |
+| displays | 11 | 11 | 11 |
 
-Operations not in UI: 0. In UI without e2e: 0. Displays not in UI: 1 (ceremony state). Displays with a partial field gap: 0.
+Operations not in UI: 0. In UI without e2e: 0. Displays not in UI: 0. Displays with a partial field gap: 0.
