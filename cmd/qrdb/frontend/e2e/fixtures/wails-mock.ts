@@ -2102,6 +2102,31 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
             if (!db) throw new Error(`database "${name}" not found`);
+            // As pkg/database Manager.updateBarrier: the barrier is fixed at
+            // creation; only bookkeeping that keeps it, its strategy and its
+            // M-of-N unchanged is accepted.
+            type Barrier = { enabled?: boolean; mode?: string; shares_required?: number; shares_total?: number };
+            const want = (barrier ?? {}) as Barrier;
+            const have = (db.barrier ?? {}) as Barrier;
+            const modeOf = (b: Barrier): string => b.mode || "passphrase";
+            let direction = "";
+            if (want.enabled && !have.enabled) direction = "enable";
+            else if (!want.enabled && have.enabled) direction = "disable";
+            else if (want.enabled && modeOf(want) !== modeOf(have)) direction = "change the strategy of";
+            else if (
+              want.enabled &&
+              modeOf(want) === "shamir" &&
+              (want.shares_required !== have.shares_required || want.shares_total !== have.shares_total)
+            ) {
+              direction = "change the M-of-N of";
+            }
+            if (direction !== "") {
+              throw (
+                `database: cannot ${direction} the encryption barrier for database ${JSON.stringify(name)} ` +
+                "after creation: no re-encryption migration is available; " +
+                "create the database with the desired barrier configuration instead"
+              );
+            }
             db.barrier = barrier;
             return db;
           },

@@ -211,22 +211,34 @@ test.describe("Admin - Database settings forms", () => {
     });
   });
 
-  test("updateBarrier enables a passphrase barrier", async ({ page }) => {
+  test("the barrier is shown read-only and the server refuses a change", async ({ page }) => {
     const main = await openDetail(page);
-    const form = main.getByTestId("db-settings-barrier");
-    await form.getByLabel("Barrier enabled").check();
-    await form.getByLabel("Barrier mode").selectOption("passphrase");
-    await form
-      .getByRole("button", { name: "Save Barrier Configuration" })
-      .click();
-
-    await expect(form.getByTestId("outcome-success")).toHaveText(
-      "Barrier configuration saved.",
+    const section = main.getByTestId("db-settings-barrier");
+    await expect(section.getByTestId("barrier-enabled")).toHaveText("No");
+    await expect(section.getByTestId("barrier-fixed-note")).toContainText(
+      "fixed when the database is created",
     );
-    expect((await storedDb(page)).barrier).toEqual({
-      enabled: true,
-      mode: "passphrase",
-    });
+    await expect(section.getByTestId("barrier-fixed-note")).toContainText("Share Holders");
+    // No edit controls: the backend refuses every transition they offered.
+    await expect(section.getByRole("checkbox")).toHaveCount(0);
+    await expect(section.getByRole("combobox")).toHaveCount(0);
+    await expect(section.getByRole("button")).toHaveCount(0);
+
+    // The mock refuses an enable as the server does, with its message.
+    const before = (await storedDb(page)).barrier;
+    const refusal = await page.evaluate(async (name: string) => {
+      const w = window as unknown as {
+        go: { main: { DatabaseBinding: { UpdateBarrier: (n: string, r: unknown) => Promise<unknown> } } };
+      };
+      try {
+        await w.go.main.DatabaseBinding.UpdateBarrier(name, { barrier: { enabled: true, mode: "passphrase" } });
+        return "";
+      } catch (err: unknown) {
+        return String(err);
+      }
+    }, DB_NAME);
+    expect(refusal).toContain("cannot enable the encryption barrier");
+    expect((await storedDb(page)).barrier).toEqual(before);
   });
 
   test("updateConnection saves the remote connection", async ({ page }) => {

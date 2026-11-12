@@ -18,10 +18,11 @@
 <!--
   DatabaseSettingsForms renders the per-database settings forms: SQL
   concurrency (database.updateSQL), scheduled compaction
-  (database.updateCompaction), Raft consensus (database.updateRaft), the
-  encryption barrier (database.updateBarrier) and the remote connection
-  (database.updateConnection). Each form validates its input, saves through
-  the SDK call of the same name, and shows an inline success or error state.
+  (database.updateCompaction), Raft consensus (database.updateRaft) and the
+  remote connection (database.updateConnection). Each form validates its
+  input, saves through the SDK call of the same name, and shows an inline
+  success or error state. The encryption barrier is shown read-only: the
+  server fixes it at creation, and an M-of-N change is a quorum rekey.
   The `sections` prop picks which forms render: the admin detail view shows
   all five, the user settings view only the database-scoped tuning.
 -->
@@ -29,7 +30,6 @@
   import type {
     Client,
     CompactionMode,
-    DatabaseBarrierConfig,
     DatabaseCompactionConfig,
     DatabaseConnectionConfig,
     DatabaseInfo,
@@ -148,13 +148,12 @@
   let raftSaving = $state(false);
   let raftOutcome: Outcome = $state(null);
 
-  // Barrier
-  let barrierEnabled: boolean = $state(false);
-  let barrierMode: string = $state("passphrase");
-  let barrierSharesRequired: number | null = $state(null);
-  let barrierSharesTotal: number | null = $state(null);
-  let barrierSaving = $state(false);
-  let barrierOutcome: Outcome = $state(null);
+  // Barrier: fixed at database creation, so shown as the server holds it.
+  // The backend refuses enabling, disabling, a strategy change and a
+  // Shamir M-of-N change (BarrierMigrationNotSupportedError); an M-of-N
+  // change is a quorum rekey, run from the Share Holders panel.
+  let barrierEnabled = $derived(database.barrier?.enabled ?? false);
+  let barrierMode = $derived(database.barrier?.mode || "passphrase");
 
   // Connection
   let connTransport: string = $state("grpc");
@@ -180,16 +179,12 @@
     discStaticPeers = discSecret = discMulticastGroup = discDnsDomain = discDnsService = "";
     discTokenEndpoint = discToken = "";
     discTokenClusterSize = null;
-    barrierEnabled = db.barrier?.enabled ?? false;
-    barrierMode = db.barrier?.mode || "passphrase";
-    barrierSharesRequired = db.barrier?.sharesRequired ?? null;
-    barrierSharesTotal = db.barrier?.sharesTotal ?? null;
     connTransport = db.connection?.transport || "grpc";
     connAddress = db.connection?.address ?? "";
     connCaFile = db.connection?.caFile ?? "";
     connCertFile = db.connection?.certFile ?? "";
     connKeyFile = db.connection?.keyFile ?? "";
-    sqlOutcome = compactionOutcome = raftOutcome = barrierOutcome = connOutcome = null;
+    sqlOutcome = compactionOutcome = raftOutcome = connOutcome = null;
   }
 
   // Plain (non-reactive) marker: reload the fields only when the database
@@ -313,17 +308,6 @@
     }
   }
 
-  let barrierError = $derived.by((): string => {
-    if (!barrierEnabled || barrierMode !== "shamir") return "";
-    if (!isIntAtLeast(barrierSharesTotal, 2)) {
-      return "Total shares must be a whole number of at least 2.";
-    }
-    if (!isIntAtLeast(barrierSharesRequired, 1) || barrierSharesRequired > barrierSharesTotal) {
-      return "Required shares must be between 1 and the total shares.";
-    }
-    return "";
-  });
-
   let connError = $derived.by((): string => {
     const addr = connAddress.trim();
     if (addr === "") return "Address is required.";
@@ -422,34 +406,6 @@
       showToast("error", msg);
     } finally {
       raftSaving = false;
-    }
-  }
-
-  async function saveBarrier(): Promise<void> {
-    if (barrierError !== "") return;
-    barrierOutcome = null;
-    let barrier: DatabaseBarrierConfig = { enabled: false };
-    if (barrierEnabled && barrierMode === "shamir") {
-      barrier = {
-        enabled: true,
-        mode: "shamir",
-        sharesRequired: barrierSharesRequired as number,
-        sharesTotal: barrierSharesTotal as number,
-      };
-    } else if (barrierEnabled) {
-      barrier = { enabled: true, mode: barrierMode };
-    }
-    try {
-      barrierSaving = true;
-      onUpdated(await client.database.updateBarrier(database.name, barrier));
-      barrierOutcome = { kind: "success", message: "Barrier configuration saved." };
-      showToast("success", "Barrier configuration saved");
-    } catch (err: unknown) {
-      const msg = errorMessage(err, "Failed to update barrier configuration");
-      barrierOutcome = { kind: "error", message: msg };
-      showToast("error", msg);
-    } finally {
-      barrierSaving = false;
     }
   }
 
@@ -678,42 +634,30 @@
 {/if}
 
 {#if sections.includes("barrier")}
-  <form class="card bg-base-200 shadow" data-testid="db-settings-barrier" onsubmit={submit(saveBarrier)}>
+  <section class="card bg-base-200 shadow" data-testid="db-settings-barrier">
     <div class="card-body gap-3">
       <h3 class="card-title text-base">Encryption Barrier</h3>
-      <p class="text-base-content/70 text-sm">
-        Encrypt this database at rest under a passphrase or an M-of-N Shamir split.
-      </p>
-      <label class="flex cursor-pointer items-center gap-3">
-        <input type="checkbox" class="toggle toggle-sm toggle-primary" aria-label="Barrier enabled" bind:checked={barrierEnabled} disabled={barrierSaving} />
-        <span class="text-sm font-medium">Enabled</span>
-      </label>
-      {#if barrierEnabled}
-        <div class="flex flex-wrap items-end gap-3">
-          <label class="form-control w-full max-w-[12rem]">
-            <span class="label-text text-xs">Mode</span>
-            <select class="select select-bordered select-sm" aria-label="Barrier mode" bind:value={barrierMode} disabled={barrierSaving}>
-              <option value="passphrase">Passphrase</option>
-              <option value="shamir">Shamir</option>
-            </select>
-          </label>
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt class="text-base-content/70">Enabled</dt>
+        <dd data-testid="barrier-enabled">{barrierEnabled ? "Yes" : "No"}</dd>
+        {#if barrierEnabled}
+          <dt class="text-base-content/70">Mode</dt>
+          <dd data-testid="barrier-mode">{barrierMode === "shamir" ? "Shamir" : "Passphrase"}</dd>
           {#if barrierMode === "shamir"}
-            <label class="form-control w-full max-w-[10rem]">
-              <span class="label-text text-xs">Required shares (M)</span>
-              <input type="number" min="1" class="input input-bordered input-sm" aria-label="Required shares" bind:value={barrierSharesRequired} disabled={barrierSaving} />
-            </label>
-            <label class="form-control w-full max-w-[10rem]">
-              <span class="label-text text-xs">Total shares (N)</span>
-              <input type="number" min="2" class="input input-bordered input-sm" aria-label="Total shares" bind:value={barrierSharesTotal} disabled={barrierSaving} />
-            </label>
+            <dt class="text-base-content/70">Shares (M-of-N)</dt>
+            <dd data-testid="barrier-shares">
+              {database.barrier?.sharesRequired ?? "?"} of {database.barrier?.sharesTotal ?? "?"}
+            </dd>
           {/if}
-        </div>
-      {/if}
-      {@render fieldError(barrierError)}
-      {@render saveButton(barrierSaving, barrierError !== "", "Save Barrier Configuration")}
-      {@render outcome(barrierOutcome)}
+        {/if}
+      </dl>
+      <p class="text-base-content/70 text-sm" data-testid="barrier-fixed-note">
+        The barrier is fixed when the database is created: it cannot be enabled, disabled or
+        switched to another mode afterwards. Changing a Shamir barrier's M-of-N is a quorum
+        rekey, run from the Share Holders panel.
+      </p>
     </div>
-  </form>
+  </section>
 {/if}
 
 {#if sections.includes("connection")}

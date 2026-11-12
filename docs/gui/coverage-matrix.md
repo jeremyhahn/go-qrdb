@@ -83,7 +83,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
 | Database | `list` | views/MainApp.svelte views/admin/DatabaseManager.svelte views/admin/Dashboard.svelte views/admin/UserDetail.svelte views/admin/RoleDetail.svelte stores/connection-manager.svelte.ts | admin-databases.spec.ts database-switching.spec.ts | *verified* |
 | Database | `scale` | views/admin/DatabaseDetail.svelte  | database-scale.spec.ts  |  |
-| Database | `updateBarrier` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts; SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none |
+| Database | `updateBarrier` | not called: the server fixes the barrier at creation (enable, disable, strategy and M-of-N changes are refused), so components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) shows it read-only and points M-of-N changes to the Share Holders rekey (DatabaseHoldersPanel) | database-settings.spec.ts (read-only view, mock refusal); SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none (no supported edit to offer) |
 | Database | `updateCompaction` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte) | database-settings.spec.ts | gap none |
 | Database | `updateConnection` | components/database/DatabaseSettingsForms.svelte (views/admin/DatabaseDetail.svelte) | database-settings.spec.ts; SDK wire: sdk/typescript/test/rest-contract.test.ts, wails-database-update-contract.test.ts | gap none |
 | Database | `updateProtocol` | views/admin/DatabaseDetail.svelte views/user/DatabaseSettingsView.svelte | regression-bugs.spec.ts (UpdateProtocol) | *verified* |
@@ -252,7 +252,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | # | group | operations / displays | files to add or change | tier |
 |---|---|---|---|---|
-| 1 | Database settings | `database.updateBarrier`, `updateCompaction`, `updateConnection`, `updateRaft`, `updateSQL` | views/admin/DatabaseDetail.svelte, views/user/DatabaseSettingsView.svelte; new e2e/database-settings.spec.ts | mocked; real for one raft update |
+| 1 | Database settings | `updateCompaction`, `updateConnection`, `updateRaft`, `updateSQL` (barrier read-only) | views/admin/DatabaseDetail.svelte, views/user/DatabaseSettingsView.svelte; new e2e/database-settings.spec.ts | mocked; real for one raft update |
 | 2 | Database holders | `officers.initializeDatabaseShamir`, `listDatabaseOfficers`, `registerDatabaseOfficer`, `revokeDatabaseOfficer`, `startDatabaseRekey`, `unenrolDatabaseOfficer`; `database.barrierStatus` (all in UI, no e2e) | components/DatabaseHoldersPanel.svelte (no change expected); new e2e/database-holders.spec.ts | mocked |
 | 3 | Users and roles | `users.delete`, `disable`, `enable`, `addCertBinding`, `removeCertBinding`, `getUserByCertThumbprint`; `roles.assign`, `unassign`, `delete` | views/admin/UserManager.svelte, UserDetail.svelte, RoleManager.svelte, RoleDetail.svelte; e2e/admin-users.spec.ts, e2e/admin-roles.spec.ts | mocked |
 | 4 | Invitations | `invitations.invite` (no e2e), `invitations.redeem` | components/admin/InviteUserModal.svelte; new redeem step in components/ConnectionManager.svelte; new e2e/admin-invitations.spec.ts | mocked; real for redeem |
