@@ -2745,6 +2745,44 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return { events, total: events.length };
           },
         },
+        VlogBinding: (() => {
+          const logs = new Map<string, string[]>();
+          const key = { version: 1, public_key: "cGs=" };
+          return {
+            Create: async (r: { log: string }) => {
+              maybeReject("VlogBinding.Create");
+              logs.set(r.log, []);
+              return { tenant_id: "acme", database: "default", log: r.log, key };
+            },
+            List: async () => ({ logs: [...logs.keys()] }),
+            Append: async (r: { log: string; entries: string[] }) => {
+              const l = logs.get(r.log) ?? [];
+              const first_index = l.length;
+              l.push(...r.entries);
+              logs.set(r.log, l);
+              return { first_index, count: r.entries.length };
+            },
+            Get: async (r: { log: string; from?: number; limit?: number }) => {
+              const from = r.from ?? 0;
+              const l = (logs.get(r.log) ?? []).slice(from, r.limit ? from + r.limit : undefined);
+              return { entries: l.map((body, i) => ({ index: from + i, body })) };
+            },
+            ProveInclusion: async (r: { index: number; size: number }) => ({ index: r.index, size: r.size, hashes: [] }),
+            ProveConsistency: async (r: { size1: number; size2: number }) => ({ size1: r.size1, size2: r.size2, hashes: [] }),
+            Head: async (r: { log: string }) => ({
+              size: (logs.get(r.log) ?? []).length,
+              root: "",
+              bodies_from: 0,
+              checkpoint_size: 0,
+            }),
+            SignHead: async (r: { log: string }) => ({
+              head: { size: (logs.get(r.log) ?? []).length, root: "", key_version: 1, signature_type: "ed25519", signature: "" },
+              checkpoint: "",
+            }),
+            RotateKey: async () => ({ key: { version: 2, public_key: "cGsy" } }),
+            ExpireBodies: async (r: { cutoff: number }) => ({ expired: r.cutoff }),
+          };
+        })(),
       },
     };
   }, state);
