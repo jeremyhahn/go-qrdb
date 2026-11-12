@@ -1393,11 +1393,32 @@ export interface CompactionProgress {
  * A passwordless user entity. Authentication is exclusively via mTLS
  * X.509 certificates.
  */
+/**
+ * A certificate bound to a user account: the certificate authenticates as
+ * the account while the binding is live.
+ */
+export interface CertBinding {
+    /**
+     * Base64url SHA-256 the certificate is matched by: of its
+     * SubjectPublicKeyInfo for the canonical kind, of the whole DER for a
+     * full-certificate pin.
+     */
+    readonly thumbprint: string;
+    /** What the thumbprint is over (e.g. "spki_sha256"). */
+    readonly kind: string;
+    /** RFC 3339 time the binding stops authenticating; absent when it does not expire. */
+    readonly notAfter?: string;
+}
+
 export interface User {
     /** Globally unique user identifier. */
     readonly id: string;
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email address (the email login key); absent when the account has none. */
+    readonly email?: string;
+    /** Display name; absent when unset. */
+    readonly name?: string;
     /** Tenant that owns this user. */
     readonly tenantId: string;
     /** Role IDs assigned to this user. */
@@ -1409,6 +1430,11 @@ export interface User {
     readonly lifecycle: string;
     /** Whether this is a built-in system user. */
     readonly system: boolean;
+    /**
+     * The account's enrolled certificate bindings (mTLS keys), expired ones
+     * included. Absent when the account has none.
+     */
+    readonly certBindings?: readonly CertBinding[];
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last update timestamp. */
@@ -1419,6 +1445,15 @@ export interface User {
 export interface CreateUserRequest {
     /** Unique username within the tenant. */
     readonly username: string;
+    /**
+     * The account's email address, its email login key. The server refuses
+     * an empty email unless withoutEmailLoginKey is set.
+     */
+    readonly email?: string;
+    /** Display name. */
+    readonly name?: string;
+    /** Create the account with no email login key (email may then be empty). */
+    readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
     readonly tenantId?: string;
     /** Role IDs to assign at creation time. */
@@ -1431,6 +1466,10 @@ export interface UpdateUserRequest {
     readonly id: string;
     /** New username. */
     readonly username?: string;
+    /** New email address; empty or absent leaves it unchanged. */
+    readonly email?: string;
+    /** New display name; empty or absent leaves it unchanged. */
+    readonly name?: string;
     /** New set of role IDs. */
     readonly roleIds?: readonly string[];
 }
