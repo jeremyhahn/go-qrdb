@@ -80,6 +80,31 @@ func TestUpdateRaft_OmittedSecretsAreKept(t *testing.T) {
 	}
 }
 
+// TestUpdateRaft_StateStorageIsKept checks that the Raft state storage
+// recorded at create survives an update, whether the update omits it or
+// names another: the database is opened with the recorded storage.
+func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
+	m := newTestManager(t)
+	t.Cleanup(func() { _ = m.Close() })
+	if _, err := m.Create(DatabaseConfig{
+		Name: "storage", Backend: BackendMemory,
+		Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendFile},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, update := range []*DatabaseRaftConfig{
+		{ClusterMode: RaftNone, RaftAddress: "db.example.com:63002"},
+		{ClusterMode: RaftNone, StateStorage: BackendMemory},
+	} {
+		if err := m.UpdateRaft("storage", update); err != nil {
+			t.Fatalf("UpdateRaft(%+v): %v", update, err)
+		}
+		if got := storedRaft(t, m, "storage").StateStorage; got != BackendFile {
+			t.Fatalf("state storage after UpdateRaft(%+v) = %q, want %q", update, got, BackendFile)
+		}
+	}
+}
+
 // A secret sent in an update replaces the stored one; leaving a discovery
 // block out removes it, secret and all.
 func TestUpdateRaft_SecretsRotateAndBlocksRemove(t *testing.T) {

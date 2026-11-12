@@ -106,6 +106,7 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 	args["raft_address"] = "db2.example.com:63001"
 	args["raft_peers"] = []any{"db2.example.com:63001", "db3.example.com:63001"}
 	args["raft_local_node_count"] = 5
+	args["raft_state_storage"] = "file"
 
 	r, err := handleDatabaseCreate(svc)(context.Background(), buildCallToolRequest(t, "qrdb_database_create", args))
 	if err != nil {

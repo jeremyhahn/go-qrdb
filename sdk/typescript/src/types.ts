@@ -2552,6 +2552,8 @@ export interface DatabaseRaftConfig {
     readonly dns?: DNSDiscoveryConfig;
     /** Token discovery settings. */
     readonly token?: TokenDiscoveryConfig;
+    /** Storage of the Raft group state (pebble, file, memory); omitted, the node's database_defaults decide. */
+    readonly stateStorage?: string;
 }
 
 /** Static peer discovery as a request sets it. */
@@ -2676,6 +2678,8 @@ export interface DatabaseRaftInfo {
     readonly dns?: DNSDiscoveryInfo;
     /** Token discovery settings. */
     readonly token?: TokenDiscoveryInfo;
+    /** Storage of the Raft group state (pebble, file, memory) the database recorded at create. */
+    readonly stateStorage?: string;
 }
 
 /** Encryption barrier configuration for a database. */
