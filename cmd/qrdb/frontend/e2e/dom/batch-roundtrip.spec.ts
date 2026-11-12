@@ -253,3 +253,23 @@ test("a malformed import file shows the server's error", async ({ page }) => {
   await expect(toast).not.toContainText("{\"error\"");
   expect(await serverGet(page, "imp-bad/1")).toBeNull();
 });
+
+test("an import into a collection shows the server's refusal and writes nothing to KV", async ({ page }) => {
+  await openImport(page);
+  await page.locator('input[name="import-target"][value="collection"]').check();
+  await page.locator("#import-database").fill(DATABASE);
+  await page.locator("#import-collection").fill("people");
+  await importThroughUI(page, "json", {
+    name: "people.json",
+    mimeType: "application/json",
+    buffer: Buffer.from('[{"id": "imp-coll/1", "name": "ada"}]'),
+  });
+  // Batch import writes the raw KV keyspace only: the server refuses the
+  // collection target (as the desktop binding does) instead of importing
+  // the rows into KV under the collection's name.
+  const toast = page.locator(".toast .alert-error").first();
+  await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(toast).toContainText(/collection/i);
+  await expect(toast).toContainText("people");
+  expect(await serverGet(page, "imp-coll/1")).toBeNull();
+});
