@@ -83,7 +83,7 @@ test.describe("Backup Manager", () => {
     await expect(page.locator(".modal").getByText("Restore Backup")).toBeVisible();
     await page.locator(".modal").getByRole("button", { name: "Restore" }).click();
 
-    await expect(page.getByText(/Restore completed/)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("Restore completed: 3 shard(s) restored in 1200 ms.")).toBeVisible({ timeout: 5_000 });
   });
 
   test("delete removes the backup from the table", async ({ page }) => {
