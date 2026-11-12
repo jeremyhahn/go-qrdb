@@ -125,6 +125,86 @@ func TestCredentialRotationScheduler_PassOnceSkipsWhenRunning(t *testing.T) {
 	}
 }
 
+// TestCredentialRotationScheduler_PassOnceSkipsWhileSealed proves a pass on
+// a node whose system barrier is sealed, or is being sealed (held), never
+// reaches CredentialRotateDue, and that an unseal (release) lets passes
+// rotate again.
+func TestCredentialRotationScheduler_PassOnceSkipsWhileSealed(t *testing.T) {
+	ctx := context.Background()
+	rot := &fakeCredentialRotator{}
+	r := newTestCredentialRotationScheduler(rot, nil)
+	var sealed atomic.Bool
+	r.sealed = sealed.Load
+
+	sealed.Store(true)
+	r.passOnce(ctx)
+	if got := rot.n.Load(); got != 0 {
+		t.Fatalf("sealed barrier: CredentialRotateDue called %d times, want 0", got)
+	}
+
+	sealed.Store(false)
+	if err := r.hold(ctx); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+	r.passOnce(ctx)
+	if got := rot.n.Load(); got != 0 {
+		t.Fatalf("sealing barrier: CredentialRotateDue called %d times, want 0", got)
+	}
+
+	r.release(ctx)
+	r.passOnce(ctx)
+	if got := rot.n.Load(); got != 1 {
+		t.Fatalf("unsealed barrier: CredentialRotateDue called %d times, want 1", got)
+	}
+}
+
+// blockingCredentialRotator parks CredentialRotateDue until release closes.
+type blockingCredentialRotator struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingCredentialRotator) CredentialRotateDue(context.Context, time.Time) (int, error) {
+	close(b.entered)
+	<-b.release
+	return 1, nil
+}
+
+// TestCredentialRotationScheduler_HoldWaitsForAnInFlightPass proves the
+// sealing hook returns only once the pass already rotating has finished, so
+// the barrier's key is not wiped under it.
+func TestCredentialRotationScheduler_HoldWaitsForAnInFlightPass(t *testing.T) {
+	ctx := context.Background()
+	rot := &blockingCredentialRotator{entered: make(chan struct{}), release: make(chan struct{})}
+	r := newTestCredentialRotationScheduler(rot, nil)
+
+	passDone := make(chan struct{})
+	go func() {
+		defer close(passDone)
+		r.passOnce(ctx)
+	}()
+	<-rot.entered
+
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		_ = r.hold(ctx)
+	}()
+	select {
+	case <-held:
+		t.Fatal("hold returned while a pass was still rotating")
+	case <-passDone:
+		t.Fatal("the pass finished before it was released")
+	default:
+	}
+	close(rot.release)
+	<-passDone
+	<-held
+	if r.running.Load() {
+		t.Fatal("running still set after the pass finished")
+	}
+}
+
 func TestCredentialRotationScheduler_StopEndsGoroutine(t *testing.T) {
 	s := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	s.opts.credentialSvc = &fakeCredentialRotator{}

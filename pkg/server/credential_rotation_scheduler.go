@@ -11,6 +11,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,7 +39,17 @@ type credentialRotationScheduler struct {
 	// trigger, so a test drives each pass with one send.
 	ticks <-chan time.Time
 
+	// sealed, when non-nil, reports whether the node's system barrier is
+	// sealed; a pass while it is rotates nothing.
+	sealed func() bool
+
 	running atomic.Bool
+
+	// passMu is held for the whole of a pass. hold takes it, so a barrier
+	// that starts to seal waits for an in-flight pass to finish, and no
+	// pass starts while held is set.
+	passMu sync.Mutex
+	held   bool
 }
 
 // run rotates on the configured period until ctx is cancelled.
@@ -70,12 +81,37 @@ func (r *credentialRotationScheduler) passOnce(ctx context.Context) int {
 	}
 	defer r.running.Store(false)
 
+	r.passMu.Lock()
+	defer r.passMu.Unlock()
+	// A sealed node serves no credential: it neither claims a due policy
+	// nor draws a value for one.
+	if r.held || (r.sealed != nil && r.sealed()) {
+		return 0
+	}
+
 	rotated, err := r.rotator.CredentialRotateDue(ctx, r.now())
 	if err != nil {
 		r.logger.Warn("credential rotation scheduler: rotation failed",
 			slog.Int("rotated", rotated), slog.Any("error", err))
 	}
 	return rotated
+}
+
+// hold waits for an in-flight pass to finish and keeps every later pass
+// from rotating until release. The system barrier runs it as it starts to
+// seal, while the root key is still live.
+func (r *credentialRotationScheduler) hold(context.Context) error {
+	r.passMu.Lock()
+	r.held = true
+	r.passMu.Unlock()
+	return nil
+}
+
+// release lets passes rotate again once the system barrier is unsealed.
+func (r *credentialRotationScheduler) release(context.Context) {
+	r.passMu.Lock()
+	r.held = false
+	r.passMu.Unlock()
 }
 
 // WithCredentialRotationPeriod overrides how often the credential rotation
@@ -105,6 +141,13 @@ func (s *Server) startCredentialRotationScheduler() {
 		period:  period,
 		now:     time.Now,
 		logger:  s.logger,
+	}
+	if s.opts.barrierRegistry != nil {
+		if sb := s.opts.barrierRegistry.SystemBarrier(); sb != nil {
+			scheduler.sealed = sb.IsSealed
+			sb.OnSealing(scheduler.hold)
+			sb.OnUnsealed(scheduler.release)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.credentialRotationCancel = cancel
