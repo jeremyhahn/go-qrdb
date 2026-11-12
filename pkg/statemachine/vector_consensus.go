@@ -442,7 +442,7 @@ func (v *VectorConsensusFSM) applyUpsertVector(ctx context.Context, cmd *VectorC
 		// Convert metadata from map[string]interface{} to map[string]string
 		metadata := make(map[string]string)
 		for k, val := range cmd.Metadata {
-			metadata[k] = fmt.Sprintf("%v", val)
+			metadata[k] = vectorStorage.EncodeMetadataValue(val)
 		}
 
 		now := time.Now().UnixNano()
@@ -678,12 +678,12 @@ func (v *VectorConsensusFSM) applyUpdateMetadata(ctx context.Context, cmd *Vecto
 	// Update metadata
 	if cmd.Merge {
 		for k, val := range cmd.Metadata {
-			vec.Metadata[k] = fmt.Sprintf("%v", val)
+			vec.Metadata[k] = vectorStorage.EncodeMetadataValue(val)
 		}
 	} else {
 		vec.Metadata = make(map[string]string)
 		for k, val := range cmd.Metadata {
-			vec.Metadata[k] = fmt.Sprintf("%v", val)
+			vec.Metadata[k] = vectorStorage.EncodeMetadataValue(val)
 		}
 	}
 

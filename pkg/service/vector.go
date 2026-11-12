@@ -1384,6 +1384,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 	}
 
 	now := time.Now().UnixNano()
+	created := v.vectorIsNew(ctx, scoped, req.ID)
 
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
@@ -1425,6 +1426,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 			Version:   1,
 			Timestamp: now,
 			Success:   true,
+			Created:   created,
 		}, nil
 	}
 
@@ -1473,7 +1475,16 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 		Version:   1,
 		Timestamp: now,
 		Success:   true,
+		Created:   created,
 	}, nil
+}
+
+// vectorIsNew reports whether no vector with id is stored in the scoped
+// namespace yet, so an upsert can say whether it created or replaced one.
+// Only a not-found answer counts as new: a read error leaves it false.
+func (v *vectorService) vectorIsNew(ctx context.Context, scoped string, id uint64) bool {
+	_, err := v.storage.GetVector(ctx, scoped, id)
+	return errors.Is(err, vector.ErrVectorNotFound)
 }
 
 // GetVector retrieves a vector by ID with optional metadata.
@@ -1932,7 +1943,7 @@ func (v *vectorService) SearchByMetadata(ctx context.Context, req *SearchByMetad
 	for key, value := range req.Filters {
 		filters = append(filters, vector.MetadataFilter{
 			Field:    key,
-			Value:    fmt.Sprintf("%v", value),
+			Value:    vector.EncodeMetadataValue(value),
 			Operator: vector.FilterEqual,
 		})
 	}
@@ -2636,26 +2647,12 @@ func (v *vectorService) validateGetIndexStatsRequest(req *GetIndexStatsRequest) 
 
 // convertToStringMap converts map[string]interface{} to map[string]string.
 func convertToStringMap(m map[string]interface{}) map[string]string {
-	if m == nil {
-		return nil
-	}
-	result := make(map[string]string, len(m))
-	for k, val := range m {
-		result[k] = fmt.Sprintf("%v", val)
-	}
-	return result
+	return vector.EncodeMetadata(m)
 }
 
 // convertFromStringMap converts map[string]string to map[string]interface{}.
 func convertFromStringMap(m map[string]string) map[string]interface{} {
-	if m == nil {
-		return nil
-	}
-	result := make(map[string]interface{}, len(m))
-	for k, val := range m {
-		result[k] = val
-	}
-	return result
+	return vector.DecodeMetadata(m)
 }
 
 // matchesMetadataFilter checks if metadata matches filter criteria.
@@ -2668,7 +2665,7 @@ func matchesMetadataFilter(metadata, filter map[string]interface{}) bool {
 		if !exists {
 			return false
 		}
-		if fmt.Sprintf("%v", metaValue) != fmt.Sprintf("%v", value) {
+		if vector.EncodeMetadataValue(metaValue) != vector.EncodeMetadataValue(value) {
 			return false
 		}
 	}
