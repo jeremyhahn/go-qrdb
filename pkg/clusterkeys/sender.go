@@ -26,15 +26,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sync"
-
-	"github.com/jeremyhahn/go-enclave"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // AdminURLResolver resolves the admin HTTPS base URL for a given Raft address.
@@ -239,91 +235,4 @@ func (s *Sender) Deliver(ctx context.Context, target placement.Replica, meta key
 		return ErrDelivery
 	}
 	return nil
-}
-
-// ownKeyOnEveryNode is the strategies whose barrier every serving node
-// initializes with its own key, so none is ever shipped to a follower: a none
-// barrier from the owner's claimed init statement, and a passphrase one from
-// the owner's init, which the client sends to every serving node, and a
-// Shamir one at its holders' first quorum on that node (seal.ArmShamir): its
-// key unwraps only through the node's own wrapped-key and roster records,
-// which a blob does not carry. A platform-custody barrier is not shipped
-// either; DatabaseService never asks.
-var ownKeyOnEveryNode = map[seal.StrategyID]bool{
-	seal.StrategyNone:       true,
-	seal.StrategyPassphrase: true,
-	seal.StrategyShamir:     true,
-}
-
-// DistributeTenantKey ships the owner-sealed tenant barrier blob to every
-// follower replica in p (skipping selfNodeID), verbatim: no plaintext root key
-// ever transits. A barrier whose every node holds its own key is not shipped
-// at all; see ownKeyOnEveryNode. All replicas are attempted, concurrently;
-// errors are accumulated via errors.Join.
-func (s *Sender) DistributeTenantKey(
-	ctx context.Context,
-	p *placement.Placement,
-	leaderTenantBarrier *seal.StorageBarrier,
-	selfNodeID string,
-) error {
-	// A barrier not yet initialized -- a tenant's, at create, before its
-	// admin initializes it -- has no key to ship; followers reconcile once
-	// it does.
-	initialized, err := leaderTenantBarrier.Initialized(ctx)
-	if err != nil {
-		return err
-	}
-	if !initialized {
-		return nil
-	}
-	// The persisted blob names the strategy: a leader still sealed after a
-	// restart has no active one.
-	if ownKeyOnEveryNode[leaderTenantBarrier.PersistedStrategy(ctx)] {
-		return nil
-	}
-	errs := make([]error, len(p.Replicas))
-	var wg sync.WaitGroup
-	for i, replica := range p.Replicas {
-		if replica.NodeID == selfNodeID {
-			continue // skip the leader itself
-		}
-		wg.Go(func() {
-			errs[i] = s.distributeTo(ctx, p, replica, leaderTenantBarrier)
-		})
-	}
-	wg.Wait()
-	return errors.Join(errs...)
-}
-
-// distributeTo delivers the tenant barrier blob to one follower replica and
-// logs a failure against that replica's node.
-func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, replica placement.Replica, b *seal.StorageBarrier) error {
-	meta := keydelivery.Meta{
-		TenantID:     p.TenantID,
-		Database:     p.Database,
-		ShardID:      p.ShardID,
-		ReplicaID:    replica.ReplicaID,
-		TargetNodeID: replica.NodeID,
-		Mode:         keydelivery.ModeSelfManaged,
-	}
-	err := s.deliverSelfManaged(ctx, replica, meta, b)
-	if err != nil {
-		s.logger.Error("clusterkeys: delivery failed",
-			slog.String("node", replica.NodeID),
-			slog.String("mode", string(meta.Mode)),
-			slog.String("error", err.Error()))
-	}
-	return err
-}
-
-// deliverSelfManaged exports the sealed root-key blob and delivers it verbatim.
-// The blob is at-rest ciphertext sealed by the tenant's strategy; it is wiped
-// from the transient buffer after delivery.
-func (s *Sender) deliverSelfManaged(ctx context.Context, replica placement.Replica, meta keydelivery.Meta, b *seal.StorageBarrier) error {
-	blob, err := b.ExportSealedBlob(ctx)
-	if err != nil {
-		return err
-	}
-	defer enclave.Wipe(blob)
-	return s.Deliver(ctx, replica, meta, blob)
 }
