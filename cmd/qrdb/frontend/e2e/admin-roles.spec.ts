@@ -503,9 +503,6 @@ webTest.describe("Admin - Role Management (web mode)", () => {
   webTest(
     "role creation failure shows the server's error text",
     async ({ page }) => {
-      await page.route("**/metrics", (route) =>
-        route.fulfill({ status: 200, contentType: "text/plain", body: "" }),
-      );
       await page.route("**/roles", async (route) => {
         if (route.request().method() === "POST") {
           await route.fulfill({
