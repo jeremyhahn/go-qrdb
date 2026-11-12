@@ -3,7 +3,8 @@
  *
  * Boots a real daemon, provisions a tenant over REST, then drives the UI:
  * the tenant detail's trust-anchor card against strict tenant isolation (the
- * system caller is refused, and the UI must say so), and enrolment of a share
+ * system caller is refused, and the UI must say so; the tenant's own admin,
+ * presented by the Vite proxy, adds, lists and removes), and enrolment of a share
  * holder from the Holders panel. After each step the daemon's own REST answer
  * is checked, so a UI that only claims success fails here.
  *
@@ -20,6 +21,7 @@ import {
   startDaemon,
   stopDaemon,
   waitForHealthy,
+  daemonRequest,
   UI_BASE_URL,
   type DomDaemon,
 } from "./fixtures/dom-daemon.ts";
@@ -118,7 +120,8 @@ async function toasts(page: Page): Promise<string> {
   return JSON.stringify(await page.locator(".toast .alert").allInnerTexts());
 }
 
-test.beforeEach(async () => {
+/** Boots an auth-off daemon with tenant TENANT: the UI is the system tenant. */
+async function bootAsSystemTenant(): Promise<void> {
   daemon = await startDaemon({ seal: "none-committed" });
   await initializeCeremony(daemon);
   await waitForHealthy(daemon);
@@ -133,7 +136,7 @@ test.beforeEach(async () => {
     admin_csr_pem: makeCSR("acme-admin"),
   });
   expect(r.status, `create tenant ${TENANT}: ${r.text.slice(0, 300)}`).toBeLessThan(300);
-});
+}
 
 test.afterEach(async () => {
   await stopDaemon(daemon);
@@ -167,7 +170,7 @@ test("tenant trust anchors: a cross-tenant caller is refused and the UI says so 
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
-  expect(daemon).not.toBeNull();
+  await bootAsSystemTenant();
   const d = daemon!;
   const refused = `not permitted to list trust anchors in tenant ${TENANT}`;
   expect((await api(d, "GET", `/v1/tenants/${TENANT}/trust-anchors`)).text).toContain(refused);
@@ -199,10 +202,67 @@ test("tenant trust anchors: a cross-tenant caller is refused and the UI says so 
   expect(errors).toEqual([]);
 });
 
+/** The fingerprints of the tenant's trust anchors, as the daemon lists them to its admin. */
+async function serverAnchorFingerprints(d: DomDaemon): Promise<string[]> {
+  const r = await daemonRequest(d.adminUrl, "GET", `/v1/tenants/${TENANT}/trust-anchors`, undefined, d.tenantAdmin);
+  expect(r.status, r.text).toBe(200);
+  const j = r.json as { anchors?: { fingerprint?: string }[] } | null;
+  return (j?.anchors ?? []).map((a) => a.fingerprint ?? "").sort();
+}
+
+// The tenant's own admin (auth on, its certificate presented by the Vite
+// proxy) manages the tenant's trust anchors from the tenant detail: add, list
+// and remove, each checked against the daemon's own answer.
+test("tenant trust anchors: the tenant admin adds, lists and removes one (UI ↔ live daemon)", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  daemon = await startDaemon({ seal: "none-committed", tenantAdmin: { tenant: TENANT } });
+  const d = daemon;
+  expect(await serverAnchorFingerprints(d)).toEqual([]);
+  // The system admin is still refused: the success below is the tenant admin's.
+  const sys = await daemonRequest(d.adminUrl, "GET", `/v1/tenants/${TENANT}/trust-anchors`, undefined, d.systemAdmin);
+  expect(sys.status, sys.text).toBe(403);
+
+  // --- List: an empty list, not a refusal --------------------------------------------
+  await openTenantDetail(page);
+  await expect(page.getByText("No trust anchors registered.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByTestId("trust-anchors-error")).toHaveCount(0);
+
+  // --- Add: the anchor reaches the daemon and the table ------------------------------
+  await page.getByTestId("add-trust-anchors-input").fill(makeCACert("Acme Login CA"));
+  await page.getByTestId("add-trust-anchors-btn").click();
+  try {
+    await expect(page.getByTestId("trust-anchors-table")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  } catch (err) {
+    throw new Error(`add trust anchor: toasts ${await toasts(page)}\n${err}`);
+  }
+  const added = await serverAnchorFingerprints(d);
+  expect(added).toHaveLength(1);
+  const fingerprint = added[0]!;
+  const table = page.getByTestId("trust-anchors-table");
+  await expect(table).toContainText(fingerprint);
+  await expect(table).toContainText("Acme Login CA");
+  await expect(page.getByTestId("add-trust-anchors-input")).toHaveValue("");
+
+  // --- List again: a fresh load shows what the daemon holds --------------------------
+  await openTenantDetail(page);
+  await expect(page.getByTestId("trust-anchors-table")).toContainText(fingerprint, { timeout: LOAD_TIMEOUT });
+
+  // --- Remove: gone from the daemon and the table ------------------------------------
+  await page.getByTestId("trust-anchors-table").getByTitle("Withdraw this trust anchor").click();
+  await expect(page.locator(".toast .alert").filter({ hasText: "Trust anchor removed." }).last()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(page.getByText("No trust anchors registered.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  expect(await serverAnchorFingerprints(d)).toEqual([]);
+
+  expect(errors).toEqual([]);
+});
+
 test("tenant share holder enrols from the Holders panel (UI ↔ live daemon)", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
-  expect(daemon).not.toBeNull();
+  await bootAsSystemTenant();
   const d = daemon!;
   expect(await serverHolderNames(d)).toEqual([]);
 

@@ -24,11 +24,14 @@
  * directory so each test starts from a pristine, uninitialized state.
  */
 
-import { spawn, type ChildProcess } from "child_process";
+import { execFileSync, spawn, type ChildProcess } from "child_process";
+import { generateKeyPairSync } from "crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+// playwright.dom.config.ts sets it for the whole run.
+import { PROXY_CLIENT_TLS_DIR_ENV } from "../../../playwright.tls.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -95,12 +98,175 @@ export interface StartDaemonOptions {
    * over a barrier, so pair this with a seal other than "none".
    */
   volumePools?: string[];
+  /**
+   * Boots the daemon with authentication on and makes the UI a tenant's
+   * admin. The fixture runs the first-boot ceremony (keeping the generated
+   * system admin credential), creates the tenant as that admin with a
+   * first admin enrolled from a fresh key, and hands the tenant admin's
+   * certificate and key to the Vite proxy (PROXY_CLIENT_TLS_DIR_ENV), which
+   * presents them to the daemon on every API call. tlsClientAuth defaults to
+   * "request" so the daemon asks for the certificate. Needs a seal other
+   * than "none" (auth requires the seal subsystem).
+   */
+  tenantAdmin?: TenantAdminOptions;
+}
+
+export interface TenantAdminOptions {
+  /** Tenant id (and name) to create. */
+  tenant: string;
+  /** The tenant's first admin. Default "<tenant>-admin". */
+  username?: string;
+  /** Tenant isolation type. Default "prefix". */
+  isolationType?: "prefix" | "barrier" | "volume";
+}
+
+/** A client certificate and its private key, both PEM. */
+export interface ClientCredential {
+  certPem: string;
+  keyPem: string;
 }
 
 export interface DomDaemon {
   adminUrl: string;
   dataDir: string;
   proc: ChildProcess;
+  /** The ceremony's generated system admin, set with tenantAdmin. */
+  systemAdmin?: ClientCredential;
+  /** The tenant admin the Vite proxy presents, set with tenantAdmin. */
+  tenantAdmin?: ClientCredential & { tenant: string; username: string };
+}
+
+function proxyClientFiles(): { cert: string; key: string } | null {
+  const dir = process.env[PROXY_CLIENT_TLS_DIR_ENV];
+  if (dir === undefined || dir === "") return null;
+  return { cert: join(dir, "client.crt"), key: join(dir, "client.key") };
+}
+
+/** Removes the proxy's client certificate, so the UI is unauthenticated again. */
+function clearProxyClientCert(): void {
+  const files = proxyClientFiles();
+  if (files === null) return;
+  rmSync(files.cert, { force: true });
+  rmSync(files.key, { force: true });
+}
+
+/** Has the Vite proxy present cred to the daemon from its next connection on. */
+function setProxyClientCert(cred: ClientCredential): void {
+  const files = proxyClientFiles();
+  if (files === null) {
+    throw new Error(`${PROXY_CLIENT_TLS_DIR_ENV} is unset: run the DOM tier through playwright.dom.config.ts`);
+  }
+  mkdirSync(dirname(files.cert), { recursive: true, mode: 0o700 });
+  writeFileSync(files.key, cred.keyPem, { mode: 0o600 });
+  writeFileSync(files.cert, cred.certPem, { mode: 0o600 });
+}
+
+/**
+ * Calls the daemon's REST API directly (self-signed TLS), presenting cred as
+ * the client certificate when given; returns the status and parsed body.
+ */
+export async function daemonRequest(
+  adminUrl: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  cred?: ClientCredential,
+): Promise<{ status: number; json: unknown; text: string }> {
+  const https = await import("https");
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? "" : JSON.stringify(body);
+    const req = https.default.request(
+      `${adminUrl}${path}`,
+      {
+        method,
+        rejectUnauthorized: false,
+        ...(cred !== undefined ? { cert: cred.certPem, key: cred.keyPem } : {}),
+        headers: payload
+          ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+          : {},
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (c: Buffer) => (text += c.toString()));
+        res.on("end", () => {
+          let json: unknown = null;
+          try {
+            json = text ? JSON.parse(text) : null;
+          } catch {
+            json = null;
+          }
+          resolve({ status: res.statusCode ?? 0, json, text });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end(payload);
+  });
+}
+
+/** A fresh P-256 key (PKCS#8 PEM) and a PKCS#10 CSR for CN=cn over it. */
+function freshKeyAndCSR(cn: string): { keyPem: string; csrPem: string } {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const keyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const dir = mkdtempSync(join(tmpdir(), "qrdb-dom-csr-"));
+  try {
+    const keyPath = join(dir, "key.pem");
+    writeFileSync(keyPath, keyPem, { mode: 0o600 });
+    const csrPem = execFileSync("openssl", ["req", "-new", "-sha256", "-key", keyPath, "-subj", `/CN=${cn}`]).toString();
+    return { keyPem, csrPem };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Runs the first-boot ceremony, creates the tenant as the generated system
+ * admin with a first admin enrolled from a fresh key, and returns both
+ * credentials.
+ */
+async function provisionTenantAdmin(
+  daemon: DomDaemon,
+  opts: TenantAdminOptions,
+): Promise<Required<Pick<DomDaemon, "systemAdmin" | "tenantAdmin">>> {
+  const init = await daemonRequest(daemon.adminUrl, "POST", "/v1/ceremony/initialize", {
+    so_pin: "so-pin-dom-e2e",
+    user_pin: "user-pin-dom-e2e",
+    admin_generate: true,
+  });
+  const ij = init.json as { admin_cert_pem?: string; admin_key_pem?: string } | null;
+  if (init.status >= 300 || !ij?.admin_cert_pem || !ij.admin_key_pem) {
+    throw new Error(`ceremony initialize returned ${init.status}: ${init.text.slice(0, 300)}`);
+  }
+  // The generated key is []byte on the wire: base64 of its PEM.
+  const systemAdmin = {
+    certPem: ij.admin_cert_pem,
+    keyPem: Buffer.from(ij.admin_key_pem, "base64").toString(),
+  };
+  await waitForHealthy(daemon);
+
+  const username = opts.username ?? `${opts.tenant}-admin`;
+  const { keyPem, csrPem } = freshKeyAndCSR(username);
+  const created = await daemonRequest(
+    daemon.adminUrl,
+    "POST",
+    "/v1/tenants",
+    {
+      id: opts.tenant,
+      name: opts.tenant,
+      isolation_type: opts.isolationType ?? "prefix",
+      admin_username: username,
+      admin_csr_pem: csrPem,
+    },
+    systemAdmin,
+  );
+  const cj = created.json as { admin?: { cert_pem?: string } } | null;
+  if (created.status >= 300 || !cj?.admin?.cert_pem) {
+    throw new Error(`create tenant ${opts.tenant} returned ${created.status}: ${created.text.slice(0, 300)}`);
+  }
+  return {
+    systemAdmin,
+    tenantAdmin: { certPem: cj.admin.cert_pem, keyPem, tenant: opts.tenant, username },
+  };
 }
 
 function writeConfig(path: string, opts: StartDaemonOptions): void {
@@ -178,6 +344,11 @@ async function waitForReady(adminUrl: string, seal: SealMode, timeoutMs = 20_000
  * blocks until it is ready for UI traffic.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> {
+  if (opts.tenantAdmin !== undefined && opts.seal === "none") {
+    throw new Error('tenantAdmin needs auth, which needs a seal other than "none"');
+  }
+  // A credential a failed run left behind must not authenticate this one.
+  clearProxyClientCert();
   const dataDir = mkdtempSync(join(tmpdir(), "qrdb-dom-"));
   const configPath = join(dataDir, "config.yaml");
   writeConfig(configPath, opts);
@@ -190,8 +361,8 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     "--raft-address", `127.0.0.1:${DOM_RAFT_PORT}`,
     "--admin-port", String(DOM_ADMIN_PORT),
     "--grpc-port", String(DOM_GRPC_PORT),
-    "--auth-enabled=false",
-    `--tls-client-auth=${opts.tlsClientAuth ?? "none"}`,
+    `--auth-enabled=${opts.tenantAdmin !== undefined}`,
+    `--tls-client-auth=${opts.tlsClientAuth ?? (opts.tenantAdmin !== undefined ? "request" : "none")}`,
     "--discovery", "static",
     "--peers", `1=127.0.0.1:${DOM_RAFT_PORT}`,
     "--replica-id", "1",
@@ -218,7 +389,17 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     proc.kill("SIGTERM");
     throw new Error(`${err}\nstderr:\n${Buffer.concat(stderr).toString()}`);
   }
-  return { adminUrl, dataDir, proc };
+  const daemon: DomDaemon = { adminUrl, dataDir, proc };
+  if (opts.tenantAdmin !== undefined) {
+    try {
+      Object.assign(daemon, await provisionTenantAdmin(daemon, opts.tenantAdmin));
+    } catch (err) {
+      proc.kill("SIGTERM");
+      throw new Error(`${err}\nstderr:\n${Buffer.concat(stderr).toString()}`);
+    }
+    setProxyClientCert(daemon.tenantAdmin!);
+  }
+  return daemon;
 }
 
 /**
@@ -251,6 +432,7 @@ export async function waitForHealthy(daemon: DomDaemon, timeoutMs = 30_000): Pro
 /** Stops the daemon and removes its data directory (best effort). */
 export async function stopDaemon(daemon: DomDaemon | null): Promise<void> {
   if (daemon === null) return;
+  clearProxyClientCert();
   daemon.proc.kill("SIGTERM");
   await new Promise((r) => setTimeout(r, 400));
   try {
