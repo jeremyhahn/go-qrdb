@@ -1912,7 +1912,7 @@ export class RestClient implements Client {
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchSecretJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/raft`,
+                return this.fetchSecretJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/raft`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1923,7 +1923,7 @@ export class RestClient implements Client {
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/barrier`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/barrier`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1939,7 +1939,7 @@ export class RestClient implements Client {
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/connection`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/connection`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
