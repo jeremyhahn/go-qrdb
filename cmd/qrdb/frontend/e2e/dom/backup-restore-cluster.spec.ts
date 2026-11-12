@@ -196,3 +196,36 @@ test.fixme("restore through the UI brings changed and deleted keys back on a clu
       .toBe(baseline[k]);
   }
 });
+
+test("a restore that completes with per-shard errors shows them and reloads the list", async ({ page }) => {
+  test.setTimeout(120_000);
+  const id = await createBackupInUi(page);
+
+  await detailCard(page).getByRole("button", { name: "Restore", exact: true }).click();
+  const modal = page.locator(".modal", { hasText: "Restore Backup" });
+  await expect(modal).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await modal.getByLabel("Allow restoring a plaintext (unencrypted) backup").check();
+  const restoreResp = page.waitForResponse((r) => r.url().endsWith("/v1/backups/restore"), { timeout: 60_000 });
+  const reload = page.waitForResponse(
+    (r) => r.request().method() === "GET" && r.url().endsWith("/v1/backups/list"),
+    { timeout: 60_000 },
+  );
+  await modal.getByRole("button", { name: "Restore", exact: true }).click();
+  const rr = await restoreResp;
+  const result = JSON.parse(await rr.text()) as {
+    shards_restored: number;
+    errors?: { shard_id: number; message: string }[];
+  };
+  expect(rr.status()).toBe(200);
+  // The backup holds only the system shard, which is never restored online.
+  expect(result.shards_restored).toBe(0);
+  expect(result.errors?.[0]?.shard_id).toBe(1);
+  expect(result.errors?.[0]?.message).toContain("online restore of shard 1 refused");
+  await expect(toast(page, "Restore completed: 0 shard(s) restored")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(toast(page, "online restore of shard 1 refused")).toBeVisible();
+  await expect(modal).toBeHidden();
+  const reloaded = await reload;
+  expect(reloaded.status()).toBe(200);
+  expect(reloaded.request().timing().startTime).toBeGreaterThanOrEqual(rr.request().timing().startTime);
+  await expect(page.locator("table tbody tr", { hasText: id }).first()).toBeVisible();
+});
