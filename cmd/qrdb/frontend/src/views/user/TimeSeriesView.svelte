@@ -85,6 +85,8 @@
   let writeTimestamp: string = $state("");
   let writeTags: string = $state("");
   let writeLoading: boolean = $state(false);
+  let writeMode: "single" | "batch" = $state("single");
+  let writeBatchText: string = $state("");
 
   // Delete confirmation
   let deleteTarget: string | null = $state(null);
@@ -512,7 +514,65 @@
     writeValue = "";
     writeTimestamp = "";
     writeTags = "";
+    writeMode = "single";
+    writeBatchText = "";
     showWritePanel = true;
+  }
+
+  /**
+   * Parses batch lines of the form `timestamp,value[,k=v;k=v]`. Returns the
+   * points or an error message naming the first bad line.
+   */
+  function parseBatch(metric: string, raw: string): TSDataPoint[] | string {
+    const points: TSDataPoint[] = [];
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line === "") continue;
+      const parts = line.split(",");
+      if (parts.length < 2 || parts.length > 3) {
+        return `Line ${i + 1}: expected timestamp,value[,k=v;k=v].`;
+      }
+      const tsRaw = parts[0].trim();
+      if (!/^\d+$/.test(tsRaw)) return `Line ${i + 1}: timestamp must be Unix nanoseconds.`;
+      const value = parseFloat(parts[1].trim());
+      if (Number.isNaN(value)) return `Line ${i + 1}: value must be a valid number.`;
+      const tags = parts.length === 3 ? parseTags(parts[2].replaceAll(";", ",")) : [];
+      points.push({
+        metric,
+        value,
+        timestampNs: parseInt(tsRaw, 10),
+        ...(tags.length > 0 ? { tags } : {}),
+      });
+    }
+    if (points.length === 0) return "Enter at least one line.";
+    return points;
+  }
+
+  async function handleWriteBatch(): Promise<void> {
+    if (writeMetric.trim() === "") {
+      showToast("warning", "Metric is required.");
+      return;
+    }
+    const parsed = parseBatch(writeMetric.trim(), writeBatchText);
+    if (typeof parsed === "string") {
+      showToast("warning", parsed);
+      return;
+    }
+    writeLoading = true;
+    try {
+      await client.timeSeries!.writeBatch(parsed);
+      showToast("success", `${parsed.length} data points written for "${writeMetric}".`);
+      showWritePanel = false;
+      await loadMetrics();
+      if (selectedMetric !== null) {
+        await loadDataPoints(selectedMetric);
+      }
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+    } finally {
+      writeLoading = false;
+    }
   }
 
   async function handleWrite(): Promise<void> {
@@ -539,7 +599,7 @@
         timestampNs: ts,
         ...(tags.length > 0 ? { tags } : {}),
       };
-      await client.timeSeries!.writePoint(point);
+      await client.timeSeries!.write(point);
       showToast("success", `Data point written for "${writeMetric}".`);
       showWritePanel = false;
 
@@ -1141,6 +1201,22 @@
 >
   {#snippet children()}
     <div class="space-y-5">
+      <div class="join" role="tablist">
+        <button
+          class="join-item btn btn-sm {writeMode === 'single' ? 'btn-active' : ''}"
+          onclick={() => (writeMode = "single")}
+          data-testid="ts-write-mode-single"
+        >
+          Single
+        </button>
+        <button
+          class="join-item btn btn-sm {writeMode === 'batch' ? 'btn-active' : ''}"
+          onclick={() => (writeMode = "batch")}
+          data-testid="ts-write-mode-batch"
+        >
+          Batch
+        </button>
+      </div>
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Metric</span></div>
         <input
@@ -1150,6 +1226,7 @@
           bind:value={writeMetric}
         />
       </label>
+      {#if writeMode === "single"}
       <label class="form-control w-full">
         <div class="label"><span class="label-text">Value</span></div>
         <input
@@ -1183,6 +1260,23 @@
           <span class="label-text-alt text-base-content/50">Comma-separated key=value pairs.</span>
         </div>
       </label>
+      {:else}
+        <label class="form-control w-full">
+          <div class="label"><span class="label-text">Points</span></div>
+          <textarea
+            class="textarea textarea-bordered w-full font-mono text-xs"
+            rows="8"
+            placeholder={"1700000000000000000,42.5,host=node1;region=us\n1700000060000000000,43"}
+            bind:value={writeBatchText}
+            data-testid="ts-write-batch"
+          ></textarea>
+          <div class="label">
+            <span class="label-text-alt text-base-content/50">
+              One point per line: timestamp_ns,value[,k=v;k=v].
+            </span>
+          </div>
+        </label>
+      {/if}
     </div>
   {/snippet}
   {#snippet footer()}
@@ -1190,7 +1284,11 @@
       <button class="btn btn-ghost" onclick={() => (showWritePanel = false)} disabled={writeLoading}>
         Cancel
       </button>
-      <button class="btn btn-primary" onclick={handleWrite} disabled={writeLoading}>
+      <button
+        class="btn btn-primary"
+        onclick={writeMode === "batch" ? handleWriteBatch : handleWrite}
+        disabled={writeLoading}
+      >
         {#if writeLoading}
           <span class="loading loading-spinner loading-sm"></span>
         {/if}
