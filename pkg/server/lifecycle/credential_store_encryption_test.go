@@ -19,6 +19,7 @@ import (
 	"context"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -79,6 +80,106 @@ func TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane(t *testing.T)
 	}
 	if !bytes.Equal(got, fresh) {
 		t.Fatalf("new credential in the barrier = %q, want %q", got, fresh)
+	}
+}
+
+// TestBuildServices_MemoryBackendCredentialsSurviveARebuild proves a
+// standalone sealed memory node binds the seal barrier as the credential
+// store: a credential already in the seal store at the bind, and the
+// versions rotated after it, are all there when a node is rebuilt from the
+// same seal store. Bound to the ephemeral system KV, the bind's legacy
+// migration moved the seal-store record out and lost it.
+func TestBuildServices_MemoryBackendCredentialsSurviveARebuild(t *testing.T) {
+	ctx := context.Background()
+	barrier, registry, credSvc := newTestBarrier(t)
+
+	const name = "db-password"
+	// Written before the bind, the credential is in the durable seal store.
+	legacy := []byte("legacy-secret")
+	if err := credSvc.StoreCredential(ctx, name, legacy); err != nil {
+		t.Fatalf("StoreCredential before the bind: %v", err)
+	}
+
+	build := func(svc *credentials.CredentialService) *lifecycle.Node {
+		t.Helper()
+		host := newLocalHost()
+		t.Cleanup(func() { _ = host.Close() })
+		hub := watch.NewHub()
+		t.Cleanup(hub.Close)
+		node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+			Host:              host,
+			WatchHub:          hub,
+			DataDir:           t.TempDir(),
+			Backend:           database.BackendMemory,
+			SealBarrier:       barrier,
+			BarrierRegistry:   registry,
+			CredentialCoreSvc: svc,
+		})
+		if err != nil {
+			t.Fatalf("BuildServices on a memory data plane: %v", err)
+		}
+		return node
+	}
+	holds := func(svc *credentials.CredentialService, version uint64, want []byte) {
+		t.Helper()
+		buf, err := svc.RetrieveCredentialVersionBuffer(ctx, name, version)
+		if err != nil {
+			t.Fatalf("version %d: %v", version, err)
+		}
+		ok, err := buf.EqualBytes(want)
+		buf.Destroy()
+		if err != nil || !ok {
+			t.Fatalf("version %d does not hold %q (err %v)", version, want, err)
+		}
+	}
+
+	first := build(credSvc)
+	// The bound store still serves the record written before the bind.
+	holds(credSvc, 0, legacy)
+
+	values := map[uint64][]byte{1: legacy}
+	for _, v := range [][]byte{[]byte("rotated-1"), []byte("rotated-2")} {
+		res, err := credSvc.RotateCredential(ctx, name, credentials.RotateOptions{
+			NewValue:    v,
+			GracePeriod: time.Hour,
+		})
+		if err != nil {
+			t.Fatalf("RotateCredential: %v", err)
+		}
+		values[res.NewVersion] = v
+	}
+	before, err := credSvc.ListCredentialVersions(ctx, name)
+	if err != nil {
+		t.Fatalf("ListCredentialVersions before the rebuild: %v", err)
+	}
+	if len(before) != len(values) {
+		t.Fatalf("versions before the rebuild = %+v, want %d", before, len(values))
+	}
+	if err := first.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	rebuilt, err := credentials.NewCredentialService(
+		&credentials.Config{Strategy: "barrier"}, barrier, slog.Default())
+	if err != nil {
+		t.Fatalf("NewCredentialService: %v", err)
+	}
+	second := build(rebuilt)
+	defer func() { _ = second.Stop(ctx) }()
+
+	after, err := rebuilt.ListCredentialVersions(ctx, name)
+	if err != nil {
+		t.Fatalf("ListCredentialVersions after the rebuild: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("versions after the rebuild = %+v, want %d", after, len(before))
+	}
+	for _, v := range after {
+		want, ok := values[v.Version]
+		if !ok {
+			t.Fatalf("unexpected version %d after the rebuild", v.Version)
+		}
+		holds(rebuilt, v.Version, want)
 	}
 }
 
