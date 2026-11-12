@@ -124,28 +124,26 @@ func ListenerClientAuth(authEnabled, nodeIdentity bool) tls.ClientAuthType {
 }
 
 // autoTLSClientCAs is the ClientCAs pool of every auto-provisioned listener:
-// the ceremony CA's certificate plus WithCACertPool's pool, built once so
-// every transport's configuration shares one pool (a TLSClientTrust keys its
-// widening on that pool). Nil when neither yields a certificate.
+// the ceremony CA's certificate alone, built once so every transport's
+// configuration shares one pool (a TLSClientTrust keys its widening on that
+// pool). WithCACertPool is deliberately absent: it only verifies peer servers
+// for the REST forwarding client, and its CAs must not issue client
+// identities here. Nil when the ceremony CA yields no certificate.
 func (s *Server) autoTLSClientCAs() *x509.CertPool {
 	s.autoClientCAs.once.Do(func() {
-		pool := x509.NewCertPool()
-		if s.opts.caCertPool != nil {
-			pool = s.opts.caCertPool.Clone()
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), autoTLSCATimeout)
 		defer cancel()
 		caCert, err := s.opts.ceremonyCA.CACertificate(ctx)
-		switch {
-		case err != nil:
+		if err != nil {
 			s.logger.Warn("auto-provisioned TLS: ceremony CA certificate unavailable for client verification",
 				"error", err)
-		case caCert != nil:
-			pool.AddCert(caCert)
-		}
-		if caCert == nil && s.opts.caCertPool == nil {
 			return
 		}
+		if caCert == nil {
+			return
+		}
+		pool := x509.NewCertPool()
+		pool.AddCert(caCert)
 		s.autoClientCAs.pool = pool
 	})
 	return s.autoClientCAs.pool

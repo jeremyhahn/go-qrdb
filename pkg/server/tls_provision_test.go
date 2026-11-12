@@ -258,6 +258,84 @@ func TestAutoProvision_RequestsNodeClientCert(t *testing.T) {
 	}
 }
 
+// TestAutoProvision_ForwardingCAPoolNotClientTrust proves WithCACertPool,
+// which only verifies peer servers for the REST forwarding client, does not
+// let its CAs issue client identities on an auto-provisioned listener: a
+// client certificate from a forwarding-only CA fails the handshake, while a
+// ceremony-CA-issued one still verifies.
+func TestAutoProvision_ForwardingCAPoolNotClientTrust(t *testing.T) {
+	forwardingCA := mustTestCeremonyCA()
+	forwardingPEM, err := forwardingCA.CABundle()
+	if err != nil {
+		t.Fatalf("forwarding CA bundle: %v", err)
+	}
+	forwardingPool := x509.NewCertPool()
+	if !forwardingPool.AppendCertsFromPEM(forwardingPEM) {
+		t.Fatal("forwarding CA bundle: no certificate appended to pool")
+	}
+	srv := New(testConfig(t, false, true), newMockKVService(), &mockAdminService{},
+		WithCeremonyCA(testServerCA), WithCACertPool(forwardingPool),
+		WithAutoTLSClientTrust(&recordingTrust{}))
+	cfg, err := srv.resolveTransportTLS("REST")
+	if err != nil {
+		t.Fatalf("resolveTransportTLS: %v", err)
+	}
+	if cfg.ClientCAs == nil {
+		t.Fatal("auto-provisioned listener has no ClientCAs pool")
+	}
+
+	issue := func(ca ceremony.CeremonyCA) tls.Certificate {
+		t.Helper()
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatalf("generate client key: %v", err)
+		}
+		issued, err := ca.IssueCertificate(t.Context(), &ceremony.IssueCertRequest{
+			PublicKey:    key.Public(),
+			CommonName:   "leader-node",
+			KeyUsage:     x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			ValidityDays: 1,
+		})
+		if err != nil {
+			t.Fatalf("issue client certificate: %v", err)
+		}
+		return tls.Certificate{Certificate: [][]byte{issued.Certificate.Raw}, PrivateKey: key}
+	}
+
+	// handshake returns the server-side handshake error and verified chains.
+	handshake := func(cert tls.Certificate) ([][]*x509.Certificate, error) {
+		t.Helper()
+		cConn, sConn := net.Pipe()
+		defer func() { _ = cConn.Close(); _ = sConn.Close() }()
+		server := tls.Server(sConn, cfg)
+		done := make(chan error, 1)
+		go func() { done <- server.Handshake() }()
+		client := tls.Client(cConn, &tls.Config{
+			RootCAs: testServerCAPool(t), ServerName: "localhost",
+			MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert},
+		})
+		if err := client.Handshake(); err != nil {
+			// The server rejected the certificate before the client finished.
+			return nil, <-done
+		}
+		// TLS 1.3 verifies the client certificate after the client's
+		// handshake returns; a read completes the server side.
+		go func() { _, _ = client.Read(make([]byte, 1)) }()
+		if err := <-done; err != nil {
+			return nil, err
+		}
+		return server.ConnectionState().VerifiedChains, nil
+	}
+
+	if chains, err := handshake(issue(forwardingCA)); err == nil || len(chains) != 0 {
+		t.Fatalf("forwarding-only CA client certificate accepted: err=%v, %d verified chains", err, len(chains))
+	}
+	if chains, err := handshake(issue(testServerCA)); err != nil || len(chains) == 0 {
+		t.Fatalf("ceremony CA client certificate not verified: err=%v, %d verified chains", err, len(chains))
+	}
+}
+
 // TestListenerClientAuth pins the node listener posture shared by qrdbd and
 // the auto-provisioned embedded listener.
 func TestListenerClientAuth(t *testing.T) {
