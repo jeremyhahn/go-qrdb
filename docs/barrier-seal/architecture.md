@@ -255,8 +255,7 @@ qrdb uses a **per-node-independent key model** (not a shared cluster-wide DEK):
   root key; the receiver refuses every envelope at its mode dispatch until verifier delivery is
   built) over the cluster mTLS control plane, with HPKE encryption to bind the payload to the recipient
   node's certificate. `pkg/clusterkeys/` handles node-identity authentication — chain validity, the
-  node SPIFFE SAN, the placement gate, and **certificate revocation**, on both the receiving and the
-  sending side. Revocation is checked separately because the other three are all satisfied by a
+  node SPIFFE SAN, the placement gate, and **certificate revocation**, on the receiving\n  side (no node sends envelopes yet). Revocation is checked separately because the other three are all satisfied by a
   revoked certificate: without it, a node whose certificate an operator has withdrawn keeps taking
   part in the key plane. See
   [certificate-authority → Where revocation is enforced](../certificate-authority/architecture.md#where-revocation-is-enforced)
@@ -1518,15 +1517,16 @@ changes how it is resolved and recorded:
 
 #### 14. What the design deletes
 
-*Implemented:* the tenant-key transport is deleted -- the sender's tenant-key
-distribution, the receiver's self-managed import handler, the sealed-blob
+*Implemented:* the tenant-key transport is deleted -- the `clusterkeys`
+sender and the lifecycle key sender, the `keydelivery.ModeSelfManaged` mode
+and the receiver's import handler for it, the sealed-blob
 export and import and `BarrierRegistry`'s import path in `pkg/seal`, and the
 database service's distributor, its key step in `inviteReplicas` and the
 rebalance deliverer. *Not implemented:* every row below is still in the code.
 
 | Where | What |
 |---|---|
-| `pkg/clusterkeys` | The `keydelivery.ModeSelfManaged` mode constant, and the `/v1/cluster/keydelivery` and `/v1/cluster/nodekey` routes, which now refuse every envelope at the mode dispatch until verifier delivery registers a mode. The package keeps node identity and the HPKE envelope. |
+| `pkg/clusterkeys` | The `/v1/cluster/keydelivery` and `/v1/cluster/nodekey` routes, which now refuse every envelope at the mode dispatch until verifier delivery registers a mode. The package keeps node identity and the HPKE envelope. |
 | `sdk/go/node` | `WithSealStrategy` (§11). |
 | `pkg/clustermig` | the tenant arm, tenant `NodeMigrationStatus`, the tenant credential files (`seal.migration_credentials_dir`). |
 
