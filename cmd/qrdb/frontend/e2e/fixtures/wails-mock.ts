@@ -343,6 +343,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       }
     }
 
+    // maybeHold keeps a call a test holds (holdCall) in flight until the
+    // test releases it (releaseCall), counting every call that arrives.
+    async function maybeHold(method: string): Promise<void> {
+      const w = window as unknown as {
+        __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; gate: Promise<void> }>;
+      };
+      const hold = w.__QRDB_MOCK_HOLDS__?.[method];
+      if (hold === undefined) return;
+      hold.calls += 1;
+      await hold.gate;
+    }
+
     // settingsEnvelope unwraps a database settings request the way the Go
     // binding decodes it: the config sits under one key ({raft: {...}}). A
     // bare config object fails, as it does against the real binding, where
@@ -1702,6 +1714,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Assign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Assign");
+            await maybeHold("RoleBinding.Assign");
             const user = userStore.get(userId);
             if (!user) throw new Error(`user "${userId}" not found`);
             const roleIds = user.roleIds ?? [];
@@ -2859,6 +2872,38 @@ export async function injectError(
     },
     { m: method, msg: message },
   );
+}
+
+/**
+ * Holds every call of a binding method in flight until releaseCall.
+ */
+export async function holdCall(page: Page, method: string): Promise<void> {
+  await page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; gate: Promise<void>; open: () => void }>;
+    };
+    let open = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    w.__QRDB_MOCK_HOLDS__ = { ...(w.__QRDB_MOCK_HOLDS__ ?? {}), [m]: { calls: 0, gate, open } };
+  }, method);
+}
+
+/**
+ * Releases the calls holdCall kept in flight and returns how many arrived.
+ */
+export async function releaseCall(page: Page, method: string): Promise<number> {
+  return page.evaluate((m: string) => {
+    const w = window as unknown as {
+      __QRDB_MOCK_HOLDS__?: Record<string, { calls: number; open: () => void }>;
+    };
+    const hold = w.__QRDB_MOCK_HOLDS__?.[m];
+    if (hold === undefined) return 0;
+    delete w.__QRDB_MOCK_HOLDS__![m];
+    hold.open();
+    return hold.calls;
+  }, method);
 }
 
 /**

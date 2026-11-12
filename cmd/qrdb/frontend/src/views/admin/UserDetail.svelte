@@ -172,13 +172,29 @@
     }
   }
 
+  /** Role ids whose assign / unassign request is still running. */
+  let pendingRoleIds: string[] = $state([]);
+
   /**
    * Toggles a role ID in the selected roles set. For an existing user the
-   * change is applied at once through roles.assign / roles.unassign.
+   * change is applied at once through roles.assign / roles.unassign. A role
+   * with a request in flight ignores further toggles (its checkbox is
+   * disabled meanwhile), so a quick check-then-uncheck cannot send assign
+   * twice; selectedRoleIds stays the authoritative state and changes only
+   * once the server accepts the change. On a refusal the checkbox is put
+   * back to that state, undoing the browser's own toggle.
    */
-  async function toggleRole(roleId: string): Promise<void> {
+  async function toggleRole(roleId: string, box?: HTMLInputElement): Promise<void> {
+    const revert = (): void => {
+      if (box !== undefined) box.checked = selectedRoleIds.includes(roleId);
+    };
+    if (pendingRoleIds.includes(roleId)) {
+      revert();
+      return;
+    }
     const assigned = selectedRoleIds.includes(roleId);
     if (!isCreate) {
+      pendingRoleIds = [...pendingRoleIds, roleId];
       try {
         if (assigned) {
           await client.roles.unassign(userId!, roleId);
@@ -188,10 +204,12 @@
           showToast("success", "Role assigned");
         }
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : "Failed to change role";
-        showToast("error", msg);
+        pendingRoleIds = pendingRoleIds.filter((id) => id !== roleId);
+        revert();
+        showToast("error", err instanceof Error ? err.message : "Failed to change role");
         return;
       }
+      pendingRoleIds = pendingRoleIds.filter((id) => id !== roleId);
     }
     if (assigned) {
       selectedRoleIds = selectedRoleIds.filter((id) => id !== roleId);
@@ -408,8 +426,9 @@
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
                     checked={selectedRoleIds.includes(role.id)}
+                    disabled={pendingRoleIds.includes(role.id)}
                     data-testid="user-role-{role.name}"
-                    onchange={() => void toggleRole(role.id)}
+                    onchange={(e) => void toggleRole(role.id, e.currentTarget)}
                   />
                   <div class="flex flex-col">
                     <span class="text-sm">{role.name}</span>

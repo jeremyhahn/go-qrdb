@@ -19,6 +19,8 @@ import {
   secondLaunchEmbeddedState,
   injectError,
   clearError,
+  holdCall,
+  releaseCall,
 } from "./fixtures/wails-mock.ts";
 import { webTest } from "./fixtures/web-mode-mock.ts";
 import type { Page } from "@playwright/test";
@@ -474,6 +476,49 @@ test.describe("Admin - User Management", () => {
       await page.getByTestId("user-role-assign-role").check();
       await expect(page.getByText("Role assigned")).toBeVisible();
       expect((await mockUser(page, id)).roleIds).toContain(roleId);
+    });
+
+    test("a role whose assign is in flight ignores a second toggle", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "pending-user");
+      const roleId = await seedRole(page, "pending-role");
+      await openUser(page, "pending-user");
+
+      const box = page.getByTestId("user-role-pending-role");
+      await holdCall(page, "RoleBinding.Assign");
+      await box.check();
+      await expect(box).toBeDisabled();
+      // The browser refuses a click on the disabled box: no second call.
+      await box.click({ force: true });
+      expect(await releaseCall(page, "RoleBinding.Assign")).toBe(1);
+
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      await expect(box).toBeEnabled();
+      await expect(box).toBeChecked();
+      expect((await mockUser(page, id)).roleIds).toEqual([roleId]);
+    });
+
+    test("a refused assign leaves the role unchecked", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "refused-user");
+      await seedRole(page, "refused-role");
+      await openUser(page, "refused-user");
+
+      await injectError(page, "RoleBinding.Assign", "permission denied: roles:assign");
+      const box = page.getByTestId("user-role-refused-role");
+      await box.click();
+      await expect(
+        page.locator(".toast .alert.alert-error").filter({ hasText: "permission denied: roles:assign" }),
+      ).toBeVisible();
+      await expect(box).not.toBeChecked();
+      await expect(box).toBeEnabled();
+      expect((await mockUser(page, id)).roleIds).toEqual([]);
+
+      // The stored selection is unchanged too: a retry assigns the role.
+      await clearError(page, "RoleBinding.Assign");
+      await box.check();
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).toHaveLength(1);
     });
 
     test("unassigns a role from an existing user at once", async ({ page }) => {
