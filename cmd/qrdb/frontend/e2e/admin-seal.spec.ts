@@ -508,6 +508,60 @@ test.describe("Admin - Seal Manager: cluster seal, passphrase and ceremony", () 
       await expect(alert).toBeVisible({ timeout: 5_000 });
       await expect(page.getByTestId("cluster-seal-status")).toContainText("record sealed");
     });
+
+    test("no cluster migration in progress hides the migration section", async ({ page }) => {
+      await navigateToSealManager(page);
+      await expect(page.getByTestId("cluster-seal-status")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("cluster-migration-status")).toHaveCount(0);
+    });
+  });
+
+  test.describe("cluster migration", () => {
+    test.use({
+      mockState: {
+        ...passphraseState,
+        sealStatus: {
+          ...passphraseState.sealStatus,
+          clusterSeal: { active: true, sealed: false, epoch: 2, local: "serving" },
+          clusterMigration: {
+            unconfirmed: true,
+            target: "shamir",
+            generation: 7,
+            acked: 1,
+            total: 3,
+            nodes: [
+              { nodeId: "10.0.0.1:7000", step: "serving", phase: "complete", attempts: 0 },
+              { nodeId: "10.0.0.2:7000", step: "recycling", phase: "copying", attempts: 2, detail: "copy retry: peer busy" },
+              { nodeId: "10.0.0.3:7000", step: "pending" },
+            ],
+          },
+        },
+      },
+    });
+
+    test("shows every cluster migration field", async ({ page }) => {
+      await navigateToSealManager(page);
+      const mig = page.getByTestId("cluster-migration-status");
+      await expect(mig).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(mig).toContainText("Cluster migration to shamir");
+      await expect(page.getByTestId("cluster-migration-progress")).toHaveText("1 of 3");
+      await expect(page.getByTestId("cluster-migration-target")).toHaveText("shamir");
+      await expect(page.getByTestId("cluster-migration-generation")).toHaveText("7");
+      await expect(page.getByTestId("cluster-migration-acked")).toHaveText("1");
+      await expect(page.getByTestId("cluster-migration-total")).toHaveText("3");
+      await expect(page.getByTestId("cluster-migration-unconfirmed")).toBeVisible();
+
+      const rows = page.getByTestId("cluster-migration-node");
+      await expect(rows).toHaveCount(3);
+      await expect(rows.nth(0)).toContainText("10.0.0.1:7000");
+      await expect(rows.nth(0)).toContainText("serving");
+      await expect(rows.nth(0)).toContainText("complete");
+      await expect(rows.nth(1)).toContainText("recycling");
+      await expect(rows.nth(1)).toContainText("copying");
+      await expect(rows.nth(1)).toContainText("2");
+      await expect(rows.nth(1)).toContainText("copy retry: peer busy");
+      await expect(rows.nth(2)).toContainText("pending");
+    });
   });
 
   test.describe("change passphrase", () => {

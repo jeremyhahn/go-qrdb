@@ -119,6 +119,15 @@ export interface MockState {
       at?: string;
       local?: string;
     };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
   };
   unsealProgress: {
     sealed: boolean;

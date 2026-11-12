@@ -15,7 +15,7 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, CeremonyStatusResponse } from "@qrdb/sdk";
+  import type { Client, UnsealProgress, SealMode, OfficerStatus, EnableEncryptionRequest, HolderRole, ClusterSeal, ClusterMigration, CeremonyStatusResponse } from "@qrdb/sdk";
   import { onMount } from "svelte";
   import { AlertTriangle, Info, RefreshCw, Lock, UserPlus, CheckCircle, Clock, AlertCircle, Copy, Download } from "lucide-svelte";
   import { sealStore, updateSealStatus, updateOfficers, setOfficersLoading } from "$stores/seal.svelte.ts";
@@ -36,6 +36,7 @@
   let showSealConfirm: boolean = $state(false);
   // The node barrier's cluster seal state; null from a server that reports none.
   let clusterSeal: ClusterSeal | null = $state(null);
+  let clusterMigration: ClusterMigration | null = $state(null);
   let clusterUnsealLoading: boolean = $state(false);
 
   // Change passphrase form state (passphrase-held barriers).
@@ -204,6 +205,7 @@
       const status = await client.seal.status();
       updateSealStatus(status);
       clusterSeal = status.clusterSeal ?? null;
+      clusterMigration = status.clusterMigration ?? null;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to fetch seal status";
       showToast("error", msg);
@@ -856,6 +858,57 @@
                 {/if}
                 Clear Cluster Seal
               </button>
+            {/if}
+          </div>
+        {/if}
+
+        {#if clusterMigration}
+          <div class="divider my-2"></div>
+          <div data-testid="cluster-migration-status">
+            <p class="text-sm">
+              Cluster migration{clusterMigration.target ? ` to ${clusterMigration.target}` : ""}:
+              <span data-testid="cluster-migration-progress">{clusterMigration.acked} of {clusterMigration.total}</span>
+              owners confirmed.
+            </p>
+            <dl class="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm mt-2">
+              {#if clusterMigration.target}
+                <dt class="text-base-content/70">Target</dt>
+                <dd class="font-mono" data-testid="cluster-migration-target">{clusterMigration.target}</dd>
+              {/if}
+              {#if clusterMigration.generation !== undefined}
+                <dt class="text-base-content/70">Generation</dt>
+                <dd class="font-mono" data-testid="cluster-migration-generation">{clusterMigration.generation}</dd>
+              {/if}
+              <dt class="text-base-content/70">Confirmed</dt>
+              <dd class="font-mono" data-testid="cluster-migration-acked">{clusterMigration.acked}</dd>
+              <dt class="text-base-content/70">Owners</dt>
+              <dd class="font-mono" data-testid="cluster-migration-total">{clusterMigration.total}</dd>
+            </dl>
+            {#if clusterMigration.unconfirmed}
+              <div class="alert alert-warning mt-2" data-testid="cluster-migration-unconfirmed">
+                <AlertTriangle class="h-5 w-5 shrink-0" />
+                <span>The migration record could not be read just now; the figures may be stale.</span>
+              </div>
+            {/if}
+            {#if clusterMigration.nodes && clusterMigration.nodes.length > 0}
+              <div class="overflow-x-auto mt-2">
+                <table class="table table-sm" data-testid="cluster-migration-nodes">
+                  <thead>
+                    <tr><th>Node</th><th>Step</th><th>Phase</th><th>Attempts</th><th>Detail</th></tr>
+                  </thead>
+                  <tbody>
+                    {#each clusterMigration.nodes as n (n.nodeId)}
+                      <tr data-testid="cluster-migration-node">
+                        <td class="font-mono">{n.nodeId}</td>
+                        <td>{n.step ?? "—"}</td>
+                        <td>{n.phase ?? "—"}</td>
+                        <td>{n.attempts ?? 0}</td>
+                        <td>{n.detail ?? ""}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
             {/if}
           </div>
         {/if}
