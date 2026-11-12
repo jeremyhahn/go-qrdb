@@ -52,8 +52,9 @@
   let createName: string = $state("");
   let createProvider: string = $state("dir");
   let createDescription: string = $state("");
-  let createCapacity: string = $state("");
-  let createOvercommit: string = $state("");
+  // Number inputs bind a number once edited and "" when cleared.
+  let createCapacity: number | string = $state("");
+  let createOvercommit: number | string = $state("");
   let creating: boolean = $state(false);
 
   /** Detail panel. */
@@ -62,8 +63,13 @@
   let tenants: VolumePoolTenant[] = $state([]);
   let tenantsNextToken: string = $state("");
   let editDescription: string = $state("");
-  let editCapacity: string = $state("");
-  let editOvercommit: string = $state("");
+  let editCapacity: number | string = $state("");
+  let editOvercommit: number | string = $state("");
+
+  /** Returns a number input's bound value as trimmed text ("" when empty). */
+  function fieldText(v: number | string | null | undefined): string {
+    return v === null || v === undefined ? "" : String(v).trim();
+  }
   let saving: boolean = $state(false);
   let confirmDelete: boolean = $state(false);
 
@@ -156,8 +162,8 @@
       name,
       ...(createProvider.trim() ? { provider: createProvider.trim() } : {}),
       ...(createDescription.trim() ? { description: createDescription.trim() } : {}),
-      ...(createCapacity.trim() ? { capacityBytes: Number(createCapacity) } : {}),
-      ...(createOvercommit.trim() ? { overcommit: Number(createOvercommit) } : {}),
+      ...(fieldText(createCapacity) ? { capacityBytes: Number(createCapacity) } : {}),
+      ...(fieldText(createOvercommit) ? { overcommit: Number(createOvercommit) } : {}),
     };
     try {
       creating = true;
@@ -225,10 +231,10 @@
       overcommit?: number;
     } = {};
     if (editDescription !== (detail.description ?? "")) req.description = editDescription;
-    if (editCapacity.trim() !== "" && Number(editCapacity) !== detail.capacityBytes) {
+    if (fieldText(editCapacity) !== "" && Number(editCapacity) !== detail.capacityBytes) {
       req.capacityBytes = Number(editCapacity);
     }
-    if (editOvercommit.trim() !== "" && Number(editOvercommit) !== detail.overcommit) {
+    if (fieldText(editOvercommit) !== "" && Number(editOvercommit) !== detail.overcommit) {
       req.overcommit = Number(editOvercommit);
     }
     if (Object.keys(req).length === 0) {
