@@ -3176,6 +3176,14 @@ export interface TenantEntitlements {
 export type TenantIsolationType = 'prefix' | 'barrier' | 'volume' | 'raft';
 
 /** Information about a tenant. */
+/**
+ * A tenant's operational status (pkg/tenant Status). `"active"` is normal
+ * service; `"suspended"` is temporarily out of service, expected to be
+ * reactivated; `"disabled"` is out of service until a system administrator
+ * reactivates it.
+ */
+export type TenantStatus = "active" | "suspended" | "disabled";
+
 export interface TenantInfo {
     /** Unique tenant identifier. */
     readonly id: string;
@@ -3186,6 +3194,11 @@ export interface TenantInfo {
      * `"prefix"` (barrier isolation is strictly opt-in).
      */
     readonly isolationType?: TenantIsolationType;
+    /**
+     * Operational status. The server always sends it; a new tenant is
+     * `"active"`.
+     */
+    readonly status: TenantStatus;
     /** Resource quotas for this tenant, if configured. */
     readonly quotas?: TenantQuotas;
     /** Feature entitlements for this tenant, if configured. */
