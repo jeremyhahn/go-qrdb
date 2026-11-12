@@ -121,3 +121,25 @@ describe('vector compaction wire names', () => {
         expect(failed.error).toBe('boom');
     });
 });
+
+describe('vector index stats wire names', () => {
+    it('reads memory_usage_bytes and index_size_bytes', async () => {
+        const c = await client();
+        mockFetch({
+            namespace: 'ns',
+            index_type: 'hnsw',
+            vector_count: 4,
+            dimension: 3,
+            index_size_bytes: 2048,
+            memory_usage_bytes: 1024,
+            timestamp: 7,
+        });
+        const s = await c.vector!.getIndexStats({ namespace: 'ns' });
+        expect(s.vectorCount).toBe(4);
+        expect(s.dimension).toBe(3);
+        expect(s.memoryUsage).toBe(1024);
+        expect(s.diskUsage).toBe(2048);
+        expect(s).not.toHaveProperty('memoryUsageBytes');
+        expect(s).not.toHaveProperty('indexSizeBytes');
+    });
+});
