@@ -30,7 +30,9 @@
     ChevronRight,
     Copy,
     Download,
+    Ticket,
   } from "lucide-svelte";
+  import RedeemInvitationModal from "./RedeemInvitationModal.svelte";
   import {
     connManagerStore,
     connectProfile,
@@ -370,6 +372,9 @@
   // ---------------------------------------------------------------------------
   // Embedded wizard navigation
   // ---------------------------------------------------------------------------
+
+  /** Whether the redeem-an-invitation modal is open (RedeemInvitationModal). */
+  let showRedeem: boolean = $state(false);
 
   function showEmbeddedPanel(): void {
     activePanel = activePanel === "embedded" ? "none" : "embedded";
@@ -794,6 +799,13 @@
                 <Server class="h-4 w-4" />
                 Connect to Server
               </button>
+              <button
+                class="btn btn-ghost btn-block"
+                onclick={() => (showRedeem = true)}
+              >
+                <Ticket class="h-4 w-4" />
+                Redeem Invitation
+              </button>
             </div>
           </div>
         </div>
@@ -821,6 +833,13 @@
           >
             <Plus class="h-3.5 w-3.5" />
             Server
+          </button>
+          <button
+            class="btn btn-sm btn-ghost"
+            onclick={() => (showRedeem = true)}
+          >
+            <Ticket class="h-3.5 w-3.5" />
+            Redeem Invitation
           </button>
         </div>
       </div>
@@ -1877,3 +1896,5 @@
     ></button>
   </div>
 {/if}
+
+<RedeemInvitationModal {client} open={showRedeem} onClose={() => (showRedeem = false)} />
