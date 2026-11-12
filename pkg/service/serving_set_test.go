@@ -23,8 +23,8 @@ func servingSetStore(t *testing.T) (*placement.Store, *placement.Placement) {
 		{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"},
 		{ReplicaID: 2, NodeID: "n2", RaftAddr: "n2"},
 	}
-	home := &placement.Placement{TenantID: "iso", Database: database.TenantHomeName, ShardID: 100, RF: 2, LeaderReplicaID: 1, Replicas: two}
-	db := &placement.Placement{TenantID: "iso", Database: "orders", ShardID: 101, RF: 2, LeaderReplicaID: 1, Replicas: two}
+	home := &placement.Placement{TenantID: "iso", DatabaseID: database.TenantHomeID, Database: database.TenantHomeName, ShardID: 100, RF: 2, LeaderReplicaID: 1, Replicas: two}
+	db := &placement.Placement{TenantID: "iso", DatabaseID: "orders-id", Database: "orders", ShardID: 101, RF: 2, LeaderReplicaID: 1, Replicas: two}
 	for _, p := range []*placement.Placement{home, db} {
 		if err := store.Put(ctx, p); err != nil {
 			t.Fatalf("Put %s: %v", p.Database, err)
@@ -69,7 +69,7 @@ func TestAddObserverReplica_ServingSetRefusesNodeOutside(t *testing.T) {
 	if placementFailed || sse.TenantID != "iso" || sse.Database != "orders" || sse.Node != "n3" {
 		t.Fatalf("placementFailed=%v ServingSetError=%+v", placementFailed, sse)
 	}
-	got, err := store.Get(ctx, "iso", "orders")
+	got, err := store.Get(ctx, "iso", "orders-id")
 	if err != nil || len(got.Replicas) != 2 {
 		t.Fatalf("placement after refusal = %+v, %v; want unchanged", got, err)
 	}
@@ -78,7 +78,7 @@ func TestAddObserverReplica_ServingSetRefusesNodeOutside(t *testing.T) {
 func TestAddObserverReplica_ServingSetAdmitsSharedTenantAnywhere(t *testing.T) {
 	store, _ := servingSetStore(t)
 	ctx := context.Background()
-	shared := &placement.Placement{TenantID: "shared", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
+	shared := &placement.Placement{TenantID: "shared", DatabaseID: "shared-orders-id", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}}
 	if err := store.Put(ctx, shared); err != nil {
 		t.Fatalf("Put: %v", err)

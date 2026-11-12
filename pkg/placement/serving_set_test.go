@@ -39,7 +39,7 @@ func newServingScheduler(t *testing.T) *Scheduler {
 // would win on load, but an isolated tenant's group lands only on n1, n2.
 func TestPlace_ServingSetConfinesIsolatedTenant(t *testing.T) {
 	s := newServingScheduler(t)
-	p, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", Database: "db", ShardID: 7, RF: 2})
+	p, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 2})
 	if err != nil {
 		t.Fatalf("Place: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestPlace_ServingSetConfinesIsolatedTenant(t *testing.T) {
 
 func TestPlace_ServingSetRefusesRFBeyondServingSet(t *testing.T) {
 	s := newServingScheduler(t)
-	_, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", Database: "db", ShardID: 7, RF: 3})
+	_, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 3})
 	var sse *ServingSetError
 	if !errors.As(err, &sse) {
 		t.Fatalf("Place RF 3 over a 2-node serving set: err = %v, want *ServingSetError", err)
@@ -65,7 +65,7 @@ func TestPlace_ServingSetRefusesRFBeyondServingSet(t *testing.T) {
 func TestPlaceAdditional_ServingSetRefusesScaleOutBeyondServingSet(t *testing.T) {
 	s := newServingScheduler(t)
 	existing := &Placement{
-		TenantID: "iso", Database: "db", ShardID: 7, RF: 2,
+		TenantID: "iso", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 2,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}, {ReplicaID: 2, NodeID: "n2", RaftAddr: "n2"}},
 	}
 	_, err := s.PlaceAdditional(context.Background(), existing, 1)
@@ -80,7 +80,7 @@ func TestPlaceAdditional_ServingSetRefusesScaleOutBeyondServingSet(t *testing.T)
 
 func TestPlace_ServingSetLeavesSharedTenantUnconfined(t *testing.T) {
 	s := newServingScheduler(t)
-	p, err := s.Place(context.Background(), PlaceRequest{TenantID: "shared", Database: "db", ShardID: 7, RF: 3})
+	p, err := s.Place(context.Background(), PlaceRequest{TenantID: "shared", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 3})
 	if err != nil {
 		t.Fatalf("Place shared tenant: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPlace_ServingSetLookupErrorFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScheduler: %v", err)
 	}
-	if _, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", Database: "db", ShardID: 7, RF: 1}); !errors.Is(err, boom) {
+	if _, err := s.Place(context.Background(), PlaceRequest{TenantID: "iso", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 1}); !errors.Is(err, boom) {
 		t.Fatalf("Place with a failing serving-set lookup: err = %v, want %v", err, boom)
 	}
 }

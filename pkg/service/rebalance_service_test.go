@@ -309,7 +309,7 @@ func TestRebalanceService_CreateRebalancePlan_SkipsAShardWhoseStaleReadIsNotAMap
 func TestRebalanceService_CreateRebalancePlan_HonoursServingSet(t *testing.T) {
 	store, _ := servingSetStore(t)
 	ctx := context.Background()
-	shared := &placement.Placement{TenantID: "shared", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
+	shared := &placement.Placement{TenantID: "shared", DatabaseID: "shared-orders-id", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}}
 	if err := store.Put(ctx, shared); err != nil {
 		t.Fatalf("Put shared: %v", err)
