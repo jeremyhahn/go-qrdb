@@ -45,6 +45,11 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if len(req.GetRoleIds()) > 0 {
 		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.GetTenantId(), req.GetRoleIds()); err != nil {
 			return nil, mapServiceError(err)
@@ -75,6 +80,11 @@ func (s *qrdbServiceServer) GetUser(ctx context.Context, req *pb.GetUserRequest)
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.GetUser(ctx, req.GetId())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -87,6 +97,11 @@ func (s *qrdbServiceServer) GetUser(ctx context.Context, req *pb.GetUserRequest)
 func (s *qrdbServiceServer) GetUserByUsername(ctx context.Context, req *pb.GetUserByUsernameRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	u, err := s.userSvc.GetUserByUsername(ctx, req.GetTenantId(), req.GetUsername())
@@ -103,6 +118,11 @@ func (s *qrdbServiceServer) GetUserByUsername(ctx context.Context, req *pb.GetUs
 func (s *qrdbServiceServer) GetUserByEmail(ctx context.Context, req *pb.GetUserByEmailRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	u, err := s.userSvc.GetUserByEmail(ctx, req.GetTenantId(), req.GetEmail())
@@ -133,6 +153,11 @@ func (s *qrdbServiceServer) AddCertBinding(ctx context.Context, req *pb.AddCertB
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	// Binding a thumbprint binds a key: the certificate target rule applies.
 	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.GetUserId()); err != nil {
 		return nil, mapServiceError(err)
@@ -151,6 +176,11 @@ func (s *qrdbServiceServer) RemoveCertBinding(ctx context.Context, req *pb.Remov
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.RemoveCertBinding(ctx, req.GetUserId(), req.GetThumbprint())
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -163,6 +193,11 @@ func (s *qrdbServiceServer) RemoveCertBinding(ctx context.Context, req *pb.Remov
 func (s *qrdbServiceServer) UpdateUser(ctx context.Context, req *pb.UpdateUserProtoRequest) (*pb.UserResponse, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	updateReq := &user.UpdateUserRequest{
@@ -221,6 +256,11 @@ func (s *qrdbServiceServer) DeleteUser(ctx context.Context, req *pb.DeleteUserRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.DeleteUser(ctx, req.GetId()); err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -267,6 +307,11 @@ func (s *qrdbServiceServer) EnableUser(ctx context.Context, req *pb.EnableUserRe
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.EnableUser(ctx, req.GetId()); err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -278,6 +323,11 @@ func (s *qrdbServiceServer) EnableUser(ctx context.Context, req *pb.EnableUserRe
 func (s *qrdbServiceServer) DisableUser(ctx context.Context, req *pb.DisableUserRequest) (*emptypb.Empty, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.userSvc.DisableUser(ctx, req.GetId()); err != nil {
@@ -293,6 +343,11 @@ func (s *qrdbServiceServer) SuspendUser(ctx context.Context, req *pb.SuspendUser
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.SuspendUser(ctx, req.GetId()); err != nil {
 		return nil, mapServiceError(err)
 	}
@@ -304,6 +359,11 @@ func (s *qrdbServiceServer) SuspendUser(ctx context.Context, req *pb.SuspendUser
 func (s *qrdbServiceServer) UnsuspendUser(ctx context.Context, req *pb.UnsuspendUserRequest) (*emptypb.Empty, error) {
 	if s.userSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.userSvc.UnsuspendUser(ctx, req.GetId()); err != nil {

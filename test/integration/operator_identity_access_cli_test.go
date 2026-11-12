@@ -40,6 +40,11 @@ func TestOperatorIdentityAccess_CLI_PerProtocol(t *testing.T) {
 			if out, err := runCLIProto(t, open, proto, "roles", "list", "--tenant-id", tenantID); err != nil {
 				t.Fatalf("[%s] operator roles list --tenant-id %s under operator-access: %v\noutput: %s", proto.name, tenantID, err, out)
 			}
+			// A write: the operator creates a user in the tenant.
+			if out, err := runCLIProto(t, open, proto, "users", "create", "--tenant-id", tenantID,
+				"--username", "opwrite", "--without-email-login-key"); err != nil {
+				t.Fatalf("[%s] operator users create --tenant-id %s under operator-access: %v\noutput: %s", proto.name, tenantID, err, out)
+			}
 			trails := operatorAccessTrails(t, open, proto, tenantID, adminCert, adminKey)
 			if !trails[tenantID] {
 				t.Fatalf("[%s] the tenant's trail holds no record of the operator's read; trails %v", proto.name, trails)
@@ -57,6 +62,11 @@ func TestOperatorIdentityAccess_CLI_PerProtocol(t *testing.T) {
 			}
 			if !strings.Contains(out, "strict") {
 				t.Fatalf("[%s] refusal does not name the strict policy: %s", proto.name, out)
+			}
+			out, err = runCLIProto(t, strict, proto, "users", "create", "--tenant-id", strictID,
+				"--username", "opwrite", "--without-email-login-key")
+			if err == nil || !strings.Contains(out, "strict") {
+				t.Fatalf("[%s] operator users create in a strict tenant = (%v) %s, want refused naming strict", proto.name, err, out)
 			}
 		})
 	}

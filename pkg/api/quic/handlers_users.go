@@ -48,6 +48,10 @@ type createUserWireRequest struct {
 // getUserWireRequest is the JSON wire payload for user.Get.
 type getUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // getUserByUsernameWireRequest is the JSON wire payload for
@@ -75,6 +79,10 @@ type addCertBindingWireRequest struct {
 	UserID       uint64 `json:"userID"`
 	Thumbprint   string `json:"thumbprint"`
 	NotAfterUnix int64  `json:"notAfterUnix"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // removeCertBindingWireRequest is the JSON wire payload for
@@ -82,6 +90,10 @@ type addCertBindingWireRequest struct {
 type removeCertBindingWireRequest struct {
 	UserID     uint64 `json:"userID"`
 	Thumbprint string `json:"thumbprint"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // updateUserWireRequest is the JSON wire payload for user.Update.
@@ -107,11 +119,19 @@ type updateUserWireRequest struct {
 	// Attributes replaces the ABAC attributes when PRESENT in the payload.
 	// Absent leaves it alone; `{}` clears it.
 	Attributes map[string]string `json:"attributes,omitempty"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
 type deleteUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // listUsersWireRequest is the JSON wire payload for user.List.
@@ -124,21 +144,37 @@ type listUsersWireRequest struct {
 // enableUserWireRequest is the JSON wire payload for user.Enable.
 type enableUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // disableUserWireRequest is the JSON wire payload for user.Disable.
 type disableUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // suspendUserWireRequest is the JSON wire payload for user.Suspend.
 type suspendUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // unsuspendUserWireRequest is the JSON wire payload for user.Unsuspend.
 type unsuspendUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // userWireResponse is the JSON wire representation of a user entity.
@@ -230,6 +266,11 @@ func (s *Server) handleCreateUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if len(req.RoleIDs) > 0 {
 		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.TenantID, req.RoleIDs); err != nil {
 			return nil, err
@@ -266,6 +307,11 @@ func (s *Server) handleGetUser(ctx context.Context, payload []byte) ([]byte, err
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.GetUser(ctx, req.ID)
 	if err != nil {
 		return nil, err
@@ -287,6 +333,11 @@ func (s *Server) handleGetUserByUsername(ctx context.Context, payload []byte) ([
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.GetUserByUsername(ctx, req.TenantID, req.Username)
 	if err != nil {
 		return nil, err
@@ -305,6 +356,11 @@ func (s *Server) handleGetUserByEmail(ctx context.Context, payload []byte) ([]by
 	var req getUserByEmailWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
@@ -349,6 +405,11 @@ func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	// Binding a thumbprint binds a key: the certificate target rule applies.
 	if err := s.authMW.AuthorizeCertBindingTarget(ctx, s.userSvc, req.UserID); err != nil {
 		return nil, err
@@ -375,6 +436,11 @@ func (s *Server) handleRemoveCertBinding(ctx context.Context, payload []byte) ([
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.RemoveCertBinding(ctx, req.UserID, req.Thumbprint)
 	if err != nil {
 		return nil, err
@@ -393,6 +459,11 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 	var req updateUserWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	updateReq := &user.UpdateUserRequest{
@@ -440,6 +511,11 @@ func (s *Server) handleDeleteUser(ctx context.Context, payload []byte) ([]byte, 
 	var req deleteUserWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.userSvc.DeleteUser(ctx, req.ID); err != nil {
@@ -509,6 +585,11 @@ func (s *Server) handleEnableUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.EnableUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -533,6 +614,11 @@ func (s *Server) handleDisableUser(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.DisableUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -554,6 +640,11 @@ func (s *Server) handleSuspendUser(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.SuspendUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -573,6 +664,11 @@ func (s *Server) handleUnsuspendUser(ctx context.Context, payload []byte) ([]byt
 	var req unsuspendUserWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.userSvc.UnsuspendUser(ctx, req.ID); err != nil {
