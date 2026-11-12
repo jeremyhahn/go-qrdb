@@ -209,3 +209,123 @@ test.describe("Web Mode Connection Manager", () => {
     ).not.toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Connection profiles: saveProfile, setActive, disconnect, deleteProfile
+// ---------------------------------------------------------------------------
+
+type WebPage = Parameters<typeof test>[2] extends (args: { page: infer P }) => unknown ? P : never;
+
+const REMOTE_NAME = "Remote QA";
+
+/** Opens the Connection Manager dialog unless it is already open. */
+async function openManager(page: WebPage): Promise<void> {
+  const modal = page.locator(".modal-box");
+  if (!(await modal.isVisible())) {
+    await page.locator("aside").getByTitle("Add server").click();
+  }
+  await expect(modal).toBeVisible({ timeout: LOAD_TIMEOUT });
+}
+
+function profileCard(page: WebPage, name: string) {
+  return page.locator(".modal-box").locator(".card", {
+    has: page.getByText(name, { exact: true }),
+  });
+}
+
+/** Adds a REST server profile pointing at the mocked origin and saves it. */
+async function addRemoteServer(page: WebPage): Promise<void> {
+  await openManager(page);
+  const modal = page.locator(".modal-box");
+  await modal.getByRole("button", { name: "Server", exact: true }).click();
+  await expect(
+    modal.getByRole("heading", { name: "Connect to Server" }),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await modal.locator("#ext-name").fill(REMOTE_NAME);
+  await modal.locator("#ext-transport").selectOption("rest");
+  await modal.locator("#ext-address").fill(new URL(page.url()).origin);
+  await modal.locator(".card", {
+    has: page.getByRole("heading", { name: "Connect to Server" }),
+  }).getByRole("button", { name: "Connect", exact: true }).click();
+}
+
+test.describe("Web Mode connection profiles", () => {
+  test.use({ webMockState: webState });
+
+  test("Add Server saves the profile and makes it active", async ({ page }) => {
+    await page.goto("/");
+    await waitForAppReady(page);
+
+    await addRemoteServer(page);
+
+    // saveProfile + setActive: the new server joins the sidebar tree and
+    // survives a reload (profiles persist in the browser).
+    await expect(page.locator("aside").getByText(REMOTE_NAME)).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await page.reload();
+    await waitForAppReady(page);
+    await expect(page.locator("aside").getByText(REMOTE_NAME)).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+  });
+
+  test("disconnect then delete a non-built-in profile", async ({ page }) => {
+    await page.goto("/");
+    await waitForAppReady(page);
+    await addRemoteServer(page);
+    await expect(page.locator("aside").getByText(REMOTE_NAME)).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+
+    await openManager(page);
+    const card = profileCard(page, REMOTE_NAME);
+    await expect(card).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // disconnect: the card flips back to a Connect action.
+    await card.getByTitle("Disconnect").click();
+    await expect(card.getByTitle("Connect")).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    // deleteProfile behind the confirmation modal.
+    await card.getByTitle("Delete profile").click();
+    await expect(page.getByRole("heading", { name: "Delete Connection" })).toBeVisible();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await expect(profileCard(page, REMOTE_NAME)).toHaveCount(0, {
+      timeout: LOAD_TIMEOUT,
+    });
+
+    // The built-in This Server profile remains.
+    await expect(profileCard(page, "This Server")).toBeVisible();
+  });
+
+  test("switching the active profile back to This Server", async ({ page }) => {
+    await page.goto("/");
+    await waitForAppReady(page);
+    await addRemoteServer(page);
+    await expect(page.locator("aside").getByText(REMOTE_NAME)).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+
+    // Connecting the new profile made it active.
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("qrdb:active-profile:v1")))
+      .not.toBe("self");
+
+    // setActive: clicking the connected This Server card makes it active
+    // and returns to its dashboard.
+    await openManager(page);
+    const self = profileCard(page, "This Server");
+    await expect(self).toBeVisible({ timeout: LOAD_TIMEOUT });
+    if (await self.getByTitle("Connect").isVisible()) {
+      await self.getByTitle("Connect").click();
+    } else {
+      await self.click();
+    }
+    await expect(
+      page.locator(".breadcrumbs").getByText("Dashboard"),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("qrdb:active-profile:v1")))
+      .toBe("self");
+  });
+});

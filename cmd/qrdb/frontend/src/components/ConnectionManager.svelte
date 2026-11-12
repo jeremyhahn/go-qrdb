@@ -39,6 +39,7 @@
     connectProfile,
     disconnectProfile,
     deleteProfile,
+    saveProfile,
     setActiveProfile,
   } from "$stores/connection-manager.svelte.ts";
   import type {
@@ -728,8 +729,7 @@
         } satisfies ExternalConnectionConfig,
         createdAt: new Date().toISOString(),
       };
-      await client.connectionManager.saveProfile(profile as never);
-      connManagerStore.profiles = [...connManagerStore.profiles, profile];
+      await saveProfile(client, profile);
       activePanel = "none";
       const state = await connectProfile(client, profile.id);
       if (

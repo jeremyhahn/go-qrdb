@@ -580,6 +580,29 @@ export async function disconnectProfile(
  * @param client    - The SDK client singleton.
  * @param profileId - ID of the profile to delete.
  */
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
+}
+
 export async function deleteProfile(
     client: Client,
     profileId: string,
