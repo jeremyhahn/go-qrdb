@@ -148,6 +148,12 @@ export async function injectWebRestMock(
     });
   });
 
+  // Intercept the Prometheus exposition the dashboard polls; an empty one
+  // keeps the request off the network.
+  await page.route("**/metrics", (route) => {
+    void route.fulfill({ status: 200, contentType: "text/plain", body: "" });
+  });
+
   // Intercept barrier status endpoint (used to probe seal state).
   await page.route("**/v1/barrier/status", (route) => {
     void route.fulfill({

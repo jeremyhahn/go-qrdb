@@ -44,6 +44,7 @@
   } from "lucide-svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
+  import { errorText } from "./tenantDefault.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
   import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
@@ -236,7 +237,7 @@
       holdersLoading = true;
       holders = await client.officers.listTenantOfficers(tenantId);
     } catch (err: unknown) {
-      showToast("error", err instanceof Error ? err.message : "Failed to list the tenant's share holders");
+      showToast("error", errorText(err, "Failed to list the tenant's share holders"));
     } finally {
       holdersLoading = false;
     }
@@ -378,7 +379,7 @@
       if (err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501 || err.statusCode === 503)) {
         tenants = [];
       } else {
-        const msg = err instanceof Error ? err.message : "Failed to fetch tenants";
+        const msg = errorText(err, "Failed to fetch tenants");
         showToast("error", msg);
       }
     } finally {
@@ -468,7 +469,7 @@
       createdTenantId = resp.tenant.id;
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to create tenant";
+      const msg = errorText(err, "Failed to create tenant");
       showToast("error", msg);
     } finally {
       createLoading = false;
@@ -573,7 +574,7 @@
       const status = await client.tenants.barrierStatus(tenantId);
       unsealStatus = status;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch tenant barrier status";
+      const msg = errorText(err, "Failed to fetch tenant barrier status");
       showToast("error", msg);
     } finally {
       unsealStatusLoading = false;
@@ -612,7 +613,7 @@
       handleCancelUnseal();
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to unseal the tenant barrier";
+      const msg = errorText(err, "Failed to unseal the tenant barrier");
       showToast("error", msg);
       await fetchUnsealStatus(unsealTenantId);
     } finally {
@@ -676,7 +677,7 @@
       resetBarrierForm();
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to initialize barrier";
+      const msg = errorText(err, "Failed to initialize barrier");
       showToast("error", msg);
     } finally {
       barrierLoading = false;
@@ -760,7 +761,7 @@
         showToast("info", resp.status);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to enable encryption";
+      const msg = errorText(err, "Failed to enable encryption");
       showToast("error", msg);
     } finally {
       enableLoading = false;

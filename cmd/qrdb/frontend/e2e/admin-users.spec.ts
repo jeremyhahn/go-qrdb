@@ -580,14 +580,6 @@ test.describe("Admin - User Management", () => {
 webTest.describe("Admin - User Management (web mode / auth-disabled regression)", () => {
   const LOAD_TIMEOUT = 10_000;
 
-  // The dashboard polls the Prometheus exposition; an empty one keeps the
-  // request off the network.
-  webTest.beforeEach(async ({ page }) => {
-    await page.route("**/metrics", (route) =>
-      route.fulfill({ status: 200, contentType: "text/plain", body: "" }),
-    );
-  });
-
   webTest(
     "POST /users returns 201 and frontend shows success (auth-disabled regression)",
     async ({ page }) => {
