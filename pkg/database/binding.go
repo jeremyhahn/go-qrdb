@@ -380,6 +380,10 @@ func resolveRaftBinding(cfg *DatabaseConfig, isolation tenant.IsolationType, pla
 		Replicas:     cfg.Replicas,
 		StateStorage: d.RaftStateStorage,
 	}
+	// The record's state storage, resolved at create, wins over the node's.
+	if cfg.Raft != nil && cfg.Raft.StateStorage != "" {
+		rb.StateStorage = cfg.Raft.StateStorage
+	}
 	if rb.Replicas == 0 {
 		rb.Replicas = d.Replicas
 	}

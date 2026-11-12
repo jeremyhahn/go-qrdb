@@ -40,9 +40,15 @@ func (d Defaults) fill(cfg *DatabaseConfig) {
 	if cfg.Replicas == 0 {
 		cfg.Replicas = d.Replicas
 	}
-	if cfg.Raft != nil && cfg.Raft.ClusterMode == "" && d.RaftClusterMode != "" {
-		raft := *cfg.Raft
-		raft.ClusterMode = d.RaftClusterMode
-		cfg.Raft = &raft
+	if cfg.Raft == nil {
+		return
 	}
+	raft := *cfg.Raft
+	if raft.ClusterMode == "" {
+		raft.ClusterMode = d.RaftClusterMode
+	}
+	if raft.StateStorage == "" {
+		raft.StateStorage = d.RaftStateStorage
+	}
+	cfg.Raft = &raft
 }

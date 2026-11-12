@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"reflect"
@@ -35,7 +36,14 @@ func TestDefaultsFill(t *testing.T) {
 			d:    d,
 			cfg:  DatabaseConfig{Name: "app", Raft: &DatabaseRaftConfig{}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendFile}},
+		},
+		{
+			name: "recorded state storage kept",
+			d:    d,
+			cfg:  DatabaseConfig{Name: "app", Raft: &DatabaseRaftConfig{StateStorage: BackendMemory}},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendMemory}},
 		},
 		{
 			name: "set fields kept",
@@ -43,7 +51,7 @@ func TestDefaultsFill(t *testing.T) {
 			cfg: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 5,
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal}},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 5,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendFile}},
 		},
 		{
 			name: "no raft block added",
@@ -71,6 +79,19 @@ func TestDefaultsFill(t *testing.T) {
 				t.Fatalf("fill = %+v, want %+v", cfg, tc.want)
 			}
 		})
+	}
+}
+
+func TestDatabaseRaftConfigValidateStateStorage(t *testing.T) {
+	for _, s := range []BackendType{"", BackendPebble, BackendFile, BackendMemory} {
+		if err := (&DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: s}).Validate(); err != nil {
+			t.Fatalf("Validate(state storage %q) = %v, want nil", s, err)
+		}
+	}
+	err := (&DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendObjstore}).Validate()
+	var target *InvalidRaftStateStorageError
+	if !errors.As(err, &target) || target.StateStorage != BackendObjstore {
+		t.Fatalf("Validate(objstore) = %v, want *InvalidRaftStateStorageError", err)
 	}
 }
 
