@@ -13,10 +13,17 @@
  */
 
 import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { join } from "node:path";
 import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 const DB_NAME = "settingsrt";
+// A per-database barrier needs a dedicated store that it wraps: a pebble
+// database with a data directory of its own (a raft-backend database is
+// served from its raft group and refused).
+const BARRIER_DB = "barriersettings";
+// Raft settings run on a raft-backend database.
+const RAFT_DB = "raftsettings";
 
 let daemon: DomDaemon | null = null;
 let api: APIRequestContext | null = null;
@@ -36,15 +43,22 @@ test.beforeAll(async ({ playwright }) => {
     baseURL: daemon.adminUrl,
     ignoreHTTPSErrors: true,
   });
-  const resp = await api.post("/v1/databases", {
-    data: { name: DB_NAME, backend: "pebble" },
-  });
-  expect(resp.ok(), await resp.text()).toBeTruthy();
+  for (const data of [
+    { name: DB_NAME, backend: "pebble" },
+    { name: BARRIER_DB, backend: "pebble", dataDir: join(daemon.dataDir, BARRIER_DB) },
+    { name: RAFT_DB, backend: "raft" },
+  ]) {
+    const resp = await api.post("/v1/databases", { data });
+    expect(resp.ok(), await resp.text()).toBeTruthy();
+  }
 });
 
 test.afterAll(async () => {
   if (api) {
-    await api.delete(`/v1/databases/${DB_NAME}`);
+    for (const name of [DB_NAME, BARRIER_DB, RAFT_DB]) {
+      const resp = await api.delete(`/v1/databases/${name}`);
+      expect(resp.ok(), await resp.text()).toBeTruthy();
+    }
     await api.dispose();
     api = null;
   }
@@ -53,20 +67,20 @@ test.afterAll(async () => {
 });
 
 /** The daemon's stored database entry. */
-async function storedDb(): Promise<Record<string, unknown>> {
-  const resp = await api!.get(`/v1/databases/${DB_NAME}`);
+async function storedDb(name = DB_NAME): Promise<Record<string, unknown>> {
+  const resp = await api!.get(`/v1/databases/${name}`);
   expect(resp.ok(), await resp.text()).toBeTruthy();
   return (await resp.json()) as Record<string, unknown>;
 }
 
 /** Opens the admin detail view of the test database. */
-async function openDetail(page: Page): Promise<Locator> {
+async function openDetail(page: Page, name = DB_NAME): Promise<Locator> {
   await page.goto(UI_BASE_URL);
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
   await page.locator('aside button[title="Databases"]').click();
   const main = page.locator("main");
-  await expect(main.getByText(DB_NAME).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await main.getByText(DB_NAME).first().click();
+  await expect(main.getByText(name, { exact: true }).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await main.getByText(name, { exact: true }).first().click();
   await expect(main.getByTestId("db-settings-sql")).toBeVisible({ timeout: LOAD_TIMEOUT });
   return main;
 }
@@ -120,24 +134,35 @@ test("updateConnection: remote connection round-trips through the daemon", async
   });
 });
 
-test("updateBarrier: barrier mode round-trips through the daemon", async ({ page }) => {
-  let main = await openDetail(page);
+// The server changes no barrier after create (enable, disable and a strategy
+// switch are migrations it refuses with 409; only a same-config write is
+// accepted), so the roundtrip is: the form sends the change, shows the
+// server's refusal, and after a reload the form and the daemon still hold
+// the database's barrier as created.
+test("updateBarrier: the form reports the daemon's refusal and the stored barrier is unchanged", async ({
+  page,
+}) => {
+  let main = await openDetail(page, BARRIER_DB);
   let form = main.getByTestId("db-settings-barrier");
+  await expect(form.getByLabel("Barrier enabled")).not.toBeChecked();
   await form.getByLabel("Barrier enabled").check();
   await form.getByLabel("Barrier mode").selectOption("passphrase");
   await form.getByRole("button", { name: "Save Barrier Configuration" }).click();
-  await expect(form.getByTestId("outcome-success")).toHaveText("Barrier configuration saved.");
+  await expect(form.getByTestId("outcome-error")).toContainText(
+    "cannot enable the encryption barrier",
+  );
+  await expect(form.getByTestId("outcome-success")).toHaveCount(0);
 
   await page.reload();
-  main = await openDetail(page);
+  main = await openDetail(page, BARRIER_DB);
   form = main.getByTestId("db-settings-barrier");
-  await expect(form.getByLabel("Barrier enabled")).toBeChecked();
-  await expect(form.getByLabel("Barrier mode")).toHaveValue("passphrase");
-  expect((await storedDb()).barrier).toMatchObject({ enabled: true, mode: "passphrase" });
+  await expect(form.getByLabel("Barrier enabled")).not.toBeChecked();
+  const stored = (await storedDb(BARRIER_DB)).barrier as { enabled?: boolean } | undefined;
+  expect(stored?.enabled ?? false).toBe(false);
 });
 
 test("updateRaft: raft configuration on the daemon's raft cluster", async ({ page }) => {
-  const main = await openDetail(page);
+  const main = await openDetail(page, RAFT_DB);
   const form = main.getByTestId("db-settings-raft");
   await form.getByLabel("Cluster mode").selectOption("distributed");
   await form.getByLabel("Replica ID").fill("1");
@@ -148,5 +173,5 @@ test("updateRaft: raft configuration on the daemon's raft cluster", async ({ pag
     form.getByTestId("outcome-success").or(form.getByTestId("outcome-error")),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
   console.log("raft outcome:", await form.locator("[data-testid^=outcome-]").first().textContent());
-  console.log("raft stored:", JSON.stringify((await storedDb()).raft));
+  console.log("raft stored:", JSON.stringify((await storedDb(RAFT_DB)).raft));
 });
