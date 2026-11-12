@@ -819,7 +819,6 @@
   title={isHistorical ? "Historical Details" : "Details"}
   onclose={() => (selectedEntry = null)}
 >
-  {#snippet children()}
     {#if selectedEntry}
       <div class="space-y-5">
         {#if isHistorical}
@@ -884,7 +883,6 @@
         </div>
       </div>
     {/if}
-  {/snippet}
   {#snippet footer()}
     {#if selectedEntry}
       <div class="flex gap-2">

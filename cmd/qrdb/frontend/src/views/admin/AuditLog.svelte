@@ -311,7 +311,6 @@
 
 <!-- Event detail panel -->
 <SlidePanel open={showDetail} title="Audit Event" onclose={() => (showDetail = false)}>
-  {#snippet children()}
     {#if selectedEvent !== null}
       <div class="flex flex-col gap-3">
         <table class="table table-sm">
@@ -346,5 +345,4 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
 </SlidePanel>

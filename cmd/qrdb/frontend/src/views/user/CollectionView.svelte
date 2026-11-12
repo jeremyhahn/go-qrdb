@@ -1162,7 +1162,6 @@
   title="Document Detail"
   onclose={() => (selectedDocument = null)}
 >
-  {#snippet children()}
     {#if selectedDocument}
       <div class="space-y-5">
         <div>
@@ -1181,7 +1180,6 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
   {#snippet footer()}
     {#if selectedDocument}
       <div class="flex gap-2">

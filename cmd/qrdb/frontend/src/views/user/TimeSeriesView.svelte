@@ -1158,7 +1158,6 @@
   title="Data Point"
   onclose={() => (selectedPoint = null)}
 >
-  {#snippet children()}
     {#if selectedPoint}
       <div class="space-y-5">
         <div>
@@ -1180,7 +1179,7 @@
           <div>
             <span class="text-sm font-medium text-base-content/70 block mb-1">Tags</span>
             <div class="flex flex-wrap gap-1">
-              {#each selectedPoint.tags as tag}
+              {#each selectedPoint.tags as tag, ti (ti)}
                 <span class="badge badge-sm badge-outline font-mono">
                   {tag.key}={tag.value}
                 </span>
@@ -1190,7 +1189,6 @@
         {/if}
       </div>
     {/if}
-  {/snippet}
 </SlidePanel>
 
 <!-- Write Data Point SlidePanel -->
@@ -1199,7 +1197,6 @@
   title="Write Data Point"
   onclose={() => (showWritePanel = false)}
 >
-  {#snippet children()}
     <div class="space-y-5">
       <div class="join" role="tablist">
         <button
@@ -1278,7 +1275,6 @@
         </label>
       {/if}
     </div>
-  {/snippet}
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       <button class="btn btn-ghost" onclick={() => (showWritePanel = false)} disabled={writeLoading}>
