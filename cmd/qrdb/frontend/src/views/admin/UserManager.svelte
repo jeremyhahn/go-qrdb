@@ -43,6 +43,7 @@
   let showInvite: boolean = $state(false);
   let searchThumbprint: string = $state("");
   let searching: boolean = $state(false);
+  let thumbprintNotFound: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -141,13 +142,18 @@
     if (thumbprint === "") return;
     try {
       searching = true;
+      thumbprintNotFound = false;
       const user = await client.users.getUserByCertThumbprint(thumbprint);
       searchThumbprint = "";
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "No user bound to that thumbprint";
-      showToast("error", msg);
+      if (err instanceof TransportError && err.statusCode === 404) {
+        thumbprintNotFound = true;
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to look up user";
+        showToast("error", msg);
+      }
     } finally {
       searching = false;
     }
@@ -223,6 +229,11 @@
       >
         Find
       </button>
+      {#if thumbprintNotFound}
+        <span class="text-warning text-sm" data-testid="user-thumbprint-not-found">
+          No user holds this certificate binding.
+        </span>
+      {/if}
     </form>
 
     <CrudTable
