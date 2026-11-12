@@ -55,6 +55,7 @@
     connectProfile,
     disconnectProfile,
     setActiveProfile,
+    isMultiNodeServer,
   } from "../stores/connection-manager.svelte.ts";
   import type { ConnectionState } from "../stores/connection-manager.svelte.ts";
 
@@ -256,8 +257,7 @@
     } else {
       dbWizardStore.mode = 'embedded';
     }
-    dbWizardStore.serverMode =
-      connManagerStore.activeServerMode === 'raft' ? 'raft' : 'standalone';
+    dbWizardStore.serverMode = isMultiNodeServer() ? 'raft' : 'standalone';
   });
 
   function handleWizardComplete(): void {

@@ -16,7 +16,7 @@
 -->
 <script lang="ts">
   import { dbWizardStore } from "$stores/database-wizard.svelte.ts";
-  import { connManagerStore } from "$stores/connection-manager.svelte.ts";
+  import { isMultiNodeServer } from "$stores/connection-manager.svelte.ts";
 
   let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
     $props();
@@ -25,7 +25,7 @@
   let sqlPostgreSQL: boolean = $state(dbWizardStore.sqlPostgreSQL);
   let etcdEnabled: boolean = $state(dbWizardStore.etcdEnabled);
 
-  let isRaft = $derived(connManagerStore.activeServerMode === "raft" || dbWizardStore.serverMode === "raft");
+  let isRaft = $derived(isMultiNodeServer() || dbWizardStore.serverMode === "raft");
 
   function handleNext(): void {
     dbWizardStore.sqlMySQL = sqlMySQL;
