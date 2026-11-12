@@ -229,6 +229,48 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 
 ## Displays
 
+Each row is a read-only surface: the SDK method that returns it, its fields (`sdk/typescript/src/types.ts`), and where the UI renders them.
+
+| surface | fields | UI display | Playwright spec | gap |
+|---|---|---|---|---|
+| /health (`admin.health`) | status, isLeader | views/admin/Dashboard.svelte (status badge, Leader/Follower) | admin-dashboard.spec.ts | *verified* |
+| /status (`admin.status`) | nodeId, raftAddress, isLeader, leaderId, shardCount, isDraining, shards | views/admin/Dashboard.svelte (all but `shards`) | admin-dashboard.spec.ts | per-shard `shards` not shown; *verified* |
+| /peers (`admin.peers`) | shards[].shardId, peers[].replicaId, address, isLeader | views/admin/Cluster.svelte (shard, replica, address table) | admin-cluster.spec.ts | *verified* |
+| /capabilities (`admin.capabilities`) | kv, mvcc, transaction, batch, watch, lease, index, timeSeries, vector | views/admin/Dashboard.svelte (feature list); stores/capabilities.svelte.ts gates views | admin-dashboard.spec.ts admin-views.spec.ts | `index` missing from the Dashboard list; *verified* |
+| cluster/raft topology (`admin.getTopology`) | nodeId, raftAddress, shardCount, shards[].shardId, replicaId, leaderId, replicas | views/admin/Topology.svelte (per-shard table) | admin-topology.spec.ts dom/cluster-topology.spec.ts | *verified* |
+| shard balance (`rebalance.getImbalanceReport`) | imbalance score, nodes, hotspots | views/admin/RebalancePanel.svelte (stat cards) | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
+| seal state (`seal.status`) | sealed, initialized, strategy, sharesRequired, sharesProvided, sharesTotal | App.svelte (unseal gate), views/admin/SealManager.svelte (stats) | admin-seal.spec.ts unseal.spec.ts | *verified* |
+| cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (sealed/clear, epoch, local only) | none | principal, node, at not shown; `clusterMigration` progress not shown; no e2e; *verified* |
+| ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
+| daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
+| metrics (/metrics) | Prometheus exposition | none: the SDK has no metrics method | none | not in SDK, not in UI; *verified* |
+
 ## Gap groups
 
+One group = one implementation lane, one view or area. Ordered by user value. Tier: *mocked* = `e2e/*.spec.ts` on the Wails/web mock with the API guard; *real* = `playwright.real.config.ts` against a real server.
+
+| # | group | operations / displays | files to add or change | tier |
+|---|---|---|---|---|
+| 1 | Database settings | `database.updateBarrier`, `updateCompaction`, `updateConnection`, `updateRaft`, `updateSQL` | views/admin/DatabaseDetail.svelte, views/user/DatabaseSettingsView.svelte; new e2e/database-settings.spec.ts | mocked; real for one raft update |
+| 2 | Database holders | `officers.initializeDatabaseShamir`, `listDatabaseOfficers`, `registerDatabaseOfficer`, `revokeDatabaseOfficer`, `startDatabaseRekey`, `unenrolDatabaseOfficer`; `database.barrierStatus` (all in UI, no e2e) | components/DatabaseHoldersPanel.svelte (no change expected); new e2e/database-holders.spec.ts | mocked |
+| 3 | Users and roles | `users.delete`, `disable`, `enable`, `addCertBinding`, `removeCertBinding`, `getUserByCertThumbprint`; `roles.assign`, `unassign`, `delete` | views/admin/UserManager.svelte, UserDetail.svelte, RoleManager.svelte, RoleDetail.svelte; e2e/admin-users.spec.ts, e2e/admin-roles.spec.ts | mocked |
+| 4 | Invitations | `invitations.invite` (no e2e), `invitations.redeem` | components/admin/InviteUserModal.svelte; new redeem step in components/ConnectionManager.svelte; new e2e/admin-invitations.spec.ts | mocked; real for redeem |
+| 5 | KV and MVCC | `kv.get`, `exists`, `list`; `mvcc.compact`, `currentRevision`, `getRevision`, `getAtRevision`, `putWithLease` | views/user/KVExplorer.svelte, lib/kvRange.ts; e2e/kv-advanced.spec.ts, e2e/kv-explorer-restore.spec.ts | mocked; real for compact |
+| 6 | Volume pools | `volumePools.create`, `delete`, `get`, `list`, `listTenants`, `update` | new views/admin/VolumePoolManager.svelte and sidebar entry; pool picker in views/admin/TenantManager.svelte; new e2e/admin-volume-pools.spec.ts | mocked |
+| 7 | Tenant trust and holders | `tenants.addTrustAnchors`, `listTrustAnchors`, `removeTrustAnchor` (no e2e); `officers.registerTenantOfficer` | views/admin/TenantDetail.svelte, views/admin/TenantManager.svelte; new e2e/tenant-trust-anchors.spec.ts, e2e/tenant-holders.spec.ts | mocked |
+| 8 | Vector | `vector.batchUpsert`, `batchDeleteVectors`, `getVector`, `hybridSearch`, `updateMetadata` | views/user/VectorView.svelte; e2e/vector.spec.ts | mocked |
+| 9 | Time series | `timeSeries.aggregate`, `richQuery`, `getRetention`, `setRetention`, `write`, `writeBatch` | views/user/TimeSeriesView.svelte; e2e/timeseries-advanced.spec.ts | mocked |
+| 10 | Seal and ceremony | `seal.clusterUnseal` (no e2e), `seal.changePassphrase`; `ceremony.status`, `ceremony.signCSR`; displays: cluster seal principal/node/at, `clusterMigration` progress, ceremony state | views/admin/SealManager.svelte; e2e/admin-seal.spec.ts; new real-backend/cluster-seal-real.spec.ts | mocked; real for cluster seal |
+| 11 | Cluster operations | `admin.mintJoinToken`, `nodeCompaction`, `setNodeCompaction`; `rebalance.getShardStats` | views/admin/Cluster.svelte, views/admin/RebalancePanel.svelte; e2e/admin-cluster.spec.ts, e2e/rebalance-panel.spec.ts | mocked; real for join token |
+| 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts | mocked; real for metrics |
+| 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked |
+| 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts | mocked |
+
 ## Summary
+
+| | total | in UI | with e2e |
+|---|---|---|---|
+| operations | 218 | 156 | 140 |
+| displays | 11 | 9 | 8 |
+
+Operations not in UI: 62. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
