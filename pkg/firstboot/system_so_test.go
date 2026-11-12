@@ -551,6 +551,26 @@ func TestInitialize_SystemSOPINRetryWithItsOwnPINSucceeds(t *testing.T) {
 	}
 }
 
+// TestInitialize_FreshSOAcceptsItsOwnPINCommittedByAPeer reproduces a
+// three-node first boot: the node that creates the SO account loses the
+// PIN-commit race to a peer that found the replicated account and
+// committed the same configured PIN. The PIN proves ours, so the creator
+// enrols instead of failing its boot on ErrSOPINAlreadySet.
+func TestInitialize_FreshSOAcceptsItsOwnPINCommittedByAPeer(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.pins.pins[tenantid.System] = "so-pin-246810"
+	res, err := Initialize(context.Background(), h.deps)
+	if err != nil {
+		t.Fatalf("Initialize = %v, want nil: the committed PIN is the SO's own", err)
+	}
+	if res == nil || !res.SOCreated {
+		t.Fatalf("Initialize result = %+v, want the SO created by this run", res)
+	}
+	if got := h.pins.pins[tenantid.System]; got != "so-pin-246810" {
+		t.Fatalf("committed PIN = %q, want the SO's own PIN", got)
+	}
+}
+
 func TestEnrollSystemSO_PINAlreadySetNeedsAVerifier(t *testing.T) {
 	h := newSOHarness(t, true)
 	if _, err := Initialize(context.Background(), h.deps); err != nil {

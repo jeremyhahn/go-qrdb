@@ -367,11 +367,13 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 	// The PIN is committed, or proven ours, before any trust anchor or
 	// binding: a run with someone else's PIN must leave no SO credential.
 	if err := commitSystemSOPIN(ctx, deps.SOPINs, tenantID, so); err != nil {
-		// An SO an earlier run created may have committed its PIN before
-		// that run stopped; a PIN already set on a brand-new SO is not ours.
-		// On a retry the committed PIN is ours only once it proves to be:
-		// an earlier run may have failed on someone else's.
-		if created || !errors.Is(err, auth.ErrSOPINAlreadySet) {
+		// A PIN already set is ours only once it proves to be: an earlier
+		// run of this node may have committed it before it stopped, and in
+		// a cluster a peer booting the same SO config commits the same PIN
+		// as soon as this node's SO account replicates to it, so even the
+		// node that created the SO can find its own PIN already set. A PIN
+		// that does not verify against ours is someone else's and refused.
+		if !errors.Is(err, auth.ErrSOPINAlreadySet) {
 			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: err}
 		}
 		if ownErr := committedSOPINIsOurs(ctx, deps.SOPINs, tenantID, so); ownErr != nil {
