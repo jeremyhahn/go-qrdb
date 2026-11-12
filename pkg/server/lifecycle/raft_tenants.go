@@ -22,9 +22,7 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"net"
-	"net/http"
 	"strconv"
-	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
@@ -42,12 +40,8 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// keySenderTimeout bounds one key delivery to a peer.
-const keySenderTimeout = 15 * time.Second
-
 // PeerAdminRegistry resolves a cluster node's admin HTTPS base URL from its
-// Raft address. The cluster key plane's sender and REST's leader forwarding
-// both resolve peers through it.
+// Raft address. REST's leader forwarding resolves peers through it.
 type PeerAdminRegistry interface {
 	rest.LeaderAdminResolver
 	// Register records adminURL as the admin base URL of the node at
@@ -155,17 +149,14 @@ type RaftTenantClusterConfig struct {
 	DedicatedRaft bool
 	// RaftAddr is this node's Raft address, its identity in placements.
 	RaftAddr string
-	// PeerAdmin resolves the admin URL a peer's key routes are served on.
-	PeerAdmin PeerAdminRegistry
 	// TrustDomain is the cluster trust domain every node certificate's SPIFFE
-	// SAN, the receiver's peer check and the sender's recipient check share.
+	// SAN and the receiver's peer check share.
 	TrustDomain string
 	// CACertPool is the cluster CA pool peer certificates verify to.
 	CACertPool *x509.CertPool
 	// Identity is this node's mTLS identity: its certificate chain, leaf
-	// first, and the crypto.Signer for the leaf's key. It is the client
-	// identity the sender presents to peers, and the certificate the
-	// receiver publishes for peers to seal tenant keys to. A composer whose
+	// first, and the crypto.Signer for the leaf's key. It is the
+	// certificate the receiver publishes for peers to seal deliveries to. A composer whose
 	// node key is held on a device sets PrivateKey to a signer that signs
 	// there; no key bytes are needed. Nil disables the key plane.
 	Identity *tls.Certificate
@@ -193,9 +184,6 @@ type RaftTenantCluster struct {
 	// KeyReceiver serves /v1/cluster/nodekey and /v1/cluster/keydelivery; nil
 	// when the key plane is not composed.
 	KeyReceiver *clusterkeys.Receiver
-	// KeySender delivers a tenant's key to the nodes its placement names; nil
-	// when the key plane is not composed.
-	KeySender *clusterkeys.Sender
 }
 
 // ServerOptions returns the server options the composition needs: the key
@@ -210,10 +198,10 @@ func (c *RaftTenantCluster) ServerOptions() []server.ServerOption {
 // ComposeRaftTenantCluster composes the multi-node half of raft tenant
 // isolation (Phases 4c-1c, 4c-1d, 4c-2):
 //
-//   - the cluster key plane: an HPKE receiver for the tenant keys peers
-//     deliver, and a sender delivering this node's to the replicas a
-//     placement names -- only with a Raft host, a barrier registry and a
-//     placement table, and a usable node key;
+//   - the cluster key plane: the node-key route and an HPKE delivery
+//     receiver, which refuses every delivery mode until one is registered
+//     (no tenant key is shipped between nodes) -- only with a Raft host, a
+//     barrier registry and a placement table, and a usable node key;
 //   - the platform's init statement for a tenant that chose platform custody:
 //     signed with the node's key under its certificate when such a tenant is
 //     created here, and trusted through CACertPool, the CA node certificates
@@ -239,9 +227,6 @@ func ComposeRaftTenantCluster(c RaftTenantClusterConfig) *RaftTenantCluster {
 	out := &RaftTenantCluster{}
 	if c.Host != nil && c.Barriers != nil && c.Services != nil && c.Services.PlacementStore != nil {
 		out.KeyReceiver = composeKeyReceiver(c, logger)
-		if out.KeyReceiver != nil {
-			out.KeySender = composeKeySender(c, logger)
-		}
 	}
 	if c.Services == nil {
 		return out
@@ -307,37 +292,6 @@ func composeKeyReceiver(c RaftTenantClusterConfig, logger *slog.Logger) *cluster
 		return nil
 	}
 	return rcv
-}
-
-// composeKeySender builds the sender: an mTLS client presenting the node's
-// identity, signing its handshakes through the identity's signer, and
-// trusting the cluster CA, resolving peers through the peer admin registry.
-func composeKeySender(c RaftTenantClusterConfig, logger *slog.Logger) *clusterkeys.Sender {
-	if _, ok := c.Identity.PrivateKey.(crypto.Signer); !ok {
-		logger.Warn("clusterkeys: node identity has no signer, sender disabled")
-		return nil
-	}
-	client := &http.Client{
-		Timeout: keySenderTimeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{*c.Identity},
-				RootCAs:      c.CACertPool,
-				MinVersion:   tls.VersionTLS13,
-			},
-			ForceAttemptHTTP2: true,
-		},
-	}
-	var resolver clusterkeys.AdminURLResolver
-	if c.PeerAdmin != nil {
-		resolver = c.PeerAdmin
-	}
-	sender, err := clusterkeys.NewSender(resolver, client, c.CACertPool, c.TrustDomain, c.Revocation, logger)
-	if err != nil {
-		logger.Warn("clusterkeys: sender init failed, peer key distribution disabled", slog.Any("error", err))
-		return nil
-	}
-	return sender
 }
 
 // NodeIdentity is the Identity of RaftTenantClusterConfig, derived from the
