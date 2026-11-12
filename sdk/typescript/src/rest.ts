@@ -1526,7 +1526,9 @@ export class RestClient implements Client {
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchUpsertResponse>('/vector/batch/upsert',
+                // The wire answers {ids, versions, success, inserted_count}:
+                // the upserted count is inserted_count, the rest failed.
+                const resp = await this.fetchJSON<{ insertedCount?: number }>('/vector/batch/upsert',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1535,17 +1537,27 @@ export class RestClient implements Client {
                         }),
                     },
                 );
+                const succeeded = resp.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchDeleteVectorsResponse>('/vector/batch/delete',
+                // The wire answers {deleted_count, failed_ids, success}.
+                const resp = await this.fetchJSON<{ deletedCount?: number; failedIds?: readonly (number | string)[] }>(
+                    '/vector/batch/delete',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, ids: req.ids.map(vectorIDToWire) }),
                     },
                 );
+                const failedIds = resp.failedIds ?? [];
+                return {
+                    deleted: resp.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
@@ -1591,8 +1603,20 @@ export class RestClient implements Client {
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
+                // The wire reads query_vector and metadata_filter; it has no
+                // weight fields, so vectorWeight/metadataWeight stay client-side.
                 const resp = await this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
-                    { method: 'POST', ...jsonBody(req) },
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            namespace: req.namespace,
+                            queryVector: req.vector,
+                            k: req.k,
+                            metadataFilter: req.metadataFilters,
+                            consistency: req.consistency,
+                            shardId: req.shardId,
+                        }),
+                    },
                 );
                 return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
             },
