@@ -134,6 +134,17 @@
   let raftPeers: string = $state("");
   let raftLocalNodeCount: number | null = $state(null);
   let raftDiscovery: string = $state("");
+  // Fields of a discovery method the database has no block for yet: asked
+  // for only when the operator picks such a method. A method whose block
+  // the database already holds keeps that block (and its stored secret).
+  let discStaticPeers: string = $state("");
+  let discSecret: string = $state("");
+  let discMulticastGroup: string = $state("");
+  let discDnsDomain: string = $state("");
+  let discDnsService: string = $state("");
+  let discTokenEndpoint: string = $state("");
+  let discToken: string = $state("");
+  let discTokenClusterSize: number | null = $state(null);
   let raftSaving = $state(false);
   let raftOutcome: Outcome = $state(null);
 
@@ -166,6 +177,9 @@
     raftPeers = (db.raft?.peers ?? []).join("\n");
     raftLocalNodeCount = db.raft?.localNodeCount ?? null;
     raftDiscovery = db.raft?.discovery ?? "";
+    discStaticPeers = discSecret = discMulticastGroup = discDnsDomain = discDnsService = "";
+    discTokenEndpoint = discToken = "";
+    discTokenClusterSize = null;
     barrierEnabled = db.barrier?.enabled ?? false;
     barrierMode = db.barrier?.mode || "passphrase";
     barrierSharesRequired = db.barrier?.sharesRequired ?? null;
@@ -220,8 +234,84 @@
     if (!isBlank(raftLocalNodeCount) && !isIntAtLeast(raftLocalNodeCount, 1)) {
       return "Local node count must be a whole number of at least 1.";
     }
+    switch (newDiscoveryMethod) {
+      case "static": {
+        const peers = splitList(discStaticPeers);
+        if (peers.length === 0) return "Static discovery needs at least one peer.";
+        const bad = peers.find((p) => !isHostPort(p));
+        if (bad !== undefined) return `Static peer "${bad}" must be host:port.`;
+        break;
+      }
+      case "multicast":
+        if (discSecret.trim() === "") return "Multicast discovery needs a shared secret.";
+        if (discMulticastGroup.trim() !== "" && !isHostPort(discMulticastGroup.trim())) {
+          return "Multicast group must be host:port.";
+        }
+        break;
+      case "dns":
+        if (discDnsDomain.trim() === "") return "DNS discovery needs a domain.";
+        break;
+      case "token":
+        if (discTokenEndpoint.trim() === "") return "Token discovery needs an endpoint.";
+        if (discToken.trim() === "") return "Token discovery needs a token.";
+        if (!isIntAtLeast(discTokenClusterSize, 1)) {
+          return "Cluster size must be a whole number of at least 1.";
+        }
+        break;
+    }
     return "";
   });
+
+  type DiscoveryKey = "static" | "multicast" | "dns" | "token";
+
+  /**
+   * The discovery method the operator picked that the database holds no
+   * block for, so the form must collect that block; "" when the pick is
+   * none or a method the current configuration already carries.
+   */
+  let newDiscoveryMethod = $derived.by((): "" | DiscoveryKey => {
+    if (raftDiscovery !== "static" && raftDiscovery !== "multicast" && raftDiscovery !== "dns" && raftDiscovery !== "token") {
+      return "";
+    }
+    return database.raft?.[raftDiscovery] === undefined ? raftDiscovery : "";
+  });
+
+  /** The discovery block built from the form for a newly picked method. */
+  function newDiscoveryBlock(): Partial<DatabaseRaftConfig> {
+    switch (newDiscoveryMethod) {
+      case "static":
+        return {
+          static: {
+            peers: splitList(discStaticPeers),
+            ...(discSecret.trim() === "" ? {} : { sharedSecret: discSecret.trim() }),
+          },
+        };
+      case "multicast":
+        return {
+          multicast: {
+            sharedSecret: discSecret.trim(),
+            ...(discMulticastGroup.trim() === "" ? {} : { multicastGroup: discMulticastGroup.trim() }),
+          },
+        };
+      case "dns":
+        return {
+          dns: {
+            domain: discDnsDomain.trim(),
+            ...(discDnsService.trim() === "" ? {} : { service: discDnsService.trim() }),
+          },
+        };
+      case "token":
+        return {
+          token: {
+            endpoint: discTokenEndpoint.trim(),
+            token: discToken.trim(),
+            clusterSize: discTokenClusterSize as number,
+          },
+        };
+      default:
+        return {};
+    }
+  }
 
   let barrierError = $derived.by((): string => {
     if (!barrierEnabled || barrierMode !== "shamir") return "";
@@ -299,7 +389,21 @@
     if (raftError !== "") return;
     raftOutcome = null;
     const peers = splitList(raftPeers);
+    // The server replaces the whole Raft configuration and drops any
+    // discovery block (with its secret) a request leaves out, so start from
+    // the current configuration and overwrite only the fields this form
+    // edits: unedited blocks pass through as they are.
+    const {
+      replicaId: _replicaId,
+      raftAddress: _raftAddress,
+      peers: _peers,
+      localNodeCount: _localNodeCount,
+      discovery: _discovery,
+      ...unedited
+    } = database.raft ?? { clusterMode: "" };
     const raft: DatabaseRaftConfig = {
+      ...unedited,
+      ...newDiscoveryBlock(),
       clusterMode: raftClusterMode,
       ...(isBlank(raftReplicaId) ? {} : { replicaId: raftReplicaId as number }),
       ...(raftAddress.trim() === "" ? {} : { raftAddress: raftAddress.trim() }),
@@ -523,6 +627,48 @@
           <span class="label-text text-xs">Peers (host:port, one per line)</span>
           <textarea class="textarea textarea-bordered textarea-sm font-mono" rows="2" aria-label="Peers" bind:value={raftPeers} disabled={raftSaving}></textarea>
         </label>
+        {#if newDiscoveryMethod === "static"}
+          <label class="form-control md:col-span-2">
+            <span class="label-text text-xs">Static peers (host:port, one per line)</span>
+            <textarea class="textarea textarea-bordered textarea-sm font-mono" rows="2" aria-label="Static peers" bind:value={discStaticPeers} disabled={raftSaving}></textarea>
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "static" || newDiscoveryMethod === "multicast"}
+          <label class="form-control">
+            <span class="label-text text-xs">Shared secret</span>
+            <input type="password" autocomplete="new-password" class="input input-bordered input-sm" aria-label="Shared secret" bind:value={discSecret} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "multicast"}
+          <label class="form-control">
+            <span class="label-text text-xs">Multicast group (host:port)</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="Multicast group" bind:value={discMulticastGroup} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "dns"}
+          <label class="form-control">
+            <span class="label-text text-xs">DNS domain</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="DNS domain" bind:value={discDnsDomain} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">SRV service</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="SRV service" bind:value={discDnsService} disabled={raftSaving} />
+          </label>
+        {/if}
+        {#if newDiscoveryMethod === "token"}
+          <label class="form-control">
+            <span class="label-text text-xs">Discovery endpoint</span>
+            <input class="input input-bordered input-sm font-mono" aria-label="Discovery endpoint" bind:value={discTokenEndpoint} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">Bootstrap token</span>
+            <input type="password" autocomplete="off" class="input input-bordered input-sm" aria-label="Bootstrap token" bind:value={discToken} disabled={raftSaving} />
+          </label>
+          <label class="form-control">
+            <span class="label-text text-xs">Cluster size</span>
+            <input type="number" min="1" class="input input-bordered input-sm" aria-label="Cluster size" bind:value={discTokenClusterSize} disabled={raftSaving} />
+          </label>
+        {/if}
       </div>
       {@render fieldError(raftError)}
       {@render saveButton(raftSaving, raftError !== "", "Save Raft Configuration")}

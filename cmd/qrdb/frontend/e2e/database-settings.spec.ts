@@ -128,7 +128,12 @@ test.describe("Admin - Database settings forms", () => {
     await form.getByLabel("Replica ID").fill("2");
     await form.getByLabel("Raft address").fill("10.0.0.2:7000");
     await form.getByLabel("Discovery").selectOption("static");
-    await form.getByLabel("Peers").fill("10.0.0.1:7000\n10.0.0.3:7000");
+    await form.getByLabel("Peers", { exact: true }).fill("10.0.0.1:7000\n10.0.0.3:7000");
+    // Static discovery is new to this database: Save waits for its peers.
+    await expect(form.getByText("Static discovery needs at least one peer.")).toBeVisible();
+    await expect(form.getByRole("button", { name: "Save Raft Configuration" })).toBeDisabled();
+    await form.getByLabel("Static peers").fill("10.0.0.4:7000");
+    await form.getByLabel("Shared secret").fill("static-secret");
     await form.getByRole("button", { name: "Save Raft Configuration" }).click();
 
     await expect(form.getByTestId("outcome-success")).toHaveText(
@@ -140,6 +145,69 @@ test.describe("Admin - Database settings forms", () => {
       raftAddress: "10.0.0.2:7000",
       peers: ["10.0.0.1:7000", "10.0.0.3:7000"],
       discovery: "static",
+      static: { peers: ["10.0.0.4:7000"], sharedSecret: "static-secret" },
+    });
+  });
+
+  test.describe("with an existing static discovery block", () => {
+    test.use({
+      mockState: {
+        ...stateWithDb,
+        databases: [{
+          name: DB_NAME,
+          backend: "pebble",
+          status: "open",
+          raft: {
+            clusterMode: "distributed",
+            replicaId: 1,
+            raftAddress: "10.0.0.1:7000",
+            discovery: "static",
+            static: { peers: ["10.0.0.2:7000", "10.0.0.3:7000"], sharedSecret: "kept-secret" },
+          },
+        }],
+      },
+    });
+
+    test("updateRaft keeps the unedited static peers and secret", async ({ page }) => {
+      const main = await openDetail(page);
+      const form = main.getByTestId("db-settings-raft");
+      // The method is already configured: the form asks for nothing more.
+      await expect(form.getByLabel("Static peers")).toHaveCount(0);
+      await form.getByLabel("Replica ID").fill("3");
+      await form.getByRole("button", { name: "Save Raft Configuration" }).click();
+
+      await expect(form.getByTestId("outcome-success")).toHaveText(
+        "Raft configuration saved.",
+      );
+      expect((await storedDb(page)).raft).toEqual({
+        clusterMode: "distributed",
+        replicaId: 3,
+        raftAddress: "10.0.0.1:7000",
+        discovery: "static",
+        static: { peers: ["10.0.0.2:7000", "10.0.0.3:7000"], sharedSecret: "kept-secret" },
+      });
+    });
+
+    test("switching to DNS discovery requires its domain and keeps the static block", async ({ page }) => {
+      const main = await openDetail(page);
+      const form = main.getByTestId("db-settings-raft");
+      await form.getByLabel("Discovery").selectOption("dns");
+      await expect(form.getByText("DNS discovery needs a domain.")).toBeVisible();
+      await expect(form.getByRole("button", { name: "Save Raft Configuration" })).toBeDisabled();
+      await form.getByLabel("DNS domain").fill("cluster.example.com");
+      await form.getByRole("button", { name: "Save Raft Configuration" }).click();
+
+      await expect(form.getByTestId("outcome-success")).toHaveText(
+        "Raft configuration saved.",
+      );
+      expect((await storedDb(page)).raft).toEqual({
+        clusterMode: "distributed",
+        replicaId: 1,
+        raftAddress: "10.0.0.1:7000",
+        discovery: "dns",
+        static: { peers: ["10.0.0.2:7000", "10.0.0.3:7000"], sharedSecret: "kept-secret" },
+        dns: { domain: "cluster.example.com" },
+      });
     });
   });
 
