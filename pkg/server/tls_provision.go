@@ -20,9 +20,15 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 )
+
+// autoTLSCATimeout bounds resolving the ceremony CA's certificate for an
+// auto-provisioned listener's ClientCAs.
+const autoTLSCATimeout = 10 * time.Second
 
 // TLSUnavailableError is returned by a transport start path when it cannot
 // obtain a TLS configuration: neither an explicit *tls.Config (WithTLS) nor a
@@ -82,7 +88,65 @@ func (s *Server) resolveTransportTLS(transport string, extraSANs ...string) (*tl
 	if err != nil {
 		return nil, err
 	}
+	// The auto-provisioned leaf is this node's own identity, so the
+	// listener takes the node posture of ListenerClientAuth: it requests a
+	// client certificate and verifies one if given, which a key delivery
+	// (POST /v1/cluster/keydelivery) needs whatever the user-auth posture.
+	clientCAs := s.autoTLSClientCAs()
+	cfg.ClientAuth = ListenerClientAuth(false, clientCAs != nil)
+	cfg.ClientCAs = clientCAs
+	if s.opts.autoTLSClientTrust != nil {
+		s.opts.autoTLSClientTrust.Wire(cfg)
+	}
 	s.logger.Info("auto-provisioned server TLS certificate from CeremonyCA",
 		"transport", transport)
 	return cfg, nil
+}
+
+// ListenerClientAuth is the client-auth mode of a node listener whose
+// operator chose none, shared by cmd/qrdbd's TLS bundle and the embedded
+// server's auto-provisioned configuration.
+//
+// The listener also serves POST /v1/cluster/keydelivery, whose receiver
+// authenticates the sending node by its client certificate whatever the
+// user-auth posture. So whenever the node has a client CA pool and a node
+// certificate of its own (nodeIdentity), the listener requests a client
+// certificate and verifies one if given (VerifyClientCertIfGiven),
+// independent of authEnabled: certificate-less requests still work when
+// auth is off, and a key delivery still carries its sender's certificate.
+// Only a node without that identity falls back to NoClientCert when auth
+// is off.
+func ListenerClientAuth(authEnabled, nodeIdentity bool) tls.ClientAuthType {
+	if authEnabled || nodeIdentity {
+		return tls.VerifyClientCertIfGiven
+	}
+	return tls.NoClientCert
+}
+
+// autoTLSClientCAs is the ClientCAs pool of every auto-provisioned listener:
+// the ceremony CA's certificate plus WithCACertPool's pool, built once so
+// every transport's configuration shares one pool (a TLSClientTrust keys its
+// widening on that pool). Nil when neither yields a certificate.
+func (s *Server) autoTLSClientCAs() *x509.CertPool {
+	s.autoClientCAs.once.Do(func() {
+		pool := x509.NewCertPool()
+		if s.opts.caCertPool != nil {
+			pool = s.opts.caCertPool.Clone()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), autoTLSCATimeout)
+		defer cancel()
+		caCert, err := s.opts.ceremonyCA.CACertificate(ctx)
+		switch {
+		case err != nil:
+			s.logger.Warn("auto-provisioned TLS: ceremony CA certificate unavailable for client verification",
+				"error", err)
+		case caCert != nil:
+			pool.AddCert(caCert)
+		}
+		if caCert == nil && s.opts.caCertPool == nil {
+			return
+		}
+		s.autoClientCAs.pool = pool
+	})
+	return s.autoClientCAs.pool
 }

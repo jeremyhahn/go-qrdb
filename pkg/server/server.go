@@ -149,6 +149,13 @@ var newSQLServiceFn buildSQLServiceFn
 // based on the protocol configuration and manages their lifecycles with
 // rollback on startup failure.
 type Server struct {
+	// autoClientCAs is the one ClientCAs pool every auto-provisioned
+	// listener configuration shares; see autoTLSClientCAs.
+	autoClientCAs struct {
+		once sync.Once
+		pool *x509.CertPool
+	}
+
 	// sealedListener is the sealed-window listener probe over the bare node
 	// barrier, built once in New so its Admission is shared by all of the
 	// server's transports. The boot-time listener gates every request with
@@ -221,11 +228,15 @@ type serverOptions struct {
 	// peerChainVerifier verifies a client certificate tlsConfig accepted
 	// without building a chain; every TLS listener binds it to every call.
 	peerChainVerifier auth.IssuerVerifier
-	gatherer          prometheus.Gatherer
-	resolver          rest.LeaderAdminResolver
-	host              rest.Host
-	kvSvc             service.KVServicer
-	adminSvc          service.AdminServicer
+	// autoTLSClientTrust is wired onto every listener configuration the
+	// server auto-provisions from the ceremony CA; see
+	// WithAutoTLSClientTrust.
+	autoTLSClientTrust TLSClientTrust
+	gatherer           prometheus.Gatherer
+	resolver           rest.LeaderAdminResolver
+	host               rest.Host
+	kvSvc              service.KVServicer
+	adminSvc           service.AdminServicer
 	// modules are capability modules a higher layer (e.g. go-xkms) registers via
 	// WithModule. Each is exposed across every transport by the start* methods.
 	modules []apimodule.ServiceModule
@@ -609,6 +620,24 @@ func WithCACertPool(pool *x509.CertPool) ServerOption {
 func WithPeerChainVerifier(v auth.IssuerVerifier) ServerOption {
 	return func(o *serverOptions) {
 		o.peerChainVerifier = v
+	}
+}
+
+// TLSClientTrust is a dynamic client-certificate trust pool that wires
+// itself onto a listener's *tls.Config (pkg/clienttrust.Pool).
+type TLSClientTrust interface {
+	Wire(cfg *tls.Config)
+}
+
+// WithAutoTLSClientTrust sets the client trust pool wired onto every
+// listener configuration the server auto-provisions from WithCeremonyCA
+// when no WithTLS configuration is given: the same pool an embedder wires
+// onto its own WithTLS configuration, so an auto-provisioned listener
+// trusts the same client certificates. Pair it with WithPeerChainVerifier
+// on the same pool.
+func WithAutoTLSClientTrust(t TLSClientTrust) ServerOption {
+	return func(o *serverOptions) {
+		o.autoTLSClientTrust = t
 	}
 }
 

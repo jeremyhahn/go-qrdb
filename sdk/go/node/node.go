@@ -4391,11 +4391,18 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// layer would widen ClientCAs from one pool's state while the
 	// authentication layer enforced the binding from another's. A node
 	// with no explicit WithTLS (relying on CeremonyCA auto-provisioning
-	// instead) has nothing to wire this onto here; that composition's
-	// listeners keep whatever trust posture ceremony.ServerTLSConfig and
-	// the auth middleware already give them.
-	if tlsCfg := server.ResolveTLSConfig(allOpts...); tlsCfg != nil {
+	// instead) hands the pool to the server, which wires it onto every
+	// configuration it auto-provisions (server.WithAutoTLSClientTrust), so
+	// that listener requests and verifies a node's client certificate the
+	// same way -- a key delivery from the leader needs it.
+	tlsCfg := server.ResolveTLSConfig(allOpts...)
+	switch {
+	case tlsCfg != nil:
 		pool.Wire(tlsCfg)
+	case server.ResolveCryptoOptions(allOpts...).CeremonyCA != nil:
+		allOpts = append(allOpts, server.WithAutoTLSClientTrust(pool))
+	}
+	if tlsCfg != nil || server.ResolveCryptoOptions(allOpts...).CeremonyCA != nil {
 		// The pool the configuration now verifies through is the one every
 		// listener binds to every call, independent of authentication, so
 		// a share claim on a re-sealed node binds only a certificate it

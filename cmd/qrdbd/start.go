@@ -1193,22 +1193,16 @@ func applyTLSClientAuth(f *startFlags, bundle *TLSBundle) {
 }
 
 // defaultListenerClientAuth returns the client-auth mode and ClientCAs
-// pool for the shared listener when the operator chose no mode.
-//
-// The listener also serves POST /v1/cluster/keydelivery, whose receiver
-// authenticates the sending node by its client certificate whatever the
-// user-auth posture. So whenever the node has a cluster CA and a node
-// identity of its own, the listener requests a client certificate and
-// verifies one if given (VerifyClientCertIfGiven against the client-auth
-// pool), independent of auth.enabled: user-facing requests without a
-// certificate still work when auth is off, and a key delivery still
-// carries its sender's certificate. Only a bundle without a CA pool or
-// leaf certificate falls back to NoClientCert when auth is off.
+// pool for the shared listener when the operator chose no mode: the node
+// posture of server.ListenerClientAuth, the bundle's cluster CA pool and
+// leaf certificate being the node identity. A verifying mode verifies
+// against the client-auth pool.
 func defaultListenerClientAuth(authEnabled bool, bundle *TLSBundle) (tls.ClientAuthType, *x509.CertPool) {
-	if authEnabled || (bundle.ClientCACertPool != nil && len(bundle.CertPEM) > 0) {
-		return tls.VerifyClientCertIfGiven, bundle.ClientCACertPool
+	mode := server.ListenerClientAuth(authEnabled, bundle.ClientCACertPool != nil && len(bundle.CertPEM) > 0)
+	if mode == tls.NoClientCert {
+		return mode, bundle.TLSConfig.ClientCAs
 	}
-	return tls.NoClientCert, bundle.TLSConfig.ClientCAs
+	return mode, bundle.ClientCACertPool
 }
 
 // newSecureAllocator, setSecureAllocator, processSecureAllocator and
