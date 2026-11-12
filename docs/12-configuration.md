@@ -473,7 +473,10 @@ The node's defaults for a new database
 ([databases architecture](databases/architecture.md#what-stays-node-level)).
 Each is filled into a database's record at creation when the caller left
 that field empty, and is never consulted again for that database: changing
-a default affects only databases created afterwards.
+a default affects only databases created afterwards. The record stores the
+values resolved at creation: the backend (from `backend`, else the node's
+run mode), and for a raft database a `raft` block with its cluster mode,
+`state_storage` and issued shard ID, added when the request carried none.
 
 ```yaml
 database_defaults:
@@ -488,8 +491,8 @@ database_defaults:
 |----------------------|--------|---------|----------|-------------|
 | `backend`            | string | `""`    | no       | Backend of a database created without one; empty selects the run mode's default (raft in raft mode, pebble in standalone mode) |
 | `replicas`           | int    | `0`     | no       | Replication factor of a raft database created without one; zero selects one |
-| `raft.clusterMode`   | string | `""`    | no       | Cluster mode filled into a raft database's `raft` block when it names none |
-| `raft.state_storage` | string | `""`    | no       | State storage of a raft database's group; empty selects `pebble` |
+| `raft.clusterMode`   | string | `""`    | no       | Cluster mode recorded in a raft database's `raft` block when it names none; empty records `none` in a block the request did not carry |
+| `raft.state_storage` | string | `""`    | no       | State storage recorded in a raft database's `raft` block (`raft.state_storage`) when it names none; empty selects `pebble` at binding |
 
 **Validation rules:**
 
