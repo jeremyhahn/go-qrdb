@@ -49,9 +49,47 @@
           { name: "Leases", enabled: capabilities.lease },
           { name: "Time Series", enabled: capabilities.timeSeries },
           { name: "Vectors", enabled: capabilities.vector },
+          { name: "Index", enabled: capabilities.index },
         ]
       : [],
   );
+
+  /** Per-shard detail from status.shards, typed defensively (the SDK types it as unknown). */
+  type ShardView =
+    | { kind: "empty" }
+    | { kind: "rows"; columns: string[]; rows: Record<string, unknown>[] }
+    | { kind: "json"; text: string };
+
+  function isRecord(v: unknown): v is Record<string, unknown> {
+    return typeof v === "object" && v !== null && !Array.isArray(v);
+  }
+
+  function shardView(shards: unknown): ShardView {
+    if (shards === null || shards === undefined) return { kind: "empty" };
+    if (Array.isArray(shards)) {
+      if (shards.length === 0) return { kind: "empty" };
+      if (shards.every(isRecord)) {
+        const columns: string[] = [];
+        for (const row of shards) {
+          for (const key of Object.keys(row)) {
+            if (!columns.includes(key)) columns.push(key);
+          }
+        }
+        return { kind: "rows", columns, rows: shards };
+      }
+    } else if (isRecord(shards) && Object.keys(shards).length === 0) {
+      return { kind: "empty" };
+    }
+    return { kind: "json", text: JSON.stringify(shards, null, 2) };
+  }
+
+  function cellText(v: unknown): string {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+
+  let shardsView = $derived<ShardView>(shardView(status?.shards));
 
   /**
    * Fetches health, status, and capabilities from the admin API.
@@ -225,6 +263,39 @@
             </span>
           {/each}
         </div>
+      </div>
+    </div>
+
+    <!-- Shards card -->
+    <div class="card bg-base-200 shadow" data-testid="dashboard-shards">
+      <div class="card-body p-5">
+        <h2 class="card-title text-lg">Shards</h2>
+        {#if shardsView.kind === "empty"}
+          <p class="text-base-content/50 py-4 text-sm" data-testid="dashboard-shards-empty">none</p>
+        {:else if shardsView.kind === "rows"}
+          <div class="overflow-x-auto">
+            <table class="table table-sm" data-testid="dashboard-shards-table">
+              <thead>
+                <tr>
+                  {#each shardsView.columns as col (col)}
+                    <th>{col}</th>
+                  {/each}
+                </tr>
+              </thead>
+              <tbody>
+                {#each shardsView.rows as row, i (i)}
+                  <tr>
+                    {#each shardsView.columns as col (col)}
+                      <td class="font-mono text-xs">{cellText(row[col])}</td>
+                    {/each}
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {:else}
+          <pre class="bg-base-300 rounded p-3 text-xs overflow-x-auto" data-testid="dashboard-shards-json">{shardsView.text}</pre>
+        {/if}
       </div>
     </div>
 
