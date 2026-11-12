@@ -2648,7 +2648,6 @@ func runStart(f *startFlags) (err error) {
 				Barriers:      barrierRegistry,
 				DedicatedRaft: raftBackendReg != nil,
 				RaftAddr:      f.raftAddress,
-				PeerAdmin:     registry,
 				TrustDomain:   f.clusterTrustDomain,
 				CACertPool:    bundle.CACertPool,
 				Identity:      nodeIdentity,
