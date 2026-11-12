@@ -2519,6 +2519,28 @@ export interface MintJoinTokenResponse {
     readonly expiresAt: string;
 }
 
+/** One sample of a Prometheus metric family (text exposition format). */
+export interface MetricSample {
+    /** Sample name; differs from the family name for _bucket/_sum/_count etc. */
+    readonly name: string;
+    /** Label set, with escapes (\\, \", \n) already decoded. */
+    readonly labels: Record<string, string>;
+    /** Sample value; +Inf, -Inf and NaN are decoded to their number forms. */
+    readonly value: number;
+}
+
+/** A Prometheus metric family, as returned by GET /metrics. */
+export interface MetricFamily {
+    /** Family name. */
+    readonly name: string;
+    /** HELP text, unescaped; empty when the exposition has none. */
+    readonly help: string;
+    /** TYPE: counter, gauge, histogram, summary or untyped. */
+    readonly type: string;
+    /** Samples belonging to the family, in exposition order. */
+    readonly samples: MetricSample[];
+}
+
 /**
  * Raft consensus configuration as a request sets it on a database. There is no
  * shard ID: the cluster issues it when the database is created, it never

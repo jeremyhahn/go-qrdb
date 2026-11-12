@@ -104,6 +104,7 @@ import type {
     UpdateDatabaseCompactionRequest,
     NodeCompactionBody,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -277,6 +278,7 @@ import {
     TransportError,
 } from './errors.js';
 import type { AuditFilter, AuditPage } from './audit.js';
+import { parsePrometheusText } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -776,6 +778,10 @@ export class RestClient implements Client {
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 this.ensureConnected();
                 return this.fetchJSON<CapabilitiesResponse>('/capabilities');
+            },
+            metrics: async (): Promise<MetricFamily[]> => {
+                this.ensureConnected();
+                return parsePrometheusText(await this.fetchText('/metrics'));
             },
         };
     }

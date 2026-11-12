@@ -25,6 +25,7 @@ export { deepSnakeToCamel, deepCamelToSnake, snakeToCamelKey, camelToSnakeKey } 
 
 // Transport implementations
 export { RestClient } from './rest.js';
+export { parsePrometheusText } from './metrics.js';
 export { WailsClient } from './wails.js';
 
 // Client interfaces
@@ -115,6 +116,8 @@ export type {
     OKResponse,
     ErrorResponse,
     MintJoinTokenResponse,
+    MetricFamily,
+    MetricSample,
 
     // KV
     KVListResponse,

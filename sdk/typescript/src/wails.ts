@@ -88,6 +88,7 @@ import type {
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -539,6 +540,10 @@ export class WailsClient implements Client {
             },
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 return b.Capabilities() as Promise<CapabilitiesResponse>;
+            },
+            metrics: async (): Promise<MetricFamily[]> => {
+                // The desktop binding exposes no Prometheus gatherer.
+                throw new NotImplementedError('admin.metrics');
             },
         };
     }
