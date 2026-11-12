@@ -77,7 +77,7 @@ func TestInsufficientNodesError_Error(t *testing.T) {
 
 // TestStoreError_Error covers both the tenant/database and tenant-only renders.
 func TestStoreError_Error(t *testing.T) {
-	withDB := &StoreError{TenantID: "acme", Database: "orders", Op: "put", Err: errBackend}
+	withDB := &StoreError{TenantID: "acme", DatabaseID: "orders", Op: "put", Err: errBackend}
 	if got, want := withDB.Error(), "placement: put acme/orders: backend boom"; got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
@@ -155,14 +155,14 @@ func TestStore_GetDeleteValidation(t *testing.T) {
 	if _, err := s.Get(ctx, "", "db"); !errors.Is(err, ErrEmptyTenant) {
 		t.Errorf("Get empty tenant = %v, want ErrEmptyTenant", err)
 	}
-	if _, err := s.Get(ctx, "t", ""); !errors.Is(err, ErrEmptyDatabase) {
-		t.Errorf("Get empty database = %v, want ErrEmptyDatabase", err)
+	if _, err := s.Get(ctx, "t", ""); !errors.Is(err, ErrEmptyDatabaseID) {
+		t.Errorf("Get empty database = %v, want ErrEmptyDatabaseID", err)
 	}
 	if err := s.Delete(ctx, "", "db"); !errors.Is(err, ErrEmptyTenant) {
 		t.Errorf("Delete empty tenant = %v, want ErrEmptyTenant", err)
 	}
-	if err := s.Delete(ctx, "t", ""); !errors.Is(err, ErrEmptyDatabase) {
-		t.Errorf("Delete empty database = %v, want ErrEmptyDatabase", err)
+	if err := s.Delete(ctx, "t", ""); !errors.Is(err, ErrEmptyDatabaseID) {
+		t.Errorf("Delete empty database = %v, want ErrEmptyDatabaseID", err)
 	}
 	if _, err := s.ListForTenant(ctx, ""); !errors.Is(err, ErrEmptyTenant) {
 		t.Errorf("ListForTenant empty tenant = %v, want ErrEmptyTenant", err)
@@ -255,9 +255,10 @@ func TestTranslateEvent_UndecodableEvents(t *testing.T) {
 // TestTranslateEvent_DeleteFromKey recovers identity from the key when no prior
 // value is supplied.
 func TestTranslateEvent_DeleteFromKey(t *testing.T) {
-	ev, ok := translateEvent(WatchEvent{Deleted: true, Key: placementKey("acme", "orders")})
-	if !ok || ev.Type != EventDelete || ev.TenantID != "acme" || ev.Database != "orders" {
-		t.Fatalf("translateEvent = (%+v,%v), want EventDelete acme/orders", ev, ok)
+	const id = "9f1c2e7a4b5d6c8e0a1b2c3d4e5f6a7b"
+	ev, ok := translateEvent(WatchEvent{Deleted: true, Key: placementKey("acme", id)})
+	if !ok || ev.Type != EventDelete || ev.TenantID != "acme" || ev.DatabaseID != id || ev.Database != "" {
+		t.Fatalf("translateEvent = (%+v,%v), want EventDelete acme/%s with no name", ev, ok, id)
 	}
 }
 
