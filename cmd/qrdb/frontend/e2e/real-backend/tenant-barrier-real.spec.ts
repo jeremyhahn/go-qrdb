@@ -45,6 +45,8 @@ interface Daemon {
 
 let daemon: Daemon;
 
+// The decoded body of many response shapes, read field by field by the tests.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function https(method: string, url: string, body?: unknown): Promise<{ status: number; json: any }> {
   const mod = await import("https");
   const data = body !== undefined ? JSON.stringify(body) : undefined;
@@ -57,7 +59,7 @@ async function https(method: string, url: string, body?: unknown): Promise<{ sta
         res.on("data", (c: Buffer) => chunks.push(c));
         res.on("end", () => {
           const text = Buffer.concat(chunks).toString();
-          let parsed: unknown = null;
+          let parsed: unknown;
           try {
             parsed = text ? JSON.parse(text) : null;
           } catch {
