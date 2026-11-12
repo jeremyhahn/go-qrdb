@@ -120,6 +120,15 @@ test("a client certificate is issued, listed and revoked against the live backen
   const serial = (await row.locator("td").first().innerText()).trim();
   expect(serial).not.toBe("");
 
+  // --- The row detail shows the server's record. ----------------------------
+  await row.getByRole("button", { name: "Details", exact: true }).click();
+  const detail = page.getByTestId("cert-detail");
+  const field = (name: string) =>
+    detail.locator("dt", { hasText: name }).locator("xpath=following-sibling::dd[1]");
+  await expect(field("Serial")).toHaveText(serial);
+  await expect(field("Tenant")).toHaveText("system");
+  await expect(field("Validity remaining")).toHaveText(/^36[45] days$/);
+
   // --- Revoke by serial. ---------------------------------------------------
   await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
   await page.locator("input[placeholder='e.g. 1a2b3c4d...']").fill(serial);
