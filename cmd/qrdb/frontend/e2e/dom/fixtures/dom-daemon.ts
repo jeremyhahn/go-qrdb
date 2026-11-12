@@ -191,6 +191,7 @@ export async function daemonRequest(
   path: string,
   body?: unknown,
   cred?: ClientCredential,
+  extraHeaders: Record<string, string> = {},
 ): Promise<{ status: number; json: unknown; text: string }> {
   const https = await import("https");
   return new Promise((resolve, reject) => {
@@ -201,9 +202,10 @@ export async function daemonRequest(
         method,
         rejectUnauthorized: false,
         ...(cred !== undefined ? { cert: cred.certPem, key: cred.keyPem } : {}),
-        headers: payload
-          ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
-          : {},
+        headers: {
+          ...extraHeaders,
+          ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+        },
       },
       (res) => {
         let text = "";
