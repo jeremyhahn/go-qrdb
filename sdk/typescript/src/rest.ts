@@ -492,6 +492,7 @@ const DATA_PLANE_PREFIXES: readonly string[] = [
     '/index',
     '/ts',
     '/vector',
+    '/vlog',
 ];
 
 /**
