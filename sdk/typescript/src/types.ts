@@ -780,7 +780,7 @@ export interface TSQueryRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Optional tag filters. */
     readonly tags?: readonly TSTag[];
@@ -817,7 +817,7 @@ export interface TSAggregateRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Aggregation function to apply. */
     readonly function: AggFunc;
@@ -847,7 +847,7 @@ export interface TSRichQueryRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Optional tag filters. */
     readonly tags?: readonly TSTag[];
@@ -895,7 +895,7 @@ export interface TSDeleteRequest {
     readonly tags?: readonly TSTag[];
     /** Start of the time range in nanoseconds (inclusive, 0 for all). */
     readonly startNs?: number;
-    /** End of the time range in nanoseconds (exclusive, 0 for all). */
+    /** End of the time range in nanoseconds (inclusive, 0 for all). */
     readonly endNs?: number;
 }
 

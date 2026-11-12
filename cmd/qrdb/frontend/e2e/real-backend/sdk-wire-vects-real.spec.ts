@@ -215,10 +215,12 @@ test.describe("SDK wire: time-series (real backend)", () => {
     const desc = await t.query({ metric, startNs: base, endNs: base + 10_000, limit: 2, descending: true });
     expect(desc.points.map((p) => p.value)).toEqual([4.5, 3.5]);
 
-    // The server's end bound is inclusive (the SDK doc says exclusive), so
-    // the window ends between two points.
     const window = await t.query({ metric, startNs: base + 1000, endNs: base + 2500 });
     expect(window.points.map((p) => p.value)).toEqual([2.5, 3.5]);
+    // Both bounds are inclusive: a point at exactly endNs is returned.
+    const exact = await t.query({ metric, startNs: base + 1000, endNs: base + 2000 });
+    expect(exact.points.map((p) => p.value)).toEqual([2.5, 3.5]);
+    expect(exact.points[exact.points.length - 1].timestampNs).toBe(base + 2000);
 
     const metrics = await t.listMetrics({ prefix: metric, limit: 5 });
     expect(metrics.metrics).toEqual([metric]);
