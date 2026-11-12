@@ -19,7 +19,7 @@
   import type { Client } from "@qrdb/sdk";
   import { Sun, Moon } from "lucide-svelte";
   import { themeStore, toggleTheme } from "$stores/theme.svelte.ts";
-  import { connManagerStore } from "$stores/connection-manager.svelte.ts";
+  import { connManagerStore, disconnectProfile } from "$stores/connection-manager.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
   let { client }: { client: Client } = $props();
@@ -32,10 +32,19 @@
   let versionLoading: boolean = $state(true);
 
   /**
-   * Connection status as reported by the SDK client (ConnectionClient.isConnected).
-   * Re-read after every action that can change it.
+   * Transport status as reported by the SDK client (ConnectionClient.isConnected),
+   * re-read after every action that can change it.
    */
-  let isConnected: boolean = $state(false);
+  let clientConnected: boolean = $state(false);
+
+  /**
+   * Connected when the client transport is up and the active profile has not
+   * been disconnected through the connection manager.
+   */
+  const isConnected = $derived(
+    clientConnected &&
+      connManagerStore.states.get(connManagerStore.activeProfileId)?.status !== 'disconnected',
+  );
   let disconnecting: boolean = $state(false);
   let disconnectError: string | null = $state(null);
 
@@ -91,9 +100,9 @@
   /** Reads the live connection status from the SDK client. */
   function refreshConnected(): void {
     try {
-      isConnected = client.connection.isConnected();
+      clientConnected = client.connection.isConnected();
     } catch {
-      isConnected = false;
+      clientConnected = false;
     }
   }
 
@@ -116,22 +125,17 @@
   }
 
   /**
-   * Closes the client connection, then marks the active profile disconnected
-   * so the app returns to the connection manager (as disconnectProfile does).
+   * Closes the client connection, then disconnects the active profile through
+   * the connection manager (disconnectProfile), which returns the app to the
+   * connection manager.
    */
   async function handleDisconnect(): Promise<void> {
     disconnecting = true;
     disconnectError = null;
     try {
       await client.connection.disconnect();
+      await disconnectProfile(client, connManagerStore.activeProfileId);
       refreshConnected();
-      const profileId = connManagerStore.activeProfileId;
-      const profile = connManagerStore.profiles.find((p) => p.id === profileId);
-      connManagerStore.states = new Map(connManagerStore.states).set(profileId, {
-        profileId,
-        status: 'disconnected',
-        isEmbedded: profile?.type === 'embedded',
-      });
     } catch (err: unknown) {
       disconnectError = err instanceof Error ? err.message : String(err);
       refreshConnected();
