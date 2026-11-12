@@ -613,7 +613,11 @@ test on arm64. Two steps close that gap:
   `sdk/go/gorm/conformance`) are out: no release test target runs them. It
   needs no arm64 host. It is not wired into CI on every pull request: the
   workflows' routing is Software's (DS-8237), so until a job runs it, a
-  change touching arch-specific code runs it by hand.
+  change touching arch-specific code runs it by hand. Its own behaviour is
+  pinned by `make test-test-cross` (in the lint gates, so CI runs it): a
+  recording stub `GO` checks the three modules, both variants, their tags
+  and environment, `-exec /bin/true`, the refusal of a missing or malformed
+  `PLATFORM`, and that a failed compilation fails make and stops the rest.
 - Once before the RC, the integration suite runs on a linux/arm64 host, from
   a clean checkout of the RC candidate commit:
 

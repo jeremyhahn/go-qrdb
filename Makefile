@@ -731,6 +731,8 @@ release-cross:
 #                      MySQL engine needs, then with integration (the SDK's
 #                      integration-tagged tests);
 #   test/clusterproof  MIN_TAGS,clusterproof as test-clusterproof runs it.
+# test-test-cross (below, in LINT_GATES) pins this module selection, the
+# FIPS matrix, the tags and environment and the failure propagation.
 # The other nested modules are out: test/performance/* and test/vanguardprobe
 # are benchmarks and an upstream probe run by hand, and
 # sdk/go/gorm/conformance is the GORM conformance harness; no release test
@@ -755,6 +757,14 @@ test-cross:
 			$(GO) test -count=1 -vet=off -exec /bin/true -tags "$(MIN_TAGS),clusterproof" ./...); \
 	done
 	@echo "==> test-cross $(PLATFORM): root, $(SDK_DIR) and test/clusterproof test binaries compiled, plain and FIPS"
+
+# test-test-cross is test-cross's regression test (in LINT_GATES): a recording
+# stub GO checks the three modules, both variants, their tags and environment,
+# -exec /bin/true, the PLATFORM refusal and that a failed compilation fails
+# make. It compiles nothing.
+.PHONY: test-test-cross
+test-test-cross:
+	@./scripts/test-cross_test.sh
 
 # release-artifacts builds every RELEASE_PLATFORMS entry into a clean
 # $(RELEASE_DIR) and writes SHA256SUMS over the result; release.yml's publish
@@ -2649,7 +2659,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
-	test-release-alpha fmt vet test-secure-analyzer vet-sdk lint-sdk
+	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
 .PHONY: lint-gates
