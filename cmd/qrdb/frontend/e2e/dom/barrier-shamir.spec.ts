@@ -5,15 +5,16 @@
  * barrier-shamir.spec.ts (real-backend DOM tier)
  *
  * Drives the real UI against a live Shamir-sealed qrdbd to guard:
- *   - The init wizard requires the share holders to be enrolled (count equal
- *     to total_shares) BEFORE the Initialize button is enabled. The admin
- *     enrols each holder from a username, a role and a CSR generated
- *     offline; the server returns the issued certificate, which the admin
- *     hands to the holder out of band.
- *   - After initialization, the completion step shows the Shamir Barrier
- *     Initialized heading with the holder claim-status panel — no share is
- *     ever displayed in the UI: each holder claims its sealed envelope with
- *     its own keys from the qrdb CLI or the desktop app.
+ *   - The init wizard collects every share holder (count equal to
+ *     total_shares) locally before its Next is enabled. The admin enters
+ *     each holder from a username, a role and a CSR generated offline; the
+ *     one ceremony.initialize call (with the SO PIN and user PIN) enrols
+ *     them all and returns each issued certificate, which the admin hands
+ *     to the holder out of band.
+ *   - After initialization, the completion step shows each holder's
+ *     certificate and the claim instructions — no share is ever displayed
+ *     in the UI: each holder claims its sealed envelope with its own keys
+ *     from the qrdb CLI or the desktop app.
  *   - The "Open Database" button is immediately available.
  *   - Seal Manager shows the Share Holders panel and points a seal to the
  *     holder quorum, with the real M-of-N counts.
@@ -23,7 +24,7 @@
  * signing path. The private keys are discarded after the test.
  */
 
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { execSync } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -85,96 +86,97 @@ test.afterEach(async () => {
 // Tests
 // ---------------------------------------------------------------------------
 
-test("shamir: wizard officer-registration step gates Initialize button until all officers registered", async ({ page }) => {
+const SO_PIN = "dom-so-pin-1";
+const USER_PIN = "dom-user-pin-1";
+
+/** Opens the wizard and advances past the barrier step in Shamir mode. */
+async function toOfficersStep(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
   await expect(page.getByRole("heading", { name: "Server Initialization" })).toBeVisible({ timeout: 15_000 });
 
   // Choose Shamir (wizard defaults to 3-of-5).
   await page.getByText("Shamir (M-of-N)").click();
   await page.getByRole("button", { name: "Next" }).click();
-
-  // Should be on the Officers step now.
   await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
+}
 
-  // Initialize button must be disabled — no officers registered yet.
-  await expect(page.getByTestId("initialize-btn")).toBeDisabled();
+/**
+ * Fills holder `i`'s form with a fresh CSR. Holders are collected locally:
+ * the one ceremony.initialize call enrols them all.
+ */
+async function fillHolder(page: Page, i: number, csrDirs: string[]): Promise<void> {
+  const { csrPem, keyDir } = generateCSR(`officer-${i + 1}`);
+  csrDirs.push(keyDir);
+  await page.getByTestId(`officer-username-${i}`).fill(`officer-${i + 1}`);
+  await page.getByTestId(`officer-csr-${i}`).fill(csrPem);
+}
 
-  // Registration count badge shows 0/5.
-  await expect(page.getByTestId("officer-registration-count")).toContainText("0 / 5");
-
-  // Generate and register 5 officers.
+/**
+ * Fills every holder, then completes the admin step (generated credential,
+ * SO PIN, user PIN) and initializes.
+ */
+async function initializeShamir(page: Page): Promise<void> {
+  await toOfficersStep(page);
   const csrDirs: string[] = [];
   try {
     for (let i = 0; i < TOTAL; i++) {
-      const { csrPem, keyDir } = generateCSR(`officer-${i + 1}`);
-      csrDirs.push(keyDir);
-
-      await page.getByTestId(`officer-username-${i}`).fill(`officer-${i + 1}`);
-      await page.getByTestId(`officer-csr-${i}`).fill(csrPem);
-      await page.getByTestId(`register-officer-btn-${i}`).click();
-
-      // Wait for the certificate to appear.
-      await expect(page.getByTestId(`officer-cert-${i}`)).toBeVisible({ timeout: 15_000 });
-
-      // Verify count badge increments.
-      await expect(page.getByTestId("officer-registration-count")).toContainText(`${i + 1} / ${TOTAL}`);
+      await fillHolder(page, i, csrDirs);
     }
-
-    // Initialize button must now be enabled.
-    await expect(page.getByTestId("initialize-btn")).toBeEnabled({ timeout: 5_000 });
   } finally {
     for (const dir of csrDirs) {
       rmSync(dir, { recursive: true, force: true });
     }
   }
+  await page.getByTestId("officers-next-btn").click();
+
+  await expect(page.getByRole("heading", { name: "Bootstrap Admin Credential" })).toBeVisible({ timeout: 10_000 });
+  await page.getByTestId("admin-mode-generate").check();
+  await page.getByTestId("so-pin-input").fill(SO_PIN);
+  await page.getByTestId("so-pin-confirm-input").fill(SO_PIN);
+  await page.getByTestId("user-pin-input").fill(USER_PIN);
+  await page.getByTestId("user-pin-confirm-input").fill(USER_PIN);
+  await page.getByTestId("admin-next-btn").click();
+
+  await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: 30_000 });
+}
+
+test("shamir: wizard holder step gates Next until every holder is filled in", async ({ page }) => {
+  await toOfficersStep(page);
+
+  // Next is disabled: no holder filled in yet; the count reads 0/5.
+  const next = page.getByTestId("officers-next-btn");
+  await expect(next).toBeDisabled();
+  await expect(next).toContainText(`(0/${TOTAL})`);
+
+  const csrDirs: string[] = [];
+  try {
+    for (let i = 0; i < TOTAL; i++) {
+      await fillHolder(page, i, csrDirs);
+      if (i < TOTAL - 1) {
+        await expect(next).toContainText(`(${i + 1}/${TOTAL})`);
+        await expect(next).toBeDisabled();
+      }
+    }
+  } finally {
+    for (const dir of csrDirs) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Every holder filled in: Next is enabled.
+  await expect(next).toBeEnabled({ timeout: 5_000 });
 });
 
-test("shamir: completing officer registration and initializing shows enrollment panel", async ({ page }) => {
-  await page.goto(UI_BASE_URL);
-  await expect(page.getByRole("heading", { name: "Server Initialization" })).toBeVisible({ timeout: 15_000 });
-
-  // Choose Shamir (wizard defaults to 3-of-5).
-  await page.getByText("Shamir (M-of-N)").click();
-  await page.getByRole("button", { name: "Next" }).click();
-
-  // Officers step.
-  await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
-
-  const csrDirs: string[] = [];
-  try {
-    for (let i = 0; i < TOTAL; i++) {
-      const { csrPem, keyDir } = generateCSR(`officer-${i + 1}`);
-      csrDirs.push(keyDir);
-      await page.getByTestId(`officer-username-${i}`).fill(`officer-${i + 1}`);
-      await page.getByTestId(`officer-csr-${i}`).fill(csrPem);
-      await page.getByTestId(`register-officer-btn-${i}`).click();
-      await expect(page.getByTestId(`officer-cert-${i}`)).toBeVisible({ timeout: 15_000 });
-    }
-  } finally {
-    for (const dir of csrDirs) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  // Click Initialize.
-  await page.getByTestId("initialize-btn").click();
-
-  // Completion step: "Shamir Barrier Initialized" heading.
-  await expect(
-    page.getByRole("heading", { name: "Shamir Barrier Initialized" }),
-  ).toBeVisible({ timeout: 20_000 });
-
-  // NO root token at init time (INV-1): root-token generation requires a
-  // quorum of Shamir shares, which officers only obtain post-claim. The
-  // wizard renders the token block only when a token exists.
-  await expect(page.getByTestId("root-token")).toHaveCount(0);
+test("shamir: initializing shows each holder's certificate and the claim instructions", async ({ page }) => {
+  await initializeShamir(page);
 
   // NO individual share elements anywhere in the page.
-  const shareElements = page.getByTestId("shamir-share");
-  await expect(shareElements).toHaveCount(0);
+  await expect(page.getByTestId("shamir-share")).toHaveCount(0);
 
-  // Holder claim-status table is rendered.
-  await expect(page.getByTestId("officer-claim-status-table")).toBeVisible();
+  // Each holder's CA-issued certificate is shown.
+  for (let i = 0; i < TOTAL; i++) {
+    await expect(page.getByTestId(`holder-cert-officer-${i + 1}`)).toHaveValue(/BEGIN CERTIFICATE/);
+  }
 
   // The alert tells holders to claim with the CLI or the desktop app.
   await expect(page.getByRole("alert").getByText(/qrdb barrier officer claim/)).toBeVisible();
@@ -191,33 +193,7 @@ test("shamir: completing officer registration and initializing shows enrollment 
 });
 
 test("shamir: after init, Seal Manager shows the Share Holders panel and the holder quorum", async ({ page }) => {
-  await page.goto(UI_BASE_URL);
-  await expect(page.getByRole("heading", { name: "Server Initialization" })).toBeVisible({ timeout: 15_000 });
-
-  await page.getByText("Shamir (M-of-N)").click();
-  await page.getByRole("button", { name: "Next" }).click();
-  await expect(page.getByRole("heading", { name: "Enrol Share Holders" })).toBeVisible({ timeout: 10_000 });
-
-  const csrDirs: string[] = [];
-  try {
-    for (let i = 0; i < TOTAL; i++) {
-      const { csrPem, keyDir } = generateCSR(`officer-${i + 1}`);
-      csrDirs.push(keyDir);
-      await page.getByTestId(`officer-username-${i}`).fill(`officer-${i + 1}`);
-      await page.getByTestId(`officer-csr-${i}`).fill(csrPem);
-      await page.getByTestId(`register-officer-btn-${i}`).click();
-      await expect(page.getByTestId(`officer-cert-${i}`)).toBeVisible({ timeout: 15_000 });
-    }
-  } finally {
-    for (const dir of csrDirs) {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-
-  await page.getByTestId("initialize-btn").click();
-  await expect(
-    page.getByRole("heading", { name: "Shamir Barrier Initialized" }),
-  ).toBeVisible({ timeout: 20_000 });
+  await initializeShamir(page);
 
   const openBtn = page.getByTestId("open-database-btn");
   await expect(openBtn).toBeEnabled();
