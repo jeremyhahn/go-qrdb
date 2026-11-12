@@ -15,6 +15,7 @@
 package server
 
 import (
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -51,6 +52,11 @@ type seamOptions struct {
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
+	webTransportPath        string
+	webTransportHandler     rest.WebTransportHandler
+	// webTransportSet records that WithWebTransportHandler was supplied, so
+	// an explicit ("", nil) still reaches REST's validation.
+	webTransportSet bool
 }
 
 // WithBackupSink sets the durable sink backup artifacts are persisted to. Nil
@@ -103,6 +109,19 @@ func WithHeadSignerProvider(p vlog.HeadSignerProvider) ServerOption {
 // The limiter's owner closes it.
 func WithInvitationRedeemLimiter(l ratelimit.Limiter) ServerOption {
 	return func(o *serverOptions) { o.invitationRedeemLimiter = l }
+}
+
+// WithWebTransportHandler serves WebTransport sessions
+// (draft-ietf-webtrans-http3-16) on path of the REST HTTP/3 listener, handing
+// each to h after the REST authentication and tenant-binding chain has
+// admitted its CONNECT (rest.WithWebTransportHandler). Without it the listener
+// advertises no WebTransport SETTINGS.
+func WithWebTransportHandler(path string, h rest.WebTransportHandler) ServerOption {
+	return func(o *serverOptions) {
+		o.webTransportPath = path
+		o.webTransportHandler = h
+		o.webTransportSet = true
+	}
 }
 
 // WithHolderActLimiter sets the limiter that throttles share-holder acts (the

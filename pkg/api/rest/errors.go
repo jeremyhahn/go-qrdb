@@ -202,6 +202,67 @@ func (e *HTTP3StartError) Unwrap() error {
 	return e.Err
 }
 
+// InvalidWebTransportHandlerError is returned by Start when
+// WithWebTransportHandler was given a nil handler, a path that is not
+// absolute, or a path the authentication middleware exempts as public
+// (middleware.IsPublicPath), where no session could ever be authenticated.
+type InvalidWebTransportHandlerError struct {
+	Path       string
+	NilHandler bool
+	PublicPath bool
+}
+
+func (e *InvalidWebTransportHandlerError) Error() string {
+	if e.NilHandler {
+		return "rest: WebTransport handler for path " + strconv.Quote(e.Path) + " is nil"
+	}
+	if e.PublicPath {
+		return "rest: WebTransport path " + strconv.Quote(e.Path) + " is a public path exempt from authentication"
+	}
+	return "rest: WebTransport path " + strconv.Quote(e.Path) + " is not an absolute path"
+}
+
+// WebTransportUnauthenticatedError refuses a WebTransport CONNECT that reached
+// the session route with no authenticated caller.
+type WebTransportUnauthenticatedError struct{}
+
+func (e *WebTransportUnauthenticatedError) Error() string {
+	return "rest: WebTransport session requires an authenticated caller"
+}
+
+// WebTransportNotHTTP3Error is the cause of a WebTransport CONNECT that did
+// not arrive over the HTTP/3 listener.
+type WebTransportNotHTTP3Error struct{}
+
+func (e *WebTransportNotHTTP3Error) Error() string {
+	return "WebTransport is served over HTTP/3 only"
+}
+
+// WebTransportClientRequirementError is the cause of a WebTransport CONNECT
+// whose client did not send Requirement, one that
+// draft-ietf-webtrans-http3-16 section 3.1 requires of every client.
+type WebTransportClientRequirementError struct {
+	Requirement string
+}
+
+func (e *WebTransportClientRequirementError) Error() string {
+	return "WebTransport client did not send " + e.Requirement
+}
+
+// WebTransportUpgradeError refuses a CONNECT on the WebTransport path that
+// could not be upgraded to a session.
+type WebTransportUpgradeError struct {
+	Err error
+}
+
+func (e *WebTransportUpgradeError) Error() string {
+	return "rest: WebTransport upgrade failed: " + e.Err.Error()
+}
+
+func (e *WebTransportUpgradeError) Unwrap() error {
+	return e.Err
+}
+
 // ListenerHostMismatchError is returned when the HTTP/3 (QUIC) socket lands
 // on a different bind host than the TCP listener it shadows -- one wildcard,
 // the other specific. The two transports serve the same handler, so the
