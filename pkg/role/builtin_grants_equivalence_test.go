@@ -149,6 +149,9 @@ var goldenAdminPermissions = []permission.Permission{
 	permission.AuditRead, permission.AuditQuery, permission.AuditDelete,
 	permission.TenantsListCross, permission.TenantsCreateCross, permission.TenantsApprove,
 	permission.TenantsReadCross, permission.TenantsDeleteCross, permission.TenantsUpdateCross,
+	// Tenant-qualified operator access to a tenant's identity records.
+	permission.UsersReadTenant, permission.UsersWriteTenant,
+	permission.RolesReadTenant, permission.RolesWriteTenant,
 	// Tenant provisioning, ScopeCross: effective only for system-tenant Admin.
 	// tenants:set_quotas is new to Admin: the quotas routes now check it
 	// rather than tenants:update, and the platform operator must hold it.

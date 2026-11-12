@@ -1124,6 +1124,7 @@ func (t *Transport) callWithSecret(ctx context.Context, method string, payload [
 }
 
 func (t *Transport) call(ctx context.Context, method string, payload []byte) ([]byte, error) {
+	payload = transport.QualifyJSON(ctx, method, payload, "tenantID", "user.", "role.")
 	ctx, cancel := t.callContext(ctx)
 	defer cancel()
 
