@@ -1,5 +1,5 @@
-# ci-template: v1.34.1 — canonical CI for all first-party Go repos.
-# go-qrdb deviations from v1.34.1, one line each (the CUSTOMIZE blocks below
+# ci-template: v1.35.1 — canonical CI for all first-party Go repos.
+# go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on GitHub-hosted ubuntu-latest (DS-7377), except the
 #     Docker-free jobs, which run on the self-hosted bigdisk pool: preflight,
@@ -10,6 +10,8 @@
 #     registry, cache volume, reaper or schedule guard remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
+#   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
+#     taken ahead of the v1.35.2 Signatures move (DS-8544, m2586)
 #   - preflight's timeout is 15 minutes against the template's 10, because it
 #     runs the diff and every full-tree architecture gate
 #   - a changes-gated `code` tier beside pr, full and nightly (DS-3160)
@@ -65,8 +67,10 @@ on:
     # and a run whose jobs an `if:` skips would post `skipped` over the real
     # run's `CI / *` contexts, CI Gate included. The cost: adding `ci:full`
     # waits for the PR's next push or update-branch, or takes effect through
-    # `workflow_dispatch`. test/buildgates/ci_tiers_test.go holds this line.
-    types: [opened, synchronize, reopened]
+    # `workflow_dispatch`. A draft runs no CI; `ready_for_review` starts the
+    # run when it is marked ready (v1.35.3, DS-8544), so no empty commit is
+    # needed. test/buildgates/ci_tiers_test.go holds this line.
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:                    # re-fire a whole workflow
   # v1.23: main's full tier after every merge and once a week, at 04:00 UTC
   # on Sunday, the end of this project's night in the factory's rotation
@@ -1584,6 +1588,106 @@ jobs:
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
 
+  signatures:
+    name: Signatures
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify commit signatures against .github/allowed_signers
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BEFORE: ${{ github.event.before }}
+          REPO: ${{ github.repository }}
+          API: ${{ github.api_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          zero() { [ -z "$1" ] || printf '%s' "$1" | grep -qE '^0+$'; }
+          isrev() { ! zero "$1" && git cat-file -e "$1^{commit}" 2>/dev/null; }
+          ASF="${RUNNER_TEMP:-/tmp}/allowed_signers"
+          # The registry is read from the base, so a pull request cannot add the key
+          # that signs it. Only the first adoption, with no registry at the base,
+          # reads it from the head.
+          REG=""
+          if [ "$EVENT" = pull_request ]; then REG="$BASE_SHA"; elif [ "$EVENT" = push ]; then REG="$BEFORE"; fi
+          # v1.35.1: a named base that is not in the clone (a push after a force
+          # push, a base the checkout did not bring) is fetched; if it still cannot
+          # be read the job fails, never falling back to the head's registry or to
+          # the head commit alone.
+          if [ "$EVENT" = pull_request ] && [ -z "$REG" ]; then
+            echo "FAIL a pull_request run with no base SHA"; exit 1
+          fi
+          if ! zero "$REG" && ! isrev "$REG"; then
+            git fetch -q --no-tags origin "$REG" 2>/dev/null || true
+            isrev "$REG" || { echo "FAIL the base ${REG:0:12} cannot be read, so neither the registry nor the range can be checked"; exit 1; }
+          fi
+          if isrev "$REG" && git cat-file -e "$REG:.github/allowed_signers" 2>/dev/null; then
+            git show "$REG:.github/allowed_signers" > "$ASF"
+            echo "registry: .github/allowed_signers at ${REG:0:12}"
+          elif git cat-file -e "$HEAD_SHA:.github/allowed_signers" 2>/dev/null; then
+            git show "$HEAD_SHA:.github/allowed_signers" > "$ASF"
+            echo "::warning::no registry at the base: .github/allowed_signers read from the head (first adoption only)"
+          else
+            echo "FAIL no .github/allowed_signers in this repository"; exit 1
+          fi
+          # The range: base..head on a pull request, before..after on a push to main,
+          # and the one commit otherwise (a new branch, a schedule or dispatch run).
+          if [ "$EVENT" = pull_request ] && isrev "$BASE_SHA"; then RANGE="$BASE_SHA..$HEAD_SHA"
+          elif [ "$EVENT" = push ] && isrev "$BEFORE"; then RANGE="$BEFORE..$HEAD_SHA"
+          else RANGE="$HEAD_SHA -1"; fi
+          # shellcheck disable=SC2086 # RANGE is one or two words on purpose
+          COMMITS=$(git rev-list --reverse $RANGE) || { echo "FAIL cannot list the range $RANGE"; exit 1; }
+          N=$(printf '%s\n' "$COMMITS" | grep -c . || true)
+          echo "checking $N commit(s) in $RANGE"
+          reg_principals=$(awk '!/^[[:space:]]*(#|$)/ {print $1}' "$ASF")
+          shown() { # print an email only when it is public: a registry principal or a GitHub noreply
+            if printf '%s\n' "$reg_principals" | grep -qxF -- "$1" || printf '%s' "$1" | grep -qE '@users\.noreply\.github\.com$|^noreply@github\.com$'; then
+              printf '%s' "$1"; else printf 'an address not in the registry'; fi
+          }
+          BAD=0
+          for c in $COMMITS; do
+            ce=$(git log -1 --format=%ce "$c")
+            s=$(git log -1 --format=%s "$c" | cut -c1-60)
+            if [ "$ce" = noreply@github.com ]; then
+              # GitHub made it (a squash merge, an update-branch merge): accept it only
+              # when the API says GitHub signed and verified it as web-flow.
+              v=$(curl -fsS --retry 3 -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' \
+                  "${API}/repos/${REPO}/commits/${c}" | jq -r '[(.commit.verification.verified|tostring), .commit.verification.reason, (.committer.login // "none")] | @tsv') \
+                || { echo "FAIL ${c:0:12} committed by GitHub, and the API could not be read: $s"; BAD=1; continue; }
+              IFS=$'\t' read -r ok reason login <<<"$v"
+              if [ "$ok" = true ] && [ "$login" = web-flow ]; then
+                echo "OK   ${c:0:12} GitHub web-flow, verified: $s"
+              else
+                echo "FAIL ${c:0:12} committed as GitHub but not verified (verified=$ok reason=$reason committer=$login): $s"; BAD=1
+              fi
+              continue
+            fi
+            # v1.35.1: grep reads the whole object (no -q), so under pipefail a
+            # long commit message never ends the pipeline with SIGPIPE.
+            if ! git cat-file commit "$c" | grep '^gpgsig' >/dev/null; then
+              echo "FAIL ${c:0:12} unsigned, committer $(shown "$ce"): $s"; BAD=1; continue
+            fi
+            g() { git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$ASF" "$@"; }
+            if ! g verify-commit "$c" >/dev/null 2>&1; then
+              echo "FAIL ${c:0:12} signed by a key not in the registry (or a bad signature), committer $(shown "$ce"): $s"; BAD=1; continue
+            fi
+            signer=$(g log -1 --format=%GS "$c")
+            if [ "$signer" != "$ce" ]; then
+              echo "FAIL ${c:0:12} principal mismatch: the key is registered to $signer, the committer is $(shown "$ce"): $s"; BAD=1; continue
+            fi
+            echo "OK   ${c:0:12} signed by $signer: $s"
+          done
+          exit $BAD
+
   ci-gate:
     name: CI Gate
     # m2479 (m2475 h): the gate reads the jobs' results only: no checkout, no
@@ -1601,7 +1705,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak]
+    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -1623,6 +1727,7 @@ jobs:
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_SOAK: ${{ needs.soak.result }}
+          RESULT_SIGNATURES: ${{ needs.signatures.result }}
           # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
           # PR labelled ci:full. A job marked `full` may be skipped below only
           # when it is not selected; a `pr` job may never be skipped.
@@ -1692,4 +1797,5 @@ jobs:
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full
           check soak "$RESULT_SOAK" nightly
+          check signatures "$RESULT_SIGNATURES" pr
           exit $BAD

@@ -30,6 +30,11 @@ are not reconstructed here — their history is in the git log.
   to `strict` in one compare-and-swap, so a racing writer is refused and the
   floor is never unset in between. The Go SDK's `TenantInfo` reports the
   tenant's isolation policy (`IsolationPolicy`) on every transport.
+- **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
+- **CI verifies commit signatures.** A Signatures job from ci-template
+  v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
+  and CI Gate requires it.
+
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
