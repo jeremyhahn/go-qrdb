@@ -24,6 +24,9 @@
     SearchSimilarResponse,
     SearchByMetadataResponse,
     VectorData,
+    BatchUpsertResponse,
+    BatchDeleteVectorsResponse,
+    HybridSearchResponse,
   } from "@qrdb/sdk";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import type { VectorSearchEvent } from "../../components/core/SearchBar/types.ts";
@@ -112,6 +115,9 @@
   let detailMetadata: string = $state("{}");
   let detailLoading: boolean = $state(false);
   let detailError: string = $state("");
+  let showBatchUpsertPanel: boolean = $state(false);
+  let batchUpsertInput: string = $state('[\n  {"id": "v1", "vector": [0.1, 0.2, 0.3], "metadata": {}}\n]');
+  let batchUpsertResult: BatchUpsertResponse | null = $state(null);
 
   // ---------------------------------------------------------------------------
   // Search state
@@ -522,20 +528,111 @@
       return;
     }
     if (selectedNamespace === "") return;
-    vectorsLoading = true;
+    const ids: string[] = [];
     for (const idx of indices) {
       const row = vectorTableData[idx];
-      if (row) {
-        try {
-          await client.vector.deleteVector({ namespace: selectedNamespace, id: row.id });
-        } catch (err: unknown) {
-          showToast("error", err instanceof Error ? err.message : String(err));
-        }
-      }
+      if (row) ids.push(row.id);
     }
-    showToast("success", `Deleted ${indices.size} vector${indices.size !== 1 ? "s" : ""}`);
-    await handleVecList();
-    vectorsLoading = false;
+    if (ids.length === 0) return;
+    vectorsLoading = true;
+    try {
+      const resp: BatchDeleteVectorsResponse = await client.vector.batchDeleteVectors({
+        namespace: selectedNamespace,
+        ids,
+      });
+      if (resp.failed > 0) {
+        const detail = (resp.errors ?? []).map((e) => `${e.id}: ${e.error}`).join("; ");
+        showToast("warning", `Deleted ${resp.deleted}, failed ${resp.failed}${detail ? ` (${detail})` : ""}`);
+      } else {
+        showToast("success", `Deleted ${resp.deleted} vector${resp.deleted !== 1 ? "s" : ""}`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      vectorsLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Batch upsert
+  // ---------------------------------------------------------------------------
+
+  function parseBatchVectors(raw: string): VectorData[] | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      showToast("warning", "Batch must be a JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      showToast("warning", "Batch must be a non-empty JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    const out: VectorData[] = [];
+    for (const [i, item] of parsed.entries()) {
+      const o = item as Record<string, unknown> | null;
+      const vec = o?.vector;
+      if (
+        o === null || typeof o !== "object" || typeof o.id !== "string" || o.id === "" ||
+        !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number")
+      ) {
+        showToast("warning", `Batch item ${i + 1} needs a string id and a numeric vector array.`);
+        return null;
+      }
+      const md = o.metadata;
+      if (md !== undefined && (typeof md !== "object" || md === null || Array.isArray(md))) {
+        showToast("warning", `Batch item ${i + 1} metadata must be a JSON object.`);
+        return null;
+      }
+      out.push({
+        id: o.id,
+        vector: vec as number[],
+        metadata: md as Record<string, unknown> | undefined,
+        version: 0,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    }
+    return out;
+  }
+
+  async function handleBatchUpsert(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    if (selectedNamespace.trim() === "") {
+      showToast("warning", "Select a namespace first.");
+      return;
+    }
+    const vectors = parseBatchVectors(batchUpsertInput);
+    if (vectors === null) return;
+    loading = true;
+    batchUpsertResult = null;
+    try {
+      const resp: BatchUpsertResponse = await client.vector.batchUpsert({
+        namespace: selectedNamespace,
+        vectors,
+      });
+      batchUpsertResult = resp;
+      if (resp.failed > 0) {
+        showToast("warning", `Batch upsert: ${resp.succeeded} succeeded, ${resp.failed} failed.`);
+      } else {
+        showToast("success", `Batch upsert: ${resp.succeeded} succeeded.`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      loading = false;
+    }
+  }
+
+  function openBatchUpsertPanel(): void {
+    batchUpsertResult = null;
+    showBatchUpsertPanel = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -954,6 +1051,13 @@
         </div>
       {/if}
 
+      <div class="mb-2 flex justify-end">
+        <button class="btn btn-outline btn-sm gap-1" onclick={openBatchUpsertPanel} disabled={loading}>
+          <Plus class="h-3.5 w-3.5" />
+          Batch upsert
+        </button>
+      </div>
+
       <CrudTable
         title="Vectors"
         data={vectorTableData}
@@ -1176,6 +1280,61 @@
             <span class="loading loading-spinner loading-xs"></span>
           {/if}
           Upsert
+        </button>
+      </div>
+    {/snippet}
+  </SlidePanel>
+
+  <!-- =================================================================== -->
+  <!-- Batch Upsert SlidePanel                                              -->
+  <!-- =================================================================== -->
+  <SlidePanel
+    open={showBatchUpsertPanel}
+    title="Batch Upsert"
+    onclose={() => (showBatchUpsertPanel = false)}
+  >
+    {#snippet children()}
+      <div class="flex flex-col gap-5">
+        <div class="surface-panel rounded-lg p-4">
+          <div class="text-base-content/50 flex items-center gap-2 text-xs font-medium">
+            <Layers class="h-4 w-4" />
+            Namespace: <span class="text-base-content font-semibold">{selectedNamespace}</span>
+          </div>
+        </div>
+
+        <label class="form-control w-full">
+          <div class="label"><span class="label-text">Vectors (JSON array of {"{id, vector, metadata?}"})</span></div>
+          <textarea
+            class="textarea textarea-bordered h-48 w-full font-mono text-sm"
+            aria-label="Batch vectors JSON"
+            data-testid="batch-upsert-input"
+            bind:value={batchUpsertInput}
+          ></textarea>
+        </label>
+
+        {#if batchUpsertResult}
+          <div class="surface-panel rounded-lg p-4 text-sm" data-testid="batch-upsert-result">
+            <div>Succeeded: <span class="font-semibold" data-testid="batch-upsert-succeeded">{batchUpsertResult.succeeded}</span></div>
+            <div>Failed: <span class="font-semibold" data-testid="batch-upsert-failed">{batchUpsertResult.failed}</span></div>
+            {#if batchUpsertResult.errors && batchUpsertResult.errors.length > 0}
+              <ul class="text-error mt-2 list-disc pl-5" data-testid="batch-upsert-errors">
+                {#each batchUpsertResult.errors as e}
+                  <li>{e.id}: {e.error}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2 justify-end">
+        <button class="btn btn-ghost btn-sm" onclick={() => (showBatchUpsertPanel = false)}>Close</button>
+        <button class="btn btn-primary btn-sm" onclick={handleBatchUpsert} disabled={loading}>
+          {#if loading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Upsert batch
         </button>
       </div>
     {/snippet}
