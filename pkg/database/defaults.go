@@ -91,3 +91,21 @@ func (d Defaults) fill(cfg *DatabaseConfig) {
 	}
 	cfg.Raft = &raft
 }
+
+// ResolveDefaults returns a copy of cfg with the node's database_defaults
+// applied, exactly as the manager applies them at create. A caller that
+// authorizes, entitles, normalises or meters a create resolves first, so
+// every gate sees the configuration the manager records. The raft block is
+// copied, so cfg is left untouched. fill is idempotent: resolving twice, or
+// resolving before the manager's own fill, records the same configuration.
+func (m *Manager) ResolveDefaults(cfg DatabaseConfig) DatabaseConfig {
+	if cfg.Raft != nil {
+		raft := *cfg.Raft
+		cfg.Raft = &raft
+	}
+	if m == nil {
+		return cfg
+	}
+	m.defaults.fill(&cfg)
+	return cfg
+}

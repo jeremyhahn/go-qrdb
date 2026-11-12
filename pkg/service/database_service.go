@@ -1582,19 +1582,6 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// this for every caller, including the system-tenant path above.
 	cfg.DataDir = ""
 
-	// Entitlement plane (consulted before the numeric quota plane): verify the
-	// tenant's plan permits the requested isolation tier / dedicated feature.
-	// Raft-backed databases are a dedicated tier requiring both the "raft"
-	// isolation-mode entitlement and the dedicated_raft feature.
-	if s.entitlementChecker != nil && cfg.Backend == database.BackendRaft {
-		if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeRaft); err != nil {
-			return nil, err
-		}
-		if err := s.entitlementChecker.CheckFeature(ctx, tenantID, quota.FeatureDedicatedRaft); err != nil {
-			return nil, err
-		}
-	}
-
 	// IsolationVolume tenants store every database on their dedicated DataRoot
 	// ({DataRoot}/databases/{db}) and run a per-tenant Raft Host. IsolationRaft
 	// tenants store every database on their DataRoot too, but each database is a
@@ -1665,8 +1652,30 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	// Reject an incoherent or unsupported raft topology request before any
 	// quota reservation, placement, or store I/O -- see validateRaftTopology.
+	// It checks the topology the request names, before the node defaults
+	// fill in an unnamed one, as the manager always has.
 	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
 		return nil, err
+	}
+
+	// Resolve the node's database_defaults (backend, replicas, raft block)
+	// before any gate: a request that omits its backend under a raft
+	// default, or its replicas under a replicas default, is entitled,
+	// normalised, quota-checked and metered as the database the manager
+	// records, never as the request it arrived as.
+	cfg = s.manager.ResolveDefaults(cfg)
+
+	// Entitlement plane (consulted before the numeric quota plane): verify the
+	// tenant's plan permits the requested isolation tier / dedicated feature.
+	// Raft-backed databases are a dedicated tier requiring both the "raft"
+	// isolation-mode entitlement and the dedicated_raft feature.
+	if s.entitlementChecker != nil && cfg.Backend == database.BackendRaft {
+		if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeRaft); err != nil {
+			return nil, err
+		}
+		if err := s.entitlementChecker.CheckFeature(ctx, tenantID, quota.FeatureDedicatedRaft); err != nil {
+			return nil, err
+		}
 	}
 
 	// Replicas (replication factor) is meaningful only for a dedicated-raft

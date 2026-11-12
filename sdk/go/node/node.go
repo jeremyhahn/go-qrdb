@@ -4207,7 +4207,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the network transports.
 	if authMW != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithDatabaseService(
-			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant)))
+			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant, n.dbManager.ResolveDefaults)))
 	}
 	if pinBackend := n.pinBackend(callerOpts); pinBackend != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))

@@ -1533,7 +1533,7 @@ func (s *Server) wireProvisioningAuthorization() {
 	if s.opts.tenantSvc != nil {
 		tenants = s.opts.tenantSvc
 	}
-	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
+	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants, s.opts.dbManager.ResolveDefaults)
 }
 
 // wireRoleGrantGuard wraps the role service every transport is handed in
