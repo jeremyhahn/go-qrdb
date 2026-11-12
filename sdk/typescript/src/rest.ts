@@ -1852,10 +1852,14 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
+                // mode and connection describe how this client reaches the
+                // database; they are not part of the server's create request,
+                // whose strict decoder refuses an unknown field.
+                const { mode: _mode, connection: _connection, ...wire } = req;
                 return this.fetchSecretJSON<DatabaseInfo>('/v1/databases', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(req),
+                    body: JSON.stringify(wire),
                 }, Boolean(req.barrier?.secret) || raftSecret(req.raft));
             },
             get: async (name: string): Promise<DatabaseInfo> => {
