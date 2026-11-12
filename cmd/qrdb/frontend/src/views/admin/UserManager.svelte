@@ -148,8 +148,9 @@
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      // HTTP transports answer 404; the Wails bindings pass the Go error
-      // through, so a "not found" message means the same there.
+      // HTTP transports answer 404; the Wails runtime rejects with the Go
+      // error's string, which the SDK normalizes to an Error, so a
+      // "not found" message means the same there.
       if (
         (err instanceof TransportError && err.statusCode === 404) ||
         (err instanceof Error && /\bnot found\b/i.test(err.message))

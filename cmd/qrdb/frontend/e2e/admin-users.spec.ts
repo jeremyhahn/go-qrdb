@@ -423,6 +423,18 @@ test.describe("Admin - User Management", () => {
       );
     });
 
+    test("a string 'not found' rejection shows the inline not-found result", async ({ page }) => {
+      await navigateToUsers(page);
+      // The Wails runtime rejects the Go error as a bare string.
+      await injectError(page, "UserBinding.GetByCertThumbprint", "user not found");
+      await page.getByTestId("user-thumbprint-input").fill("tp-missing");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveText(
+        "No user holds this certificate binding.",
+      );
+      await expect(page.locator(".toast .alert.alert-error")).toHaveCount(0);
+    });
+
     test("lists the bindings the server holds when a user opens", async ({ page }) => {
       await navigateToUsers(page);
       const id = await seedUser(page, "listed-user");

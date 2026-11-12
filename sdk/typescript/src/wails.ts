@@ -327,13 +327,31 @@ function wrapBindings(
             const fn = target[prop];
             if (typeof fn !== 'function') return fn;
             return (...args: unknown[]) =>
-                fn.apply(target, args).then((result: unknown) =>
-                    result === undefined || result === null
-                        ? result
-                        : fromSnake(result),
+                fn.apply(target, args).then(
+                    (result: unknown) =>
+                        result === undefined || result === null
+                            ? result
+                            : fromSnake(result),
+                    (err: unknown) => {
+                        throw toError(err);
+                    },
                 );
         },
     });
+}
+
+/**
+ * Normalizes a binding rejection to an Error. The Wails runtime rejects a
+ * Go method's error as its message string, not an Error, so callers that
+ * test `instanceof Error` would otherwise lose the server's message.
+ */
+export function toError(err: unknown): Error {
+    if (err instanceof Error) return err;
+    if (typeof err === 'string') return new Error(err);
+    if (typeof err === 'object' && err !== null && typeof (err as { message?: unknown }).message === 'string') {
+        return new Error((err as { message: string }).message);
+    }
+    return new Error(String(err));
 }
 
 // ---------------------------------------------------------------------------

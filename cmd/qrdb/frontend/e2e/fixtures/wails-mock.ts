@@ -339,7 +339,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     function maybeReject(method: string): void {
       const s = getState();
       if (s.errors[method]) {
-        throw new Error(s.errors[method]);
+        // The Wails runtime rejects a Go error as its message string, not
+        // an Error; the SDK must normalize it.
+        throw s.errors[method];
       }
     }
 
@@ -1646,7 +1648,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
                 return { ...user, roleIds: [...(user.roleIds ?? [])] };
               }
             }
-            throw new Error(`user not found: no user bound to thumbprint "${thumbprint}"`);
+            // A string, as the Wails runtime rejects a Go error.
+            throw `user not found: no user bound to thumbprint "${thumbprint}"`;
           },
           AddCertBinding: async (id: string, thumbprint: string, notAfterUnix: number) => {
             maybeReject("UserBinding.AddCertBinding");
