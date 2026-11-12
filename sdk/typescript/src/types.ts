@@ -2453,6 +2453,15 @@ export interface DatabaseProtocolConfig {
 
 /** The etcd wire protocol as a database reports it. The Go SDK's
  * `EtcdProtocolConfig`. */
+/** Wire protocols a database serves, as set at create. Unlike
+ * {@link DatabaseProtocolConfig} (what `updateProtocol` changes), it can
+ * also enable the etcd v3 listener, which is fixed for the database's
+ * lifetime. */
+export interface DatabaseCreateProtocolConfig extends DatabaseProtocolConfig {
+    /** etcd v3 wire protocol listener; absent means off. */
+    readonly etcd?: DatabaseEtcdProtocolInfo;
+}
+
 export interface DatabaseEtcdProtocolInfo {
     /** Whether the etcd wire protocol serves this database. */
     readonly enabled: boolean;
@@ -2839,7 +2848,7 @@ export interface CreateDatabaseRequest {
     readonly backend: string;
     /** Wire protocol configuration (mysql/postgresql). The wire field name
      * is `protocol` to match the Go transport type. */
-    readonly protocol?: DatabaseProtocolConfig;
+    readonly protocol?: DatabaseCreateProtocolConfig;
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */

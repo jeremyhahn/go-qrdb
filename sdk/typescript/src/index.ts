@@ -307,6 +307,7 @@ export type {
     DatabaseInfo,
     CreateDatabaseRequest,
     DatabaseProtocolConfig,
+    DatabaseCreateProtocolConfig,
     DatabaseSQLConfig,
     CompactionMode,
     DatabaseCompactionConfig,
