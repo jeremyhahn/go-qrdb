@@ -182,7 +182,7 @@ async function waitForClusterTopology(adminUrl: string, want: number, timeoutMs 
 }
 
 /** Boots a 3-node cluster and blocks until topology reports all members. */
-export async function startCluster(nodeCount = 3): Promise<DomCluster> {
+export async function startCluster(nodeCount = 3, opts: { sm?: "mvcc" } = {}): Promise<DomCluster> {
   const certDir = mkdtempSync(join(tmpdir(), "qrdb-dom-cluster-certs-"));
   const { caPath, nodes: nodeCerts } = generateClusterCerts(certDir, nodeCount);
 
@@ -235,6 +235,8 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
       "--enable-unix=false",
       "--enable-quic=false",
       "--enable-mcp=false",
+      // mvcc keeps revision history, which the node compaction policy needs.
+      ...(opts.sm !== undefined ? ["--sm", opts.sm] : []),
     ];
 
     const proc = spawn(qrdbdBin(), args, {
@@ -262,8 +264,25 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
 /** Stops all cluster nodes and removes their data + cert directories. */
 export async function stopCluster(cluster: DomCluster | null): Promise<void> {
   if (cluster === null) return;
-  for (const p of cluster.procs) p.kill("SIGTERM");
-  await new Promise((r) => setTimeout(r, 600));
+  // Wait for every node to exit: the next test reuses the fixed ports, and a
+  // node still shutting down holds them (bind: address already in use).
+  await Promise.all(
+    cluster.procs.map(
+      (p) =>
+        new Promise<void>((resolve) => {
+          if (p.exitCode !== null || p.signalCode !== null) {
+            resolve();
+            return;
+          }
+          const kill = setTimeout(() => p.kill("SIGKILL"), 10_000);
+          p.once("exit", () => {
+            clearTimeout(kill);
+            resolve();
+          });
+          p.kill("SIGTERM");
+        }),
+    ),
+  );
   for (const dir of [...cluster.dataDirs, cluster.certDir]) {
     try {
       rmSync(dir, { recursive: true, force: true });
