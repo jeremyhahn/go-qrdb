@@ -374,6 +374,27 @@ func TestTransport_TenantBarrierStatus_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestTransport_TenantBarrierStatus_NodesUnreadable pins the round trip of a
+// status whose serving-node source failed: the client must decode
+// NodesUnreadable, not a standalone barrier the CLI would act on alone.
+func TestTransport_TenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	mock := &mockTenantBarrierSvc{
+		statusFn: func(_ context.Context, tenantID string) (*tenantpkg.TenantBarrierStatus, error) {
+			return &tenantpkg.TenantBarrierStatus{TenantID: tenantID, Sealed: true, NodesUnreadable: true}, nil
+		},
+	}
+	tr, cleanup := connectTransportWithBarrier(t, mock)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("TenantBarrierStatus: %v", err)
+	}
+	if !resp.NodesUnreadable || len(resp.Nodes) != 0 {
+		t.Fatalf("NodesUnreadable = %v, Nodes = %+v; want true and none", resp.NodesUnreadable, resp.Nodes)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Argument-validation cases
 // ---------------------------------------------------------------------------

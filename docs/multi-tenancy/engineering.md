@@ -1667,8 +1667,9 @@ phase 5 on.
 >   record publishes (`tenant.BarrierNode`, sourced by
 >   `pkg/server/lifecycle` from the placement table and member records). It
 >   reaches clients on every transport and the CLI status table. A
->   standalone node lists none; a list the node cannot read is logged and
->   left out.
+>   standalone node lists none; a list the node cannot read is logged, left
+>   out, and reported as `NodesUnreadable` (`nodes_unreadable`) so a client
+>   can tell an unknown serving set from a standalone barrier.
 > - **Fan-out.** `qrdb tenant barrier-init` under `passphrase` sends the init
 >   to every listed node at once, over `--server`'s transport (rest, grpc,
 >   quic or mcp), and prints one result per node; each call proves the init
@@ -1680,7 +1681,11 @@ phase 5 on.
 >   to each of them at once, since each node's own key is sealed under that
 >   credential, printing one result per node; a `BarrierFanOutError` names
 >   the nodes that refused while the others unseal. A barrier served by one
->   node is unsealed on `--server`'s node.
+>   node is unsealed on `--server`'s node. When the status reports
+>   `NodesUnreadable`, both `barrier-init` (passphrase) and `barrier-unseal`
+>   fail with `TenantServingNodesUnknownError` naming the tenant and send
+>   nothing, rather than act on `--server`'s node alone and leave the other
+>   replicas sealed.
 > - **First-admin window.** Once the pending first admin's record is
 >   consumed, a node initialising later admits the certificate whose
 >   thumbprint was pinned for the barrier at onboarding

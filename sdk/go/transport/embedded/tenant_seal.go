@@ -79,6 +79,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     sealconv.FromReport(status.ClusterSeal),
 		KeyFingerprint:  status.KeyFingerprint,
 		Nodes:           barrierNodesFromTenant(status.Nodes),
+		NodesUnreadable: status.NodesUnreadable,
 	}, nil
 }
 
