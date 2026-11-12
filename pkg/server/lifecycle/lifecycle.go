@@ -1063,6 +1063,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 				}
 			}
 		}
+		// Strict tenant isolation phase 6: an isolated tenant's database
+		// groups are placed only on its serving set (its home group's nodes).
+		schedOpts = append(schedOpts, placement.WithServingSet(service.PlacementServingSet(store)))
 		if scheduler, serr := placement.NewScheduler(service.NewHostTopologyProvider(infra.Host, n.Rebalance), schedOpts...); serr == nil {
 			placementOpts = []service.DatabaseServiceOption{
 				service.WithPlacementStore(store),
