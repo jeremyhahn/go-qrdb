@@ -12,9 +12,9 @@
  *
  *   1. update: rename a prefix tenant in the info card, Save, and GET
  *      /v1/tenants/{id} returns the new name;
- *   2. refused update: ask for an isolation type this single-node server
- *      cannot provision; the server's error is shown in a toast and the
- *      tenant is unchanged on the server;
+ *   2. refused update: the tenant is deleted on the server while its form
+ *      is open; Save shows the server's not-found refusal in a toast and
+ *      writes nothing;
  *   3. delete: select the tenant row, Delete Selected, confirm the dialog;
  *      the row leaves the UI list and the server no longer has the tenant.
  */
@@ -23,7 +23,12 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 import {
   startDaemon,
   stopDaemon,
@@ -71,7 +76,10 @@ async function runFirstBoot(d: DomDaemon): Promise<void> {
       {
         method: "POST",
         rejectUnauthorized: false,
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
       },
       (res) => {
         let text = "";
@@ -79,7 +87,12 @@ async function runFirstBoot(d: DomDaemon): Promise<void> {
         res.on("data", (chunk: string) => (text += chunk));
         res.on("end", () => {
           if (res.statusCode && res.statusCode < 300) resolve();
-          else reject(new Error(`ceremony initialize returned ${res.statusCode}: ${text}`));
+          else
+            reject(
+              new Error(
+                `ceremony initialize returned ${res.statusCode}: ${text}`,
+              ),
+            );
         });
       },
     );
@@ -97,8 +110,25 @@ function generateCSR(cn: string): string {
   try {
     const keyPath = join(dir, "key.pem");
     const csrPath = join(dir, "csr.pem");
-    execFileSync("openssl", ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", keyPath]);
-    execFileSync("openssl", ["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${cn}`]);
+    execFileSync("openssl", [
+      "ecparam",
+      "-name",
+      "prime256v1",
+      "-genkey",
+      "-noout",
+      "-out",
+      keyPath,
+    ]);
+    execFileSync("openssl", [
+      "req",
+      "-new",
+      "-key",
+      keyPath,
+      "-out",
+      csrPath,
+      "-subj",
+      `/CN=${cn}`,
+    ]);
     return readFileSync(csrPath, "utf8").trim();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -106,13 +136,22 @@ function generateCSR(cn: string): string {
 }
 
 /** Expects a toast of the given kind whose text matches; returns it. */
-async function expectToast(page: Page, kind: "success" | "error", text: string | RegExp) {
-  const toast = page.locator(`.toast .alert-${kind}`).filter({ hasText: text }).last();
+async function expectToast(
+  page: Page,
+  kind: "success" | "error",
+  text: string | RegExp,
+) {
+  const toast = page
+    .locator(`.toast .alert-${kind}`)
+    .filter({ hasText: text })
+    .last();
   try {
     await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`expected ${kind} toast ${String(text)}; toasts: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(
+      `expected ${kind} toast ${String(text)}; toasts: ${JSON.stringify(shown)}\n${err}`,
+    );
   }
   return toast;
 }
@@ -120,23 +159,33 @@ async function expectToast(page: Page, kind: "success" | "error", text: string |
 /** Loads the app shell and opens the Tenants admin view. */
 async function openTenantsView(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.getByRole("button", { name: "Tenants", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible({
+  await expect(page.getByText("Seal Manager")).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
+  await page.getByRole("button", { name: "Tenants", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible(
+    {
+      timeout: LOAD_TIMEOUT,
+    },
+  );
 }
 
 /** Creates the prefix-isolation tenant with its first admin's CSR. */
 async function createTenant(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Create Tenant" }).click();
-  await expect(page.getByRole("heading", { name: "Create Tenant" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Create Tenant" }),
+  ).toBeVisible();
   await page.locator("#tenant-id").fill(TENANT_ID);
   await page.locator("#tenant-name").fill(TENANT_NAME);
-  await expect(page.getByTestId("create-tenant-isolation-select")).toHaveValue("prefix");
+  await expect(page.getByTestId("create-tenant-isolation-select")).toHaveValue(
+    "prefix",
+  );
   await page.getByTestId("create-tenant-admin-username").fill("acme-admin");
   await page.getByTestId("create-tenant-admin-kind-csr").click();
-  await page.getByTestId("create-tenant-admin-csr").fill(generateCSR("acme-admin"));
+  await page
+    .getByTestId("create-tenant-admin-csr")
+    .fill(generateCSR("acme-admin"));
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectToast(page, "success", `Tenant "${TENANT_NAME}" created.`);
   await expect(page.getByTestId("create-tenant-admin-cert-result")).toHaveValue(
@@ -148,7 +197,9 @@ async function createTenant(page: Page): Promise<void> {
 /** Opens the tenant detail by clicking the list row showing `name`. */
 async function openTenant(page: Page, name: string): Promise<void> {
   await page.getByText(name).first().click();
-  await expect(page.getByRole("heading", { name: `Tenant Quotas — ${TENANT_ID}` })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: `Tenant Quotas — ${TENANT_ID}` }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
@@ -191,7 +242,9 @@ test("tenant rename round-trips through the server (UI ↔ live daemon)", async 
 
   // Back on the list the tenant shows its new name.
   await page.getByRole("button", { name: "Back", exact: true }).click();
-  await expect(page.getByText(RENAMED).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText(RENAMED).first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 });
 
 test("refused tenant update shows the server's error and changes nothing", async ({
@@ -203,17 +256,21 @@ test("refused tenant update shows the server's error and changes nothing", async
   await createTenant(page);
   await openTenant(page, TENANT_NAME);
 
-  // A barrier-isolated tenant needs the system-managed barrier entitlement,
-  // which a new tenant does not have: the server refuses the change.
-  await page.getByTestId("tenant-isolation-select").selectOption("barrier");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  const toast = await expectToast(page, "error", /PATCH|PUT|update|isolation/i);
-  await expect(toast).not.toHaveText(/^\s*Failed to update tenant\s*$/);
+  // The server refuses an update of a tenant that no longer exists: another
+  // admin deletes it while this form is open.
+  const del = await request.delete(`${adminUrl}/v1/tenants/${TENANT_ID}`);
+  expect(del.status()).toBe(204);
 
-  const { status, body } = await serverTenant(request, adminUrl);
-  expect(status).toBe(200);
-  expect(body.name).toBe(TENANT_NAME);
-  expect(body.isolation_type).toBe("prefix");
+  await nameInput(page).fill(RENAMED);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  // The toast carries the server's own refusal, not a generic message.
+  const toast = await expectToast(page, "error", /not found/i);
+  await expect(toast).toContainText(TENANT_ID);
+  await expect(page.getByText(`Tenant "${TENANT_ID}" updated.`)).toHaveCount(0);
+
+  // Nothing was written: the tenant is still gone and not recreated.
+  const { status } = await serverTenant(request, adminUrl);
+  expect(status).toBe(404);
 });
 
 test("tenant delete removes it from the server and the list (UI ↔ live daemon)", async ({
@@ -234,11 +291,14 @@ test("tenant delete removes it from the server and the list (UI ↔ live daemon)
   await dialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expectToast(page, "success", "Deleted 1 tenant.");
 
-  await expect(page.getByRole("row").filter({ hasText: TENANT_ID })).toHaveCount(0);
+  await expect(
+    page.getByRole("row").filter({ hasText: TENANT_ID }),
+  ).toHaveCount(0);
 
   const { status } = await serverTenant(request, adminUrl);
   expect(status).toBe(404);
-  const list = await request.get(`${adminUrl}/v1/tenants`);
-  expect(list.ok(), `GET /v1/tenants ${list.status()}: ${await list.text()}`).toBeTruthy();
-  expect(JSON.stringify(await list.json())).not.toContain(`"${TENANT_ID}"`);
+  const list = await request.get(`${adminUrl}/v1/tenants/list`);
+  expect(list.ok(), `GET /v1/tenants/list ${list.status()}`).toBeTruthy();
+  const listed = (await list.json()) as { tenants: { id: string }[] };
+  expect(listed.tenants.map((t) => t.id)).not.toContain(TENANT_ID);
 });
