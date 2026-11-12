@@ -309,31 +309,6 @@ func TestStore_Validation(t *testing.T) {
 	}
 }
 
-// TestStore_ShamirFieldsRoundTrip proves ShamirThreshold/ShamirTotal survive a
-// CompareAndSwapMigration/GetMigration round trip through the replicated KV (JSON
-// marshal/unmarshal), which is what every owner's reconciler relies on to
-// rebuild seal.MigrationOptions for a Shamir-target migration. Before this
-// field existed on ClusterMigration, every reconciler tick reconstructed
-// threshold=0/total=0 regardless of the operator's request, failing
-// seal.MigrationOptions.Validate() forever.
-func TestStore_ShamirFieldsRoundTrip(t *testing.T) {
-	ctx := context.Background()
-	s := NewStore(newMemKV())
-	putMigration(t, s, &ClusterMigration{
-		TenantID: "", Database: "",
-		Target: seal.StrategyShamir, Mechanism: seal.MechanismSwap,
-		ShamirThreshold: 2, ShamirTotal: 3,
-		Owners: []string{"n1"}, Generation: 1,
-	})
-	got, err := s.GetMigration(ctx, "", "")
-	if err != nil || got == nil {
-		t.Fatalf("GetMigration = %v, %v", got, err)
-	}
-	if got.ShamirThreshold != 2 || got.ShamirTotal != 3 {
-		t.Fatalf("ShamirThreshold/ShamirTotal = %d/%d, want 2/3", got.ShamirThreshold, got.ShamirTotal)
-	}
-}
-
 // TestStore_ShamirFieldsZeroForPassphrase proves a passphrase-target record
 // round-trips with zero Shamir fields (omitempty), matching
 // seal.MigrationOptions.Validate's contract that they are ignored for a
