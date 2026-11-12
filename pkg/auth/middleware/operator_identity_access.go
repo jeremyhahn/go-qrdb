@@ -127,11 +127,14 @@ func (m *AuthMiddleware) AuthorizeOperatorIdentityAccess(ctx context.Context, te
 		return ctx, nil
 	}
 	decision := m.decideOperatorIdentityAccess(ctx, identity, target, perm)
-	if err := m.auditOperatorIdentityAccess(ctx, identity, target, perm, decision); err != nil {
-		return nil, err
-	}
+	auditErr := m.auditOperatorIdentityAccess(ctx, identity, target, perm, decision)
+	// A refused access stays refused with its own reason; an unrecordable
+	// record only turns an admitted access into a refusal.
 	if decision != nil {
 		return nil, decision
+	}
+	if auditErr != nil {
+		return nil, auditErr
 	}
 	return tenant.WithTenantID(ctx, target), nil
 }
