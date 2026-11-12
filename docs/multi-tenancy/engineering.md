@@ -1667,6 +1667,12 @@ phase 5 on.
 >   on its own connection, and the claim book accepts the re-signed
 >   statement as the same init. A `none`, Shamir or hardware init goes to
 >   `--server`'s node alone, the other nodes initialising from its claim.
+>   `qrdb tenant barrier-unseal` fans out the same way: it reads the listed
+>   nodes from `--server`'s barrier status and sends the credential unseal
+>   to each of them at once, since each node's own key is sealed under that
+>   credential, printing one result per node; a `BarrierFanOutError` names
+>   the nodes that refused while the others unseal. A barrier served by one
+>   node is unsealed on `--server`'s node.
 > - **First-admin window.** Once the pending first admin's record is
 >   consumed, a node initialising later admits the certificate whose
 >   thumbprint was pinned for the barrier at onboarding
@@ -1675,6 +1681,7 @@ phase 5 on.
 > Pinned by `TestClusterEnableEncryption_TenantScope_RF3` (through the CLI,
 > no key delivered and no unseal on the followers),
 > `TestSendToServingNodes_*`, `TestTenantBarrierInit_FansOutToServingNodes`,
+> `TestTenantBarrierUnseal_*`,
 > `TestBarrierNodes_*`, `TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing`,
 > `TestDistributeTenantKey_Uninitialized_ShipsNothing`,
 > `TestDistributeTenantKey_Shamir_ShipsNothing`,
