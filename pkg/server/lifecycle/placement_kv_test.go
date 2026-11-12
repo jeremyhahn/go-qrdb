@@ -72,7 +72,7 @@ func TestPlacementKV_ChangesReachTheStoresWatch(t *testing.T) {
 		t.Fatalf("Watch = %v; want the node's change feed", err)
 	}
 
-	p := placement.Placement{TenantID: "acme", Database: "orders", ShardID: 7}
+	p := placement.Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 7}
 	raw, _ := json.Marshal(p)
 	key := []byte(placement.PlacementPrefix + "acme/orders")
 	hub.NotifyPut([]byte("__sys:other/key"), &kv.KeyValue{Key: []byte("__sys:other/key"), Value: []byte("x")}, nil)

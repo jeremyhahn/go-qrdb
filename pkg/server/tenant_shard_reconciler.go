@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -256,6 +257,12 @@ type TenantShardReconciler struct {
 	// queues a pass on kick so a deferred shard starts then.
 	unsealNotifier BarrierUnsealNotifier
 	kick           chan struct{}
+
+	// placedNames maps "tenant/database id" to the database name of every
+	// placement this reconciler has seen. The table is keyed by the opaque
+	// id, so a delete event names only the id; the shard to close is found
+	// here (see handleEvent).
+	placedNames sync.Map
 }
 
 // NewTenantShardReconciler creates a TenantShardReconciler. store and factory
@@ -304,6 +311,9 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		r.logger.Warn("placement reconciler: List failed",
 			slog.Any("error", err))
 		return
+	}
+	for _, p := range placements {
+		r.rememberName(p.TenantID, p.DatabaseID, p.Database)
 	}
 
 	// allPlacements tracks every entry in the placement table, regardless of
@@ -720,6 +730,7 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 		if ev.Placement == nil {
 			break
 		}
+		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database)
 		if ev.Placement.IsLocalBinding() {
 			// Same as ReconcileOnce: a local binding has no Raft group for
 			// this reconciler to attach.
@@ -740,13 +751,45 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 				slog.Any("error", err))
 		}
 	case placement.EventDelete:
-		if err := r.closeDemoted(ev.TenantID, ev.Database); err != nil {
+		// A delete names only the entry's id; the database whose shard
+		// closes is the one the entry named while it existed.
+		name := r.forgetName(ev.TenantID, ev.DatabaseID)
+		if name == "" {
+			name = ev.Database
+		}
+		if name == "" {
+			r.logger.Debug("placement reconciler: delete of an entry never seen, nothing to close",
+				slog.String("tenant", ev.TenantID),
+				slog.String("database_id", ev.DatabaseID))
+			break
+		}
+		if err := r.closeDemoted(ev.TenantID, name); err != nil {
 			r.logger.Warn("placement reconciler: shard close on delete failed",
 				slog.String("tenant", ev.TenantID),
-				slog.String("database", ev.Database),
+				slog.String("database", name),
 				slog.Any("error", err))
 		}
 	}
+}
+
+// rememberName records the database name a placement entry carries, so a
+// later delete of the entry (which names only its id) closes that shard.
+func (r *TenantShardReconciler) rememberName(tenantID, databaseID, name string) {
+	if databaseID == "" || name == "" {
+		return
+	}
+	r.placedNames.Store(tenantID+"/"+databaseID, name)
+}
+
+// forgetName returns and drops the name recorded for the entry, or "" when
+// the entry was never seen.
+func (r *TenantShardReconciler) forgetName(tenantID, databaseID string) string {
+	v, ok := r.placedNames.LoadAndDelete(tenantID + "/" + databaseID)
+	if !ok {
+		return ""
+	}
+	name, _ := v.(string) //nolint:errcheck // the map only ever holds strings
+	return name
 }
 
 // runPoll calls ReconcileOnce on every pollInterval tick until ctx is cancelled.

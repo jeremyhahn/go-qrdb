@@ -561,6 +561,27 @@ func (s *Store) ListForTenant(ctx context.Context, tenantID string) ([]*Placemen
 	return out, nil
 }
 
+// GetByName returns the tenant's placement entry for the database named
+// name. The table is keyed by the opaque database id, so this scans the
+// tenant's entries for the one whose record names the database; a caller
+// that holds the id uses Get. It returns ErrPlacementNotFound when no entry
+// names the database.
+func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placement, error) {
+	if name == "" {
+		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabase}
+	}
+	placements, err := s.ListForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range placements {
+		if p.Database == name {
+			return p, nil
+		}
+	}
+	return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrPlacementNotFound}
+}
+
 // Watch returns a typed placement change stream when the backing KV implements
 // Watcher; otherwise it returns ErrWatchUnsupported. The returned channel is
 // closed when ctx is cancelled or the underlying feed ends.

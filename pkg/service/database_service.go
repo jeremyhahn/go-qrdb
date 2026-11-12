@@ -562,10 +562,10 @@ func addObserverReplica(
 	}
 	if !swapped {
 		return current, nil, true, &placement.StoreError{
-			TenantID: current.TenantID,
-			Database: current.Database,
-			Op:       "put",
-			Err:      &placement.ConflictError{},
+			TenantID:   current.TenantID,
+			DatabaseID: current.DatabaseID,
+			Op:         "put",
+			Err:        &placement.ConflictError{},
 		}
 	}
 
@@ -650,10 +650,10 @@ func removeReplicaFromGroup(
 	}
 	if !swapped {
 		return current, true, &placement.StoreError{
-			TenantID: current.TenantID,
-			Database: current.Database,
-			Op:       "put",
-			Err:      &placement.ConflictError{},
+			TenantID:   current.TenantID,
+			DatabaseID: current.DatabaseID,
+			Op:         "put",
+			Err:        &placement.ConflictError{},
 		}
 	}
 	if raftHost != nil {
@@ -1046,9 +1046,9 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 	if err := database.CheckDroppable(name); err != nil {
 		return err
 	}
-	tenantID := ""
+	tenantID, knownID := "", ""
 	if db, err := s.manager.Get(name); err == nil {
-		tenantID = db.TenantID()
+		tenantID, knownID = db.TenantID(), db.ID()
 	} else {
 		var dropping *database.DroppingError
 		if errors.As(err, &dropping) {
@@ -1057,9 +1057,13 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 	}
 
 	var hadPlacement, owned bool
+	var databaseID string
 	if tenantID != "" {
 		var err error
-		hadPlacement, owned, err = s.dropRaftPlacement(ctx, tenantID, name)
+		if databaseID, err = s.placementID(ctx, tenantID, name, knownID); err != nil {
+			return err
+		}
+		hadPlacement, owned, err = s.dropRaftPlacement(ctx, tenantID, databaseID)
 		if err != nil {
 			return err
 		}
@@ -1067,18 +1071,38 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 
 	if err := s.manager.Drop(ctx, name); err != nil {
 		if hadPlacement && owned && isReclamationFailure(err) {
-			s.clearRaftPlacementFence(ctx, tenantID, name)
+			s.clearRaftPlacementFence(ctx, tenantID, databaseID)
 		}
 		return err
 	}
 
 	if hadPlacement {
-		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 	}
 	return nil
+}
+
+// placementID resolves the placement id of the tenant's database named name.
+// The placement table is keyed by the opaque id the catalog record carries;
+// knownID is that id when the caller holds the database's record. A caller
+// without one (a drop resumed after the local record went away) finds the
+// entry that names the database. An empty id with a nil error means the
+// database has no placement entry.
+func (s *DatabaseService) placementID(ctx context.Context, tenantID, name, knownID string) (string, error) {
+	if knownID != "" || s.placementStore == nil {
+		return knownID, nil
+	}
+	p, err := s.placementStore.GetByName(ctx, tenantID, name)
+	if err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return p.DatabaseID, nil
 }
 
 // isReclamationFailure reports whether err is a failed manager-level drop
@@ -1118,17 +1142,17 @@ func isReclamationFailure(err error) bool {
 // an earlier one still live after a restart -- already owns the fence, and
 // this call's caller must never be the one to clear it (go-qrdb#482 round 3,
 // finding 4).
-func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, name string) (hadPlacement, owned bool, err error) {
-	if s.placementStore == nil {
+func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, databaseID string) (hadPlacement, owned bool, err error) {
+	if s.placementStore == nil || databaseID == "" {
 		return false, false, nil
 	}
-	if _, err := s.placementStore.Get(ctx, tenantID, name); err != nil {
+	if _, err := s.placementStore.Get(ctx, tenantID, databaseID); err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return false, false, nil
 		}
 		return false, false, err
 	}
-	owned, err = s.placementStore.TryMarkDropping(ctx, tenantID, name)
+	owned, err = s.placementStore.TryMarkDropping(ctx, tenantID, databaseID)
 	if err != nil {
 		return true, false, err
 	}
@@ -1147,14 +1171,14 @@ func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, name 
 // leaves the database in the SAME fail-closed state the failed drop already
 // left it in, not a new one -- an operator retrying the drop calls
 // dropRaftPlacement again regardless.
-func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID, name string) {
+func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID, databaseID string) {
 	// Under a context the failed request's cancellation cannot reach: see
 	// database.DropRollbackContext.
 	rollbackCtx, cancel := database.DropRollbackContext(ctx)
 	defer cancel()
-	if err := s.placementStore.SetDropping(rollbackCtx, tenantID, name, false); err != nil {
+	if err := s.placementStore.SetDropping(rollbackCtx, tenantID, databaseID, false); err != nil {
 		s.logger.Warn("failed to clear the replicated drop fence after a failed drop",
-			slog.String("tenant", tenantID), slog.String("database", name), slog.Any("error", err))
+			slog.String("tenant", tenantID), slog.String("database_id", databaseID), slog.Any("error", err))
 	}
 }
 
@@ -1176,8 +1200,8 @@ func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID,
 // local drop this entry is fenced for has, in fact, already happened.
 // Reporting failure here instead forces a retry, which re-attempts this
 // idempotent marker (and then the deletion) until both converge.
-func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, tenantID, name string) error {
-	return s.placementStore.MarkDropCommitted(ctx, tenantID, name)
+func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, tenantID, databaseID string) error {
+	return s.placementStore.MarkDropCommitted(ctx, tenantID, databaseID)
 }
 
 // raftPlacementDropAlreadyCommitted reports whether (tenantID, name)'s
@@ -1188,8 +1212,12 @@ func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, te
 // DropForTenant tell a legitimate retry-after-teardown apart from a request
 // that reached a node which never had the local catalog record at all
 // (go-qrdb#482 round 3, finding 5).
-func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context, tenantID, name string) (bool, error) {
-	p, err := s.placementStore.Get(ctx, tenantID, name)
+func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context, tenantID, databaseID string) (bool, error) {
+	if databaseID == "" {
+		// No entry names the database: it was already removed.
+		return true, nil
+	}
+	p, err := s.placementStore.Get(ctx, tenantID, databaseID)
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return true, nil
@@ -1214,8 +1242,8 @@ func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context,
 // caller retrying the drop -- through DropForTenant, which recognizes an
 // already-gone local catalog entry as "finish the placement teardown", not
 // as a failure -- is what completes it.
-func (s *DatabaseService) finishRaftPlacementTeardown(ctx context.Context, tenantID, name string) error {
-	return s.placementStore.Delete(ctx, tenantID, name)
+func (s *DatabaseService) finishRaftPlacementTeardown(ctx context.Context, tenantID, databaseID string) error {
+	return s.placementStore.Delete(ctx, tenantID, databaseID)
 }
 
 // UpdateProtocol updates the wire protocol configuration for the named
@@ -1948,10 +1976,11 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	// included, resolves its own replica's directory from the tenant's volume
 	// pool and slot (placementRaftInfoSource's LocalRootResolver).
 	plan, err := s.placementScheduler.Place(ctx, placement.PlaceRequest{
-		TenantID: tenantID,
-		Database: info.Name,
-		ShardID:  info.ShardID,
-		RF:       rf,
+		TenantID:   tenantID,
+		DatabaseID: info.ID,
+		Database:   info.Name,
+		ShardID:    info.ShardID,
+		RF:         rf,
 	})
 	if err != nil {
 		return nil, err
@@ -2015,12 +2044,12 @@ func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.Databas
 // the database has no placement entry (predates placement, or was created
 // with raft cluster mode "local").
 func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info *database.DatabaseInfo) {
-	if s.placementStore == nil || info.Backend != database.BackendRaft {
+	if s.placementStore == nil || info.Backend != database.BackendRaft || info.ID == "" {
 		return
 	}
 	readCtx, cancel := s.boundedInfoRead(ctx)
 	defer cancel()
-	p, err := s.placementStore.Get(readCtx, info.TenantID, info.Name)
+	p, err := s.placementStore.Get(readCtx, info.TenantID, info.ID)
 	if err != nil {
 		return
 	}
@@ -2103,6 +2132,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	wasRaft := false
 	replicaCount := 0
 	wasDedicatedWAL := false
+	knownID := ""
 	db, dbErr := s.manager.GetForTenantIgnoringFence(ctx, name)
 	switch {
 	case dbErr != nil && database.IsTenantHome(name):
@@ -2114,18 +2144,24 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		wasRaft = info.Backend == database.BackendRaft
 		replicaCount = info.Replicas
 		wasDedicatedWAL = info.DedicatedWAL
+		knownID = info.ID
 	case s.placementStore != nil:
 		// No local record on this node for name at all. See this method's
 		// doc comment: refuse now, before the replicated fence is ever
 		// touched, unless the replicated entry already proves an earlier
 		// attempt finished the local half elsewhere.
-		committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+		id, ierr := s.placementID(ctx, tenantID, name, "")
+		if ierr != nil {
+			return ierr
+		}
+		committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, id)
 		if cerr != nil {
 			return cerr
 		}
 		if !committed {
 			return dbErr
 		}
+		knownID = id
 	default:
 		// No placement wired in at all (a single-node deployment with no
 		// scheduler): there is no replicated signal to consult, so a
@@ -2133,7 +2169,11 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		return dbErr
 	}
 
-	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, name)
+	databaseID, err := s.placementID(ctx, tenantID, name, knownID)
+	if err != nil {
+		return err
+	}
+	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, databaseID)
 	if err != nil {
 		return err
 	}
@@ -2141,12 +2181,12 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	if err := s.manager.DropForTenant(ctx, name); err != nil {
 		var notFound *database.NotFoundError
 		if hadPlacement && errors.As(err, &notFound) {
-			committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+			committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, databaseID)
 			if cerr != nil {
 				return cerr
 			}
 			if committed {
-				return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+				return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 			}
 			// Defense in depth: the upfront GetForTenantIgnoringFence check
 			// above already refuses a request with no local record and no
@@ -2156,7 +2196,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 			// regardless (go-qrdb#482 round 3, findings 5 and 6).
 		}
 		if hadPlacement && owned && isReclamationFailure(err) {
-			s.clearRaftPlacementFence(ctx, tenantID, name)
+			s.clearRaftPlacementFence(ctx, tenantID, databaseID)
 		}
 		return err
 	}
@@ -2179,10 +2219,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	// drop apart from one that never actually happened -- see
 	// raftPlacementDropAlreadyCommitted above.
 	if hadPlacement {
-		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 	}
 	return nil
 }
@@ -2449,10 +2489,11 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 	// -- that node's per-node singleton *database.Manager is the only place
 	// the database is registered, so requiring a manager lookup here (as a
 	// prior version of this method did) 404s on every node except the
-	// creator. placementStore.Get is itself tenant-scoped (keyed by
-	// tenantID+database), so a successful load already proves tenant
-	// ownership -- no separate manager-based ownership check is needed.
-	p, err := s.placementStore.Get(ctx, tenantID, name)
+	// creator, which alone holds the catalog record and so the database id.
+	// placementStore.GetByName finds the entry among the tenant's own
+	// (keyed by tenantID+database id), so a successful load already proves
+	// tenant ownership -- no separate manager-based ownership check is needed.
+	p, err := s.placementStore.GetByName(ctx, tenantID, name)
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return nil, &NotDedicatedRaftDatabaseError{Database: name}

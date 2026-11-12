@@ -1839,7 +1839,9 @@ func (s *placementRaftInfoSource) databaseInfo(tenantID, db string, ignoreFence 
 func (s *placementRaftInfoSource) databaseAndPlacementInfo(tenantID, db string) (shardID uint64, dataDir string, p *placement.Placement, ok bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
-	p, err = s.store.Get(ctx, tenantID, db)
+	// A follower holds no catalog record for db, so it has no id to key by:
+	// the entry is the tenant's one that names the database.
+	p, err = s.store.GetByName(ctx, tenantID, db)
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return 0, "", nil, false, nil

@@ -203,7 +203,7 @@ func TestStartBarrierInitWatcher_InitializesAPlacedTenantFromItsClaimedStatement
 
 	placements, _ := newPlacementStoreOverHub(t)
 	home := placedOn("10.0.0.1:7000", "10.0.0.2:7000")
-	home.TenantID, home.Database = "acme", "home"
+	home.TenantID, home.DatabaseID, home.Database = "acme", "home", "home"
 	if err := placements.Put(ctx, home); err != nil {
 		t.Fatalf("Put placement: %v", err)
 	}

@@ -81,3 +81,33 @@ func TestStore_PutRefusesAnEntryWithoutADatabaseID(t *testing.T) {
 		t.Fatalf("Put without an id: err = %v, want ErrEmptyDatabaseID", err)
 	}
 }
+
+// TestStore_GetByNameFindsTheTenantsEntry: a caller holding only a name (a
+// follower with no catalog record) finds the entry that names the database
+// among the tenant's own; another tenant's entry of that name is not it.
+func TestStore_GetByNameFindsTheTenantsEntry(t *testing.T) {
+	s, err := NewStore(newFakeKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	mine := samplePlacement("acme", "orders", 1000)
+	mine.DatabaseID = "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4"
+	theirs := samplePlacement("globex", "orders", 1001)
+	theirs.DatabaseID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	for _, p := range []*Placement{mine, theirs} {
+		if err := s.Put(ctx, p); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	got, err := s.GetByName(ctx, "acme", "orders")
+	if err != nil || got.DatabaseID != mine.DatabaseID {
+		t.Fatalf("GetByName = %+v, %v; want acme's entry", got, err)
+	}
+	if _, err := s.GetByName(ctx, "acme", "invoices"); !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("GetByName of an unplaced name: err = %v, want ErrPlacementNotFound", err)
+	}
+	if _, err := s.GetByName(ctx, "acme", ""); !errors.Is(err, ErrEmptyDatabase) {
+		t.Fatalf("GetByName of an empty name: err = %v, want ErrEmptyDatabase", err)
+	}
+}

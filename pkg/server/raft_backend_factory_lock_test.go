@@ -209,7 +209,7 @@ func TestRaftBackendFactory_ShardStoppedDuringReadPlansAgain(t *testing.T) {
 // not exist, so the shard starts on the host but never elects a leader: a
 // founding start whose quorum never forms.
 func noQuorumPlacement(tenantID, db string, shardID uint64) *placement.Placement {
-	return &placement.Placement{TenantID: tenantID, Database: db, ShardID: shardID, Replicas: []placement.Replica{
+	return &placement.Placement{TenantID: tenantID, DatabaseID: db, Database: db, ShardID: shardID, Replicas: []placement.Replica{
 		{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
 		{ReplicaID: 2, NodeID: "127.0.0.1:9", RaftAddr: "127.0.0.1:9"},
 		{ReplicaID: 3, NodeID: "127.0.0.1:11", RaftAddr: "127.0.0.1:11"},

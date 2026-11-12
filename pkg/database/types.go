@@ -533,6 +533,14 @@ const (
 	// keyspace a standalone node's home store occupies in the tenant barrier,
 	// so reserving the one reserves the other.
 	TenantHomeName = tenant.HomeName
+
+	// TenantHomeID is the placement id of an isolated tenant's home group.
+	// Every other database is placed under the opaque id its catalog record
+	// carries, but the home group has no catalog record: the tenant's catalog
+	// lives in the home store, reached through this placement. Its id is the
+	// reserved home name, which names nothing the tenant chose, and no
+	// allocated id (32 hex digits) can equal it.
+	TenantHomeID = TenantHomeName
 )
 
 // reservedNames is the set of database names that collide with a directory
