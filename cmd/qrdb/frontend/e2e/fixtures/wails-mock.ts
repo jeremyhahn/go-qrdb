@@ -975,6 +975,56 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return result;
           },
         },
+        // InvitationBinding mirrors cmd/qrdb/bindings_invitations.go. Invite
+        // issues a single-use token; Redeem (unauthenticated, dials its own
+        // server) exchanges an issued token plus a CSR for a certificate and
+        // consumes the token, so an unknown or reused token rejects.
+        InvitationBinding: (() => {
+          const issued = new Map<
+            string,
+            { userID: string; username: string; tenantID: string }
+          >();
+          let seq = 0;
+          return {
+            Invite: async (req: { username: string; email?: string; name?: string; roleIDs?: string[] }) => {
+              maybeReject("InvitationBinding.Invite");
+              if (!req || !req.username) throw new Error("username is required");
+              seq += 1;
+              const token = `inv-token-${seq}-${req.username}`;
+              const userID = `user-inv-${seq}`;
+              issued.set(token, { userID, username: req.username, tenantID: "default" });
+              return {
+                id: `invitation-${seq}`,
+                token,
+                userID,
+                username: req.username,
+                expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+              };
+            },
+            Redeem: async (req: {
+              server?: string;
+              transport?: string;
+              caFile?: string;
+              tenantID: string;
+              token: string;
+              csrPEM: string;
+            }) => {
+              maybeReject("InvitationBinding.Redeem");
+              const inv = issued.get(req.token);
+              if (!inv) throw new Error("invitation token is invalid or expired");
+              if (!req.csrPEM || !req.csrPEM.includes("CERTIFICATE REQUEST")) {
+                throw new Error("csrPEM must be a PEM certificate request");
+              }
+              issued.delete(req.token);
+              return {
+                userID: inv.userID,
+                username: inv.username,
+                tenantID: req.tenantID || inv.tenantID,
+                certPEM: `-----BEGIN CERTIFICATE-----\nMOCK-${inv.username}\n-----END CERTIFICATE-----\n`,
+              };
+            },
+          };
+        })(),
         AdminBinding: {
           Health: async () => {
             maybeReject("AdminBinding.Health");
