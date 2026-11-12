@@ -1608,6 +1608,11 @@ func buildDatabaseQuotaOpts(tenantSvc tenant.TenantServicer, log *slog.Logger) [
 	if lookup, ok := tenantSvc.(service.TenantInfoLookup); ok {
 		opts = append(opts, service.WithTenantInfoLookup(lookup))
 	}
+	// The cluster isolation floor makes every isolated tenant strict
+	// (phase 5 G1: a strict tenant's databases need a dedicated WAL).
+	if reader, ok := tenantSvc.(tenant.ClusterIsolationPolicyReader); ok {
+		opts = append(opts, service.WithDatabaseIsolationPolicyReader(reader))
+	}
 	// Record per-database raft-group usage so MaxRaftGroups is enforced for each
 	// dedicated-raft (IsolationRaft) database.
 	if rec, ok := tenantSvc.(service.QuotaUsageRecorder); ok {

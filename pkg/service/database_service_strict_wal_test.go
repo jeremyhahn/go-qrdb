@@ -62,14 +62,16 @@ func TestCreateForTenant_StrictTenant_DedicatedWALCreated(t *testing.T) {
 // TestCreateForTenant_StrictTenant_QuotaStillApplies: the strict policy does
 // not bypass the MaxDedicatedWALGroups quota.
 func TestCreateForTenant_StrictTenant_QuotaStillApplies(t *testing.T) {
-	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 0}}
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 1, CurrentDedicatedWALGroups: 1}}
 	svc := newReplicaDatabaseService(t, strictRaftTenant(), f)
 	ctx := tenant.WithTenantID(context.Background(), "rt")
 
 	cfg := testDBConfig("app")
 	cfg.DedicatedWAL = true
-	if _, err := svc.CreateForTenant(ctx, cfg); err == nil {
-		t.Fatal("CreateForTenant succeeded over the dedicated-WAL quota, want refusal")
+	_, err := svc.CreateForTenant(ctx, cfg)
+	var exceeded *quota.ExceededError
+	if !errors.As(err, &exceeded) || exceeded.Resource != quota.ResourceDedicatedWALGroups {
+		t.Fatalf("CreateForTenant err = %v, want the dedicated-WAL quota refusal", err)
 	}
 }
 

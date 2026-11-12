@@ -881,6 +881,28 @@ type BarrierOffDataPathError struct {
 	ServedBy string
 }
 
+// StrictTenantDedicatedWALRequiredError refuses creating a database of a
+// strict-isolation tenant without a dedicated WAL (docs/multi-tenancy
+// engineering.md phase 5, G1): a strict tenant never has a log under a node
+// key, so every one of its databases is a raft group on a dedicated WAL.
+// Backend is set when the requested backend cannot carry a dedicated WAL at
+// all (any non-raft backend).
+type StrictTenantDedicatedWALRequiredError struct {
+	Name    string
+	Tenant  string
+	Backend string
+}
+
+func (e *StrictTenantDedicatedWALRequiredError) Error() string {
+	msg := "database " + strconv.Quote(e.Name) + ": tenant " + strconv.Quote(e.Tenant) +
+		" has the strict isolation policy; its databases need a dedicated WAL"
+	if e.Backend != "" {
+		return msg + ", which backend " + strconv.Quote(e.Backend) +
+			" cannot carry (use the raft backend with a dedicated WAL)"
+	}
+	return msg + " (request one with --dedicated-wal)"
+}
+
 // Error returns a human-readable description of the refused request.
 func (e *BarrierOffDataPathError) Error() string {
 	return "database: a per-database barrier would not protect database " +

@@ -204,6 +204,33 @@ func WithTenantInfoLookup(lookup TenantInfoLookup) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.tenantInfo = lookup }
 }
 
+// WithDatabaseIsolationPolicyReader wires the cluster isolation floor the
+// create path reads to decide whether an isolated tenant is strict
+// (tenant.EffectiveIsolationPolicy). Unwired, only the tenant's own policy
+// counts.
+func WithDatabaseIsolationPolicyReader(r tenant.ClusterIsolationPolicyReader) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.isolationFloor = r }
+}
+
+// strictIsolation reports whether info's tenant is governed by the strict
+// isolation policy: an isolated (volume or raft) tenant whose own policy, or
+// the cluster floor, is strict. The policy governs isolated tenants only, so
+// a shared (prefix) tenant is never strict.
+func (s *DatabaseService) strictIsolation(ctx context.Context, info *tenant.TenantInfo) (bool, error) {
+	if info == nil || info.EffectiveIsolationType() == tenant.IsolationPrefix {
+		return false, nil
+	}
+	floor := tenant.ClusterIsolationPolicyUnset
+	if s.isolationFloor != nil {
+		p, err := s.isolationFloor.ClusterIsolationPolicy(ctx)
+		if err != nil {
+			return false, err
+		}
+		floor = p
+	}
+	return tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) == tenant.ClusterIsolationPolicyStrict, nil
+}
+
 // WithPlacementStore sets the replicated placement table into which a
 // dedicated-raft (IsolationRaft) database's computed Placement is persisted on
 // create and removed on drop. When nil, no placement is persisted (the
@@ -849,6 +876,7 @@ type DatabaseService struct {
 	quotaChecker       quota.Checker
 	entitlementChecker quota.EntitlementChecker
 	tenantInfo         TenantInfoLookup
+	isolationFloor     tenant.ClusterIsolationPolicyReader
 	quotaUsage         QuotaUsageRecorder
 	placementStore     *placement.Store
 	placementScheduler *placement.Scheduler
@@ -1607,9 +1635,13 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// can skip a platform-custody tenant, whose every node self-initializes
 	// under its own key, without a second GetTenant call.
 	var tenantBarrierAutoUnseal bool
+	strictTenant := false
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
+			return nil, err
+		}
+		if strictTenant, err = s.strictIsolation(ctx, info); err != nil {
 			return nil, err
 		}
 		// A volume- or raft-isolated tenant serves every database from the
@@ -1706,6 +1738,20 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// closed rather than silently downgrading, so the caller learns the opt-in
 	// was rejected (a downgrade-to-shared would weaken the requested isolation
 	// without notice).
+	//
+	// Phase 5 G1: a strict tenant never has a log under a node key, so every
+	// one of its databases is a raft group on a dedicated WAL. A request
+	// without one, or on a backend that cannot carry one, is refused rather
+	// than upgraded silently; the entitlement and quota checks below still
+	// apply to the dedicated WAL it does request.
+	if strictTenant {
+		if cfg.Backend != database.BackendRaft {
+			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID, Backend: string(cfg.Backend)}
+		}
+		if !cfg.DedicatedWAL {
+			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID}
+		}
+	}
 	if cfg.DedicatedWAL {
 		if cfg.Backend != database.BackendRaft {
 			cfg.DedicatedWAL = false
