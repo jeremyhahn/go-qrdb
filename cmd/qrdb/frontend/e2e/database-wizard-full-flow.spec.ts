@@ -237,7 +237,11 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
    * Navigates to the Barrier step on a standalone server and returns.
    * Steps: Name → Storage → SQL → Barrier
    */
-  async function navigateToBarrier(page: Page, dbName: string): Promise<void> {
+  async function navigateToBarrier(
+    page: Page,
+    dbName: string,
+    dataDir = "/tmp/qrdb-wizard-barrier-modes",
+  ): Promise<void> {
     await openWizard(page);
     await page.locator("#db-name").fill(dbName);
     await page.locator("main").getByRole("button", { name: "Next" }).click();
@@ -245,6 +249,8 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
     await expect(
       page.getByRole("heading", { name: "Storage Backend" }),
     ).toBeVisible({ timeout: STEP_TIMEOUT });
+    // A per-database barrier needs the database's own data directory.
+    if (dataDir !== "") await page.locator("#data-dir-input").fill(dataDir);
     await page.locator("main").getByRole("button", { name: "Next" }).click();
 
     await expect(
@@ -296,6 +302,39 @@ test.describe("Database Wizard - Barrier Step Modes", () => {
     await page.locator("#db-shares-required").fill("2");
     await page.locator("#db-shares-total").fill("3");
     await page.locator("main").getByRole("button", { name: "Next" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Review Configuration" }),
+    ).toBeVisible({ timeout: STEP_TIMEOUT });
+  });
+
+  test("a barrier without a data directory cannot advance and says why", async ({ page }) => {
+    await navigateToBarrier(page, "barrier-nodir-db", "");
+    const next = page.locator("main").getByRole("button", { name: "Next" });
+    const dirError = page.getByTestId("db-barrier-datadir-error");
+
+    // No barrier: no data directory is needed.
+    await page.getByTestId("db-seal-mode-none").click();
+    await expect(dirError).toBeHidden();
+    await expect(next).toBeEnabled();
+
+    for (const mode of ["passphrase", "shamir"]) {
+      await page.getByTestId(`db-seal-mode-${mode}`).click();
+      await expect(dirError).toContainText("data directory");
+      await expect(next).toBeDisabled();
+    }
+
+    // Back to Storage, set a data directory: the Shamir barrier advances.
+    await page.locator("main").getByRole("button", { name: "Back" }).click();
+    await page.locator("main").getByRole("button", { name: "Back" }).click();
+    await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible({
+      timeout: STEP_TIMEOUT,
+    });
+    await page.locator("#data-dir-input").fill("/tmp/qrdb-wizard-barrier-nodir");
+    await next.click();
+    await next.click();
+    await page.getByTestId("db-seal-mode-shamir").click();
+    await expect(dirError).toBeHidden();
+    await next.click();
     await expect(
       page.getByRole("heading", { name: "Review Configuration" }),
     ).toBeVisible({ timeout: STEP_TIMEOUT });
