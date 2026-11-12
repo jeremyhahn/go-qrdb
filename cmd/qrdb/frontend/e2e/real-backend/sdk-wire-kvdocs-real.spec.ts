@@ -11,6 +11,7 @@
  * action silently send or read nothing.
  */
 
+import { createServer, type AddressInfo } from "node:net";
 import { RestClient } from "@qrdb/sdk";
 import { test, expect } from "./fixtures/daemon.ts";
 
@@ -20,6 +21,17 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 function uniq(label: string): string {
   return `wire-${label}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+}
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port;
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
 async function sdk(adminUrl: string): Promise<RestClient> {
@@ -62,11 +74,16 @@ test.describe("SDK wire: kv, documents, databases, index/query (real backend)", 
   }) => {
     const c = await sdk(daemon.adminUrl);
     const name = uniq("db").replace(/-/g, "_");
+    const etcdAddr = `127.0.0.1:${await freePort()}`;
 
     const created = await c.database.create({
       name,
       backend: "pebble",
-      protocol: { mysql: false, postgresql: false },
+      protocol: {
+        mysql: false,
+        postgresql: false,
+        etcd: { enabled: true, listenAddr: etcdAddr, advertiseClientUrls: [`http://${etcdAddr}`] },
+      },
       sql: { concurrency: "pessimistic" },
     });
     expect(created.name).toBe(name);
@@ -78,6 +95,9 @@ test.describe("SDK wire: kv, documents, databases, index/query (real backend)", 
     expect(got.sql?.concurrency).toBe("pessimistic");
     expect(got.protocol?.mysql ?? false).toBe(false);
     expect(got.protocol?.postgresql ?? false).toBe(false);
+    expect(got.protocol?.etcd?.enabled).toBe(true);
+    expect(got.protocol?.etcd?.listenAddr).toBe(etcdAddr);
+    expect(got.protocol?.etcd?.advertiseClientUrls).toEqual([`http://${etcdAddr}`]);
 
     const listed = await c.database.list();
     expect(listed.map((d) => d.name)).toContain(name);
