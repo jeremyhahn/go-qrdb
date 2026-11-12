@@ -13,6 +13,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Admin | `drain` | views/admin/Cluster.svelte  | admin-dashboard.spec.ts admin-cluster.spec.ts  |  |
 | Admin | `getTopology` | stores/connection-manager.svelte.ts views/admin/Topology.svelte  | real-backend/rebalance-real.spec.ts  |  |
 | Admin | `health` | views/admin/Dashboard.svelte  | setup-wizard.spec.ts admin-views.spec.ts  |  |
+| Admin | `metrics` | views/admin/Dashboard.svelte (Metrics card: filter, family table, expandable samples; desktop shows not available) | admin-metrics.spec.ts | *verified* |
 | Admin | `mintJoinToken` | views/admin/Cluster.svelte (web mode; desktop binding is not implemented by design) | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `nodeCompaction` | views/admin/Cluster.svelte | admin-cluster.spec.ts web-mode-cluster.spec.ts | *verified* |
 | Admin | `peers` | views/admin/Cluster.svelte  | setup-wizard.spec.ts full-admin-operations.spec.ts  |  |
@@ -243,7 +244,7 @@ Each row is a read-only surface: the SDK method that returns it, its fields (`sd
 | cluster seal (`seal.status().clusterSeal`, `seal.clusterUnseal`) | active, sealed, epoch, principal, principalTenant, node, at, local | views/admin/SealManager.svelte (all fields) | admin-seal.spec.ts | `clusterMigration` not in the SDK type; *verified* |
 | ceremony state (`ceremony.status`) | state, spkiPin | none | none | not in UI; *verified* |
 | daemon status (`daemon.daemonStatus`) | running, pid, logFile | components/admin/DaemonPanel.svelte (Running/Stopped, PID, log file) | admin-daemon.spec.ts | *verified* |
-| metrics (/metrics) | Prometheus exposition | none: the SDK has no metrics method | none | not in SDK, not in UI; *verified* |
+| metrics (/metrics, `admin.metrics`) | families[].name, help, type, samples[].name, labels, value | views/admin/Dashboard.svelte (Metrics card) | admin-metrics.spec.ts | *verified* |
 
 ## Gap groups
 
@@ -270,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 217 | 217 |
-| displays | 11 | 9 | 8 |
+| operations | 219 | 218 | 218 |
+| displays | 11 | 10 | 9 |
 
 Operations not in UI: 1 (`timeSeries.writePoint`, an alias of `write`). In UI without e2e: 0. Displays with a partial field gap: 0 (cluster seal `clusterMigration` waits on an SDK field).
