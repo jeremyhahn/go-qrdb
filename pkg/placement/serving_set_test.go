@@ -113,3 +113,64 @@ func TestServingSetError_CheckNode(t *testing.T) {
 		t.Fatalf("CheckServingSet(n2) = %v, want nil", err)
 	}
 }
+
+func TestServingSetError_Error(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *ServingSetError
+		want string
+	}{
+		{
+			name: "named node",
+			err:  &ServingSetError{TenantID: "iso", Database: "db", Node: "n3"},
+			want: `placement: node "n3" is outside the serving set of tenant "iso"; database "db" is confined to it`,
+		},
+		{
+			name: "planner refusal",
+			err:  &ServingSetError{TenantID: "iso", Database: "db", Have: 1, Need: 3},
+			want: `placement: database "db" of tenant "iso" is confined to the tenant's serving set: have 1 eligible serving nodes, need 3`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.err.Error(); got != tt.want {
+				t.Fatalf("Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServingScheduler_CancelledContext(t *testing.T) {
+	s := newServingScheduler(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.Place(ctx, PlaceRequest{TenantID: "iso", Database: "db", ShardID: 7, RF: 1}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Place on a cancelled context: err = %v, want context.Canceled", err)
+	}
+	existing := &Placement{
+		TenantID: "iso", DatabaseID: "db-id", Database: "db", ShardID: 7, RF: 1,
+		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}},
+	}
+	if _, err := s.PlaceAdditional(ctx, existing, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("PlaceAdditional on a cancelled context: err = %v, want context.Canceled", err)
+	}
+}
+
+func TestNotAReplicaError_LocalBinding(t *testing.T) {
+	tests := []struct {
+		name    string
+		shardID uint64
+		want    bool
+	}{
+		{name: "local binding", shardID: 0, want: true},
+		{name: "raft group", shardID: 7, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := &NotAReplicaError{TenantID: "iso", Database: "db", ShardID: tt.shardID, NodeID: "n1"}
+			if got := e.LocalBinding(); got != tt.want {
+				t.Fatalf("LocalBinding() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
