@@ -32,10 +32,41 @@
  * database-wizard-real.spec.ts and the StepDatabaseRaft unit tests.
  */
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
+
+/** Waits for a toast; on a miss, names the error toasts on screen. */
+async function expectToast(page: Page, text: string): Promise<void> {
+  try {
+    await expect(page.getByText(text).last()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  } catch (err) {
+    const errors = await page.locator(".toast .alert-error").allInnerTexts();
+    throw new Error(`expected toast "${text}"; error toasts: ${JSON.stringify(errors)}\n${err}`);
+  }
+}
+
+/**
+ * Returns the PEM of a fresh EC P-256 CSR for `cn`, made with openssl in a
+ * temp dir that is removed before returning: the key is never kept.
+ */
+function generateCSR(cn: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "qrdb-csr-"));
+  try {
+    const keyPath = join(dir, "key.pem");
+    const csrPath = join(dir, "csr.pem");
+    execFileSync("openssl", ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", keyPath]);
+    execFileSync("openssl", ["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${cn}`]);
+    return readFileSync(csrPath, "utf8").trim();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 const TENANT_ID = "acme";
 const TENANT_NAME = "Acme Corp";
@@ -96,10 +127,20 @@ test("tenant create + quotas + entitlements round-trip (UI ↔ live daemon)", as
   // prefix is the default isolation; assert it explicitly to be deterministic.
   await expect(page.getByTestId("create-tenant-isolation-select")).toHaveValue("prefix");
 
+  // A tenant is created with its first admin's login credential, or not at
+  // all: the admin's CSR (its key never leaves this test's temp dir).
+  await page.getByTestId("create-tenant-admin-username").fill("acme-admin");
+  await page.getByTestId("create-tenant-admin-kind-csr").click();
+  await page.getByTestId("create-tenant-admin-csr").fill(generateCSR("acme-admin"));
+
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.getByText(`Tenant "${TENANT_NAME}" created.`).last()).toBeVisible({
-    timeout: LOAD_TIMEOUT,
-  });
+  await expectToast(page, `Tenant "${TENANT_NAME}" created.`);
+
+  // The admin's certificate is shown once; Done returns to the list.
+  await expect(page.getByTestId("create-tenant-admin-cert-result")).toHaveValue(
+    /BEGIN CERTIFICATE/,
+  );
+  await page.getByTestId("create-tenant-admin-result-done").click();
 
   // Back on the list — open the tenant detail by clicking its row.
   await page.getByText(TENANT_NAME).first().click();
