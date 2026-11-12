@@ -33,6 +33,8 @@ import {
     indexParamsToWire,
     rebuildProgressFromWire,
     compactionProgressFromWire,
+    searchResponseFromWire,
+    type WireSearchResponse,
     type WireRebuildIndexResponse,
     type WireRebuildProgress,
     type WireCompactResponse,
@@ -1488,7 +1490,7 @@ export class RestClient implements Client {
                 // distance_metric / index_type as canonical service strings,
                 // not the SDK's numeric proto enums, and the index parameters
                 // under index_config.
-                return this.fetchJSON<CreateNamespaceResponse>('/vector/namespace',
+                const resp = await this.fetchJSON<{ success?: boolean; timestamp?: number }>('/vector/namespace',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1501,6 +1503,8 @@ export class RestClient implements Client {
                         }),
                     },
                 );
+                // The wire (vectorCreateNamespaceResponse) reports success.
+                return { created: resp.success === true, timestamp: resp.timestamp ?? 0 };
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
                 this.ensureConnected();
@@ -1594,7 +1598,11 @@ export class RestClient implements Client {
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
+                const resp = await this.fetchJSON<{
+                    vectors?: VectorData[] | null;
+                    nextCursor?: string;
+                    totalCount?: number;
+                }>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
                         offset: req.offset,
@@ -1602,9 +1610,11 @@ export class RestClient implements Client {
                         shard_id: req.shardId,
                     })}`,
                 );
+                // The wire answers the namespace size as total_count.
                 return {
-                    ...resp,
                     vectors: (resp.vectors ?? []).map(normalizeVectorIDField),
+                    nextCursor: resp.nextCursor || undefined,
+                    total: resp.totalCount ?? 0,
                 };
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
@@ -1618,19 +1628,25 @@ export class RestClient implements Client {
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
-                    { method: 'POST', ...jsonBody(req) },
+                // The wire (vectorSearchSimilarRequest) reads query_vector
+                // and answers the search time as query_duration.
+                const { vector, ...rest } = req;
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/similar',
+                    { method: 'POST', ...jsonBody({ ...rest, queryVector: vector }) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByMetadata: async (
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
+                // The wire answers the match count as total_count.
+                const resp = await this.fetchJSON<{ results?: VectorData[] | null; totalCount?: number }>(
+                    '/vector/search/metadata',
                     { method: 'POST', ...jsonBody(req) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                const results = (resp.results ?? []).map(normalizeVectorIDField);
+                return { results, total: resp.totalCount ?? results.length };
             },
             hybridSearch: async (
                 req: HybridSearchRequest,
@@ -1638,7 +1654,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 // The wire reads query_vector and metadata_filter; it has no
                 // weight fields, so vectorWeight/metadataWeight stay client-side.
-                const resp = await this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/hybrid',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1651,17 +1667,17 @@ export class RestClient implements Client {
                         }),
                     },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/by-id',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                     },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             rebuildIndex: async (
                 req: RebuildIndexRequest,

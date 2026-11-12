@@ -143,3 +143,47 @@ describe('vector index stats wire names', () => {
         expect(s).not.toHaveProperty('indexSizeBytes');
     });
 });
+
+describe('vector search and list wire names', () => {
+    it('sends the searchSimilar query vector as query_vector and reads query_duration as took', async () => {
+        const c = await client();
+        const calls = mockFetch({ results: [{ id: 7, score: 1 }], timestamp: 1, query_duration: 42 });
+        const r = await c.vector!.searchSimilar({ namespace: 'ns', vector: [1, 0], k: 1, efSearch: 16, minScore: 0.5 });
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body.query_vector).toEqual([1, 0]);
+        expect(body).not.toHaveProperty('vector');
+        expect(body.ef_search).toBe(16);
+        expect(body.min_score).toBe(0.5);
+        expect(r.took).toBe(42);
+        expect(r.results[0].id).toBe('7');
+    });
+
+    it('reads took from hybridSearch and searchByID', async () => {
+        const c = await client();
+        mockFetch({ results: [], query_duration: 9 });
+        const h = await c.vector!.hybridSearch({
+            namespace: 'ns', vector: [1], metadataFilters: {}, k: 1, vectorWeight: 1, metadataWeight: 0,
+        });
+        expect(h.took).toBe(9);
+        const b = await c.vector!.searchByID({ namespace: 'ns', id: '1', k: 1 });
+        expect(b.took).toBe(9);
+    });
+
+    it('reads total_count as total for searchByMetadata and listVectors', async () => {
+        const c = await client();
+        mockFetch({ results: [{ id: 1, vector: [1] }], total_count: 5, timestamp: 1 });
+        expect((await c.vector!.searchByMetadata({ namespace: 'ns', filters: {} })).total).toBe(5);
+        mockFetch({ vectors: [{ id: 1, vector: [1] }], next_cursor: 'abc', total_count: 3, timestamp: 1 });
+        const l = await c.vector!.listVectors({ namespace: 'ns', limit: 1 });
+        expect(l.total).toBe(3);
+        expect(l.nextCursor).toBe('abc');
+        expect(l.vectors[0].id).toBe('1');
+    });
+
+    it('reads createNamespace success as created', async () => {
+        const c = await client();
+        mockFetch({ namespace: 'ns', dimension: 3, timestamp: 11, success: true });
+        expect(await c.vector!.createNamespace({ namespace: 'ns', dimension: 3, distanceMetric: 0, indexType: 0 }))
+            .toEqual({ created: true, timestamp: 11 });
+    });
+});
