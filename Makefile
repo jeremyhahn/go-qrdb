@@ -714,28 +714,47 @@ release-cross:
 	@mkdir -p $(RELEASE_DIR)
 	$(call release-platform,$(PLATFORM))
 
-# test-cross compiles and links every test binary of ONE platform, plain and
-# FIPS, and runs none of them:
+# test-cross compiles and links the release test binaries of ONE platform,
+# plain and FIPS, and runs none of them:
 #   make test-cross PLATFORM=linux/arm64
 # -exec /bin/true hands each linked binary to /bin/true instead of running
 # it, so an arm64-only compile failure surfaces on an amd64 host before the
-# once-before-RC arm64 integration run (docs/release/engineering.md). Each
-# variant builds twice over ./...: with RELEASE_TAGS (the unit tests), then
-# with RELEASE_TAGS plus integration (every integration-tagged test, the
-# test/integration suites included), the tags those binaries ship with.
-# GOFIPS140 picks the variant exactly as release-platform does.
+# once-before-RC arm64 integration run (docs/release/engineering.md).
+# GOFIPS140 picks the variant exactly as release-platform does. A `go test
+# ./...` stops at a nested go.mod, so each module is compiled from its own
+# directory, with the tags of the target that tests it:
+#   .                  RELEASE_TAGS (the unit tests), then RELEASE_TAGS plus
+#                      integration (every integration-tagged test, the
+#                      test/integration suites included);
+#   $(SDK_DIR)         the same two tag sets: test-sdk's BUILD_TAGS plus the
+#                      gms_pure_go a CGO_ENABLED=0 build of the SDK's embedded
+#                      MySQL engine needs, then with integration (the SDK's
+#                      integration-tagged tests);
+#   test/clusterproof  MIN_TAGS,clusterproof as test-clusterproof runs it.
+# The other nested modules are out: test/performance/* and test/vanguardprobe
+# are benchmarks and an upstream probe run by hand, and
+# sdk/go/gorm/conformance is the GORM conformance harness; no release test
+# target runs any of them.
 .PHONY: test-cross
 test-cross:
 	@case "$(PLATFORM)" in */*) ;; *) echo "test-cross: set PLATFORM=<goos>/<goarch>, e.g. make test-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
 	@set -e; os=$(word 1,$(subst /, ,$(PLATFORM))); arch=$(word 2,$(subst /, ,$(PLATFORM))); \
 	for fips in off $(RELEASE_FIPS_MODULE); do \
 		for tags in '$(RELEASE_TAGS)' '$(RELEASE_TAGS) integration'; do \
-			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips tags=$$tags"; \
+			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips . tags=$$tags"; \
 			GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
 				$(GO) test -count=1 -vet=off -exec /bin/true -tags "$$tags" ./...; \
 		done; \
+		for tags in '$(RELEASE_TAGS)' '$(RELEASE_TAGS) integration'; do \
+			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips $(SDK_DIR) tags=$$tags"; \
+			(cd $(SDK_DIR) && GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+				$(GO) test -count=1 -vet=off -exec /bin/true -tags "$$tags" ./...); \
+		done; \
+		echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips test/clusterproof tags=$(MIN_TAGS),clusterproof"; \
+		(cd test/clusterproof && GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+			$(GO) test -count=1 -vet=off -exec /bin/true -tags "$(MIN_TAGS),clusterproof" ./...); \
 	done
-	@echo "==> test-cross $(PLATFORM): every test binary compiled, plain and FIPS"
+	@echo "==> test-cross $(PLATFORM): root, $(SDK_DIR) and test/clusterproof test binaries compiled, plain and FIPS"
 
 # release-artifacts builds every RELEASE_PLATFORMS entry into a clean
 # $(RELEASE_DIR) and writes SHA256SUMS over the result; release.yml's publish

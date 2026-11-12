@@ -606,8 +606,11 @@ The release publishes linux/arm64 binaries, plain and FIPS (`make
 release-cross PLATFORM=linux/arm64`, CI's full tier), but no CI job runs a
 test on arm64. Two steps close that gap:
 
-- `make test-cross PLATFORM=linux/arm64` compiles and links every unit and
-  integration test binary for linux/arm64, plain and FIPS, and runs none. It
+- `make test-cross PLATFORM=linux/arm64` compiles and links the unit and
+  integration test binaries of the root module, the Go SDK (`sdk/go`) and
+  `test/clusterproof` for linux/arm64, plain and FIPS, and runs none. The
+  other nested modules (`test/performance/*`, `test/vanguardprobe`,
+  `sdk/go/gorm/conformance`) are out: no release test target runs them. It
   needs no arm64 host. It is not wired into CI on every pull request: the
   workflows' routing is Software's (DS-8237), so until a job runs it, a
   change touching arch-specific code runs it by hand.

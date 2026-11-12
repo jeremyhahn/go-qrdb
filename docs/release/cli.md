@@ -80,11 +80,21 @@ for `linux/arm64`.
 
 ## `make test-cross PLATFORM=<goos>/<goarch>`
 
-Compiles and links every test binary of one platform, plain and FIPS, and
-runs none of them (`go test -exec /bin/true`, `CGO_ENABLED=0`). Each variant
-builds `./...` twice: with the release build tags (the unit tests) and with
-the release build tags plus `integration` (every integration-tagged test, the
-`test/integration` suites included). `GOFIPS140` selects the variant as
+Compiles and links the test binaries of one platform, plain and FIPS, and
+runs none of them (`go test -exec /bin/true`, `CGO_ENABLED=0`). `go test ./...`
+stops at a nested `go.mod`, so each module it covers is built from its own
+directory:
+
+- the root module, `./...` twice: with the release build tags (the unit
+  tests) and with the release build tags plus `integration` (every
+  integration-tagged test, the `test/integration` suites included);
+- the Go SDK (`sdk/go`), with the same two tag sets;
+- `test/clusterproof`, with the tags `make test-clusterproof` uses
+  (`codec_json,raft,clusterproof`).
+
+The other nested modules (`test/performance/*`, `test/vanguardprobe`,
+`sdk/go/gorm/conformance`) are out: no release test target runs them.
+`GOFIPS140` selects the variant as
 `release-cross` does. `make test-cross PLATFORM=linux/arm64` on an amd64 host
 catches an arm64-only compile failure before the arm64 integration run before
 the RC (engineering.md, "linux/arm64 before the RC"). Without `PLATFORM` it
