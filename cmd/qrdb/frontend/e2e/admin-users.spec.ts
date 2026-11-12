@@ -187,6 +187,33 @@ test.describe("Admin - User Management", () => {
     });
   });
 
+  test.describe("Create user without a default tenant", () => {
+    // A fresh daemon lists only the System tenant; there is no "default".
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        tenants: [{ id: "system", name: "System" }],
+      },
+    });
+
+    test("tenant defaults to the first tenant the server lists", async ({
+      page,
+    }) => {
+      await navigateToUsers(page);
+      await page.getByRole("button", { name: "Create User" }).click();
+
+      const tenantSelect = page.locator("select#user-detail-tenant");
+      await expect(tenantSelect).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(tenantSelect).toHaveValue("system");
+
+      await page.getByPlaceholder("Enter username").fill("dana");
+      await page.getByRole("button", { name: "Create" }).click();
+      await expect(page.getByText("dana", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
   test.describe("Edit user", () => {
     test("clicking a user row opens the edit form", async ({ page }) => {
       await navigateToUsers(page);
@@ -552,6 +579,14 @@ test.describe("Admin - User Management", () => {
  */
 webTest.describe("Admin - User Management (web mode / auth-disabled regression)", () => {
   const LOAD_TIMEOUT = 10_000;
+
+  // The dashboard polls the Prometheus exposition; an empty one keeps the
+  // request off the network.
+  webTest.beforeEach(async ({ page }) => {
+    await page.route("**/metrics", (route) =>
+      route.fulfill({ status: 200, contentType: "text/plain", body: "" }),
+    );
+  });
 
   webTest(
     "POST /users returns 201 and frontend shows success (auth-disabled regression)",
