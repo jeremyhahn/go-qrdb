@@ -21,6 +21,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 import { WailsClient } from '../src/wails.js';
+import { TransportError } from '../src/errors.js';
 
 interface CapturedRequest {
     url: string;
@@ -199,6 +200,29 @@ describe('VlogClient — REST wire contract', () => {
         expect(res.expired).toBe(3);
     });
 
+    it('create requires origin: omitting it does not type-check', () => {
+        // Type-level only: the function is never called.
+        const omit = (v: RestClient['vlog']) =>
+            // @ts-expect-error origin is required; the server never derives one.
+            v.create({ log: 'events' });
+        expect(typeof omit).toBe('function');
+    });
+
+    it('create surfaces the service refusal of an empty origin as a TransportError', async () => {
+        const client = await connectedClient();
+        const refusal = 'vlog: invalid descriptor: origin must be non-empty UTF-8 without control characters';
+        vi.stubGlobal('fetch', async (): Promise<Response> =>
+            new Response(JSON.stringify({ error: refusal }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        );
+        const err = await client.vlog.create({ log: 'events', origin: '' }).catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(TransportError);
+        expect((err as TransportError).statusCode).toBe(400);
+        expect((err as TransportError).message).toContain(refusal);
+    });
+
     it('rejects before any request when not connected', async () => {
         const calls = installMockFetch({});
         const client = new RestClient(BASE);
@@ -217,7 +241,7 @@ type BindingFn = (...args: unknown[]) => Promise<unknown>;
 type VlogCall = (vlog: RestClient['vlog']) => Promise<unknown>;
 
 const VLOG_CALLS: ReadonlyArray<[string, string, VlogCall]> = [
-    ['create', '/vlog/log', (v) => v.create({ log: 'events', signingKeyType: 'ed25519' })],
+    ['create', '/vlog/log', (v) => v.create({ log: 'events', origin: 'example.com/events', signingKeyType: 'ed25519' })],
     ['list', '/vlog/logs', (v) => v.list()],
     ['append', '/vlog/append', (v) => v.append({ log: 'events', entries: ['YQ=='] })],
     ['get', '/vlog/entries', (v) => v.get({ log: 'events', from: 0, limit: 1 })],
@@ -279,11 +303,13 @@ describe('VlogClient — Wails binding contract', () => {
         installVlogBinding({ Create: create });
         const res = await new WailsClient().vlog.create({
             log: 'events',
+            origin: 'example.com/events',
             allowExpireBodies: true,
             signingKeyType: 'ed25519',
         });
         expect(create).toHaveBeenCalledWith({
             log: 'events',
+            origin: 'example.com/events',
             allow_expire_bodies: true,
             signing_key_type: 'ed25519',
         });

@@ -15,8 +15,11 @@
 package main
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
@@ -27,7 +30,10 @@ import (
 func TestVlogBinding_NotConnected(t *testing.T) {
 	b := NewVlogBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
 	calls := map[string]func() error{
-		"Create": func() error { _, err := b.Create(&vlogwire.CreateRequest{Log: "l"}); return err },
+		"Create": func() error {
+			_, err := b.Create(&vlogwire.CreateRequest{Log: "l", Origin: "example.com/l"})
+			return err
+		},
 		"List":   func() error { _, err := b.List(); return err },
 		"Append": func() error { _, err := b.Append(&vlogwire.AppendRequest{Log: "l"}); return err },
 		"Get":    func() error { _, err := b.Get(&vlogwire.GetRequest{Log: "l"}); return err },
@@ -50,6 +56,25 @@ func TestVlogBinding_NotConnected(t *testing.T) {
 	for name, call := range calls {
 		if err := call(); err == nil {
 			t.Errorf("%s succeeded without a connection", name)
+		}
+	}
+}
+
+// TestVlogBinding_CreateRequiresOrigin pins that the desktop binding refuses
+// an empty origin with the service's error and never derives a default.
+func TestVlogBinding_CreateRequiresOrigin(t *testing.T) {
+	b := NewVlogBinding(testLogger(t), NewConnectionBinding(testLogger(t)))
+	for name, req := range map[string]*vlogwire.CreateRequest{
+		"nil request":  nil,
+		"empty origin": {Log: "events"},
+	} {
+		_, err := b.Create(req)
+		var ide *vlog.InvalidDescriptorError
+		if !errors.As(err, &ide) {
+			t.Fatalf("%s: err = %v, want *vlog.InvalidDescriptorError", name, err)
+		}
+		if !strings.Contains(err.Error(), "origin must be non-empty") {
+			t.Errorf("%s: err = %q, want the service's origin refusal", name, err)
 		}
 	}
 }

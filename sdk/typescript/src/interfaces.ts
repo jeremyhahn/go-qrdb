@@ -2391,8 +2391,11 @@ export interface VlogHeadKey {
 export interface VlogCreateRequest {
     /** Log name within the database. */
     readonly log: string;
-    /** Checkpoint origin line; the server derives one when omitted. */
-    readonly origin?: string;
+    /**
+     * Checkpoint origin line (C2SP tlog-checkpoint), e.g. "example.com/log".
+     * Required: the server refuses an empty origin and never derives one.
+     */
+    readonly origin: string;
     /** C2SP note verifier keys of external witnesses. */
     readonly verifierKeys?: readonly string[];
     /** Allow ExpireBodies on this log. */

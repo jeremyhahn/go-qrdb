@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
@@ -58,6 +59,14 @@ func vlogCall[Req, Res any](b *VlogBinding, name string, req *Req,
 // Create creates a log, with a head-signing key when the request names a
 // key type.
 func (b *VlogBinding) Create(req *vlogwire.CreateRequest) (*vlogwire.CreateResult, error) {
+	// The origin is the checkpoint's first line (C2SP tlog-checkpoint) and
+	// is required: refuse an empty one with the service's error rather than
+	// derive a default the service would never apply.
+	if req == nil || req.Origin == "" {
+		err := &vlog.InvalidDescriptorError{Reason: "origin must be non-empty UTF-8 without control characters"}
+		b.logger.Error("Create failed", "error", err)
+		return nil, err
+	}
 	return vlogCall(b, "Create", req, transport.VlogClient.VlogCreate)
 }
 
