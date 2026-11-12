@@ -58,7 +58,11 @@ export interface AuditEvent {
 export interface AuditFilter {
     /** Start time (inclusive), ISO 8601 / RFC 3339. */
     from?: string;
-    /** End time (exclusive), ISO 8601 / RFC 3339. */
+    /**
+     * End time (exclusive), ISO 8601 / RFC 3339: an event stamped exactly
+     * `to` is not returned (pkg/audit matchesFilter keeps only events before
+     * it). Sent unchanged as the `to` query parameter.
+     */
     to?: string;
     /** Actor identity filter. */
     actor?: string;
