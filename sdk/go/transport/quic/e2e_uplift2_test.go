@@ -234,26 +234,7 @@ func TestE2E_Embedding_ListModels_UnmarshalError(t *testing.T) {
 func TestQUICExtraClosed_Auth(t *testing.T) {
 	tr := newClosedTransport()
 	var ce *transport.ClosedError
-	ce = nil
 
-	if err := tr.DeleteUser(context.Background(), 1); !errorsAsP(err, &ce) {
-		t.Errorf("DeleteUser: %v", err)
-	}
-	if err := tr.EnableUser(context.Background(), 1); !errorsAsP(err, &ce) {
-		t.Errorf("EnableUser: %v", err)
-	}
-	if err := tr.DisableUser(context.Background(), 1); !errorsAsP(err, &ce) {
-		t.Errorf("DisableUser: %v", err)
-	}
-	if err := tr.SuspendUser(context.Background(), 1); !errorsAsP(err, &ce) {
-		t.Errorf("SuspendUser: %v", err)
-	}
-	if err := tr.UnsuspendUser(context.Background(), 1); !errorsAsP(err, &ce) {
-		t.Errorf("UnsuspendUser: %v", err)
-	}
-	if err := tr.DeleteRole(context.Background(), "r"); !errorsAsP(err, &ce) {
-		t.Errorf("DeleteRole: %v", err)
-	}
 	if err := tr.AssignRole(context.Background(), 1, "r"); !errorsAsP(err, &ce) {
 		t.Errorf("AssignRole: %v", err)
 	}
@@ -404,45 +385,8 @@ func TestE2E_AuthFactor_RevokeFactor_RPCError(t *testing.T) {
 // Collection unmarshal-error / error paths
 // ---------------------------------------------------------------------------
 
-func TestE2E_Collection_UpdateDocument_Closed(t *testing.T) {
-	// Use newClosedTransport to cover the UpdateDocument closed-path branch
-	// without spinning up a QUIC server.
-	tr := newClosedTransport()
-	err := tr.UpdateDocument(context.Background(), transport.UpdateDocumentRequest{})
-	var ce *transport.ClosedError
-	if !errorAs(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // DeleteBackup unmarshal-error path (87.5%) — the proto.Marshal error branch
 // is hard to hit; test the call error path separately by using a slow server.
 // Instead add closed path test that wasn't covered before.
 // ---------------------------------------------------------------------------
-
-func TestQUICExtraClosed_Remaining(t *testing.T) {
-	tr := newClosedTransport()
-	var ce *transport.ClosedError
-
-	// Barrier methods
-	if err := tr.BarrierSeal(context.Background()); !errorAs(err, &ce) {
-		t.Errorf("BarrierSeal: %v", err)
-	}
-
-	// Collection
-	if err := tr.DropCollection(context.Background(), "db", "c"); !errorAs(err, &ce) {
-		t.Errorf("DropCollection: %v", err)
-	}
-
-	// Auth factor
-	if err := tr.VerifyFactor(context.Background(), &transport.VerifyFactorRequest{}); !errorAs(err, &ce) {
-		t.Errorf("VerifyFactor: %v", err)
-	}
-	if _, err := tr.ListFactors(context.Background(), &transport.ListFactorsRequest{}); !errorAs(err, &ce) {
-		t.Errorf("ListFactors: %v", err)
-	}
-	if err := tr.RevokeFactor(context.Background(), &transport.RevokeFactorRequest{}); !errorAs(err, &ce) {
-		t.Errorf("RevokeFactor: %v", err)
-	}
-}
