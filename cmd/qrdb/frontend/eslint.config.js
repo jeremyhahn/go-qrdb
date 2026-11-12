@@ -23,6 +23,9 @@ export default ts.config(
           destructuredArrayIgnorePattern: "^_",
         },
       ],
+      // A string with an escape such as \n cannot be written as a plain
+      // attribute value, so its mustache is not useless.
+      "svelte/no-useless-mustaches": ["error", { ignoreStringEscape: true }],
     },
   },
   {
