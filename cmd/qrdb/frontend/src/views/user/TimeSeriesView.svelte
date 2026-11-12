@@ -1256,53 +1256,51 @@
   title="Data Point"
   onclose={() => (selectedPoint = null)}
 >
-  {#snippet children()}
-    {#if selectedPoint}
-      <div class="space-y-5">
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Metric</span
-          >
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
-            {selectedPoint.metric}
-          </div>
+  {#if selectedPoint}
+    <div class="space-y-5">
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Metric</span
+        >
+        <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+          {selectedPoint.metric}
         </div>
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Value</span
-          >
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
-            {selectedPoint.value}
-          </div>
-        </div>
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Timestamp</span
-          >
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
-            {formatTimestamp(selectedPoint.timestampNs / 1_000_000)}
-          </div>
-          <div class="text-xs text-base-content/40 mt-1">
-            {selectedPoint.timestampNs} ns
-          </div>
-        </div>
-        {#if selectedPoint.tags.length > 0}
-          <div>
-            <span class="text-sm font-medium text-base-content/70 block mb-1"
-              >Tags</span
-            >
-            <div class="flex flex-wrap gap-1">
-              {#each selectedPoint.tags as tag}
-                <span class="badge badge-sm badge-outline font-mono">
-                  {tag.key}={tag.value}
-                </span>
-              {/each}
-            </div>
-          </div>
-        {/if}
       </div>
-    {/if}
-  {/snippet}
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Value</span
+        >
+        <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+          {selectedPoint.value}
+        </div>
+      </div>
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Timestamp</span
+        >
+        <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+          {formatTimestamp(selectedPoint.timestampNs / 1_000_000)}
+        </div>
+        <div class="text-xs text-base-content/40 mt-1">
+          {selectedPoint.timestampNs} ns
+        </div>
+      </div>
+      {#if selectedPoint.tags.length > 0}
+        <div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Tags</span
+          >
+          <div class="flex flex-wrap gap-1">
+            {#each selectedPoint.tags as tag}
+              <span class="badge badge-sm badge-outline font-mono">
+                {tag.key}={tag.value}
+              </span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </SlidePanel>
 
 <!-- Write Data Point SlidePanel -->
@@ -1311,95 +1309,91 @@
   title="Write Data Point"
   onclose={() => (showWritePanel = false)}
 >
-  {#snippet children()}
-    <div class="space-y-5">
-      <div class="join" role="tablist">
-        <button
-          class="join-item btn btn-sm {writeMode === 'single'
-            ? 'btn-active'
-            : ''}"
-          onclick={() => (writeMode = "single")}
-          data-testid="ts-write-mode-single"
-        >
-          Single
-        </button>
-        <button
-          class="join-item btn btn-sm {writeMode === 'batch'
-            ? 'btn-active'
-            : ''}"
-          onclick={() => (writeMode = "batch")}
-          data-testid="ts-write-mode-batch"
-        >
-          Batch
-        </button>
-      </div>
+  <div class="space-y-5">
+    <div class="join" role="tablist">
+      <button
+        class="join-item btn btn-sm {writeMode === 'single'
+          ? 'btn-active'
+          : ''}"
+        onclick={() => (writeMode = "single")}
+        data-testid="ts-write-mode-single"
+      >
+        Single
+      </button>
+      <button
+        class="join-item btn btn-sm {writeMode === 'batch' ? 'btn-active' : ''}"
+        onclick={() => (writeMode = "batch")}
+        data-testid="ts-write-mode-batch"
+      >
+        Batch
+      </button>
+    </div>
+    <label class="form-control w-full">
+      <div class="label"><span class="label-text">Metric</span></div>
+      <input
+        type="text"
+        class="input input-bordered w-full font-mono"
+        placeholder="cpu.usage"
+        bind:value={writeMetric}
+      />
+    </label>
+    {#if writeMode === "single"}
       <label class="form-control w-full">
-        <div class="label"><span class="label-text">Metric</span></div>
+        <div class="label"><span class="label-text">Value</span></div>
         <input
           type="text"
           class="input input-bordered w-full font-mono"
-          placeholder="cpu.usage"
-          bind:value={writeMetric}
+          placeholder="42.5"
+          bind:value={writeValue}
         />
       </label>
-      {#if writeMode === "single"}
-        <label class="form-control w-full">
-          <div class="label"><span class="label-text">Value</span></div>
-          <input
-            type="text"
-            class="input input-bordered w-full font-mono"
-            placeholder="42.5"
-            bind:value={writeValue}
-          />
-        </label>
-        <label class="form-control w-full">
-          <div class="label">
-            <span class="label-text">Timestamp (ns)</span>
-          </div>
-          <input
-            type="text"
-            class="input input-bordered w-full font-mono"
-            placeholder="Leave empty for now"
-            bind:value={writeTimestamp}
-          />
-          <div class="label">
-            <span class="label-text-alt text-base-content/50"
-              >Unix nanoseconds. Empty uses current time.</span
-            >
-          </div>
-        </label>
-        <label class="form-control w-full">
-          <div class="label"><span class="label-text">Tags</span></div>
-          <input
-            type="text"
-            class="input input-bordered w-full font-mono"
-            placeholder="host=node1,region=us-east"
-            bind:value={writeTags}
-          />
-          <div class="label">
-            <span class="label-text-alt text-base-content/50"
-              >Comma-separated key=value pairs.</span
-            >
-          </div>
-        </label>
-      {:else}
-        <label class="form-control w-full">
-          <div class="label"><span class="label-text">Points</span></div>
-          <textarea
-            class="textarea textarea-bordered w-full font-mono text-xs"
-            rows="8"
-            placeholder={"1700000000000000000,42.5,host=node1;region=us\n1700000060000000000,43"}
-            bind:value={writeBatchText}
-            data-testid="ts-write-batch"></textarea>
-          <div class="label">
-            <span class="label-text-alt text-base-content/50">
-              One point per line: timestamp_ns,value[,k=v;k=v].
-            </span>
-          </div>
-        </label>
-      {/if}
-    </div>
-  {/snippet}
+      <label class="form-control w-full">
+        <div class="label">
+          <span class="label-text">Timestamp (ns)</span>
+        </div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="Leave empty for now"
+          bind:value={writeTimestamp}
+        />
+        <div class="label">
+          <span class="label-text-alt text-base-content/50"
+            >Unix nanoseconds. Empty uses current time.</span
+          >
+        </div>
+      </label>
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Tags</span></div>
+        <input
+          type="text"
+          class="input input-bordered w-full font-mono"
+          placeholder="host=node1,region=us-east"
+          bind:value={writeTags}
+        />
+        <div class="label">
+          <span class="label-text-alt text-base-content/50"
+            >Comma-separated key=value pairs.</span
+          >
+        </div>
+      </label>
+    {:else}
+      <label class="form-control w-full">
+        <div class="label"><span class="label-text">Points</span></div>
+        <textarea
+          class="textarea textarea-bordered w-full font-mono text-xs"
+          rows="8"
+          placeholder={"1700000000000000000,42.5,host=node1;region=us\n1700000060000000000,43"}
+          bind:value={writeBatchText}
+          data-testid="ts-write-batch"></textarea>
+        <div class="label">
+          <span class="label-text-alt text-base-content/50">
+            One point per line: timestamp_ns,value[,k=v;k=v].
+          </span>
+        </div>
+      </label>
+    {/if}
+  </div>
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       <button

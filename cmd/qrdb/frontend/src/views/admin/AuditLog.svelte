@@ -360,61 +360,59 @@
   title="Audit Event"
   onclose={() => (showDetail = false)}
 >
-  {#snippet children()}
-    {#if selectedEvent !== null}
-      <div class="flex flex-col gap-3">
-        <table class="table table-sm">
-          <tbody>
+  {#if selectedEvent !== null}
+    <div class="flex flex-col gap-3">
+      <table class="table table-sm">
+        <tbody>
+          <tr
+            ><th class="w-32">Timestamp</th><td class="font-mono text-xs"
+              >{selectedEvent.timestamp}</td
+            ></tr
+          >
+          <tr><th>Actor</th><td>{selectedEvent.actor}</td></tr>
+          {#if selectedEvent.tenantID}
+            <tr><th>Tenant</th><td>{selectedEvent.tenantID}</td></tr>
+          {/if}
+          {#if selectedEvent.role}
+            <tr><th>Role</th><td>{selectedEvent.role}</td></tr>
+          {/if}
+          <tr><th>Resource</th><td>{selectedEvent.resource}</td></tr>
+          <tr><th>Action</th><td>{selectedEvent.action}</td></tr>
+          <tr><th>Outcome</th><td>{selectedEvent.outcome}</td></tr>
+          {#if selectedEvent.clientIP}
             <tr
-              ><th class="w-32">Timestamp</th><td class="font-mono text-xs"
-                >{selectedEvent.timestamp}</td
+              ><th>Client IP</th><td class="font-mono text-xs"
+                >{selectedEvent.clientIP}</td
               ></tr
             >
-            <tr><th>Actor</th><td>{selectedEvent.actor}</td></tr>
-            {#if selectedEvent.tenantID}
-              <tr><th>Tenant</th><td>{selectedEvent.tenantID}</td></tr>
-            {/if}
-            {#if selectedEvent.role}
-              <tr><th>Role</th><td>{selectedEvent.role}</td></tr>
-            {/if}
-            <tr><th>Resource</th><td>{selectedEvent.resource}</td></tr>
-            <tr><th>Action</th><td>{selectedEvent.action}</td></tr>
-            <tr><th>Outcome</th><td>{selectedEvent.outcome}</td></tr>
-            {#if selectedEvent.clientIP}
-              <tr
-                ><th>Client IP</th><td class="font-mono text-xs"
-                  >{selectedEvent.clientIP}</td
-                ></tr
-              >
-            {/if}
-            {#if selectedEvent.requestID}
-              <tr
-                ><th>Request ID</th><td class="font-mono text-xs"
-                  >{selectedEvent.requestID}</td
-                ></tr
-              >
-            {/if}
-            {#if selectedEvent.prevHash}
-              <tr
-                ><th>Prev Hash</th><td class="font-mono text-xs break-all"
-                  >{selectedEvent.prevHash}</td
-                ></tr
-              >
-            {/if}
-          </tbody>
-        </table>
-        {#if selectedEvent.attributes && Object.keys(selectedEvent.attributes).length > 0}
-          <div>
-            <h4 class="text-sm font-semibold mb-1">Attributes</h4>
-            <pre
-              class="bg-base-300 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(
-                selectedEvent.attributes,
-                null,
-                2,
-              )}</pre>
-          </div>
-        {/if}
-      </div>
-    {/if}
-  {/snippet}
+          {/if}
+          {#if selectedEvent.requestID}
+            <tr
+              ><th>Request ID</th><td class="font-mono text-xs"
+                >{selectedEvent.requestID}</td
+              ></tr
+            >
+          {/if}
+          {#if selectedEvent.prevHash}
+            <tr
+              ><th>Prev Hash</th><td class="font-mono text-xs break-all"
+                >{selectedEvent.prevHash}</td
+              ></tr
+            >
+          {/if}
+        </tbody>
+      </table>
+      {#if selectedEvent.attributes && Object.keys(selectedEvent.attributes).length > 0}
+        <div>
+          <h4 class="text-sm font-semibold mb-1">Attributes</h4>
+          <pre
+            class="bg-base-300 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(
+              selectedEvent.attributes,
+              null,
+              2,
+            )}</pre>
+        </div>
+      {/if}
+    </div>
+  {/if}
 </SlidePanel>

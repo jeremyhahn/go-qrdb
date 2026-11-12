@@ -1335,42 +1335,40 @@
   title="Document Detail"
   onclose={() => (selectedDocument = null)}
 >
-  {#snippet children()}
-    {#if selectedDocument}
-      <div class="space-y-5">
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Document ID</span
-          >
-          <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
-            {selectedDocument.id}
-          </div>
+  {#if selectedDocument}
+    <div class="space-y-5">
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Document ID</span
+        >
+        <div class="font-mono text-sm bg-base-200 rounded px-3 py-2">
+          {selectedDocument.id}
         </div>
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Document Body</span
-          >
-          <pre
-            class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap"
-            data-testid="document-detail-body">{JSON.stringify(
-              selectedDocument.document,
-              null,
-              2,
-            )}</pre>
-        </div>
-        {#if selectedCollection}
-          <div>
-            <span class="text-sm font-medium text-base-content/70 block mb-1"
-              >Collection</span
-            >
-            <div class="text-sm bg-base-200 rounded px-3 py-2">
-              {selectedCollection.name}
-            </div>
-          </div>
-        {/if}
       </div>
-    {/if}
-  {/snippet}
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Document Body</span
+        >
+        <pre
+          class="font-mono text-sm bg-base-200 rounded px-3 py-2 max-h-96 overflow-auto whitespace-pre-wrap"
+          data-testid="document-detail-body">{JSON.stringify(
+            selectedDocument.document,
+            null,
+            2,
+          )}</pre>
+      </div>
+      {#if selectedCollection}
+        <div>
+          <span class="text-sm font-medium text-base-content/70 block mb-1"
+            >Collection</span
+          >
+          <div class="text-sm bg-base-200 rounded px-3 py-2">
+            {selectedCollection.name}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
   {#snippet footer()}
     {#if selectedDocument}
       <div class="flex gap-2">

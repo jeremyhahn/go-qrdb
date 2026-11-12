@@ -792,115 +792,108 @@
   title={isHistorical ? "Historical Details" : "Details"}
   onclose={() => (selectedEntry = null)}
 >
-  {#snippet children()}
-    {#if selectedEntry}
-      <div class="space-y-5">
-        {#if isHistorical}
-          <div role="alert" class="alert alert-warning py-2 text-xs">
-            <Clock class="h-4 w-4 shrink-0" />
-            <span>Value shown as of revision {asOfRevision}.</span>
-          </div>
-        {/if}
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Key</span
-          >
-          <div
-            class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all"
-          >
-            {selectedEntry.key}
-          </div>
+  {#if selectedEntry}
+    <div class="space-y-5">
+      {#if isHistorical}
+        <div role="alert" class="alert alert-warning py-2 text-xs">
+          <Clock class="h-4 w-4 shrink-0" />
+          <span>Value shown as of revision {asOfRevision}.</span>
         </div>
-        <div>
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Value</span
-          >
-          <div
-            class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap"
-          >
-            {selectedEntry.value}
-          </div>
-        </div>
-        <div data-testid="kv-entry-revision">
-          <span class="text-sm font-medium text-base-content/70 block mb-1"
-            >Latest revision</span
-          >
-          {#if entryMeta}
-            <dl
-              class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2"
-            >
-              <dt class="text-base-content/60">Create revision</dt>
-              <dd class="font-mono" data-testid="kv-create-revision">
-                {entryMeta.createRevision ?? "—"}
-              </dd>
-              <dt class="text-base-content/60">Mod revision</dt>
-              <dd class="font-mono" data-testid="kv-mod-revision">
-                {entryMeta.modRevision ?? "—"}
-              </dd>
-              <dt class="text-base-content/60">Version</dt>
-              <dd class="font-mono" data-testid="kv-version">
-                {entryMeta.version ?? "—"}
-              </dd>
-              <dt class="text-base-content/60">Lease</dt>
-              <dd class="font-mono" data-testid="kv-lease">
-                {entryMeta.leaseId ? entryMeta.leaseId : "none"}
-              </dd>
-            </dl>
-          {:else if entryMetaError}
-            <div
-              class="text-error text-xs"
-              data-testid="kv-entry-revision-error"
-            >
-              {entryMetaError}
-            </div>
-          {:else}
-            <span class="loading loading-spinner loading-xs"></span>
-          {/if}
-        </div>
-        <div>
-          <label
-            class="text-sm font-medium text-base-content/70 block mb-1"
-            for="kv-at-revision"
-          >
-            Value at revision
-          </label>
-          <div class="join w-full">
-            <input
-              id="kv-at-revision"
-              type="number"
-              min="1"
-              class="input join-item input-bordered input-sm w-full font-mono"
-              placeholder="revision"
-              bind:value={atRevisionInput}
-              onkeydown={(e) => e.key === "Enter" && lookupAtRevision()}
-            />
-            <button
-              class="btn btn-sm join-item"
-              onclick={lookupAtRevision}
-              disabled={atRevisionBusy}
-            >
-              Look up
-            </button>
-          </div>
-          {#if atRevisionResult}
-            <div
-              class="mt-2 font-mono text-sm bg-base-200 rounded px-3 py-2 break-all whitespace-pre-wrap"
-              data-testid="kv-at-revision-value"
-            >
-              {atRevisionResult.value}
-            </div>
-          {:else if atRevisionError}
-            <div
-              class="mt-2 text-error text-xs"
-              data-testid="kv-at-revision-error"
-            >
-              {atRevisionError}
-            </div>
-          {/if}
+      {/if}
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Key</span
+        >
+        <div class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all">
+          {selectedEntry.key}
         </div>
       </div>
-    {/if}
-  {/snippet}
+      <div>
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Value</span
+        >
+        <div
+          class="font-mono text-sm bg-base-200 rounded px-3 py-2 break-all max-h-64 overflow-auto whitespace-pre-wrap"
+        >
+          {selectedEntry.value}
+        </div>
+      </div>
+      <div data-testid="kv-entry-revision">
+        <span class="text-sm font-medium text-base-content/70 block mb-1"
+          >Latest revision</span
+        >
+        {#if entryMeta}
+          <dl
+            class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm bg-base-200 rounded px-3 py-2"
+          >
+            <dt class="text-base-content/60">Create revision</dt>
+            <dd class="font-mono" data-testid="kv-create-revision">
+              {entryMeta.createRevision ?? "—"}
+            </dd>
+            <dt class="text-base-content/60">Mod revision</dt>
+            <dd class="font-mono" data-testid="kv-mod-revision">
+              {entryMeta.modRevision ?? "—"}
+            </dd>
+            <dt class="text-base-content/60">Version</dt>
+            <dd class="font-mono" data-testid="kv-version">
+              {entryMeta.version ?? "—"}
+            </dd>
+            <dt class="text-base-content/60">Lease</dt>
+            <dd class="font-mono" data-testid="kv-lease">
+              {entryMeta.leaseId ? entryMeta.leaseId : "none"}
+            </dd>
+          </dl>
+        {:else if entryMetaError}
+          <div class="text-error text-xs" data-testid="kv-entry-revision-error">
+            {entryMetaError}
+          </div>
+        {:else}
+          <span class="loading loading-spinner loading-xs"></span>
+        {/if}
+      </div>
+      <div>
+        <label
+          class="text-sm font-medium text-base-content/70 block mb-1"
+          for="kv-at-revision"
+        >
+          Value at revision
+        </label>
+        <div class="join w-full">
+          <input
+            id="kv-at-revision"
+            type="number"
+            min="1"
+            class="input join-item input-bordered input-sm w-full font-mono"
+            placeholder="revision"
+            bind:value={atRevisionInput}
+            onkeydown={(e) => e.key === "Enter" && lookupAtRevision()}
+          />
+          <button
+            class="btn btn-sm join-item"
+            onclick={lookupAtRevision}
+            disabled={atRevisionBusy}
+          >
+            Look up
+          </button>
+        </div>
+        {#if atRevisionResult}
+          <div
+            class="mt-2 font-mono text-sm bg-base-200 rounded px-3 py-2 break-all whitespace-pre-wrap"
+            data-testid="kv-at-revision-value"
+          >
+            {atRevisionResult.value}
+          </div>
+        {:else if atRevisionError}
+          <div
+            class="mt-2 text-error text-xs"
+            data-testid="kv-at-revision-error"
+          >
+            {atRevisionError}
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
   {#snippet footer()}
     {#if selectedEntry}
       <div class="flex gap-2">
