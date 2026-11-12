@@ -20,6 +20,7 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import * as net from "net";
+import { supervise, type Supervised } from "./daemon-helpers.ts";
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -66,12 +67,19 @@ export function findFreePort(): Promise<number> {
 async function waitForHealth(
   adminUrl: string,
   timeoutMs = 15_000,
+  stopped: () => string | null = () => null,
 ): Promise<void> {
   const https = await import("https");
   const deadline = Date.now() + timeoutMs;
   let lastErr: unknown;
 
   while (Date.now() < deadline) {
+    // A daemon that has already exited will never answer: fail at once
+    // instead of polling a dead port for the rest of the timeout.
+    const why = stopped();
+    if (why !== null) {
+      throw new Error(`Daemon at ${adminUrl} exited before becoming ready (${why})`);
+    }
     await new Promise<void>((resolve, reject) => {
       const req = https.default.get(
         `${adminUrl}/health`,
@@ -165,7 +173,54 @@ function qrdbdBin(): string {
  * ensureMvccDaemon (adds "--sm mvcc"), so the two only ever differ in the
  * one flag that matters for this feature.
  */
-async function spawnDaemon(extraArgs: string[] = []): Promise<{ info: DaemonInfo; proc: ChildProcess }> {
+async function spawnDaemon(extraArgs: string[] = []): Promise<RunningDaemon> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= SPAWN_ATTEMPTS; attempt++) {
+    try {
+      return await spawnDaemonOnce(extraArgs);
+    } catch (err) {
+      lastErr = err;
+      // Only a daemon that exited early (e.g. a port taken between
+      // findFreePort and bind) is worth another try with fresh ports and
+      // a fresh data dir; a daemon that stayed up but never answered is
+      // a real failure.
+      if (!(err instanceof DaemonStartError) || !err.exitedEarly) break;
+    }
+  }
+  throw lastErr;
+}
+
+/** Spawn attempts, each with fresh ports and a fresh data dir. */
+const SPAWN_ATTEMPTS = 3;
+
+/** A daemon process this worker started, with its supervision handle. */
+interface RunningDaemon extends Supervised {
+  info: DaemonInfo;
+}
+
+/** Error from spawnDaemonOnce; exitedEarly marks a daemon that died before ready. */
+class DaemonStartError extends Error {
+  constructor(
+    message: string,
+    readonly exitedEarly: boolean,
+  ) {
+    super(message);
+  }
+}
+
+/** stopDaemon stops a daemon (waiting for its exit) and removes its data dir. */
+async function stopDaemon(d: RunningDaemon): Promise<void> {
+  await d.stop();
+  rmSync(d.info.dataDir, { recursive: true, force: true });
+}
+
+/**
+ * spawnDaemonOnce starts one daemon on fresh ports with a fresh data dir
+ * and waits for its health endpoint. On failure the daemon is stopped, its
+ * data dir removed, and the error carries the args, the exit status and the
+ * daemon's output tail.
+ */
+async function spawnDaemonOnce(extraArgs: string[]): Promise<RunningDaemon> {
   const [adminPort, raftPort, grpcPort] = await Promise.all([
     findFreePort(),
     findFreePort(),
@@ -211,39 +266,46 @@ async function spawnDaemon(extraArgs: string[] = []): Promise<{ info: DaemonInfo
       NO_COLOR: "1",
     },
   });
+  const sup = supervise(proc);
 
   const adminUrl = `https://127.0.0.1:${adminPort}`;
   const info: DaemonInfo = { adminUrl, adminPort, raftPort, grpcPort, dataDir };
-  const shared = { info, proc };
-
-  proc.on("error", (err) => {
-    console.error("[daemon fixture] spawn error:", err);
-  });
-
-  // Give the process a moment to start before polling health.
-  await new Promise((r) => setTimeout(r, 300));
+  const running: RunningDaemon = { ...sup, info };
 
   try {
-    await waitForHealth(adminUrl);
+    await waitForHealth(adminUrl, 15_000, sup.exitStatus);
   } catch (err) {
-    // Collect stderr for debugging before throwing.
-    const stderrChunks: Buffer[] = [];
-    if (proc.stderr) {
-      proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    }
-    proc.kill("SIGTERM");
-    await new Promise((r) => setTimeout(r, 500));
-    const stderr = Buffer.concat(stderrChunks).toString();
-    throw new Error(
-      `[daemon fixture] daemon health check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+    const exitStatus = sup.exitStatus();
+    const exitedEarly = exitStatus !== null;
+    await stopDaemon(running);
+    throw new DaemonStartError(
+      `[daemon fixture] daemon health check failed.\nArgs: ${args.join(" ")}\n` +
+        `Exit: ${exitStatus ?? "still running (stopped by fixture)"}\n` +
+        `Output tail:\n${sup.outputTail()}\nOriginal: ${err}`,
+      exitedEarly,
     );
   }
 
-  return shared;
+  return running;
 }
 
 // Shared daemon state across all tests in the worker (spawned once per worker).
-let sharedDaemon: { info: DaemonInfo; proc: ChildProcess } | null = null;
+let sharedDaemon: RunningDaemon | null = null;
+
+/**
+ * watchShared clears the shared slot (and removes the data dir) when a
+ * shared daemon dies on its own, so the next test starts a new one.
+ */
+function watchShared(shared: RunningDaemon, label: string, clear: (d: RunningDaemon) => void): void {
+  shared.proc.once("exit", (code, signal) => {
+    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGKILL") {
+      console.warn(
+        `[daemon fixture] ${label} exited unexpectedly: code=${code} signal=${signal}\n${shared.outputTail()}`,
+      );
+    }
+    clear(shared);
+  });
+}
 
 /**
  * ensureDaemon starts the default (no "--sm" flag, i.e. raft.sm_type:
@@ -255,18 +317,15 @@ async function ensureDaemon(): Promise<DaemonInfo> {
     return sharedDaemon.info;
   }
   const shared = await spawnDaemon();
-  shared.proc.on("exit", (code, signal) => {
-    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGKILL") {
-      console.warn(`[daemon fixture] daemon exited unexpectedly: code=${code} signal=${signal}`);
-    }
-    sharedDaemon = null;
+  watchShared(shared, "daemon", (d) => {
+    if (sharedDaemon === d) sharedDaemon = null;
   });
   sharedDaemon = shared;
   return shared.info;
 }
 
 // Shared raft.sm_type: mvcc daemon state, independent of sharedDaemon.
-let sharedMvccDaemon: { info: DaemonInfo; proc: ChildProcess } | null = null;
+let sharedMvccDaemon: RunningDaemon | null = null;
 
 /**
  * ensureMvccDaemon starts a raft.sm_type: mvcc daemon (identical to
@@ -279,57 +338,56 @@ async function ensureMvccDaemon(): Promise<DaemonInfo> {
     return sharedMvccDaemon.info;
   }
   const shared = await spawnDaemon(["--sm", "mvcc"]);
-  shared.proc.on("exit", (code, signal) => {
-    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGKILL") {
-      console.warn(`[daemon fixture] mvcc daemon exited unexpectedly: code=${code} signal=${signal}`);
-    }
-    sharedMvccDaemon = null;
+  watchShared(shared, "mvcc daemon", (d) => {
+    if (sharedMvccDaemon === d) sharedMvccDaemon = null;
   });
   sharedMvccDaemon = shared;
   return shared.info;
 }
 
 /**
- * Kills the shared daemon and removes the temporary data directory.
- * Called once per worker when the test suite finishes.
+ * Stops the shared daemon, waiting for it to exit, and removes its
+ * temporary data directory. Called by the worker teardown below.
  */
 export async function shutdownDaemon(): Promise<void> {
   if (sharedDaemon === null) return;
-  const { info, proc } = sharedDaemon;
+  const d = sharedDaemon;
   sharedDaemon = null;
-  proc.kill("SIGTERM");
-  // Give it a moment to flush writes.
-  await new Promise((r) => setTimeout(r, 400));
-  try {
-    rmSync(info.dataDir, { recursive: true, force: true });
-  } catch {
-    // Best effort.
-  }
+  await stopDaemon(d);
 }
 
 /**
- * Kills the shared mvcc daemon and removes its temporary data directory.
- * Called once per worker when the test suite finishes, alongside
- * shutdownDaemon -- see global-teardown.ts.
+ * Stops the shared mvcc daemon, waiting for it to exit, and removes its
+ * temporary data directory. Called by the worker teardown below.
  */
 export async function shutdownMvccDaemon(): Promise<void> {
   if (sharedMvccDaemon === null) return;
-  const { info, proc } = sharedMvccDaemon;
+  const d = sharedMvccDaemon;
   sharedMvccDaemon = null;
-  proc.kill("SIGTERM");
-  await new Promise((r) => setTimeout(r, 400));
-  try {
-    rmSync(info.dataDir, { recursive: true, force: true });
-  } catch {
-    // Best effort.
-  }
+  await stopDaemon(d);
 }
 
 // ---------------------------------------------------------------------------
 // Extended test with daemon fixture
 // ---------------------------------------------------------------------------
 
-export const test = base.extend<DaemonFixtures>({
+type DaemonWorkerFixtures = {
+  /**
+   * Worker-scoped teardown: Playwright replaces the worker after a failed
+   * test, and this stops the old worker's daemons (waiting for exit) before
+   * the replacement worker starts its own.
+   */
+  daemonReaper: void;
+};
+
+export const test = base.extend<DaemonFixtures, DaemonWorkerFixtures>({
+  daemonReaper: [
+    async ({}, use) => {
+      await use();
+      await Promise.all([shutdownDaemon(), shutdownMvccDaemon()]);
+    },
+    { scope: "worker", auto: true },
+  ],
   daemon: async ({}, use) => {
     const info = await ensureDaemon();
     await use(info);

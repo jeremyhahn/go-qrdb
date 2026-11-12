@@ -19,12 +19,12 @@
  */
 
 import { test as base } from "@playwright/test";
-import { spawn, type ChildProcess } from "child_process";
+import { spawn } from "child_process";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { findFreePort, waitForHealthExported } from "./daemon-helpers.ts";
+import { findFreePort, supervise, waitForHealthExported } from "./daemon-helpers.ts";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -112,14 +112,9 @@ export const test = base.extend<AuthDaemonFixtures>({
       env: { ...process.env, NO_COLOR: "1" },
     });
 
-    proc.on("error", (err) => {
-      console.error("[auth-daemon] spawn error:", err);
-    });
-
-    const stderrChunks: Buffer[] = [];
-    if (proc.stderr) {
-      proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    }
+    // Drains stdout/stderr into a tail, records the exit, and reaps the
+    // process if the worker exits without this teardown.
+    const sup = supervise(proc);
 
     const adminUrl = `https://127.0.0.1:${adminPort}`;
     const info: AuthDaemonInfo = {
@@ -135,23 +130,22 @@ export const test = base.extend<AuthDaemonFixtures>({
       nodeKeyPath: join(dataDir, "node-key.pem"),
     };
 
-    await new Promise<void>((r) => setTimeout(r, 300));
-
     try {
-      await waitForHealthExported(adminUrl);
+      await waitForHealthExported(adminUrl, undefined, sup.exitStatus);
     } catch (err) {
-      proc.kill("SIGTERM");
-      await new Promise<void>((r) => setTimeout(r, 500));
-      const stderr = Buffer.concat(stderrChunks).toString();
+      const exit = sup.exitStatus() ?? "still running (stopped by fixture)";
+      await sup.stop();
+      rmSync(dataDir, { recursive: true, force: true });
       throw new Error(
-        `[auth-daemon] health check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+        `[auth-daemon] health check failed.\nArgs: ${args.join(" ")}\nExit: ${exit}\nOutput tail:\n${sup.outputTail()}\nOriginal: ${err}`,
       );
     }
 
     await use(info);
 
-    proc.kill("SIGTERM");
-    await new Promise<void>((r) => setTimeout(r, 400));
+    // Wait for the exit (SIGKILL after the grace period) so the next
+    // test's daemon never races this one for CPU, ports or files.
+    await sup.stop();
     try {
       rmSync(dataDir, { recursive: true, force: true });
     } catch {

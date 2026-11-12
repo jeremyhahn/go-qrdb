@@ -34,6 +34,8 @@ import {
   findFreePort,
   waitForHealthExported,
   waitForSealedWindow,
+  supervise,
+  type Supervised,
 } from "./daemon-helpers.ts";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -148,6 +150,9 @@ interface SpawnedDaemon {
   configPath: string;
 }
 
+/** Supervision handle of every daemon spawnSealedDaemon started. */
+const supervised = new WeakMap<ChildProcess, Supervised>();
+
 async function spawnSealedDaemon(
   dataDir: string,
   configPath: string,
@@ -207,32 +212,22 @@ async function spawnSealedDaemon(
 
   const adminUrl = `https://127.0.0.1:${adminPort}`;
 
-  proc.on("error", (err) => {
-    console.error("[sealed-daemon] spawn error:", err);
-  });
-
-  // Collect stderr for diagnostics on health-check failure.
-  const stderrChunks: Buffer[] = [];
-  if (proc.stderr) {
-    proc.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-  }
-
-  // Brief pause before polling — avoids hitting the port before the OS
-  // completes the bind.
-  await new Promise<void>((r) => setTimeout(r, 300));
+  // Drains stdout/stderr into a tail, records the exit, and reaps the
+  // process if the worker exits without fixture teardown.
+  const sup = supervise(proc);
+  supervised.set(proc, sup);
 
   // A sealed daemon with an uninitialized barrier serves /v1/barrier/status
   // (sealed:true) while /health returns 503. Poll the sealed-window endpoint
   // rather than /health so that spawnSealedDaemon resolves as soon as the
   // daemon is ready for barrier operations (initialize / unseal).
   try {
-    await waitForSealedWindow(adminUrl);
+    await waitForSealedWindow(adminUrl, undefined, sup.exitStatus);
   } catch (err) {
-    proc.kill("SIGTERM");
-    await new Promise<void>((r) => setTimeout(r, 500));
-    const stderr = Buffer.concat(stderrChunks).toString();
+    const exit = sup.exitStatus() ?? "still running (stopped by fixture)";
+    await sup.stop();
     throw new Error(
-      `[sealed-daemon] sealed-window check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+      `[sealed-daemon] sealed-window check failed.\nArgs: ${args.join(" ")}\nExit: ${exit}\nOutput tail:\n${sup.outputTail()}\nOriginal: ${err}`,
     );
   }
 
@@ -240,8 +235,9 @@ async function spawnSealedDaemon(
 }
 
 async function killDaemon(proc: ChildProcess): Promise<void> {
-  proc.kill("SIGTERM");
-  await new Promise<void>((r) => setTimeout(r, 400));
+  // SIGTERM, SIGKILL after the grace period, and wait for the exit so the
+  // next daemon (a restart or the next test's) never races this one.
+  await supervised.get(proc)?.stop();
 }
 
 // ---------------------------------------------------------------------------
