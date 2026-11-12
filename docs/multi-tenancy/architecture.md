@@ -899,7 +899,14 @@ tenant keeps only what it cannot do without.
    may raise it for itself.**
    - Under `strict`, the operator has no access to tenant records.
    - Under `operator-access`, named, audited, platform-only permissions reach
-     tenant identity records.
+     tenant identity records: `users:read:tenant`, `users:write:tenant`,
+     `roles:read:tenant` and `roles:write:tenant`. The operator names the
+     tenant on the request (`tenant_id`), and every user and role operation,
+     role assignment and certificate binding passes one gate,
+     `AuthMiddleware.AuthorizeOperatorIdentityAccess`. The gate reads the
+     tenant's effective policy, admits or refuses the access, and records it
+     in the platform trail and in the tenant's trail. An access that cannot
+     be recorded in both is refused.
    - **Tenant databases and data are never accessible across tenants, in
      either mode, by anyone.**
 
