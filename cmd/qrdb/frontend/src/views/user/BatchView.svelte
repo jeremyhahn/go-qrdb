@@ -16,6 +16,7 @@
 -->
 <script lang="ts">
   import type { Client, Op, OpType, BatchResponse, ImportResult } from "@qrdb/sdk";
+  import { isDesktop } from "@qrdb/sdk";
   import type { Column } from "../../components/core/DataTable/types.ts";
   import { CrudTable } from "../../components/core/CrudTable";
   import { ChevronUp, ChevronDown, FileUp } from "lucide-svelte";
@@ -177,6 +178,14 @@
   type ImportTarget = "kv" | "collection";
 
   let importFilePath: string = $state("");
+  /**
+   * A browser cannot name a path on the server, so outside the desktop app
+   * the Import tab takes a picked file and streams it over the server's
+   * chunked import session (batch.importContent).
+   */
+  const browserImport: boolean = !isDesktop();
+  let importFile: File | null = $state(null);
+  let importFileInput: HTMLInputElement | null = $state(null);
   let importFormat: string = $state("auto");
   let importKeyField: string = $state("");
   let importValueMode: ValueMode = $state("row");
@@ -215,7 +224,9 @@
   // Import tab — derived
   // ---------------------------------------------------------------------------
 
-  const importDisabled: boolean = $derived(importFilePath.trim() === "" || importLoading);
+  const importDisabled: boolean = $derived(
+    (browserImport ? importFile === null : importFilePath.trim() === "") || importLoading
+  );
 
   interface ImportErrorRow {
     row: number;
@@ -258,7 +269,11 @@
   // ---------------------------------------------------------------------------
 
   async function handleImport(): Promise<void> {
-    if (importFilePath.trim() === "") {
+    if (browserImport && importFile === null) {
+      showToast("warning", "Choose a file to import.");
+      return;
+    }
+    if (!browserImport && importFilePath.trim() === "") {
       showToast("warning", "Enter a file path to import.");
       return;
     }
@@ -281,7 +296,9 @@
           collection: importCollection,
         } : {}),
       };
-      importResult = await client.batch.importFile(importFilePath.trim(), opts);
+      importResult = browserImport && importFile !== null
+        ? await client.batch.importContent(importFile, { ...opts, filename: importFile.name })
+        : await client.batch.importFile(importFilePath.trim(), opts);
       if (importResult.failed === 0) {
         showToast("success", `Imported ${String(importResult.succeeded)} of ${String(importResult.total)} records.`);
       } else {
@@ -296,6 +313,8 @@
 
   function resetImport(): void {
     importFilePath = "";
+    importFile = null;
+    if (importFileInput !== null) importFileInput.value = "";
     importFormat = "auto";
     importKeyField = "";
     importValueMode = "row";
@@ -478,19 +497,36 @@
         <div class="card-body p-5">
           <h3 class="card-title text-base font-semibold">Import from File</h3>
 
-          <!-- File path -->
-          <div class="form-control mt-2">
-            <label class="label" for="import-file-path">
-              <span class="label-text text-xs font-medium">File Path</span>
-            </label>
-            <input
-              id="import-file-path"
-              type="text"
-              class="input input-bordered input-sm w-full"
-              placeholder="/path/to/data.csv"
-              bind:value={importFilePath}
-            />
-          </div>
+          {#if browserImport}
+            <!-- File picked in the browser, streamed to the server -->
+            <div class="form-control mt-2">
+              <label class="label" for="import-file">
+                <span class="label-text text-xs font-medium">File</span>
+              </label>
+              <input
+                id="import-file"
+                type="file"
+                class="file-input file-input-bordered file-input-sm w-full"
+                data-testid="import-file-input"
+                bind:this={importFileInput}
+                onchange={(e) => { importFile = (e.currentTarget as HTMLInputElement).files?.[0] ?? null; }}
+              />
+            </div>
+          {:else}
+            <!-- File path on this machine (desktop app) -->
+            <div class="form-control mt-2">
+              <label class="label" for="import-file-path">
+                <span class="label-text text-xs font-medium">File Path</span>
+              </label>
+              <input
+                id="import-file-path"
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="/path/to/data.csv"
+                bind:value={importFilePath}
+              />
+            </div>
+          {/if}
 
           <!-- Format -->
           <div class="form-control mt-3">
