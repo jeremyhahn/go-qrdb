@@ -68,10 +68,11 @@ func newDatabaseCmd() *cobra.Command {
 // newDatabaseCreateCmd creates the "database create" subcommand.
 func newDatabaseCreateCmd() *cobra.Command {
 	var (
-		backend     string
-		dataDir     string
-		replicas    int
-		clusterMode string
+		backend      string
+		dataDir      string
+		replicas     int
+		clusterMode  string
+		dedicatedWAL bool
 
 		barrierEnabled         bool
 		barrierStrategy        string
@@ -96,6 +97,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Dedicated data directory for this database (required for a real per-database encryption barrier)")
 	cmd.Flags().IntVar(&replicas, "replicas", 0, "Replication factor for a dedicated-raft database (raft backend only; defaults to 1)")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "Raft cluster topology for a dedicated-raft database (local, distributed; raft backend only, defaults to local)")
+	cmd.Flags().BoolVar(&dedicatedWAL, "dedicated-wal", false, "Give a dedicated-raft database its own WAL under the tenant's key (raft backend only; required for a strict-isolation tenant)")
 	applyEtcd := addDatabaseCreateEtcdFlags(cmd)
 
 	cmd.Flags().BoolVar(&barrierEnabled, "barrier-enabled", false, "Enable a per-database encryption barrier (requires a dedicated store)")
@@ -110,10 +112,11 @@ func newDatabaseCreateCmd() *cobra.Command {
 		name := args[0]
 
 		req := transport.CreateDatabaseRequest{
-			Name:     name,
-			Backend:  backend,
-			DataDir:  dataDir,
-			Replicas: replicas,
+			Name:         name,
+			Backend:      backend,
+			DataDir:      dataDir,
+			Replicas:     replicas,
+			DedicatedWAL: dedicatedWAL,
 		}
 
 		// Raft topology (cluster mode) is meaningful only for a

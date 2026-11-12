@@ -17166,7 +17166,11 @@ type DatabaseCreateRequest struct {
 	// strategy / threshold / total. See DatabaseBarrierConfig.
 	Barrier *DatabaseBarrierConfig `protobuf:"bytes,8,opt,name=barrier,proto3" json:"barrier,omitempty"`
 	// sql holds the database's SQL settings; unset means the defaults.
-	Sql           *DatabaseSQLConfig `protobuf:"bytes,9,opt,name=sql,proto3" json:"sql,omitempty"`
+	Sql *DatabaseSQLConfig `protobuf:"bytes,9,opt,name=sql,proto3" json:"sql,omitempty"`
+	// dedicated_wal requests a dedicated WAL, keyed by the tenant's own key,
+	// for a dedicated-raft database (raft backend only). Required for every
+	// database of a strict-isolation tenant.
+	DedicatedWal  bool `protobuf:"varint,10,opt,name=dedicated_wal,json=dedicatedWal,proto3" json:"dedicated_wal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -17255,6 +17259,13 @@ func (x *DatabaseCreateRequest) GetSql() *DatabaseSQLConfig {
 		return x.Sql
 	}
 	return nil
+}
+
+func (x *DatabaseCreateRequest) GetDedicatedWal() bool {
+	if x != nil {
+		return x.DedicatedWal
+	}
+	return false
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -35944,7 +35955,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tdocuments\x18\x01 \x03(\v2\x19.qrdb.v1.DocumentResponseR\tdocuments\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12\x1f\n" +
 	"\vtotal_count\x18\x03 \x01(\x03R\n" +
-	"totalCount\"\xe0\x02\n" +
+	"totalCount\"\x85\x03\n" +
 	"\x15DatabaseCreateRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\abackend\x18\x03 \x01(\tR\abackend\x12\x19\n" +
@@ -35953,7 +35964,9 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x04raft\x18\x06 \x01(\v2\x1b.qrdb.v1.DatabaseRaftConfigR\x04raft\x12\x1a\n" +
 	"\breplicas\x18\a \x01(\rR\breplicas\x128\n" +
 	"\abarrier\x18\b \x01(\v2\x1e.qrdb.v1.DatabaseBarrierConfigR\abarrier\x12,\n" +
-	"\x03sql\x18\t \x01(\v2\x1a.qrdb.v1.DatabaseSQLConfigR\x03sqlJ\x04\b\x02\x10\x03R\x06engine\"(\n" +
+	"\x03sql\x18\t \x01(\v2\x1a.qrdb.v1.DatabaseSQLConfigR\x03sql\x12#\n" +
+	"\rdedicated_wal\x18\n" +
+	" \x01(\bR\fdedicatedWalJ\x04\b\x02\x10\x03R\x06engine\"(\n" +
 	"\x12DatabaseGetRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\")\n" +
 	"\x13DatabaseDropRequest\x12\x12\n" +
