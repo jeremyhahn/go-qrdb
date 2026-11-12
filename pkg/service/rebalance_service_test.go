@@ -25,6 +25,7 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
@@ -361,6 +362,83 @@ func TestRebalanceService_CreateRebalancePlan_HonoursServingSet(t *testing.T) {
 	}
 	if sse.TenantID != "iso" || sse.Database != "orders" || sse.Node != "n3" {
 		t.Fatalf("ServingSetError = %+v", sse)
+	}
+}
+
+// TestRebalanceService_CreateRebalancePlan_NeverMovesAHomeGroup is #1517
+// Codex finding 3: a tenant's home group spans the cluster, so a plan over
+// an overloaded node holding a home-group replica proposes no move of it
+// and lists the skip with *HomeGroupMoveError, while an ordinary shard on
+// the same node still moves.
+func TestRebalanceService_CreateRebalancePlan_NeverMovesAHomeGroup(t *testing.T) {
+	store, _ := servingSetStore(t)
+	ctx := context.Background()
+	for _, p := range []*placement.Placement{
+		{TenantID: "shared", DatabaseID: "shared-home-id", Database: database.TenantHomeName, ShardID: 105, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}},
+		{TenantID: "shared", DatabaseID: "shared-orders-id", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}},
+	} {
+		if err := store.Put(ctx, p); err != nil {
+			t.Fatalf("Put %s: %v", p.Database, err)
+		}
+	}
+	host := &mockHost{
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				ShardInfoList: []quicraft.ShardInfo{
+					{ShardID: 105, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 102, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 103, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 104, IsLeader: true, Nodes: map[uint64]string{3: "n3"}},
+				},
+			}
+		},
+		staleReadFn: func(_ context.Context, shardID uint64, _ interface{}) (interface{}, error) {
+			if shardID == 104 {
+				return map[string][]byte{"k": []byte("v")}, nil
+			}
+			return map[string][]byte{"key1": []byte("value-data-that-is-large-enough-to-move")}, nil
+		},
+	}
+	svc := NewRebalanceService(host).(*RebalanceService)
+	svc.placementStore = store
+
+	plan, err := svc.CreateRebalancePlan(ctx, &RebalancePlanOptions{})
+	if err != nil {
+		t.Fatalf("CreateRebalancePlan: %v", err)
+	}
+	sharedMoved := false
+	for _, m := range plan.Moves {
+		if m.ShardID == 105 {
+			t.Fatalf("plan moves home group shard 105 to %s", m.ToNode)
+		}
+		if m.ShardID == 102 {
+			sharedMoved = true
+		}
+	}
+	if !sharedMoved {
+		t.Fatalf("plan moves = %+v, want shard 102 moved", plan.Moves)
+	}
+	var found bool
+	for _, sk := range plan.Skipped {
+		var herr *HomeGroupMoveError
+		if sk.ShardID != 105 {
+			continue
+		}
+		found = true
+		if sk.FromNode != "n1" || !errors.As(sk.Err, &herr) || sk.Reason == "" {
+			t.Fatalf("skipped = %+v, want shard 105 from n1 refused with *HomeGroupMoveError", sk)
+		}
+		if herr.TenantID != "shared" || herr.ShardID != 105 {
+			t.Fatalf("HomeGroupMoveError = %+v", herr)
+		}
+		if want := "rebalance: tenant shared home group shard 105 is not moved; it spans the cluster"; herr.Error() != want {
+			t.Fatalf("Error() = %q, want %q", herr.Error(), want)
+		}
+	}
+	if !found {
+		t.Fatalf("plan skipped = %+v, want the home group shard 105 listed", plan.Skipped)
 	}
 }
 

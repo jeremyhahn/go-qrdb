@@ -651,6 +651,9 @@ var placementRules = []rule{
 	// An isolated tenant's group needs a node outside its serving set: the
 	// serving set must grow first; a retry alone never succeeds.
 	as(&placement.ServingSetError{}, FailedPrecondition),
+	// A tenant's home group spans the cluster and a rebalance never moves
+	// it; a retry of the same move never succeeds.
+	as(&service.HomeGroupMoveError{}, FailedPrecondition),
 	as(&service.ReplicaFloorError{}, InvalidArgument),
 	as(&service.NotDedicatedRaftDatabaseError{}, InvalidArgument),
 	// The dedicated shard's leader was not stable within the wait bound.

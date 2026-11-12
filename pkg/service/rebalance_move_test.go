@@ -487,6 +487,54 @@ func TestMoveTenantGroupShard_RejectsDroppingPlacement(t *testing.T) {
 	}
 }
 
+// TestMoveTenantGroupShard_RejectsHomeGroup is #1517 Codex finding 3: a
+// hand-built plan that moves a tenant's home group shard is refused before
+// leader routing, quota or any placement mutation. The home group spans the
+// cluster; moving its source replica would strand the tenant's database
+// replicas outside the serving set.
+func TestMoveTenantGroupShard_RejectsHomeGroup(t *testing.T) {
+	p := newTestPlacement("acme", database.TenantHomeName, 10)
+	store := newTestPlacementStore(t, p)
+
+	host := &fakeRaftHost{leaderID: 2, leaderOK: true}
+	svc := &RebalanceService{
+		host:           hostForMove(t),
+		placementStore: store,
+		selfNodeID:     "node-b:9100",
+		raftHost:       host,
+		logger:         testLogger(),
+	}
+
+	move := RebalanceMovePlan{ShardID: 10, FromNode: "node-a:9100", ToNode: "node-c:9100"}
+	err := svc.moveTenantGroupShard(context.Background(), move, p)
+	var mve *RebalanceMoveError
+	if !errors.As(err, &mve) {
+		t.Fatalf("error = %v, want *RebalanceMoveError", err)
+	}
+	if mve.Step != "home-group" {
+		t.Errorf("Step = %q, want \"home-group\"", mve.Step)
+	}
+	var herr *HomeGroupMoveError
+	if !errors.As(err, &herr) || herr.TenantID != "acme" || herr.ShardID != 10 {
+		t.Fatalf("wrapped error = %v, want *HomeGroupMoveError for acme shard 10", errors.Unwrap(err))
+	}
+	if len(host.observerCalls) != 0 || len(host.removeCalls) != 0 {
+		t.Error("no AddObserver/RemoveFollowerNode calls expected for a home group")
+	}
+	current, gerr := store.Get(context.Background(), p.TenantID, p.DatabaseID)
+	if gerr != nil {
+		t.Fatalf("store.Get: %v", gerr)
+	}
+	if len(current.Replicas) != len(p.Replicas) {
+		t.Errorf("placement replicas = %d, want %d (unchanged)", len(current.Replicas), len(p.Replicas))
+	}
+	for i := range p.Replicas {
+		if current.Replicas[i].RaftAddr != p.Replicas[i].RaftAddr {
+			t.Errorf("replica %d = %s, want %s (unchanged)", i, current.Replicas[i].RaftAddr, p.Replicas[i].RaftAddr)
+		}
+	}
+}
+
 func TestMoveTenantGroupShard_LeaderRouting_ExecutesLocallyWhenLeader(t *testing.T) {
 	p := newTestPlacement("acme", "db1", 10)
 	store := newTestPlacementStore(t, p)

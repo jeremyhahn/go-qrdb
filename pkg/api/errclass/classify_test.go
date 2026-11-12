@@ -405,6 +405,7 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		{"placement replica names a path", &placement.ReplicaDataRootError{TenantID: "t", Database: "d", NodeID: "n", DataRoot: "/d"}, FailedPrecondition},
 		{"group outside the tenant's serving set", &placement.ServingSetError{TenantID: "t", Database: "d", Node: "n"}, FailedPrecondition},
 		{"serving set too small for the group", &placement.ServingSetError{TenantID: "t", Database: "d", Have: 2, Need: 3}, FailedPrecondition},
+		{"rebalance never moves a tenant home group", &service.RebalanceMoveError{ShardID: 7, TenantID: "t", Step: "home-group", Err: &service.HomeGroupMoveError{TenantID: "t", ShardID: 7}}, FailedPrecondition},
 		{"undone tenant id not yet released", &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}}, Unavailable},
 		{"deleted tenant id is retired", &tenant.TenantDeletedError{TenantID: "t"}, AlreadyExists},
 	} {

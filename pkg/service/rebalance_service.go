@@ -113,8 +113,9 @@ type RebalancePlanResult struct {
 }
 
 // RebalanceSkippedMove is a move CreateRebalancePlan considered and did not
-// propose. Err is the typed refusal (*placement.ServingSetError); Reason is
-// its text.
+// propose. Err is the typed refusal (*placement.ServingSetError, or
+// *HomeGroupMoveError for a tenant home group shard, which carries no
+// ToNode); Reason is its text.
 type RebalanceSkippedMove struct {
 	ShardID  uint64
 	FromNode string
@@ -405,6 +406,19 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 				}
 			}
 			if !isOnNode {
+				continue
+			}
+
+			// A tenant's home group spans the cluster and is never moved:
+			// list the skip and leave the shard where it is.
+			if current := shardIdx[si.ShardID]; current != nil && database.IsTenantHome(current.Database) {
+				herr := &HomeGroupMoveError{TenantID: current.TenantID, ShardID: si.ShardID}
+				skipped = append(skipped, RebalanceSkippedMove{
+					ShardID:  si.ShardID,
+					FromNode: balances[i].node.Address,
+					Reason:   herr.Error(),
+					Err:      herr,
+				})
 				continue
 			}
 
@@ -729,6 +743,19 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 			TenantID: p.TenantID,
 			Step:     "dropping",
 			Err:      &database.DroppingError{Name: p.Database, TenantID: p.TenantID},
+		}
+	}
+
+	// A tenant's home group spans the cluster and is never moved: moving
+	// its source replica would strand the tenant's database replicas
+	// outside the serving set. CreateRebalancePlan never proposes it; a
+	// hand-built plan is refused here before any mutation.
+	if database.IsTenantHome(p.Database) {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "home-group",
+			Err:      &HomeGroupMoveError{TenantID: p.TenantID, ShardID: move.ShardID},
 		}
 	}
 
