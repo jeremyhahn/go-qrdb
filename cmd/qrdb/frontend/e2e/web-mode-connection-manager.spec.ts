@@ -247,6 +247,9 @@ async function addRemoteServer(page: WebPage): Promise<void> {
   await modal.locator(".card", {
     has: page.getByRole("heading", { name: "Connect to Server" }),
   }).getByRole("button", { name: "Connect", exact: true }).click();
+  // The connect closes the dialog once it completes (after the admin view
+  // probes); the profile is in the sidebar before that.
+  await expect(modal).toBeHidden({ timeout: LOAD_TIMEOUT });
 }
 
 test.describe("Web Mode connection profiles", () => {

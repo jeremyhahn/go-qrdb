@@ -421,6 +421,9 @@ async function detectWebServerMode(
     let serverMode: 'standalone' | 'raft' = 'standalone';
     let nodeCount = 0;
     const refusedViews: string[] = [];
+    // Every probe runs at once: the connect waits for the slowest, not the sum.
+    const probes = adminViewProbes(client);
+    const settled = Promise.allSettled(probes.map(([, probe]) => probe()));
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -439,8 +442,7 @@ async function detectWebServerMode(
     // Each admin view is offered only when the server allows the caller the
     // view's own read route: a refusal (403) hides that view; any other
     // error keeps it, so the view shows its own error.
-    const probes = adminViewProbes(client);
-    const results = await Promise.allSettled(probes.map(([, probe]) => probe()));
+    const results = await settled;
     results.forEach((r, i) => {
         if (r.status === 'rejected' && isRefused(r.reason)) refusedViews.push(probes[i]![0]);
     });
