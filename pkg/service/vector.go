@@ -252,6 +252,32 @@ func (v *vectorService) refreshIndexSizeMetric(scoped string) {
 	v.metrics.setIndexBytes(scoped, float64(estimateIndexSizeBytes(index)))
 }
 
+// vectorStored reports whether storage holds vector id in the scoped
+// namespace. The vector_count gauge moves only for ids whose stored state
+// a write changes: an upsert of a stored id and a delete of a missing id
+// leave the count where it is.
+func (v *vectorService) vectorStored(ctx context.Context, scoped string, id uint64) bool {
+	vec, err := v.storage.GetVector(ctx, scoped, id)
+	return err == nil && vec != nil
+}
+
+// storedVectorIDs counts the distinct ids of a batch and how many of them
+// storage already holds in the scoped namespace: a batch upsert adds
+// distinct-stored vectors, a batch delete removes stored.
+func (v *vectorService) storedVectorIDs(ctx context.Context, scoped string, ids []uint64) (distinct, stored int) {
+	seen := make(map[uint64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		if v.vectorStored(ctx, scoped, id) {
+			stored++
+		}
+	}
+	return len(seen), stored
+}
+
 // RebuildJobState tracks the state of an index rebuild job.
 type RebuildJobState struct {
 	JobID            string
@@ -1464,6 +1490,12 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	now := time.Now().UnixNano()
 
+	// Read before the write: a re-upsert of a stored id adds no vector.
+	var added float64
+	if v.metrics != nil && !v.vectorStored(ctx, scoped, req.ID) {
+		added = 1
+	}
+
 	if v.raftNode != nil {
 		cmd := statemachine.NewUpsertCommand(scoped, req.ID, req.Vector, req.Metadata, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
@@ -1491,7 +1523,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Inc()
-			v.metrics.addVectors(scoped, 1)
+			v.metrics.addVectors(scoped, added)
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1540,7 +1572,7 @@ func (v *vectorService) UpsertVector(ctx context.Context, req *UpsertVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Inc()
-		v.metrics.addVectors(scoped, 1)
+		v.metrics.addVectors(scoped, added)
 		v.refreshIndexSizeMetric(scoped)
 	}
 
@@ -1634,6 +1666,12 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 		return nil, &VectorServiceClosedError{}
 	}
 
+	// Read before the write: a delete of a missing id removes no vector.
+	var removed float64
+	if v.metrics != nil && v.vectorStored(ctx, scoped, req.ID) {
+		removed = -1
+	}
+
 	if v.raftNode != nil {
 		cmd := statemachine.NewDeleteCommand(scoped, req.ID, v.nodeID)
 		if err := v.proposeToRaft(ctx, cmd); err != nil {
@@ -1658,7 +1696,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 		if v.metrics != nil {
 			v.metrics.vectorsDeleted.Inc()
-			v.metrics.addVectors(scoped, -1)
+			v.metrics.addVectors(scoped, removed)
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1696,7 +1734,7 @@ func (v *vectorService) DeleteVector(ctx context.Context, req *DeleteVectorReque
 
 	if v.metrics != nil {
 		v.metrics.vectorsDeleted.Inc()
-		v.metrics.addVectors(scoped, -1)
+		v.metrics.addVectors(scoped, removed)
 		v.refreshIndexSizeMetric(scoped)
 	}
 
@@ -1771,6 +1809,13 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 		versions[i] = 1
 	}
 
+	// Read before the write: only distinct ids not yet stored add vectors.
+	var added float64
+	if v.metrics != nil {
+		distinct, stored := v.storedVectorIDs(ctx, scoped, ids)
+		added = float64(distinct - stored)
+	}
+
 	if v.raftNode != nil {
 		batchIDs := make([]uint64, len(req.Vectors))
 		batchVectors := make([][]float32, len(req.Vectors))
@@ -1807,7 +1852,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 		if v.metrics != nil {
 			v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-			v.metrics.addVectors(scoped, float64(len(req.Vectors)))
+			v.metrics.addVectors(scoped, added)
 			v.refreshIndexSizeMetric(scoped)
 		}
 
@@ -1862,7 +1907,7 @@ func (v *vectorService) BatchUpsert(ctx context.Context, req *BatchUpsertRequest
 
 	if v.metrics != nil {
 		v.metrics.vectorsUpserted.Add(float64(len(req.Vectors)))
-		v.metrics.addVectors(scoped, float64(len(req.Vectors)))
+		v.metrics.addVectors(scoped, added)
 		v.refreshIndexSizeMetric(scoped)
 	}
 
@@ -3070,7 +3115,13 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 
 	scoped := scopedFromContext(ctx, req.Namespace)
 
+	// Read before the write: the batch removes only the ids stored now.
+	var removed float64
 	err := v.admit(func() error {
+		if v.metrics != nil {
+			_, stored := v.storedVectorIDs(ctx, scoped, req.IDs)
+			removed = -float64(stored)
+		}
 		return v.storage.BatchDeleteVectors(ctx, scoped, req.IDs)
 	})
 	var closedErr *VectorServiceClosedError
@@ -3109,6 +3160,8 @@ func (v *vectorService) BatchDeleteVectors(ctx context.Context, req *BatchDelete
 	}
 
 	if v.metrics != nil {
+		v.metrics.addVectors(scoped, removed)
+		v.refreshIndexSizeMetric(scoped)
 		v.metrics.operationDuration.With("batch_delete").Observe(time.Since(start).Seconds())
 	}
 

@@ -328,6 +328,11 @@ func TestVectorCountMetric_CountsStoredVectorsExactly(t *testing.T) {
 	_, _ = svc.DeleteVector(ctx, &DeleteVectorRequest{Namespace: "reup", ID: 99})
 	require.Equal(t, float64(2), stored())
 	assert.Equal(t, stored(), gauge(), "a delete subtracts only an id that was stored")
+
+	_, err = svc.BatchDeleteVectors(ctx, &BatchDeleteVectorsRequest{Namespace: "reup", IDs: []uint64{1, 1, 77}})
+	require.NoError(t, err)
+	require.Equal(t, float64(1), stored())
+	assert.Equal(t, stored(), gauge(), "a batch delete subtracts each stored id once")
 }
 
 // TestVectorCountMetric_SystemTenantLabel verifies that namespaces created
