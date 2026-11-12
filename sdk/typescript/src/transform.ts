@@ -14,12 +14,14 @@
 
 import type {
     CeremonyOfficerRequest,
+    CompactionProgress,
     DatabaseBarrierStatus,
     DistanceMetric,
     MVCCKeyValue,
     OfficerRegisterRequest,
     OfficerStatus,
     OpResponse,
+    RebuildProgress,
     RestoreKeyChange,
     RestoreRevisionResult,
     VectorIndexType,
@@ -243,6 +245,93 @@ export function vectorIDToWire(id: string): number | string {
         return id;
     }
     return Number(id);
+}
+
+/**
+ * Converts vector index parameters to the REST wire's index_config, a
+ * map[string]string on the Go side (vectorCreateNamespaceRequest): a
+ * numeric or boolean parameter is sent as its decimal string, which the
+ * server parses, instead of being refused as a type mismatch.
+ */
+export function indexParamsToWire(
+    params: Readonly<Record<string, unknown>> | undefined,
+): Record<string, string> | undefined {
+    if (params === undefined) {
+        return undefined;
+    }
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        out[key] = typeof value === 'string' ? value : String(value);
+    }
+    return out;
+}
+
+/** The REST wire's index-rebuild start answer, after snake-to-camel. */
+export interface WireRebuildIndexResponse {
+    readonly jobId: string;
+    readonly timestamp: number;
+    readonly success: boolean;
+}
+
+/** The REST wire's index-rebuild progress (vectorRebuildProgressResponse). */
+export interface WireRebuildProgress {
+    readonly jobId: string;
+    readonly status: string;
+    readonly percentComplete?: number;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly error?: string;
+}
+
+/** The REST wire's compaction start answer (vectorCompactResponse). */
+export interface WireCompactResponse {
+    readonly operationId: string;
+    readonly success: boolean;
+}
+
+/** The REST wire's compaction progress (vectorCompactionProgressResponse). */
+export interface WireCompactionProgress {
+    readonly operationId: string;
+    readonly percentComplete?: number;
+    readonly inProgress?: boolean;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly error?: string;
+}
+
+/**
+ * Maps the wire's rebuild progress to the SDK shape: percent_complete
+ * (0-100) becomes progress (0.0-1.0) and completed_at becomes finishedAt.
+ */
+export function rebuildProgressFromWire(w: WireRebuildProgress): RebuildProgress {
+    return {
+        jobId: w.jobId,
+        status: w.status,
+        progress: (w.percentComplete ?? 0) / 100,
+        startedAt: w.startedAt ?? 0,
+        finishedAt: w.completedAt || undefined,
+        error: w.error || undefined,
+    };
+}
+
+/**
+ * Maps the wire's compaction progress to the SDK shape: operation_id is
+ * the job id, in_progress and error give the status, percent_complete
+ * (0-100) becomes progress (0.0-1.0) and completed_at becomes finishedAt.
+ */
+export function compactionProgressFromWire(w: WireCompactionProgress): CompactionProgress {
+    const status = w.inProgress ? 'running' : w.error ? 'failed' : 'completed';
+    return {
+        jobId: w.operationId,
+        status,
+        progress: (w.percentComplete ?? 0) / 100,
+        startedAt: w.startedAt ?? 0,
+        finishedAt: w.completedAt || undefined,
+        error: w.error || undefined,
+    };
 }
 
 /** Converts a wire vector ID (number or string) to the SDK string form. */

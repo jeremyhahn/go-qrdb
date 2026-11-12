@@ -30,6 +30,13 @@ import {
     normalizeVectorEnumFields,
     normalizeVectorIDField,
     vectorIDToWire,
+    indexParamsToWire,
+    rebuildProgressFromWire,
+    compactionProgressFromWire,
+    type WireRebuildIndexResponse,
+    type WireRebuildProgress,
+    type WireCompactResponse,
+    type WireCompactionProgress,
 } from './transform.js';
 import { encodePKCS12Base64 } from './pkcs12.js';
 import type {
@@ -1558,7 +1565,7 @@ export class RestClient implements Client {
                             dimension: req.dimension,
                             distance_metric: distanceMetricToRestWire(req.distanceMetric),
                             index_type: indexTypeToRestWire(req.indexType),
-                            index_config: req.indexParams,
+                            index_config: indexParamsToWire(req.indexParams),
                             shard_id: req.shardId,
                         }),
                     },
@@ -1729,20 +1736,23 @@ export class RestClient implements Client {
                 req: RebuildIndexRequest,
             ): Promise<RebuildIndexResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildIndexResponse>('/vector/index/rebuild',
+                // The wire answers {job_id, status, ..., timestamp, success}.
+                const resp = await this.fetchJSON<WireRebuildIndexResponse>('/vector/index/rebuild',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.jobId, started: resp.success, timestamp: resp.timestamp };
             },
             getRebuildProgress: async (
                 req: GetRebuildProgressRequest,
             ): Promise<RebuildProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
+                const resp = await this.fetchJSON<WireRebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return rebuildProgressFromWire(resp);
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
@@ -1757,20 +1767,23 @@ export class RestClient implements Client {
                 req: CompactNamespaceRequest,
             ): Promise<CompactNamespaceResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactNamespaceResponse>('/vector/compact',
+                // The wire names the job operation_id and reports success.
+                const resp = await this.fetchJSON<WireCompactResponse>('/vector/compact',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.operationId, started: resp.success };
             },
             getCompactionProgress: async (
                 req: GetCompactionProgressRequest,
             ): Promise<CompactionProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactionProgress>(`/vector/compact/progress${buildQuery({
+                const resp = await this.fetchJSON<WireCompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
-                        job_id: req.jobId,
+                        operation_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return compactionProgressFromWire(resp);
             },
         };
     }
