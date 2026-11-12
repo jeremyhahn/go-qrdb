@@ -50,10 +50,14 @@ const LOAD_TIMEOUT = 15_000;
 /** Waits for a toast; on a miss, names the error toasts on screen. */
 async function expectToast(page: Page, text: string): Promise<void> {
   try {
-    await expect(page.getByText(text).last()).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByText(text).last()).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
   } catch (err) {
     const errors = await page.locator(".toast .alert-error").allInnerTexts();
-    throw new Error(`expected toast "${text}"; error toasts: ${JSON.stringify(errors)}\n${err}`);
+    throw new Error(
+      `expected toast "${text}"; error toasts: ${JSON.stringify(errors)}\n${err}`,
+    );
   }
 }
 
@@ -66,8 +70,25 @@ function generateCSR(cn: string): string {
   try {
     const keyPath = join(dir, "key.pem");
     const csrPath = join(dir, "csr.pem");
-    execFileSync("openssl", ["ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", keyPath]);
-    execFileSync("openssl", ["req", "-new", "-key", keyPath, "-out", csrPath, "-subj", `/CN=${cn}`]);
+    execFileSync("openssl", [
+      "ecparam",
+      "-name",
+      "prime256v1",
+      "-genkey",
+      "-noout",
+      "-out",
+      keyPath,
+    ]);
+    execFileSync("openssl", [
+      "req",
+      "-new",
+      "-key",
+      keyPath,
+      "-out",
+      csrPath,
+      "-subj",
+      `/CN=${cn}`,
+    ]);
     return readFileSync(csrPath, "utf8").trim();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -120,7 +141,10 @@ async function runFirstBoot(d: DomDaemon): Promise<void> {
       {
         method: "POST",
         rejectUnauthorized: false,
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
       },
       (res) => {
         let text = "";
@@ -128,7 +152,12 @@ async function runFirstBoot(d: DomDaemon): Promise<void> {
         res.on("data", (chunk: string) => (text += chunk));
         res.on("end", () => {
           if (res.statusCode && res.statusCode < 300) resolve();
-          else reject(new Error(`ceremony initialize returned ${res.statusCode}: ${text}`));
+          else
+            reject(
+              new Error(
+                `ceremony initialize returned ${res.statusCode}: ${text}`,
+              ),
+            );
         });
       },
     );
@@ -144,19 +173,25 @@ test.afterEach(async () => {
 
 /** Resolves a quota <input> by the visible label text of its wrapping field. */
 function quotaInput(page: Page, label: string) {
-  return page.locator("label.form-control", { hasText: label }).locator("input");
+  return page
+    .locator("label.form-control", { hasText: label })
+    .locator("input");
 }
 
 /** Navigates to the Tenants admin view from the loaded app shell. */
 async function openTenantsView(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
   // App shell loaded (no barrier gate with seal:"none").
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-
-  await page.getByRole("button", { name: "Tenants", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible({
+  await expect(page.getByText("Seal Manager")).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
+
+  await page.getByRole("button", { name: "Tenants", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible(
+    {
+      timeout: LOAD_TIMEOUT,
+    },
+  );
 }
 
 test("tenant create + quotas + entitlements round-trip (UI ↔ live daemon)", async ({
@@ -170,18 +205,24 @@ test("tenant create + quotas + entitlements round-trip (UI ↔ live daemon)", as
 
   // --- 1. Create a prefix-isolation tenant -------------------------------
   await page.getByRole("button", { name: "Create Tenant" }).click();
-  await expect(page.getByRole("heading", { name: "Create Tenant" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Create Tenant" }),
+  ).toBeVisible();
 
   await page.locator("#tenant-id").fill(TENANT_ID);
   await page.locator("#tenant-name").fill(TENANT_NAME);
   // prefix is the default isolation; assert it explicitly to be deterministic.
-  await expect(page.getByTestId("create-tenant-isolation-select")).toHaveValue("prefix");
+  await expect(page.getByTestId("create-tenant-isolation-select")).toHaveValue(
+    "prefix",
+  );
 
   // A tenant is created with its first admin's login credential, or not at
   // all: the admin's CSR (its key never leaves this test's temp dir).
   await page.getByTestId("create-tenant-admin-username").fill("acme-admin");
   await page.getByTestId("create-tenant-admin-kind-csr").click();
-  await page.getByTestId("create-tenant-admin-csr").fill(generateCSR("acme-admin"));
+  await page
+    .getByTestId("create-tenant-admin-csr")
+    .fill(generateCSR("acme-admin"));
 
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectToast(page, `Tenant "${TENANT_NAME}" created.`);
@@ -194,33 +235,49 @@ test("tenant create + quotas + entitlements round-trip (UI ↔ live daemon)", as
 
   // Back on the list — open the tenant detail by clicking its row.
   await page.getByText(TENANT_NAME).first().click();
-  await expect(page.getByRole("heading", { name: `Tenant Quotas — ${TENANT_ID}` })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: `Tenant Quotas — ${TENANT_ID}` }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
   // --- 2. Set quotas (new fields + a couple existing) --------------------
   await quotaInput(page, "Max Databases").fill(String(QUOTAS.maxDatabases));
   await quotaInput(page, "Max Keys").fill(String(QUOTAS.maxKeys));
-  await quotaInput(page, "Max Storage (bytes)").fill(String(QUOTAS.maxStorageBytes));
-  await quotaInput(page, "Max Database Size (bytes)").fill(String(QUOTAS.maxDatabaseSizeBytes));
-  await quotaInput(page, "Max Replicas / Group").fill(String(QUOTAS.maxReplicasPerGroup));
-  await quotaInput(page, "Max Total Replicas").fill(String(QUOTAS.maxTotalReplicas));
+  await quotaInput(page, "Max Storage (bytes)").fill(
+    String(QUOTAS.maxStorageBytes),
+  );
+  await quotaInput(page, "Max Database Size (bytes)").fill(
+    String(QUOTAS.maxDatabaseSizeBytes),
+  );
+  await quotaInput(page, "Max Replicas / Group").fill(
+    String(QUOTAS.maxReplicasPerGroup),
+  );
+  await quotaInput(page, "Max Total Replicas").fill(
+    String(QUOTAS.maxTotalReplicas),
+  );
 
   await page.getByRole("button", { name: "Save Quotas" }).click();
-  await expect(page.getByText(`Quotas updated for tenant "${TENANT_ID}".`).last()).toBeVisible({
+  await expect(
+    page.getByText(`Quotas updated for tenant "${TENANT_ID}".`).last(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
   // The UI repopulates from the server response — assert it reflects the saved
   // values (i.e. the server accepted and echoed them back).
-  await expect(quotaInput(page, "Max Storage (bytes)")).toHaveValue(String(QUOTAS.maxStorageBytes));
+  await expect(quotaInput(page, "Max Storage (bytes)")).toHaveValue(
+    String(QUOTAS.maxStorageBytes),
+  );
   await expect(quotaInput(page, "Max Database Size (bytes)")).toHaveValue(
     String(QUOTAS.maxDatabaseSizeBytes),
   );
   await expect(quotaInput(page, "Max Replicas / Group")).toHaveValue(
     String(QUOTAS.maxReplicasPerGroup),
   );
-  await expect(quotaInput(page, "Max Total Replicas")).toHaveValue(String(QUOTAS.maxTotalReplicas));
+  await expect(quotaInput(page, "Max Total Replicas")).toHaveValue(
+    String(QUOTAS.maxTotalReplicas),
+  );
 
   // --- 3. Set entitlements ----------------------------------------------
   await page.getByTestId("entitlement-allow-dedicated-raft").check();
@@ -230,18 +287,24 @@ test("tenant create + quotas + entitlements round-trip (UI ↔ live daemon)", as
   await page.getByTestId("allowed-mode-volume").check();
 
   await page.getByTestId("save-entitlements-btn").click();
-  await expect(page.getByText(`Entitlements updated for tenant "${TENANT_ID}".`).last()).toBeVisible(
-    { timeout: LOAD_TIMEOUT },
-  );
+  await expect(
+    page.getByText(`Entitlements updated for tenant "${TENANT_ID}".`).last(),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
   // The toggles stay set after the server round trip.
-  await expect(page.getByTestId("entitlement-allow-dedicated-raft")).toBeChecked();
-  await expect(page.getByTestId("entitlement-allow-volume-storage")).toBeChecked();
+  await expect(
+    page.getByTestId("entitlement-allow-dedicated-raft"),
+  ).toBeChecked();
+  await expect(
+    page.getByTestId("entitlement-allow-volume-storage"),
+  ).toBeChecked();
   // Note: allow_dedicated_wal requires the backend handler DTO to be updated
   // (setTenantEntitlementsRequest currently lacks AllowDedicatedWAL).
   // We assert the UI toggle remains visible and was not reset by the response
   // repopulation (UI renders from SDK types which include the field).
-  await expect(page.getByTestId("entitlement-allow-dedicated-wal")).toBeVisible();
+  await expect(
+    page.getByTestId("entitlement-allow-dedicated-wal"),
+  ).toBeVisible();
   await expect(page.getByTestId("allowed-mode-prefix")).toBeChecked();
   await expect(page.getByTestId("allowed-mode-volume")).toBeChecked();
 

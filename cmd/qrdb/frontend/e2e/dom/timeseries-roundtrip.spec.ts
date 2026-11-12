@@ -13,7 +13,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -32,39 +37,53 @@ test("TS data point round-trips through a wizard-created ts database against the
   page,
 }) => {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // --- Create a TimeSeries database through the real wizard. -------------
   await page.locator("aside").getByText("New Database").click();
-  await expect(page.getByRole("heading", { name: "Database Name & Engine" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Database Name & Engine" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.locator("#db-name").fill("metrics");
   await page.locator("button").filter({ hasText: "TimeSeries" }).click();
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Storage Backend" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "SQL Wire Protocols" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Database Encryption Barrier" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Review Configuration" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: /Create/ }).click();
 
   // The REAL backend must provision the database: it appears in the sidebar.
-  await expect(page.locator("aside").getByText("metrics", { exact: true })).toBeVisible({
+  await expect(
+    page.locator("aside").getByText("metrics", { exact: true }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -86,13 +105,19 @@ test("TS data point round-trips through a wizard-created ts database against the
   });
 
   // --- Read it back: metric list shows the REAL stored series. ------------
-  await expect(page.getByText("cpu.load").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("cpu.load").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // A server refresh must still list the metric (persistence, not local echo).
   await page.getByRole("button", { name: "Refresh" }).first().click();
-  await expect(page.getByText("cpu.load").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("cpu.load").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // Open the metric detail: the stored value must surface in the data table.
   await page.getByText("cpu.load").first().click();
-  await expect(page.getByText("73.25").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("73.25").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 });

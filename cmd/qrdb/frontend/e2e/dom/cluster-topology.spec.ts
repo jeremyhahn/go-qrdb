@@ -45,7 +45,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { startCluster, stopCluster, UI_BASE_URL, type DomCluster } from "./fixtures/dom-cluster.ts";
+import {
+  startCluster,
+  stopCluster,
+  UI_BASE_URL,
+  type DomCluster,
+} from "./fixtures/dom-cluster.ts";
 
 const LOAD_TIMEOUT = 20_000;
 
@@ -80,15 +85,23 @@ test.afterEach(async () => {
   cluster = null;
 });
 
-test("multi-node cluster: UI detects raft mode and shows Cluster + Topology nav", async ({ page }) => {
+test("multi-node cluster: UI detects raft mode and shows Cluster + Topology nav", async ({
+  page,
+}) => {
   await page.goto(UI_BASE_URL);
   // App shell loads (seal disabled → no barrier gate).
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   const aside = page.locator("aside");
   // Detected from the live /admin/topology probe (3 distinct nodes ⇒ raft).
-  await expect(aside.getByText("Topology", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(aside.getByText("Cluster", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(aside.getByText("Topology", { exact: true })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(aside.getByText("Cluster", { exact: true })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 });
 
 test("multi-node cluster: Topology view renders all 3 member nodes for the system shard", async ({
@@ -98,13 +111,19 @@ test("multi-node cluster: Topology view renders all 3 member nodes for the syste
   expect(cluster).not.toBeNull();
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   await page.locator("aside").getByText("Topology", { exact: true }).click();
 
   const main = page.locator("main");
-  await expect(main.getByTestId("topology-node-summary")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(main.getByTestId("topology-shards-table")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(main.getByTestId("topology-node-summary")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(main.getByTestId("topology-shards-table")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // The system Raft group (shard 1) must list all three member addresses.
   const shardRow = main.getByTestId("topology-shard-row").first();
@@ -116,7 +135,9 @@ test("multi-node cluster: Topology view renders all 3 member nodes for the syste
   await expect(shardRow.locator(".badge")).toBeVisible();
 
   // No UI↔backend drift: the daemon's own topology reports the same 3 nodes.
-  const resp = await request.get(`${cluster!.adminUrl}/admin/topology`, { ignoreHTTPSErrors: true });
+  const resp = await request.get(`${cluster!.adminUrl}/admin/topology`, {
+    ignoreHTTPSErrors: true,
+  });
   expect(resp.ok()).toBeTruthy();
   const topo = await resp.json();
   const ids = new Set<string>();
@@ -130,11 +151,15 @@ test("multi-node cluster: DB wizard exposes the Replication Factor picker and De
   page,
 }) => {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // Open the new-database wizard from the sidebar.
   await page.locator("aside").getByText("New Database").click();
-  await expect(page.getByRole("heading", { name: "Database Name & Engine" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Database Name & Engine" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -143,14 +168,18 @@ test("multi-node cluster: DB wizard exposes the Replication Factor picker and De
   await page.getByRole("button", { name: "Next" }).click();
 
   // Step 2 — Storage Backend (default).
-  await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Storage Backend" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
   // Step 3 — Raft Configuration: the cluster-only step. This step only appears
   // when the UI detected raft mode from the live cluster topology.
-  await expect(page.getByRole("heading", { name: "Raft Configuration" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Raft Configuration" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   const main = page.locator("main");
@@ -167,12 +196,16 @@ test("multi-node cluster: Cluster page requests a real snapshot for the system s
   page,
 }) => {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // Navigate to the Cluster admin page (membership + snapshot management),
   // distinct from the read-only Topology view exercised above.
   await page.locator("aside").getByText("Cluster", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Cluster Peers" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Cluster Peers" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -181,19 +214,25 @@ test("multi-node cluster: Cluster page requests a real snapshot for the system s
   // The peers table must already reflect the live 3-node membership fetched
   // from GET /peers on mount, proving this page -- not just Topology -- talks
   // to the real cluster.
-  await expect(main.locator("table tbody tr").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(main.locator("table tbody tr").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   const peerRowCount = await main.locator("table tbody tr").count();
   expect(peerRowCount).toBeGreaterThanOrEqual(3);
 
   // Drive the Snapshot card: shard 1 is the system Raft group every node
   // joined during cluster boot.
-  const snapshotCard = main.locator(".card", { has: page.getByRole("heading", { name: "Request Snapshot" }) });
+  const snapshotCard = main.locator(".card", {
+    has: page.getByRole("heading", { name: "Request Snapshot" }),
+  });
   await snapshotCard.getByPlaceholder("Shard ID").fill("1");
   await snapshotCard.getByRole("button", { name: "Request Snapshot" }).click();
 
   // A real POST /snapshot round-trip to the live leader must succeed --
   // confirmed by the success toast (not a mocked binding).
-  await expect(page.getByRole("alert").getByText("Snapshot requested for shard 1")).toBeVisible({
+  await expect(
+    page.getByRole("alert").getByText("Snapshot requested for shard 1"),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -212,10 +251,14 @@ test("multi-node cluster: Rebalance page loads a real, zero-hotspots imbalance r
   page.on("pageerror", (err) => pageErrors.push(err));
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   await page.locator("aside").getByText("Rebalance", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Rebalance Plan" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Rebalance Plan" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -225,7 +268,9 @@ test("multi-node cluster: Rebalance page loads a real, zero-hotspots imbalance r
   // report.hotspots were still evaluated unconditionally, the whole section
   // (including the other two stat cards, which render first) would never
   // reach the DOM because the exception aborts the entire template render.
-  await expect(main.getByText("Imbalance Score")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(main.getByText("Imbalance Score")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await expect(main.getByText("Nodes", { exact: true })).toBeVisible();
   const hotspotsCard = main.locator(".surface-panel", { hasText: "Hotspots" });
   await expect(hotspotsCard).toBeVisible();

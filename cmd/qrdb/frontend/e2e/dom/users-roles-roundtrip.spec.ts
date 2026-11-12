@@ -19,7 +19,12 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -39,11 +44,19 @@ test.afterEach(async () => {
 });
 
 /** Loads the app shell fresh from the daemon and opens an admin view. */
-async function openAdminView(page: Page, label: "Users" | "Roles", createLabel: string): Promise<void> {
+async function openAdminView(
+  page: Page,
+  label: "Users" | "Roles",
+  createLabel: string,
+): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await page.getByRole("button", { name: label, exact: true }).click();
-  await expect(page.getByRole("button", { name: createLabel })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByRole("button", { name: createLabel })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 }
 
 /** Expects the success toast with the given text. */
@@ -51,10 +64,14 @@ async function expectToast(page: Page, text: string): Promise<void> {
   // On a miss, report the error toasts on screen, so a daemon refusal is
   // named by its message rather than as a missing success toast.
   try {
-    await expect(page.getByText(text).last()).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.getByText(text).last()).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
   } catch (err) {
     const errors = await page.locator(".toast .alert-error").allInnerTexts();
-    throw new Error(`expected toast "${text}"; error toasts: ${JSON.stringify(errors)}\n${err}`);
+    throw new Error(
+      `expected toast "${text}"; error toasts: ${JSON.stringify(errors)}\n${err}`,
+    );
   }
 }
 
@@ -62,7 +79,9 @@ async function expectToast(page: Page, text: string): Promise<void> {
 async function createRole(page: Page, name: string): Promise<void> {
   await openAdminView(page, "Roles", "Create Role");
   await page.getByRole("button", { name: "Create Role" }).click();
-  await expect(page.getByRole("heading", { name: "Create Role" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Create Role" }),
+  ).toBeVisible();
   await page.getByPlaceholder("Enter role name").fill(name);
   // A fresh daemon has no "default" tenant: the form starts on System.
   await expect(page.locator("#role-detail-tenant")).toHaveValue("system");
@@ -81,10 +100,14 @@ async function openRow(page: Page, text: string): Promise<void> {
 async function openUser(page: Page): Promise<void> {
   await openAdminView(page, "Users", "Create User");
   await openRow(page, USER);
-  await expect(page.getByPlaceholder("Enter username")).toHaveValue(USER, { timeout: LOAD_TIMEOUT });
+  await expect(page.getByPlaceholder("Enter username")).toHaveValue(USER, {
+    timeout: LOAD_TIMEOUT,
+  });
 }
 
-test("roles + users create, assign, reassign, delete round-trip (UI ↔ live daemon)", async ({ page }) => {
+test("roles + users create, assign, reassign, delete round-trip (UI ↔ live daemon)", async ({
+  page,
+}) => {
   // Some twenty page loads against a live daemon: past the 30 s default.
   test.setTimeout(120_000);
   expect(daemon).not.toBeNull();
@@ -94,12 +117,18 @@ test("roles + users create, assign, reassign, delete round-trip (UI ↔ live dae
   await createRole(page, ROLE_B);
 
   await openAdminView(page, "Roles", "Create Role");
-  await expect(page.getByRole("cell", { name: ROLE_A, exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(page.getByRole("cell", { name: ROLE_B, exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: ROLE_A, exact: true }),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(
+    page.getByRole("cell", { name: ROLE_B, exact: true }),
+  ).toBeVisible();
 
   // Role detail shows the persisted role.
   await openRow(page, ROLE_A);
-  await expect(page.getByRole("heading", { name: "Edit Role" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByRole("heading", { name: "Edit Role" })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await expect(page.getByPlaceholder("Enter role name")).toHaveValue(ROLE_A);
   await expect(page.getByTestId("role-delete")).toBeVisible();
 
@@ -135,12 +164,16 @@ test("roles + users create, assign, reassign, delete round-trip (UI ↔ live dae
   await expectToast(page, `User "${USER}" deleted`);
 
   await openAdminView(page, "Users", "Create User");
-  await expect(page.getByRole("cell", { name: USER, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("cell", { name: USER, exact: true })).toHaveCount(
+    0,
+  );
 
   for (const role of [ROLE_A, ROLE_B]) {
     await openAdminView(page, "Roles", "Create Role");
     await openRow(page, role);
-    await expect(page.getByPlaceholder("Enter role name")).toHaveValue(role, { timeout: LOAD_TIMEOUT });
+    await expect(page.getByPlaceholder("Enter role name")).toHaveValue(role, {
+      timeout: LOAD_TIMEOUT,
+    });
     await page.getByTestId("role-delete").click();
     await expect(page.getByTestId("role-delete")).toHaveText("Confirm Delete");
     await page.getByTestId("role-delete").click();
@@ -149,7 +182,13 @@ test("roles + users create, assign, reassign, delete round-trip (UI ↔ live dae
 
   await openAdminView(page, "Roles", "Create Role");
   // The list has loaded (system roles are always present) before the absence check.
-  await expect(page.getByRole("cell", { name: "System" }).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(page.getByRole("cell", { name: ROLE_A, exact: true })).toHaveCount(0);
-  await expect(page.getByRole("cell", { name: ROLE_B, exact: true })).toHaveCount(0);
+  await expect(page.getByRole("cell", { name: "System" }).first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(
+    page.getByRole("cell", { name: ROLE_A, exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("cell", { name: ROLE_B, exact: true }),
+  ).toHaveCount(0);
 });

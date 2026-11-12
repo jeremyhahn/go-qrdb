@@ -57,7 +57,10 @@ test.beforeEach(async ({ request }, testInfo) => {
     data: { so_pin: SO_PIN, user_pin: USER_PIN, admin_generate: true },
     ignoreHTTPSErrors: true,
   });
-  expect(init.ok(), `ceremony init: ${init.status()} ${await init.text()}`).toBeTruthy();
+  expect(
+    init.ok(),
+    `ceremony init: ${init.status()} ${await init.text()}`,
+  ).toBeTruthy();
   await waitForHealthy(daemon);
 });
 
@@ -76,10 +79,17 @@ function makeCSR(cn: string): string {
     return execFileSync(
       "openssl",
       [
-        "req", "-new",
-        "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-        "-nodes", "-keyout", join(dir, "key.pem"),
-        "-subj", `/CN=${cn}`,
+        "req",
+        "-new",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+        "-keyout",
+        join(dir, "key.pem"),
+        "-subj",
+        `/CN=${cn}`,
       ],
       { encoding: "utf8" },
     );
@@ -89,34 +99,54 @@ function makeCSR(cn: string): string {
 }
 
 async function expectToast(page: Page, text: string): Promise<void> {
-  await expect(page.locator(".toast .alert").filter({ hasText: text }).first()).toBeVisible({
+  await expect(
+    page.locator(".toast .alert").filter({ hasText: text }).first(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
 
-async function openView(page: Page, nav: string, heading: string): Promise<void> {
+async function openView(
+  page: Page,
+  nav: string,
+  heading: string,
+): Promise<void> {
   await page.getByRole("button", { name: nav, exact: true }).click();
-  await expect(page.getByRole("heading", { name: heading, exact: true }).first()).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: heading, exact: true }).first(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
 
-test("volume pool: the configured pool is listed, read, updated and assigned to a tenant (UI ↔ live daemon)", async ({ page, request }) => {
+test("volume pool: the configured pool is listed, read, updated and assigned to a tenant (UI ↔ live daemon)", async ({
+  page,
+  request,
+}) => {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
 
   await page.goto(UI_BASE_URL);
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
 
-  const getJSON = async (path: string): Promise<{ status: number; body: Record<string, unknown> }> => {
-    const r = await request.get(`${daemon!.adminUrl}${path}`, { ignoreHTTPSErrors: true });
+  const getJSON = async (
+    path: string,
+  ): Promise<{ status: number; body: Record<string, unknown> }> => {
+    const r = await request.get(`${daemon!.adminUrl}${path}`, {
+      ignoreHTTPSErrors: true,
+    });
     const text = await r.text();
-    return { status: r.status(), body: text === "" ? {} : (JSON.parse(text) as Record<string, unknown>) };
+    return {
+      status: r.status(),
+      body: text === "" ? {} : (JSON.parse(text) as Record<string, unknown>),
+    };
   };
 
   // The node maps "fast" but the replicated catalog starts empty.
   await openView(page, "Volume Pools", "Volume Pools");
-  await expect(page.getByText("No volume pools in the catalog.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("No volume pools in the catalog.")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   expect((await getJSON("/v1/volume-pools/list")).body.pools).toEqual([]);
 
   // Create: the catalog entry for the node's configured "dir" pool.
@@ -128,56 +158,92 @@ test("volume pool: the configured pool is listed, read, updated and assigned to 
   await expectToast(page, `Volume pool "${POOL}" created`);
   const created = await getJSON(`/v1/volume-pools/${POOL}`);
   expect(created.status).toBe(200);
-  expect(created.body).toMatchObject({ name: POOL, provider: "dir", description: "fast tier", overcommit: 1 });
+  expect(created.body).toMatchObject({
+    name: POOL,
+    provider: "dir",
+    description: "fast tier",
+    overcommit: 1,
+  });
 
   // List and get: the pool's row opens its detail.
   const row = page.getByRole("row").filter({ hasText: POOL }).first();
   await expect(row).toBeVisible({ timeout: LOAD_TIMEOUT });
   await row.click();
-  await expect(page.getByTestId("volume-pool-detail-name")).toHaveText(POOL, { timeout: LOAD_TIMEOUT });
-  await expect(page.getByTestId("volume-pool-description")).toHaveText("fast tier");
+  await expect(page.getByTestId("volume-pool-detail-name")).toHaveText(POOL, {
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(page.getByTestId("volume-pool-description")).toHaveText(
+    "fast tier",
+  );
 
   // Update: description and overcommit.
-  await page.locator("#volume-pool-edit-description").fill("fast tier, updated");
+  await page
+    .locator("#volume-pool-edit-description")
+    .fill("fast tier, updated");
   await page.locator("#volume-pool-edit-overcommit").fill("2");
   await page.getByTestId("volume-pool-save").click();
   await expectToast(page, `Volume pool "${POOL}" updated`);
-  await expect(page.getByTestId("volume-pool-description")).toHaveText("fast tier, updated");
+  await expect(page.getByTestId("volume-pool-description")).toHaveText(
+    "fast tier, updated",
+  );
   await expect(page.getByTestId("volume-pool-overcommit")).toHaveText("2x");
   const updated = await getJSON(`/v1/volume-pools/${POOL}`);
-  expect(updated.body).toMatchObject({ name: POOL, description: "fast tier, updated", overcommit: 2 });
+  expect(updated.body).toMatchObject({
+    name: POOL,
+    description: "fast tier, updated",
+    overcommit: 2,
+  });
 
   // Assign: a volume-isolation tenant created on the pool in the Tenants view.
   await page.getByRole("button", { name: "Tenants", exact: true }).click();
   await page.getByRole("button", { name: "Create Tenant" }).click();
-  await expect(page.getByRole("heading", { name: "Create Tenant" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Create Tenant" }),
+  ).toBeVisible();
   await page.locator("#tenant-id").fill(TENANT_ID);
   await page.locator("#tenant-name").fill(TENANT_ID);
-  await page.getByTestId("create-tenant-isolation-select").selectOption("volume");
+  await page
+    .getByTestId("create-tenant-isolation-select")
+    .selectOption("volume");
   // The pool field turns from free text into a picker once the catalog loads.
   const poolPicker = page.locator("select#tenant-volume-pool");
   await expect(poolPicker).toBeVisible({ timeout: LOAD_TIMEOUT });
   await poolPicker.selectOption(POOL);
   // Over a barrier a tenant is created with its first admin's credential.
   await page.getByRole("textbox", { name: "Admin Username" }).fill("vol-admin");
-  await page.getByRole("textbox", { name: "Admin CSR PEM" }).fill(makeCSR("vol-admin"));
+  await page
+    .getByRole("textbox", { name: "Admin CSR PEM" })
+    .fill(makeCSR("vol-admin"));
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await expectToast(page, `Tenant "${TENANT_ID}" created.`);
   const poolTenants = await getJSON(`/v1/volume-pools/${POOL}/tenants`);
-  expect(poolTenants.body.tenants).toEqual([expect.objectContaining({ tenantId: TENANT_ID })]);
+  expect(poolTenants.body.tenants).toEqual([
+    expect.objectContaining({ tenantId: TENANT_ID }),
+  ]);
   const tenantRecord = await getJSON(`/v1/tenants/${TENANT_ID}`);
-  expect(tenantRecord.body).toMatchObject({ id: TENANT_ID, isolation_type: "volume", volume_pool: POOL });
-  expect((await getJSON(`/v1/volume-pools/${POOL}`)).body).toMatchObject({ tenantCount: 1 });
+  expect(tenantRecord.body).toMatchObject({
+    id: TENANT_ID,
+    isolation_type: "volume",
+    volume_pool: POOL,
+  });
+  expect((await getJSON(`/v1/volume-pools/${POOL}`)).body).toMatchObject({
+    tenantCount: 1,
+  });
 
   // listTenants: the pool's detail lists the assigned tenant.
   await openView(page, "Volume Pools", "Volume Pools");
   await page.getByRole("row").filter({ hasText: POOL }).first().click();
-  await expect(page.getByTestId("volume-pool-tenants")).toContainText(TENANT_ID, { timeout: LOAD_TIMEOUT });
+  await expect(page.getByTestId("volume-pool-tenants")).toContainText(
+    TENANT_ID,
+    { timeout: LOAD_TIMEOUT },
+  );
 
   expect(errors).toEqual([]);
 });
 
-test("a backup create appears in the audit log (UI ↔ live daemon)", async ({ page }) => {
+test("a backup create appears in the audit log (UI ↔ live daemon)", async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
 
@@ -190,25 +256,33 @@ test("a backup create appears in the audit log (UI ↔ live daemon)", async ({ p
   await page.getByRole("button", { name: "Create Backup" }).click();
   const modal = page.locator(".modal-box").filter({ hasText: "Create Backup" });
   await expect(modal).toBeVisible();
-  await modal.getByPlaceholder("/var/backups/qrdb/backup-001 or s3://bucket/key").fill(destination);
+  await modal
+    .getByPlaceholder("/var/backups/qrdb/backup-001 or s3://bucket/key")
+    .fill(destination);
   await modal.locator("select").nth(1).selectOption("none");
   await modal.getByRole("button", { name: "Create", exact: true }).click();
   const created = page.getByText(/Backup "[^"]+" created/).first();
   await expect(created).toBeVisible({ timeout: LOAD_TIMEOUT });
-  const id = /Backup "([^"]+)" created/.exec((await created.textContent()) ?? "")?.[1] ?? "";
+  const id =
+    /Backup "([^"]+)" created/.exec((await created.textContent()) ?? "")?.[1] ??
+    "";
   expect(id).not.toBe("");
 
   // Audit Log: filtered to this backup, its create is listed (the server
   // records a "permitted" decision and then the "success" outcome).
   const resource = `backup:${id}`;
   await openView(page, "Audit Log", "Audit Log");
-  await expect(page.getByRole("row").filter({ hasText: "posture-change" }).first()).toBeVisible({
+  await expect(
+    page.getByRole("row").filter({ hasText: "posture-change" }).first(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByPlaceholder("Filter by resource").fill(resource);
   await page.getByPlaceholder("Filter by action").fill("backup.create");
   await page.getByRole("button", { name: "Apply", exact: true }).click();
-  await expect(page.getByRole("row").filter({ hasText: "posture-change" })).toHaveCount(0, {
+  await expect(
+    page.getByRole("row").filter({ hasText: "posture-change" }),
+  ).toHaveCount(0, {
     timeout: LOAD_TIMEOUT,
   });
   const events = page.getByRole("row").filter({ hasText: resource });
@@ -218,8 +292,12 @@ test("a backup create appears in the audit log (UI ↔ live daemon)", async ({ p
 
   // Selecting the event opens its detail with the server's record.
   await success.click();
-  await expect(page.getByRole("cell", { name: resource, exact: true }).last()).toBeVisible();
-  await expect(page.getByRole("cell", { name: "backup.create", exact: true }).last()).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: resource, exact: true }).last(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "backup.create", exact: true }).last(),
+  ).toBeVisible();
   await expect(page.getByText(destination).last()).toBeVisible();
 
   expect(errors).toEqual([]);

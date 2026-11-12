@@ -17,7 +17,12 @@
  * clusterUnseal) needs a multi-node fixture with a raft transport.
  */
 
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type APIRequestContext,
+  type Page,
+} from "@playwright/test";
 import {
   startDaemon,
   stopDaemon,
@@ -41,33 +46,51 @@ test.afterEach(async () => {
   daemon = null;
 });
 
-async function sealStatus(request: APIRequestContext): Promise<Record<string, unknown>> {
-  const res = await request.get(`${daemon!.adminUrl}/v1/barrier/status`, { ignoreHTTPSErrors: true });
+async function sealStatus(
+  request: APIRequestContext,
+): Promise<Record<string, unknown>> {
+  const res = await request.get(`${daemon!.adminUrl}/v1/barrier/status`, {
+    ignoreHTTPSErrors: true,
+  });
   expect(res.status(), `seal status: ${await res.text()}`).toBe(200);
   return (await res.json()) as Record<string, unknown>;
 }
 
 // The init wizard is a multi-step ceremony; this spec covers the cluster seal
 // card, so the server is initialized through the ceremony API.
-async function initAndOpenSealManager(page: Page, request: APIRequestContext): Promise<void> {
-  const init = await request.post(`${daemon!.adminUrl}/v1/ceremony/initialize`, {
-    data: {
-      secret: Buffer.from(PASSPHRASE).toString("base64"),
-      so_pin: SO_PIN,
-      user_pin: USER_PIN,
-      admin_generate: true,
+async function initAndOpenSealManager(
+  page: Page,
+  request: APIRequestContext,
+): Promise<void> {
+  const init = await request.post(
+    `${daemon!.adminUrl}/v1/ceremony/initialize`,
+    {
+      data: {
+        secret: Buffer.from(PASSPHRASE).toString("base64"),
+        so_pin: SO_PIN,
+        user_pin: USER_PIN,
+        admin_generate: true,
+      },
+      ignoreHTTPSErrors: true,
     },
-    ignoreHTTPSErrors: true,
-  });
-  expect(init.ok(), `ceremony init: ${init.status()} ${await init.text()}`).toBeTruthy();
+  );
+  expect(
+    init.ok(),
+    `ceremony init: ${init.status()} ${await init.text()}`,
+  ).toBeTruthy();
   await waitForHealthy(daemon!);
   await page.goto(UI_BASE_URL);
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
   await page.getByText("Seal Manager").first().click();
-  await expect(page.getByRole("heading", { name: "Seal Manager" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Seal Manager" }),
+  ).toBeVisible();
 }
 
-test("one node: the cluster seal card follows the server's inactive record through a node-local seal and unseal", async ({ page, request }) => {
+test("one node: the cluster seal card follows the server's inactive record through a node-local seal and unseal", async ({
+  page,
+  request,
+}) => {
   await initAndOpenSealManager(page, request);
   await expect(page.getByText("Unsealed").first()).toBeVisible();
 
@@ -77,7 +100,11 @@ test("one node: the cluster seal card follows the server's inactive record throu
   const before = await sealStatus(request);
   expect(before.sealed).toBe(false);
   expect(before.strategy).toBe("passphrase");
-  expect(before.cluster_seal).toEqual({ active: false, sealed: false, epoch: 0 });
+  expect(before.cluster_seal).toEqual({
+    active: false,
+    sealed: false,
+    epoch: 0,
+  });
 
   // The UI's view agrees: no cluster seal card, no cluster unseal action,
   // no cluster migration panel.
@@ -90,24 +117,36 @@ test("one node: the cluster seal card follows the server's inactive record throu
   const soPin = page.getByTestId("seal-so-pin");
   if (await soPin.isVisible()) await soPin.fill(SO_PIN);
   await page.getByRole("button", { name: "Confirm Seal" }).click();
-  await expect(page.getByText("Enter the barrier passphrase to unseal the encryption barrier.")).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByText(
+      "Enter the barrier passphrase to unseal the encryption barrier.",
+    ),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Sealed").first()).toBeVisible();
 
   const sealed = await sealStatus(request);
   expect(sealed.sealed).toBe(true);
   // A node-local seal writes no cluster record.
-  expect((sealed.cluster_seal as { active?: boolean } | undefined)?.active ?? false).toBe(false);
+  expect(
+    (sealed.cluster_seal as { active?: boolean } | undefined)?.active ?? false,
+  ).toBe(false);
   await expect(page.getByTestId("cluster-seal-status")).toHaveCount(0);
   await expect(page.getByTestId("cluster-unseal-btn")).toHaveCount(0);
 
   // Unseal through the UI with the passphrase.
   await page.getByPlaceholder("Enter passphrase").fill(PASSPHRASE);
   await page.getByRole("button", { name: "Unseal", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Seal", exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByRole("button", { name: "Seal", exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Unsealed").first()).toBeVisible();
 
   const after = await sealStatus(request);
   expect(after.sealed).toBe(false);
-  expect(after.cluster_seal).toEqual({ active: false, sealed: false, epoch: 0 });
+  expect(after.cluster_seal).toEqual({
+    active: false,
+    sealed: false,
+    epoch: 0,
+  });
   await expect(page.getByTestId("cluster-seal-status")).toHaveCount(0);
 });

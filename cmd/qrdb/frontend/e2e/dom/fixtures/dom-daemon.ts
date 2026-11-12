@@ -104,7 +104,12 @@ export interface DomDaemon {
 }
 
 function writeConfig(path: string, opts: StartDaemonOptions): void {
-  const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
+  const lines = [
+    "codec:",
+    '  storage_codec: "json"',
+    '  wire_codec: "json"',
+    "seal:",
+  ];
   if (opts.seal === "none") {
     // auth.enabled requires seal.enabled, so a seal-off daemon runs auth-off.
     lines.push("  enabled: false");
@@ -124,7 +129,11 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
     for (const name of opts.volumePools) {
       const poolDir = join(poolRoot, name);
       mkdirSync(poolDir, { recursive: true, mode: 0o700 });
-      lines.push(`    - name: "${name}"`, `      path: "${poolDir}"`, '      provider: "dir"');
+      lines.push(
+        `    - name: "${name}"`,
+        `      path: "${poolDir}"`,
+        '      provider: "dir"',
+      );
     }
     // Entitlements are fail-closed and a create request carries none, so a
     // new tenant may use the pools only through the operator defaults.
@@ -144,7 +153,11 @@ function writeConfig(path: string, opts: StartDaemonOptions): void {
  *   - "none": /health returns 200 (fully booted, unsealed).
  *   - sealed modes: /v1/barrier/status returns 200 (sealed-window listener up).
  */
-async function waitForReady(adminUrl: string, seal: SealMode, timeoutMs = 20_000): Promise<void> {
+async function waitForReady(
+  adminUrl: string,
+  seal: SealMode,
+  timeoutMs = 20_000,
+): Promise<void> {
   const https = await import("https");
   // seal:"none" (no barrier) boots straight to healthy. Every enabled-seal
   // mode — including "none-committed", whose barrier still needs an
@@ -154,10 +167,14 @@ async function waitForReady(adminUrl: string, seal: SealMode, timeoutMs = 20_000
   let lastErr: unknown = "no attempt";
   while (Date.now() < deadline) {
     const ok = await new Promise<boolean>((resolve) => {
-      const req = https.default.get(`${adminUrl}${path}`, { rejectUnauthorized: false }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200);
-      });
+      const req = https.default.get(
+        `${adminUrl}${path}`,
+        { rejectUnauthorized: false },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode === 200);
+        },
+      );
       req.on("error", (e) => {
         lastErr = e;
         resolve(false);
@@ -170,32 +187,46 @@ async function waitForReady(adminUrl: string, seal: SealMode, timeoutMs = 20_000
     if (ok) return;
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error(`DOM daemon at ${adminUrl}${path} not ready within ${timeoutMs}ms (last: ${lastErr})`);
+  throw new Error(
+    `DOM daemon at ${adminUrl}${path} not ready within ${timeoutMs}ms (last: ${lastErr})`,
+  );
 }
 
 /**
  * Spawns a fresh qrdbd on the fixed DOM ports in the requested seal mode and
  * blocks until it is ready for UI traffic.
  */
-export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> {
+export async function startDaemon(
+  opts: StartDaemonOptions,
+): Promise<DomDaemon> {
   const dataDir = mkdtempSync(join(tmpdir(), "qrdb-dom-"));
   const configPath = join(dataDir, "config.yaml");
   writeConfig(configPath, opts);
 
   const args = [
     "start",
-    "--config", configPath,
-    "--data-dir", dataDir,
-    "--listen", `127.0.0.1:${DOM_RAFT_PORT}`,
-    "--raft-address", `127.0.0.1:${DOM_RAFT_PORT}`,
-    "--admin-port", String(DOM_ADMIN_PORT),
-    "--grpc-port", String(DOM_GRPC_PORT),
+    "--config",
+    configPath,
+    "--data-dir",
+    dataDir,
+    "--listen",
+    `127.0.0.1:${DOM_RAFT_PORT}`,
+    "--raft-address",
+    `127.0.0.1:${DOM_RAFT_PORT}`,
+    "--admin-port",
+    String(DOM_ADMIN_PORT),
+    "--grpc-port",
+    String(DOM_GRPC_PORT),
     "--auth-enabled=false",
     `--tls-client-auth=${opts.tlsClientAuth ?? "none"}`,
-    "--discovery", "static",
-    "--peers", `1=127.0.0.1:${DOM_RAFT_PORT}`,
-    "--replica-id", "1",
-    "--log-level", "warn",
+    "--discovery",
+    "static",
+    "--peers",
+    `1=127.0.0.1:${DOM_RAFT_PORT}`,
+    "--replica-id",
+    "1",
+    "--log-level",
+    "warn",
     "--enable-grpc=false",
     "--enable-unix=false",
     "--enable-quic=false",
@@ -227,15 +258,22 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
  * during that window /health briefly returns 503 then 404 before 200. Tests
  * call this before navigating into the post-init app shell.
  */
-export async function waitForHealthy(daemon: DomDaemon, timeoutMs = 30_000): Promise<void> {
+export async function waitForHealthy(
+  daemon: DomDaemon,
+  timeoutMs = 30_000,
+): Promise<void> {
   const https = await import("https");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ok = await new Promise<boolean>((resolve) => {
-      const req = https.default.get(`${daemon.adminUrl}/health`, { rejectUnauthorized: false }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200);
-      });
+      const req = https.default.get(
+        `${daemon.adminUrl}/health`,
+        { rejectUnauthorized: false },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode === 200);
+        },
+      );
       req.on("error", () => resolve(false));
       req.setTimeout(1000, () => {
         req.destroy();
@@ -245,7 +283,9 @@ export async function waitForHealthy(daemon: DomDaemon, timeoutMs = 30_000): Pro
     if (ok) return;
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error(`DOM daemon ${daemon.adminUrl}/health not 200 within ${timeoutMs}ms`);
+  throw new Error(
+    `DOM daemon ${daemon.adminUrl}/health not 200 within ${timeoutMs}ms`,
+  );
 }
 
 /** Stops the daemon and removes its data directory (best effort). */

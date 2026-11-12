@@ -61,14 +61,22 @@ async function initializeCeremony(d: DomDaemon): Promise<void> {
       {
         method: "POST",
         rejectUnauthorized: false,
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
       },
       (res) => {
         let text = "";
         res.on("data", (c: Buffer) => (text += c.toString()));
         res.on("end", () => {
           if (res.statusCode && res.statusCode < 300) resolve();
-          else reject(new Error(`ceremony initialize returned ${res.statusCode}: ${text.slice(0, 300)}`));
+          else
+            reject(
+              new Error(
+                `ceremony initialize returned ${res.statusCode}: ${text.slice(0, 300)}`,
+              ),
+            );
         });
       },
     );
@@ -87,10 +95,25 @@ function makeCSR(commonName: string): string {
   const dir = mkdtempSync(join(tmpdir(), "qrdb-invite-"));
   try {
     const csr = join(dir, "req.csr");
-    execFileSync("openssl", [
-      "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
-      "-keyout", join(dir, "key.pem"), "-out", csr, "-subj", `/CN=${commonName}`,
-    ], { stdio: "pipe" });
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-new",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+        "-keyout",
+        join(dir, "key.pem"),
+        "-out",
+        csr,
+        "-subj",
+        `/CN=${commonName}`,
+      ],
+      { stdio: "pipe" },
+    );
     return readFileSync(csr, "utf8");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -104,17 +127,24 @@ async function expectToast(page: Page, text: string | RegExp): Promise<string> {
     await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(
+      `expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`,
+    );
   }
   return toast.innerText();
 }
 
-test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", async ({ page, request }) => {
+test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", async ({
+  page,
+  request,
+}) => {
   expect(daemon).not.toBeNull();
 
   // --- Invite --------------------------------------------------------------------
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await page.getByRole("button", { name: "Users", exact: true }).click();
   await page.getByRole("button", { name: "Invite User" }).click();
   await page.locator("#invite-username").fill(INVITEE);
@@ -123,7 +153,9 @@ test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", a
   // The modal switches to its "Invitation created" view; a failure is an
   // error toast, which is caught here before it auto-dismisses.
   const created = page.getByText("Invitation created");
-  await expect(created.or(page.locator(".toast .alert")).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(created.or(page.locator(".toast .alert")).first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   if (!(await created.isVisible())) {
     const shown = await page.locator(".toast .alert").allInnerTexts();
     throw new Error(`invite failed; toasts shown: ${JSON.stringify(shown)}`);
@@ -137,7 +169,9 @@ test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", a
   // --- Redeem --------------------------------------------------------------------
   const csrPEM = makeCSR(INVITEE);
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   // The sidebar's "Add server" opens the Connection Manager.
   await page.getByRole("button", { name: "Add server", exact: true }).click();
   await page.getByRole("button", { name: "Redeem Invitation" }).first().click();
@@ -151,18 +185,33 @@ test("invite in Users, redeem in the Connection Manager (UI ↔ live daemon)", a
     await expect(result).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.getByTestId("redeem-error").allInnerTexts();
-    throw new Error(`redeem failed; error shown: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(
+      `redeem failed; error shown: ${JSON.stringify(shown)}\n${err}`,
+    );
   }
   await expect(page.getByTestId("redeem-username")).toHaveText(INVITEE);
   const userID = (await page.getByTestId("redeem-user-id").innerText()).trim();
   expect(userID).not.toBe("");
-  await expect(page.getByTestId("redeem-cert-pem")).toHaveValue(/^-----BEGIN CERTIFICATE-----/);
+  await expect(page.getByTestId("redeem-cert-pem")).toHaveValue(
+    /^-----BEGIN CERTIFICATE-----/,
+  );
 
   // --- Server state --------------------------------------------------------------
-  const resp = await request.get(`${daemon!.adminUrl}/users/list`, { ignoreHTTPSErrors: true });
-  expect(resp.ok(), `GET /v1/users: ${resp.status()} ${await resp.text()}`).toBeTruthy();
+  const resp = await request.get(`${daemon!.adminUrl}/users/list`, {
+    ignoreHTTPSErrors: true,
+  });
+  expect(
+    resp.ok(),
+    `GET /v1/users: ${resp.status()} ${await resp.text()}`,
+  ).toBeTruthy();
   const listed = (await resp.json()) as {
-    users: { id: string; username: string; tenant_id: string; lifecycle: string; cert_bindings?: unknown[] }[];
+    users: {
+      id: string;
+      username: string;
+      tenant_id: string;
+      lifecycle: string;
+      cert_bindings?: unknown[];
+    }[];
   };
   const invitee = listed.users.find((u) => u.username === INVITEE);
   expect(invitee, `GET /users/list: no ${INVITEE}`).toBeDefined();

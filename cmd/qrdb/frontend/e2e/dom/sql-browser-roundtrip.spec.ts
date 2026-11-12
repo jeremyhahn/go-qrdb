@@ -14,7 +14,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -33,19 +38,31 @@ test("SQL query executes against live KV data after enabling the protocol in Set
   page,
 }) => {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.locator("aside").getByText("system", { exact: true }).first().click();
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await page
+    .locator("aside")
+    .getByText("system", { exact: true })
+    .first()
+    .click();
   await expect(page.getByRole("heading", { name: "KV Store" })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
   // --- Seed a KV entry the SQL query must find. ---------------------------
-  await page.getByRole("button", { name: "Create", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Create", exact: true })
+    .first()
+    .click();
   await page.locator("input[placeholder='Enter key']").fill("sql/roundtrip");
   await page
     .locator("textarea[placeholder='Enter value (supports JSON)']")
     .fill("sql-visible-value");
-  await page.getByRole("button", { name: "Create", exact: true }).last().click();
+  await page
+    .getByRole("button", { name: "Create", exact: true })
+    .last()
+    .click();
   await expect(page.getByText('Created "sql/roundtrip"').last()).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
@@ -58,8 +75,12 @@ test("SQL query executes against live KV data after enabling the protocol in Set
   await tabList.getByText("Settings", { exact: true }).click();
   const mysqlToggle = page.locator("input.toggle").first();
   await mysqlToggle.check();
-  await expect(page.getByText(/MySQL enabled/i).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(tabList.getByText("SQL Browser")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText(/MySQL enabled/i).first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(tabList.getByText("SQL Browser")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // --- Execute the default kv query through the real backend. -------------
   await tabList.getByText("SQL Browser").click();
@@ -77,7 +98,9 @@ test("SQL query executes against live KV data after enabling the protocol in Set
   await expect(resultsTable.getByText("sql/roundtrip").first()).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await expect(resultsTable.getByText("sql-visible-value").first()).toBeVisible({
-    timeout: LOAD_TIMEOUT,
-  });
+  await expect(resultsTable.getByText("sql-visible-value").first()).toBeVisible(
+    {
+      timeout: LOAD_TIMEOUT,
+    },
+  );
 });

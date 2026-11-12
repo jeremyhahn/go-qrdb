@@ -14,7 +14,12 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -32,9 +37,13 @@ test.afterEach(async () => {
 /** Loads the app shell fresh from the daemon and opens the admin Dashboard. */
 async function openDashboard(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await page.locator("aside").getByText("Dashboard", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Capabilities" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByRole("heading", { name: "Capabilities" })).toBeVisible(
+    { timeout: LOAD_TIMEOUT },
+  );
 }
 
 /** The SDK's snake_case to camelCase key transform, which the Dashboard's columns show. */
@@ -64,7 +73,10 @@ const CAPABILITY_KEYS: Record<string, string> = {
 
 const RAFT_DB = "dashraft";
 
-test("dashboard shards and capabilities round-trip (UI ↔ live daemon)", async ({ page, request }) => {
+test("dashboard shards and capabilities round-trip (UI ↔ live daemon)", async ({
+  page,
+  request,
+}) => {
   expect(daemon).not.toBeNull();
   const base = daemon!.adminUrl;
 
@@ -73,18 +85,30 @@ test("dashboard shards and capabilities round-trip (UI ↔ live daemon)", async 
     data: { name: RAFT_DB, backend: "raft" },
     ignoreHTTPSErrors: true,
   });
-  expect(created.status(), `create ${RAFT_DB}: ${await created.text()}`).toBe(201);
+  expect(created.status(), `create ${RAFT_DB}: ${await created.text()}`).toBe(
+    201,
+  );
 
-  let status: { shard_count: number; shards: Record<string, unknown>[] } = { shard_count: 0, shards: [] };
+  let status: { shard_count: number; shards: Record<string, unknown>[] } = {
+    shard_count: 0,
+    shards: [],
+  };
   await expect
-    .poll(async () => {
-      const r = await request.get(`${base}/status`, { ignoreHTTPSErrors: true });
-      status = await r.json();
-      return status.shards.length;
-    }, { timeout: LOAD_TIMEOUT })
+    .poll(
+      async () => {
+        const r = await request.get(`${base}/status`, {
+          ignoreHTTPSErrors: true,
+        });
+        status = await r.json();
+        return status.shards.length;
+      },
+      { timeout: LOAD_TIMEOUT },
+    )
     .toBeGreaterThan(0);
 
-  const capsResp = await request.get(`${base}/capabilities`, { ignoreHTTPSErrors: true });
+  const capsResp = await request.get(`${base}/capabilities`, {
+    ignoreHTTPSErrors: true,
+  });
   expect(capsResp.status()).toBe(200);
   const caps = (await capsResp.json()) as Record<string, unknown>;
 
@@ -93,37 +117,67 @@ test("dashboard shards and capabilities round-trip (UI ↔ live daemon)", async 
   const card = page.getByTestId("dashboard-shards");
   const table = card.getByTestId("dashboard-shards-table");
   const rows = table.locator("tbody tr");
-  await expect(rows).toHaveCount(status.shards.length, { timeout: LOAD_TIMEOUT });
+  await expect(rows).toHaveCount(status.shards.length, {
+    timeout: LOAD_TIMEOUT,
+  });
 
   const wireColumns: string[] = [];
-  for (const s of status.shards) for (const k of Object.keys(s)) if (!wireColumns.includes(k)) wireColumns.push(k);
+  for (const s of status.shards)
+    for (const k of Object.keys(s))
+      if (!wireColumns.includes(k)) wireColumns.push(k);
   await expect(table.locator("thead th")).toHaveText(wireColumns.map(camel));
 
   // Shard ids, leadership and health are stable between the two reads; counters
   // (term, last_applied, pending) may move, so they are checked for presence only.
-  const STABLE = ["shard_id", "replica_id", "is_leader", "state_machine_type_name", "health", "nodes"];
+  const STABLE = [
+    "shard_id",
+    "replica_id",
+    "is_leader",
+    "state_machine_type_name",
+    "health",
+    "nodes",
+  ];
   const shown = await rows.evaluateAll((trs) =>
-    trs.map((tr) => Array.from(tr.querySelectorAll("td")).map((td) => (td.textContent ?? "").trim())),
+    trs.map((tr) =>
+      Array.from(tr.querySelectorAll("td")).map((td) =>
+        (td.textContent ?? "").trim(),
+      ),
+    ),
   );
-  const shownById = new Map(shown.map((cells) => [cells[wireColumns.indexOf("shard_id")], cells]));
+  const shownById = new Map(
+    shown.map((cells) => [cells[wireColumns.indexOf("shard_id")], cells]),
+  );
   for (const s of status.shards) {
     const cells = shownById.get(cell(s["shard_id"]));
     expect(cells, `row for shard ${cell(s["shard_id"])}`).toBeDefined();
     for (const key of STABLE) {
       if (!(key in s)) continue;
-      expect(cells![wireColumns.indexOf(key)], `shard ${cell(s["shard_id"])} ${key}`).toBe(cell(s[key]));
+      expect(
+        cells![wireColumns.indexOf(key)],
+        `shard ${cell(s["shard_id"])} ${key}`,
+      ).toBe(cell(s[key]));
     }
   }
 
   // The stat agrees with the status shard count.
-  await expect(page.locator(".stat").filter({ hasText: "Loaded on this node" }).locator(".stat-value"))
-    .toHaveText(String(status.shard_count));
+  await expect(
+    page
+      .locator(".stat")
+      .filter({ hasText: "Loaded on this node" })
+      .locator(".stat-value"),
+  ).toHaveText(String(status.shard_count));
 
   // --- The Capabilities card shows the capabilities answer. -------------------------
-  const capCard = page.locator(".card").filter({ has: page.getByRole("heading", { name: "Capabilities" }) });
+  const capCard = page
+    .locator(".card")
+    .filter({ has: page.getByRole("heading", { name: "Capabilities" }) });
   for (const [label, key] of Object.entries(CAPABILITY_KEYS)) {
-    expect(typeof caps[key], `capabilities.${key} is a boolean`).toBe("boolean");
-    const badge = capCard.locator(".badge").filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) });
+    expect(typeof caps[key], `capabilities.${key} is a boolean`).toBe(
+      "boolean",
+    );
+    const badge = capCard
+      .locator(".badge")
+      .filter({ hasText: new RegExp(`^\\s*${label}\\s*$`) });
     await expect(badge, `badge ${label}`).toHaveCount(1);
     if (caps[key] === true) {
       await expect(badge, `${label} enabled`).toHaveClass(/badge-success/);

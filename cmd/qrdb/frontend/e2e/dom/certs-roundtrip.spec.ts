@@ -45,7 +45,10 @@ test.beforeEach(async ({ request }) => {
     data: { so_pin: SO_PIN, user_pin: USER_PIN, admin_generate: true },
     ignoreHTTPSErrors: true,
   });
-  expect(init.ok(), `ceremony init: ${init.status()} ${await init.text()}`).toBeTruthy();
+  expect(
+    init.ok(),
+    `ceremony init: ${init.status()} ${await init.text()}`,
+  ).toBeTruthy();
   await waitForHealthy(daemon);
 });
 
@@ -61,10 +64,17 @@ function makeCSR(cn: string): string {
     return execFileSync(
       "openssl",
       [
-        "req", "-new",
-        "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
-        "-nodes", "-keyout", join(dir, "key.pem"),
-        "-subj", `/CN=${cn}`,
+        "req",
+        "-new",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:P-256",
+        "-nodes",
+        "-keyout",
+        join(dir, "key.pem"),
+        "-subj",
+        `/CN=${cn}`,
       ],
       { encoding: "utf8" },
     );
@@ -76,9 +86,16 @@ function makeCSR(cn: string): string {
 /** Opens the Certificates admin view. */
 async function openCerts(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.locator("aside").getByRole("button", { name: "Certificates", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Certificates", exact: true })).toBeVisible({
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await page
+    .locator("aside")
+    .getByRole("button", { name: "Certificates", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Certificates", exact: true }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
@@ -88,27 +105,39 @@ test("a client certificate is issued, listed and revoked against the live backen
   request,
 }) => {
   await openCerts(page);
-  await expect(page.getByText("No certificates issued.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("No certificates issued.")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // --- The account must exist before a certificate can be issued. --------
   const created = await request.post(`${daemon!.adminUrl}/users`, {
     data: { username: USERNAME, email: `${USERNAME}@example.com` },
     ignoreHTTPSErrors: true,
   });
-  expect(created.ok(), `create user: ${created.status()} ${await created.text()}`).toBeTruthy();
+  expect(
+    created.ok(),
+    `create user: ${created.status()} ${await created.text()}`,
+  ).toBeTruthy();
 
   // --- Issue from a CSR through the view. ----------------------------------
-  await page.getByRole("button", { name: "Issue", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Issue", exact: true })
+    .first()
+    .click();
   await page.locator("input[placeholder='e.g. alice']").first().fill(USERNAME);
   await page
     .locator("textarea[placeholder='-----BEGIN CERTIFICATE REQUEST-----']")
     .fill(makeCSR(USERNAME));
   await page.locator("input[placeholder='8760h']").fill("8760h");
   await page.getByRole("button", { name: "Issue", exact: true }).last().click();
-  await expect(page.getByText(`Certificate issued for "${USERNAME}"`).last()).toBeVisible({
+  await expect(
+    page.getByText(`Certificate issued for "${USERNAME}"`).last(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await expect(page.getByText("Certificate PEM", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Certificate PEM", { exact: true }),
+  ).toBeVisible();
 
   // --- A reload lists it from the server, with its detail columns. -------
   await page.reload();
@@ -124,24 +153,41 @@ test("a client certificate is issued, listed and revoked against the live backen
   await row.getByRole("button", { name: "Details", exact: true }).click();
   const detail = page.getByTestId("cert-detail");
   const field = (name: string) =>
-    detail.locator("dt", { hasText: name }).locator("xpath=following-sibling::dd[1]");
+    detail
+      .locator("dt", { hasText: name })
+      .locator("xpath=following-sibling::dd[1]");
   await expect(field("Serial")).toHaveText(serial);
   await expect(field("Tenant")).toHaveText("system");
   await expect(field("Validity remaining")).toHaveText(/^36[45] days$/);
 
   // --- Revoke by serial. ---------------------------------------------------
-  await page.getByRole("button", { name: "Revoke", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Revoke", exact: true })
+    .first()
+    .click();
   await page.locator("input[placeholder='e.g. 1a2b3c4d...']").fill(serial);
-  await page.getByRole("button", { name: "Revoke", exact: true }).last().click();
-  await expect(page.getByText(`Revoking serial "${serial}" is permanent.`)).toBeVisible();
-  await page.getByRole("button", { name: "Confirm Revoke", exact: true }).click();
-  await expect(page.getByText(`Certificate ${serial} revoked`).last()).toBeVisible({
+  await page
+    .getByRole("button", { name: "Revoke", exact: true })
+    .last()
+    .click();
+  await expect(
+    page.getByText(`Revoking serial "${serial}" is permanent.`),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Confirm Revoke", exact: true })
+    .click();
+  await expect(
+    page.getByText(`Certificate ${serial} revoked`).last(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
   await page.reload();
   await openCerts(page);
   await expect(
-    page.locator("table tbody tr").filter({ hasText: serial }).locator(".badge", { hasText: "Revoked" }),
+    page
+      .locator("table tbody tr")
+      .filter({ hasText: serial })
+      .locator(".badge", { hasText: "Revoked" }),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
 });

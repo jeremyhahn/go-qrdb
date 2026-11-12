@@ -27,7 +27,12 @@
  */
 
 import { test, expect, type Page } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -77,15 +82,21 @@ const STANDALONE_ADMIN_ITEMS: readonly string[] = [
   "Settings",
 ] as const;
 
-test("standalone admin views render against a real empty backend without a JS page error", async ({ page }) => {
+test("standalone admin views render against a real empty backend without a JS page error", async ({
+  page,
+}) => {
   const pageErrors = attachPageErrorCollector(page);
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   for (const item of STANDALONE_ADMIN_ITEMS) {
     await clickAdminNavItem(page, item);
-    await expect(page.locator(".breadcrumbs").getByText(item)).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(page.locator(".breadcrumbs").getByText(item)).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
 
     // Let the view's async list-fetches (databases/backups/tenants/etc.)
     // settle before checking for accumulated errors and moving on.
@@ -93,7 +104,9 @@ test("standalone admin views render against a real empty backend without a JS pa
 
     if (pageErrors.length > 0) {
       const messages = pageErrors.map((e) => e.message).join("\n  ");
-      throw new Error(`JavaScript exception(s) after navigating to "${item}" against a real empty backend:\n  ${messages}`);
+      throw new Error(
+        `JavaScript exception(s) after navigating to "${item}" against a real empty backend:\n  ${messages}`,
+      );
     }
 
     // The view actually mounted content, not a blank error boundary.
@@ -101,7 +114,9 @@ test("standalone admin views render against a real empty backend without a JS pa
   }
 });
 
-test("Databases view lists the built-in system database against a real backend without crashing", async ({ page }) => {
+test("Databases view lists the built-in system database against a real backend without crashing", async ({
+  page,
+}) => {
   // qrdbd always boots with one built-in "system" kv database, so this is
   // the minimal-but-nonempty list state rather than a true empty state (see
   // the standalone-mode sweep above for pageerror coverage on views that
@@ -109,36 +124,56 @@ test("Databases view lists the built-in system database against a real backend w
   const pageErrors = attachPageErrorCollector(page);
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   await clickAdminNavItem(page, "Databases");
-  await expect(page.locator(".breadcrumbs").getByText("Databases")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(page.locator("main").getByText("system")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.locator(".breadcrumbs").getByText("Databases")).toBeVisible(
+    { timeout: LOAD_TIMEOUT },
+  );
+  await expect(page.locator("main").getByText("system")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   expect(pageErrors).toEqual([]);
 });
 
-test("Backups view lists zero backups against a real empty backend without crashing", async ({ page }) => {
+test("Backups view lists zero backups against a real empty backend without crashing", async ({
+  page,
+}) => {
   const pageErrors = attachPageErrorCollector(page);
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   await clickAdminNavItem(page, "Backups");
-  await expect(page.locator(".breadcrumbs").getByText("Backups")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(page.getByText("No backups found.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.locator(".breadcrumbs").getByText("Backups")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(page.getByText("No backups found.")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   expect(pageErrors).toEqual([]);
 });
 
-test("Tenants view lists zero tenants against a real empty backend without crashing", async ({ page }) => {
+test("Tenants view lists zero tenants against a real empty backend without crashing", async ({
+  page,
+}) => {
   const pageErrors = attachPageErrorCollector(page);
 
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   await clickAdminNavItem(page, "Tenants");
-  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible(
+    { timeout: LOAD_TIMEOUT },
+  );
   await page.waitForLoadState("networkidle", { timeout: LOAD_TIMEOUT });
 
   expect(pageErrors).toEqual([]);

@@ -55,14 +55,22 @@ async function initializeCeremony(d: DomDaemon): Promise<void> {
       {
         method: "POST",
         rejectUnauthorized: false,
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
       },
       (res) => {
         let text = "";
         res.on("data", (c: Buffer) => (text += c.toString()));
         res.on("end", () => {
           if (res.statusCode && res.statusCode < 300) resolve();
-          else reject(new Error(`ceremony initialize returned ${res.statusCode}: ${text.slice(0, 300)}`));
+          else
+            reject(
+              new Error(
+                `ceremony initialize returned ${res.statusCode}: ${text.slice(0, 300)}`,
+              ),
+            );
         });
       },
     );
@@ -90,9 +98,13 @@ test.afterEach(async () => {
 /** Loads the app shell fresh from the daemon and opens the Cluster admin view. */
 async function openCluster(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await page.locator("aside").getByText("Cluster", { exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Mint Join Token" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(
+    page.getByRole("heading", { name: "Mint Join Token" }),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
 }
 
 /** Expects the toast; on a miss, reports the toasts on screen. */
@@ -102,7 +114,9 @@ async function expectToast(page: Page, text: string | RegExp): Promise<string> {
     await expect(toast).toBeVisible({ timeout: LOAD_TIMEOUT });
   } catch (err) {
     const shown = await page.locator(".toast .alert").allInnerTexts();
-    throw new Error(`expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`);
+    throw new Error(
+      `expected toast ${String(text)}; toasts shown: ${JSON.stringify(shown)}\n${err}`,
+    );
   }
   return toast.innerText();
 }
@@ -123,7 +137,10 @@ function tokenShape(token: string): { length: number; alphabet: string } {
 // topology reports 1 node"), so this daemon never reaches the mint card. The
 // spec runs once that is ruled on, or on a multi-node cluster fixture with a
 // barrier and cluster_join (fixtures/dom-cluster.ts boots neither today).
-test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({ page, request }) => {
+test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({
+  page,
+  request,
+}) => {
   expect(daemon).not.toBeNull();
 
   // --- Mint in the UI. --------------------------------------------------------------
@@ -132,7 +149,10 @@ test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({ page, req
   await card.getByLabel("Join node ID").fill(NODE_ID);
   await card.getByLabel("Join token TTL seconds").fill(String(TTL_SECONDS));
   const uiMintedAt = Date.now();
-  const uiMint = page.waitForResponse((r) => r.url().includes("/v1/cluster/join-tokens"), { timeout: LOAD_TIMEOUT });
+  const uiMint = page.waitForResponse(
+    (r) => r.url().includes("/v1/cluster/join-tokens"),
+    { timeout: LOAD_TIMEOUT },
+  );
   await card.getByRole("button", { name: "Mint Token" }).click();
   const uiResp = await uiMint;
   expect(uiResp.status(), `UI mint: ${await uiResp.text()}`).toBe(201);
@@ -140,20 +160,32 @@ test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({ page, req
 
   const result = card.getByTestId("join-token-result");
   await expect(result).toBeVisible({ timeout: LOAD_TIMEOUT });
-  const uiToken = (await result.getByTestId("join-token-value").innerText()).trim();
+  const uiToken = (
+    await result.getByTestId("join-token-value").innerText()
+  ).trim();
   expect(uiToken.length, "token shown in the UI").toBeGreaterThan(0);
-  const expiryText = (await result.getByText(/^Expires /).innerText()).replace(/^Expires\s+/, "").trim();
+  const expiryText = (await result.getByText(/^Expires /).innerText())
+    .replace(/^Expires\s+/, "")
+    .trim();
   const uiExpiry = Date.parse(expiryText);
-  expect(Number.isNaN(uiExpiry), `UI expiry "${expiryText}" parses as a time`).toBeFalsy();
-  expect(Math.abs(uiExpiry - (uiMintedAt + TTL_SECONDS * 1000)), `UI expiry ${expiryText} is the TTL out`)
-    .toBeLessThan(EXPIRY_SLACK_MS);
+  expect(
+    Number.isNaN(uiExpiry),
+    `UI expiry "${expiryText}" parses as a time`,
+  ).toBeFalsy();
+  expect(
+    Math.abs(uiExpiry - (uiMintedAt + TTL_SECONDS * 1000)),
+    `UI expiry ${expiryText} is the TTL out`,
+  ).toBeLessThan(EXPIRY_SLACK_MS);
 
   // --- The daemon's answer to the same mint call has the same shape. ----------------
   const apiMintedAt = Date.now();
-  const resp = await request.post(`${daemon!.adminUrl}/v1/cluster/join-tokens`, {
-    data: { node_id: NODE_ID, ttl_seconds: TTL_SECONDS },
-    ignoreHTTPSErrors: true,
-  });
+  const resp = await request.post(
+    `${daemon!.adminUrl}/v1/cluster/join-tokens`,
+    {
+      data: { node_id: NODE_ID, ttl_seconds: TTL_SECONDS },
+      ignoreHTTPSErrors: true,
+    },
+  );
   const body = await resp.text();
   expect(resp.status(), `POST /v1/cluster/join-tokens: ${body}`).toBe(201);
   const minted = JSON.parse(body) as { token?: string; expires_at?: string };
@@ -163,9 +195,14 @@ test.fixme("mint join token round-trip (UI ↔ live daemon)", async ({ page, req
   // Join tokens are single-use secrets: a second mint is a new token.
   expect(minted.token).not.toBe(uiToken);
   const apiExpiry = Date.parse(minted.expires_at!);
-  expect(Math.abs(apiExpiry - (apiMintedAt + TTL_SECONDS * 1000)), `API expiry ${minted.expires_at}`)
-    .toBeLessThan(EXPIRY_SLACK_MS);
-  expect(Math.abs(apiExpiry - uiExpiry), "UI and API expiries are the same TTL out").toBeLessThan(EXPIRY_SLACK_MS);
+  expect(
+    Math.abs(apiExpiry - (apiMintedAt + TTL_SECONDS * 1000)),
+    `API expiry ${minted.expires_at}`,
+  ).toBeLessThan(EXPIRY_SLACK_MS);
+  expect(
+    Math.abs(apiExpiry - uiExpiry),
+    "UI and API expiries are the same TTL out",
+  ).toBeLessThan(EXPIRY_SLACK_MS);
 
   // A mint without a node id is refused in the UI before any call.
   await card.getByLabel("Join node ID").fill("");

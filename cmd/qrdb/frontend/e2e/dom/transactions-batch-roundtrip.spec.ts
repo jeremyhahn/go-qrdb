@@ -15,7 +15,12 @@
  */
 
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -33,17 +38,29 @@ test.afterEach(async () => {
 /** Opens the default (kv-engine) database workspace on its KV Store tab. */
 async function openWorkspace(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.locator("aside").getByText("system", { exact: true }).first().click();
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await page
+    .locator("aside")
+    .getByText("system", { exact: true })
+    .first()
+    .click();
   await expect(page.getByRole("heading", { name: "KV Store" })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
 
 /** Switches the workspace to the named tool tab. */
-async function openTab(page: Page, tab: string, heading: string): Promise<void> {
+async function openTab(
+  page: Page,
+  tab: string,
+  heading: string,
+): Promise<void> {
   await page.getByRole("tab", { name: tab, exact: true }).click();
-  await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: heading, exact: true }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 }
@@ -59,7 +76,10 @@ function txnCard(page: Page, title: string): Locator {
  * Builds and executes a transaction: "key tx/a has version 0" guarding PUTs
  * of `puts` on success. Returns once the result badge is shown.
  */
-async function runGuardedTxn(page: Page, puts: [string, string][]): Promise<void> {
+async function runGuardedTxn(
+  page: Page,
+  puts: [string, string][],
+): Promise<void> {
   await page.getByRole("button", { name: "Reset", exact: true }).click();
 
   const cond = txnCard(page, "Conditions");
@@ -77,7 +97,9 @@ async function runGuardedTxn(page: Page, puts: [string, string][]): Promise<void
   await page.getByRole("button", { name: "Execute Transaction" }).click();
 }
 
-test("transactions commit or abort atomically and a batch writes keys", async ({ page }) => {
+test("transactions commit or abort atomically and a batch writes keys", async ({
+  page,
+}) => {
   await openWorkspace(page);
 
   // --- Transaction 1: condition holds, both keys commit. -----------------
@@ -95,7 +117,9 @@ test("transactions commit or abort atomically and a batch writes keys", async ({
   // written. -------------------------------------------------------------
   await runGuardedTxn(page, [["tx/c", "charlie"]]);
   await expect(
-    page.getByText("Transaction condition failed; failure ops executed.").last(),
+    page
+      .getByText("Transaction condition failed; failure ops executed.")
+      .last(),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
   await expect(page.locator(".badge", { hasText: "Failed" })).toBeVisible();
 
@@ -110,7 +134,9 @@ test("transactions commit or abort atomically and a batch writes keys", async ({
     await page.locator("input[placeholder='Value']").nth(i).fill(value);
   }
   await page.getByRole("button", { name: "Execute Batch" }).click();
-  await expect(page.getByText("Batch executed successfully.").last()).toBeVisible({
+  await expect(
+    page.getByText("Batch executed successfully.").last(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 

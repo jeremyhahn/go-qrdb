@@ -12,7 +12,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -31,37 +36,51 @@ test("vector round-trips through a wizard-created vector database against the li
   page,
 }) => {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // --- Create a Vector database through the real wizard. -----------------
   await page.locator("aside").getByText("New Database").click();
-  await expect(page.getByRole("heading", { name: "Database Name & Engine" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Database Name & Engine" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.locator("#db-name").fill("embeddings");
   await page.locator("button").filter({ hasText: "Vector" }).click();
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Storage Backend" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Storage Backend" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "SQL Wire Protocols" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "SQL Wire Protocols" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Database Encryption Barrier" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Database Encryption Barrier" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: "Next" }).click();
 
-  await expect(page.getByRole("heading", { name: "Review Configuration" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Review Configuration" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await page.getByRole("button", { name: /Create/ }).click();
-  await expect(page.locator("aside").getByText("embeddings", { exact: true })).toBeVisible({
+  await expect(
+    page.locator("aside").getByText("embeddings", { exact: true }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
@@ -73,7 +92,9 @@ test("vector round-trips through a wizard-created vector database against the li
     .first()
     .click();
   const modal = page.locator(".modal");
-  await expect(modal.getByRole("heading", { name: "Create Namespace" })).toBeVisible({
+  await expect(
+    modal.getByRole("heading", { name: "Create Namespace" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await modal.locator("input[placeholder='Namespace name']").fill("docs");
@@ -85,25 +106,35 @@ test("vector round-trips through a wizard-created vector database against the li
 
   // --- Upsert a vector and read it back from the live index. -------------
   await page.locator("select").first().selectOption("docs");
-  await expect(page.locator("select").first()).toHaveValue("docs", { timeout: LOAD_TIMEOUT });
+  await expect(page.locator("select").first()).toHaveValue("docs", {
+    timeout: LOAD_TIMEOUT,
+  });
 
   // Vector IDs are uint64 across the whole stack (proto string IDs are
   // parsed with strconv.ParseUint; REST/transport structs use uint64), so
   // the round-trip must use a numeric ID.
-  await expect(page.getByRole("button", { name: "Upsert Vector" })).toBeVisible({
+  await expect(page.getByRole("button", { name: "Upsert Vector" })).toBeVisible(
+    {
+      timeout: LOAD_TIMEOUT,
+    },
+  );
+  await page.getByRole("button", { name: "Upsert Vector" }).click();
+  await expect(page.getByText("New Vector")).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await page.getByRole("button", { name: "Upsert Vector" }).click();
-  await expect(page.getByText("New Vector")).toBeVisible({ timeout: LOAD_TIMEOUT });
   await page.locator("input[placeholder='Unique ID']").fill("41");
-  await page.locator("textarea[placeholder='0.1, 0.5, -0.3, 0.8, ...']").fill("0.1, 0.2, 0.3, 0.4");
+  await page
+    .locator("textarea[placeholder='0.1, 0.5, -0.3, 0.8, ...']")
+    .fill("0.1, 0.2, 0.3, 0.4");
   await page.getByRole("button", { name: "Upsert", exact: true }).click();
   await expect(
     page.getByText('Vector "41" upserted in namespace "docs".'),
   ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
   // The vectors table lists the REAL stored vector.
-  await expect(page.locator("table").getByText("41", { exact: true }).first()).toBeVisible({
+  await expect(
+    page.locator("table").getByText("41", { exact: true }).first(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 

@@ -13,7 +13,12 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -29,14 +34,25 @@ test.afterEach(async () => {
 });
 
 /** Opens the default (kv-engine) database's Collections tab. */
-async function openCollections(page: import("@playwright/test").Page): Promise<void> {
+async function openCollections(
+  page: import("@playwright/test").Page,
+): Promise<void> {
   await page.goto(UI_BASE_URL);
-  await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await page.locator("aside").getByText("system", { exact: true }).first().click();
+  await expect(page.getByText("Seal Manager")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await page
+    .locator("aside")
+    .getByText("system", { exact: true })
+    .first()
+    .click();
   await expect(page.getByRole("heading", { name: "KV Store" })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await page.locator("main nav").getByText("Collections", { exact: true }).click();
+  await page
+    .locator("main nav")
+    .getByText("Collections", { exact: true })
+    .click();
   await expect(page.getByRole("heading", { name: "Collections" })).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
@@ -49,31 +65,47 @@ test("collection document round-trips create -> insert -> read -> delete against
 
   // --- Create a collection through the real REST path. -------------------
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Create Collection" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Create Collection" }),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
-  await page.locator("input[placeholder='Enter collection name']").fill("customers");
-  await page.getByRole("button", { name: "Create", exact: true }).last().click();
+  await page
+    .locator("input[placeholder='Enter collection name']")
+    .fill("customers");
+  await page
+    .getByRole("button", { name: "Create", exact: true })
+    .last()
+    .click();
   await expect(page.getByText('Collection "customers" created')).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
 
   // Select it in the left panel.
-  await page.getByRole("button", { name: /customers/ }).first().click();
-  await expect(page.locator("h3").filter({ hasText: "customers" })).toBeVisible({
-    timeout: LOAD_TIMEOUT,
-  });
+  await page
+    .getByRole("button", { name: /customers/ })
+    .first()
+    .click();
+  await expect(page.locator("h3").filter({ hasText: "customers" })).toBeVisible(
+    {
+      timeout: LOAD_TIMEOUT,
+    },
+  );
 
   // --- Insert a document (JSON mode) and read it back. -------------------
   await page.getByRole("tab", { name: "Documents" }).click();
-  const insertBtn = page.locator("main").getByRole("button", { name: "Insert", exact: true });
+  const insertBtn = page
+    .locator("main")
+    .getByRole("button", { name: "Insert", exact: true });
   await expect(insertBtn).toBeVisible({ timeout: LOAD_TIMEOUT });
   await insertBtn.click();
 
   const modal = page.locator(".modal");
   await expect(modal).toBeVisible({ timeout: LOAD_TIMEOUT });
   await modal.getByRole("button", { name: "JSON", exact: true }).click();
-  await modal.locator("textarea").fill('{"name": "Ada Lovelace", "email": "ada@example.com"}');
+  await modal
+    .locator("textarea")
+    .fill('{"name": "Ada Lovelace", "email": "ada@example.com"}');
   await modal.getByRole("button", { name: "Insert", exact: true }).click();
   await expect(page.getByText("Document inserted.").first()).toBeVisible({
     timeout: LOAD_TIMEOUT,
@@ -81,21 +113,31 @@ test("collection document round-trips create -> insert -> read -> delete against
 
   // The document row must render the REAL stored field values (round trip
   // through the live engine, not a mock echo).
-  await expect(page.getByText("Ada Lovelace").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await expect(page.getByText("ada@example.com").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Ada Lovelace").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  await expect(page.getByText("ada@example.com").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // A reload-from-server (Refresh via tab re-entry) must still show it —
   // proving persistence, not just optimistic local state.
   await page.getByRole("tab", { name: /Secondary indexes/ }).click();
   await page.getByRole("tab", { name: "Documents" }).click();
-  await expect(page.getByText("Ada Lovelace").first()).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByText("Ada Lovelace").first()).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 
   // --- Delete the document and prove it is gone server-side. -------------
   // CrudTable deletion is checkbox-selection + toolbar Delete (no per-row
   // delete button). Hard assertions — unlike the mocked-tier sibling, this
   // must fail loudly if the deletion surface changes.
   await page.locator("table tbody tr input[type='checkbox']").first().check();
-  await page.locator(".btn-error").filter({ hasText: /Delete/i }).first().click();
+  await page
+    .locator(".btn-error")
+    .filter({ hasText: /Delete/i })
+    .first()
+    .click();
   await page
     .locator(".modal, .modal-box")
     .locator("button")

@@ -45,7 +45,10 @@ async function api(
         method,
         rejectUnauthorized: false,
         headers: payload
-          ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) }
+          ? {
+              "Content-Type": "application/json",
+              "Content-Length": Buffer.byteLength(payload),
+            }
           : {},
       },
       (res) => {
@@ -74,12 +77,17 @@ async function initializeCeremony(d: DomDaemon): Promise<void> {
     user_pin: "user-pin-dom-e2e",
     admin_generate: true,
   });
-  if (r.status >= 300) throw new Error(`ceremony initialize returned ${r.status}: ${r.text.slice(0, 300)}`);
+  if (r.status >= 300)
+    throw new Error(
+      `ceremony initialize returned ${r.status}: ${r.text.slice(0, 300)}`,
+    );
 }
 
 /** Runs openssl with a fresh in-memory P-256 key handed over in a scratch dir removed at once. */
 function opensslWithFreshKey(args: (keyPath: string) => string[]): string {
-  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const { privateKey } = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+  });
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const dir = mkdtempSync(join(tmpdir(), "qrdb-trust-"));
   try {
@@ -94,21 +102,44 @@ function opensslWithFreshKey(args: (keyPath: string) => string[]): string {
 /** A self-signed CA certificate (PEM) for subject CN=cn. */
 function makeCACert(cn: string): string {
   return opensslWithFreshKey((key) => [
-    "req", "-x509", "-new", "-sha256", "-key", key, "-days", "30", "-subj", `/CN=${cn}`,
-    "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+    "req",
+    "-x509",
+    "-new",
+    "-sha256",
+    "-key",
+    key,
+    "-days",
+    "30",
+    "-subj",
+    `/CN=${cn}`,
+    "-addext",
+    "basicConstraints=critical,CA:TRUE",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
   ]);
 }
 
 /** A PKCS#10 CSR for CN=username. */
 function makeCSR(username: string): string {
-  return opensslWithFreshKey((key) => ["req", "-new", "-sha256", "-key", key, "-subj", `/CN=${username}`]);
+  return opensslWithFreshKey((key) => [
+    "req",
+    "-new",
+    "-sha256",
+    "-key",
+    key,
+    "-subj",
+    `/CN=${username}`,
+  ]);
 }
 
 /** The usernames of the tenant barrier's share holders, as the daemon lists them. */
 async function serverHolderNames(d: DomDaemon): Promise<string[]> {
   const r = await api(d, "GET", `/v1/tenants/${TENANT}/barrier/officers`);
   expect(r.status, r.text).toBe(200);
-  const j = r.json as { username?: string }[] | Record<string, { username?: string }[] | undefined> | null;
+  const j = r.json as
+    | { username?: string }[]
+    | Record<string, { username?: string }[] | undefined>
+    | null;
   const list = Array.isArray(j) ? j : (j?.["officers"] ?? j?.["items"] ?? []);
   return list.map((h) => h.username ?? "").sort();
 }
@@ -132,7 +163,10 @@ test.beforeEach(async () => {
     admin_username: "acme-admin",
     admin_csr_pem: makeCSR("acme-admin"),
   });
-  expect(r.status, `create tenant ${TENANT}: ${r.text.slice(0, 300)}`).toBeLessThan(300);
+  expect(
+    r.status,
+    `create tenant ${TENANT}: ${r.text.slice(0, 300)}`,
+  ).toBeLessThan(300);
 });
 
 test.afterEach(async () => {
@@ -145,16 +179,26 @@ async function openTenants(page: Page): Promise<void> {
   await page.goto(UI_BASE_URL);
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: 20_000 });
   await page.locator('aside button[title="Tenants"]').click();
-  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(page.getByRole("button", { name: "Create Tenant" })).toBeVisible(
+    { timeout: LOAD_TIMEOUT },
+  );
 }
 
 /** Opens the tenant's detail view from the tenants table. */
 async function openTenantDetail(page: Page): Promise<void> {
   await openTenants(page);
   const main = page.locator("main");
-  await expect(main.locator("table").getByText(TENANT, { exact: true }).first()).toBeVisible({ timeout: LOAD_TIMEOUT });
-  await main.locator("table").getByText(TENANT, { exact: true }).first().click();
-  await expect(page.getByText("Trust Anchors", { exact: true })).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(
+    main.locator("table").getByText(TENANT, { exact: true }).first(),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await main
+    .locator("table")
+    .getByText(TENANT, { exact: true })
+    .first()
+    .click();
+  await expect(page.getByText("Trust Anchors", { exact: true })).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
 }
 
 // Strict tenant isolation (owner ruling 2026-10-01, pkg/tenant Confine): only
@@ -170,11 +214,15 @@ test("tenant trust anchors: a cross-tenant caller is refused and the UI says so 
   expect(daemon).not.toBeNull();
   const d = daemon!;
   const refused = `not permitted to list trust anchors in tenant ${TENANT}`;
-  expect((await api(d, "GET", `/v1/tenants/${TENANT}/trust-anchors`)).text).toContain(refused);
+  expect(
+    (await api(d, "GET", `/v1/tenants/${TENANT}/trust-anchors`)).text,
+  ).toContain(refused);
 
   // --- List: the refusal is shown in place of the table ----------------------------
   await openTenantDetail(page);
-  await expect(page.getByTestId("trust-anchors-error")).toContainText(refused, { timeout: LOAD_TIMEOUT });
+  await expect(page.getByTestId("trust-anchors-error")).toContainText(refused, {
+    timeout: LOAD_TIMEOUT,
+  });
   await expect(page.getByText("No trust anchors registered.")).toHaveCount(0);
   await expect(page.getByTestId("trust-anchors-table")).toHaveCount(0);
 
@@ -182,24 +230,34 @@ test("tenant trust anchors: a cross-tenant caller is refused and the UI says so 
   const pem = makeCACert("Acme Login CA");
   await page.getByTestId("add-trust-anchors-input").fill(pem);
   const addResp = page.waitForResponse(
-    (r) => r.url().includes(`/v1/tenants/${TENANT}/trust-anchors`) && r.request().method() === "POST",
+    (r) =>
+      r.url().includes(`/v1/tenants/${TENANT}/trust-anchors`) &&
+      r.request().method() === "POST",
   );
   await page.getByTestId("add-trust-anchors-btn").click();
   expect((await addResp).status()).toBe(403);
-  await expect(page.locator(".toast .alert").filter({ hasText: "not permitted" }).last()).toBeVisible({
+  await expect(
+    page.locator(".toast .alert").filter({ hasText: "not permitted" }).last(),
+  ).toBeVisible({
     timeout: LOAD_TIMEOUT,
   });
   await expect(page.getByTestId("add-trust-anchors-input")).toHaveValue(pem);
   await expect(page.getByTestId("trust-anchors-table")).toHaveCount(0);
 
   // --- Remove: refused on the wire as well -----------------------------------------
-  const del = await api(d, "DELETE", `/v1/tenants/${TENANT}/trust-anchors/${"0".repeat(64)}`);
+  const del = await api(
+    d,
+    "DELETE",
+    `/v1/tenants/${TENANT}/trust-anchors/${"0".repeat(64)}`,
+  );
   expect(del.status, del.text).toBe(403);
 
   expect(errors).toEqual([]);
 });
 
-test("tenant share holder enrols from the Holders panel (UI ↔ live daemon)", async ({ page }) => {
+test("tenant share holder enrols from the Holders panel (UI ↔ live daemon)", async ({
+  page,
+}) => {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(err.message));
   expect(daemon).not.toBeNull();
@@ -209,19 +267,28 @@ test("tenant share holder enrols from the Holders panel (UI ↔ live daemon)", a
   await openTenants(page);
   await page.getByTestId(`tenant-holders-btn-${TENANT}`).click();
   const panel = page.getByTestId("tenant-holders-panel");
-  await expect(panel.getByText("No share holders enrolled.")).toBeVisible({ timeout: LOAD_TIMEOUT });
+  await expect(panel.getByText("No share holders enrolled.")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
   await panel.getByTestId("tenant-holder-enrol-toggle").click();
   await panel.getByTestId("officer-username-0").fill("alice");
   await panel.getByTestId("officer-csr-0").fill(makeCSR("alice"));
   await panel.getByTestId("register-officer-btn-0").click();
   try {
-    await expect(panel.getByTestId("officer-cert-0")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(panel.getByTestId("officer-cert-0")).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
   } catch (err) {
     const alerts = await panel.locator('[role="alert"]').allInnerTexts();
-    throw new Error(`enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`);
+    throw new Error(
+      `enrol alice: alerts ${JSON.stringify(alerts)} toasts ${await toasts(page)}\n${err}`,
+    );
   }
   // The panel reloads its list from the daemon, which now holds alice.
-  await expect(panel.getByTestId("tenant-holders-table")).toContainText("alice", { timeout: LOAD_TIMEOUT });
+  await expect(panel.getByTestId("tenant-holders-table")).toContainText(
+    "alice",
+    { timeout: LOAD_TIMEOUT },
+  );
   expect(await serverHolderNames(d)).toEqual(["alice"]);
 
   expect(errors).toEqual([]);
