@@ -210,7 +210,7 @@
               handleFieldChange(name, sqlType, e.currentTarget.checked)}
           />
           <span class="label-text text-base-content/60">
-            {Boolean(getDisplayValue(name, sqlType)) ? "true" : "false"}
+            {getDisplayValue(name, sqlType) ? "true" : "false"}
           </span>
         </label>
       {:else if upper === "JSON"}
