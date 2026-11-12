@@ -295,6 +295,37 @@ func TestTenantBarrierUnseal_OneNodeUnsealsServerNode(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierUnseal_UnreadableNodesRefuses pins that a status whose
+// serving set could not be read makes barrier-unseal and barrier-init fail
+// without sending to any node: an empty, unreadable list is not a
+// standalone barrier.
+func TestTenantBarrierUnseal_UnreadableNodesRefuses(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unseal", []string{"tenant", "barrier-unseal", "--id", "acme", "--key", base64.StdEncoding.EncodeToString([]byte("credential"))}},
+		{"init", []string{"tenant", "barrier-init", "--id", "acme", "--passphrase", "pass"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newUnsealRecorder(nil, nil)
+			r.svc.barrierStatusFn = func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+				r.statuses++
+				return &tenant.TenantBarrierStatus{TenantID: id, Sealed: true, NodesUnreadable: true}, nil
+			}
+			_, err := runCLI(tenantRootOver(r.svc)(), context.Background(), tc.args...)
+			var unknown *TenantServingNodesUnknownError
+			if !errors.As(err, &unknown) || unknown.TenantID != "acme" {
+				t.Fatalf("err = %v, want TenantServingNodesUnknownError for acme", err)
+			}
+			if r.statuses != 1 || len(r.unseals) != 0 || len(r.inits) != 0 {
+				t.Fatalf("%d statuses, unseals %q, inits %q; want nothing sent", r.statuses, r.unseals, r.inits)
+			}
+		})
+	}
+}
+
 // TestTenantBarrierInit_FanOutNeedsANetworkTransport proves a barrier served
 // by several nodes is not initialized over a transport that reaches only the
 // node it runs beside.
