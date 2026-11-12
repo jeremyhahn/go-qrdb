@@ -511,6 +511,29 @@ func TestTransport_TenantBarrierStatus_Success(t *testing.T) {
 	}
 }
 
+// TestTransport_TenantBarrierStatus_NodesUnreadable pins the round trip of a
+// status whose serving-node source failed: the client must decode
+// NodesUnreadable, not a standalone barrier the CLI would act on alone.
+func TestTransport_TenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	svc := &fakeTenantServicer{
+		statusFn: func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+			return &tenantpkg.TenantBarrierStatus{TenantID: id, Sealed: true, NodesUnreadable: true}, nil
+		},
+	}
+	addr, stop := startTenantBarrierServer(t, svc)
+	defer stop()
+	tr, cleanup := connectBareTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.NodesUnreadable || len(resp.Nodes) != 0 {
+		t.Fatalf("NodesUnreadable = %v, Nodes = %+v; want true and none", resp.NodesUnreadable, resp.Nodes)
+	}
+}
+
 func TestTransport_TenantBarrierStatus_NilRequest(t *testing.T) {
 	tr := &Transport{config: &transport.Config{}}
 	_, err := tr.TenantBarrierStatus(context.Background(), nil)

@@ -260,6 +260,46 @@ func TestTenantBarrierUnseal_FansOutToServingNodes(t *testing.T) {
 	}
 }
 
+// TestTenantBarrierUnseal_RerunAfterAPartialFanOut proves a rerun after a
+// partial unseal reports every node unsealed: n2 refuses the first run, and
+// the rerun reaches n1 and n3 again, whose service answers an open barrier
+// under the right credential with success.
+func TestTenantBarrierUnseal_RerunAfterAPartialFanOut(t *testing.T) {
+	n1, n2, n3 := newUnsealRecorder(nil, nil), newUnsealRecorder(nil, nil), newUnsealRecorder(nil, nil)
+	n2.svc.barrierUnsealFn = func(_ context.Context, _ string, key []byte) error {
+		n2.mu.Lock()
+		defer n2.mu.Unlock()
+		n2.unseals = append(n2.unseals, append([]byte(nil), key...))
+		if len(n2.unseals) == 1 {
+			return errors.New("node unavailable")
+		}
+		return nil
+	}
+	nodes := []servingNode{servingNodeOn(t, "n1", n1.svc), servingNodeOn(t, "n2", n2.svc), servingNodeOn(t, "n3", n3.svc)}
+	req := &transport.TenantBarrierUnsealRequest{TenantID: "acme", Key: []byte("credential")}
+
+	_, err := sendToServingNodes(context.Background(), nodes, "the barrier unseal", barrierUnseal(req))
+	var fanOut *BarrierFanOutError
+	if !errors.As(err, &fanOut) || strings.Join(fanOut.Failed, ",") != "n2" {
+		t.Fatalf("first run err = %v; want *BarrierFanOutError naming n2", err)
+	}
+
+	results, err := sendToServingNodes(context.Background(), nodes, "the barrier unseal", barrierUnseal(req))
+	if err != nil {
+		t.Fatalf("rerun err = %v, results = %+v; want every node unsealed", err, results)
+	}
+	for i, addr := range []string{"n1", "n2", "n3"} {
+		if len(results) != 3 || results[i].Node != addr || results[i].Error != "" {
+			t.Fatalf("rerun results = %+v; want n1, n2 and n3 OK", results)
+		}
+	}
+	for name, r := range map[string]*initRecorder{"n1": n1, "n2": n2, "n3": n3} {
+		if len(r.unseals) != 2 {
+			t.Fatalf("%s received %d unseals; want one per run", name, len(r.unseals))
+		}
+	}
+}
+
 func TestTenantBarrierUnseal_SeveralNodesFanOut(t *testing.T) {
 	key := base64.StdEncoding.EncodeToString([]byte("credential"))
 	for _, transportType := range []string{transportREST, transportGRPC, transportQUIC, transportMCP} {
@@ -292,6 +332,37 @@ func TestTenantBarrierUnseal_OneNodeUnsealsServerNode(t *testing.T) {
 	}
 	if r.statuses != 1 || len(r.unseals) != 1 || string(r.unseals[0]) != "credential" || !strings.Contains(out, "OK") {
 		t.Fatalf("%d statuses, unseals %q, output %q; want --server's node unsealed", r.statuses, r.unseals, out)
+	}
+}
+
+// TestTenantBarrierUnseal_UnreadableNodesRefuses pins that a status whose
+// serving set could not be read makes barrier-unseal and barrier-init fail
+// without sending to any node: an empty, unreadable list is not a
+// standalone barrier.
+func TestTenantBarrierUnseal_UnreadableNodesRefuses(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"unseal", []string{"tenant", "barrier-unseal", "--id", "acme", "--key", base64.StdEncoding.EncodeToString([]byte("credential"))}},
+		{"init", []string{"tenant", "barrier-init", "--id", "acme", "--passphrase", "pass"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newUnsealRecorder(nil, nil)
+			r.svc.barrierStatusFn = func(_ context.Context, id string) (*tenant.TenantBarrierStatus, error) {
+				r.statuses++
+				return &tenant.TenantBarrierStatus{TenantID: id, Sealed: true, NodesUnreadable: true}, nil
+			}
+			_, err := runCLI(tenantRootOver(r.svc)(), context.Background(), tc.args...)
+			var unknown *TenantServingNodesUnknownError
+			if !errors.As(err, &unknown) || unknown.TenantID != "acme" {
+				t.Fatalf("err = %v, want TenantServingNodesUnknownError for acme", err)
+			}
+			if r.statuses != 1 || len(r.unseals) != 0 || len(r.inits) != 0 {
+				t.Fatalf("%d statuses, unseals %q, inits %q; want nothing sent", r.statuses, r.unseals, r.inits)
+			}
+		})
 	}
 }
 

@@ -6141,6 +6141,10 @@ message TenantBarrierStatusResponse {
     // nodes are the nodes serving the barrier, each with its own key, for a
     // client fanning a barrier init out to every one.
     repeated TenantBarrierNode nodes = 10;
+    // nodes_unreadable is true when the server could not read the nodes
+    // serving the barrier: an empty nodes then means the serving set is
+    // unknown, not a standalone barrier.
+    bool nodes_unreadable = 11;
 }
 
 // TenantBarrierNode is one node serving a tenant barrier: its Raft address
