@@ -2054,6 +2054,7 @@ func (s *Server) registerRoutes() {
 	// single-message POST /batch/import, carrying a dataset of any size
 	// in capped pieces instead of one message no transport's pre-auth
 	// cap can admit.
+	s.route(http.MethodGet, "/batch/import/formats", permission.BatchExecute, s.handleBatchImportFormats)
 	s.route(http.MethodPost, "/batch/import/begin", permission.BatchExecute, s.handleBatchImportBegin)
 	s.route(http.MethodPost, "/batch/import/{session}/append", permission.BatchExecute, s.handleBatchImportAppend)
 	s.route(http.MethodPost, "/batch/import/{session}/commit", permission.BatchExecute, s.handleBatchImportCommit)

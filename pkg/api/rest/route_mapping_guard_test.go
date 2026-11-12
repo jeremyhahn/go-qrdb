@@ -227,6 +227,7 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 		// Core data plane.
 		{"POST", "/tx", permission.TransactionExecute},
 		{"POST", "/batch", permission.BatchExecute},
+		{"GET", "/batch/import/formats", permission.BatchExecute},
 		{"POST", "/batch/import/begin", permission.BatchExecute},
 		{"POST", "/batch/import/sess1/append", permission.BatchExecute},
 		{"POST", "/batch/import/sess1/commit", permission.BatchExecute},
