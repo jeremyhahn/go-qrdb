@@ -161,7 +161,7 @@ export function useDataTable<T>(
   let data = $state<T[]>([...options.data]);
   let sortState = $state<SortState[]>([]);
   let filterState = $state<FilterState[]>([]);
-  let pagination = $state<PaginationState>({
+  const pagination = $state<PaginationState>({
     page: 1,
     pageSize: initialPageSize,
     totalRows: options.data.length,
