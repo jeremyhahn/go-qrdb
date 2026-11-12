@@ -20,13 +20,13 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Admin | `requestSnapshot` | views/admin/Cluster.svelte | admin-cluster.spec.ts | *verified* |
 | Admin | `setNodeCompaction` | none | none | not in UI; *verified* |
 | Admin | `status` | views/admin/Dashboard.svelte components/ConnectionManager.svelte | admin-dashboard.spec.ts | *verified* |
-| AuditQuery | `query` | views/user/SQLBrowserScoped.svelte views/user/TimeSeriesView.svelte views/user/CollectionView.svelte  | admin-audit.spec.ts timeseries-operations.spec.ts  |  |
-| Backup | `create` | views/admin/UserDetail.svelte views/user/IndexManager.svelte views/admin/DatabaseDetail.svelte  | collection.spec.ts admin-databases.spec.ts  |  |
-| Backup | `delete` | stores/navigation.svelte.ts stores/toast.svelte.ts views/admin/BackupManager.svelte  | collection.spec.ts admin-roles.spec.ts  |  |
-| Backup | `get` | views/admin/UserDetail.svelte stores/toast.svelte.ts views/admin/RoleDetail.svelte  | timeseries-chart-fix.spec.ts bulk-delete.spec.ts  |  |
-| Backup | `list` | views/admin/CertManager.svelte views/user/IndexManager.svelte views/MainApp.svelte  | admin-nav-smoke.spec.ts tenant-barrier-unseal.spec.ts  |  |
-| Backup | `restore` | views/admin/BackupManager.svelte  | backup-manager.spec.ts kv-explorer-restore.spec.ts  |  |
-| Backup | `verify` | views/admin/BackupManager.svelte  | collection.spec.ts batch-advanced.spec.ts  |  |
+| AuditQuery | `query` | views/admin/AuditLog.svelte | admin-audit.spec.ts | *verified* |
+| Backup | `create` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
+| Backup | `delete` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
+| Backup | `get` | none (hits are other clients' `get`) | none | not in UI; *verified* |
+| Backup | `list` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
+| Backup | `restore` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
+| Backup | `verify` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Batch | `availableCodecs` | none | none | not in UI; *verified* |
 | Batch | `availableImportFormats` | views/user/BatchView.svelte  | batch-import.spec.ts  |  |
 | Batch | `execute` | views/user/BatchView.svelte | batch.spec.ts batch-advanced.spec.ts | *verified* |
@@ -141,91 +141,91 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Officer | `startRekey` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `startTenantRekey` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
 | Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
-| Rebalance | `createPlan` | views/admin/RebalancePanel.svelte  | none | no e2e |
-| Rebalance | `execute` | views/user/TransactionView.svelte views/admin/RebalancePanel.svelte views/user/BatchView.svelte  | database.spec.ts batch-operations.spec.ts  |  |
-| Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte  | none | no e2e |
-| Rebalance | `getShardStats` | none | none | not in UI |
-| Role | `assign` | none | fixtures/wails-mock.ts  | not in UI |
-| Role | `create` | views/admin/BackupManager.svelte views/admin/UserDetail.svelte views/user/IndexManager.svelte  | collection.spec.ts admin-roles.spec.ts  |  |
-| Role | `delete` | stores/toast.svelte.ts stores/navigation.svelte.ts views/user/WatchView.svelte  | collection.spec.ts admin-roles.spec.ts  |  |
-| Role | `get` | stores/toast.svelte.ts views/admin/Settings.svelte views/user/WatchView.svelte  | vector-namespace-fix.spec.ts watch-advanced.spec.ts  |  |
-| Role | `list` | views/admin/CredentialManager.svelte views/admin/CertManager.svelte views/user/LeaseManager.svelte  | batch-advanced.spec.ts tenant-barrier-unseal.spec.ts  |  |
-| Role | `listPermissions` | components/admin/PermissionTreePicker.svelte  | none | no e2e |
-| Role | `unassign` | none | none | not in UI |
-| Role | `update` | views/admin/UserDetail.svelte views/admin/RoleDetail.svelte views/admin/TenantDetail.svelte  | full-admin-operations.spec.ts kv-crud.spec.ts  |  |
-| SQL | `query` | views/admin/AuditLog.svelte views/user/SQLBrowserScoped.svelte views/user/CollectionView.svelte  | admin-audit.spec.ts sql-browser.spec.ts  |  |
-| Seal | `changePassphrase` | none | none | not in UI |
-| Seal | `clusterUnseal` | views/admin/SealManager.svelte  | none | no e2e |
-| Seal | `enableEncryption` | views/admin/SealManager.svelte views/admin/TenantManager.svelte  | none | no e2e |
-| Seal | `initialize` | views/admin/SealManager.svelte components/ConnectionManager.svelte components/ServerInitWizard.svelte  | admin-seal-officers.spec.ts admin-seal.spec.ts  |  |
-| Seal | `initializeShamir` | views/admin/SealManager.svelte  | ceremony-init-wizard.spec.ts  |  |
-| Seal | `seal` | views/admin/SealManager.svelte  | admin-seal-officers.spec.ts database-wizard-barrier-passphrase.spec.ts  |  |
-| Seal | `status` | App.svelte stores/connection-manager.svelte.ts stores/seal.svelte.ts  | batch-advanced.spec.ts transaction-operations.spec.ts  |  |
-| Seal | `unseal` | App.svelte views/admin/SealManager.svelte  | tenant-barrier-unseal.spec.ts admin-seal-officers.spec.ts  |  |
-| ServerConfig | `initialized` | none | tenant-barrier-unseal.spec.ts collection.spec.ts  | not in UI |
-| ServerConfig | `isEmbeddedAvailable` | stores/connection-manager.svelte.ts  | none | no e2e |
-| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte  | none | no e2e |
+| Rebalance | `createPlan` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
+| Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
+| Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
+| Rebalance | `getShardStats` | none | none (binding-presence smoke only) | not in UI; *verified* |
+| Role | `assign` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| Role | `create` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
+| Role | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
+| Role | `get` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
+| Role | `list` | views/admin/RoleManager.svelte views/admin/UserDetail.svelte | admin-roles.spec.ts | *verified* |
+| Role | `listPermissions` | components/admin/PermissionTreePicker.svelte | mandated-scenarios.spec.ts regression-bugs.spec.ts | *verified* |
+| Role | `unassign` | none | none | not in UI; *verified* |
+| Role | `update` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
+| SQL | `query` | views/user/SQLBrowserScoped.svelte | sql-browser.spec.ts dom/sql-browser-roundtrip.spec.ts | *verified* |
+| Seal | `changePassphrase` | none | none | not in UI; *verified* |
+| Seal | `clusterUnseal` | views/admin/SealManager.svelte | none | no e2e; *verified* |
+| Seal | `enableEncryption` | views/admin/SealManager.svelte views/admin/TenantManager.svelte | web-mode-enable-encryption.spec.ts web-mode-tenant-enable-encryption.spec.ts | *verified* |
+| Seal | `initialize` | views/admin/SealManager.svelte (re-initialise) | admin-seal.spec.ts | *verified* |
+| Seal | `initializeShamir` | views/admin/SealManager.svelte | admin-seal.spec.ts | UI *verified* |
+| Seal | `seal` | views/admin/SealManager.svelte | admin-seal.spec.ts | *verified* |
+| Seal | `status` | App.svelte views/MainApp.svelte views/admin/SealManager.svelte stores/connection-manager.svelte.ts | admin-seal.spec.ts unseal.spec.ts | *verified* |
+| Seal | `unseal` | App.svelte views/admin/SealManager.svelte | unseal.spec.ts admin-seal.spec.ts | *verified* |
+| ServerConfig | `initialized` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| ServerConfig | `isEmbeddedAvailable` | none (hit is `connectionManager.isEmbeddedAvailable`) | none | not in UI; *verified* |
+| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
 | Tenant | `barrierInit` | views/admin/TenantManager.svelte  | real-backend/per-tenant-barrier.spec.ts  |  |
-| Tenant | `barrierStatus` | views/admin/TenantManager.svelte components/DatabaseHoldersPanel.svelte  | none | no e2e |
-| Tenant | `barrierUnseal` | views/admin/TenantManager.svelte  | none | no e2e |
-| Tenant | `create` | views/admin/DatabaseDetail.svelte views/admin/BackupManager.svelte views/user/CollectionView.svelte  | bulk-delete.spec.ts collection.spec.ts  |  |
-| Tenant | `delete` | stores/navigation.svelte.ts views/admin/BackupManager.svelte views/user/WatchView.svelte  | collection.spec.ts kv-crud.spec.ts  |  |
-| Tenant | `get` | stores/toast.svelte.ts stores/connection-manager.svelte.ts views/admin/UserDetail.svelte  | watch-advanced.spec.ts kv-explorer-regression.spec.ts  |  |
-| Tenant | `list` | views/admin/CertManager.svelte views/admin/CredentialManager.svelte views/admin/UserDetail.svelte  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
-| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte  | none | no e2e |
-| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte  | none | no e2e |
-| Tenant | `update` | views/admin/UserDetail.svelte views/admin/RoleDetail.svelte views/admin/TenantDetail.svelte  | collection.spec.ts kv-crud.spec.ts  |  |
-| Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte  | none | no e2e |
-| Tenant | `updateQuotas` | views/admin/TenantDetail.svelte  | none | no e2e |
-| TimeSeries | `aggregate` | none | none | not in UI |
-| TimeSeries | `deleteSeries` | views/user/TimeSeriesView.svelte  | none | no e2e |
-| TimeSeries | `getRetention` | none | none | not in UI |
+| Tenant | `barrierStatus` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
+| Tenant | `barrierUnseal` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
+| Tenant | `create` | views/admin/TenantManager.svelte | tenant-crud.spec.ts tenant-volume-pool.spec.ts | *verified* |
+| Tenant | `delete` | views/admin/TenantManager.svelte | tenant-crud.spec.ts | *verified* |
+| Tenant | `get` | views/admin/TenantDetail.svelte | tenant-crud.spec.ts tenant-quotas.spec.ts | *verified* |
+| Tenant | `list` | views/admin/TenantManager.svelte components/admin/TenantSelect.svelte | tenant-crud.spec.ts | *verified* |
+| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
+| Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
+| Tenant | `updateQuotas` | views/admin/TenantDetail.svelte | tenant-quotas.spec.ts tenant-multitenancy-web.spec.ts | *verified* |
+| TimeSeries | `aggregate` | none | none | not in UI; *verified* |
+| TimeSeries | `deleteSeries` | views/user/TimeSeriesView.svelte | timeseries-advanced.spec.ts | *verified* |
+| TimeSeries | `getRetention` | none | none | not in UI; *verified* |
 | TimeSeries | `listMetrics` | views/user/TimeSeriesView.svelte  | timeseries.spec.ts  |  |
-| TimeSeries | `query` | views/admin/AuditLog.svelte views/user/IndexManager.svelte views/user/SQLBrowserScoped.svelte  | admin-audit.spec.ts index.spec.ts  |  |
-| TimeSeries | `richQuery` | none | none | not in UI |
-| TimeSeries | `setRetention` | none | none | not in UI |
-| TimeSeries | `write` | none | transaction-operations.spec.ts admin-roles.spec.ts  | not in UI |
-| TimeSeries | `writeBatch` | none | none | not in UI |
+| TimeSeries | `query` | views/user/TimeSeriesView.svelte (`client.timeSeries!`) | timeseries-advanced.spec.ts | *verified* |
+| TimeSeries | `richQuery` | none | none | not in UI; *verified* |
+| TimeSeries | `setRetention` | none | none | not in UI; *verified* |
+| TimeSeries | `write` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| TimeSeries | `writeBatch` | none | none | not in UI; *verified* |
 | TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
 | Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
-| User | `addCertBinding` | none | none | not in UI |
-| User | `create` | views/admin/BackupManager.svelte views/admin/UserDetail.svelte views/admin/DatabaseDetail.svelte  | bulk-delete.spec.ts admin-databases.spec.ts  |  |
-| User | `delete` | stores/navigation.svelte.ts stores/connection-manager.svelte.ts stores/toast.svelte.ts  | collection.spec.ts admin-roles.spec.ts  |  |
-| User | `disable` | none | mandated-scenarios.spec.ts real-backend/fixtures/sealed-daemon.ts  | not in UI |
-| User | `enable` | none | web-mode-enable-encryption.spec.ts admin-seal.spec.ts  | not in UI |
-| User | `get` | stores/toast.svelte.ts views/admin/UserDetail.svelte views/admin/Settings.svelte  | watch-advanced.spec.ts batch-operations.spec.ts  |  |
-| User | `getUserByCertThumbprint` | none | none | not in UI |
-| User | `list` | stores/connection-manager.svelte.ts views/admin/UserDetail.svelte views/admin/CredentialManager.svelte  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
-| User | `removeCertBinding` | none | none | not in UI |
-| User | `update` | views/admin/RoleDetail.svelte views/admin/UserDetail.svelte views/admin/TenantDetail.svelte  | kv-crud.spec.ts full-admin-operations.spec.ts  |  |
-| Vector | `batchDeleteVectors` | none | none | not in UI |
-| Vector | `batchUpsert` | none | none | not in UI |
-| Vector | `compactNamespace` | views/user/VectorView.svelte  | none | no e2e |
+| User | `addCertBinding` | none | none | not in UI; *verified* |
+| User | `create` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
+| User | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
+| User | `disable` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| User | `enable` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| User | `get` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
+| User | `getUserByCertThumbprint` | none | none | not in UI; *verified* |
+| User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
+| User | `removeCertBinding` | none | none | not in UI; *verified* |
+| User | `update` | views/admin/UserDetail.svelte | admin-users.spec.ts (edit form; save not asserted) | *verified* |
+| Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
+| Vector | `batchUpsert` | none | none | not in UI; *verified* |
+| Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `createNamespace` | views/user/VectorView.svelte  | vector.spec.ts vector-namespace-fix.spec.ts  |  |
-| Vector | `deleteNamespace` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `deleteVector` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `getCompactionProgress` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `getIndexStats` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `getNamespaceInfo` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `getRebuildProgress` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `getVector` | none | none | not in UI |
-| Vector | `hybridSearch` | none | none | not in UI |
-| Vector | `listNamespaces` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `listVectors` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `rebuildIndex` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `searchByID` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `searchByMetadata` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `searchSimilar` | views/user/VectorView.svelte  | none | no e2e |
-| Vector | `updateMetadata` | none | none | not in UI |
+| Vector | `deleteNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `deleteVector` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `getCompactionProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `getIndexStats` | views/user/VectorView.svelte | vector.spec.ts (load stats) | *verified* |
+| Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
+| Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `getVector` | none | none | not in UI; *verified* |
+| Vector | `hybridSearch` | none | none | not in UI; *verified* |
+| Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `searchByID` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `searchByMetadata` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
+| Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
+| Vector | `updateMetadata` | none | none | not in UI; *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
-| VolumePool | `create` | views/admin/UserDetail.svelte views/admin/DatabaseDetail.svelte views/admin/RoleDetail.svelte  | collection.spec.ts admin-form-error-regression.spec.ts  |  |
-| VolumePool | `delete` | stores/toast.svelte.ts stores/navigation.svelte.ts stores/connection-manager.svelte.ts  | collection.spec.ts admin-roles.spec.ts  |  |
-| VolumePool | `get` | views/admin/Settings.svelte stores/toast.svelte.ts views/admin/UserDetail.svelte  | bulk-delete.spec.ts batch-operations.spec.ts  |  |
-| VolumePool | `list` | views/admin/UserDetail.svelte views/admin/UserManager.svelte views/admin/CredentialManager.svelte  | batch-advanced.spec.ts admin-nav-smoke.spec.ts  |  |
-| VolumePool | `listTenants` | none | none | not in UI |
-| VolumePool | `update` | views/admin/UserDetail.svelte views/admin/RoleDetail.svelte views/admin/TenantDetail.svelte  | collection.spec.ts kv-crud.spec.ts  |  |
-| Watch | `watch` | views/user/WatchView.svelte  | admin-dashboard.spec.ts admin-views.spec.ts  |  |
-| Watch | `watchPrefix` | views/user/WatchView.svelte  | none | no e2e |
+| VolumePool | `create` | none (no `volumePools` call in src; tenants take a pool name only) | none | not in UI; *verified* |
+| VolumePool | `delete` | none | none | not in UI; *verified* |
+| VolumePool | `get` | none | none | not in UI; *verified* |
+| VolumePool | `list` | none | none | not in UI; *verified* |
+| VolumePool | `listTenants` | none | none | not in UI; *verified* |
+| VolumePool | `update` | none | none | not in UI; *verified* |
+| Watch | `watch` | views/user/WatchView.svelte | watch.spec.ts watch-advanced.spec.ts | *verified* |
+| Watch | `watchPrefix` | views/user/WatchView.svelte | watch-advanced.spec.ts real-backend/watch-events-real.spec.ts | *verified* |
 
 ## Displays
 
