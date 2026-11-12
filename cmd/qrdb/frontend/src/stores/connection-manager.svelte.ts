@@ -26,7 +26,7 @@
  */
 
 import type { Client } from "@qrdb/sdk";
-import { isDesktop } from "@qrdb/sdk";
+import { isDesktop, TransportError } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,6 +138,13 @@ export interface ConnManagerState {
     activeServerMode: 'standalone' | 'raft' | '';
     /** Number of cluster nodes for the currently active profile. */
     activeClusterNodeCount: number;
+    /**
+     * Profiles whose server refused the caller its admin topology (403): the
+     * caller is no server administrator there (a tenant user without an admin
+     * role), and that server's admin views are not offered. Kept in memory
+     * only: a different credential on the next load is probed afresh.
+     */
+    nonAdminProfileIds: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +268,7 @@ export const connManagerStore: ConnManagerState = $state({
     loading: true,
     activeServerMode: '',
     activeClusterNodeCount: 0,
+    nonAdminProfileIds: [],
 });
 
 // ---------------------------------------------------------------------------
@@ -407,7 +415,7 @@ async function loadWebProfiles(client: Client): Promise<void> {
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; serverAdmin: boolean }> {
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -417,12 +425,19 @@ async function detectWebServerMode(
             }
         }
         const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount };
-    } catch {
+        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount, serverAdmin: true };
+    } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        return { serverMode: 'standalone', nodeCount: 0 };
+        // Only a refusal (403) says the caller is no server administrator:
+        // the admin views are then not offered.
+        return { serverMode: 'standalone', nodeCount: 0, serverAdmin: !isForbidden(err) };
     }
+}
+
+/** True when err is the server's refusal of the caller (HTTP 403). */
+export function isForbidden(err: unknown): boolean {
+    return err instanceof TransportError && err.statusCode === 403;
 }
 
 /**
@@ -431,10 +446,12 @@ async function detectWebServerMode(
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, serverAdmin } = await detectWebServerMode(client);
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
+    const others = connManagerStore.nonAdminProfileIds.filter((id) => id !== profileId);
+    connManagerStore.nonAdminProfileIds = serverAdmin ? others : [...others, profileId];
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;
