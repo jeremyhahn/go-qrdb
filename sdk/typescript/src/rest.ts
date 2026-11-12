@@ -34,6 +34,24 @@ import {
 import type {
     AdminClient,
     AuditQueryClient,
+    VlogClient,
+    VlogCreateRequest,
+    VlogCreateResult,
+    VlogListResult,
+    VlogAppendRequest,
+    VlogAppendResult,
+    VlogGetRequest,
+    VlogGetResult,
+    VlogInclusionRequest,
+    VlogInclusionProof,
+    VlogConsistencyRequest,
+    VlogConsistencyProof,
+    VlogHead,
+    VlogSignHeadResult,
+    VlogRotateKeyRequest,
+    VlogRotateKeyResult,
+    VlogExpireRequest,
+    VlogExpireResult,
     BackupClient,
     BatchClient,
     CeremonyClient,
@@ -2819,6 +2837,36 @@ export class RestClient implements Client {
                 const query = params.size > 0 ? `?${params.toString()}` : '';
                 return this.fetchJSON<AuditPage>(`/v1/audit/events${query}`);
             },
+        };
+    }
+
+    get vlog(): VlogClient {
+        const post = async <T>(path: string, body: unknown): Promise<T> => {
+            this.ensureConnected();
+            return this.fetchJSON<T>(path, { method: 'POST', ...jsonBody(body) });
+        };
+        const get = async <T>(path: string, params: Record<string, string | number | undefined>): Promise<T> => {
+            this.ensureConnected();
+            return this.fetchJSON<T>(`${path}${buildQuery(params)}`);
+        };
+        return {
+            create: (req: VlogCreateRequest) => post<VlogCreateResult>('/vlog/log', req),
+            list: () => get<VlogListResult>('/vlog/logs', {}),
+            append: (req: VlogAppendRequest) => post<VlogAppendResult>('/vlog/append', req),
+            get: (req: VlogGetRequest) =>
+                get<VlogGetResult>('/vlog/entries', { log: req.log, from: req.from, limit: req.limit }),
+            proveInclusion: (req: VlogInclusionRequest) =>
+                get<VlogInclusionProof>('/vlog/proof/inclusion', { log: req.log, index: req.index, size: req.size }),
+            proveConsistency: (req: VlogConsistencyRequest) =>
+                get<VlogConsistencyProof>('/vlog/proof/consistency', {
+                    log: req.log,
+                    size1: req.size1,
+                    size2: req.size2,
+                }),
+            head: (log: string) => get<VlogHead>('/vlog/head', { log }),
+            signHead: (log: string) => post<VlogSignHeadResult>('/vlog/head/sign', { log }),
+            rotateKey: (req: VlogRotateKeyRequest) => post<VlogRotateKeyResult>('/vlog/key/rotate', req),
+            expireBodies: (req: VlogExpireRequest) => post<VlogExpireResult>('/vlog/expire', req),
         };
     }
 
