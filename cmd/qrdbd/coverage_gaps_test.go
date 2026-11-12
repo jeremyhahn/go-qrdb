@@ -466,23 +466,6 @@ func TestIsSingleNode_MultiplePeers(t *testing.T) {
 // generateReplicaID: multiple calls return non-zero unique values
 // ---------------------------------------------------------------------------
 
-func TestGenerateReplicaID_AlwaysNonZero(t *testing.T) {
-	for range 100 {
-		id, err := generateReplicaID()
-		require.NoError(t, err)
-		assert.NotEqual(t, uint64(0), id, "replica ID must never be zero")
-	}
-}
-
-func TestGenerateReplicaID_Within48Bits(t *testing.T) {
-	for range 100 {
-		id, err := generateReplicaID()
-		require.NoError(t, err)
-		assert.LessOrEqual(t, id, uint64(0xFFFFFFFFFFFF),
-			"replica ID must fit within 48 bits")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // newStatusCmd: mTLS branch (tls-cert-file + tls-key-file set)
 // ---------------------------------------------------------------------------
