@@ -467,6 +467,43 @@ omitted. Ignored for a single-node cluster.
 
 ---
 
+### database_defaults
+
+The node's defaults for a new database
+([databases architecture](databases/architecture.md#what-stays-node-level)).
+Each is filled into a database's record at creation when the caller left
+that field empty, and is never consulted again for that database: changing
+a default affects only databases created afterwards. The record stores the
+values resolved at creation: the backend (from `backend`, else the node's
+run mode), and for a raft database a `raft` block with its cluster mode,
+`state_storage` and issued shard ID, added when the request carried none.
+
+```yaml
+database_defaults:
+  backend: raft
+  replicas: 3
+  raft:
+    clusterMode: distributed
+    state_storage: pebble
+```
+
+| Field                | Type   | Default | Required | Description |
+|----------------------|--------|---------|----------|-------------|
+| `backend`            | string | `""`    | no       | Backend of a database created without one; empty selects the run mode's default (raft in raft mode, pebble in standalone mode) |
+| `replicas`           | int    | `0`     | no       | Replication factor of a raft database created without one; zero selects one |
+| `raft.clusterMode`   | string | `""`    | no       | Cluster mode recorded in a raft database's `raft` block when it names none; empty records `none` in a block the request did not carry |
+| `raft.state_storage` | string | `""`    | no       | State storage recorded in a raft database's `raft` block (`raft.state_storage`) when it names none; empty selects `pebble` at binding |
+
+**Validation rules:**
+
+- `backend`, when non-empty, must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
+- `replicas` must not be negative (>= 0).
+- `raft.clusterMode`, when non-empty, must be one of: `none`, `local`, `distributed`.
+- `raft.state_storage`, when non-empty, must be one of: `pebble`, `file`, `memory`.
+- `replicas` and `raft.*` apply only to a database whose backend is `raft`.
+
+---
+
 ### storage
 
 Configures the underlying storage backend.

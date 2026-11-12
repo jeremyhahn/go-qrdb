@@ -229,6 +229,15 @@ func TestProtoRaftConfigToDomain_WithDNS(t *testing.T) {
 	}
 }
 
+// TestProtoRaftConfigToDomain_StateStorage checks that a gRPC create carries
+// the requested Raft state storage into the domain config.
+func TestProtoRaftConfigToDomain_StateStorage(t *testing.T) {
+	result := protoRaftConfigToDomain(&pb.DatabaseRaftConfig{StateStorage: "file"})
+	if result.StateStorage != database.BackendFile {
+		t.Fatalf("StateStorage = %q, want %q", result.StateStorage, database.BackendFile)
+	}
+}
+
 func TestProtoRaftConfigToDomain_WithToken(t *testing.T) {
 	result := protoRaftConfigToDomain(&pb.DatabaseRaftConfig{
 		Token: &pb.DatabaseTokenDiscovery{

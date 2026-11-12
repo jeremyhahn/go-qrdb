@@ -68,10 +68,11 @@ func newDatabaseCmd() *cobra.Command {
 // newDatabaseCreateCmd creates the "database create" subcommand.
 func newDatabaseCreateCmd() *cobra.Command {
 	var (
-		backend     string
-		dataDir     string
-		replicas    int
-		clusterMode string
+		backend      string
+		dataDir      string
+		replicas     int
+		clusterMode  string
+		stateStorage string
 
 		barrierEnabled         bool
 		barrierStrategy        string
@@ -96,6 +97,7 @@ func newDatabaseCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dataDir, "data-dir", "", "Dedicated data directory for this database (required for a real per-database encryption barrier)")
 	cmd.Flags().IntVar(&replicas, "replicas", 0, "Replication factor for a dedicated-raft database (raft backend only; defaults to 1)")
 	cmd.Flags().StringVar(&clusterMode, "cluster-mode", "", "Raft cluster topology for a dedicated-raft database (local, distributed; raft backend only, defaults to local)")
+	cmd.Flags().StringVar(&stateStorage, "state-storage", "", "Storage of the Raft group state (pebble, file, memory); defaults to the node's database_defaults, and create records the resolved value")
 	applyEtcd := addDatabaseCreateEtcdFlags(cmd)
 
 	cmd.Flags().BoolVar(&barrierEnabled, "barrier-enabled", false, "Enable a per-database encryption barrier (requires a dedicated store)")
@@ -119,8 +121,8 @@ func newDatabaseCreateCmd() *cobra.Command {
 		// Raft topology (cluster mode) is meaningful only for a
 		// dedicated-raft (--backend raft) database; only send it when the
 		// operator explicitly requested one so a plain create is unaffected.
-		if clusterMode != "" {
-			req.Raft = &transport.DatabaseRaftConfig{ClusterMode: clusterMode}
+		if clusterMode != "" || stateStorage != "" {
+			req.Raft = &transport.DatabaseRaftConfig{ClusterMode: clusterMode, StateStorage: stateStorage}
 		}
 
 		applyEtcd(&req)
@@ -498,6 +500,9 @@ func printDatabaseInfo(info *transport.DatabaseInfo) error {
 			_, _ = fmt.Fprintf(outputWriter, "  Mode:     %s\n", info.Raft.ClusterMode)
 			if info.Raft.RaftAddress != "" {
 				_, _ = fmt.Fprintf(outputWriter, "  Address:  %s\n", info.Raft.RaftAddress)
+			}
+			if info.Raft.StateStorage != "" {
+				_, _ = fmt.Fprintf(outputWriter, "  State:    %s\n", info.Raft.StateStorage)
 			}
 		}
 		if info.Barrier != nil {

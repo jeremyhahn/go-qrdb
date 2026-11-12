@@ -254,12 +254,22 @@ type DatabaseRaftConfig struct {
 	Multicast      *MulticastDiscoveryConfig `yaml:"multicast"      json:"multicast,omitempty"`
 	DNS            *DNSDiscoveryConfig       `yaml:"dns"            json:"dns,omitempty"`
 	Token          *TokenDiscoveryConfig     `yaml:"token"          json:"token,omitempty"`
+	// StateStorage is the storage of the database's Raft group state
+	// (pebble, file or memory). Create records the value resolved from the
+	// request or the node's database_defaults, so the database is opened
+	// with it and never re-resolved against node config.
+	StateStorage BackendType `yaml:"state_storage,omitempty" json:"state_storage,omitempty"`
 }
 
 // Validate checks that the Raft config is internally consistent.
 func (r *DatabaseRaftConfig) Validate() error {
 	if !r.ClusterMode.Valid() {
 		return &InvalidRaftClusterModeError{Mode: string(r.ClusterMode)}
+	}
+	if r.StateStorage != "" {
+		if _, ok := raftStateStorages[r.StateStorage]; !ok {
+			return &InvalidRaftStateStorageError{StateStorage: r.StateStorage}
+		}
 	}
 
 	// Discovery validation only applies to distributed mode.

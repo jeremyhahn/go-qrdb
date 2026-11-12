@@ -92,6 +92,9 @@ type Manager struct {
 	catalogRef atomic.Pointer[catalogRef]
 	reclaimer  KeyspaceReclaimer
 	localNode  atomic.Pointer[string] // see SetLocalNode
+	// defaults are the node's database_defaults, filled into a new
+	// database's record at create (WithDefaults).
+	defaults Defaults
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
@@ -301,6 +304,9 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 // create is CreateWithCredentials and Provision. shared selects the empty,
 // node-shared incarnation (see Provision).
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
+	// The node's defaults are filled in once, here, and recorded with the
+	// rest of the config; opening the database never consults them again.
+	m.defaults.fill(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -1119,6 +1125,11 @@ func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
 	}
 	kept := *raft
 	kept.ShardID = issued
+	// The Raft state storage is recorded at create and opens the database
+	// from then on; an update carries none and keeps the recorded one.
+	if prev := db.config.Load().Raft; prev != nil {
+		kept.StateStorage = prev.StateStorage
+	}
 	if err := keepStoredSecrets(&kept, db.Config().Raft); err != nil {
 		return err
 	}

@@ -334,6 +334,16 @@ func TestResolveBinding_Defaults(t *testing.T) {
 			wantBackend: BackendRaft,
 			wantRaft:    &RaftBinding{Host: RaftHostSystem, Replicas: 5, ClusterMode: RaftLocal, StateStorage: BackendPebble},
 		},
+		{
+			name: "recorded state storage wins over defaults",
+			cfg: &DatabaseConfig{Name: "app", Backend: BackendRaft,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendMemory}},
+			node: BindingNode{DataDir: bindNodeDir, RaftMode: true, Defaults: Defaults{
+				RaftStateStorage: BackendFile,
+			}},
+			wantBackend: BackendRaft,
+			wantRaft:    &RaftBinding{Host: RaftHostSystem, Replicas: 1, ClusterMode: RaftLocal, StateStorage: BackendMemory},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

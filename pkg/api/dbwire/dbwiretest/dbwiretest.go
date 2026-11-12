@@ -45,11 +45,12 @@ var Secrets = []string{StaticSecret, MulticastSecret, DiscoveryToken}
 // discovery secret.
 func RaftConfig() *database.DatabaseRaftConfig {
 	return &database.DatabaseRaftConfig{
-		ClusterMode: database.RaftDistributed,
-		ReplicaID:   1,
-		RaftAddress: "db.example.com:63001",
-		Peers:       []string{"db.example.com:63001"},
-		Discovery:   database.DiscoveryStatic,
+		ClusterMode:  database.RaftDistributed,
+		StateStorage: database.BackendFile,
+		ReplicaID:    1,
+		RaftAddress:  "db.example.com:63001",
+		Peers:        []string{"db.example.com:63001"},
+		Discovery:    database.DiscoveryStatic,
 		Static: &database.StaticDiscoveryConfig{
 			Peers:        []string{"db.example.com:63001"},
 			SharedSecret: StaticSecret,
