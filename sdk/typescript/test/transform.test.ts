@@ -246,6 +246,19 @@ describe('deepCamelToSnake', () => {
         expect(back).toEqual({ found: true, metadata: { owner_team: 'core' } });
     });
 
+    it('keeps the keys of user ABAC attributes as typed, both ways', () => {
+        const wire = deepCamelToSnake({
+            roleBindings: [{ roleId: 'r1', tenantId: 't1' }],
+            attributes: { costCenter: 'cc-1', clearance_level: 'high' },
+        });
+        expect(wire).toEqual({
+            role_bindings: [{ role_id: 'r1', tenant_id: 't1' }],
+            attributes: { costCenter: 'cc-1', clearance_level: 'high' },
+        });
+        const back = deepSnakeToCamel({ last_auth: 'x', attributes: { clearance_level: 'high' } });
+        expect(back).toEqual({ lastAuth: 'x', attributes: { clearance_level: 'high' } });
+    });
+
     it('converts top-level camelCase keys to snake_case', () => {
         const input = { shardId: 1, replicaId: 2, address: 'host:1' };
         const out = deepCamelToSnake(input) as Record<string, unknown>;

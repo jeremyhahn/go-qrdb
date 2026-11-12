@@ -1411,6 +1411,10 @@ export interface User {
     readonly id: string;
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email login key; absent for a user created without one. */
+    readonly email?: string;
+    /** Display name; presentation only. */
+    readonly name?: string;
     /** Tenant that owns this user. */
     readonly tenantId: string;
     /** Role IDs assigned to this user. */
@@ -1420,6 +1424,14 @@ export interface User {
      * or deleting. Only active can authenticate.
      */
     readonly lifecycle: string;
+    /** Permitted authentication methods; absent states no restriction. */
+    readonly authMethods?: readonly string[];
+    /** Last successful authentication (RFC 3339); absent if never. */
+    readonly lastAuth?: string;
+    /** Roles granted within a tenant scope, additive alongside `roleIds`. */
+    readonly roleBindings?: readonly RoleBinding[];
+    /** ABAC key/value attributes evaluated by policy. */
+    readonly attributes?: Readonly<Record<string, string>>;
     /** Whether this is a built-in system user. */
     readonly system: boolean;
     /** ISO 8601 creation timestamp. */
@@ -1441,6 +1453,26 @@ export interface CreateUserRequest {
     readonly tenantId?: string;
     /** Role IDs to assign at creation time. */
     readonly roleIds?: readonly string[];
+    /** Display name; presentation only. */
+    readonly name?: string;
+    /** Permitted authentication methods. Empty states no restriction. */
+    readonly authMethods?: readonly string[];
+    /**
+     * State to create the account in: pending, active or disabled only.
+     * Empty defaults to active, or pending when `pending` is set; both are
+     * refused unless they agree.
+     */
+    readonly lifecycle?: string;
+    /** Create the account pending activation (shorthand for lifecycle pending). */
+    readonly pending?: boolean;
+}
+
+/** A role granted within a tenant scope, additive alongside `roleIds`. */
+export interface RoleBinding {
+    /** The granted role's ID. */
+    readonly roleId: string;
+    /** The tenant the grant applies in. */
+    readonly tenantId: string;
 }
 
 /** Parameters for updating an existing user. */
@@ -1451,6 +1483,23 @@ export interface UpdateUserRequest {
     readonly username?: string;
     /** New set of role IDs. */
     readonly roleIds?: readonly string[];
+    /** New email login key; uniqueness is re-checked within the tenant. */
+    readonly email?: string;
+    /** New display name. */
+    readonly name?: string;
+    /** Replaces the permitted authentication methods when present; `[]` clears them. */
+    readonly authMethods?: readonly string[];
+    /** Transitions the account to this lifecycle state when non-empty. */
+    readonly lifecycle?: string;
+    /**
+     * Raises the last-authentication high-water mark (RFC 3339). A value at
+     * or before the stored one writes nothing.
+     */
+    readonly lastAuth?: string;
+    /** Replaces the tenant-scoped role bindings when present; `[]` clears them. */
+    readonly roleBindings?: readonly RoleBinding[];
+    /** Replaces the ABAC attributes when present; `{}` clears them. */
+    readonly attributes?: Readonly<Record<string, string>>;
 }
 
 /** Parameters for binding an mTLS certificate thumbprint to a user. */
@@ -3204,6 +3253,21 @@ export interface CreateTenantRequest {
     readonly adminChainPem?: string;
     /** Registers the tenant's trust anchors with it. */
     readonly trustAnchorsPem?: string;
+    /**
+     * The tenant's security officer, optional: a second principal, distinct
+     * from the admin by name and by key, holding the tenant's so role alone.
+     * `soUsername`, exactly one of `soCsrPem` and `soCertPem`, and `soPin`
+     * are given together or not at all.
+     */
+    readonly soUsername?: string;
+    /** The SO's certificate signing request, signed as the admin's CSR is. */
+    readonly soCsrPem?: string;
+    /** The SO's own certificate, leaf first; it must chain to one of `trustAnchorsPem`. */
+    readonly soCertPem?: string;
+    /** Intermediates for `soCertPem`. */
+    readonly soChainPem?: string;
+    /** The SO's second factor (auth.so_dual_factor), the PIN the SO gate asks for. */
+    readonly soPin?: string;
 }
 
 /**
@@ -3246,6 +3310,10 @@ export interface UpdateTenantRequest {
      * data stored under the current strategy.
      */
     readonly isolationType?: TenantIsolationType;
+    /** Replaces the description when present (`""` clears it). */
+    readonly description?: string;
+    /** Replaces the whole metadata map when present; `{}` clears it. */
+    readonly metadata?: Readonly<Record<string, string>>;
 }
 
 /** Response from updating a tenant. */

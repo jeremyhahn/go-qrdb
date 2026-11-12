@@ -253,6 +253,7 @@ export type {
     // User management
     User,
     CreateUserRequest,
+    RoleBinding,
     UpdateUserRequest,
     AddCertBindingRequest,
     ListUsersRequest,
