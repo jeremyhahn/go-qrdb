@@ -54,10 +54,17 @@ func TestDefaultsFill(t *testing.T) {
 				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: BackendFile}},
 		},
 		{
-			name: "no raft block added",
+			name: "raft block added for a raft backend",
 			d:    d,
 			cfg:  DatabaseConfig{Name: "app"},
-			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft, Replicas: 3,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftDistributed, StateStorage: BackendFile}},
+		},
+		{
+			name: "added raft block falls back to cluster mode none",
+			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft},
+			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone}},
 		},
 		{
 			name: "raft defaults skip a non-raft backend",
@@ -142,5 +149,27 @@ func TestManagerCreateRecordsDefaults(t *testing.T) {
 	}
 	if got := db.Config().Backend; got != BackendPebble {
 		t.Fatalf("reopened backend = %q, want the recorded %q", got, BackendPebble)
+	}
+}
+
+func TestManagerCreateRaftWithoutRaftBlockRecordsShard(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	m := newCatalogManager(logger, t.TempDir(), WithDefaults(Defaults{RaftClusterMode: RaftLocal, RaftStateStorage: BackendMemory}))
+	m.SetShardIDClaimer(testShardClaimer(t))
+	t.Cleanup(func() { _ = m.Close() })
+
+	db, err := m.Create(DatabaseConfig{Name: "groupless", Backend: BackendRaft})
+	if err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	raft := db.Config().Raft
+	if raft == nil {
+		t.Fatal("recorded raft block = nil, want one filled from the defaults")
+	}
+	if raft.ClusterMode != RaftLocal || raft.StateStorage != BackendMemory {
+		t.Fatalf("recorded raft = %+v, want cluster mode %q and state storage %q", raft, RaftLocal, BackendMemory)
+	}
+	if raft.ShardID == 0 {
+		t.Fatal("recorded shard ID = 0, want one issued at create")
 	}
 }
