@@ -122,7 +122,7 @@ func TestManager_Create_IndeterminateWriteRemovesItsOwnRecord(t *testing.T) {
 
 func TestManager_Create_IndeterminateWriteLeavesAnotherIncarnation(t *testing.T) {
 	mgr, store, cat := newSettleManager(t)
-	theirs := DatabaseMeta{Name: "orders", Backend: BackendMemory, Incarnation: "their-incarnation"}
+	theirs := DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory, Incarnation: "their-incarnation"}
 	store.armed, store.other = true, &theirs
 
 	_, err := mgr.Create(DatabaseConfig{Name: "orders", Backend: BackendMemory})

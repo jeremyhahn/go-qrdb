@@ -63,7 +63,7 @@ func TestKVCatalog_UpdateRefusesAnAbsentRecordOrAnotherIncarnation(t *testing.T)
 		t.Fatalf("Update created an absent record: Get = %v", err)
 	}
 
-	live := DatabaseMeta{Name: "orders", Backend: BackendMemory, Incarnation: "two"}
+	live := DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory, Incarnation: "two"}
 	if err := cat.Create(ctx, live); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -97,7 +97,7 @@ func markDropping(meta *DatabaseMeta) error {
 func TestKVCatalog_UpdateRetriesASwapLostToTheSameIncarnation(t *testing.T) {
 	ctx := context.Background()
 	cat, store := newSwapHookCatalog(t)
-	meta := DatabaseMeta{Name: "orders", Backend: BackendMemory, Incarnation: "one"}
+	meta := DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory, Incarnation: "one"}
 	if err := cat.Create(ctx, meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestKVCatalog_UpdateRetriesASwapLostToTheSameIncarnation(t *testing.T) {
 func TestKVCatalog_UpdateReturnsTheMutationsErrorUnwritten(t *testing.T) {
 	ctx := context.Background()
 	cat, store := newSwapHookCatalog(t)
-	meta := DatabaseMeta{Name: "orders", Backend: BackendMemory, Incarnation: "one"}
+	meta := DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory, Incarnation: "one"}
 	if err := cat.Create(ctx, meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}

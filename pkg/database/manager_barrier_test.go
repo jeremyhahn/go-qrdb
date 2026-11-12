@@ -673,7 +673,7 @@ func TestManager_Open_RegisterBarrierFails_CleansUp(t *testing.T) {
 	if err := os.MkdirAll(mgr2.dbDir("", "collide-db"), 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := testCatalogFor(mgr2.dataDir).Create(context.Background(), meta); err != nil {
+	if err := testCatalogFor(mgr2.dataDir).Create(context.Background(), withTestID(meta)); err != nil {
 		t.Fatalf("catalog Create: %v", err)
 	}
 

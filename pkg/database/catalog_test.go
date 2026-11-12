@@ -69,7 +69,7 @@ func TestNewKVCatalog_RequiresSystemStore(t *testing.T) {
 func TestKVCatalog_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	cat, _ := newTestCatalog(t, nil)
-	meta := DatabaseMeta{TenantID: "acme", Name: "orders", Backend: BackendMemory, Incarnation: "i1"}
+	meta := DatabaseMeta{ID: "test-id", TenantID: "acme", Name: "orders", Backend: BackendMemory, Incarnation: "i1"}
 	if err := cat.Create(ctx, meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestKVCatalog_RoundTrip(t *testing.T) {
 func TestKVCatalog_CreateRefusesAnExistingRecord(t *testing.T) {
 	ctx := context.Background()
 	cat, _ := newTestCatalog(t, nil)
-	meta := DatabaseMeta{Name: "db", Backend: BackendMemory}
+	meta := DatabaseMeta{ID: "test-id", Name: "db", Backend: BackendMemory}
 	if err := cat.Create(ctx, meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestKVCatalog_ConcurrentCreatesHaveOneWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if cat.Create(ctx, DatabaseMeta{Name: "db", Backend: BackendMemory}) == nil {
+			if cat.Create(ctx, DatabaseMeta{ID: "test-id", Name: "db", Backend: BackendMemory}) == nil {
 				wins.Add(1)
 			}
 		}()
@@ -152,10 +152,10 @@ func TestKVCatalog_IsolatedTenantLivesInItsHomeStore(t *testing.T) {
 	ctx := context.Background()
 	home := kvstore.NewMemoryKVStore()
 	cat, system := newTestCatalog(t, &fakeCatalogHomes{homes: map[string]kvstore.KVStore{"iso": home}})
-	if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "a", Backend: BackendMemory}); err != nil {
+	if err := cat.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: "iso", Name: "a", Backend: BackendMemory}); err != nil {
 		t.Fatalf("Create isolated: %v", err)
 	}
-	if err := cat.Create(ctx, DatabaseMeta{TenantID: "shared", Name: "b", Backend: BackendMemory}); err != nil {
+	if err := cat.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: "shared", Name: "b", Backend: BackendMemory}); err != nil {
 		t.Fatalf("Create shared: %v", err)
 	}
 	if v, _ := system.Get(ctx, CatalogKey("iso", "a")); v != nil {
@@ -178,7 +178,7 @@ func TestKVCatalog_ListTenantDoesNotMatchAPrefixTenant(t *testing.T) {
 	ctx := context.Background()
 	cat, _ := newTestCatalog(t, nil)
 	for _, tid := range []string{"acme", "acme2"} {
-		if err := cat.Create(ctx, DatabaseMeta{TenantID: tid, Name: "db", Backend: BackendMemory}); err != nil {
+		if err := cat.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: tid, Name: "db", Backend: BackendMemory}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -191,7 +191,7 @@ func TestKVCatalog_ListTenantDoesNotMatchAPrefixTenant(t *testing.T) {
 func TestKVCatalog_HomeResolutionFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	boom := errors.New("sealed")
-	meta := DatabaseMeta{TenantID: "iso", Name: "a", Backend: BackendMemory}
+	meta := DatabaseMeta{ID: "test-id", TenantID: "iso", Name: "a", Backend: BackendMemory}
 	cases := map[string]*fakeCatalogHomes{
 		"locate":  {homes: map[string]kvstore.KVStore{"iso": nil}, locateErr: boom},
 		"resolve": {homes: map[string]kvstore.KVStore{"iso": nil}, resolveEr: boom},
@@ -227,7 +227,7 @@ func TestKVCatalog_HomeStoreWithoutPutIfAbsentIsRefused(t *testing.T) {
 	homes := &fakeCatalogHomes{homes: map[string]kvstore.KVStore{"iso": plainKVStore{kvstore.NewMemoryKVStore()}}}
 	cat, _ := newTestCatalog(t, homes)
 	var notAtomic *CatalogStoreNotAtomicError
-	if err := cat.Create(ctx, DatabaseMeta{TenantID: "iso", Name: "a"}); !errors.As(err, &notAtomic) {
+	if err := cat.Create(ctx, DatabaseMeta{ID: "test-id", TenantID: "iso", Name: "a"}); !errors.As(err, &notAtomic) {
 		t.Fatalf("Create: err = %v, want *CatalogStoreNotAtomicError", err)
 	}
 }
@@ -303,7 +303,7 @@ func TestKVCatalog_StoreFailuresAreTyped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := DatabaseMeta{Name: "orders", Backend: BackendMemory}
+	meta := DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory}
 	var writeErr *CatalogWriteError
 	var readErr *CatalogReadError
 	writes := map[string]error{
@@ -338,7 +338,7 @@ func TestKVCatalog_DeleteRemovesOnlyTheNamedIncarnationUnderItsClaim(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	meta := DatabaseMeta{Name: "orders", TenantID: "acme", Backend: BackendMemory, Incarnation: "i2", Dropping: true, DropClaim: "c2"}
+	meta := DatabaseMeta{ID: "test-id", Name: "orders", TenantID: "acme", Backend: BackendMemory, Incarnation: "i2", Dropping: true, DropClaim: "c2"}
 	if err := cat.Create(ctx, meta); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
