@@ -109,6 +109,23 @@ export interface StartDaemonOptions {
    * than "none" (auth requires the seal subsystem).
    */
   tenantAdmin?: TenantAdminOptions;
+  /**
+   * Like tenantAdmin, then the tenant admin invites a plain user holding one
+   * data role (no admin role), who redeems the invitation with its own CSR;
+   * the Vite proxy presents the user's certificate instead of the admin's.
+   */
+  tenantUser?: TenantUserOptions;
+}
+
+export interface TenantUserOptions extends TenantAdminOptions {
+  /** The user's username; defaults to `${tenant}-user`. */
+  userName?: string;
+  /**
+   * The tenant's built-in role the user holds (its only role); defaults to
+   * "operator", the data role (kv, mvcc, leases, ...) with no admin permission.
+   * A tenant admin holds no data permission, so it cannot grant a new role one.
+   */
+  role?: string;
 }
 
 export interface TenantAdminOptions {
@@ -134,6 +151,8 @@ export interface DomDaemon {
   systemAdmin?: ClientCredential;
   /** The tenant admin the Vite proxy presents, set with tenantAdmin. */
   tenantAdmin?: ClientCredential & { tenant: string; username: string };
+  /** The plain tenant user the Vite proxy presents, set with tenantUser. */
+  tenantUser?: ClientCredential & { tenant: string; username: string; roleId: string };
 }
 
 function proxyClientFiles(): { cert: string; key: string } | null {
@@ -269,6 +288,56 @@ async function provisionTenantAdmin(
   };
 }
 
+/**
+ * provisionTenantAdmin, then as the tenant admin: one role with opts.permissions,
+ * an invitation for a user holding only that role, and the user's own
+ * redemption of it with a fresh CSR (the user's certificate is the result).
+ */
+async function provisionTenantUser(
+  daemon: DomDaemon,
+  opts: TenantUserOptions,
+): Promise<Required<Pick<DomDaemon, "systemAdmin" | "tenantAdmin" | "tenantUser">>> {
+  const admins = await provisionTenantAdmin(daemon, opts);
+  const admin = admins.tenantAdmin;
+  const roleName = opts.role ?? "operator";
+  const roles = await daemonRequest(daemon.adminUrl, "GET", "/roles/list", undefined, admin);
+  const role = ((roles.json as { roles?: { id: string; name: string }[] } | null)?.roles ?? []).find(
+    (r) => r.name === roleName,
+  );
+  if (roles.status >= 300 || !role) {
+    throw new Error(`role ${roleName} not in tenant ${opts.tenant} (${roles.status}): ${roles.text.slice(0, 300)}`);
+  }
+
+  const username = opts.userName ?? `${opts.tenant}-user`;
+  const invite = await daemonRequest(
+    daemon.adminUrl,
+    "POST",
+    "/users/invite",
+    { username, email: `${username}@example.test`, roleIDs: [role.id] },
+    admin,
+  );
+  const vj = invite.json as { token?: string } | null;
+  if (invite.status >= 300 || !vj?.token) {
+    throw new Error(`invite ${username} returned ${invite.status}: ${invite.text.slice(0, 300)}`);
+  }
+
+  const { keyPem, csrPem } = freshKeyAndCSR(username);
+  const redeemed = await daemonRequest(daemon.adminUrl, "POST", "/invitations/redeem", {
+    tenantID: opts.tenant,
+    token: vj.token,
+    csrPEM: csrPem,
+  });
+  const ej = redeemed.json as { certPEM?: string; cert_pem?: string } | null;
+  const certPem = ej?.certPEM ?? ej?.cert_pem;
+  if (redeemed.status >= 300 || !certPem) {
+    throw new Error(`redeem invitation for ${username} returned ${redeemed.status}: ${redeemed.text.slice(0, 300)}`);
+  }
+  return {
+    ...admins,
+    tenantUser: { certPem, keyPem, tenant: opts.tenant, username, roleId: role.id },
+  };
+}
+
 function writeConfig(path: string, opts: StartDaemonOptions): void {
   const lines = ['codec:', '  storage_codec: "json"', '  wire_codec: "json"', "seal:"];
   if (opts.seal === "none") {
@@ -344,7 +413,7 @@ async function waitForReady(adminUrl: string, seal: SealMode, timeoutMs = 20_000
  * blocks until it is ready for UI traffic.
  */
 export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> {
-  if (opts.tenantAdmin !== undefined && opts.seal === "none") {
+  if ((opts.tenantAdmin ?? opts.tenantUser) !== undefined && opts.seal === "none") {
     throw new Error('tenantAdmin needs auth, which needs a seal other than "none"');
   }
   // A credential a failed run left behind must not authenticate this one.
@@ -361,8 +430,8 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     "--raft-address", `127.0.0.1:${DOM_RAFT_PORT}`,
     "--admin-port", String(DOM_ADMIN_PORT),
     "--grpc-port", String(DOM_GRPC_PORT),
-    `--auth-enabled=${opts.tenantAdmin !== undefined}`,
-    `--tls-client-auth=${opts.tlsClientAuth ?? (opts.tenantAdmin !== undefined ? "request" : "none")}`,
+    `--auth-enabled=${(opts.tenantAdmin ?? opts.tenantUser) !== undefined}`,
+    `--tls-client-auth=${opts.tlsClientAuth ?? ((opts.tenantAdmin ?? opts.tenantUser) !== undefined ? "request" : "none")}`,
     "--discovery", "static",
     "--peers", `1=127.0.0.1:${DOM_RAFT_PORT}`,
     "--replica-id", "1",
@@ -390,7 +459,15 @@ export async function startDaemon(opts: StartDaemonOptions): Promise<DomDaemon> 
     throw new Error(`${err}\nstderr:\n${Buffer.concat(stderr).toString()}`);
   }
   const daemon: DomDaemon = { adminUrl, dataDir, proc };
-  if (opts.tenantAdmin !== undefined) {
+  if (opts.tenantUser !== undefined) {
+    try {
+      Object.assign(daemon, await provisionTenantUser(daemon, opts.tenantUser));
+    } catch (err) {
+      proc.kill("SIGTERM");
+      throw new Error(`${err}\nstderr:\n${Buffer.concat(stderr).toString()}`);
+    }
+    setProxyClientCert(daemon.tenantUser!);
+  } else if (opts.tenantAdmin !== undefined) {
     try {
       Object.assign(daemon, await provisionTenantAdmin(daemon, opts.tenantAdmin));
     } catch (err) {
