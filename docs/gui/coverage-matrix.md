@@ -103,9 +103,9 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Invitation | `invite` | components/admin/InviteUserModal.svelte | none (admin-users.spec.ts never opens the invite modal) | no e2e; *verified* |
 | Invitation | `redeem` | none | none | not in UI; *verified* |
 | KV | `delete` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
-| KV | `exists` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| KV | `get` | none (KVExplorer reads through `kv.scan`; other hits are other clients' `get`) | none | not in UI; *verified* |
-| KV | `list` | none (other hits are other clients' `list`) | none | not in UI; *verified* |
+| KV | `exists` | views/user/KVExplorer.svelte (Go to key) | kv-mvcc.spec.ts | *verified* |
+| KV | `get` | views/user/KVExplorer.svelte (Go to key, keys-only open) | kv-mvcc.spec.ts | *verified* |
+| KV | `list` | views/user/KVExplorer.svelte (Keys only toggle) | kv-mvcc.spec.ts | *verified* |
 | KV | `put` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
 | KV | `scan` | views/user/KVExplorer.svelte | kv-crud.spec.ts dom/kv-explorer-roundtrip.spec.ts | *verified* |
 | Lease | `grant` | views/user/LeaseManager.svelte  | lease-advanced.spec.ts lease-grant-fix.spec.ts  |  |
@@ -119,11 +119,11 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Lock | `release` | views/user/LockManager.svelte  | lock.spec.ts  |  |
 | Lock | `status` | views/user/LockManager.svelte | lock.spec.ts | *verified* |
 | Lock | `tryLock` | views/user/LockManager.svelte  | lock.spec.ts  |  |
-| MVCC | `compact` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| MVCC | `currentRevision` | none | real-backend/kv-restore-mvcc-real.spec.ts (REST only, no UI) | not in UI; *verified* |
-| MVCC | `getAtRevision` | none | none | not in UI; *verified* |
-| MVCC | `getRevision` | none | none | not in UI; *verified* |
-| MVCC | `putWithLease` | none | none | not in UI; *verified* |
+| MVCC | `compact` | views/user/KVExplorer.svelte (Compact to revision) | kv-mvcc.spec.ts | *verified* |
+| MVCC | `currentRevision` | views/user/KVExplorer.svelte (header revision) | kv-mvcc.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
+| MVCC | `getAtRevision` | views/user/KVExplorer.svelte (Value at revision) | kv-mvcc.spec.ts | *verified* |
+| MVCC | `getRevision` | views/user/KVExplorer.svelte (entry panel) | kv-mvcc.spec.ts | *verified* |
+| MVCC | `putWithLease` | views/user/KVExplorer.svelte (lease id on save) | kv-mvcc.spec.ts | *verified* |
 | MVCC | `range` | views/user/KVExplorer.svelte (as-of revision browse) | kv-explorer-restore.spec.ts | *verified* |
 | MVCC | `restoreToRevision` | views/user/KVExplorer.svelte | kv-explorer-restore.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
 | Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
@@ -145,13 +145,13 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
 | Rebalance | `getShardStats` | none | none (binding-presence smoke only) | not in UI; *verified* |
-| Role | `assign` | none | none (mock only: fixtures/wails-mock.ts) | not in UI; *verified* |
+| Role | `assign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `create` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
-| Role | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
+| Role | `delete` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `get` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `list` | views/admin/RoleManager.svelte views/admin/UserDetail.svelte | admin-roles.spec.ts | *verified* |
 | Role | `listPermissions` | components/admin/PermissionTreePicker.svelte | mandated-scenarios.spec.ts regression-bugs.spec.ts | *verified* |
-| Role | `unassign` | none | none | not in UI; *verified* |
+| Role | `unassign` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | Role | `update` | views/admin/RoleDetail.svelte | admin-roles.spec.ts | *verified* |
 | SQL | `query` | views/user/SQLBrowserScoped.svelte | sql-browser.spec.ts dom/sql-browser-roundtrip.spec.ts | *verified* |
 | Seal | `changePassphrase` | none | none | not in UI; *verified* |
@@ -188,15 +188,15 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | TimeSeries | `writeBatch` | none | none | not in UI; *verified* |
 | TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
 | Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
-| User | `addCertBinding` | none | none | not in UI; *verified* |
+| User | `addCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | User | `create` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
-| User | `delete` | none (hits are other clients' `delete`) | none | not in UI; *verified* |
-| User | `disable` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| User | `enable` | none | none (spec hits are false name matches) | not in UI; *verified* |
+| User | `delete` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
+| User | `disable` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
+| User | `enable` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | User | `get` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
-| User | `getUserByCertThumbprint` | none | none | not in UI; *verified* |
+| User | `getUserByCertThumbprint` | views/admin/UserManager.svelte (find by thumbprint) | admin-users.spec.ts | *verified* |
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
-| User | `removeCertBinding` | none | none | not in UI; *verified* |
+| User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | User | `update` | views/admin/UserDetail.svelte | admin-users.spec.ts (edit form; save not asserted) | *verified* |
 | Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
 | Vector | `batchUpsert` | none | none | not in UI; *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 161 | 145 |
+| operations | 218 | 178 | 162 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 57. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 40. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
