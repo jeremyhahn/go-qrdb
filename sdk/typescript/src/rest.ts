@@ -77,6 +77,7 @@ import type {
     BatchUpsertResponse,
     BootstrapResult,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     CapabilitiesResponse,
     CeremonyInitializeRequest,
@@ -556,6 +557,15 @@ function jsonBody(data: unknown): RequestInit {
     };
 }
 
+/** Size of one append chunk of a batch import session (1 MiB). */
+export const IMPORT_CHUNK_BYTES = 1024 * 1024;
+
+/** Wire shape of GET /batch/import/formats. */
+interface ImportFormatsWire {
+    readonly formats?: readonly string[];
+    readonly codecs?: readonly string[];
+}
+
 /**
  * Builds a JSON request body from an object already in wire form, without
  * re-casing any key (see holderEnrolmentWire).
@@ -964,13 +974,66 @@ export class RestClient implements Client {
             importFile: async (_filePath: string, _opts: ImportOptions): Promise<ImportResult> => {
                 throw new DesktopOnlyError('batch.importFile');
             },
+            importContent: async (data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult> => {
+                this.ensureConnected();
+                return this.importContentSession(data, opts);
+            },
             availableCodecs: async (): Promise<readonly string[]> => {
-                throw new DesktopOnlyError('batch.availableCodecs');
+                this.ensureConnected();
+                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
+                return resp.codecs ?? [];
             },
             availableImportFormats: async (): Promise<readonly string[]> => {
-                throw new DesktopOnlyError('batch.availableImportFormats');
+                this.ensureConnected();
+                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
+                return resp.formats ?? [];
             },
         };
+    }
+
+    /**
+     * Runs one chunked import session: begin, append each IMPORT_CHUNK_BYTES
+     * piece with its sequence number, commit. Any failure after begin aborts
+     * the session (best effort) and rethrows the original error.
+     */
+    private async importContentSession(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult> {
+        // A copy into a plain ArrayBuffer: fetch's BodyInit refuses a view
+        // over a SharedArrayBuffer.
+        const bytes: Uint8Array<ArrayBuffer> =
+            data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await data.arrayBuffer());
+        const begin = await this.fetchJSON<{ sessionId: string }>('/batch/import/begin', {
+            method: 'POST',
+            ...jsonBody({
+                format: opts.format,
+                filename: opts.filename ?? '',
+                key_field: opts.key_field,
+                value_mode: opts.value_mode,
+                value_field: opts.value_field ?? '',
+                skip_header: opts.skip_header ?? false,
+                transactional: opts.transactional ?? false,
+            }),
+        });
+        const base = `/batch/import/${encodeURIComponent(begin.sessionId)}`;
+        try {
+            let seq = 0;
+            for (let off = 0; off < bytes.length; off += IMPORT_CHUNK_BYTES) {
+                await this.fetchVoid(`${base}/append?seq=${seq}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: bytes.subarray(off, Math.min(off + IMPORT_CHUNK_BYTES, bytes.length)),
+                });
+                seq++;
+            }
+            return await this.fetchJSON<ImportResult>(`${base}/commit`, { method: 'POST' });
+        } catch (err: unknown) {
+            try {
+                await this.fetchVoid(`${base}/abort`, { method: 'POST' });
+            } catch {
+                // The session may already be gone (a failed commit ends it);
+                // the original error is the one the caller needs.
+            }
+            throw err;
+        }
     }
 
     // -----------------------------------------------------------------------

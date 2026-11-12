@@ -525,6 +525,16 @@ export interface ImportOptions {
     readonly database?: string;
 }
 
+/**
+ * Options for importing in-memory content (batch.importContent): the
+ * ImportOptions plus the original filename, which lets format "auto"
+ * infer the format from the extension.
+ */
+export interface ImportContentOptions extends ImportOptions {
+    /** Original filename of the content, e.g. "users.csv". */
+    readonly filename?: string;
+}
+
 /** A single row that failed during import. */
 export interface ImportError {
     /** 1-based row number that failed. */

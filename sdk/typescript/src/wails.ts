@@ -57,6 +57,7 @@ import type {
     BatchUpsertResponse,
     BootstrapResult,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     CapabilitiesResponse,
     CeremonyInitializeRequest,
@@ -661,6 +662,10 @@ export class WailsClient implements Client {
             },
             importFile: async (filePath: string, opts: ImportOptions): Promise<ImportResult> => {
                 return b.ImportFile(filePath, toSnake(opts)) as Promise<ImportResult>;
+            },
+            importContent: async (_data: Uint8Array | Blob, _opts: ImportContentOptions): Promise<ImportResult> => {
+                // The desktop app reads the file natively; importFile takes its path.
+                throw new NotImplementedError('batch.importContent');
             },
             availableCodecs: async (): Promise<readonly string[]> => {
                 return b.AvailableCodecs() as Promise<readonly string[]>;

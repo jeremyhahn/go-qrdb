@@ -37,6 +37,7 @@ import type {
     Op,
     BatchResponse,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
 
     // Watch
@@ -566,6 +567,20 @@ export interface BatchClient {
      * @returns Statistics about the import operation.
      */
     importFile(filePath: string, opts: ImportOptions): Promise<ImportResult>;
+
+    /**
+     * Imports a dataset the caller holds in memory (a browser File or bytes)
+     * over the server's chunked import session: begin, append in 1 MiB
+     * chunks numbered from 0, commit. Any failure aborts the session and
+     * rethrows the original error.
+     *
+     * REST only: the desktop transport imports from a path with importFile.
+     *
+     * @param data - The file content.
+     * @param opts - Import configuration; filename lets "auto" detect the format.
+     * @returns Statistics about the import operation.
+     */
+    importContent(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult>;
 
     /**
      * Returns the names of all compiled-in codec types.

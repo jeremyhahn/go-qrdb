@@ -156,6 +156,7 @@ export type {
     BatchRequest,
     BatchResponse,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     ImportError,
 
