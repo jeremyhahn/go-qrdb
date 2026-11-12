@@ -1224,16 +1224,16 @@ export class WailsClient implements Client {
                 return b.UpdateCompaction(name, req) as Promise<DatabaseInfo>;
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
-                return b.UpdateRaft(name, raft) as Promise<DatabaseInfo>;
+                return b.UpdateRaft(name, { raft }) as Promise<DatabaseInfo>;
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
-                return b.UpdateBarrier(name, barrier) as Promise<DatabaseInfo>;
+                return b.UpdateBarrier(name, { barrier }) as Promise<DatabaseInfo>;
             },
             barrierStatus: async (name: string): Promise<DatabaseBarrierStatus> => {
                 return normalizeDatabaseBarrierStatus(await b.BarrierStatus(name) as DatabaseBarrierStatus);
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
-                return b.UpdateConnection(name, connection) as Promise<DatabaseInfo>;
+                return b.UpdateConnection(name, { connection }) as Promise<DatabaseInfo>;
             },
             scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
                 return b.Scale(name, targetReplicas) as Promise<DatabaseInfo>;

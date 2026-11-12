@@ -343,6 +343,17 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       }
     }
 
+    // settingsEnvelope unwraps a database settings request the way the Go
+    // binding decodes it: the config sits under one key ({raft: {...}}). A
+    // bare config object fails, as it does against the real binding, where
+    // its fields would decode into nothing.
+    function settingsEnvelope(method: string, req: unknown, key: string): unknown {
+      if (typeof req !== "object" || req === null || Object.keys(req).length !== 1 || !(key in req)) {
+        throw new Error(`${method}: request must be {${key}: {...}}`);
+      }
+      return (req as Record<string, unknown>)[key];
+    }
+
     // Stateful in-memory stores for CRUD bindings
     const kvStore = new Map<string, string>();
 
@@ -2055,7 +2066,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return db;
           },
-          UpdateRaft: async (name: string, raft: unknown) => {
+          UpdateRaft: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseRaftRequest: {raft: {...}}.
+            const raft = settingsEnvelope("DatabaseBinding.UpdateRaft", req, "raft");
             maybeReject("DatabaseBinding.UpdateRaft");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
@@ -2063,7 +2076,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             db.raft = raft;
             return db;
           },
-          UpdateBarrier: async (name: string, barrier: unknown) => {
+          UpdateBarrier: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseBarrierRequest: {barrier: {...}}.
+            const barrier = settingsEnvelope("DatabaseBinding.UpdateBarrier", req, "barrier");
             maybeReject("DatabaseBinding.UpdateBarrier");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
@@ -2071,7 +2086,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             db.barrier = barrier;
             return db;
           },
-          UpdateConnection: async (name: string, connection: unknown) => {
+          UpdateConnection: async (name: string, req: unknown) => {
+            // The binding takes *transport.UpdateDatabaseConnectionRequest: {connection: {...}}.
+            const connection = settingsEnvelope("DatabaseBinding.UpdateConnection", req, "connection");
             maybeReject("DatabaseBinding.UpdateConnection");
             const s = getState();
             const db = s.databases.find((d: { name: string }) => d.name === name) as Record<string, unknown> | undefined;
