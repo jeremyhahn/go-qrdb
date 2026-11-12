@@ -1154,9 +1154,10 @@ export interface ListVectorsRequest {
     readonly namespace: string;
     /** Maximum number of vectors to return. */
     readonly limit?: number;
-    /** Number of vectors to skip. */
-    readonly offset?: number;
-    /** Cursor for cursor-based pagination. */
+    /**
+     * Opaque cursor from a previous page's nextCursor; omit for the first
+     * page. Listing pages by cursor only.
+     */
     readonly cursor?: string;
     /** Target shard identifier. */
     readonly shardId?: number;
