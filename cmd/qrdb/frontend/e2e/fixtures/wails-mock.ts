@@ -360,6 +360,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // every write, KV or MVCC. Each key's history is an ordered list of
     // (revision, value) entries; value === null marks a delete.
     let mvccRevision = 0;
+    // Highest revision MVCCBinding.Compact has discarded history up to; a
+    // GetAtRevision below it fails as a compacted read does on a real daemon.
+    let compactedRevision = 0;
     const revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
 
     /** Records a write (value !== null) or delete (value === null) for key, bumping the shared revision counter, and returns the new revision. */
@@ -1015,6 +1018,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           GetAtRevision: async (key: string, revision: number) => {
             maybeReject("MVCCBinding.GetAtRevision");
+            if (revision < compactedRevision) {
+              throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
+            }
             const val = valueAtRevision(key, revision);
             if (val === null) throw new Error(`key "${key}" not found at revision ${revision}`);
             return { key: encodeB64(key), value: encodeB64(val), revision };
@@ -1046,8 +1052,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { kvs: kvs.map((kv) => ({ key: encodeB64(kv.key), value: encodeB64(kv.value) })), count: kvs.length };
           },
-          Compact: async (_revision: number) => {
+          Compact: async (revision: number) => {
             maybeReject("MVCCBinding.Compact");
+            if (revision > mvccRevision) {
+              throw new Error(`mvcc: required revision ${revision} is a future revision`);
+            }
+            if (revision > compactedRevision) compactedRevision = revision;
+            (window as unknown as { __mvccCompactedRevision?: number }).__mvccCompactedRevision = compactedRevision;
           },
           CurrentRevision: async () => {
             maybeReject("MVCCBinding.CurrentRevision");
