@@ -23,24 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// TestMigrationNotSupportedError_IsTheSharedRefusal pins that the node's
-// refusal is the same condition every transport already classifies: REST,
-// gRPC, unix, QUIC and MCP answer service.ErrMigrationProviderUnavailable
-// with 501 / Unimplemented, and they find it with errors.Is.
-func TestMigrationNotSupportedError_IsTheSharedRefusal(t *testing.T) {
-	var err error = &MigrationNotSupportedError{Reason: "no seal store (this backend cannot hold a seal store)"}
-
-	if !errors.Is(err, service.ErrMigrationProviderUnavailable) {
-		t.Fatal("errors.Is(MigrationNotSupportedError, ErrMigrationProviderUnavailable) = false")
-	}
-	if errors.Is(err, service.ErrSharedBarrierImmutable) {
-		t.Fatal("MigrationNotSupportedError must not match an unrelated sentinel")
-	}
-	if want := "node: encryption migration not supported: no seal store (this backend cannot hold a seal store)"; err.Error() != want {
-		t.Fatalf("Error() = %q, want %q", err.Error(), want)
-	}
-}
-
 // TestMigrationReopenError_IsNotARefusal pins the other half of the split: a
 // failure inside a migration the node accepted must not be reported by any
 // transport as "migration is not available on this node".

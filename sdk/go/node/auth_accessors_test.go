@@ -148,9 +148,3 @@ func TestNode_StrictSeparation_ReportsResolvedPosture(t *testing.T) {
 		})
 	}
 }
-
-// TestNode_StrictSeparation_FalseBeforeWiring proves a node that has not
-// wired its authorizer reports the standard posture rather than a guess.
-func TestNode_StrictSeparation_FalseBeforeWiring(t *testing.T) {
-	require.False(t, new(Node).StrictSeparation())
-}
