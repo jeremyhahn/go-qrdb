@@ -23,7 +23,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | AuditQuery | `query` | views/admin/AuditLog.svelte | admin-audit.spec.ts | *verified* |
 | Backup | `create` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `delete` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
-| Backup | `get` | none (hits are other clients' `get`) | none | not in UI; *verified* |
+| Backup | `get` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `list` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `restore` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `verify` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
@@ -44,7 +44,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Collection | `deleteDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts collection-advanced.spec.ts | *verified* |
 | Collection | `drop` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
 | Collection | `get` | views/user/CollectionView.svelte | collections-crud.spec.ts (runs on collection select; not asserted alone) | UI *verified* |
-| Collection | `getDocument` | none | none | not in UI; *verified* |
+| Collection | `getDocument` | views/user/CollectionView.svelte | collection-advanced.spec.ts | *verified* |
 | Collection | `insertDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
 | Collection | `list` | views/admin/UserDetail.svelte views/admin/UserManager.svelte stores/connection-manager.svelte.ts  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
 | Collection | `listDocuments` | views/user/CollectionView.svelte | collections-crud.spec.ts (documents appear in the list) | *verified* |
@@ -67,7 +67,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Credential | `list` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `listVersions` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (version history) | *verified* |
 | Credential | `retrieve` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (reveal) | *verified* |
-| Credential | `retrieveVersion` | none | none | not in UI; *verified* |
+| Credential | `retrieveVersion` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `rotate` | views/admin/CredentialManager.svelte  | credential-manager.spec.ts  |  |
 | Credential | `store` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `strategy` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (strategy badge) | *verified* |
@@ -133,7 +133,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts | *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
-| Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
+| Officer | `registerTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
 | Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts | *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
@@ -164,7 +164,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Seal | `unseal` | App.svelte views/admin/SealManager.svelte | unseal.spec.ts admin-seal.spec.ts | *verified* |
 | ServerConfig | `initialized` | none | none (spec hits are false name matches) | not in UI; *verified* |
 | ServerConfig | `isEmbeddedAvailable` | none (hit is `connectionManager.isEmbeddedAvailable`) | none | not in UI; *verified* |
-| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `barrierInit` | views/admin/TenantManager.svelte  | real-backend/per-tenant-barrier.spec.ts  |  |
 | Tenant | `barrierStatus` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
 | Tenant | `barrierUnseal` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
@@ -172,21 +172,21 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Tenant | `delete` | views/admin/TenantManager.svelte | tenant-crud.spec.ts | *verified* |
 | Tenant | `get` | views/admin/TenantDetail.svelte | tenant-crud.spec.ts tenant-quotas.spec.ts | *verified* |
 | Tenant | `list` | views/admin/TenantManager.svelte components/admin/TenantSelect.svelte | tenant-crud.spec.ts | *verified* |
-| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
-| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
+| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateQuotas` | views/admin/TenantDetail.svelte | tenant-quotas.spec.ts tenant-multitenancy-web.spec.ts | *verified* |
-| TimeSeries | `aggregate` | none | none | not in UI; *verified* |
+| TimeSeries | `aggregate` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
 | TimeSeries | `deleteSeries` | views/user/TimeSeriesView.svelte | timeseries-advanced.spec.ts | *verified* |
-| TimeSeries | `getRetention` | none | none | not in UI; *verified* |
+| TimeSeries | `getRetention` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
 | TimeSeries | `listMetrics` | views/user/TimeSeriesView.svelte  | timeseries.spec.ts  |  |
 | TimeSeries | `query` | views/user/TimeSeriesView.svelte (`client.timeSeries!`) | timeseries-advanced.spec.ts | *verified* |
-| TimeSeries | `richQuery` | none | none | not in UI; *verified* |
-| TimeSeries | `setRetention` | none | none | not in UI; *verified* |
-| TimeSeries | `write` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| TimeSeries | `writeBatch` | none | none | not in UI; *verified* |
-| TimeSeries | `writePoint` | views/user/TimeSeriesView.svelte  | timeseries-operations.spec.ts  |  |
+| TimeSeries | `richQuery` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `setRetention` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `write` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `writeBatch` | views/user/TimeSeriesView.svelte | timeseries-ops.spec.ts | *verified* |
+| TimeSeries | `writePoint` | none (alias for `write`; the view calls `write`) | none | not in UI (alias); *verified* |
 | Transaction | `execute` | views/user/TransactionView.svelte | transaction.spec.ts transaction-operations.spec.ts | *verified* |
 | User | `addCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
 | User | `create` | views/admin/UserDetail.svelte | admin-users.spec.ts | *verified* |
@@ -270,7 +270,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 189 | 180 |
+| operations | 218 | 198 | 192 |
 | displays | 11 | 9 | 8 |
 
-Operations not in UI: 29. In UI without e2e: 9. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 20. In UI without e2e: 6. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
