@@ -991,7 +991,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 		// Add metadata if provided
 		if cmd.BatchMeta != nil && i < len(cmd.BatchMeta) {
 			for k, v := range cmd.BatchMeta[i] {
-				vecs[i].Metadata[k] = fmt.Sprintf("%v", v)
+				vecs[i].Metadata[k] = vector.EncodeMetadataValue(v)
 			}
 		}
 
@@ -1237,12 +1237,12 @@ func (vsm *VectorStateMachine) handleUpdateMetadata(ctx context.Context, cmd *Ve
 			newMetadata[k] = v
 		}
 		for k, v := range cmd.Metadata {
-			newMetadata[k] = fmt.Sprintf("%v", v)
+			newMetadata[k] = vector.EncodeMetadataValue(v)
 		}
 	} else {
 		// Replace: use only new metadata
 		for k, v := range cmd.Metadata {
-			newMetadata[k] = fmt.Sprintf("%v", v)
+			newMetadata[k] = vector.EncodeMetadataValue(v)
 		}
 	}
 
@@ -1736,26 +1736,12 @@ func (vsm *VectorStateMachine) GetMetrics() *VectorMetrics {
 
 // convertToStringMap converts map[string]interface{} to map[string]string.
 func convertToStringMap(m map[string]interface{}) map[string]string {
-	if m == nil {
-		return nil
-	}
-	result := make(map[string]string, len(m))
-	for k, v := range m {
-		result[k] = fmt.Sprintf("%v", v)
-	}
-	return result
+	return vector.EncodeMetadata(m)
 }
 
 // convertFromStringMap converts map[string]string to map[string]interface{}.
 func convertFromStringMap(m map[string]string) map[string]interface{} {
-	if m == nil {
-		return nil
-	}
-	result := make(map[string]interface{}, len(m))
-	for k, v := range m {
-		result[k] = v
-	}
-	return result
+	return vector.DecodeMetadata(m)
 }
 
 // PrepareSnapshot implements sm.DiskStateMachine.PrepareSnapshot.

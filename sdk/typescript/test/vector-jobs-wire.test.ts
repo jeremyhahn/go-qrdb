@@ -187,3 +187,29 @@ describe('vector search and list wire names', () => {
             .toEqual({ created: true, timestamp: 11 });
     });
 });
+
+describe('vector upsert, stats metric and cursor paging (#1478)', () => {
+    it('reads upsertVector created from the wire', async () => {
+        const c = await client();
+        mockFetch({ id: 9, version: 1, timestamp: 3, success: true, created: true });
+        const r = await c.vector!.upsertVector({ namespace: 'ns', id: '9', vector: [1, 0] });
+        expect(r.created).toBe(true);
+        mockFetch({ id: 9, version: 1, timestamp: 4, success: true, created: false });
+        expect((await c.vector!.upsertVector({ namespace: 'ns', id: '9', vector: [1, 0] })).created).toBe(false);
+    });
+
+    it('reads the index stats distance_metric as distanceMetric', async () => {
+        const c = await client();
+        mockFetch({ namespace: 'ns', index_type: 'hnsw', distance_metric: 'L2', vector_count: 1, dimension: 2 });
+        const s = await c.vector!.getIndexStats({ namespace: 'ns' });
+        expect(s.distanceMetric).toBe(1);
+    });
+
+    it('pages listVectors by cursor only, never sending offset', async () => {
+        const c = await client();
+        const calls = mockFetch({ vectors: [], total_count: 0 });
+        await c.vector!.listVectors({ namespace: 'ns', limit: 2, cursor: 'next1' });
+        expect(calls[0].url).toContain('cursor=next1');
+        expect(calls[0].url).not.toContain('offset');
+    });
+});

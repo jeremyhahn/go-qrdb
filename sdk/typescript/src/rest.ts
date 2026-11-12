@@ -1677,7 +1677,6 @@ export class RestClient implements Client {
                 }>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
-                        offset: req.offset,
                         cursor: req.cursor,
                         shard_id: req.shardId,
                     })}`,
