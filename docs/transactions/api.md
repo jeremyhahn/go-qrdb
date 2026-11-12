@@ -115,8 +115,13 @@ from 0, commit, and abort on any failure. The browser UI's Import tab uses
 it; the desktop app imports from a path with `importFile`.
 
 `POST /batch/import/begin` — `ImportOptions` (`format`, `filename`,
-`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`).
-Response:
+`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`,
+`collection`). Batch import writes the raw KV keyspace only, so a non-empty
+`collection` is refused with `422` (`importing into a collection ... is not
+supported`), the same refusal the desktop binding's `ImportFile` makes; the
+rows are never written to KV in its place. `format` is one of the list
+`GET /batch/import/formats` reports (`codec.ImportFormats`, shared with the
+desktop binding's `AvailableImportFormats`). Response:
 
 ```json
 { "session_id": "a1b2c3d4e5f6a7b8" }
