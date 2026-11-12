@@ -21,9 +21,10 @@
     HealthResponse,
     StatusResponse,
     CapabilitiesResponse,
+    MetricFamily,
   } from "@qrdb/sdk";
   import { onMount } from "svelte";
-  import { XCircle, RefreshCw } from "lucide-svelte";
+  import { XCircle, RefreshCw, ChevronRight, ChevronDown } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
@@ -136,8 +137,74 @@
     }
   }
 
+  // ---- Metrics (GET /metrics, Prometheus exposition) ----
+
+  let metrics = $state<MetricFamily[]>([]);
+  let metricsLoading: boolean = $state(false);
+  let metricsLoaded: boolean = $state(false);
+  let metricsUnavailable: boolean = $state(false);
+  let metricsError = $state<string | null>(null);
+  let metricsFilter: string = $state("");
+  let expandedFamilies = $state<Record<string, boolean>>({});
+
+  /** Families whose name, type or help contains the filter (case-insensitive). */
+  let filteredMetrics = $derived<MetricFamily[]>(
+    metricsFilter.trim() === ""
+      ? metrics
+      : metrics.filter((f) => {
+          const q = metricsFilter.trim().toLowerCase();
+          return (
+            f.name.toLowerCase().includes(q) ||
+            f.type.toLowerCase().includes(q) ||
+            f.help.toLowerCase().includes(q)
+          );
+        }),
+  );
+
+  function isNotImplemented(err: unknown): boolean {
+    return err instanceof Error && err.name === "NotImplementedError";
+  }
+
+  /** Loads the node's Prometheus metrics; desktop mode has none. */
+  async function fetchMetrics(): Promise<void> {
+    metricsLoading = true;
+    try {
+      metrics = await client.admin.metrics();
+      metricsError = null;
+      metricsUnavailable = false;
+      metricsLoaded = true;
+    } catch (err: unknown) {
+      if (isNotImplemented(err)) {
+        metricsUnavailable = true;
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to fetch metrics";
+        metricsError = msg;
+        showToast("error", `Metrics: ${msg}`);
+      }
+    } finally {
+      metricsLoading = false;
+    }
+  }
+
+  function toggleFamily(name: string): void {
+    expandedFamilies[name] = !expandedFamilies[name];
+  }
+
+  function labelText(labels: Record<string, string>): string {
+    const parts = Object.entries(labels).map(([k, v]) => `${k}="${v}"`);
+    return parts.length === 0 ? "" : `{${parts.join(", ")}}`;
+  }
+
+  function valueText(v: number): string {
+    if (Number.isNaN(v)) return "NaN";
+    if (v === Number.POSITIVE_INFINITY) return "+Inf";
+    if (v === Number.NEGATIVE_INFINITY) return "-Inf";
+    return String(v);
+  }
+
   onMount(() => {
     void fetchDashboardData();
+    void fetchMetrics();
     startPolling();
 
     return () => {
@@ -335,6 +402,102 @@
               </tbody>
             </table>
           </div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Metrics card (GET /metrics) -->
+    <div class="card bg-base-200 shadow" data-testid="dashboard-metrics">
+      <div class="card-body p-5">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="card-title text-lg">Metrics</h2>
+          {#if !metricsUnavailable}
+            <button
+              class="btn btn-ghost btn-sm"
+              data-testid="metrics-refresh"
+              onclick={() => void fetchMetrics()}
+              disabled={metricsLoading}
+            >
+              {#if metricsLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {:else}
+                <RefreshCw class="h-4 w-4" />
+              {/if}
+              Refresh
+            </button>
+          {/if}
+        </div>
+        {#if metricsUnavailable}
+          <p class="text-base-content/50 py-4 text-sm" data-testid="metrics-unavailable">
+            Metrics are not available on desktop.
+          </p>
+        {:else}
+          <input
+            type="search"
+            class="input input-bordered input-sm w-full max-w-sm"
+            placeholder="Filter by name, type or help"
+            aria-label="Filter metrics"
+            data-testid="metrics-filter"
+            bind:value={metricsFilter}
+          />
+          {#if metricsError !== null && !metricsLoaded}
+            <p class="text-error py-4 text-sm" data-testid="metrics-error">{metricsError}</p>
+          {:else if metricsLoaded && filteredMetrics.length === 0}
+            <p class="text-base-content/50 py-4 text-sm" data-testid="metrics-empty">No metrics match.</p>
+          {:else if metricsLoaded}
+            <div class="overflow-x-auto">
+              <table class="table table-sm" data-testid="metrics-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Help</th>
+                    <th class="text-right">Samples</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each filteredMetrics as fam (fam.name)}
+                    <tr data-testid="metrics-family" data-family={fam.name}>
+                      <td class="font-mono text-xs">
+                        <button
+                          class="btn btn-ghost btn-xs"
+                          aria-expanded={expandedFamilies[fam.name] === true}
+                          aria-label={`Toggle ${fam.name}`}
+                          onclick={() => toggleFamily(fam.name)}
+                        >
+                          {#if expandedFamilies[fam.name]}
+                            <ChevronDown class="h-3 w-3" />
+                          {:else}
+                            <ChevronRight class="h-3 w-3" />
+                          {/if}
+                        </button>
+                        {fam.name}
+                      </td>
+                      <td><span class="badge badge-sm badge-ghost">{fam.type}</span></td>
+                      <td class="text-xs">{fam.help}</td>
+                      <td class="text-right font-mono text-xs">{fam.samples.length}</td>
+                    </tr>
+                    {#if expandedFamilies[fam.name]}
+                      <tr data-testid="metrics-samples" data-family={fam.name}>
+                        <td colspan="4">
+                          <table class="table table-xs">
+                            <tbody>
+                              {#each fam.samples as sample, i (i)}
+                                <tr data-testid="metrics-sample">
+                                  <td class="font-mono text-xs">{sample.name}{labelText(sample.labels)}</td>
+                                  <td class="text-right font-mono text-xs">{valueText(sample.value)}</td>
+                                </tr>
+                              {/each}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    {/if}
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
         {/if}
       </div>
     </div>
