@@ -1428,6 +1428,10 @@ export interface User {
     readonly id: string;
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email address (the email login key); absent when the account has none. */
+    readonly email?: string;
+    /** Display name; absent when unset. */
+    readonly name?: string;
     /** Tenant that owns this user. */
     readonly tenantId: string;
     /** Role IDs assigned to this user. */
@@ -1457,6 +1461,8 @@ export interface CreateUserRequest {
     /** Email address: the user's email login key. The daemon requires it
      *  unless withoutEmailLoginKey is set. */
     readonly email?: string;
+    /** Display name. */
+    readonly name?: string;
     /** Create the user with no email login key (email may then be empty). */
     readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
@@ -1471,6 +1477,10 @@ export interface UpdateUserRequest {
     readonly id: string;
     /** New username. */
     readonly username?: string;
+    /** New email address; empty or absent leaves it unchanged. */
+    readonly email?: string;
+    /** New display name; empty or absent leaves it unchanged. */
+    readonly name?: string;
     /** New set of role IDs. */
     readonly roleIds?: readonly string[];
 }

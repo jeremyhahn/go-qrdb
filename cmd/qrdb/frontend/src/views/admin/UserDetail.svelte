@@ -44,6 +44,7 @@
 
   let username: string = $state("");
   let email: string = $state("");
+  let displayName: string = $state("");
   let tenantId: string = $state("");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
@@ -110,6 +111,8 @@
         const user: User = await client.users.get(userId);
         existingUser = user;
         username = user.username;
+        email = user.email ?? "";
+        displayName = user.name ?? "";
         // Never allow tenantId to become undefined — TenantSelect's
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
@@ -146,6 +149,7 @@
           ...(email.trim() !== ""
             ? { email: email.trim() }
             : { withoutEmailLoginKey: true }),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -154,6 +158,8 @@
         await client.users.update({
           id: userId!,
           username: username.trim(),
+          ...(email.trim() === "" ? {} : { email: email.trim() }),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           roleIds: selectedRoleIds,
         });
         showToast("success", `User "${username}" updated`);
@@ -334,19 +340,30 @@
               />
             </label>
 
-            {#if isCreate}
-              <!-- Email (the user's email login key; blank = none) -->
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Email</span></div>
-                <input
-                  type="email"
-                  class="input input-bordered input-sm w-full"
-                  placeholder="Enter email (blank: no email login)"
-                  data-testid="user-email"
-                  bind:value={email}
-                />
-              </label>
-            {/if}
+            <!-- Email (the user's email login key; blank at create = none) -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Email</span></div>
+              <input
+                type="email"
+                class="input input-bordered input-sm w-full"
+                placeholder="Enter email (blank: no email login)"
+                data-testid="user-email"
+                bind:value={email}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
+            <!-- Display name -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Display Name</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="Optional display name"
+                bind:value={displayName}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
 
             <!-- Tenant ID -->
             <label class="form-control w-full" for="user-detail-tenant">
