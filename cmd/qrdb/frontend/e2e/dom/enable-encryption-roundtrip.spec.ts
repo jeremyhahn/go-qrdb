@@ -73,6 +73,8 @@ test.afterEach(async () => {
 });
 
 test("none -> passphrase migration through the Seal Manager preserves data", async ({ page }) => {
+  // The migration wait alone (MIGRATE_TIMEOUT) exceeds the 30 s default.
+  test.setTimeout(3 * MIGRATE_TIMEOUT);
   await page.goto(UI_BASE_URL);
   await expect(page.getByText("Seal Manager")).toBeVisible({ timeout: LOAD_TIMEOUT });
 
