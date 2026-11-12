@@ -509,8 +509,25 @@ export async function startCluster(
 /** Stops all cluster nodes and removes their data + cert directories. */
 export async function stopCluster(cluster: DomCluster | null): Promise<void> {
   if (cluster === null) return;
-  for (const p of cluster.procs) p.kill("SIGTERM");
-  await new Promise((r) => setTimeout(r, 600));
+  // Wait for every node to exit so the next fixture can bind the fixed
+  // ports; a node still running after 15 s is killed.
+  await Promise.all(
+    cluster.procs.map(
+      (p) =>
+        new Promise<void>((resolve) => {
+          if (p.exitCode !== null || p.signalCode !== null) {
+            resolve();
+            return;
+          }
+          const timer = setTimeout(() => p.kill("SIGKILL"), 15_000);
+          p.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          p.kill("SIGTERM");
+        }),
+    ),
+  );
   for (const dir of [...cluster.dataDirs, cluster.certDir]) {
     try {
       rmSync(dir, { recursive: true, force: true });
