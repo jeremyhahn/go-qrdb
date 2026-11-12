@@ -444,3 +444,28 @@ func (s *qrdbServiceServer) authorizeTenantRequest(tenantID string, decide func(
 	}
 	return nil
 }
+
+// operatorTenantContext is the tenant qualifier of an identity-record RPC
+// (users, roles, credentials): when tenantID names another tenant than the
+// caller's, the caller is the platform operator acting on that tenant's
+// records, admitted by authmw.AuthorizeOperatorIdentityAccess under perm and
+// the tenant's isolation policy, and audited in both trails. It returns the
+// context the RPC runs under.
+func (s *qrdbServiceServer) operatorTenantContext(ctx context.Context, tenantID string, perm permission.Permission) (context.Context, error) {
+	if tenantID == "" {
+		return ctx, nil
+	}
+	if err := tenant.ValidateTenantIDShape(tenantID); err != nil {
+		return nil, mapServiceError(err)
+	}
+	if s.authMW == nil {
+		// No auth chain: no operator identity to admit; the identity
+		// service's own tenant check decides.
+		return ctx, nil
+	}
+	out, err := s.authMW.AuthorizeOperatorIdentityAccess(ctx, tenantID, perm)
+	if err != nil {
+		return nil, authmw.GRPCError(err, codes.PermissionDenied)
+	}
+	return out, nil
+}

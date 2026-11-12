@@ -20,6 +20,7 @@ import (
 	"time"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -464,6 +465,10 @@ func (s *Server) handleListUsers(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, err := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.userSvc.ListUsers(ctx, &user.ListUsersRequest{
 		TenantID: req.TenantID,
 		Page:     req.Page,

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -201,7 +202,11 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	ctx, ok := s.operatorTenantContext(r.Context(), w, listReq.TenantID, permission.UsersReadTenant)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiRequestTimeout)
 	defer cancel()
 
 	resp, err := s.userSvc.ListUsers(ctx, listReq)

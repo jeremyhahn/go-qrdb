@@ -234,6 +234,10 @@ func (s *qrdbServiceServer) ListUsers(ctx context.Context, req *pb.ListUsersRequ
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "user"})
 	}
 
+	ctx, err := s.operatorTenantContext(ctx, req.GetTenantId(), permission.UsersReadTenant)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.userSvc.ListUsers(ctx, &user.ListUsersRequest{
 		TenantID: req.GetTenantId(),
 		Page:     int(req.GetPage()),
@@ -410,6 +414,10 @@ func (s *qrdbServiceServer) ListRoles(ctx context.Context, req *pb.ListRolesRequ
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
+	ctx, err := s.operatorTenantContext(ctx, req.GetTenantId(), permission.RolesReadTenant)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.roleSvc.ListRoles(ctx, &role.ListRolesRequest{
 		TenantID: req.GetTenantId(),
 		Page:     int(req.GetPage()),

@@ -499,6 +499,10 @@ func (s *Server) handleListRoles(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, err := s.operatorTenantContext(ctx, req.TenantID, permission.RolesReadTenant)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.roleSvc.ListRoles(ctx, &role.ListRolesRequest{
 		TenantID: req.TenantID,
 		Page:     req.Page,

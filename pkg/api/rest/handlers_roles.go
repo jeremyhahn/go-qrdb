@@ -197,7 +197,11 @@ func (s *Server) handleListRoles(w http.ResponseWriter, r *http.Request) {
 		listReq.PageSize = pageSize
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
+	ctx, ok := s.operatorTenantContext(r.Context(), w, listReq.TenantID, permission.RolesReadTenant)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiRequestTimeout)
 	defer cancel()
 
 	resp, err := s.roleSvc.ListRoles(ctx, listReq)
