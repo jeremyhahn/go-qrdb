@@ -128,6 +128,10 @@ function writeClusterConfig(path: string): void {
     '  wire_codec: "json"',
     "seal:",
     "  enabled: false",
+    // auth off: without a seal the server cannot hold credentials, and the
+    // topology UI under test needs no login.
+    "auth:",
+    "  enabled: false",
   ];
   writeFileSync(path, lines.join("\n") + "\n", { mode: 0o600 });
 }
@@ -186,6 +190,14 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
   const peersFlag = NODE_PORTS.slice(0, nodeCount)
     .map((p, i) => `${i + 1}=127.0.0.1:${p.raft}`)
     .join(",");
+  // Static peers must each list every replica's Raft member identity
+  // (spki:<sha256-hex>), which qrdbd node-identity derives from the cert.
+  const identitiesFlag = nodeCerts
+    .map((c, i) => {
+      const id = execFileSync(qrdbdBin(), ["node-identity", "--cert", c.certPath]).toString().trim();
+      return `${i + 1}=${id}`;
+    })
+    .join(",");
 
   const procs: ChildProcess[] = [];
   const dataDirs: string[] = [];
@@ -210,6 +222,7 @@ export async function startCluster(nodeCount = 3): Promise<DomCluster> {
       "--tls-client-auth=none",
       "--discovery", "static",
       "--peers", peersFlag,
+      "--member-identities", identitiesFlag,
       "--shard-id", "1",
       "--replica-id", String(i + 1),
       "--cluster-trust-domain", CLUSTER_TRUST_DOMAIN,
