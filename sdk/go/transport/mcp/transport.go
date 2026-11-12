@@ -1101,6 +1101,7 @@ type serverShardInfo struct {
 // the text content from the first TextContent result. If the result
 // contains an error (IsError=true), a toolResultError is returned.
 func (t *Transport) callTool(ctx context.Context, tool string, args map[string]any) (string, error) {
+	args = transport.QualifyArgs(ctx, tool, args, "qrdb_user_", "qrdb_role_")
 	// Carry the database scope on data-plane tool calls so the server resolves
 	// the request against the correct (tenant, database) keyspace.
 	if t.database != "" && isDataPlaneTool(tool) {

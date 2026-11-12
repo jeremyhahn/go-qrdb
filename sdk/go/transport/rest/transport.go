@@ -989,9 +989,9 @@ func (t *Transport) ReplicaStates(ctx context.Context, shardID uint64) (*transpo
 // base transport unchanged.
 func (t *Transport) scopedRoundTripper() http.RoundTripper {
 	if t.activeDatabase == "" {
-		return t.baseRT
+		return transport.TenantRoundTripper(t.baseRT)
 	}
-	return &dbHeaderRoundTripper{base: t.baseRT, database: t.activeDatabase}
+	return transport.TenantRoundTripper(&dbHeaderRoundTripper{base: t.baseRT, database: t.activeDatabase})
 }
 
 // WithDatabase returns a database-scoped clone of the transport. The clone

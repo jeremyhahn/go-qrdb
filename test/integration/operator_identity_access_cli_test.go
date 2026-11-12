@@ -5,6 +5,7 @@ package integration_test
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -41,9 +42,22 @@ func TestOperatorIdentityAccess_CLI_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] operator roles list --tenant-id %s under operator-access: %v\noutput: %s", proto.name, tenantID, err, out)
 			}
 			// A write: the operator creates a user in the tenant.
-			if out, err := runCLIProto(t, open, proto, "users", "create", "--tenant-id", tenantID,
-				"--username", "opwrite", "--without-email-login-key"); err != nil {
-				t.Fatalf("[%s] operator users create --tenant-id %s under operator-access: %v\noutput: %s", proto.name, tenantID, err, out)
+			created, err := runCLIProto(t, open, proto, "users", "create", "--tenant-id", tenantID,
+				"--username", "opwrite", "--without-email-login-key")
+			if err != nil {
+				t.Fatalf("[%s] operator users create --tenant-id %s under operator-access: %v\noutput: %s", proto.name, tenantID, err, created)
+			}
+			m := regexp.MustCompile(`(?m)^ID:\s+(\d+)`).FindStringSubmatch(created)
+			if m == nil {
+				t.Fatalf("[%s] users create printed no ID: %s", proto.name, created)
+			}
+			// By-id verbs: the operator reads and disables the user it made.
+			got, err := runCLIProto(t, open, proto, "users", "get", "--tenant-id", tenantID, m[1])
+			if err != nil || !strings.Contains(got, "opwrite") {
+				t.Fatalf("[%s] operator users get --tenant-id %s %s = (%v) %s, want the user", proto.name, tenantID, m[1], err, got)
+			}
+			if out, err := runCLIProto(t, open, proto, "users", "disable", "--tenant-id", tenantID, m[1]); err != nil {
+				t.Fatalf("[%s] operator users disable --tenant-id %s %s under operator-access: %v\noutput: %s", proto.name, tenantID, m[1], err, out)
 			}
 			trails := operatorAccessTrails(t, open, proto, tenantID, adminCert, adminKey)
 			if !trails[tenantID] {
@@ -67,6 +81,10 @@ func TestOperatorIdentityAccess_CLI_PerProtocol(t *testing.T) {
 				"--username", "opwrite", "--without-email-login-key")
 			if err == nil || !strings.Contains(out, "strict") {
 				t.Fatalf("[%s] operator users create in a strict tenant = (%v) %s, want refused naming strict", proto.name, err, out)
+			}
+			out, err = runCLIProto(t, strict, proto, "users", "get", "--tenant-id", strictID, "1")
+			if err == nil || !strings.Contains(out, "strict") {
+				t.Fatalf("[%s] operator users get by id in a strict tenant = (%v) %s, want refused naming strict", proto.name, err, out)
 			}
 		})
 	}
