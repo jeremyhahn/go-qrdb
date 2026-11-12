@@ -214,6 +214,7 @@ test("passphrase: a wrong passphrase shows a friendly error and stays sealed, th
 
 test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)", async ({
   page,
+  request,
 }) => {
   // -------------------------------------------------------------------------
   // Step 1: Initialize via wizard.
@@ -252,6 +253,20 @@ test("passphrase: full-screen sealed gate shows mode-aware Unseal button (Bug 3)
   // -------------------------------------------------------------------------
   // Step 3: Reload the page — the full-screen sealed gate must appear.
   // -------------------------------------------------------------------------
+  // The app reads the seal state once on load: reload only after the server
+  // itself reports sealed, or the reload races the seal and opens the shell.
+  await expect
+    .poll(
+      async () => {
+        const res = await request.get(`${daemon!.adminUrl}/v1/barrier/status`, {
+          ignoreHTTPSErrors: true,
+        });
+        if (res.status() !== 200) return false;
+        return ((await res.json()) as { sealed?: boolean }).sealed === true;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
   await page.reload();
   await expect(
     page.getByRole("heading", { name: "QRDB is Sealed" }),
