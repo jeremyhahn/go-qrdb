@@ -56,6 +56,50 @@ func TestHandleBatchImportBegin_Success(t *testing.T) {
 	}
 }
 
+// A begin that names a collection is refused, as the desktop binding
+// refuses it, and opens no session: nothing is imported into KV instead.
+func TestHandleBatchImportBegin_CollectionRefused(t *testing.T) {
+	called := false
+	batchSvc := &mockBatchService{
+		importBeginFn: func(_ context.Context, _ service.ImportOptions) (string, error) {
+			called = true
+			return "sess-should-not-open", nil
+		},
+	}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
+
+	body := `{"format":"json","key_field":"id","collection":"people"}`
+	req := httptest.NewRequest(http.MethodPost, "/batch/import/begin", bytes.NewReader([]byte(body)))
+	rr := httptest.NewRecorder()
+	srv.handleBatchImportBegin(rr, req)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if called {
+		t.Fatal("ImportBegin was called for a collection-targeted import")
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("people")) {
+		t.Errorf("error body does not name the collection: %s", rr.Body.String())
+	}
+}
+
+// An empty collection field is the KV import it always was.
+func TestHandleBatchImportBegin_EmptyCollectionIsKV(t *testing.T) {
+	batchSvc := &mockBatchService{
+		importBeginFn: func(_ context.Context, _ service.ImportOptions) (string, error) {
+			return "sess-kv", nil
+		},
+	}
+	srv := NewServer(&mockKVService{}, &mockAdminService{}, ":0", WithBatch(batchSvc))
+	req := httptest.NewRequest(http.MethodPost, "/batch/import/begin", bytes.NewReader([]byte(`{"format":"json","collection":""}`)))
+	rr := httptest.NewRecorder()
+	srv.handleBatchImportBegin(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHandleBatchImportBegin_ServiceError(t *testing.T) {
 	batchSvc := &mockBatchService{
 		importBeginFn: func(context.Context, service.ImportOptions) (string, error) {
