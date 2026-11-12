@@ -539,6 +539,44 @@ func deliverTenantKeyToReplicaWithRetry(ctx context.Context, deliverer KeyDistri
 //     means the caller must fail the whole operation; unlike keyDeliveryErr,
 //     nothing else in the system retries a config change AddObserver itself
 //     reported as failed.
+//
+// PlacementServingSet returns the scheduler's serving-set lookup over the
+// replicated placement table (placement.WithServingSet). An isolated
+// tenant's serving set is the set of nodes hosting its home group
+// (database.TenantHomeName); a tenant with no home group (a shared tenant)
+// and the home group itself are unconfined. A table read failure fails the
+// placement closed.
+func PlacementServingSet(ps *placement.Store) placement.ServingSetFunc {
+	return func(ctx context.Context, tenantID, name string) ([]string, bool, error) {
+		if ps == nil || database.IsTenantHome(name) {
+			return nil, false, nil
+		}
+		home, err := ps.Get(ctx, tenantID, database.TenantHomeName)
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		nodes := make([]string, 0, len(home.Replicas))
+		for _, r := range home.Replicas {
+			nodes = append(nodes, r.RaftAddr)
+		}
+		return nodes, true, nil
+	}
+}
+
+// checkReplicaInServingSet refuses a replica of current on raftAddr with
+// *placement.ServingSetError when current belongs to an isolated tenant
+// whose serving set does not contain raftAddr.
+func checkReplicaInServingSet(ctx context.Context, ps *placement.Store, current *placement.Placement, raftAddr string) error {
+	nodes, confined, err := PlacementServingSet(ps)(ctx, current.TenantID, current.Database)
+	if err != nil || !confined {
+		return err
+	}
+	return placement.CheckServingSet(nodes, current.TenantID, current.Database, raftAddr)
+}
+
 func addObserverReplica(
 	ctx context.Context,
 	raftHost RaftHost,
@@ -554,6 +592,11 @@ func addObserverReplica(
 	// it was, so no reconciler starts a shard there.
 	if aerr := admitReplica(raftHost, current.ShardID, r.RaftAddr); aerr != nil {
 		return current, nil, false, aerr
+	}
+	// An isolated tenant's group never gains a replica outside its serving
+	// set, whichever path chose the node (scale-out, rebalance MOVE).
+	if serr := checkReplicaInServingSet(ctx, ps, current, r.RaftAddr); serr != nil {
+		return current, nil, false, serr
 	}
 	updated = clonePlacementWithReplica(current, r)
 	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, updated)

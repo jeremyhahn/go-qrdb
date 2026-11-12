@@ -644,6 +644,9 @@ var placementRules = []rule{
 	// Within quota, but the cluster has no free node: retryable once capacity
 	// changes, which a quota refusal is not.
 	as(&placement.InsufficientNodesError{}, Unavailable),
+	// An isolated tenant's group needs a node outside its serving set: the
+	// serving set must grow first; a retry alone never succeeds.
+	as(&placement.ServingSetError{}, FailedPrecondition),
 	as(&service.ReplicaFloorError{}, InvalidArgument),
 	as(&service.NotDedicatedRaftDatabaseError{}, InvalidArgument),
 	// The dedicated shard's leader was not stable within the wait bound.
