@@ -34,7 +34,9 @@ export default ts.config(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_", caughtErrorsIgnorePattern: "^_" },
       ],
-      "svelte/no-useless-mustaches": "error",
+      // A mustache around a literal with an escape (placeholder={"a\nb"}) is
+      // not useless: as a plain attribute the "\n" would render verbatim.
+      "svelte/no-useless-mustaches": ["error", { ignoreStringEscape: true }],
       "svelte/require-each-key": "error",
       "svelte/no-useless-children-snippet": "error",
       // Off by ruling 109: the rule asks for SvelteMap/SvelteSet in place of the
