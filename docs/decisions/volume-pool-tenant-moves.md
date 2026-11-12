@@ -22,7 +22,12 @@ move it to a larger pool has to delete and recreate the tenant.
 `MoveTenant(ctx, tenantID, toPool) (*Move, error)` and
 `GetMove(ctx, tenantID) (*Move, error)`, with `volume.Move` holding
 `TenantID`, `FromPool`, `ToPool`, `State`, `NodesCopied`, `NodesPending` and
-`Error`. This record decides what sits behind it.
+`Error`. This record decides what sits behind it. No other per-node field
+is added: `NodesCopied` is the durable record of which directory is
+authoritative for a node until cut over. A node in `NodesCopied` opens the
+tenant from the destination pool; a node not in it (still in `NodesPending`,
+or removed from `NodesCopied` by an abort) opens it from the source pool, as
+the assignment says.
 
 The move has to keep every rule the feature already has:
 
@@ -101,37 +106,48 @@ the typed reason in `Error`.
   directory is stale: it lacks every write the node acknowledged after it
   resumed. The abort therefore never simply reopens the source. One
   `NodesCopied` node at a time (as in step 2), the node quiesces its replica
-  (closes its destination stores; the others keep quorum) and then:
-  - **(a) Multi-replica tenant.** It reopens from the source directory and
-    catches up from the group, the same restart catch-up step 3 relies on.
-    Every write it acknowledged is held by a quorum of the other replicas,
-    none of which is rolled back at the same time. Because its log has gone
-    back, the replica rejoins as a non-voting member and is promoted only
-    once caught up, so it never votes or counts toward a commit while it
-    lacks entries it once acknowledged; if go-quicraft cannot demote a
-    replica in place, the multi-replica case uses (b) as well.
+  (closes its destination stores; the others keep quorum) and, while it stays
+  quiesced, makes the source authoritative:
+  - **(a) Multi-replica tenant.** The source directory needs no copy: every
+    write the node acknowledged is held by a quorum of the other replicas,
+    none of which is rolled back at the same time, and the node catches up
+    from the group after it reopens, the same restart catch-up step 3 relies
+    on. Because its log goes back, the replica is first demoted to a
+    non-voting member (a membership change committed in the group), so it
+    never votes or counts toward a commit while it lacks entries it once
+    acknowledged; it is promoted only once caught up. If go-quicraft cannot
+    demote a replica in place, the multi-replica case uses (b) as well.
   - **(b) Single-replica tenant.** No other replica holds its writes, so the
-    node copies the destination directory back over the source directory,
-    verifies the copy as in Q4, and only then reopens from the source.
+    node copies the destination directory back over the source directory and
+    verifies the copy as in Q4.
 
-  The node then removes the destination directory through the inside-pool
-  guard on the destination pool and leaves `NodesCopied` with a CAS on the
-  journal; a node that crashes mid-abort redoes its abort step from the
-  start, opening from the destination until that CAS. When no node is left
-  in `NodesCopied`, the destination reservation is released and the journal
-  is deleted. Every write acknowledged before or during the move is on the
-  source when the abort ends, so the abort loses nothing. The alternative,
-  making a node's resume on the destination the point after which the move
-  only rolls forward, is not picked: it would leave cancel open only until
-  the first replica resumes (for a single-replica tenant, never after its one
-  step), and a later node whose destination pool turns unready would leave
+  Only then, still quiesced, the node leaves `NodesCopied` with a CAS on the
+  journal: that CAS durably records that the source is authoritative for the
+  node. After it, the node reopens the tenant from the source directory (for
+  (a), catching up as a non-voting member and promoted once caught up), and
+  last removes the destination directory through the inside-pool guard on
+  the destination pool. The destination is never deleted while the journal
+  still sends the node to it. A node that crashes before the CAS redoes its
+  abort step from the start at boot: it is still in `NodesCopied`, its
+  destination directory is intact, and a partial copy-back is simply
+  overwritten. A node that crashes after the CAS opens from the source per
+  the assignment and removes any leftover destination directory at boot.
+  When no node is left in `NodesCopied`, the destination reservation is
+  released and the journal is deleted. Every write acknowledged before or
+  during the move is on the source when the abort ends, so the abort loses
+  nothing. The alternative, making a node's resume on the destination the
+  point after which the move only rolls forward, is not picked: it would
+  leave cancel open only until the first replica resumes (for a
+  single-replica tenant, never after its one step), and a later node whose destination pool turns unready would leave
   the tenant split across two pools with no way back.
 - **A node that crashes mid-step** reads the journal at boot. A step that had
   not recorded `NodesCopied` is redone from the start: the partial
   destination directory is removed and the copy restarts. A node in
   `NodesCopied` opens the tenant from the destination pool, because the
   journal, not the assignment, says where that node's copy lives until cut
-  over. This is the only time a node resolves a tenant from anything but the
+  over. During `aborting`, a node no longer in `NodesCopied` opens the tenant
+  from the source pool and removes any destination directory left behind,
+  through the inside-pool guard; it never selects the destination. This is the only time a node resolves a tenant from anything but the
   assignment, and it is bounded by the journal's life.
 - **After cut over**, a node that fails to remove its source directory
   retries on the report interval; the move stays in `cutover` and `GetMove`
@@ -341,12 +357,22 @@ sleeps: every wait is on an observable state):
   single-replica `NodesCopied` node with writes made after it resumed on the
   destination: the destination is copied back over the source, a corrupted
   copy-back fails verify and the source is not reopened, and after reopen
-  every write acknowledged on the destination is readable from the source; a
-  crash injected mid-abort redoes the abort step at reopen.
+  every write acknowledged on the destination is readable from the source.
+  Crash injection in that abort step: after the copy-back verifies and before
+  the journal CAS, the node is still in `NodesCopied` at boot, redoes the
+  abort step and finds the destination intact; after the CAS and before the
+  destination is deleted, the node opens from the source and deletes the
+  destination at boot; after the deletion, the node opens from the source and
+  never selects the missing destination.
 - **Unit, the reconciler.** One replica offline at a time; bounded retry,
   then abort; leader change mid-move resumes from the journal; an abort
   returns `NodesCopied` nodes one at a time, and a multi-replica node
-  rejoins non-voting and is promoted only once caught up.
+  rejoins non-voting and is promoted only once caught up. The same three
+  crash points on the multi-replica (a) path: after the demotion and before
+  the CAS, the node redoes the abort step with its destination intact; after
+  the CAS and before deletion, it opens from the source as a non-voting
+  member, catches up, and deletes the destination at boot; after deletion, it
+  opens from the source and never selects the missing destination.
 - **Unit, keys.** A `Lockable` destination double that records `Unlock`
   calls: the move derives no key and calls `Unlock` on none; a sealed node's
   step waits and reports `StateLocked`.
