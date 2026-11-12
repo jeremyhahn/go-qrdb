@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -191,6 +192,222 @@ func TestWebTransport_SessionAndStreamUnderReplicaForwarding(t *testing.T) {
 	}
 	if err := <-echoed; err != nil {
 		t.Fatalf("handler: %v", err)
+	}
+}
+
+// dialWTPooled opens n WebTransport sessions on one QUIC connection to srv.
+// The client advertises session flow control, so the server admits more than
+// one session on the connection.
+func dialWTPooled(t *testing.T, srv *Server, pool *x509.CertPool, n int) []*webtransport.Session {
+	t.Helper()
+	// The CONNECT request's context is the session's, so it lives until the
+	// test ends.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+	qconn, err := quic.DialAddr(ctx, srv.Addr(), wtClientTLS(pool), &quic.Config{
+		EnableDatagrams:                  true,
+		EnableStreamResetPartialDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("quic.DialAddr: %v", err)
+	}
+	t.Cleanup(func() { _ = qconn.CloseWithError(0, "") })
+	tr := &webtransport.Transport{Config: &webtransport.Config{
+		MaxIncomingStreams:    16,
+		MaxIncomingUniStreams: 16,
+		MaxIncomingData:       1 << 20,
+	}}
+	t.Cleanup(func() { _ = tr.Close() })
+	cc, err := tr.NewClientConn(qconn)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	sessions := make([]*webtransport.Session, 0, n)
+	for i := range n {
+		resp, sess, err := cc.Dial(ctx, "https://"+srv.Addr()+wtTestPath, http.Header{"Authorization": []string{"Bearer good"}})
+		if resp != nil {
+			// The response body is the session stream: it closes with the test.
+			t.Cleanup(func() { _ = resp.Body.Close() })
+		}
+		if err != nil {
+			t.Fatalf("session %d: Dial: %v", i, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("session %d: status %d, want 200", i, resp.StatusCode)
+		}
+		t.Cleanup(func() { _ = sess.CloseWithError(0, "") })
+		sessions = append(sessions, sess)
+	}
+	return sessions
+}
+
+// pingDatagram sends payload on sess until a datagram comes back, and
+// returns it. Datagrams are unreliable, so each attempt waits a short while
+// before resending; ctx bounds the whole exchange.
+func pingDatagram(ctx context.Context, sess *webtransport.Session, payload string) ([]byte, error) {
+	for {
+		if err := sess.SendDatagram([]byte(payload)); err != nil {
+			return nil, err
+		}
+		attempt, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		got, err := sess.ReceiveDatagram(attempt)
+		cancel()
+		if err == nil {
+			return got, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("no datagram answered %q: %w", payload, context.Cause(ctx))
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+	}
+}
+
+// echoDatagrams answers every datagram sess receives with "echo:" and the
+// payload, calling record first, until the session ends.
+func echoDatagrams(sess *WebTransportSession, record func(string)) {
+	for {
+		b, err := sess.ReceiveDatagram(sess.Context())
+		if err != nil {
+			return
+		}
+		record(string(b))
+		if err := sess.SendDatagram(append([]byte("echo:"), b...)); err != nil {
+			return
+		}
+	}
+}
+
+func TestWebTransport_DatagramsBothWays(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	handler := func(sess *WebTransportSession, _ *auth.Identity, _ string) {
+		echoDatagrams(sess, func(p string) {
+			mu.Lock()
+			seen = append(seen, p)
+			mu.Unlock()
+		})
+	}
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, handler))
+	status, sess, err := dialWT(t, srv, pool, wtTestPath, "Bearer good")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status %d, want 200", status)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	got, err := pingDatagram(ctx, sess, "ping")
+	if err != nil {
+		t.Fatalf("datagram exchange: %v", err)
+	}
+	if string(got) != "echo:ping" {
+		t.Fatalf("datagram answered %q, want %q", got, "echo:ping")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("the handler received no datagram")
+	}
+	for _, p := range seen {
+		if p != "ping" {
+			t.Fatalf("the handler received %q, want only %q", p, "ping")
+		}
+	}
+}
+
+func TestWebTransport_PooledSessionsDatagramIsolation(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string][]string{}
+	handlerErr := make(chan error, 2)
+	handler := func(sess *WebTransportSession, _ *auth.Identity, _ string) {
+		// The client names each session on its first stream, which ties
+		// this server-side session to the client's.
+		ctx, cancel := context.WithTimeout(sess.Context(), 10*time.Second)
+		str, err := sess.AcceptStream(ctx)
+		cancel()
+		if err != nil {
+			handlerErr <- fmt.Errorf("AcceptStream: %w", err)
+			return
+		}
+		name, err := io.ReadAll(str)
+		if err != nil {
+			handlerErr <- fmt.Errorf("read the session name: %w", err)
+			return
+		}
+		handlerErr <- nil
+		echoDatagrams(sess, func(p string) {
+			mu.Lock()
+			seen[string(name)] = append(seen[string(name)], p)
+			mu.Unlock()
+		})
+	}
+	srv, pool := startWTServer(t, WithWebTransportHandler(wtTestPath, handler))
+	// Both Dials answered 200 on one connection: without negotiated flow
+	// control the second would be refused.
+	sessions := dialWTPooled(t, srv, pool, 2)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	names := []string{"A", "B"}
+	payloads := []string{"a", "b"}
+	for i, sess := range sessions {
+		str, err := sess.OpenStreamSync(ctx)
+		if err != nil {
+			t.Fatalf("session %s: OpenStreamSync: %v", names[i], err)
+		}
+		if _, err := str.Write([]byte(names[i])); err != nil {
+			t.Fatalf("session %s: write the name: %v", names[i], err)
+		}
+		if err := str.Close(); err != nil {
+			t.Fatalf("session %s: close the name stream: %v", names[i], err)
+		}
+	}
+	for range sessions {
+		select {
+		case err := <-handlerErr:
+			if err != nil {
+				t.Fatalf("handler: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("a session never reached the handler")
+		}
+	}
+
+	// Both sessions exchange datagrams at once.
+	results := make(chan error, len(sessions))
+	for i, sess := range sessions {
+		go func() {
+			want := "echo:" + payloads[i]
+			got, err := pingDatagram(ctx, sess, payloads[i])
+			if err == nil && string(got) != want {
+				err = fmt.Errorf("received %q, want only %q", got, want)
+			}
+			if err != nil {
+				err = fmt.Errorf("session %s: %w", names[i], err)
+			}
+			results <- err
+		}()
+	}
+	for range sessions {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, name := range names {
+		if len(seen[name]) == 0 {
+			t.Fatalf("server session %s received no datagram", name)
+		}
+		for _, p := range seen[name] {
+			if p != payloads[i] {
+				t.Fatalf("server session %s received %q, want only %q", name, p, payloads[i])
+			}
+		}
 	}
 }
 
