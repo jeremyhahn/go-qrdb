@@ -18,6 +18,7 @@
   import { onMount } from "svelte";
   import type { Component } from "svelte";
   import type {
+    AggFunc,
     Client,
     TSDataPoint,
     TSTag,
@@ -90,6 +91,34 @@
 
   // Detail panel for a single data point
   let selectedPoint: TimeSeriesRow | null = $state(null);
+
+  // AggFunc names, indexed by their numeric value (SDK AggFunc 0..8).
+  const AGG_FUNC_NAMES = [
+    "None",
+    "Avg",
+    "Sum",
+    "Min",
+    "Max",
+    "Count",
+    "Percentile",
+    "First",
+    "Last",
+  ] as const;
+
+  // Aggregate card
+  let aggFunction: number = $state(1);
+  let aggInterval: string = $state("1m");
+  let aggResults: { timestampNs: number; value: number; count: number }[] = $state([]);
+  let aggLoading: boolean = $state(false);
+  let aggRan: boolean = $state(false);
+
+  const aggChartData = $derived(
+    aggResults.map((b) => ({
+      timestamp: Math.round(b.timestampNs / 1_000_000),
+      value: b.value,
+      metric: `${selectedMetric ?? ""} ${AGG_FUNC_NAMES[aggFunction] ?? ""}`,
+    }))
+  );
 
   // ---------------------------------------------------------------------------
   // Column Definitions
@@ -200,9 +229,80 @@
     return tags;
   }
 
+  const DURATION_UNITS: { suffix: string; label: string; ns: number }[] = [
+    { suffix: "d", label: "days", ns: 86_400_000_000_000 },
+    { suffix: "h", label: "hours", ns: 3_600_000_000_000 },
+    { suffix: "m", label: "minutes", ns: 60_000_000_000 },
+    { suffix: "s", label: "seconds", ns: 1_000_000_000 },
+    { suffix: "ms", label: "milliseconds", ns: 1_000_000 },
+  ];
+
+  /**
+   * Parses a duration such as "90s", "5m", "2h", "7d", "250ms" or a bare
+   * number of nanoseconds. Returns null when empty or invalid.
+   */
+  function parseDurationNs(raw: string): number | null {
+    const s = raw.trim();
+    if (s === "") return null;
+    const m = /^(\d+(?:\.\d+)?)\s*(ns|ms|s|m|h|d)?$/.exec(s);
+    if (m === null) return null;
+    const n = parseFloat(m[1]);
+    const unit = m[2] ?? "ns";
+    if (unit === "ns") return Math.round(n);
+    const u = DURATION_UNITS.find((d) => d.suffix === unit);
+    return u ? Math.round(n * u.ns) : null;
+  }
+
+  /** Renders nanoseconds in the largest whole human unit ("2 hours"). */
+  function formatDurationNs(ns: number): string {
+    if (ns <= 0) return "0";
+    for (const u of DURATION_UNITS) {
+      if (ns >= u.ns) {
+        const v = ns / u.ns;
+        const shown = Number.isInteger(v) ? String(v) : v.toFixed(2);
+        return `${shown} ${u.label}`;
+      }
+    }
+    return `${ns} ns`;
+  }
+
+  function errMessage(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
+
+  async function runAggregate(): Promise<void> {
+    if (selectedMetric === null) return;
+    const intervalNs = parseDurationNs(aggInterval);
+    if (aggInterval.trim() !== "" && intervalNs === null) {
+      showToast("warning", "Interval must be a duration like 30s, 5m, 1h or 1d.");
+      return;
+    }
+    aggLoading = true;
+    try {
+      const resp = await client.timeSeries!.aggregate({
+        metric: selectedMetric,
+        startNs: rangeStartMs * 1_000_000,
+        endNs: rangeEndMs * 1_000_000,
+        function: aggFunction as AggFunc,
+        ...(intervalNs !== null ? { intervalNs } : {}),
+      });
+      aggResults = (resp?.results ?? []).map((r) => ({
+        timestampNs: r.timestampNs,
+        value: r.value,
+        count: r.count,
+      }));
+      aggRan = true;
+    } catch (err: unknown) {
+      showToast("error", errMessage(err));
+      aggResults = [];
+    } finally {
+      aggLoading = false;
+    }
+  }
 
   async function loadMetrics(): Promise<void> {
 
@@ -568,6 +668,78 @@
       pageSize={10}
       emptyMessage="No data points found"
     />
+
+    <!-- Aggregate -->
+    <div class="surface-panel mt-4 rounded-xl p-5" data-testid="ts-aggregate-card">
+      <h3 class="mb-3 text-sm font-semibold">Aggregate</h3>
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="form-control">
+          <div class="label"><span class="label-text">Function</span></div>
+          <select
+            class="select select-bordered select-sm"
+            bind:value={aggFunction}
+            data-testid="ts-agg-function"
+          >
+            {#each AGG_FUNC_NAMES as name, i (name)}
+              <option value={i}>{name}</option>
+            {/each}
+          </select>
+        </label>
+        <label class="form-control">
+          <div class="label"><span class="label-text">Interval</span></div>
+          <input
+            type="text"
+            class="input input-bordered input-sm w-28 font-mono"
+            placeholder="1m"
+            bind:value={aggInterval}
+            data-testid="ts-agg-interval"
+          />
+        </label>
+        <button
+          class="btn btn-sm btn-primary"
+          onclick={runAggregate}
+          disabled={aggLoading}
+          data-testid="ts-agg-run"
+        >
+          {#if aggLoading}<span class="loading loading-spinner loading-xs"></span>{/if}
+          Aggregate
+        </button>
+        {#if parseDurationNs(aggInterval) !== null}
+          <div class="text-xs text-base-content/50">
+            {formatDurationNs(parseDurationNs(aggInterval) ?? 0)}
+            <div class="font-mono">{parseDurationNs(aggInterval)} ns</div>
+          </div>
+        {/if}
+      </div>
+      <p class="mt-2 text-xs text-base-content/50">Uses the selected time range.</p>
+
+      {#if aggRan}
+        {#if aggResults.length === 0}
+          <p class="mt-3 text-sm text-base-content/60" data-testid="ts-agg-empty">No buckets.</p>
+        {:else}
+          <div class="mt-4">
+            <TimeSeriesChart data={aggChartData} chartType="line" height={200} accentColor="#a78bfa" />
+          </div>
+          <table class="table table-sm mt-3" data-testid="ts-agg-results">
+            <thead>
+              <tr><th>Bucket</th><th class="text-right">Value</th><th class="text-right">Count</th></tr>
+            </thead>
+            <tbody>
+              {#each aggResults as b (b.timestampNs)}
+                <tr>
+                  <td class="font-mono text-xs">
+                    {formatTimestamp(b.timestampNs / 1_000_000)}
+                    <div class="text-base-content/40">{b.timestampNs} ns</div>
+                  </td>
+                  <td class="text-right font-mono" data-testid="ts-agg-value">{b.value}</td>
+                  <td class="text-right font-mono">{b.count}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      {/if}
+    </div>
   {/if}
 
 <!-- Data Point Detail SlidePanel -->
