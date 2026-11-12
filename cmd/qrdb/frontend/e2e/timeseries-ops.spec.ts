@@ -311,14 +311,14 @@ function seriesLines(base: number): string[] {
 test.describe("TimeSeries operations", () => {
   test.use({ mockState: tsState });
 
-  test("single write saves through write", async ({ page }) => {
+  test("single write saves through writePoint", async ({ page }) => {
     await injectStatefulTimeSeriesBinding(page);
     await navigateToTimeSeries(page);
 
     await writePointViaUI(page, "ops.single", "12.5", ns(minuteBase()));
     await expect(page.getByText('Data point written for "ops.single"')).toBeVisible({ timeout: 5_000 });
-    expect(await bindingCalls(page)).toContain("Write");
-    expect(await bindingCalls(page)).not.toContain("WritePoint");
+    expect(await bindingCalls(page)).toContain("WritePoint");
+    expect(await bindingCalls(page)).not.toContain("Write");
 
     await openMetric(page, "ops.single");
     await expect(page.getByText("1 data points")).toBeVisible({ timeout: 5_000 });

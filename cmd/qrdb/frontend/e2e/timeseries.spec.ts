@@ -676,7 +676,7 @@ test.describe("TimeSeries Error Handling", () => {
     await navigateToTimeSeries(page);
 
     // Inject error for WritePoint after page load
-    await injectError(page, "TimeSeriesBinding.Write", "storage write failed");
+    await injectError(page, "TimeSeriesBinding.WritePoint", "storage write failed");
 
     const now = Date.now();
     const tsNs = String(now * 1_000_000);
@@ -686,7 +686,7 @@ test.describe("TimeSeries Error Handling", () => {
       timeout: 5_000,
     });
 
-    await clearError(page, "TimeSeriesBinding.Write");
+    await clearError(page, "TimeSeriesBinding.WritePoint");
   });
 
   test("list metrics error shows error toast", async ({ page }) => {

@@ -295,12 +295,12 @@ test.describe("TimeSeries Advanced", () => {
     await injectStatefulTimeSeriesBinding(page);
     await navigateToTimeSeries(page);
 
-    await injectError(page, "TimeSeriesBinding.Write", "write quota exceeded");
+    await injectError(page, "TimeSeriesBinding.WritePoint", "write quota exceeded");
 
     await writePointViaUI(page, "err.metric", "1.0");
     await expect(page.getByText("write quota exceeded")).toBeVisible({ timeout: 5_000 });
 
-    await clearError(page, "TimeSeriesBinding.Write");
+    await clearError(page, "TimeSeriesBinding.WritePoint");
   });
 
   test("error on delete series shows error toast", async ({ page }) => {

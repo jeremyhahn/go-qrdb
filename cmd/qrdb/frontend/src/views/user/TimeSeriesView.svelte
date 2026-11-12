@@ -599,7 +599,7 @@
         timestampNs: ts,
         ...(tags.length > 0 ? { tags } : {}),
       };
-      await client.timeSeries!.write(point);
+      await client.timeSeries!.writePoint(point);
       showToast("success", `Data point written for "${writeMetric}".`);
       showWritePanel = false;
 

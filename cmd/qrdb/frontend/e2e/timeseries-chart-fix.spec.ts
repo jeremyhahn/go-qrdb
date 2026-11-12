@@ -91,6 +91,15 @@ async function injectStatefulTimeSeriesBinding(
             tags: point["tags"] as { key: string; value: string }[] | undefined,
           });
         },
+        WritePoint: async (point: Record<string, unknown>) => {
+          maybeReject("TimeSeriesBinding.WritePoint");
+          tsPoints.push({
+            metric: point["metric"] as string,
+            value: point["value"] as number,
+            timestampNs: (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number,
+            tags: point["tags"] as { key: string; value: string }[] | undefined,
+          });
+        },
 
         WriteBatch: async (points: TSDataPoint[]) => {
           maybeReject("TimeSeriesBinding.WriteBatch");
