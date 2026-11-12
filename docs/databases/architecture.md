@@ -282,7 +282,7 @@ Node configuration keeps only what is genuinely a property of the node:
 |---|---|
 | run mode (`raft` / `standalone`) | whether the node hosts Raft groups at all |
 | control-plane store — `raft.sm_type` / `raft.sm_storage` (raft mode), `storage.backend` (standalone) | the store that holds the system tenant's catalog, users, tenants, placement and the system database; **never** another database's data |
-| `database_defaults` — `backend`, `replicas`, `raft.clusterMode`, `raft.state_storage` (not yet configuration keys; `database.Defaults` holds the four fields) | filled into a database record at creation when the caller left the field empty; never consulted again for that database |
+| `database_defaults` — `backend`, `replicas`, `raft.clusterMode`, `raft.state_storage` ([configuration](../12-configuration.md#database_defaults); `database.DefaultsFromConfig` converts them to `database.Defaults`) | filled into a database record at creation when the caller left the field empty; never consulted again for that database. `raft.state_storage` has no field in the record yet and is applied at binding resolution |
 | `storage.objstore` provider profiles and credentials | how the node reaches an object store; a database chooses `objstore`, the node supplies the credentials |
 | `storage.volume_pools` | where volume and raft tenants' data roots are allocated |
 | Raft tuning, data directory root, listeners | unchanged |
