@@ -424,7 +424,7 @@ func testDatabaseBarrierOverProtocol(t *testing.T, node *multiProtoNode, proto m
 
 	out, err := runCLIProto(t, node, proto, "database", "create", dbName,
 		"--data-dir", dataDir,
-		"--barrier-enabled",
+		"--backend", "pebble", "--barrier-enabled",
 		"--barrier-strategy", "passphrase",
 		"--barrier-passphrase", passphrase,
 	)
