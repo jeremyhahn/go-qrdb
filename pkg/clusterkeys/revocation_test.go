@@ -361,22 +361,20 @@ func TestHandler_RevocationCheckedAfterSAN(t *testing.T) {
 // Receiver: end-to-end, against a delivery that would otherwise succeed
 // ---------------------------------------------------------------------------
 
-// revocationRoundTrip runs a complete self-managed distribution from a
-// leader to a follower over an httptest server that presents the leader's
-// certificate as the verified TLS peer, and reports whether the follower ended
-// up holding the tenant key.
+// revocationRoundTrip seals an envelope from a leader to a follower over an
+// httptest server that presents the leader's certificate as the verified TLS
+// peer, and returns the receiver's HTTP status and body.
 //
 // It exists so the refused case and the admitted case differ in EXACTLY one
-// input — the receiver's revocation option — and are compared on the outcome
-// that matters (does the follower hold the key?) rather than on a status code.
-func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.RevocationChecker) (*seal.BarrierRegistry, error) {
+// input — the receiver's revocation option. No tenant root key is ever
+// shipped, so an admitted envelope clears every transport gate and is then
+// refused at the mode dispatch (400 unknown delivery mode); a revoked
+// delivering node is refused before it.
+func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.RevocationChecker) (*seal.BarrierRegistry, int, string) {
 	t.Helper()
 	ctx := context.Background()
 
-	leaderReg, leaderAlloc := newTestRegistry(t)
-	initTestSystemBarrier(t, leaderReg)
 	leaderDataRoot := t.TempDir()
-	leaderBarrier := initLeaderTenant(t, leaderReg, leaderAlloc, tenantID)
 
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
@@ -425,14 +423,22 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 	// leader.cert is the peer the receiver sees; a test revoking it must build
 	// its checker from this same certificate, which is why the helper hands the
 	// option in rather than the certificate out.
-	return followerReg, sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1")
+	status, body := postSealedEnvelope(ctx, t, sender, srv, distPlacement.Replicas[1], keydelivery.Meta{
+		TenantID:     tenantID,
+		Database:     "db-main",
+		ShardID:      1,
+		ReplicaID:    2,
+		TargetNodeID: "follower-node-1",
+		Mode:         keydelivery.ModeSelfManaged,
+	})
+	return followerReg, status, body
 }
 
-// TestRoundTrip_RevokedLeader_KeyNotImported is the mutation-visible pair, run
-// end to end: an otherwise-valid self-managed delivery, refused because the
-// delivering node's certificate is revoked, with the follower's tenant barrier
-// left absent rather than merely a non-200 on the wire.
-func TestRoundTrip_RevokedLeader_KeyNotImported(t *testing.T) {
+// TestRoundTrip_RevokedLeader_Refused is the mutation-visible pair, run end
+// to end: an otherwise-valid envelope, refused because the delivering node's
+// certificate is revoked -- before the mode dispatch -- with nothing
+// registered on the follower.
+func TestRoundTrip_RevokedLeader_Refused(t *testing.T) {
 	// The certificate the injector presents is minted inside the helper, so
 	// this revokes by SUBJECT rather than by serial: every leader-node-1
 	// certificate the helper's CA issues counts as revoked. Serial-keyed
@@ -440,31 +446,23 @@ func TestRoundTrip_RevokedLeader_KeyNotImported(t *testing.T) {
 	// TestFormatSerialAgreement.
 	checker := &subjectRevocationChecker{subject: "leader-node-1"}
 
-	followerReg, err := revocationRoundTrip(t, "tenant-revoked",
-		checker)
-	if err == nil {
-		t.Fatal("DistributeTenantKey succeeded against a revoked delivering node")
+	followerReg, status, body := revocationRoundTrip(t, "tenant-revoked", checker)
+	if status == http.StatusOK || strings.Contains(body, "unknown delivery mode") {
+		t.Fatalf("status %d body %q; want a revocation refusal before the mode dispatch", status, body)
 	}
 	if _, gerr := followerReg.GetTenant("tenant-revoked"); gerr == nil {
-		t.Error("follower holds the tenant key after a delivery from a revoked node")
+		t.Error("follower registered a tenant barrier from a revoked node's delivery")
 	}
 }
 
-// TestRoundTrip_NoChecker_KeyImported is the same distribution with the option
-// omitted. It documents the pre-change behaviour precisely: the revoked node's
-// delivery is accepted and the follower's tenant barrier is registered, holding
-// the imported blob sealed until its owner unseals it.
-func TestRoundTrip_NoChecker_KeyImported(t *testing.T) {
-	followerReg, err := revocationRoundTrip(t, "tenant-unchecked", nil)
-	if err != nil {
-		t.Fatalf("DistributeTenantKey: %v", err)
-	}
-	tb, gerr := followerReg.GetTenant("tenant-unchecked")
-	if gerr != nil {
-		t.Fatalf("GetTenant: %v", gerr)
-	}
-	if !tb.IsSealed() {
-		t.Error("follower tenant barrier must remain sealed after a self-managed import")
+// TestRoundTrip_NoChecker_ReachesModeDispatch is the same envelope with the
+// option omitted: every transport gate admits it, and the mode dispatch
+// refuses it because no tenant root key is ever shipped.
+func TestRoundTrip_NoChecker_ReachesModeDispatch(t *testing.T) {
+	followerReg, status, body := revocationRoundTrip(t, "tenant-unchecked", nil)
+	assertUnknownDeliveryMode(t, status, body)
+	if _, gerr := followerReg.GetTenant("tenant-unchecked"); gerr == nil {
+		t.Error("follower registered a tenant barrier from a refused delivery")
 	}
 }
 
