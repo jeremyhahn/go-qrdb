@@ -110,6 +110,10 @@ type serviceTestHooks struct {
 	// afterWaiterRegistered runs after the waiter is registered and before
 	// the existence re-check.
 	afterWaiterRegistered func()
+	// beforePolicyWrite runs once in SetRotationPolicy, after the current
+	// value is read and before the guarded metadata write, on the first
+	// attempt only.
+	beforePolicyWrite func()
 }
 
 // waiterDelivery is what submitManual hands a blocked retriever: its own
@@ -140,6 +144,12 @@ func WithAuditLogger(logger audit.AuditLogger) Option {
 // unbound until BindStore attaches one, and every barrier-strategy call fails
 // with ErrStoreUnavailable until then. The manual strategy keeps no records.
 // The logger must not be nil.
+//
+// A barrier-strategy service built over a *seal.StorageBarrier without
+// WithLegacyStore takes that barrier as its legacy store too: the previous
+// layout (credentials/<name>) only ever lived in a seal barrier, so the
+// service migrates the barrier's old records in place, onto the __sys:
+// prefixes, before its first operation. The two key sets do not overlap.
 func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ...Option) (*CredentialService, error) {
 	if logger == nil {
 		return nil, ErrNilLogger
@@ -166,6 +176,11 @@ func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ..
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if strategy == StrategyBarrier && s.legacy == nil {
+		if barrier, ok := store.(*seal.StorageBarrier); ok && barrier != nil {
+			s.legacy = barrier
+		}
 	}
 	return s, nil
 }

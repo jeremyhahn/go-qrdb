@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -129,21 +130,14 @@ func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, 
 	if err := policy.validate(); err != nil {
 		return err
 	}
-	if exists, err := s.barrierExists(ctx, name); err != nil {
-		return err
-	} else if !exists {
-		return ErrCredentialNotFound
-	}
-
 	var next time.Time
 	if policy.Enabled {
 		next = s.now().UTC().Add(policy.Interval)
 	}
-	if err := s.updateBarrierMeta(ctx, name, "write meta", func(meta *credentialMeta) bool {
+	if err := s.updatePolicyMeta(ctx, name, func(meta *credentialMeta) {
 		p := policy
 		meta.Policy = &p
 		meta.NextRotation = next
-		return true
 	}); err != nil {
 		return err
 	}
@@ -154,6 +148,71 @@ func (s *CredentialService) SetRotationPolicy(ctx context.Context, name string, 
 		"retain_versions": policy.RetainVersions,
 	})
 	return nil
+}
+
+// updatePolicyMeta applies fn to name's metadata and writes the result in one
+// conditional write guarded on both the metadata record and the current value:
+// the write lands only while the credential still exists, unchanged, so a
+// DeleteCredential that completes between the existence read and the write
+// fails the guard, and the retry reports ErrCredentialNotFound instead of
+// recreating metadata for a deleted credential.
+func (s *CredentialService) updatePolicyMeta(ctx context.Context, name string, fn func(*credentialMeta)) error {
+	key := metaKey(name)
+	for attempt := range rotationMetaRetries {
+		written, err := s.tryPolicyMetaWrite(ctx, name, key, attempt == 0, fn)
+		if err != nil || written {
+			return err
+		}
+	}
+	return &OperationError{Op: "write meta", Cause: ErrRotationMetaContended}
+}
+
+// tryPolicyMetaWrite is one attempt of updatePolicyMeta. It reports whether the
+// guarded write applied; a refused guard is (false, nil). The copy of the
+// current value it reads is wiped on every path.
+func (s *CredentialService) tryPolicyMetaWrite(ctx context.Context, name, key string, first bool, fn func(*credentialMeta)) (bool, error) {
+	current, exists, err := s.loadBarrierCurrent(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	defer secure.Wipe(current)
+	if !exists {
+		return false, ErrCredentialNotFound
+	}
+	if current == nil {
+		// A non-nil guard value is what requires the value to be present.
+		current = []byte{}
+	}
+	var meta credentialMeta
+	raw, getErr := s.store.Get(ctx, key)
+	switch {
+	case getErr == nil:
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return false, &OperationError{Op: "decode meta", Cause: err}
+		}
+	case errors.Is(getErr, seal.ErrSecretNotFound):
+		raw = nil
+	default:
+		return false, &OperationError{Op: "read meta", Cause: getErr}
+	}
+	fn(&meta)
+	next, err := json.Marshal(&meta)
+	if err != nil {
+		return false, &OperationError{Op: "encode meta", Cause: err}
+	}
+	if first && s.testHooks.beforePolicyWrite != nil {
+		s.testHooks.beforePolicyWrite()
+	}
+	applied, err := s.store.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{
+			{Key: key, Value: raw},
+			{Key: credentialPrefix + name, Value: current},
+		},
+		[]kvstore.KV{{Key: key, Value: next}})
+	if err != nil {
+		return false, &OperationError{Op: "write meta", Cause: err}
+	}
+	return applied, nil
 }
 
 // RotationPolicy returns the named credential's rotation policy, the zero

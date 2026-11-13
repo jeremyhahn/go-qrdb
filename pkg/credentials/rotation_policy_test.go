@@ -561,6 +561,42 @@ func TestRotateDue_DeleteDuringSourceStaysDeleted(t *testing.T) {
 	}
 }
 
+// TestSetRotationPolicy_DeleteBetweenCheckAndWrite proves a policy update
+// racing a delete cannot recreate the deleted credential's metadata: the
+// existence check and the metadata write are one guarded write, so the delete
+// fails the guard and SetRotationPolicy reports ErrCredentialNotFound. A later
+// store under the same name then starts without a schedule.
+func TestSetRotationPolicy_DeleteBetweenCheckAndWrite(t *testing.T) {
+	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name string) (*secure.Buffer, error) {
+		return secure.NewBufferFromBytes([]byte(name + "-rotated"))
+	}))
+	ctx := t.Context()
+	storeRotationCredential(t, svc, "db")
+	svc.testHooks.beforePolicyWrite = func() {
+		if err := svc.DeleteCredential(ctx, "db"); err != nil {
+			t.Errorf("DeleteCredential: %v", err)
+		}
+	}
+
+	if err := svc.SetRotationPolicy(ctx, "db", *testPolicy); !errors.Is(err, ErrCredentialNotFound) {
+		t.Fatalf("SetRotationPolicy error = %v, want ErrCredentialNotFound", err)
+	}
+	svc.testHooks.beforePolicyWrite = nil
+
+	storeRotationCredential(t, svc, "db")
+	policy, err := svc.RotationPolicy(ctx, "db")
+	if err != nil {
+		t.Fatalf("RotationPolicy: %v", err)
+	}
+	if policy != (RotationPolicy{}) {
+		t.Fatalf("RotationPolicy = %+v, want the zero policy", policy)
+	}
+	n, err := svc.RotateDue(ctx, rotationEpoch.Add(24*365*time.Hour))
+	if n != 0 || err != nil {
+		t.Fatalf("RotateDue = %d, %v; want 0 and nil", n, err)
+	}
+}
+
 // TestRotateDue_ManualRotationBeforeCommitKept: a manual rotation lands
 // between the scheduled rotation's read of the current value and its
 // write. That write is conditional on the value read, so the manual value
