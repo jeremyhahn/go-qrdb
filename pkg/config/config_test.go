@@ -2589,6 +2589,63 @@ cors:
 	}
 }
 
+func TestLoad_CORSAllowCredentialsFromYAML(t *testing.T) {
+	yamlContent := validYAML + `
+cors:
+  allowed_origins:
+    - "https://app.example.com"
+  allow_credentials: true
+`
+	path := writeTemp(t, yamlContent)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: unexpected error: %v", err)
+	}
+	if !cfg.CORS.AllowCredentials {
+		t.Fatal("CORS.AllowCredentials: got false, want true from allow_credentials")
+	}
+}
+
+func TestValidate_CORS_AllowCredentials(t *testing.T) {
+	tests := []struct {
+		name    string
+		origins []string
+		wantErr bool
+	}{
+		{name: "listed origins", origins: []string{"https://app.example.com", "http://localhost:8080"}},
+		{name: "no origins", origins: nil},
+		{name: "wildcard alone", origins: []string{"*"}, wantErr: true},
+		{name: "wildcard among listed", origins: []string{"https://app.example.com", "*"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.CORS.AllowedOrigins = tc.origins
+			cfg.CORS.AllowCredentials = true
+			err := cfg.Validate()
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Validate: unexpected error: %v", err)
+				}
+				return
+			}
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("Validate = %v (%T), want *ValidationError", err, err)
+			}
+			if ve.Field != "cors.allow_credentials" {
+				t.Errorf("Field: got %q, want %q", ve.Field, "cors.allow_credentials")
+			}
+		})
+	}
+	// Without credentials the "*" origin stays valid.
+	cfg := validConfig()
+	cfg.CORS.AllowedOrigins = []string{"*"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate wildcard without credentials: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap config
 // ---------------------------------------------------------------------------

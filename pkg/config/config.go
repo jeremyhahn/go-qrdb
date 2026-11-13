@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1546,6 +1547,13 @@ type CORSConfig struct {
 	// MaxAge is the maximum age (in seconds) for preflight cache.
 	// Default: 3600.
 	MaxAge int `yaml:"max_age"`
+
+	// AllowCredentials lets a cross-origin browser call carry credentials
+	// (cookies, a TLS client certificate, an Authorization header the
+	// browser manages): the REST server answers an allowed origin with
+	// Access-Control-Allow-Credentials: true. It cannot be combined with
+	// the "*" origin. Default: false.
+	AllowCredentials bool `yaml:"allow_credentials"`
 }
 
 // GRPCWebConfig is the server.grpc_web block: gRPC-Web on the REST server.
@@ -2589,6 +2597,10 @@ func (c *Config) Validate() error {
 	// CORS validation.
 	if c.CORS.MaxAge < 0 {
 		return &ValidationError{Field: "cors.max_age", Reason: "must not be negative"}
+	}
+	if c.CORS.AllowCredentials && slices.Contains(c.CORS.AllowedOrigins, "*") {
+		// The Fetch standard forbids credentials with the "*" origin.
+		return &ValidationError{Field: "cors.allow_credentials", Reason: `cannot be combined with the "*" origin`}
 	}
 
 	// SQL validation.
