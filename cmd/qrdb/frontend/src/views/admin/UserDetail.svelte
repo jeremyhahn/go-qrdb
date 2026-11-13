@@ -18,6 +18,7 @@
   import type {
     Client,
     User,
+    CertBinding,
     Role,
     ListRolesResponse,
     DatabaseInfo,
@@ -42,6 +43,8 @@
   // ---------------------------------------------------------------------------
 
   let username: string = $state("");
+  let email: string = $state("");
+  let displayName: string = $state("");
   let tenantId: string = $state("default");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
@@ -49,6 +52,14 @@
   let databases: DatabaseInfo[] = $state([]);
   let loading: boolean = $state(true);
   let saving: boolean = $state(false);
+  let busy: boolean = $state(false);
+  let confirmDelete: boolean = $state(false);
+  /** The user's certificate bindings as the server lists them. */
+  let certBindings: readonly CertBinding[] = $derived.by(
+    () => (existingUser as User | null)?.certBindings ?? [],
+  );
+  let bindingThumbprint: string = $state("");
+  let bindingExpiry: string = $state("");
 
   /** Whether we are creating a new user (vs editing an existing one). */
   let isCreate = $derived(userId === null);
@@ -99,6 +110,8 @@
         const user: User = await client.users.get(userId);
         existingUser = user;
         username = user.username;
+        email = user.email ?? "";
+        displayName = user.name ?? "";
         // Never allow tenantId to become undefined — TenantSelect's
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
@@ -126,9 +139,13 @@
     try {
       saving = true;
 
+      const trimmedEmail = email.trim();
+      const trimmedName = displayName.trim();
       if (isCreate) {
         await client.users.create({
           username: username.trim(),
+          email: trimmedEmail,
+          ...(trimmedName !== "" ? { name: trimmedName } : {}),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -137,7 +154,11 @@
         await client.users.update({
           id: userId!,
           username: username.trim(),
-          roleIds: selectedRoleIds,
+          ...(trimmedEmail !== "" ? { email: trimmedEmail } : {}),
+          ...(trimmedName !== "" ? { name: trimmedName } : {}),
+          // No roleIds: an existing user's roles change only through
+          // roles.assign / roles.unassign (toggleRole), so a Save racing an
+          // in-flight toggle cannot resend the stale set and undo it.
         });
         showToast("success", `User "${username}" updated`);
       }
@@ -151,12 +172,146 @@
     }
   }
 
-  /** Toggles a role ID in the selected roles set. */
-  function toggleRole(roleId: string): void {
-    if (selectedRoleIds.includes(roleId)) {
+  /** Set while any role assign / unassign request of this user is running. */
+  let roleChangePending = $state(false);
+
+  /**
+   * Toggles a role ID in the selected roles set. For an existing user the
+   * change is applied at once through roles.assign / roles.unassign. While
+   * any role change is in flight every role toggle waits for it: all role
+   * checkboxes are disabled and a toggle that still arrives is ignored and
+   * its box put back. The server replaces the user's whole role set on each
+   * change, so two concurrent changes (even to different roles) could undo
+   * each other; one at a time keeps them ordered. selectedRoleIds stays the
+   * authoritative state and changes only once the server accepts the
+   * change. On a refusal the checkbox is put back to that state, undoing
+   * the browser's own toggle.
+   */
+  async function toggleRole(roleId: string, box?: HTMLInputElement): Promise<void> {
+    const revert = (): void => {
+      if (box !== undefined) box.checked = selectedRoleIds.includes(roleId);
+    };
+    if (roleChangePending) {
+      revert();
+      return;
+    }
+    const assigned = selectedRoleIds.includes(roleId);
+    if (!isCreate) {
+      roleChangePending = true;
+      try {
+        if (assigned) {
+          await client.roles.unassign(userId!, roleId);
+          showToast("success", "Role unassigned");
+        } else {
+          await client.roles.assign(userId!, roleId);
+          showToast("success", "Role assigned");
+        }
+      } catch (err: unknown) {
+        roleChangePending = false;
+        revert();
+        showToast("error", err instanceof Error ? err.message : "Failed to change role");
+        return;
+      }
+      roleChangePending = false;
+    }
+    if (assigned) {
       selectedRoleIds = selectedRoleIds.filter((id) => id !== roleId);
     } else {
       selectedRoleIds = [...selectedRoleIds, roleId];
+    }
+  }
+
+  /**
+   * The lifecycle states the backend moves to active (EnableUser) and to
+   * disabled (DisableUser), mirroring the transition graph in
+   * pkg/user/lifecycle.go. Deleting is terminal and offers neither.
+   */
+  const ENABLEABLE = new Set(["pending", "suspended", "locked", "disabled"]);
+  const DISABLEABLE = new Set(["pending", "active", "suspended", "locked"]);
+
+  function canEnable(lifecycle: string): boolean {
+    return ENABLEABLE.has(lifecycle);
+  }
+
+  function canDisable(lifecycle: string): boolean {
+    return DISABLEABLE.has(lifecycle);
+  }
+
+  /** Enables or disables the existing user. */
+  async function handleSetEnabled(enable: boolean): Promise<void> {
+    try {
+      busy = true;
+      if (enable) {
+        await client.users.enable(userId!);
+      } else {
+        await client.users.disable(userId!);
+      }
+      existingUser = await client.users.get(userId!);
+      showToast("success", `User "${username}" ${enable ? "enabled" : "disabled"}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to change user state";
+      showToast("error", msg);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Deletes the existing user after a second confirming click. */
+  async function handleDelete(): Promise<void> {
+    if (!confirmDelete) {
+      confirmDelete = true;
+      return;
+    }
+    try {
+      busy = true;
+      await client.users.delete(userId!);
+      showToast("success", `User "${username}" deleted`);
+      onBack();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete user";
+      showToast("error", msg);
+    } finally {
+      busy = false;
+      confirmDelete = false;
+    }
+  }
+
+  /** Binds a certificate thumbprint to the existing user. */
+  async function handleAddBinding(): Promise<void> {
+    const thumbprint = bindingThumbprint.trim();
+    if (thumbprint === "") return;
+    let notAfterUnix: number | undefined;
+    if (bindingExpiry !== "") {
+      notAfterUnix = Math.floor(new Date(bindingExpiry).getTime() / 1000);
+    }
+    try {
+      busy = true;
+      existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
+      bindingThumbprint = "";
+      bindingExpiry = "";
+      showToast("success", "Certificate binding added");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to add certificate binding";
+      showToast("error", msg);
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Removes a certificate thumbprint binding from the existing user. */
+  async function handleRemoveBinding(thumbprint: string): Promise<void> {
+    const tp = thumbprint.trim();
+    if (tp === "") return;
+    try {
+      busy = true;
+      existingUser = await client.users.removeCertBinding(userId!, tp);
+      if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
+      showToast("success", "Certificate binding removed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to remove certificate binding";
+      showToast("error", msg);
+    } finally {
+      busy = false;
     }
   }
 
@@ -206,6 +361,32 @@
               />
             </label>
 
+            <!-- Email -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Email</span></div>
+              <input
+                type="email"
+                class="input input-bordered input-sm w-full"
+                placeholder="user@example.com"
+                data-testid="user-email"
+                bind:value={email}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
+            <!-- Display name -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Display Name</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="Optional display name"
+                data-testid="user-name"
+                bind:value={displayName}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
             <!-- Tenant ID -->
             <label class="form-control w-full" for="user-detail-tenant">
               <div class="label"><span class="label-text">Tenant ID</span></div>
@@ -226,7 +407,16 @@
             <div class="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <span class="text-base-content/60 font-semibold">Lifecycle</span>
-                <p class="font-mono">{existingUser.lifecycle}</p>
+                <p>
+                  <span
+                    class="badge badge-sm {existingUser.lifecycle === 'active'
+                      ? 'badge-success'
+                      : existingUser.lifecycle === 'disabled'
+                        ? 'badge-error'
+                        : 'badge-warning'}"
+                    data-testid="user-lifecycle-badge">{existingUser.lifecycle}</span
+                  >
+                </p>
               </div>
               <div>
                 <span class="text-base-content/60 font-semibold">Created</span>
@@ -255,7 +445,9 @@
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-primary"
                     checked={selectedRoleIds.includes(role.id)}
-                    onchange={() => toggleRole(role.id)}
+                    disabled={roleChangePending}
+                    data-testid="user-role-{role.name}"
+                    onchange={(e) => void toggleRole(role.id, e.currentTarget)}
                   />
                   <div class="flex flex-col">
                     <span class="text-sm">{role.name}</span>
@@ -296,6 +488,83 @@
       </div>
     {/if}
 
+    <!-- Certificate bindings (existing users only) -->
+    {#if existingUser !== null}
+      <div class="card bg-base-200 shadow" data-testid="user-cert-bindings">
+        <div class="card-body">
+          <h3 class="card-title text-base">Certificate Bindings</h3>
+          <p class="text-base-content/70 text-sm">
+            Bind a certificate's base64url SHA-256 SPKI thumbprint to this user.
+          </p>
+          <div class="flex flex-wrap items-end gap-2">
+            <label class="form-control grow">
+              <div class="label"><span class="label-text">Thumbprint</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                placeholder="Certificate thumbprint"
+                data-testid="user-binding-thumbprint"
+                bind:value={bindingThumbprint}
+              />
+            </label>
+            <label class="form-control">
+              <div class="label"><span class="label-text">Expires (optional)</span></div>
+              <input
+                type="datetime-local"
+                class="input input-bordered input-sm"
+                data-testid="user-binding-expiry"
+                bind:value={bindingExpiry}
+              />
+            </label>
+            <button
+              class="btn btn-primary btn-sm"
+              data-testid="user-binding-add"
+              disabled={busy || bindingThumbprint.trim() === ""}
+              onclick={() => void handleAddBinding()}
+            >
+              Add Binding
+            </button>
+            <button
+              class="btn btn-outline btn-sm"
+              data-testid="user-binding-remove"
+              disabled={busy || bindingThumbprint.trim() === ""}
+              onclick={() => void handleRemoveBinding(bindingThumbprint)}
+            >
+              Remove Binding
+            </button>
+          </div>
+          {#if certBindings.length === 0}
+            <p class="text-base-content/50 pt-2 text-sm" data-testid="user-cert-bindings-empty">
+              No certificate bindings.
+            </p>
+          {:else}
+            <ul class="flex flex-col gap-1 pt-2">
+              {#each certBindings as binding (binding.thumbprint)}
+                <li class="flex items-center gap-2" data-testid="user-binding-row">
+                  <span
+                    class="font-mono text-xs break-all"
+                    data-testid="user-binding-thumbprint-value">{binding.thumbprint}</span
+                  >
+                  <span class="badge badge-ghost badge-xs">{binding.kind}</span>
+                  <span class="text-base-content/60 text-xs">
+                    {binding.notAfter !== undefined ? `expires ${binding.notAfter}` : "no expiry"}
+                  </span>
+                  <button
+                    class="btn btn-ghost btn-xs ml-auto"
+                    aria-label="Remove binding {binding.thumbprint}"
+                    disabled={busy}
+                    onclick={() => void handleRemoveBinding(binding.thumbprint)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      </div>
+    {/if}
+
     <!-- Action buttons -->
     <div class="flex gap-2 pt-2">
       <button
@@ -311,6 +580,36 @@
       <button class="btn btn-ghost btn-sm" onclick={onBack}>
         Cancel
       </button>
+      {#if existingUser !== null && !existingUser.system}
+        {#if canEnable(existingUser.lifecycle)}
+          <button
+            class="btn btn-outline btn-success btn-sm"
+            data-testid="user-enable"
+            disabled={busy}
+            onclick={() => void handleSetEnabled(true)}
+          >
+            Enable
+          </button>
+        {/if}
+        {#if canDisable(existingUser.lifecycle)}
+          <button
+            class="btn btn-outline btn-warning btn-sm"
+            data-testid="user-disable"
+            disabled={busy}
+            onclick={() => void handleSetEnabled(false)}
+          >
+            Disable
+          </button>
+        {/if}
+        <button
+          class="btn btn-error btn-sm ml-auto"
+          data-testid="user-delete"
+          disabled={busy}
+          onclick={() => void handleDelete()}
+        >
+          {confirmDelete ? "Confirm Delete" : "Delete"}
+        </button>
+      {/if}
     </div>
   {/if}
 </div>

@@ -19,6 +19,8 @@ import {
   secondLaunchEmbeddedState,
   injectError,
   clearError,
+  holdCall,
+  releaseCall,
 } from "./fixtures/wails-mock.ts";
 import { webTest } from "./fixtures/web-mode-mock.ts";
 import type { Page } from "@playwright/test";
@@ -150,6 +152,8 @@ test.describe("Admin - User Management", () => {
 
       // Fill the form
       await page.getByPlaceholder("Enter username").fill("charlie");
+      await page.getByPlaceholder("user@example.com").fill("  charlie@example.com ");
+      await page.getByPlaceholder("Optional display name").fill("Charlie C");
 
       // Submit
       await page.getByRole("button", { name: "Create" }).click();
@@ -161,6 +165,11 @@ test.describe("Admin - User Management", () => {
       await expect(
         page.getByText("charlie", { exact: true }),
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      // The trimmed email and the display name reach the server and load back.
+      await page.getByText("charlie", { exact: true }).click();
+      await expect(page.getByPlaceholder("user@example.com")).toHaveValue("charlie@example.com");
+      await expect(page.getByPlaceholder("Optional display name")).toHaveValue("Charlie C");
     });
 
     test("shows validation when username is empty", async ({ page }) => {
@@ -259,6 +268,443 @@ test.describe("Admin - User Management", () => {
 
       // The Lifecycle column should show "active"
       await expect(page.getByRole("cell", { name: "active", exact: true })).toBeVisible();
+    });
+  });
+
+  test.describe("User operations", () => {
+    /** Reads the mock's stored user record through the Wails binding. */
+    async function mockUser(
+      page: Page,
+      id: string,
+    ): Promise<{ lifecycle: string; roleIds: string[] }> {
+      return page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              UserBinding: {
+                Get: (id: string) => Promise<{ lifecycle: string; roleIds: string[] }>;
+              };
+            };
+          };
+        };
+        return w.go.main.UserBinding.Get(uid);
+      }, id);
+    }
+
+    /** Creates a role through the mock binding and returns its id. */
+    async function seedRole(page: Page, name: string): Promise<string> {
+      return page.evaluate((n: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              RoleBinding: {
+                Create: (req: { name: string }) => Promise<{ id: string }>;
+              };
+            };
+          };
+        };
+        return w.go.main.RoleBinding.Create({ name: n }).then((r) => r.id);
+      }, name);
+    }
+
+    /** Binds a thumbprint to a user through the mock binding. */
+    async function seedBinding(page: Page, id: string, thumbprint: string): Promise<void> {
+      await page.evaluate(
+        ({ uid, tp }: { uid: string; tp: string }) => {
+          const w = window as unknown as {
+            go: {
+              main: {
+                UserBinding: {
+                  AddCertBinding: (id: string, tp: string, n: number) => Promise<unknown>;
+                };
+              };
+            };
+          };
+          return w.go.main.UserBinding.AddCertBinding(uid, tp, 0);
+        },
+        { uid: id, tp: thumbprint },
+      );
+    }
+
+    /** Re-fetches the user list and opens the named user's detail view. */
+    async function openUser(page: Page, name: string): Promise<void> {
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+      await expect(page.getByText(name, { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await page.getByText(name, { exact: true }).click();
+      await expect(page.getByText("Edit User")).toBeVisible();
+    }
+
+    test("disables an active user", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "dis-user");
+      await openUser(page, "dis-user");
+
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("active");
+      await expect(badge).toHaveClass(/badge-success/);
+      await page.getByTestId("user-disable").click();
+      await expect(page.getByTestId("user-enable")).toBeVisible();
+      await expect(badge).toHaveText("disabled");
+      await expect(badge).toHaveClass(/badge-error/);
+      expect((await mockUser(page, id)).lifecycle).toBe("disabled");
+    });
+
+    test("enables a disabled user", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "en-user");
+      await page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: { main: { UserBinding: { Disable: (id: string) => Promise<void> } } };
+        };
+        return w.go.main.UserBinding.Disable(uid);
+      }, id);
+      await openUser(page, "en-user");
+
+      await expect(page.getByTestId("user-lifecycle-badge")).toHaveText("disabled");
+      await page.getByTestId("user-enable").click();
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await expect(page.getByTestId("user-lifecycle-badge")).toHaveText("active");
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
+    test("an active user offers Disable only", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "act-user");
+      await openUser(page, "act-user");
+
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+    });
+
+    test("enables a pending user: the invitee activates", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await page.evaluate((u: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              UserBinding: {
+                Create: (req: { username: string; lifecycle: string }) => Promise<{ id: string }>;
+              };
+            };
+          };
+        };
+        return w.go.main.UserBinding.Create({ username: u, lifecycle: "pending" }).then((r) => r.id);
+      }, "pend-user");
+      await openUser(page, "pend-user");
+
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("pending");
+      // Pending moves to active or to disabled: both actions are offered.
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await page.getByTestId("user-enable").click();
+      await expect(badge).toHaveText("active");
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
+    test("enables a suspended user: the account is reinstated", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "susp-user");
+      await page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: { main: { UserBinding: { Suspend: (id: string) => Promise<void> } } };
+        };
+        return w.go.main.UserBinding.Suspend(uid);
+      }, id);
+      await openUser(page, "susp-user");
+
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("suspended");
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await page.getByTestId("user-enable").click();
+      await expect(badge).toHaveText("active");
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
+    test("deletes a user after confirmation", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "del-user");
+      await openUser(page, "del-user");
+
+      const del = page.getByTestId("user-delete");
+      await del.click();
+      await expect(del).toHaveText("Confirm Delete");
+      await del.click();
+      await expect(page.getByText("No users found.")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+
+    test("adds a certificate binding", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "bind-user");
+      await openUser(page, "bind-user");
+
+      await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
+      await page.getByTestId("user-binding-thumbprint").fill("tp-add-1");
+      await page.getByTestId("user-binding-expiry").fill("2031-01-02T03:04");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText("tp-add-1");
+      await expect(page.getByTestId("user-binding-row")).toContainText("spki_sha256");
+      await expect(page.getByTestId("user-binding-row")).toContainText("expires 2031-01-0");
+      await expect(page.getByTestId("user-cert-bindings-empty")).toHaveCount(0);
+      await expect(page.locator('[role="alert"]').first()).toContainText(
+        "Certificate binding added",
+      );
+    });
+
+    test("removes a certificate binding", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "unbind-user");
+      await openUser(page, "unbind-user");
+
+      await page.getByTestId("user-binding-thumbprint").fill("tp-rm-1");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(1);
+      await page.getByRole("button", { name: "Remove binding tp-rm-1" }).click();
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+      await expect(page.getByTestId("user-cert-bindings-empty")).toBeVisible();
+
+      // The mock no longer resolves the thumbprint: the lookup says so inline.
+      await page.getByRole("button", { name: /^Back$/ }).click();
+      await page.getByTestId("user-thumbprint-input").fill("tp-rm-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveText(
+        "No user holds this certificate binding.",
+      );
+    });
+
+    test("a string 'not found' rejection shows the inline not-found result", async ({ page }) => {
+      await navigateToUsers(page);
+      // The Wails runtime rejects the Go error as a bare string.
+      await injectError(page, "UserBinding.GetByCertThumbprint", "user not found");
+      await page.getByTestId("user-thumbprint-input").fill("tp-missing");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveText(
+        "No user holds this certificate binding.",
+      );
+      await expect(page.locator(".toast .alert.alert-error")).toHaveCount(0);
+    });
+
+    test("lists the bindings the server holds when a user opens", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "listed-user");
+      await seedBinding(page, id, "tp-listed-1");
+      await seedBinding(page, id, "tp-listed-2");
+      await openUser(page, "listed-user");
+
+      await expect(page.getByTestId("user-binding-thumbprint-value")).toHaveText([
+        "tp-listed-1",
+        "tp-listed-2",
+      ]);
+      await expect(page.getByTestId("user-binding-row").first()).toContainText("no expiry");
+    });
+
+    test("clears the not-found message on the next lookup", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "nf-user");
+      await seedBinding(page, id, "tp-nf-1");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-unknown");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByTestId("user-thumbprint-not-found")).toBeVisible();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-nf-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByText("Edit User")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByTestId("user-thumbprint-not-found")).toHaveCount(0);
+    });
+
+    test("finds a user by certificate thumbprint", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "found-user");
+      await seedBinding(page, id, "tp-find-1");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Users").click();
+
+      await page.getByTestId("user-thumbprint-input").fill("tp-find-1");
+      await page.getByTestId("user-thumbprint-submit").click();
+      await expect(page.getByText("Edit User")).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(page.getByPlaceholder("Enter username")).toHaveValue("found-user");
+    });
+
+    test("assigns a role to an existing user at once", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "assign-user");
+      const roleId = await seedRole(page, "assign-role");
+      await openUser(page, "assign-user");
+
+      await page.getByTestId("user-role-assign-role").check();
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).toContain(roleId);
+    });
+
+    test("a role whose assign is in flight ignores a second toggle", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "pending-user");
+      const roleId = await seedRole(page, "pending-role");
+      await openUser(page, "pending-user");
+
+      const box = page.getByTestId("user-role-pending-role");
+      await holdCall(page, "RoleBinding.Assign");
+      await box.check();
+      await expect(box).toBeDisabled();
+      // The browser refuses a click on the disabled box: no second call.
+      await box.click({ force: true });
+      expect(await releaseCall(page, "RoleBinding.Assign")).toBe(1);
+
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      await expect(box).toBeEnabled();
+      await expect(box).toBeChecked();
+      expect((await mockUser(page, id)).roleIds).toEqual([roleId]);
+    });
+
+    test("a role change in flight holds the toggles of every other role", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "serial-user");
+      const roleA = await seedRole(page, "serial-role-a");
+      const roleB = await seedRole(page, "serial-role-b");
+      await page.evaluate(
+        async ({ uid, rids }: { uid: string; rids: string[] }) => {
+          const w = window as unknown as {
+            go: {
+              main: { RoleBinding: { Assign: (u: string, r: string) => Promise<void> } };
+            };
+          };
+          for (const rid of rids) await w.go.main.RoleBinding.Assign(uid, rid);
+        },
+        { uid: id, rids: [roleA, roleB] },
+      );
+      await openUser(page, "serial-user");
+
+      const boxA = page.getByTestId("user-role-serial-role-a");
+      const boxB = page.getByTestId("user-role-serial-role-b");
+      await expect(boxA).toBeChecked();
+      await expect(boxB).toBeChecked();
+      await holdCall(page, "RoleBinding.Unassign");
+      await boxA.uncheck();
+      await expect(boxB).toBeDisabled();
+      // The browser refuses a click on the disabled box: B sends no call.
+      await boxB.click({ force: true });
+      expect(await releaseCall(page, "RoleBinding.Unassign")).toBe(1);
+
+      await expect(page.getByText("Role unassigned")).toBeVisible();
+      await expect(boxA).toBeEnabled();
+      await expect(boxB).toBeEnabled();
+      await expect(boxA).not.toBeChecked();
+      await expect(boxB).toBeChecked();
+      expect((await mockUser(page, id)).roleIds).toEqual([roleB]);
+
+      await boxB.uncheck();
+      await expect(boxB).toBeEnabled();
+      await expect(boxB).not.toBeChecked();
+      await expect.poll(async () => (await mockUser(page, id)).roleIds).toEqual([]);
+    });
+
+    test("a refused assign leaves the role unchecked", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "refused-user");
+      await seedRole(page, "refused-role");
+      await openUser(page, "refused-user");
+
+      await injectError(page, "RoleBinding.Assign", "permission denied: roles:assign");
+      const box = page.getByTestId("user-role-refused-role");
+      await box.click();
+      await expect(
+        page.locator(".toast .alert.alert-error").filter({ hasText: "permission denied: roles:assign" }),
+      ).toBeVisible();
+      await expect(box).not.toBeChecked();
+      await expect(box).toBeEnabled();
+      expect((await mockUser(page, id)).roleIds).toEqual([]);
+
+      // The stored selection is unchanged too: a retry assigns the role.
+      await clearError(page, "RoleBinding.Assign");
+      await box.check();
+      await expect(page.getByText("Role assigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).toHaveLength(1);
+    });
+
+    test("unassigns a role from an existing user at once", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "unassign-user");
+      const roleId = await seedRole(page, "unassign-role");
+      await page.evaluate(
+        ({ uid, rid }: { uid: string; rid: string }) => {
+          const w = window as unknown as {
+            go: {
+              main: { RoleBinding: { Assign: (u: string, r: string) => Promise<void> } };
+            };
+          };
+          return w.go.main.RoleBinding.Assign(uid, rid);
+        },
+        { uid: id, rid: roleId },
+      );
+      await openUser(page, "unassign-user");
+
+      const box = page.getByTestId("user-role-unassign-role");
+      await expect(box).toBeChecked();
+      await box.uncheck();
+      await expect(page.getByText("Role unassigned")).toBeVisible();
+      expect((await mockUser(page, id)).roleIds).not.toContain(roleId);
+    });
+
+    test("Save while an unassign is in flight keeps the role revoked", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "race-user");
+      const roleId = await seedRole(page, "race-role");
+      await page.evaluate(
+        ({ uid, rid }: { uid: string; rid: string }) => {
+          type Binding = { Assign: (u: string, r: string) => Promise<void>; Unassign: (u: string, r: string) => Promise<void> };
+          const w = window as unknown as {
+            go: { main: { RoleBinding: Binding } };
+            releaseUnassign?: () => void;
+          };
+          const roles = w.go.main.RoleBinding;
+          // The server applies the unassign at once; its response arrives
+          // only when the test releases it.
+          const unassign = roles.Unassign.bind(roles);
+          roles.Unassign = async (u: string, r: string) => {
+            await unassign(u, r);
+            await new Promise<void>((resolve) => {
+              w.releaseUnassign = resolve;
+            });
+          };
+          return roles.Assign(uid, rid);
+        },
+        { uid: id, rid: roleId },
+      );
+      await openUser(page, "race-user");
+
+      const box = page.getByTestId("user-role-race-role");
+      await expect(box).toBeChecked();
+      await box.uncheck();
+      await page.waitForFunction(() => typeof (window as { releaseUnassign?: unknown }).releaseUnassign === "function");
+      await page.getByRole("button", { name: /save/i }).click();
+      await expect(page.getByText('User "race-user" updated')).toBeVisible();
+      await page.evaluate(() => (window as unknown as { releaseUnassign: () => void }).releaseUnassign());
+
+      expect((await mockUser(page, id)).roleIds).not.toContain(roleId);
+    });
+
+    test("shows an error toast when adding a binding fails", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "bind-err-user");
+      await openUser(page, "bind-err-user");
+
+      await injectError(page, "UserBinding.AddCertBinding", "thumbprint already bound");
+      await page.getByTestId("user-binding-thumbprint").fill("tp-err-1");
+      await page.getByTestId("user-binding-add").click();
+      await expect(page.locator('[role="alert"]').last()).toContainText(
+        "thumbprint already bound",
+      );
+      await expect(page.getByTestId("user-binding-row")).toHaveCount(0);
+      await clearError(page, "UserBinding.AddCertBinding");
     });
   });
 

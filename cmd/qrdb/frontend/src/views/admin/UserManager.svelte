@@ -41,6 +41,9 @@
   let showDetail: boolean = $state(false);
   let detailUserId: string | null = $state(null);
   let showInvite: boolean = $state(false);
+  let searchThumbprint: string = $state("");
+  let searching: boolean = $state(false);
+  let thumbprintNotFound: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -132,6 +135,36 @@
     void fetchUsers();
   }
 
+  /** Looks up the user bound to a certificate thumbprint and opens it. */
+  async function handleThumbprintSearch(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    const thumbprint = searchThumbprint.trim();
+    if (thumbprint === "") return;
+    try {
+      searching = true;
+      thumbprintNotFound = false;
+      const user = await client.users.getUserByCertThumbprint(thumbprint);
+      searchThumbprint = "";
+      detailUserId = user.id;
+      showDetail = true;
+    } catch (err: unknown) {
+      // HTTP transports answer 404; the Wails runtime rejects with the Go
+      // error's string, which the SDK normalizes to an Error, so a
+      // "not found" message means the same there.
+      if (
+        (err instanceof TransportError && err.statusCode === 404) ||
+        (err instanceof Error && /\bnot found\b/i.test(err.message))
+      ) {
+        thumbprintNotFound = true;
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to look up user";
+        showToast("error", msg);
+      }
+    } finally {
+      searching = false;
+    }
+  }
+
   /** Opens the invite-a-user modal (see InviteUserModal.svelte). */
   function handleInvite(): void {
     showInvite = true;
@@ -175,6 +208,39 @@
         Invite User
       </button>
     </div>
+
+    <!-- Certificate thumbprint lookup -->
+    <form
+      class="flex items-end gap-2"
+      data-testid="user-thumbprint-search"
+      onsubmit={(e) => void handleThumbprintSearch(e)}
+    >
+      <label class="form-control grow">
+        <div class="label">
+          <span class="label-text font-semibold">Find user by certificate thumbprint</span>
+        </div>
+        <input
+          type="text"
+          class="input input-bordered input-sm w-full font-mono"
+          placeholder="Certificate thumbprint"
+          data-testid="user-thumbprint-input"
+          bind:value={searchThumbprint}
+        />
+      </label>
+      <button
+        type="submit"
+        class="btn btn-sm btn-outline"
+        data-testid="user-thumbprint-submit"
+        disabled={searching || searchThumbprint.trim() === ""}
+      >
+        Find
+      </button>
+      {#if thumbprintNotFound}
+        <span class="text-warning text-sm" data-testid="user-thumbprint-not-found">
+          No user holds this certificate binding.
+        </span>
+      {/if}
+    </form>
 
     <CrudTable
       title="Users"
