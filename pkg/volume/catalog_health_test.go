@@ -62,11 +62,10 @@ func TestCatalog_GetPool_StaleReportShowsNoReport(t *testing.T) {
 	if _, err := cat.CreatePool(ctx, CreatePoolRequest{Name: "fast"}); err != nil {
 		t.Fatalf("CreatePool: %v", err)
 	}
-	cat.leaseTTL = 10 * time.Millisecond
-	putTestNodeReport(t, kv, NodeReport{NodeID: "node-1", Pools: map[string]PoolOnNode{
+	// A report older than the lease TTL is stale.
+	putTestNodeReport(t, kv, NodeReport{NodeID: "node-1", ReportedAt: time.Now().Add(-2 * cat.leaseTTL), Pools: map[string]PoolOnNode{
 		"fast": {Mapped: true, Health: Health{State: StateReady}},
 	}})
-	time.Sleep(20 * time.Millisecond)
 
 	detail, err := cat.GetPool(ctx, "fast")
 	if err != nil {

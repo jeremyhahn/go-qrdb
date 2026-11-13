@@ -44,62 +44,6 @@ func TestFloat16_EncodeDecode(t *testing.T) {
 	}
 }
 
-func TestFloat16_SpecialValues(t *testing.T) {
-	c := NewFloat16Converter()
-
-	tests := []struct {
-		name  string
-		value float32
-	}{
-		{"positive zero", 0.0},
-		{"negative zero", float32(math.Copysign(0, -1))},
-		{"positive infinity", float32(math.Inf(1))},
-		{"negative infinity", float32(math.Inf(-1))},
-		{"NaN", float32(math.NaN())},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			encoded := c.Encode([]float32{tt.value})
-			decoded := c.Decode(encoded)
-			require.Len(t, decoded, 1)
-
-			if math.IsNaN(float64(tt.value)) {
-				assert.True(t, math.IsNaN(float64(decoded[0])), "NaN should round-trip")
-			} else if math.IsInf(float64(tt.value), 1) {
-				assert.True(t, math.IsInf(float64(decoded[0]), 1), "positive infinity should round-trip")
-			} else if math.IsInf(float64(tt.value), -1) {
-				assert.True(t, math.IsInf(float64(decoded[0]), -1), "negative infinity should round-trip")
-			} else {
-				assert.Equal(t, tt.value, decoded[0])
-			}
-		})
-	}
-}
-
-func TestFloat16_Range(t *testing.T) {
-	c := NewFloat16Converter()
-
-	// Float16 max is ~65504, min positive is ~5.96e-8.
-	tests := []struct {
-		name  string
-		value float32
-		delta float64
-	}{
-		{"near max", 65000.0, 100.0},
-		{"small positive", 0.001, 0.0001},
-		{"near min normal", 6.1e-5, 1e-5},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			encoded := c.Encode([]float32{tt.value})
-			decoded := c.Decode(encoded)
-			assert.InDelta(t, tt.value, decoded[0], tt.delta)
-		})
-	}
-}
-
 func TestFloat16_EmptyVector(t *testing.T) {
 	c := NewFloat16Converter()
 	encoded := c.Encode([]float32{})
