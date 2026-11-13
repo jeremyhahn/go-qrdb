@@ -1738,9 +1738,19 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 
 // publicVerb registers a built-in no-login verb under the REST route
 // publicverbs.Table gives it; the table, not this transport, decides which
-// built-in routes are public.
+// built-in routes are public. A verb with a RateLimit dimension draws that
+// bucket by caller address before h runs (AuthMiddleware.LimitPublicHTTP).
 func (s *Server) publicVerb(enabled bool, v publicverbs.Verb, h http.HandlerFunc) {
 	method, pattern := publicverbs.RESTRoute(v)
+	if limit := publicverbs.Table[v].RateLimit; limit != "" {
+		serve := h
+		h = func(w http.ResponseWriter, r *http.Request) {
+			if !s.authMW.LimitPublicHTTP(w, r, limit) {
+				return
+			}
+			serve(w, r)
+		}
+	}
 	s.publicIf(enabled, method, pattern, h)
 }
 

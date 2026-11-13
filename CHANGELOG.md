@@ -11,9 +11,9 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- Key delivery works with `auth.enabled=false`: the listener now asks for node client certificates, and public Health on gRPC, Unix and MCP is held to its declared `admin:health` rate limit, as on QUIC.
+- **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
 
 ### Added
 

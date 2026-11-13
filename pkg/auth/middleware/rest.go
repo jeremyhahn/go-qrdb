@@ -17,12 +17,14 @@ package middleware
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // RESTMiddleware returns an http.Handler that wraps the given handler with
@@ -317,6 +319,33 @@ func setRetryAfterHeader(w http.ResponseWriter, err error) {
 		return
 	}
 	w.Header().Set("Retry-After", strconv.FormatInt(RetryAfterSeconds(delay), 10))
+}
+
+// LimitPublicHTTP draws perm's pre-authentication bucket for a no-login
+// REST route (publicverbs.Names.RateLimit) before its handler runs, the REST
+// counterpart of QUIC's limitPublic and gRPC's
+// PublicRateLimitUnaryInterceptor. A public route runs no authentication,
+// so the caller's source host is the only identity there is; the port is
+// dropped so a caller cannot reset its bucket by reconnecting. On refusal it
+// writes the 429 (with Retry-After) and returns false; a nil receiver, an
+// unwired limiter or an undeclared policy admits the request.
+func (m *AuthMiddleware) LimitPublicHTTP(w http.ResponseWriter, r *http.Request, perm permission.Permission) bool {
+	if m == nil {
+		return true
+	}
+	source, ok := auth.RemoteAddrFromContext(r.Context())
+	if !ok {
+		source = r.RemoteAddr
+	}
+	if host, _, err := net.SplitHostPort(source); err == nil {
+		source = host
+	}
+	if err := m.CheckLoginRateLimit(r.Context(), "", source, perm); err != nil {
+		setRetryAfterHeader(w, err)
+		WriteJSONError(w, mapHTTPAuthError(err), err.Error())
+		return false
+	}
+	return true
 }
 
 // restErrorResponse is the JSON payload for auth error responses.
