@@ -288,3 +288,51 @@ func TestMintDelegation_ARenewalNeedsDelegateInThePolicyScope(t *testing.T) {
 		t.Fatalf("the allowed renewal made %d issuer calls, want %d", issuer.issued, calls+1)
 	}
 }
+
+// misfiledPolicies is the real policy store whose read answers with a record
+// that names somebody else: the real record as stored, with misfile applied,
+// the way a record written under the wrong key would read back.
+type misfiledPolicies struct {
+	cert.DelegationPolicyStore
+	misfile func(*delegation.Policy)
+}
+
+func (m *misfiledPolicies) DelegationPolicy(ctx context.Context, tenantID, principal string) (delegation.Policy, bool, error) {
+	pol, found, err := m.DelegationPolicyStore.DelegationPolicy(ctx, tenantID, principal)
+	if err != nil || !found {
+		return pol, found, err
+	}
+	m.misfile(&pol)
+	return pol, true, nil
+}
+
+// The grant is only built from a stored policy that names the tenant and the
+// principal it was read for.
+func TestMintDelegation_RefusesAStoredPolicyThatNamesSomebodyElse(t *testing.T) {
+	for name, misfile := range map[string]func(*delegation.Policy){
+		"another principal": func(p *delegation.Policy) { p.Principal = "reporting" },
+		"another tenant":    func(p *delegation.Policy) { p.Tenant = "globex" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ring := audit.NewRingBuffer(16)
+			svc, issuer := countedPolicyService(t, ring, func(s cert.DelegationPolicyStore) cert.DelegationPolicyStore {
+				return &misfiledPolicies{DelegationPolicyStore: s, misfile: misfile}
+			})
+			if _, err := svc.PutDelegationPolicy(anchorCaller("acme", "alice"), billingPolicy()); err != nil {
+				t.Fatalf("PutDelegationPolicy: %v", err)
+			}
+
+			var denied *service.DelegationDeniedError
+			got, err := svc.MintDelegation(servicePrincipalCtx("billing"), &service.MintDelegationRequest{TenantID: "acme", CSRPEM: delegationCSR(t)})
+			if got != nil || !errors.As(err, &denied) {
+				t.Fatalf("mint under a policy for %s: issued %v, err = %v; want *service.DelegationDeniedError", name, got != nil, err)
+			}
+			if issuer.issued != 0 {
+				t.Fatalf("the refused mint reached the issuer: %d calls", issuer.issued)
+			}
+			if n := mintEvents(ring.Snapshot()); n != 0 {
+				t.Fatalf("the refused mint wrote %d mint events", n)
+			}
+		})
+	}
+}
