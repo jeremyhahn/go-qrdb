@@ -17,6 +17,16 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **Named credentials rotate on a policy, once per interval across the cluster.**
+  A `barrier` credential can carry a rotation policy (enabled, interval,
+  versions retained) in its metadata record; `RotateDue` rotates each due
+  credential once under a guarded claim, with the next value from the
+  embedder's `WithRotationValueSource` (`node.WithCredentialRotationValueSource`).
+  With no source a due credential reports `ErrNoRotationValueSource`, and a
+  policy on a `manual` service is refused with `InvalidRotationPolicyError`.
+  A tenant's credential store of record is now its replicated home store; the
+  tenant barrier is read once, as the migration source of the old layout
+  (part 1 of #1201).
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
 - **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.

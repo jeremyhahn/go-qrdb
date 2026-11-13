@@ -311,6 +311,15 @@ func WithDEKProvider(p dek.Provider) NodeOption {
 	return func(o *nodeOptions) { o.dekProvider = p }
 }
 
+// WithCredentialRotationValueSource supplies the source the credential
+// core draws new values from when a rotation policy falls due. go-qrdb
+// generates no credential values: without this option every due rotation
+// reports credentials.ErrNoRotationValueSource. The source runs with the
+// owning tenant bound on its context (tenant.FromContext).
+func WithCredentialRotationValueSource(src credentials.RotationValueSource) NodeOption {
+	return func(o *nodeOptions) { o.credentialRotation = src }
+}
+
 // WithHeadSignerProvider replaces the software head-signing key of every
 // verifiable log with a composer's vlog.HeadSignerProvider, typically one
 // that keeps the key on a device or in a KMS and never exports it.
@@ -457,6 +466,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	dekProvider             dek.Provider
+	credentialRotation      credentials.RotationValueSource
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
 	holderActLimiter        ratelimit.Limiter
@@ -1564,10 +1574,7 @@ func (n *Node) Client() *sdk.Client { return n.client.Load() }
 func (n *Node) Services() *lifecycle.Node { return n.svcNode.Load() }
 
 // BarrierRegistry returns the per-tenant barrier registry built during the
-// seal subsystem phase. Embedders use this to construct tenant-scoped
-// credential resolvers via the sdk/go/secret subpackage's
-// NewTenantScopedCredentialRetrieve so that
-// credential:// lookups route to the correct per-tenant barrier store.
+// seal subsystem phase. Embedders use it to reach a tenant's barrier.
 // Returns nil when cfg.Seal.Enabled is false (no seal subsystem) or when
 // the node is in the sealed state before Unseal has been called.
 func (n *Node) BarrierRegistry() *seal.BarrierRegistry { return n.barrierRegistry.Load() }
@@ -3593,8 +3600,16 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	if credStrategy == "" {
 		credStrategy = credentials.StrategyBarrier
 	}
+	// No store yet: lifecycle.BuildServices binds the system shard's
+	// replicated KV once it exists, so every node keeps the same records
+	// (docs/credentials/architecture.md, "Storage"); until then it fails
+	// closed.
+	credOpts := []credentials.Option{credentials.WithLegacyStore(barrier)}
+	if nOpts != nil && nOpts.credentialRotation != nil {
+		credOpts = append(credOpts, credentials.WithRotationValueSource(nOpts.credentialRotation))
+	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: credStrategy}, barrier, log)
+		&credentials.Config{Strategy: credStrategy}, nil, log, credOpts...)
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &StorageCreateError{Backend: "seal-credentials", Err: credErr}

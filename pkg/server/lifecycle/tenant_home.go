@@ -209,7 +209,18 @@ func attachHomeSource(n *Node, source tenant.HomeStoreSource, served []tenant.St
 			other.SetHomeStoreSource(source)
 		}
 	}
+	// A tenant caller's named credentials live in its home store too, so a
+	// rotation policy or claim is one record for every node.
+	if creds, ok := n.Credential.(tenantHomesSetter); ok {
+		creds.SetTenantHomes(source)
+	}
 	return true
+}
+
+// tenantHomesSetter is the credential service's attach point for the tenant
+// home stores (service.CredentialService.SetTenantHomes).
+type tenantHomesSetter interface {
+	SetTenantHomes(src tenant.HomeStoreSource)
 }
 
 // HomeStore implements tenant.HomeStoreSource. It fails, and the resolver

@@ -11,23 +11,38 @@ package credentials
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-const credentialPrefix = "credentials/"
+const credentialPrefix = "__sys:credentials/" //nolint:gosec // G101: the system key prefix the records live under, not a credential
+
+// The prefixes a credential's other records live under, beside its value
+// (see the storage layout in versioned.go). The embedded KV, transaction and
+// watch surfaces refuse every key under them, as they do the value prefix.
+const (
+	MetaKeyPrefix    = "__sys:credential-meta/"
+	VersionKeyPrefix = "__sys:credential-versions/"
+	StagedKeyPrefix  = "__sys:credential-staged/"
+)
 
 // CredentialService manages named credentials using a configurable strategy.
 // The manual strategy stores credentials in-memory with blocking retrieval
 // semantics. The barrier strategy delegates to a seal.StorageBarrier for
 // encrypted persistence.
 type CredentialService struct {
-	barrier  *seal.StorageBarrier
+	// store holds barrier-strategy records. In a running node it is the
+	// system shard's replicated KV, bound by BindStore once that KV exists,
+	// so every node reads and conditionally writes the same records.
+	store    *boundStore
 	strategy string
 	logger   *slog.Logger
 	mu       sync.RWMutex
@@ -56,6 +71,32 @@ type CredentialService struct {
 	// builds the service before the compliance logger exists).
 	audit audit.AuditLogger
 
+	// rotationSource produces the value a scheduled rotation writes. Nil
+	// means RotateDue rotates nothing and reports ErrNoRotationValueSource
+	// for each due credential.
+	rotationSource RotationValueSource
+
+	// now is the clock SetRotationPolicy reads; tests replace it.
+	now func() time.Time
+
+	// rotationAttemptTimeout bounds one credential's attempt in a RotateDue
+	// pass; tests shorten it.
+	rotationAttemptTimeout time.Duration
+
+	// legacy is the node-local store holding this node's records under the
+	// old credentials/ layout, nil when there is none (WithLegacyStore).
+	legacy Store
+	// migrateMu serializes the migration and the resolve verbs, and guards
+	// migrated and conflicts.
+	migrateMu sync.Mutex
+	// migrated reports that the migration from legacy ran to completion.
+	migrated bool
+	// conflicts holds the unresolved migration conflicts, by name.
+	conflicts map[string]*CredentialMigrationConflictError
+	// migratedBarriers records the barriers ForBarrier has migrated with no
+	// conflict left, keyed by *seal.StorageBarrier, so it migrates each once.
+	migratedBarriers sync.Map
+
 	// testHooks are interleaving seams for this package's tests; every
 	// field is nil in production.
 	testHooks serviceTestHooks
@@ -70,6 +111,10 @@ type serviceTestHooks struct {
 	// afterWaiterRegistered runs after the waiter is registered and before
 	// the existence re-check.
 	afterWaiterRegistered func()
+	// beforePolicyWrite runs once in SetRotationPolicy, after the current
+	// value is read and before the guarded metadata write, on the first
+	// attempt only.
+	beforePolicyWrite func()
 }
 
 // waiterDelivery is what submitManual hands a blocked retriever: its own
@@ -93,12 +138,20 @@ func WithAuditLogger(logger audit.AuditLogger) Option {
 }
 
 // NewCredentialService creates a new CredentialService with the given
-// configuration, optional barrier, and logger.
+// configuration, optional store, and logger.
 //
-// If cfg is nil or cfg.Strategy is empty, the manual strategy is used.
-// The barrier parameter is required when using the barrier strategy and
-// may be nil for the manual strategy. The logger must not be nil.
-func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slog.Logger, opts ...Option) (*CredentialService, error) {
+// If cfg is nil or cfg.Strategy is empty, the manual strategy is used. The
+// barrier strategy keeps its records in store; a nil store leaves the service
+// unbound until BindStore attaches one, and every barrier-strategy call fails
+// with ErrStoreUnavailable until then. The manual strategy keeps no records.
+// The logger must not be nil.
+//
+// A barrier-strategy service built over a *seal.StorageBarrier without
+// WithLegacyStore takes that barrier as its legacy store too: the previous
+// layout (credentials/<name>) only ever lived in a seal barrier, so the
+// service migrates the barrier's old records in place, onto the __sys:
+// prefixes, before its first operation. The two key sets do not overlap.
+func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ...Option) (*CredentialService, error) {
 	if logger == nil {
 		return nil, ErrNilLogger
 	}
@@ -111,32 +164,91 @@ func NewCredentialService(cfg *Config, barrier *seal.StorageBarrier, logger *slo
 	if !validStrategies[strategy] {
 		return nil, ErrInvalidStrategy
 	}
-
-	if strategy == StrategyBarrier && barrier == nil {
+	if isTypedNilStore(store) {
 		return nil, ErrNilBarrier
 	}
 
 	s := &CredentialService{
-		barrier:     barrier,
+		store:       newBoundStore(store),
 		strategy:    strategy,
 		logger:      logger,
 		manualCreds: make(map[string]*secure.Secret),
 		waiters:     make(map[string][]chan waiterDelivery),
+		now:         time.Now,
+
+		rotationAttemptTimeout: rotationAttemptTimeout,
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
+	if strategy == StrategyBarrier && s.legacy == nil {
+		if barrier, ok := store.(*seal.StorageBarrier); ok && barrier != nil {
+			s.legacy = barrier
+		}
+	}
 	return s, nil
 }
 
-// ForBarrier returns a barrier-strategy CredentialService over barrier that
-// shares s's logger and audit logger. It is how a tenant's named-credential
-// store is derived from the node-wide one: the same versioned rotation API,
-// persisted in the tenant barrier's own storage and encrypted under that
-// barrier's key. It returns ErrNilBarrier when barrier is nil.
-func (s *CredentialService) ForBarrier(barrier *seal.StorageBarrier) (*CredentialService, error) {
-	return NewCredentialService(&Config{Strategy: StrategyBarrier}, barrier, s.logger,
-		WithAuditLogger(s.auditLogger()))
+// isTypedNilStore reports whether st is a non-nil interface holding a nil
+// pointer, such as (*seal.StorageBarrier)(nil). Such a store passes an
+// st == nil check yet panics on first use, so NewCredentialService and
+// BindStore refuse it with ErrNilBarrier before binding.
+func isTypedNilStore(st Store) bool {
+	if st == nil {
+		return false
+	}
+	v := reflect.ValueOf(st)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+// ForTenant returns a barrier-strategy CredentialService over a tenant's
+// home store that shares s's logger, audit logger, rotation value source and
+// clock, so a tenant's scheduled rotations draw from the same source. It is
+// how a tenant's named-credential store is derived from the node-wide one:
+// the same versioned rotation API, persisted in the tenant's home store — on a
+// cluster a Raft group of the tenant's own whose PutIfAbsent and
+// CompareAndSwap decide once for every node, encrypted under the tenant's
+// key — so a policy, claim or version written through one node is the same
+// record on every node. legacy is the tenant barrier on this node: its
+// records under the old credentials/ layout move into home first
+// (MigrateLegacy), once per barrier for s, and that migration's error is
+// returned. It returns ErrNilStore when home is nil and ErrNilBarrier when
+// legacy is nil.
+func (s *CredentialService) ForTenant(ctx context.Context, home Store, legacy *seal.StorageBarrier) (*CredentialService, error) {
+	if home == nil {
+		return nil, ErrNilStore
+	}
+	// A nil *StorageBarrier passed on as a Store would bind as a non-nil
+	// interface, so it is refused here rather than left unbound.
+	if legacy == nil {
+		return nil, ErrNilBarrier
+	}
+	out, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, home, s.logger,
+		WithAuditLogger(s.auditLogger()), WithRotationValueSource(s.rotationSource),
+		WithLegacyStore(legacy))
+	if err != nil {
+		return nil, err
+	}
+	out.now = s.now
+	out.rotationAttemptTimeout = s.rotationAttemptTimeout
+	if _, done := s.migratedBarriers.Load(legacy); done {
+		out.migrated = true
+		return out, nil
+	}
+	if err := out.MigrateLegacy(ctx); err != nil {
+		return nil, err
+	}
+	// A barrier with an unresolved conflict migrates again on each call,
+	// so every derived service lists and resolves it.
+	if len(out.conflicts) == 0 {
+		s.migratedBarriers.Store(legacy, struct{}{})
+	}
+	return out, nil
 }
 
 // SetAuditLogger attaches (or replaces) the compliance audit logger after
@@ -163,6 +275,11 @@ func (s *CredentialService) auditLogger() audit.AuditLogger {
 // no audit logger is configured. Emission is best-effort per the AuditLogger
 // contract and never affects the mutation outcome.
 func (s *CredentialService) emitAudit(ctx context.Context, action, name string, attrs map[string]any) {
+	s.emitAuditOutcome(ctx, action, name, audit.OutcomeSuccess, attrs)
+}
+
+// emitAuditOutcome emits an audit event with the given outcome.
+func (s *CredentialService) emitAuditOutcome(ctx context.Context, action, name, outcome string, attrs map[string]any) {
 	logger := s.auditLogger()
 	if logger == nil {
 		return
@@ -176,12 +293,20 @@ func (s *CredentialService) emitAudit(ctx context.Context, action, name string, 
 		actor = id.Subject
 		tenantID = id.TenantID
 	}
+	// Internal callers (the rotation scheduler, retention GC) carry no
+	// identity; they bind the tenant they act for on the context, which owns
+	// the mutated credential.
+	if tenantID == "" {
+		if bound, ok := tenant.IDFromContext(ctx); ok {
+			tenantID = bound
+		}
+	}
 	audit.EmitBestEffort(ctx, logger, "credentials", audit.AuditEvent{
 		Actor:      actor,
 		TenantID:   tenantID,
 		Resource:   "credential:" + name,
 		Action:     action,
-		Outcome:    audit.OutcomeSuccess,
+		Outcome:    outcome,
 		Attributes: attrs,
 	})
 }
@@ -190,6 +315,9 @@ func (s *CredentialService) emitAudit(ctx context.Context, action, name string, 
 // For the manual strategy, the value is stored in-memory. For the barrier
 // strategy, the value is encrypted and stored via the StorageBarrier.
 func (s *CredentialService) StoreCredential(ctx context.Context, name string, value []byte) error {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return err
+	}
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -203,7 +331,7 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 			return err
 		}
 	case StrategyBarrier:
-		if err := s.barrier.Put(ctx, credentialPrefix+name, value); err != nil {
+		if err := s.storeBarrier(ctx, name, value); err != nil {
 			return err
 		}
 	default:
@@ -226,6 +354,9 @@ func (s *CredentialService) StoreCredential(ctx context.Context, name string, va
 // transport (see docs/credentials/architecture.md, "Protected-memory
 // boundary").
 func (s *CredentialService) RetrieveCredentialBuffer(ctx context.Context, name string) (*secure.Buffer, error) {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
@@ -267,6 +398,9 @@ func (s *CredentialService) SubmitCredential(ctx context.Context, name string, v
 // before removal. For the barrier strategy, the key is deleted from
 // the StorageBarrier.
 func (s *CredentialService) DeleteCredential(ctx context.Context, name string) error {
+	if err := s.ensureMigrated(ctx); err != nil {
+		return err
+	}
 	if err := validateName(name); err != nil {
 		return err
 	}
@@ -439,12 +573,14 @@ func (s *CredentialService) removeWaiter(name string, ch chan waiterDelivery) {
 	}
 }
 
-// retrieveBarrier retrieves a credential from the StorageBarrier. If the
-// underlying storage returns an error, ErrCredentialNotFound is returned.
+// retrieveBarrier reads the credential from the barrier store; only a store
+// that answers "no such key" yields ErrCredentialNotFound, because a caller
+// told "not found" for a store it could not read would treat a live
+// credential as absent.
 func (s *CredentialService) retrieveBarrier(ctx context.Context, name string) (*secure.Buffer, error) {
-	data, err := s.barrier.Get(ctx, credentialPrefix+name)
+	data, err := s.store.Get(ctx, credentialPrefix+name)
 	if err != nil {
-		return nil, ErrCredentialNotFound
+		return nil, readFailure("retrieve", err, ErrCredentialNotFound)
 	}
 	return bufferFromHeap(data)
 }

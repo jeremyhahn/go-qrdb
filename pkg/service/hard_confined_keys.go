@@ -14,7 +14,11 @@
 
 package service
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+)
 
 // hardConfinedPrefixes are "__sys:cluster_ca/" and "__sys:cert_ca/", the
 // sub-prefixes of the internal key namespace (see internal_keys.go) under
@@ -78,25 +82,51 @@ import "strings"
 // requires its at-rest protection to match Key A's, but nothing had
 // extended this embedded-transport guard to its prefix, so an embedded
 // caller could read a tenant's login CA private key directly by name.
-var hardConfinedPrefixes = []string{
+var hardConfinedPrefixes = append(append([]string(nil), hardConfinedMaterialPrefixes...), hardConfinedWholePrefixes...)
+
+// hardConfinedMaterialPrefixes are the CA prefixes of hardConfinedPrefixes,
+// under which only the "material" record is confined (see the doc comment
+// above).
+var hardConfinedMaterialPrefixes = []string{
 	InternalKeyPrefixSystem + "cluster_ca/",
 	InternalKeyPrefixSystem + "cert_ca/",
 }
 
-// hardConfinedWholePrefixes are internal sub-prefixes confined WHOLE on
-// the embedded transport: every key under one is refused to a point
-// read, write, delete, compare or transaction op, refused as an
-// enumeration or watch root, and filtered out of any broader sweep, with
-// no "/material" suffix test. "__sys:cert_delegation_policy/" duplicates
-// pkg/cert's unexported prefixDelegationPolicy, for the same reason
-// hardConfinedMaterialSuffix duplicates cakey's record name (go-qrdb#1187):
-// a standing delegation policy authorizes certificate issuance, so an
-// embedded caller holding only kv:put must not be able to write one
-// around CertEnrollmentService's own policy-admin check. pkg/cert's own
-// narrow self-scan of one tenant's policies (ListDelegationPolicies)
-// stays visible through FilterInternalMap's owner escape, exactly as
+// hardConfinedWholePrefixes are the prefixes of hardConfinedPrefixes under
+// which EVERY record is confined, not only a "material" one.
+// "__sys:credentials/" is the credential service's replicated store
+// (pkg/credentials, docs/credentials/architecture.md, "Storage"): each
+// record under it is a credential's current value, and is reached only through the credential verbs, which
+// authorize and audit every access. A point Get through the embedded KV
+// would read a value without credentials:retrieve and a Put would replace
+// one with no credential authorization or audit, so the whole prefix is
+// refused. The credential service's own store (pkg/server/lifecycle's
+// kvSealBackend) reaches it through the node's own KV service, never through
+// the embedded decorators, and its self-scan rooted at this prefix stays
+// unfiltered (isHardConfinedKeyForScan).
+// credentials.MigrationClaimPrefix holds the migration claims: each names
+// the copy a credential's migration settled on and whether its import is
+// complete, so a Put through the embedded KV would redirect or replay a
+// migration.
+// credentials.MetaKeyPrefix, VersionKeyPrefix and StagedKeyPrefix hold a
+// credential's metadata, its retained versions and its staged rotation
+// values: former and future secret values, and the record that says which
+// version is current and when it rotates.
+// "__sys:cert_delegation_policy/" duplicates pkg/cert's unexported
+// prefixDelegationPolicy, for the same reason hardConfinedMaterialSuffix
+// duplicates cakey's record name (go-qrdb#1187): a standing delegation
+// policy authorizes certificate issuance, so an embedded caller holding
+// only kv:put must not be able to write one around
+// CertEnrollmentService's own policy-admin check. pkg/cert's own narrow
+// self-scan of one tenant's policies (ListDelegationPolicies) stays
+// visible through FilterInternalMap's owner escape, exactly as
 // CACertPEMs' certificate scan does (isHardConfinedKeyForScan).
 var hardConfinedWholePrefixes = []string{
+	InternalKeyPrefixSystem + "credentials/",
+	credentials.MigrationClaimPrefix,
+	credentials.MetaKeyPrefix,
+	credentials.VersionKeyPrefix,
+	credentials.StagedKeyPrefix,
 	delegationPolicyConfinedPrefix,
 }
 
@@ -105,10 +135,11 @@ var hardConfinedWholePrefixes = []string{
 // fails if the two drift apart.
 const delegationPolicyConfinedPrefix = "__sys:cert_delegation_policy/"
 
-// hardConfinedAllPrefixes is hardConfinedPrefixes followed by
-// hardConfinedWholePrefixes: every confined namespace, for the
-// root, range and overlap tests below that do not look at a key's suffix.
-var hardConfinedAllPrefixes = append(append([]string{}, hardConfinedPrefixes...), hardConfinedWholePrefixes...)
+// hardConfinedAllPrefixes is every confined namespace, for the root,
+// range and overlap tests below that do not look at a key's suffix:
+// hardConfinedPrefixes already lists hardConfinedMaterialPrefixes followed
+// by hardConfinedWholePrefixes.
+var hardConfinedAllPrefixes = hardConfinedPrefixes
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record
 // name for the private half of any CA it manages (keyMaterial in
@@ -175,7 +206,7 @@ func isHardConfinedMaterialKey(key string) bool {
 	if !strings.HasSuffix(key, hardConfinedMaterialSuffix) {
 		return false
 	}
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedMaterialPrefixes {
 		if strings.HasPrefix(key, p) {
 			return true
 		}
@@ -275,7 +306,8 @@ func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 // enumeration whose own query root was scanPrefix. Every "material"
 // record is always stripped (isHardConfinedKey, unconditionally -- a
 // scan never has a legitimate reason to see a CA's private key). A
-// "certificate" record is stripped TOO, but ONLY when scanPrefix is
+// "certificate" record, like every record under hardConfinedWholePrefixes,
+// is stripped TOO, but ONLY when scanPrefix is
 // broader than (an ancestor of) the confined CA root key belongs to --
 // "__sys:" itself, or any other sweep wider than the CA subsystem's own
 // namespace -- never when scanPrefix is at or below that root, which is

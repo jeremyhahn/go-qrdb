@@ -1627,11 +1627,126 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
+// credentialStoreOnDataPlane reports whether the data plane of a node whose
+// primary engine is backend can hold the credential records: it must keep
+// them encrypted at rest and across a restart. Pebble and file write through
+// the barrier's at-rest Encryptor to disk. An objstore backend writes the
+// bytes it is given to its bucket unencrypted, and a memory backend keeps
+// nothing across a restart, so binding either would lose a credential's
+// confidentiality or the credential itself (legacy migration deletes the
+// barrier originals once copied).
+func credentialStoreOnDataPlane(backend database.BackendType) bool {
+	return backend != database.BackendObjstore && backend != database.BackendMemory
+}
+
+// sealGatedStore is the credential store bound on a data plane that
+// encrypts at rest: its records live on the node's KV, but every access
+// keeps the system seal barrier's own sealed-state check, exactly as
+// StorageBarrier's Get, Put and List refuse a sealed barrier with
+// seal.ErrSealed. Sealing neither closes the data plane nor makes an
+// ordinary KV read fail (a Pebble read ignores its SealWatch), so without
+// this gate a sealed node would still return a credential's current and
+// retained values through the credential verbs.
+type sealGatedStore struct {
+	credentials.Store
+	barrier *seal.StorageBarrier
+}
+
+// open reports seal.ErrSealed while the system barrier is sealed.
+func (s sealGatedStore) open() error {
+	if s.barrier.IsSealed() {
+		return seal.ErrSealed
+	}
+	return nil
+}
+
+func (s sealGatedStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Store.Get(ctx, key)
+}
+
+func (s sealGatedStore) Put(ctx context.Context, key string, value []byte) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Put(ctx, key, value)
+}
+
+func (s sealGatedStore) Delete(ctx context.Context, key string) error {
+	if err := s.open(); err != nil {
+		return err
+	}
+	return s.Store.Delete(ctx, key)
+}
+
+func (s sealGatedStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := s.open(); err != nil {
+		return nil, err
+	}
+	return s.Store.List(ctx, prefix)
+}
+
+func (s sealGatedStore) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutIfAbsent(ctx, key, value)
+}
+
+func (s sealGatedStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.CompareAndSwap(ctx, key, expected, next)
+}
+
+func (s sealGatedStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if err := s.open(); err != nil {
+		return false, err
+	}
+	return s.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
 // buildSealServices constructs the security services that depend on the
 // seal barrier: BarrierService, CredentialService, CeremonyService,
 // TenantService, and CertProvider.
 func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Logger, authStore kvstore.KVStore) error {
 	if infra.CredentialCoreSvc != nil {
+		// One credential store per cluster (docs/credentials/architecture.md,
+		// "Storage"): the barrier strategy's records live on the system
+		// shard's replicated KV, and its conditional writes are Raft
+		// transactions, so a policy, claim or version written on one node is
+		// the same record on every node.
+		//
+		// The records are written to the data plane as they are, so the
+		// data plane must encrypt at rest and survive a restart. A
+		// standalone objstore backend does not encrypt and a memory backend
+		// does not persist, so on either the system seal barrier, which
+		// encrypts every record it stores on its own durable store, is
+		// bound as the credential store instead. On a data plane that does
+		// encrypt at rest, the KV store is gated on the system barrier
+		// (sealGatedStore), so a sealed node refuses every credential read.
+		//
+		// The manual strategy keeps its credentials in protected memory
+		// and writes nothing to the data plane, so it binds no store and
+		// starts on any backend.
+		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
+			var credStore credentials.Store = kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
+			switch {
+			case !credentialStoreOnDataPlane(infra.Backend):
+				if infra.SealBarrier == nil {
+					return &NilSealBarrierError{}
+				}
+				credStore = infra.SealBarrier
+			case infra.SealBarrier != nil:
+				credStore = sealGatedStore{Store: credStore, barrier: infra.SealBarrier}
+			}
+			if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+				return err
+			}
+		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)
 
 		ceremonyCoreSvc, err := ceremonyService(infra, log)

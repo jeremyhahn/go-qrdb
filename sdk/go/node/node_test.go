@@ -697,8 +697,7 @@ func TestBarrierRegistry_NilWhenSealDisabled(t *testing.T) {
 // TestBarrierRegistry_NonNilAfterSealEnabled verifies that a seal-enabled node
 // exposes a non-nil BarrierRegistry once fully booted. The registry is built
 // during the seal subsystem phase (before BuildServices) and is the object
-// embedders use to construct tenant-scoped credential resolvers via the
-// sdk/go/secret subpackage's NewTenantScopedCredentialRetrieve.
+// embedders use to reach a tenant's barrier.
 func TestBarrierRegistry_NonNilAfterSealEnabled(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := sealedStandaloneConfig(t, dataDir)

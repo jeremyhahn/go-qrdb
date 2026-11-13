@@ -23,6 +23,7 @@ import (
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -87,6 +88,22 @@ func (m *mockCredentialSvc) CredentialDelete(ctx context.Context, name string) e
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, name)
 	}
+	return nil
+}
+
+func (*mockCredentialSvc) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*mockCredentialSvc) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*mockCredentialSvc) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*mockCredentialSvc) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 

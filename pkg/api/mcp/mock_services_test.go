@@ -124,6 +124,22 @@ func (m *covMockCredentialSvc) CredentialDelete(ctx context.Context, name string
 	}
 	return nil
 }
+
+func (*covMockCredentialSvc) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*covMockCredentialSvc) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*covMockCredentialSvc) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*covMockCredentialSvc) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return nil
+}
 func (m *covMockCredentialSvc) CredentialStrategy(context.Context) (string, error) {
 	return m.credentialStrategy(), nil
 }

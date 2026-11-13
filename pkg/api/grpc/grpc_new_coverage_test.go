@@ -133,6 +133,18 @@ func (c *coverageGRPCCredentialService) CredentialListVersions(_ context.Context
 func (c *coverageGRPCCredentialService) CredentialGCExpired(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }
+func (c *coverageGRPCCredentialService) CredentialSetRotationPolicy(_ context.Context, _ string, _ credentials.RotationPolicy) error {
+	return nil
+}
+func (c *coverageGRPCCredentialService) CredentialRotationPolicy(_ context.Context, _ string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+func (c *coverageGRPCCredentialService) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+func (c *coverageGRPCCredentialService) CredentialResolveMigrationConflict(_ context.Context, _ string, _ credentials.MigrationResolution) error {
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // Embedding service mock (implements service.EmbeddingServicer)

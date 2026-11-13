@@ -28,6 +28,7 @@ import (
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -78,6 +79,22 @@ func (f *fakeCredentialServicer) CredentialDelete(ctx context.Context, name stri
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, name)
 	}
+	return nil
+}
+
+func (*fakeCredentialServicer) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*fakeCredentialServicer) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*fakeCredentialServicer) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*fakeCredentialServicer) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 func (f *fakeCredentialServicer) CredentialStrategy(context.Context) (string, error) {

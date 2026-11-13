@@ -75,13 +75,13 @@ func TestDeleteCredential_Barrier_RemovesCurrentMetaAndAllVersions(t *testing.T)
 	// The defect this guards against: the meta sidecar and every
 	// historical version key must actually be gone from the barrier
 	// store, not merely unreachable through one lookup path.
-	_, err = svc.barrier.Get(ctx, metaKey("k"))
+	_, err = svc.store.Get(ctx, metaKey("k"))
 	assert.Error(t, err, "meta sidecar must be deleted")
-	_, err = svc.barrier.Get(ctx, versionKey("k", 1))
+	_, err = svc.store.Get(ctx, versionKey("k", 1))
 	assert.Error(t, err, "v1 history key must be deleted")
-	_, err = svc.barrier.Get(ctx, versionKey("k", 2))
+	_, err = svc.store.Get(ctx, versionKey("k", 2))
 	assert.Error(t, err, "v2 history key must be deleted")
-	_, err = svc.barrier.Get(ctx, credentialPrefix+"k")
+	_, err = svc.store.Get(ctx, credentialPrefix+"k")
 	assert.Error(t, err, "current value key must be deleted")
 }
 
@@ -133,7 +133,7 @@ func TestDeleteCredential_Barrier_SealedFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, svc.StoreCredential(ctx, "k", []byte("v1")))
 
-	require.NoError(t, svc.barrier.Seal())
+	require.NoError(t, barrierOf(t, svc).Seal())
 
 	err := svc.DeleteCredential(ctx, "k")
 	require.Error(t, err, "delete on a sealed barrier must fail closed, not silently no-op")

@@ -1262,6 +1262,22 @@ func (s *stubCredentialSvc) CredentialSubmit(_ context.Context, _ string, _ []by
 	return nil
 }
 func (s *stubCredentialSvc) CredentialDelete(_ context.Context, _ string) error { return nil }
+
+func (*stubCredentialSvc) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*stubCredentialSvc) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*stubCredentialSvc) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*stubCredentialSvc) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return nil
+}
 func (s *stubCredentialSvc) CredentialStrategy(context.Context) (string, error) {
 	return "stub", nil
 }

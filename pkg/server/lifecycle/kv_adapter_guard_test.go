@@ -16,8 +16,10 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/mvcc"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/writemode"
@@ -223,6 +225,90 @@ func TestKVSealBackend_GuardedVerbs_StillActOnAPresentKey(t *testing.T) {
 		}
 		if got := string(tx.data["k"].Value); got != "new" {
 			t.Errorf("stored %q, want %q", got, "new")
+		}
+	})
+}
+
+// TestKVSealBackend_PutAllIfAllUnchanged proves the backend's guarded batch
+// is one transaction: every write lands while every guard holds, and a
+// single stale or unexpectedly present guard leaves every key as it was.
+func TestKVSealBackend_PutAllIfAllUnchanged(t *testing.T) {
+	ctx := context.Background()
+	writes := []kvstore.KV{
+		{Key: "value", Value: []byte("new")},
+		{Key: "meta", Value: []byte("m2")},
+		{Key: "retained", Value: []byte("old")},
+	}
+
+	t.Run("applies every write while every guard holds", func(t *testing.T) {
+		tx := newEvaluatingTxService()
+		tx.put("value", []byte("old"))
+		b := kvSealBackend{tx: tx}
+
+		applied, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: "value", Value: []byte("old")},
+			{Key: "meta"},
+		}, writes)
+		if err != nil || !applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (true, nil)", applied, err)
+		}
+		for _, w := range writes {
+			if got := string(tx.data[w.Key].Value); got != string(w.Value) {
+				t.Errorf("%s holds %q, want %q", w.Key, got, w.Value)
+			}
+		}
+	})
+
+	t.Run("a stale guard writes nothing", func(t *testing.T) {
+		tx := newEvaluatingTxService()
+		tx.put("value", []byte("other"))
+		b := kvSealBackend{tx: tx}
+
+		applied, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: "value", Value: []byte("old")},
+			{Key: "meta"},
+		}, writes)
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if got := string(tx.data["value"].Value); got != "other" {
+			t.Errorf("value holds %q, want the other writer's %q", got, "other")
+		}
+		for _, key := range []string{"meta", "retained"} {
+			if _, ok := tx.data[key]; ok {
+				t.Errorf("a refused batch wrote %s", key)
+			}
+		}
+	})
+
+	t.Run("a key that must be absent but exists writes nothing", func(t *testing.T) {
+		tx := newEvaluatingTxService()
+		tx.put("value", []byte("old"))
+		tx.put("meta", []byte("m1"))
+		b := kvSealBackend{tx: tx}
+
+		applied, err := b.PutAllIfAllUnchanged(ctx, []kvstore.Guard{
+			{Key: "value", Value: []byte("old")},
+			{Key: "meta"},
+		}, writes)
+		if err != nil || applied {
+			t.Fatalf("PutAllIfAllUnchanged = (%v, %v), want (false, nil)", applied, err)
+		}
+		if got := string(tx.data["value"].Value); got != "old" {
+			t.Errorf("value holds %q, want %q", got, "old")
+		}
+		if got := string(tx.data["meta"].Value); got != "m1" {
+			t.Errorf("meta holds %q, want %q", got, "m1")
+		}
+	})
+
+	t.Run("requires a transaction service", func(t *testing.T) {
+		applied, err := kvSealBackend{}.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: "meta"}}, writes)
+		if !errors.Is(err, ErrNoTransactionService) {
+			t.Errorf("error = %v, want ErrNoTransactionService", err)
+		}
+		if applied {
+			t.Error("a refused guarded batch must not report success")
 		}
 	})
 }

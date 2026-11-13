@@ -89,6 +89,22 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 	return nil
 }
 
+func (*mockCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*mockCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*mockCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*mockCredentialService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return nil
+}
+
 func (m *mockCredentialService) CredentialStrategy(context.Context) (string, error) {
 	return m.credentialStrategy(), nil
 }
