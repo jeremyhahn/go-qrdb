@@ -1268,6 +1268,21 @@ func SystemRoleID(tenantID, roleName string) string {
 	return deterministicUUID(tenantID, roleName)
 }
 
+// SystemRoleIDs returns every system role's canonical ID in the given
+// tenant, keyed by role name: the built-in roles and the owner role, each
+// mapped to SystemRoleID(tenantID, name). Each role has exactly one canonical
+// (UUIDv8) ID; this is not the removed UUIDv5/v8 dual-read set. An empty
+// tenantID defaults to the system tenant, as in SystemRoleID. The map is
+// freshly allocated on every call, so a caller may modify it freely.
+func SystemRoleIDs(tenantID string) map[string]string {
+	names := systemRoleNames()
+	ids := make(map[string]string, len(names))
+	for name := range names {
+		ids[name] = SystemRoleID(tenantID, name)
+	}
+	return ids
+}
+
 // systemRoleNamespace domain-separates role identifiers from every other
 // SHA-256 derivation in the system. UUIDv8 leaves the derivation entirely
 // to the application (RFC 9562 §5.8), so unlike a v3/v5 namespace this is
