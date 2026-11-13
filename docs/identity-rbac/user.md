@@ -34,6 +34,17 @@ Because the binding is over the **public key**, renewing your certificate with
 the same key keeps you the same user. Rotate the key and you need a new
 binding.
 
+## What needs no identity
+
+Two verbs need no certificate, token or role at all, on every transport:
+`qrdb admin health` and invitation redemption (`qrdb enroll`). Health no
+longer needs the `admin:health` permission; a role that still lists it
+grants nothing more by it. A client with no credential connects, and is
+refused with an `unauthenticated` error at its first command that needs an
+identity — `qrdb kv get`, for example. `admin:health` survives only as the
+name of Health's per-address rate-limit bucket (see
+[../rate-limit/user.md](../rate-limit/user.md)).
+
 ## Enrolling somebody, end to end
 
 Run as an Admin of the tenant the user belongs to (here `acme`). Under the
@@ -362,13 +373,9 @@ Full reference: [../certificate-authority/cli.md](../certificate-authority/cli.m
 
 Issuing a fresh certificate every day is a chore. Instead, write a **standing
 delegation policy** once: it names the principal, the most it may be handed,
-and the longest each certificate may live.
-
-```bash
-qrdb ca delegate policy put --principal billing --scope certs:delegate,kv:get,kv:put --ttl 1h
-qrdb ca delegate policy list
-qrdb ca delegate policy delete billing
-```
+and the longest each certificate may live. Writing, listing and deleting
+policies needs `certs:delegate`, and deleting a policy revokes it: no further
+certificate is minted under it.
 
 While the policy stands, the application mints its first certificate itself
 and renews it with the certificate it holds, with no one from your tenant at
@@ -382,6 +389,18 @@ Deleting the policy stops every further mint and renewal at once. The
 certificate the application already holds keeps working until it expires;
 revoke its serial too if you want it out now. Writing, listing and deleting a
 policy all need `certs:delegate`, in your own tenant.
+
+A policy-minted certificate is enough for the four things an embedded
+application does for your tenant on its own: read one account's roles and
+effective permissions before that account signs in (`roles:read`,
+`users:read`, `permissions:resolve`; `qrdb users get`, `qrdb roles
+get-by-name`, `qrdb roles resolve-permissions`), bind and unbind roles for
+federated login (`roles:assign`, `roles:unassign`; `qrdb roles assign|unassign`),
+and list the barrier's officers and seal it (`tenant_barrier:officer_list`,
+`tenant_barrier:seal`; `qrdb tenant barrier-officer list`, `qrdb tenant
+barrier-seal`). Put exactly those permissions in the policy's scope. Each works
+only in your tenant, is recorded in your audit trail, and stops on the next
+call once you delete the policy and revoke the serial.
 
 ## Telling whether a caller owns its tenant
 

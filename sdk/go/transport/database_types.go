@@ -77,6 +77,9 @@ type DatabaseRaftInfo struct {
 	Multicast      *MulticastDiscoveryInfo `json:"multicast,omitempty"`
 	DNS            *DNSDiscoveryInfo       `json:"dns,omitempty"`
 	Token          *TokenDiscoveryInfo     `json:"token,omitempty"`
+	// StateStorage is the storage of the Raft group state (pebble, file or
+	// memory) the database recorded at create.
+	StateStorage string `json:"stateStorage,omitempty"`
 }
 
 // StaticDiscoveryInfo reports static peer discovery.
@@ -176,6 +179,9 @@ type DatabaseRaftConfig struct {
 	Multicast      *MulticastDiscoveryConfig `json:"multicast,omitempty"`
 	DNS            *DNSDiscoveryConfig       `json:"dns,omitempty"`
 	Token          *TokenDiscoveryConfig     `json:"token,omitempty"`
+	// StateStorage is the storage of the Raft group state: pebble, file or
+	// memory. Empty takes the node's database_defaults.
+	StateStorage string `json:"stateStorage,omitempty"`
 }
 
 // StaticDiscoveryConfig is static peer discovery as a request sets it.

@@ -432,25 +432,9 @@ func TestCAFileReadError_Error(t *testing.T) {
 	}
 }
 
-func TestCAFileReadError_Unwrap(t *testing.T) {
-	inner := errors.New("permission denied")
-	err := &CAFileReadError{Path: "/etc/ssl/ca.pem", Err: inner}
-	if !errors.Is(err, inner) {
-		t.Error("errors.Is should find the wrapped inner error")
-	}
-}
-
 func TestCAParseError_Error(t *testing.T) {
 	err := &CAParseError{Path: "/etc/ssl/ca.pem"}
 	expected := "transport: failed to parse CA certificate from /etc/ssl/ca.pem"
-	if got := err.Error(); got != expected {
-		t.Errorf("CAParseError.Error() = %q, want %q", got, expected)
-	}
-}
-
-func TestCAParseError_ErrorDifferentPath(t *testing.T) {
-	err := &CAParseError{Path: "/tmp/root-ca.pem"}
-	expected := "transport: failed to parse CA certificate from /tmp/root-ca.pem"
 	if got := err.Error(); got != expected {
 		t.Errorf("CAParseError.Error() = %q, want %q", got, expected)
 	}

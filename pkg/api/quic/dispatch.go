@@ -15,10 +15,14 @@
 package quic
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
@@ -61,6 +65,35 @@ func (s *Server) handlePublicIf(enabled bool, method string, h methodHandler) {
 		return
 	}
 	s.handlers[method] = h
+}
+
+// handlePublicVerb registers a built-in no-login verb under the QUIC name
+// publicverbs.Table gives it; the table, not this transport, decides which
+// built-in methods are public.
+func (s *Server) handlePublicVerb(enabled bool, v publicverbs.Verb, h methodHandler) {
+	s.handlePublicIf(enabled, publicverbs.Table[v].QUIC, h)
+}
+
+// limitPublic draws a built-in public verb's pre-authentication bucket
+// (publicverbs.Names.RateLimit) on the existing limiter, keyed by the
+// caller's source host in the system tenant: a public method runs no
+// authentication, so the source address is the only caller identity there
+// is. A port is dropped so a caller cannot reset its bucket by reconnecting.
+// Nil means the method is not public, is a verb with no pre-auth dimension,
+// or the server has no middleware to hold a limiter.
+func (s *Server) limitPublic(ctx context.Context, method string) error {
+	if s.authMW == nil || !s.methodPerms.IsPublic(method) {
+		return nil
+	}
+	v, ok := publicverbs.QUICVerb(method)
+	if !ok || publicverbs.Table[v].RateLimit == "" {
+		return nil
+	}
+	source, _ := auth.RemoteAddrFromContext(ctx)
+	if host, _, err := net.SplitHostPort(source); err == nil {
+		source = host
+	}
+	return s.authMW.CheckLoginRateLimit(ctx, "", source, publicverbs.Table[v].RateLimit)
 }
 
 // handleStreamOnly declares the permission for a server-streaming method
@@ -129,7 +162,7 @@ func (s *Server) buildHandlers() {
 	// The admin handlers are registered only when an admin service is
 	// provided.
 	adminOn := s.adminSvc != nil
-	s.handleIf(adminOn, "admin.Health", permission.AdminHealth, s.handleHealth)
+	s.handlePublicVerb(adminOn, publicverbs.VerbHealth, s.handleHealth)
 	s.handleIf(adminOn, "admin.Status", permission.AdminStatus, s.handleStatus)
 	s.handleIf(adminOn, "admin.Peers", permission.AdminPeers, s.handlePeers)
 	s.handleIf(adminOn, "admin.AddMember", permission.AdminAddMember, s.handleAddMember)
@@ -293,7 +326,7 @@ func (s *Server) buildHandlers() {
 	// block, which skips both authentication and authorization for it).
 	invitesOn := s.invitations != nil
 	s.handleIf(invitesOn, methodInviteUser, permission.UsersInvite, s.handleInviteUser)
-	s.handlePublicIf(invitesOn, methodRedeemInvitation, s.handleRedeemInvitation)
+	s.handlePublicVerb(invitesOn, publicverbs.VerbInvitationRedeem, s.handleRedeemInvitation)
 
 	// Collection
 	s.handle("collection.Create", permission.CollectionsCreate, s.handleCollectionCreate)

@@ -470,8 +470,12 @@ func TestCLIMultiProtocolDatabaseUpdateBarrier(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
 			})
 
-			// Step 1: Create a database.
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName)
+			// Step 1: Create a database on the shared pebble store. The
+			// backend is named: a create without one records the node run
+			// mode's backend, which on a raft node serves the data from its
+			// raft group rather than from a shared store.
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName,
+				"--backend", "pebble")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
@@ -481,8 +485,7 @@ func TestCLIMultiProtocolDatabaseUpdateBarrier(t *testing.T) {
 				fmt.Sprintf("[%s] database create should contain 'Name:'", proto))
 
 			// Step 2: Enabling a barrier on a SHARED-store database fails
-			// closed. This database was created with the default backend on
-			// the shared system store, where a per-database barrier would be
+			// closed. This database was created on the shared system store, where a per-database barrier would be
 			// crypto theater (data stays under the shared store's DEK), so
 			// the server rejects it with a typed "requires a dedicated store"
 			// error. The happy path (barrier on a dedicated-store database)

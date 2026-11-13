@@ -61,35 +61,24 @@ func startAuthenticatedMCP(t *testing.T) (string, *http.Client) {
 // size to do it.
 func TestMCP_UnauthenticatedRefusedBeforeMCPLayer(t *testing.T) {
 	url, client := startAuthenticatedMCP(t)
-	session := ""
-	for _, body := range []string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"anon","version":"1"}}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
-		`{"jsonrpc":"2.0","id":3,"method":"ping"}`,
-	} {
-		req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-		if err != nil {
-			t.Fatalf("NewRequest: %v", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		if session != "" {
-			req.Header.Set("Mcp-Session-Id", session)
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("POST: %v", err)
-		}
-		got, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if id := resp.Header.Get("Mcp-Session-Id"); id != "" {
-			session = id
-		}
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("anonymous %s: status %d, want 401; body %q", body[:40], resp.StatusCode, got)
-		}
-		if strings.Contains(string(got), "qrdb_") {
-			t.Errorf("anonymous %s disclosed the tool surface: %q", body[:40], got)
+	s := &mcpSession{t: t, url: url, client: client}
+	s.initialize()
+
+	// qrdb_health is the one built-in no-login tool (pkg/api/publicverbs):
+	// an anonymous caller reaches the MCP layer for it, and sees nothing else.
+	status, body := s.post(toolsListBody)
+	if status != http.StatusOK || !strings.Contains(body, `"qrdb_health"`) {
+		t.Fatalf("anonymous tools/list: status %d, body %q", status, body)
+	}
+	if strings.Contains(strings.ReplaceAll(body, `"qrdb_health"`, ""), "qrdb_") {
+		t.Errorf("anonymous tools/list disclosed a non-public tool: %q", body)
+	}
+	if status, body = s.post(callToolBody("qrdb_health")); status != http.StatusOK || strings.Contains(body, `"isError":true`) {
+		t.Errorf("anonymous qrdb_health: status %d, body %q", status, body)
+	}
+	for _, name := range []string{"qrdb_get", "qrdb_put", "qrdb_status"} {
+		if status, body = s.post(callToolBody(name)); status != http.StatusUnauthorized {
+			t.Errorf("anonymous %s: status %d, want 401; body %q", name, status, body)
 		}
 	}
 }

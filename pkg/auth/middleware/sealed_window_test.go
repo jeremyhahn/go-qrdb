@@ -62,20 +62,21 @@ func TestAuthorize_SealedMarkerConvertsToUnavailable(t *testing.T) {
 	}
 }
 
-// TestAuthorize_SealedMarkerAdmitsAdminHealth pins the liveness exception:
-// admin:health is allowed during the tenant sealed window so the
-// gRPC/QUIC/Unix SDK transports (whose Connect performs an authenticated
-// Health RPC) can open the connection needed to reach the barrier
-// status/unseal endpoints that end the window.
-func TestAuthorize_SealedMarkerAdmitsAdminHealth(t *testing.T) {
+// TestAuthorize_SealedMarkerRefusesAdminHealth pins that the sealed window
+// has no health exception: Health is a no-login verb on every transport
+// (pkg/api/publicverbs), served before authorization, so admin:health is
+// refused like every other permission while the tenant is sealed.
+func TestAuthorize_SealedMarkerRefusesAdminHealth(t *testing.T) {
 	authz := &mockAuthorizer{}
 	m := newTestMiddleware(authz)
 
-	if err := m.AuthorizeTenant(sealedCtx("t1"), "t1", permission.AdminHealth); err != nil {
-		t.Fatalf("admin:health during the sealed window = %v, want nil", err)
+	err := m.AuthorizeTenant(sealedCtx("t1"), "t1", permission.AdminHealth)
+	var unavailable *StoreUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("admin:health during the sealed window = %v, want *StoreUnavailableError", err)
 	}
 	if authz.calls.Load() != 0 {
-		t.Fatal("admin:health must be admitted by the sealed-window rule, not RBAC")
+		t.Fatal("the sealed-window refusal must precede RBAC")
 	}
 }
 

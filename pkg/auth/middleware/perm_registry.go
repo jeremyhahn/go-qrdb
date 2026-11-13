@@ -198,18 +198,18 @@ func (r *MCPToolRegistry) Covered(toolName string) bool {
 // publicEligibleMCPPermissions is the closed set of permissions a tool may
 // carry and still be declared public. Every other permission names a verb
 // that reaches data or changes the node -- KV, SQL, documents, vectors,
-// admin, IAM, seal -- and a tool carrying one is refused. admin:health is
-// the one exception because it is already public on every other transport:
-// REST serves GET /health on its public allowlist and gRPC exempts
-// grpc.health.v1, and it reports node liveness only.
+// admin, IAM, seal -- and a tool carrying one is refused. identity:public
+// (permission.Public) is the one exception: it is the permission of a verb
+// that needs no login on any transport (pkg/api/publicverbs), such as
+// qrdb_health, which reports node liveness only.
 var publicEligibleMCPPermissions = map[permission.Permission]struct{}{
-	permission.AdminHealth: {},
+	permission.Public: {},
 }
 
 // RegisterPublic declares a tool served WITHOUT authentication or
 // authorization, as REST does for a RESTRoutePublic route and gRPC for a
 // RegisterPublicGRPCMethods method. A tool carrying a registered permission
-// other than admin:health reaches data or changes the node, and is refused
+// other than identity:public reaches data or changes the node, and is refused
 // with *PublicMCPToolRefusedError: the declaration is how an embedder opens
 // its first-contact surface, never a way to open a data verb. Declaring the
 // same tool twice is a no-op. Call it after every permission registration,

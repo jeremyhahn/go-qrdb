@@ -129,8 +129,6 @@ func (p Policy) Bound(scope []string, ttl time.Duration) (Grant, time.Duration, 
 // broader sweeps filtered); TenantKeyPrefixes reclaims a tenant's policies.
 // sdk/go/node: Node.MintDelegation — the first mint, in process, as the
 // service principal.
-// sdk/go/transport: CertClient.PutDelegationPolicy, ListDelegationPolicies,
-//                   DeleteDelegationPolicy(principal)
 ```
 
 ### User entity — `pkg/user/types.go`
@@ -1631,10 +1629,6 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   data, after revocation, after expiry and past 24h of validity even when the
   tenant's own CA signed it; and that issuance refuses an unknown permission,
   a lifetime over 24h and a built-in role's name.
-  `TestCADelegatePolicy_CLI_PerProtocol`
-  (`test/integration/ca_delegate_policy_cli_test.go`,
-  `make integration-test-identity-rbac`) drives `qrdb ca delegate policy put`,
-  `list` and `delete` on every transport.
   The standing policy is unit-tested at each layer: `pkg/auth/delegation`
   (`policy_test.go`, `Policy.Bound` narrowing and refusing to widen),
   `pkg/cert` (`delegation_policy_test.go`), `pkg/service`
@@ -1643,16 +1637,10 @@ part of the on-disk contract. Changing it invalidates every existing binding.
   tenant is gone; `hard_confined_keys_test.go` for the confinement,
   `keyspace_reclaim_test.go` for the reclaim),
   `sdk/go/node` (`mint_delegation_test.go`), `pkg/server`
-  (`embedded_mint_delegation_test.go`), each transport's handler
-  (`*_delegation_policy_test.go` under `pkg/api/{rest,grpc,quic,mcp}`) and SDK
-  client (`transport_delegation_policy_test.go` under `sdk/go/transport/*`),
-  and `cmd/qrdb` (`ca_delegate_policy_test.go`). A delegated tenant-barrier
-  seal and officer list are tested on every transport
-  (`*tenant_barrier_delegated_test.go`). `pkg/api/errclass` and each
-  transport's mapping test assert `DelegationPolicyNotFoundError` is NotFound.
-  `TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol` deletes a shared
-  tenant holding a policy on every transport: the renewal is refused and the
-  CA holds no policy for it.
+  (`embedded_mint_delegation_test.go`). A delegated tenant-barrier seal and
+  officer list are tested at the service layer and through the embedded
+  transport (`tenant_barrier_delegated_test.go`). `pkg/api/errclass` asserts
+  `DelegationPolicyNotFoundError` is NotFound.
   `TestABACPolicy_CLI_PerProtocol` (`make integration-test-identity-rbac`)
   drives the stored-policy lifecycle with `qrdb abac policy` on every
   transport of one node: create, get, update (the creation time survives,

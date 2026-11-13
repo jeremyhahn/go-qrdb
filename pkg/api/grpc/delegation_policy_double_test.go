@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Jeremy Hahn
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build !integration
+
 package grpc
 
 import (

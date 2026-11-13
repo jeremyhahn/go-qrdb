@@ -23,7 +23,9 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
 // Name is the database the fixture stores.
@@ -45,11 +47,12 @@ var Secrets = []string{StaticSecret, MulticastSecret, DiscoveryToken}
 // discovery secret.
 func RaftConfig() *database.DatabaseRaftConfig {
 	return &database.DatabaseRaftConfig{
-		ClusterMode: database.RaftDistributed,
-		ReplicaID:   1,
-		RaftAddress: "db.example.com:63001",
-		Peers:       []string{"db.example.com:63001"},
-		Discovery:   database.DiscoveryStatic,
+		ClusterMode:  database.RaftDistributed,
+		StateStorage: database.BackendFile,
+		ReplicaID:    1,
+		RaftAddress:  "db.example.com:63001",
+		Peers:        []string{"db.example.com:63001"},
+		Discovery:    database.DiscoveryStatic,
 		Static: &database.StaticDiscoveryConfig{
 			Peers:        []string{"db.example.com:63001"},
 			SharedSecret: StaticSecret,
@@ -68,13 +71,34 @@ func RaftConfig() *database.DatabaseRaftConfig {
 	}
 }
 
-// Seed stores the fixture database through the real service: a create, then
-// a Raft update carrying every discovery secret, as an operator would.
+// ClaimShards gives mgr a shard ID claimer over an in-memory store. Seed
+// creates its database with a Raft block, which the manager issues a shard
+// ID, so the manager behind the service passed to Seed needs one.
+func ClaimShards(t testing.TB, mgr *database.Manager) {
+	t.Helper()
+	c, err := shard.NewClaimer(kvstore.NewMemoryKVStore())
+	if err != nil {
+		t.Fatalf("shard.NewClaimer: %v", err)
+	}
+	mgr.SetShardIDClaimer(c)
+}
+
+// Seed stores the fixture database through the real service: a create
+// recording the Raft state storage, then a Raft update carrying every
+// discovery secret, as an operator would. The manager behind svc needs a
+// shard ID claimer (ClaimShards).
 func Seed(t testing.TB, svc service.DatabaseServicer) {
 	t.Helper()
+	// The Raft state storage is recorded at create and immutable after it,
+	// so the create records the one RaftConfig names and the update below
+	// keeps it.
 	if _, err := svc.Create(database.DatabaseConfig{
 		Name:    Name,
 		Backend: database.BackendMemory,
+		Raft: &database.DatabaseRaftConfig{
+			ClusterMode:  RaftConfig().ClusterMode,
+			StateStorage: RaftConfig().StateStorage,
+		},
 	}); err != nil {
 		t.Fatalf("create %s: %v", Name, err)
 	}
