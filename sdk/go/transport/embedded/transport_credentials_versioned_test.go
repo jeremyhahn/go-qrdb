@@ -43,6 +43,7 @@ type mockCredentialService struct {
 	retrieveVersionFn func(ctx context.Context, name string, version uint64) ([]byte, error)
 	listVersionsFn    func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
 	gcExpiredFn       func(ctx context.Context, name string) (int, error)
+	setPolicyFn       func(ctx context.Context, name string, policy credentials.RotationPolicy) error
 }
 
 func (m *mockCredentialService) CredentialStore(ctx context.Context, name string, value []byte) error {
@@ -86,22 +87,6 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, name)
 	}
-	return nil
-}
-
-func (*mockCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
-	return nil
-}
-
-func (*mockCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
-	return &service.CredentialRotationPolicyStatus{}, nil
-}
-
-func (*mockCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
-	return nil, nil
-}
-
-func (*mockCredentialService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 
@@ -149,6 +134,34 @@ func (m *mockCredentialService) CredentialGCExpired(ctx context.Context, name st
 		return m.gcExpiredFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (m *mockCredentialService) CredentialSetRotationPolicy(ctx context.Context, name string, policy credentials.RotationPolicy) error {
+	if m.setPolicyFn != nil {
+		return m.setPolicyFn(ctx, name, policy)
+	}
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (m *mockCredentialService) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *mockCredentialService) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *mockCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }
 
 // newCredentialTransport creates a transport with the given credential
@@ -369,6 +382,154 @@ func TestEmbeddedCredential_Rotate_ServiceError(t *testing.T) {
 	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "x", NewValue: []byte("y")})
 	if !errors.Is(err, errCredential) {
 		t.Errorf("expected errCredential, got %v", err)
+	}
+}
+
+func TestEmbeddedCredential_SetRotationPolicy_Success(t *testing.T) {
+	var gotName string
+	var gotPolicy credentials.RotationPolicy
+	svc := &mockCredentialService{
+		setPolicyFn: func(_ context.Context, name string, policy credentials.RotationPolicy) error {
+			gotName, gotPolicy = name, policy
+			return nil
+		},
+	}
+	tr := newCredentialTransport(t, svc)
+
+	if err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db", Enabled: true, Interval: "24h", RetainVersions: 3,
+	}); err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	want := credentials.RotationPolicy{Enabled: true, Interval: 24 * time.Hour, RetainVersions: 3}
+	if gotName != "db" || gotPolicy != want {
+		t.Errorf("service saw %q %+v, want db %+v", gotName, gotPolicy, want)
+	}
+}
+
+func TestEmbeddedCredential_SetRotationPolicy_InvalidPolicy(t *testing.T) {
+	svc := &mockCredentialService{
+		setPolicyFn: func(context.Context, string, credentials.RotationPolicy) error {
+			return &credentials.InvalidRotationPolicyError{Reason: "interval must be positive"}
+		},
+	}
+	tr := newCredentialTransport(t, svc)
+
+	var invalid *credentials.InvalidRotationPolicyError
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db", Enabled: true, Interval: "0s", RetainVersions: 1,
+	})
+	if !errors.As(err, &invalid) {
+		t.Fatalf("service refusal: expected InvalidRotationPolicyError, got %T: %v", err, err)
+	}
+	// An interval that does not parse is refused before the service sees it.
+	err = tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "db", Enabled: true, Interval: "weekly", RetainVersions: 1,
+	})
+	if !errors.As(err, &invalid) {
+		t.Fatalf("unparsable interval: expected InvalidRotationPolicyError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedCredential_SetRotationPolicy_NilServiceAndRequest(t *testing.T) {
+	var nilSvc *NilServiceError
+	if err := newCredentialTransport(t, nil).CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{Name: "x"}); !errors.As(err, &nilSvc) {
+		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
+	}
+	var nilReq *NilRequestError
+	if err := newCredentialTransport(t, &mockCredentialService{}).CredentialSetRotationPolicy(context.Background(), nil); !errors.As(err, &nilReq) {
+		t.Fatalf("expected NilRequestError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedCredential_RotationPolicy_Success(t *testing.T) {
+	tr := newCredentialTransport(t, &mockCredentialService{})
+
+	resp, err := tr.CredentialRotationPolicy(context.Background(), "db")
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if resp.Name != "db" || !resp.Enabled || resp.Interval != time.Hour.String() || resp.RetainVersions != 2 {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+}
+
+func TestEmbeddedCredential_RotationPolicy_NotFoundAndClosed(t *testing.T) {
+	tr := newCredentialTransport(t, &mockCredentialService{})
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.Is(err, credentials.ErrCredentialNotFound) {
+		t.Fatalf("expected ErrCredentialNotFound, got %v", err)
+	}
+	var closed *transport.ClosedError
+	if _, err := closedCredentialTransport(t).CredentialRotationPolicy(context.Background(), "db"); !errors.As(err, &closed) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedCredential_MigrationConflicts_Success(t *testing.T) {
+	tr := newCredentialTransport(t, &mockCredentialService{})
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	want := transport.CredentialMigrationConflict{Name: "db", Value: true, Policy: true}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want {
+		t.Errorf("unexpected resp: %+v", resp)
+	}
+
+	var out *transport.CredentialMigrationConflictsResponse
+	if err := handleCredentialMigrationConflicts(context.Background(), tr, nil, &out); err != nil {
+		t.Fatalf("handleCredentialMigrationConflicts: %v", err)
+	}
+	if out == nil || len(out.Conflicts) != 1 {
+		t.Errorf("handler response: %+v", out)
+	}
+}
+
+func TestEmbeddedCredential_MigrationConflicts_NilServiceAndClosed(t *testing.T) {
+	var nilSvc *NilServiceError
+	if _, err := newCredentialTransport(t, nil).CredentialMigrationConflicts(context.Background()); !errors.As(err, &nilSvc) {
+		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
+	}
+	var closed *transport.ClosedError
+	if _, err := closedCredentialTransport(t).CredentialMigrationConflicts(context.Background()); !errors.As(err, &closed) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+	if err := handleCredentialMigrationConflicts(context.Background(), closedCredentialTransport(t), nil, nil); !errors.As(err, &closed) {
+		t.Fatalf("handler: expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestEmbeddedCredential_ResolveMigrationConflict_SuccessAndNotFound(t *testing.T) {
+	tr := newCredentialTransport(t, &mockCredentialService{})
+
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+	if err := handleCredentialResolveMigrationConflict(context.Background(), tr,
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}, nil); !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
+		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
+	}
+}
+
+func TestEmbeddedCredential_ResolveMigrationConflict_NilServiceRequestAndClosed(t *testing.T) {
+	req := &transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}
+	var nilSvc *NilServiceError
+	if err := newCredentialTransport(t, nil).CredentialResolveMigrationConflict(context.Background(), req); !errors.As(err, &nilSvc) {
+		t.Fatalf("expected NilServiceError, got %T: %v", err, err)
+	}
+	tr := newCredentialTransport(t, &mockCredentialService{})
+	var invalid *InvalidRequestError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(), nil); !errors.As(err, &invalid) {
+		t.Fatalf("expected InvalidRequestError, got %T: %v", err, err)
+	}
+	if err := handleCredentialResolveMigrationConflict(context.Background(), tr, "not a request", nil); !errors.As(err, &invalid) {
+		t.Fatalf("handler: expected InvalidRequestError, got %T: %v", err, err)
+	}
+	var closed *transport.ClosedError
+	if err := closedCredentialTransport(t).CredentialResolveMigrationConflict(context.Background(), req); !errors.As(err, &closed) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
 	}
 }
 

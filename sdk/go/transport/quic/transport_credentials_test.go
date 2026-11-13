@@ -94,6 +94,43 @@ func TestTransport_CredentialRotate_NilRequest(t *testing.T) {
 	}
 }
 
+func TestTransport_CredentialSetRotationPolicy_ClosedAndNilRequest(t *testing.T) {
+	var ce *transport.ClosedError
+	if err := newClosedCredentialTransport(t).CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{Name: "k"}); !errors.As(err, &ce) {
+		t.Fatalf("expected *ClosedError, got %T", err)
+	}
+	var nre *nilCredentialRequestError
+	if err := newOpenCredentialTransport(t).CredentialSetRotationPolicy(context.Background(), nil); !errors.As(err, &nre) {
+		t.Fatalf("expected *nilCredentialRequestError, got %T", err)
+	}
+}
+
+func TestTransport_CredentialRotationPolicy_Closed(t *testing.T) {
+	var ce *transport.ClosedError
+	if _, err := newClosedCredentialTransport(t).CredentialRotationPolicy(context.Background(), "k"); !errors.As(err, &ce) {
+		t.Fatalf("expected *ClosedError, got %T", err)
+	}
+}
+
+func TestTransport_CredentialMigrationConflicts_Closed(t *testing.T) {
+	var ce *transport.ClosedError
+	if _, err := newClosedCredentialTransport(t).CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
+		t.Fatalf("expected *ClosedError, got %T", err)
+	}
+}
+
+func TestTransport_CredentialResolveMigrationConflict_ClosedAndNilRequest(t *testing.T) {
+	var ce *transport.ClosedError
+	req := &transport.CredentialResolveMigrationConflictRequest{Name: "k", Resolution: "import"}
+	if err := newClosedCredentialTransport(t).CredentialResolveMigrationConflict(context.Background(), req); !errors.As(err, &ce) {
+		t.Fatalf("expected *ClosedError, got %T", err)
+	}
+	var nre *nilCredentialRequestError
+	if err := newOpenCredentialTransport(t).CredentialResolveMigrationConflict(context.Background(), nil); !errors.As(err, &nre) {
+		t.Fatalf("expected *nilCredentialRequestError, got %T", err)
+	}
+}
+
 func TestTransport_CredentialRetrieveVersion_NilRequest(t *testing.T) {
 	tr := newOpenCredentialTransport(t)
 	_, err := tr.retrieveVersionResponse(context.Background(), nil)
