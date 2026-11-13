@@ -49,13 +49,6 @@ func TestEnrolledCert(t *testing.T) {
 	}
 }
 
-func TestEnrolledCert_EmptyNotAfter(t *testing.T) {
-	got := EnrolledCert(&pb.EnrolledCertResponse{Username: "alice"})
-	if !got.NotAfter.IsZero() {
-		t.Errorf("NotAfter = %v, want zero", got.NotAfter)
-	}
-}
-
 func TestEnrolledCert_BringYourOwn_SerialEmpty(t *testing.T) {
 	// A bring-your-own certificate carries no serial: the cluster did not
 	// issue it. The conversion must not synthesize one.

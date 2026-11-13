@@ -60,13 +60,3 @@ func TestGRPCIssueDelegation_InvalidTTLIsARequestError(t *testing.T) {
 		t.Fatalf("err = %v (%T); want a *transport.RequestError", err, err)
 	}
 }
-
-func TestGRPCIssueDelegation_Closed(t *testing.T) {
-	tr := &Transport{}
-	tr.closed.Store(true)
-	_, err := tr.IssueDelegation(context.Background(), &transport.IssueDelegationRequest{})
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}

@@ -139,53 +139,106 @@ func TestConnect_NonAuth4xxKeepsTheConnectionError(t *testing.T) {
 	}
 }
 
-func TestInitializeRefusalCapture_DisarmedKeepsNothing(t *testing.T) {
-	address := refusingServer(t, http.StatusUnauthorized, nil, `{"error":"later"}`)
-	c := newInitializeRefusalCapture(http.DefaultTransport)
-	c.disarm()
-	req, err := http.NewRequest(http.MethodPost, address, nil)
+// roundTripRefused sends a POST to address through a refusalCapture with ctx.
+func roundTripRefused(t *testing.T, ctx context.Context, address string) string {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, address, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	resp, err := c.RoundTrip(req)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	_ = resp.Body.Close()
-	if got := c.Refusal(); got != nil {
-		t.Errorf("Refusal = %v after disarm, want nil", got)
-	}
-}
-
-func TestInitializeRefusalCapture_BodyIsHandedOn(t *testing.T) {
-	const body = `{"error":"refused"}`
-	address := refusingServer(t, http.StatusUnauthorized, nil, body)
-	c := newInitializeRefusalCapture(http.DefaultTransport)
-	req, err := http.NewRequest(http.MethodPost, address, nil)
-	if err != nil {
-		t.Fatalf("NewRequest: %v", err)
-	}
-	resp, err := c.RoundTrip(req)
+	resp, err := (&refusalCapture{next: http.DefaultTransport}).RoundTrip(req)
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	got, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if string(got) != body {
+	return string(got)
+}
+
+func TestRefusalCapture_RequestWithoutSlotKeepsNothing(t *testing.T) {
+	const body = `{"error":"refused"}`
+	address := refusingServer(t, http.StatusUnauthorized, nil, body)
+	_, slot := withRefusalSlot(context.Background(), "qrdb_get")
+	if got := roundTripRefused(t, context.Background(), address); got != body {
 		t.Errorf("body = %q, want %q", got, body)
 	}
-	if c.Refusal() == nil {
-		t.Error("Refusal = nil, want the 401 kept")
+	if got := slot.Refusal(); got != nil {
+		t.Errorf("Refusal = %v for a request that did not carry the slot, want nil", got)
 	}
 }
 
-func TestInitializeRefusal_PlainTextBodyIsTheMessage(t *testing.T) {
+func TestRefusalCapture_BodyIsHandedOn(t *testing.T) {
+	const body = `{"error":"refused"}`
+	address := refusingServer(t, http.StatusUnauthorized, nil, body)
+	ctx, slot := withRefusalSlot(context.Background(), "qrdb_get")
+	if got := roundTripRefused(t, ctx, address); got != body {
+		t.Errorf("body = %q, want %q", got, body)
+	}
+	var reqErr *transport.RequestError
+	if err := slot.Refusal(); !errors.As(err, &reqErr) || reqErr.Method != "qrdb_get" {
+		t.Errorf("Refusal = %v, want the 401 kept as qrdb_get's RequestError", err)
+	}
+}
+
+func TestRefusalCapture_SuccessKeepsNothing(t *testing.T) {
+	address := refusingServer(t, http.StatusOK, nil, `{}`)
+	ctx, slot := withRefusalSlot(context.Background(), "qrdb_get")
+	_ = roundTripRefused(t, ctx, address)
+	if got := slot.Refusal(); got != nil {
+		t.Errorf("Refusal = %v after a 200, want nil", got)
+	}
+}
+
+// TestCallTool_401AfterInitializeIsTheTypedRefusal: a server that answers
+// initialize and refuses the caller's credential at tools/call -- what a
+// node serving no-login tools does with a refused certificate -- yields the
+// server's typed refusal, not mcp-go's bare authorization-required error.
+func TestCallTool_401AfterInitializeIsTheTypedRefusal(t *testing.T) {
+	const msg = "auth/middleware: client certificate is invalid or unverified"
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(string(raw), `"initialize"`):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"qrdb","version":"test"}}}`)
+		case strings.Contains(string(raw), `"tools/call"`):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":"`+msg+`"}`)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	t.Cleanup(hs.Close)
+
+	tr, err := New(transport.WithAddress(hs.URL), transport.WithTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	_, err = tr.Get(context.Background(), "k")
+	var reqErr *transport.RequestError
+	if !errors.As(err, &reqErr) {
+		t.Fatalf("err = %T %v, want *transport.RequestError", err, err)
+	}
+	if reqErr.StatusCode != int(wire.CodeUnauthenticated) {
+		t.Errorf("StatusCode = %d, want %d", reqErr.StatusCode, wire.CodeUnauthenticated)
+	}
+	if !strings.Contains(err.Error(), msg) {
+		t.Errorf("err = %q, want the server's message", err)
+	}
+}
+
+func TestHTTPRefusal_PlainTextBodyIsTheMessage(t *testing.T) {
 	resp := &http.Response{Status: "401 Unauthorized", Header: http.Header{}}
-	err := initializeRefusal(wire.CodeUnauthenticated, resp, []byte("unauthorized\n")).err
+	err := httpRefusal("initialize", wire.CodeUnauthenticated, resp, []byte("unauthorized\n")).err
 	if !strings.Contains(err.Error(), "unauthenticated: unauthorized") {
 		t.Errorf("err = %q, want the plain body as the message", err)
 	}
-	err = initializeRefusal(wire.CodeUnauthenticated, resp, nil).err
+	err = httpRefusal("initialize", wire.CodeUnauthenticated, resp, nil).err
 	if !strings.Contains(err.Error(), "401 Unauthorized") {
 		t.Errorf("err = %q, want the status line for an empty body", err)
 	}

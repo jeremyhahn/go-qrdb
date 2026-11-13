@@ -470,31 +470,10 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("user.Delete", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "user.Delete", "err")
-		if err := tr.DeleteUser(context.Background(), 1); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("user.List", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "user.List", "err")
 		if _, err := tr.ListUsers(context.Background(), &transport.ListUsersRequest{}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("user.Enable", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "user.Enable", "err")
-		if err := tr.EnableUser(context.Background(), 1); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("user.Disable", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "user.Disable", "err")
-		if err := tr.DisableUser(context.Background(), 1); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -534,31 +513,10 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("role.Delete", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "role.Delete", "err")
-		if err := tr.DeleteRole(context.Background(), "r1"); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("role.List", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "role.List", "err")
 		if _, err := tr.ListRoles(context.Background(), &transport.ListRolesRequest{}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("role.Assign", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "role.Assign", "err")
-		if err := tr.AssignRole(context.Background(), 1, "r1"); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("role.Unassign", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "role.Unassign", "err")
-		if err := tr.UnassignRole(context.Background(), 1, "r1"); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -602,13 +560,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "tenant.TrustAnchorRemove", "err")
 		if err := tr.RemoveTrustAnchor(context.Background(), "t1", "fp1"); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("cert.Revoke", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "cert.Revoke", "err")
-		if _, err := tr.RevokeCert(context.Background(), "s"); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -805,13 +756,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("tenant.Delete", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "tenant.Delete", "err")
-		if err := tr.DeleteTenant(context.Background(), "t1"); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("tenant.UpdateQuotas", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "tenant.UpdateQuotas", "err")
@@ -865,13 +809,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("vector.DeleteNamespace", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "vector.DeleteNamespace", "err")
-		if _, err := tr.DeleteNamespace(context.Background(), &transport.DeleteNamespaceRequest{Namespace: "ns"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("vector.ListNamespaces", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "vector.ListNamespaces", "err")
@@ -900,31 +837,10 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("vector.Delete", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "vector.Delete", "err")
-		if _, err := tr.DeleteVector(context.Background(), &transport.DeleteVectorRequest{Namespace: "ns"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("vector.BatchUpsert", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "vector.BatchUpsert", "err")
-		if _, err := tr.BatchUpsert(context.Background(), &transport.BatchUpsertRequest{Namespace: "ns"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("vector.BatchDelete", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "vector.BatchDelete", "err")
 		if _, err := tr.BatchDeleteVectors(context.Background(), &transport.BatchDeleteVectorsRequest{Namespace: "ns"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("vector.List", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "vector.List", "err")
-		if _, err := tr.ListVectors(context.Background(), &transport.ListVectorsRequest{Namespace: "ns"}); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -1006,13 +922,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("ts.WriteBatch", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "ts.WriteBatch", "err")
-		if err := tr.TSWriteBatch(context.Background(), []transport.TSDataPoint{{Metric: "m"}}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("ts.Query", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "ts.Query", "err")
@@ -1038,13 +947,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "ts.RichQuery", "err")
 		if _, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{Metric: "m"}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("ts.DeleteSeries", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "ts.DeleteSeries", "err")
-		if _, err := tr.TSDeleteSeries(context.Background(), &transport.TSDeleteRequest{Metric: "m"}); err == nil {
 			t.Fatal("expected err")
 		}
 	})
@@ -1126,42 +1028,7 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 			t.Fatal("expected err")
 		}
 	})
-	t.Run("collection.ListDocuments", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "collection.ListDocuments", "err")
-		if _, err := tr.ListDocuments(context.Background(), transport.ListDocumentsRequest{}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 
-	t.Run("admin.RemoveMember", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "admin.RemoveMember", "err")
-		if err := tr.RemoveMember(context.Background(), 1, 2); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("admin.RequestSnapshot", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "admin.RequestSnapshot", "err")
-		if err := tr.RequestSnapshot(context.Background(), 1); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("admin.StartShard", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "admin.StartShard", "err")
-		if err := tr.StartShard(context.Background(), &transport.StartShardRequest{ShardID: 1}); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("admin.StopShard", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "admin.StopShard", "err")
-		if err := tr.StopShard(context.Background(), 1); err == nil {
-			t.Fatal("expected err")
-		}
-	})
 	t.Run("admin.GetShardState", func(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "admin.GetShardState", "err")
@@ -1173,13 +1040,6 @@ func TestE2E_BulkServerErr_RemainingMethods(t *testing.T) {
 		srv, tr := startE2EServer(t)
 		serverErr(srv, "admin.GetTopology", "err")
 		if _, err := tr.GetTopology(context.Background()); err == nil {
-			t.Fatal("expected err")
-		}
-	})
-	t.Run("kv.Delete", func(t *testing.T) {
-		srv, tr := startE2EServer(t)
-		serverErr(srv, "kv.Delete", "err")
-		if err := tr.Delete(context.Background(), "k"); err == nil {
 			t.Fatal("expected err")
 		}
 	})

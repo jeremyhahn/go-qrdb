@@ -792,8 +792,6 @@ var embeddingRules = []rule{
 	// not-found), and the refusal to register is what the caller asked about.
 	as(&service.EmbeddingProviderRegistrationError{}, AlreadyExists),
 	as(&service.EmbeddingProviderNotFoundError{}, NotFound),
-	as(&service.EmbeddingBatchTooLargeError{}, InvalidArgument),
-	as(&service.EmbeddingDimensionMismatchError{}, InvalidArgument),
 	as(&service.EmbeddingServiceClosedError{}, Unavailable),
 	as(&service.EmbeddingProviderAlreadyRegisteredError{}, AlreadyExists),
 }
@@ -1055,6 +1053,7 @@ var onboardingRules = []rule{
 	// caller renewing itself -- is refused permission.
 	as(&service.DelegationRequestError{}, InvalidArgument),
 	as(&service.DelegationDeniedError{}, PermissionDenied),
+	as(&service.DelegationPolicyNotFoundError{}, NotFound),
 	as(&service.TenantOnboardingFieldError{}, InvalidArgument),
 	as(&service.TenantOnboardingNotConfiguredError{}, Unimplemented),
 	as(&bootstrap.MissingAdminCredentialError{}, InvalidArgument),

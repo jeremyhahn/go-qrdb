@@ -164,7 +164,9 @@ func TestMCP_EnrollEndpointCarriesTheOpaqueRefusal(t *testing.T) {
 // enrolment endpoint serves.
 func TestMCP_EnrollEndpointDoesNotOpenMCP(t *testing.T) {
 	base, client := startEnrollMCP(t, &fakeInvitations{})
-	req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	// /mcp admits an anonymous caller only for publicverbs.Table's tools;
+	// the enrol endpoint must not widen that to a data tool.
+	req, _ := http.NewRequest(http.MethodPost, base+"/mcp", strings.NewReader(callToolBody("qrdb_get")))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
