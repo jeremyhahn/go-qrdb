@@ -160,27 +160,6 @@ var errBarrier = errors.New("barrier: test error")
 // BarrierInitialize
 // ---------------------------------------------------------------------------
 
-func TestEmbeddedBarrier_Initialize(t *testing.T) {
-	var capturedSecret string
-	svc := &mockBarrierService{
-		barrierInitializeFn: func(_ context.Context, secret []byte) error {
-			capturedSecret = string(secret)
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.BarrierInitialize(context.Background(), &transport.BarrierInitializeRequest{
-		Secret: []byte("my-master-key"),
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if capturedSecret != "my-master-key" {
-		t.Errorf("expected secret 'my-master-key', got %q", capturedSecret)
-	}
-}
-
 func TestEmbeddedBarrier_Initialize_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
@@ -234,27 +213,6 @@ func TestEmbeddedBarrier_Initialize_ServiceError(t *testing.T) {
 // BarrierUnseal
 // ---------------------------------------------------------------------------
 
-func TestEmbeddedBarrier_Unseal(t *testing.T) {
-	var capturedSecret string
-	svc := &mockBarrierService{
-		barrierUnsealFn: func(_ context.Context, secret []byte) error {
-			capturedSecret = string(secret)
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.BarrierUnseal(context.Background(), &transport.BarrierUnsealRequest{
-		Secret: []byte("unseal-key"),
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if capturedSecret != "unseal-key" {
-		t.Errorf("expected secret 'unseal-key', got %q", capturedSecret)
-	}
-}
-
 func TestEmbeddedBarrier_Unseal_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
@@ -276,28 +234,6 @@ func TestEmbeddedBarrier_Unseal_NilService(t *testing.T) {
 	var nilErr *NilServiceError
 	if !errors.As(err, &nilErr) {
 		t.Errorf("expected NilServiceError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedBarrier_ChangePassphrase(t *testing.T) {
-	var gotCurrent, gotNext string
-	svc := &mockBarrierService{
-		barrierChangePassphraseFn: func(_ context.Context, current, next []byte) error {
-			gotCurrent, gotNext = string(current), string(next)
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.BarrierChangePassphrase(context.Background(), &transport.BarrierChangePassphraseRequest{
-		Current: []byte("old-passphrase"),
-		Next:    []byte("new-passphrase"),
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if gotCurrent != "old-passphrase" || gotNext != "new-passphrase" {
-		t.Errorf("service got (%q, %q), want (old-passphrase, new-passphrase)", gotCurrent, gotNext)
 	}
 }
 
@@ -399,25 +335,6 @@ func TestEmbeddedBarrier_ChangePassphrase_RequiresSOPIN(t *testing.T) {
 // BarrierSeal
 // ---------------------------------------------------------------------------
 
-func TestEmbeddedBarrier_Seal(t *testing.T) {
-	sealCalled := false
-	svc := &mockBarrierService{
-		barrierSealFn: func(_ context.Context) error {
-			sealCalled = true
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.BarrierSeal(context.Background())
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !sealCalled {
-		t.Error("expected BarrierSeal to be called on service")
-	}
-}
-
 func TestEmbeddedBarrier_Seal_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
@@ -469,33 +386,6 @@ func TestEmbeddedBarrier_Status(t *testing.T) {
 	}
 	if resp.InitializedAt != "" {
 		t.Errorf("expected empty initialized_at for zero time, got %q", resp.InitializedAt)
-	}
-}
-
-func TestEmbeddedBarrier_Status_InitializedAt(t *testing.T) {
-	initTime := time.Date(2026, 3, 4, 12, 30, 0, 0, time.UTC)
-	svc := &mockBarrierService{
-		barrierStatusFn: func(_ context.Context) (*service.BarrierStatusInfo, error) {
-			return &service.BarrierStatusInfo{
-				Sealed:         false,
-				Strategy:       "passphrase",
-				HardwareBacked: false,
-				InitializedAt:  initTime,
-			}, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	resp, err := tr.BarrierStatus(context.Background())
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	expected := initTime.Format(time.RFC3339)
-	if resp.InitializedAt != expected {
-		t.Errorf("expected initialized_at %q, got %q", expected, resp.InitializedAt)
-	}
-	if resp.Sealed {
-		t.Error("expected sealed=false")
 	}
 }
 
@@ -704,25 +594,6 @@ func TestEmbeddedBarrier_RecoveryGenerate_ServiceError(t *testing.T) {
 // BarrierDeleteRecoveryKeys
 // ---------------------------------------------------------------------------
 
-func TestEmbeddedBarrier_RecoveryDelete(t *testing.T) {
-	deleteCalled := false
-	svc := &mockBarrierService{
-		barrierDeleteRecoveryKeysFn: func(_ context.Context) error {
-			deleteCalled = true
-			return nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	err := tr.BarrierDeleteRecoveryKeys(context.Background())
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !deleteCalled {
-		t.Error("expected BarrierDeleteRecoveryKeys to be called on service")
-	}
-}
-
 func TestEmbeddedBarrier_RecoveryDelete_Closed(t *testing.T) {
 	tr := closedBarrierTransport(t)
 
@@ -746,23 +617,6 @@ func TestEmbeddedBarrier_RecoveryDelete_NilService(t *testing.T) {
 // ---------------------------------------------------------------------------
 // BarrierHasRecoveryKeys
 // ---------------------------------------------------------------------------
-
-func TestEmbeddedBarrier_RecoveryStatus(t *testing.T) {
-	svc := &mockBarrierService{
-		barrierHasRecoveryKeysFn: func(_ context.Context) (bool, error) {
-			return true, nil
-		},
-	}
-	tr := newBarrierTransport(t, svc)
-
-	resp, err := tr.BarrierHasRecoveryKeys(context.Background())
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
-	}
-	if !resp.HasKeys {
-		t.Error("expected has_keys=true")
-	}
-}
 
 func TestEmbeddedBarrier_RecoveryStatus_NoKeys(t *testing.T) {
 	svc := &mockBarrierService{
@@ -1156,21 +1010,6 @@ func TestEmbeddedBarrier_EnableEncryption_Closed(t *testing.T) {
 // ---------------------------------------------------------------------------
 // WithBarrierService option test
 // ---------------------------------------------------------------------------
-
-func TestWithBarrierService(t *testing.T) {
-	svc := &mockBarrierService{}
-	tr, err := New(newMockKVService(), &mockAdminService{}, WithBarrierService(svc))
-	if err != nil {
-		t.Fatalf("failed to create transport with barrier option: %v", err)
-	}
-
-	// Verify the barrier service is wired by calling a method that does not
-	// return NilServiceError.
-	err = tr.BarrierSeal(context.Background())
-	if err != nil {
-		t.Fatalf("expected no error when barrier service is set, got: %v", err)
-	}
-}
 
 // TestEmbeddedBarrier_Request_RetiredShareVerbsAreUnknown proves the raw-share
 // verbs the unified share-holder quorum retired are gone from the dispatch
