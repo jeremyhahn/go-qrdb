@@ -149,9 +149,9 @@ records a node writes a settled note under the old prefix and deletes the
 note last, so a rerun interrupted mid-deletion finishes the deletion instead
 of reading the remainder as a different copy.
 
-**Resolving a conflict.** An operator lists a node's conflicts (permission
-`credentials:list`) and settles each one (permission `credentials:rotate`)
-with one of two resolutions:
+**Resolving a conflict.** A caller of `CredentialServicer` lists a node's
+conflicts (`CredentialMigrationConflicts`) and settles each one
+(`CredentialResolveMigrationConflict`) with one of two resolutions:
 
 - `import` writes the node's kept current value as a new version of the
   replicated record, retaining the version it replaces, exactly as a rotation
@@ -161,8 +161,8 @@ with one of two resolutions:
 Either way the node's old records for that name are then deleted, and the
 resolution is audited with the old records it did not carry over (the kept
 version history, and the current value unless it was imported). Resolving a
-name that has no conflict on the node is `NotFound`; a resolution other than
-the two is `InvalidArgument`. Conflicts are per node: each node lists and
+name that has no conflict on the node is `ErrMigrationConflictNotFound`; a
+resolution other than the two is `ErrInvalidMigrationResolution`. Conflicts are per node: each node lists and
 resolves only the copies it kept. The verbs are listed per transport in
 [api.md](api.md) and the operator steps are in [user.md](user.md).
 
@@ -340,13 +340,12 @@ A named credential under the `barrier` strategy can carry a rotation policy:
 after a rotation, the current one included. An owner ruling replaced the
 earlier "no automatic rotation policy" non-goal: the engine's own secrets
 need scheduled rotation even in a standalone qrdb with no KMS above it. The
-policy is set and read through `CredentialServicer` on every transport, under
-`credentials:rotate`. The `manual` strategy refuses every policy, because its
+policy is set and read through `CredentialServicer`
+(`CredentialSetRotationPolicy`, `CredentialRotationPolicy`). The `manual` strategy refuses every policy, because its
 values come from an officer, not the engine.
 
-**Every node runs the scheduler, and the cluster rotates a credential once per
-interval.** Each node checks every `seal.credential_rotation_check_period`
-(default `1m`). A due credential is claimed by a compare-and-swap on its
+**Any node may run `RotateDue`, and the cluster rotates a credential once per
+interval.** A due credential is claimed by a compare-and-swap on its
 metadata record that records an expiring claim, and only the node holding the
 claim calls the value source, so a source that changes a password or issues a
 key outside the store runs once per rotation, not once per node. The rest see
@@ -378,7 +377,7 @@ the holder runs the value source and the rotation under a deadline of 30
 seconds or the lease's own expiry, whichever is sooner, so it has stopped
 writing before another node may take the claim. That bound is per credential:
 an attempt past it releases its claim and stays due, and the pass goes on to
-the next credential. The scheduler puts no deadline on the pass as a whole,
+the next credential. `RotateDue` puts no deadline on the pass as a whole,
 so one slow value source does not starve the credentials after it. Ending the claim, by completing or releasing it, gets its own 30-second
 bound that starts once the rotation has returned, so a rotation that used its
 whole lease can still settle its claim.
@@ -388,7 +387,7 @@ the metadata record with a pending cleanup, and clears the mark only once the
 expired-version reaping and the trim to `retain_versions` have both succeeded.
 If either fails, every later check retries the cleanup, without calling the
 value source again, until it lands. A transient storage fault therefore leaves
-an old version readable for one check period, not for a whole interval. Every writer of the metadata record (the policy, the
+an old version readable until the next check, not for a whole interval. Every writer of the metadata record (the policy, the
 claim, a rotation, the history trim) updates it conditionally and re-reads on
 a conflict, so none overwrites another: a policy disabled during a rotation
 stays disabled.

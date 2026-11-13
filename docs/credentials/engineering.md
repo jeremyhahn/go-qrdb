@@ -57,10 +57,10 @@ refused with `CapabilityUnsupportedError`. The embedded transport is handed the 
 the network transports (`embedded.WithCredentialService`).
 
 Its
-`CredentialRotateDue(ctx, now)` is the scheduler's entry point, not a wire
-operation. `CredentialRotationPolicyFromWire(enabled, interval, retainVersions)`
-is the one parser every transport uses to turn the wire fields into a
-`credentials.RotationPolicy`. `CredentialRotationPolicyStatus` carries the
+`CredentialRotateDue(ctx, now)` carries out every due policy in the system
+store and in each unsealed tenant's store; it is not a wire operation.
+`CredentialRotationPolicyFromWire(enabled, interval, retainVersions)` turns
+the wire fields into a `credentials.RotationPolicy`. `CredentialRotationPolicyStatus` carries the
 policy and `NextRotation`, and renders them for the wire with
 `WireInterval()` (a Go duration string) and `WireNextRotation()` (RFC 3339 UTC,
 or empty when nothing is scheduled).
@@ -238,7 +238,7 @@ than change the interface.
 - **Rotation takes a grace period.** The previous version stays retrievable for
   that long; `0` wipes it immediately.
 - **A credential rotates once per interval across the cluster, not once per
-  node.** Every node runs the scheduler, and a due credential is claimed by a
+  node.** Any node may run `RotateDue`, and a due credential is claimed by a
   `CompareAndSwap` on its metadata record that records a claim expiring one
   lease (five minutes) ahead. Only the claim holder calls the
   `RotationValueSource`, so a source with effects outside the store runs once
@@ -288,11 +288,11 @@ than change the interface.
 | Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
 | `ListCredentials` on a backend that cannot enumerate | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
-| Rotation policy refused: an enabled policy with a non-positive or unparsable interval or `RetainVersions` below 1, or any policy under `manual` | `*credentials.InvalidRotationPolicyError`, invalid-argument on every transport | **yes** — nothing is stored |
+| Rotation policy refused: an enabled policy with a non-positive or unparsable interval or `RetainVersions` below 1, or any policy under `manual` | `*credentials.InvalidRotationPolicyError` | **yes** — nothing is stored |
 | Rotation policy set or read for an unknown name | `ErrCredentialNotFound` | n/a |
-| Due rotation with no `RotationValueSource` configured | `*credentials.RotationError` wrapping `ErrNoRotationValueSource`; the scheduler logs it and the credential stays due | **yes** — no rotation, no claim |
+| Due rotation with no `RotationValueSource` configured | `*credentials.RotationError` wrapping `ErrNoRotationValueSource`; `RotateDue` returns it and the credential stays due | **yes** — no rotation, no claim |
 | `RotationValueSource` returns an error or a nil Buffer | `*credentials.RotationError` wrapping the cause (`ErrEmptyCredentialValue` for nil); the credential stays due | **yes** |
-| Claimed rotation fails after the source (failed or contended commit batch, cancelled scheduler context) | `*credentials.RotationError` wrapping the cause; the claim is released and the credential stays due, so the next check retries, landing the staged value without calling the source again | **yes** — `NextRotation` does not move |
+| Claimed rotation fails after the source (failed or contended commit batch, cancelled caller context) | `*credentials.RotationError` wrapping the cause; the claim is released and the credential stays due, so the next check retries, landing the staged value without calling the source again | **yes** — `NextRotation` does not move |
 | Node crashes holding a rotation claim | the claim lapses after its five-minute lease; the credential is then due on every node | n/a |
 | Expired-version reaping or the history trim fails after a rotation landed | `*credentials.RotationError` wrapping the cause; the rotation is not counted, `NextRotation` has moved, and the record keeps a pending cleanup that every later check retries without calling the value source | **yes** — the trimmed versions stay until the cleanup lands |
 | Tenant on the shared system barrier | `*service.CapabilityUnsupportedError` (no dedicated barrier) | **yes**, never the node-wide store |
@@ -307,9 +307,7 @@ continue with no credential at all.
 
 One permission per verb, listed in the [API capability matrix](api.md#capability-matrix)
 (`pkg/permission/constants.go`). **Write, rotate and delete custody secret
-material and are gated separately from reads.** Setting and reading a rotation
-policy both take `credentials:rotate`: a policy decides when secret material
-is replaced, so it is held to the same permission as the rotation itself. Every `credentials:*`
+material and are gated separately from reads.** Every `credentials:*`
 permission is tenant self-scope, declared in `pkg/permission/self_scope.go`,
 so a tenant administrator can grant it inside the tenant. The grant reaches
 only that tenant's store because the store is resolved from the caller's
@@ -324,20 +322,13 @@ reports it. Secret references in config use the `credential://` and
 ownership across the stack is documented in
 [credentials/secret-resolution.md](../credentials/secret-resolution.md).
 
-`seal.credential_rotation_check_period` sets how often each node's scheduler
-looks for due credentials. It is a Go duration and defaults to `1m`; a
-non-positive or unparsable value fails configuration validation. A rotation
-lands within one check period of its `NextRotation`.
-
 ## Scheduled rotation
 
 `SetRotationPolicy` validates the policy, stores it in the credential's metadata
 record (`credential-meta/<name>`), and schedules `NextRotation` one interval from now. A disabled policy
 clears the schedule. Setting a policy emits a `rotation_policy` audit event.
 
-`qrdbd` starts a scheduler on every node (`pkg/server`,
-`credential_rotation_scheduler.go`). Every check period it calls
-`CredentialRotateDue`, which sweeps the system store and then the store of
+`CredentialRotateDue` sweeps the system store and then the store of
 every tenant the `seal.BarrierRegistry` lists (`ListTenants`), in tenant-ID
 order, each under that tenant's context, so a tenant's due policy rotates
 that tenant's credential and nothing else. A tenant whose barrier is sealed,
@@ -357,8 +348,8 @@ strategy's credentials and, for each one whose enabled policy is due:
    attempt left a staged value (below). Steps 2 to 4 are one attempt, under a
    deadline of 30 seconds or the claim's own expiry, whichever is sooner. An
    attempt past it fails like any other, and the pass goes on to the next
-   credential, so one slow source does not starve the rest; the scheduler
-   sets no deadline on the pass, and only its own context ending stops one;
+   credential, so one slow source does not starve the rest; `RotateDue`
+   sets no deadline on the pass, and only its caller's context ending stops one;
 3. stages the new value: one guarded batch, refused unless the metadata record
    is exactly as read, writes the value under the next version's staged key
    (`credential-staged/<e>/<N+1>`) and the metadata record naming that version
@@ -376,7 +367,7 @@ strategy's credentials and, for each one whose enabled policy is due:
    rotation ends with `ErrRotationClaimLost` having written nothing. If
    steps 2 to 4 failed it ends the claim instead and leaves `NextRotation`
    where it was, so the credential stays due. Ending a failed claim runs even
-   after the scheduler's context is cancelled, under its own 30-second bound
+   after the caller's context is cancelled, under its own 30-second bound
    that starts once the rotation has returned; if that write fails too, the
    claim lapses;
 5. deletes every staged value of a version up to the current one, runs `GCExpiredVersions`, then prunes history to `RetainVersions - 1`
@@ -412,7 +403,7 @@ value source. A failed cleanup is therefore retried on every check until it
 lands, not left until the next rotation. Under a policy disabled meanwhile it
 reaps expired versions and does no trim.
 
-The scheduler logs a failure and keeps running. Under `manual` it does
+`RotateDue` reports a failed credential and goes on to the next. Under `manual` it does
 nothing: a manual credential has no stored value to replace and the policy is
 refused.
 
@@ -447,7 +438,7 @@ with the credential and are removed with it by `delete`.
 
 ## Test strategy
 
-**Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol on one node, the tenant-store CLI suite per protocol, and the embedded tenant-store suite; and on a three-node cluster a credential, rotation policy, rotation and delete made through one node are read through the others, per protocol. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
+**Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol on one node, the tenant-store CLI suite per protocol, and the embedded tenant-store suite; and on a three-node cluster a credential, rotation and delete made through one node are read through the others, per protocol. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
 
 - **Unit**: store/retrieve/submit/delete for both strategies, rotation with and
   without a grace period, versioned retrieval including `0` meaning current, GC
@@ -471,11 +462,10 @@ with the credential and are removed with it by `delete`.
   clearing, `RotateDue` calling the value source once when a second caller
   arrives while the first holds the claim, a crashed holder's claim lapsing,
   a failing or absent value source, a failed current-value write and a
-  cancelled scheduler context each leaving the credential due (and retried by
+  cancelled caller context each leaving the credential due (and retried by
   a restarted service), a policy changed during a rotation, the prune, the
-  reaper or a rotation keeping it, and pruning to `RetainVersions`. Each SDK transport sets and reads a policy and
-  maps a refused one to its invalid-argument error, and the `qrdb credential
-  rotation-policy` verbs have CLI unit tests.
+  reaper or a rotation keeping it, and pruning to `RetainVersions`. The embedder's value source reaches the
+  store through `node.WithCredentialRotationValueSource`.
 - **One store**: an unbound service fails every verb with
   `ErrStoreUnavailable`, `BindStore` refuses nil and replaces a bound store,
   and two services bound to one store see each other's credential and policy
