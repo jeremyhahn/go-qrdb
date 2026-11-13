@@ -30,6 +30,12 @@ import (
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs/publicverbstest"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // certlessConn dials p's gRPC listener presenting cert, or no certificate
@@ -102,6 +108,39 @@ func TestPublicVerbsParity_GRPC(t *testing.T) {
 	if code := callCode(conn, service+publicverbs.Table[publicverbs.VerbHealth].GRPC, nil); code != codes.OK {
 		t.Fatalf("Health with no certificate = %v, want OK", code)
 	}
+}
+
+// TestPublicVerbsParity_GRPCHealthAnswer: a caller with no certificate
+// gets the admin service's Health answer, every field intact, the same
+// fixture the REST, QUIC and Unix parity tests compare against.
+func TestPublicVerbsParity_GRPCHealthAnswer(t *testing.T) {
+	ca := newParityCA(t)
+	serverTLS := &tls.Config{
+		Certificates: []tls.Certificate{ca.issue(t, 2, pkix.Name{CommonName: "localhost"}, x509.ExtKeyUsageServerAuth)},
+		ClientCAs:    ca.pool,
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		MinVersion:   tls.VersionTLS13,
+	}
+	roles := authtest.BindingRoles(t)
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithAuthenticator(auth.NewMTLSAuthenticator()))
+	srv := NewServer(newMockKVService(), publicverbstest.Admin{AdminServicer: newMockAdminService()}, "127.0.0.1:0",
+		WithTLS(serverTLS), WithAuthMiddleware(mw))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(srv.Stop)
+	conn := certlessConn(t, &parityServer{srv: srv, pool: ca.pool}, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp := &pb.HealthResponse{}
+	full := "/" + pb.QRDBService_ServiceDesc.ServiceName + "/" + publicverbs.Table[publicverbs.VerbHealth].GRPC
+	if err := conn.Invoke(ctx, full, &emptypb.Empty{}, resp); err != nil {
+		t.Fatalf("Health with no certificate: %v", err)
+	}
+	publicverbstest.CheckHealth(t, "gRPC", service.HealthStatus{
+		Status: resp.GetStatus(), Leader: resp.GetLeader(), DiagnosticsDropped: resp.GetDiagnosticsDropped(),
+	})
 }
 
 // TestPublicVerbsParity_GRPCBadCertificateIsHandshakeFailure: a client
