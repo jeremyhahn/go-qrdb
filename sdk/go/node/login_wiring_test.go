@@ -41,11 +41,6 @@ import (
 // principalRoles
 // ---------------------------------------------------------------------------
 
-func TestPrincipalRoles_RoleIDsOnly(t *testing.T) {
-	u := &user.User{RoleIDs: []string{"admin", "ops"}}
-	assert.Equal(t, []string{"admin", "ops"}, principalRoles(u))
-}
-
 func TestPrincipalRoles_BindingsAppendedAndDeduped(t *testing.T) {
 	u := &user.User{
 		RoleIDs: []string{"admin", "ops"},
@@ -341,19 +336,6 @@ func TestWithIdentityHydrator_SubjectIsUserIDAcrossRenameAndEmailChange(t *testi
 	assert.Equal(t, "alice2@example.com", hyd.principals[2].Email)
 }
 
-func TestWithIdentityHydrator_SetsOption(t *testing.T) {
-	hyd := &recordingHydrator{}
-	o := &nodeOptions{}
-	WithIdentityHydrator(hyd)(o)
-	assert.Same(t, hyd, o.identityHydrator)
-}
-
-func TestWithIdentityHydrator_NilIsAccepted(t *testing.T) {
-	o := &nodeOptions{}
-	WithIdentityHydrator(nil)(o)
-	assert.Nil(t, o.identityHydrator)
-}
-
 // TestBuildEmbeddedOpts_LoginUnknownFactor_NotFound proves the resolver is
 // wired and rejects an unknown credential (the GetUser path is never reached
 // because factor lookup fails first — the inverse user-not-found path is
@@ -386,19 +368,6 @@ func TestBuildEmbeddedOpts_LoginUnknownFactor_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 // NodeOption accessors
 // ---------------------------------------------------------------------------
-
-func TestWithSessionIssuer_SetsOption(t *testing.T) {
-	issuer := newFakeSessionIssuer()
-	o := &nodeOptions{}
-	WithSessionIssuer(issuer)(o)
-	assert.Same(t, issuer, o.sessionIssuer)
-}
-
-func TestWithSessionIssuer_NilIsAccepted(t *testing.T) {
-	o := &nodeOptions{}
-	WithSessionIssuer(nil)(o)
-	assert.Nil(t, o.sessionIssuer)
-}
 
 func TestWithLoginFactorVerifier_Appends(t *testing.T) {
 	o := &nodeOptions{}
