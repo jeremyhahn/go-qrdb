@@ -25,7 +25,7 @@
 </script>
 
 <ul class="steps w-full mb-6">
-  {#each steps as label, i}
+  {#each steps as label, i (i)}
     <li class="step" class:step-primary={i <= currentIndex}>
       {label}
     </li>

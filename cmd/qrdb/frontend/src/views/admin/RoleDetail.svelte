@@ -21,6 +21,7 @@
   import { showToast } from "$stores/toast.svelte.ts";
   import PermissionTreePicker from "../../components/admin/PermissionTreePicker.svelte";
   import TenantSelect from "../../components/admin/TenantSelect.svelte";
+  import { defaultTenantId, errorText } from "./tenantDefault.ts";
 
   let {
     client,
@@ -37,13 +38,15 @@
   // ---------------------------------------------------------------------------
 
   let name: string = $state("");
-  let tenantId: string = $state("default");
+  let tenantId: string = $state("");
   let selectedPermissions: string[] = $state([]);
   let databases: DatabaseInfo[] = $state([]);
   let selectedDatabaseScope: string[] = $state([]);
   let existingRole: Role | null = $state(null);
   let loading: boolean = $state(true);
   let saving: boolean = $state(false);
+  let deleting: boolean = $state(false);
+  let confirmDelete: boolean = $state(false);
 
   /** Whether we are creating a new role (vs editing an existing one). */
   let isCreate = $derived(roleId === null);
@@ -63,7 +66,9 @@
       const dbs = await client.database.list();
       databases = dbs;
 
-      if (roleId !== null) {
+      if (roleId === null) {
+        tenantId = await defaultTenantId(client);
+      } else {
         const role: Role = await client.roles.get(roleId);
         existingRole = role;
         name = role.name;
@@ -83,7 +88,7 @@
         selectedDatabaseScope = dbScope.size > 0 ? [...dbScope] : [];
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to load role data";
+      const msg = errorText(err, "Failed to load role data");
       showToast("error", msg);
     } finally {
       loading = false;
@@ -122,10 +127,30 @@
 
       onBack();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to save role";
+      const msg = errorText(err, "Failed to save role");
       showToast("error", msg);
     } finally {
       saving = false;
+    }
+  }
+
+  /** Deletes the existing role after a second confirming click. */
+  async function handleDelete(): Promise<void> {
+    if (!confirmDelete) {
+      confirmDelete = true;
+      return;
+    }
+    try {
+      deleting = true;
+      await client.roles.delete(roleId!);
+      showToast("success", `Role "${name}" deleted`);
+      onBack();
+    } catch (err: unknown) {
+      const msg = errorText(err, "Failed to delete role");
+      showToast("error", msg);
+    } finally {
+      deleting = false;
+      confirmDelete = false;
     }
   }
 
@@ -285,6 +310,16 @@
       <button class="btn btn-ghost btn-sm" onclick={onBack}>
         Cancel
       </button>
+      {#if existingRole !== null && !existingRole.system}
+        <button
+          class="btn btn-error btn-sm ml-auto"
+          data-testid="role-delete"
+          disabled={deleting}
+          onclick={() => void handleDelete()}
+        >
+          {confirmDelete ? "Confirm Delete" : "Delete"}
+        </button>
+      {/if}
     </div>
   {/if}
 </div>

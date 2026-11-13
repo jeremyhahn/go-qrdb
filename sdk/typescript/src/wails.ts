@@ -75,6 +75,7 @@ import type {
     BatchUpsertResponse,
     BootstrapResult,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     CapabilitiesResponse,
     CeremonyInitializeRequest,
@@ -106,6 +107,7 @@ import type {
     UpdateDatabaseProtocolRequest,
     UpdateDatabaseSQLRequest,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -221,6 +223,9 @@ import type {
     VolumePoolDetail,
     ListVolumePoolsResponse,
     ListVolumePoolTenantsResponse,
+    ListVolumePoolTenantsRequest,
+    CreateVolumePoolRequest,
+    UpdateVolumePoolRequest,
     TrustAnchorList,
     ConfigInitializedResponse,
     BackupRequest,
@@ -377,6 +382,7 @@ interface WailsBindings {
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         AuditBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        VolumePoolBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         VlogBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
     };
@@ -555,6 +561,10 @@ export class WailsClient implements Client {
             capabilities: async (): Promise<CapabilitiesResponse> => {
                 return b.Capabilities() as Promise<CapabilitiesResponse>;
             },
+            metrics: async (): Promise<MetricFamily[]> => {
+                // The desktop binding exposes no Prometheus gatherer.
+                throw new NotImplementedError('admin.metrics');
+            },
         };
     }
 
@@ -671,6 +681,10 @@ export class WailsClient implements Client {
             },
             importFile: async (filePath: string, opts: ImportOptions): Promise<ImportResult> => {
                 return b.ImportFile(filePath, toSnake(opts)) as Promise<ImportResult>;
+            },
+            importContent: async (_data: Uint8Array | Blob, _opts: ImportContentOptions): Promise<ImportResult> => {
+                // The desktop app reads the file natively; importFile takes its path.
+                throw new NotImplementedError('batch.importContent');
             },
             availableCodecs: async (): Promise<readonly string[]> => {
                 return b.AvailableCodecs() as Promise<readonly string[]>;
@@ -1471,31 +1485,41 @@ export class WailsClient implements Client {
     /**
      * @inheritdoc
      *
-     * Not yet implemented in desktop (Wails) mode: there is no
-     * main.VolumePoolBinding counterpart to the remote transports' volume
-     * pool management surface (REST, gRPC, QUIC, Unix, MCP). Every method
-     * throws NotImplementedError, matching admin.mintJoinToken's existing
-     * desktop-mode gap above.
+     * Served by main.VolumePoolBinding over the active connection's volume
+     * pool client. The Go request structs carry camelCase json tags, so
+     * request objects pass through unconverted; responses go through
+     * wrapBindings, which turns the tenant page's `next_page_token` into
+     * `nextPageToken`.
      */
     get volumePools(): VolumePoolClient {
+        const b = wrapBindings(getBindings().main.VolumePoolBinding);
         return {
             list: async (): Promise<ListVolumePoolsResponse> => {
-                throw new NotImplementedError('volumePools.list');
+                const pools = (await b.List()) as VolumePool[] | null;
+                return { pools: pools ?? [] };
             },
-            get: async (): Promise<VolumePoolDetail> => {
-                throw new NotImplementedError('volumePools.get');
+            get: async (pool: string): Promise<VolumePoolDetail> => {
+                return b.Get(pool) as Promise<VolumePoolDetail>;
             },
-            create: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.create');
+            create: async (req: CreateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Create(req) as Promise<VolumePool>;
             },
-            update: async (): Promise<VolumePool> => {
-                throw new NotImplementedError('volumePools.update');
+            update: async (pool: string, req: UpdateVolumePoolRequest): Promise<VolumePool> => {
+                return b.Update(pool, { ...req, name: pool }) as Promise<VolumePool>;
             },
-            delete: async (): Promise<void> => {
-                throw new NotImplementedError('volumePools.delete');
+            delete: async (pool: string): Promise<void> => {
+                await b.Delete(pool);
             },
-            listTenants: async (): Promise<ListVolumePoolTenantsResponse> => {
-                throw new NotImplementedError('volumePools.listTenants');
+            listTenants: async (
+                pool: string,
+                req: ListVolumePoolTenantsRequest = {},
+            ): Promise<ListVolumePoolTenantsResponse> => {
+                const page = (await b.ListTenants(
+                    pool,
+                    req.pageSize ?? 0,
+                    req.pageToken ?? '',
+                )) as ListVolumePoolTenantsResponse | null;
+                return { tenants: page?.tenants ?? [], nextPageToken: page?.nextPageToken || undefined };
             },
         };
     }

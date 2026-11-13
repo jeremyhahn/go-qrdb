@@ -136,7 +136,7 @@
   <!-- Tool view -->
   <div class="flex-1 overflow-y-auto p-6" id="tabpanel-{activeTool}" role="tabpanel">
     {#if activeTool === 'data'}
-      <KVExplorer client={dbClient} />
+      <KVExplorer client={dbClient} database={database.name} />
     {:else if activeTool === 'collections'}
       <CollectionView {client} {database} />
     {:else if activeTool === 'indexes'}

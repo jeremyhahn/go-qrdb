@@ -17,11 +17,13 @@
 <script lang="ts">
   // lucide-svelte icons are legacy Svelte 4 class components incompatible with
   // Svelte 5 Component<T> under exactOptionalPropertyTypes.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  import type { ComponentType } from "svelte";
+
   interface Tab {
     id: string;
     label: string;
-    icon?: any;
+    // lucide-svelte icons are class components.
+    icon?: ComponentType;
     badge?: string | number;
   }
 
@@ -39,7 +41,7 @@
 </script>
 
 <div class="border-base-content/6 flex items-center gap-1 border-b" role="tablist">
-  {#each tabs as tab}
+  {#each tabs as tab (tab.id)}
     <button
       class="-mb-px flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium transition-colors
              {tab.id === activeTab

@@ -26,7 +26,7 @@
  */
 
 import type { Client } from "@qrdb/sdk";
-import { isDesktop } from "@qrdb/sdk";
+import { isDesktop, TransportError } from "@qrdb/sdk";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,6 +138,13 @@ export interface ConnManagerState {
     activeServerMode: 'standalone' | 'raft' | '';
     /** Number of cluster nodes for the currently active profile. */
     activeClusterNodeCount: number;
+    /**
+     * Profiles whose server refused the caller its admin topology (403): the
+     * caller is no server administrator there (a tenant user without an admin
+     * role), and that server's admin views are not offered. Kept in memory
+     * only: a different credential on the next load is probed afresh.
+     */
+    nonAdminProfileIds: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +268,7 @@ export const connManagerStore: ConnManagerState = $state({
     loading: true,
     activeServerMode: '',
     activeClusterNodeCount: 0,
+    nonAdminProfileIds: [],
 });
 
 // ---------------------------------------------------------------------------
@@ -398,16 +406,19 @@ async function loadWebProfiles(client: Client): Promise<void> {
  * standalone/clustered choice). The built-in web "This Server" profile has no
  * such record, so without this probe a browser connected to a real multi-node
  * cluster would always present the standalone UI. We derive the mode from the
- * live topology: a server is "raft" when more than one distinct replica is
- * known across its Raft groups; a single-node deployment (or a minimal
- * embeddable server with no topology endpoint) resolves to "standalone".
+ * live topology: a server whose topology loads with at least one replica is
+ * "raft", so a single-node Raft server still exposes the Cluster surfaces
+ * (minting its first join token is how it grows). Only a server with no
+ * readable topology (a minimal embeddable server, forbidden or unreachable)
+ * resolves to "standalone". The database wizard keys its multi-node steps on
+ * the node count, not on this mode (see isMultiNodeServer).
  *
  * @returns The detected mode and the distinct cluster node count (0 when the
  *   topology could not be read).
  */
 async function detectWebServerMode(
     client: Client,
-): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number }> {
+): Promise<{ serverMode: 'standalone' | 'raft'; nodeCount: number; serverAdmin: boolean }> {
     try {
         const topology = await client.admin.getTopology();
         const replicaIds = new Set<string>();
@@ -417,12 +428,42 @@ async function detectWebServerMode(
             }
         }
         const nodeCount = replicaIds.size;
-        return { serverMode: nodeCount > 1 ? 'raft' : 'standalone', nodeCount };
-    } catch {
+        return { serverMode: nodeCount >= 1 ? 'raft' : 'standalone', nodeCount, serverAdmin: true };
+    } catch (err) {
         // No topology endpoint (minimal embeddable server), forbidden, or
         // unreachable → treat as standalone; cluster surfaces stay hidden.
-        return { serverMode: 'standalone', nodeCount: 0 };
+        // Only a refusal (403) can say the caller is no server administrator,
+        // and only when the tenant list is refused too: a tenant admin is
+        // refused the topology but manages its tenant from the admin views.
+        if (!isForbidden(err)) {
+            return { serverMode: 'standalone', nodeCount: 0, serverAdmin: true };
+        }
+        let serverAdmin = true;
+        try {
+            await client.tenants.list();
+        } catch (listErr) {
+            serverAdmin = !isForbidden(listErr);
+        }
+        return { serverMode: 'standalone', nodeCount: 0, serverAdmin };
     }
+}
+
+/** True when err is the server's refusal of the caller (HTTP 403). */
+export function isForbidden(err: unknown): boolean {
+    return err instanceof TransportError && err.statusCode === 403;
+}
+
+/**
+ * Reports whether the active server is a multi-node Raft cluster, which is what
+ * the database wizard's Raft steps (replica count, etcd) need. A single-node
+ * Raft server is "raft" for the admin nav but gets the wizard's single-node
+ * steps. A desktop profile recorded as clustered carries no node count (0) and
+ * stays multi-node.
+ */
+export function isMultiNodeServer(): boolean {
+    if (connManagerStore.activeServerMode !== 'raft') return false;
+    const n = connManagerStore.activeClusterNodeCount;
+    return n === 0 || n > 1;
 }
 
 /**
@@ -431,10 +472,12 @@ async function detectWebServerMode(
  * reloads without re-probing being strictly required.
  */
 async function applyWebServerMode(client: Client, profileId: string): Promise<void> {
-    const { serverMode, nodeCount } = await detectWebServerMode(client);
+    const { serverMode, nodeCount, serverAdmin } = await detectWebServerMode(client);
     connManagerStore.profiles = connManagerStore.profiles.map((p) =>
         p.id === profileId ? { ...p, serverMode, clusterNodeCount: nodeCount } : p,
     );
+    const others = connManagerStore.nonAdminProfileIds.filter((id) => id !== profileId);
+    connManagerStore.nonAdminProfileIds = serverAdmin ? others : [...others, profileId];
     if (connManagerStore.activeProfileId === profileId) {
         connManagerStore.activeServerMode = serverMode;
         connManagerStore.activeClusterNodeCount = nodeCount;
@@ -534,6 +577,17 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
+    // A transport closed by connection.disconnect() (Settings' Disconnect)
+    // is reopened here: the REST client always targets the page origin, as
+    // App.svelte's initialize does. Without this the probe below fails with
+    // "not connected" and the profile can only recover by a page reload.
+    if (!client.connection.isConnected()) {
+        try {
+            await client.connection.connect(window.location.origin);
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
     const state = await resolveWebConnectionState(client, profile);
     connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
@@ -580,6 +634,29 @@ export async function disconnectProfile(
  * @param client    - The SDK client singleton.
  * @param profileId - ID of the profile to delete.
  */
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
+}
+
 export async function deleteProfile(
     client: Client,
     profileId: string,

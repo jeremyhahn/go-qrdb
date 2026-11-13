@@ -482,10 +482,7 @@ webTest.describe("Admin form error regression — web mode REST 409", () => {
       ).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       const tenantsSidebar = page.locator("aside").getByText("Tenants");
-      if (!(await tenantsSidebar.isVisible())) {
-        // Not in web-admin mode — test is a no-op.
-        return;
-      }
+      await expect(tenantsSidebar).toBeVisible({ timeout: LOAD_TIMEOUT });
 
       await tenantsSidebar.click();
       await expect(

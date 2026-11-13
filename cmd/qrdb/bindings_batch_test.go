@@ -236,6 +236,20 @@ func TestBatchBinding_AvailableImportFormats_NonEmpty(t *testing.T) {
 	}
 }
 
+// The binding reports the one shared list the REST route also serves.
+func TestBatchBinding_AvailableImportFormats_EqualsSharedList(t *testing.T) {
+	b := newBatchBindingNoConn(t)
+	got, want := b.AvailableImportFormats(), sdk.ImportFormats()
+	if len(got) != len(want) {
+		t.Fatalf("AvailableImportFormats = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AvailableImportFormats = %v, want %v", got, want)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // FileOpenError tests
 // ---------------------------------------------------------------------------

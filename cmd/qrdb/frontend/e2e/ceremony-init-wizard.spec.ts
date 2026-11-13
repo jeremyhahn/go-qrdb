@@ -159,6 +159,17 @@ async function gotoWizard(page: Page): Promise<void> {
   await expect(page.getByText("Global Encryption Barrier")).toBeVisible();
 }
 
+const SO_PIN = "so-pin-123456";
+const USER_PIN = "user-pin-654321";
+
+/** Fills the admin step's SO PIN and user PIN, each with its confirmation. */
+async function fillPins(page: Page): Promise<void> {
+  await page.getByTestId("so-pin-input").fill(SO_PIN);
+  await page.getByTestId("so-pin-confirm-input").fill(SO_PIN);
+  await page.getByTestId("user-pin-input").fill(USER_PIN);
+  await page.getByTestId("user-pin-confirm-input").fill(USER_PIN);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -176,6 +187,7 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     await expect(page.getByRole("heading", { name: "Bootstrap Admin Credential" })).toBeVisible({ timeout: LOAD_TIMEOUT });
     await page.getByTestId("admin-mode-csr").check();
     await page.getByTestId("admin-csr-pem").fill(ADMIN_CSR);
+    await fillPins(page);
     await page.getByTestId("admin-next-btn").click();
 
     await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: LOAD_TIMEOUT });
@@ -188,6 +200,8 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     expect(body.secret).toBe(Buffer.from("S3cur3P@ss!").toString("base64"));
     expect(body.admin_csr_pem).toBe(ADMIN_CSR);
     expect(body.officers).toBeUndefined();
+    expect(body.so_pin).toBe(SO_PIN);
+    expect(body.user_pin).toBe(USER_PIN);
 
     await page.getByTestId("open-database-btn").click();
   });
@@ -217,6 +231,7 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     await expect(page.getByRole("heading", { name: "Bootstrap Admin Credential" })).toBeVisible({ timeout: LOAD_TIMEOUT });
     await page.getByTestId("admin-mode-generate").check();
     await expect(page.getByTestId("admin-generate-warning")).toContainText("dev/test/evaluation ONLY");
+    await fillPins(page);
     await page.getByTestId("admin-next-btn").click();
 
     await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: LOAD_TIMEOUT });
@@ -226,6 +241,8 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     const body = ceremonyCalls[0]!.body;
     expect(body.admin_generate).toBe(true);
     expect(body.threshold).toBe(2);
+    expect(body.so_pin).toBe(SO_PIN);
+    expect(body.user_pin).toBe(USER_PIN);
     expect(body.officers).toEqual([
       { username: "alice", role: "so", csr_pem: CSR },
       { username: "bob", role: "custodian", csr_pem: CSR },
@@ -292,6 +309,49 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     await expect(next).toBeEnabled();
   });
 
+  test("admin step requires a confirmed SO PIN and user PIN before initializing", async ({ page, ceremonyCalls }) => {
+    await gotoWizard(page);
+    await page.locator("#setup-passphrase").fill("S3cur3P@ss!");
+    await page.locator("#setup-passphrase-confirm").fill("S3cur3P@ss!");
+    await page.getByRole("button", { name: "Next" }).click();
+    await expect(page.getByRole("heading", { name: "Bootstrap Admin Credential" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await page.getByTestId("admin-mode-generate").check();
+
+    // The PIN fields are masked.
+    for (const id of ["so-pin-input", "so-pin-confirm-input", "user-pin-input", "user-pin-confirm-input"]) {
+      await expect(page.getByTestId(id)).toHaveAttribute("type", "password");
+    }
+
+    // No PINs: Initialize is refused locally, nothing is sent.
+    await page.getByTestId("admin-next-btn").click();
+    await expect(page.getByTestId("admin-apply-error")).toContainText("SO PIN must be at least 6 characters");
+    expect(ceremonyCalls).toHaveLength(0);
+
+    // Mismatched SO PIN confirmation.
+    await page.getByTestId("so-pin-input").fill(SO_PIN);
+    await page.getByTestId("so-pin-confirm-input").fill("different-pin");
+    await expect(page.getByTestId("so-pin-error")).toContainText("SO PINs do not match.");
+
+    // Short user PIN.
+    await page.getByTestId("so-pin-confirm-input").fill(SO_PIN);
+    await expect(page.getByTestId("so-pin-error")).toHaveCount(0);
+    await page.getByTestId("user-pin-input").fill("12345");
+    await page.getByTestId("user-pin-confirm-input").fill("12345");
+    await expect(page.getByTestId("user-pin-error")).toContainText("User PIN must be at least 6 characters");
+    await page.getByTestId("admin-next-btn").click();
+    await expect(page.getByTestId("admin-apply-error")).toContainText("User PIN must be at least 6 characters");
+    expect(ceremonyCalls).toHaveLength(0);
+
+    // Valid PINs: one call carrying both.
+    await page.getByTestId("user-pin-input").fill(USER_PIN);
+    await page.getByTestId("user-pin-confirm-input").fill(USER_PIN);
+    await page.getByTestId("admin-next-btn").click();
+    await expect(page.getByRole("heading", { name: "Server Initialized" })).toBeVisible({ timeout: LOAD_TIMEOUT });
+    expect(ceremonyCalls).toHaveLength(1);
+    expect(ceremonyCalls[0]!.body.so_pin).toBe(SO_PIN);
+    expect(ceremonyCalls[0]!.body.user_pin).toBe(USER_PIN);
+  });
+
   test("a ceremony.initialize refusal is shown on the admin step, without losing the collected holders", async ({ page }) => {
     await gotoWizard(page);
     await page.getByText("Shamir (M-of-N)").click();
@@ -310,6 +370,7 @@ test.describe("ServerInitWizard — ceremony.initialize", () => {
     });
 
     await page.getByTestId("admin-mode-generate").check();
+    await fillPins(page);
     await page.getByTestId("admin-next-btn").click();
 
     await expect(page.getByTestId("admin-apply-error")).toContainText("duplicate username");

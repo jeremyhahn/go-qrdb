@@ -44,8 +44,10 @@
   } from "lucide-svelte";
   import { CrudTable } from "../../components/core/CrudTable";
   import { showToast } from "$stores/toast.svelte.ts";
+  import { errorText } from "./tenantDefault.ts";
   import PageHeader from "../../components/PageHeader.svelte";
   import HolderRekeyPanel from "../../components/HolderRekeyPanel.svelte";
+  import HolderEnrolmentForms from "../../components/wizard/HolderEnrolmentForms.svelte";
   import TenantDetail from "./TenantDetail.svelte";
 
   let { client }: { client: Client } = $props();
@@ -88,6 +90,22 @@
   // default) uses the tenant's default pool, the first entry of its
   // allowedVolumePools. The field is only shown/sent for volume/raft.
   let newTenantVolumePool: string = $state("");
+  // Pool names from client.volumePools.list(), loaded the first time the
+  // pool field is shown. Empty (no pools, or the list call failed) keeps
+  // the field free text so a pool mapped on the nodes but not yet listed
+  // can still be named.
+  let volumePoolNames: string[] = $state([]);
+  let volumePoolNamesRequested = false;
+
+  /** Loads the pool catalog's names for the create form's pool picker. */
+  async function loadVolumePoolNames(): Promise<void> {
+    try {
+      const resp = await client.volumePools.list();
+      volumePoolNames = (resp.pools ?? []).map((p) => p.name).sort();
+    } catch {
+      volumePoolNames = [];
+    }
+  }
   let createLoading: boolean = $state(false);
 
   // Admin onboarding fields. A tenant is created with its first admin's
@@ -149,6 +167,13 @@
     }
   });
 
+  $effect(() => {
+    if (isVolumePoolEligible && !volumePoolNamesRequested) {
+      volumePoolNamesRequested = true;
+      void loadVolumePoolNames();
+    }
+  });
+
   // Barrier init form fields. Per the platform architecture the tenant admin
   // chooses the per-tenant barrier strategy (none / passphrase / shamir);
   // passphrase is the back-compat default. The Shamir strategy initializes the
@@ -175,11 +200,26 @@
   let holdersTenantId: string = $state("");
   let holders = $state<import("@qrdb/sdk").OfficerStatus[]>([]);
   let holdersLoading: boolean = $state(false);
+  // Holder enrolment on the tenant barrier (registerTenantOfficer).
+  let showEnrol: boolean = $state(false);
+  let enrolRegistered: number = $state(0);
+
+  /** Registers one holder on the open tenant and reloads the holder list. */
+  async function enrolTenantHolder(
+    req: import("@qrdb/sdk").OfficerRegisterRequest,
+  ): Promise<import("@qrdb/sdk").OfficerRegisterResponse> {
+    const tenantId = holdersTenantId;
+    const resp = await client.officers.registerTenantOfficer({ tenantId, ...req });
+    void fetchHolders(tenantId);
+    return resp;
+  }
 
   /** Opens the share-holder panel for a tenant. */
   function handleHolders(tenantId: string): void {
     holdersTenantId = tenantId;
     holders = [];
+    showEnrol = false;
+    enrolRegistered = 0;
     showHoldersPanel = true;
     void fetchHolders(tenantId);
   }
@@ -197,7 +237,7 @@
       holdersLoading = true;
       holders = await client.officers.listTenantOfficers(tenantId);
     } catch (err: unknown) {
-      showToast("error", err instanceof Error ? err.message : "Failed to list the tenant's share holders");
+      showToast("error", errorText(err, "Failed to list the tenant's share holders"));
     } finally {
       holdersLoading = false;
     }
@@ -329,17 +369,28 @@
   // Actions
   // ---------------------------------------------------------------------------
 
+  /**
+   * Why the server refused the tenant list, shown in place of the empty state:
+   * "No tenants found." under a refusal would say the list is empty when the
+   * server never gave it.
+   */
+  let listError = $state<string | null>(null);
+
   /** Fetches the tenant list from the server. */
   async function fetchTenants(): Promise<void> {
     try {
       loading = true;
       const response: ListTenantsResponse = await client.tenants.list();
       tenants = [...(response.tenants ?? [])];
+      listError = null;
     } catch (err: unknown) {
       if (err instanceof TransportError && (err.statusCode === 404 || err.statusCode === 501 || err.statusCode === 503)) {
         tenants = [];
+        listError = null;
       } else {
-        const msg = err instanceof Error ? err.message : "Failed to fetch tenants";
+        const msg = errorText(err, "Failed to fetch tenants");
+        tenants = [];
+        listError = msg;
         showToast("error", msg);
       }
     } finally {
@@ -356,6 +407,8 @@
     newTenantIsolationType = "prefix";
     newTenantBarrierAutoUnseal = false;
     newTenantVolumePool = "";
+    // Re-read the pool catalog the next time the pool field is shown.
+    volumePoolNamesRequested = false;
     newAdminUsername = "";
     newAdminCredentialKind = "csr";
     newAdminCsrPem = "";
@@ -427,7 +480,7 @@
       createdTenantId = resp.tenant.id;
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to create tenant";
+      const msg = errorText(err, "Failed to create tenant");
       showToast("error", msg);
     } finally {
       createLoading = false;
@@ -532,7 +585,7 @@
       const status = await client.tenants.barrierStatus(tenantId);
       unsealStatus = status;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to fetch tenant barrier status";
+      const msg = errorText(err, "Failed to fetch tenant barrier status");
       showToast("error", msg);
     } finally {
       unsealStatusLoading = false;
@@ -571,7 +624,7 @@
       handleCancelUnseal();
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to unseal the tenant barrier";
+      const msg = errorText(err, "Failed to unseal the tenant barrier");
       showToast("error", msg);
       await fetchUnsealStatus(unsealTenantId);
     } finally {
@@ -635,7 +688,7 @@
       resetBarrierForm();
       await fetchTenants();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to initialize barrier";
+      const msg = errorText(err, "Failed to initialize barrier");
       showToast("error", msg);
     } finally {
       barrierLoading = false;
@@ -719,7 +772,7 @@
         showToast("info", resp.status);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Failed to enable encryption";
+      const msg = errorText(err, "Failed to enable encryption");
       showToast("error", msg);
     } finally {
       enableLoading = false;
@@ -906,14 +959,28 @@
               <span class="label-text font-semibold">Volume Pool</span>
               <span class="label-text-alt text-base-content/50">Optional</span>
             </label>
-            <input
-              id="tenant-volume-pool"
-              type="text"
-              class="input input-bordered w-full"
-              placeholder="fast"
-              data-testid="create-tenant-volume-pool"
-              bind:value={newTenantVolumePool}
-            />
+            {#if volumePoolNames.length > 0}
+              <select
+                id="tenant-volume-pool"
+                class="select select-bordered w-full"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              >
+                <option value="">Default pool</option>
+                {#each volumePoolNames as poolName (poolName)}
+                  <option value={poolName}>{poolName}</option>
+                {/each}
+              </select>
+            {:else}
+              <input
+                id="tenant-volume-pool"
+                type="text"
+                class="input input-bordered w-full"
+                placeholder="fast"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              />
+            {/if}
             <div class="label">
               <span class="label-text-alt text-base-content/60">
                 The named volume pool to place this tenant on. Leave empty to use the tenant's default pool.
@@ -1336,6 +1403,26 @@
           </div>
         {/if}
 
+        <div class="border-t border-base-300 pt-4" data-testid="tenant-holder-enrol">
+          <button
+            class="btn btn-outline btn-sm"
+            data-testid="tenant-holder-enrol-toggle"
+            onclick={() => { showEnrol = !showEnrol; enrolRegistered = 0; }}
+          >
+            {showEnrol ? "Cancel enrolment" : "Enrol holder"}
+          </button>
+          {#if showEnrol}
+            <div class="mt-4">
+              <HolderEnrolmentForms
+                {client}
+                count={1}
+                bind:registeredCount={enrolRegistered}
+                enrol={enrolTenantHolder}
+              />
+            </div>
+          {/if}
+        </div>
+
         <div class="border-t border-base-300 pt-4">
           <HolderRekeyPanel
             submitCommand="qrdb tenant barrier-quorum submit --op rekey"
@@ -1602,7 +1689,7 @@
       showDelete={true}
       createLabel="Create Tenant"
       deleteLabel="Delete Selected"
-      emptyMessage="No tenants found."
+      emptyMessage={listError ?? "No tenants found."}
       oncreateclick={handleCreate}
       ondeleteselected={handleDeleteSelected}
       onrowclick={handleSelectRow}

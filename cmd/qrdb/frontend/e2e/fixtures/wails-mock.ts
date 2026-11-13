@@ -87,6 +87,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -108,6 +113,26 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
   };
   unsealProgress: {
     sealed: boolean;
@@ -360,6 +385,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // every write, KV or MVCC. Each key's history is an ordered list of
     // (revision, value) entries; value === null marks a delete.
     let mvccRevision = 0;
+    // Highest revision MVCCBinding.Compact has discarded history up to; a
+    // GetAtRevision below it fails as a compacted read does on a real daemon.
+    let compactedRevision = 0;
     const revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
 
     /** Records a write (value !== null) or delete (value === null) for key, bumping the shared revision counter, and returns the new revision. */
@@ -467,6 +495,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       lifecycle: string;
       createdAt: string;
       updatedAt: string;
+      roleIds?: string[];
+      certBindings?: { thumbprint: string; notAfterUnix: number }[];
     }>();
     const roleStore = new Map<string, {
       id: string;
@@ -476,6 +506,44 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
       createdAt: string;
       updatedAt: string;
     }>();
+
+    // Volume pool catalog store (VolumePoolBinding). Assignments are the
+    // tenants placed on each pool; tests seed them through
+    // window.__volumePoolAssign because tenant placement is not a
+    // VolumePoolBinding method.
+    type MockVolumePool = {
+      name: string;
+      provider: string;
+      description?: string;
+      capacityBytes: number;
+      reservedBytes: number;
+      usedBytes: number;
+      tenantCount: number;
+      nodes: { ready: number; locked: number; unavailable: number; unmapped: number };
+      overcommit: number;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const volumePoolStore = new Map<string, MockVolumePool>();
+    const volumePoolAssignments = new Map<string, { tenantId: string; reservedBytes: number }[]>();
+    const volumePoolView = (p: MockVolumePool): MockVolumePool => {
+      const assigned = volumePoolAssignments.get(p.name) ?? [];
+      return {
+        ...p,
+        nodes: { ...p.nodes },
+        tenantCount: assigned.length,
+        reservedBytes: assigned.reduce((sum, a) => sum + a.reservedBytes, 0),
+      };
+    };
+    (window as unknown as Record<string, unknown>).__volumePoolAssign = (
+      pool: string,
+      tenantId: string,
+      reservedBytes: number,
+    ) => {
+      const list = volumePoolAssignments.get(pool) ?? [];
+      list.push({ tenantId, reservedBytes });
+      volumePoolAssignments.set(pool, list);
+    };
 
     // Lease store
     const leaseStore = new Map<number, { id: number; ttl: number; granted_ttl: number; remaining_ttl: number }>();
@@ -619,6 +687,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("SealBinding.Status");
             return { ...getState().sealStatus };
           },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            return { ...next };
+          },
         },
         CeremonyBinding: {
           // CeremonyBinding.Initialize(req): `qrdb init`'s desktop
@@ -695,6 +782,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
@@ -878,6 +967,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("EmbeddedServerBinding.StartEmbedded");
             const s = getState();
             s.embeddedRunning = true;
+            // The Go binding persists the config it started with.
+            (s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = true;
           },
           StopEmbedded: async () => {
             maybeReject("EmbeddedServerBinding.StopEmbedded");
@@ -885,6 +976,22 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             s.embeddedRunning = false;
           },
           IsEmbedded: () => getState().embeddedRunning,
+          HasSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.HasSavedConfig");
+            return (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig === true;
+          },
+          RestoreEmbedded: async () => {
+            maybeReject("EmbeddedServerBinding.RestoreEmbedded");
+            const s = getState();
+            if ((s as { embeddedSavedConfig?: boolean }).embeddedSavedConfig !== true) {
+              throw new Error("no saved embedded server config");
+            }
+            s.embeddedRunning = true;
+          },
+          ClearSavedConfig: async () => {
+            maybeReject("EmbeddedServerBinding.ClearSavedConfig");
+            (getState() as { embeddedSavedConfig?: boolean }).embeddedSavedConfig = false;
+          },
         },
         KVBinding: {
           Put: async (key: string, value: string) => {
@@ -932,6 +1039,56 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return result;
           },
         },
+        // InvitationBinding mirrors cmd/qrdb/bindings_invitations.go. Invite
+        // issues a single-use token; Redeem (unauthenticated, dials its own
+        // server) exchanges an issued token plus a CSR for a certificate and
+        // consumes the token, so an unknown or reused token rejects.
+        InvitationBinding: (() => {
+          const issued = new Map<
+            string,
+            { userID: string; username: string; tenantID: string }
+          >();
+          let seq = 0;
+          return {
+            Invite: async (req: { username: string; email?: string; name?: string; roleIDs?: string[] }) => {
+              maybeReject("InvitationBinding.Invite");
+              if (!req || !req.username) throw new Error("username is required");
+              seq += 1;
+              const token = `inv-token-${seq}-${req.username}`;
+              const userID = `user-inv-${seq}`;
+              issued.set(token, { userID, username: req.username, tenantID: "default" });
+              return {
+                id: `invitation-${seq}`,
+                token,
+                userID,
+                username: req.username,
+                expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+              };
+            },
+            Redeem: async (req: {
+              server?: string;
+              transport?: string;
+              caFile?: string;
+              tenantID: string;
+              token: string;
+              csrPEM: string;
+            }) => {
+              maybeReject("InvitationBinding.Redeem");
+              const inv = issued.get(req.token);
+              if (!inv) throw new Error("invitation token is invalid or expired");
+              if (!req.csrPEM || !req.csrPEM.includes("CERTIFICATE REQUEST")) {
+                throw new Error("csrPEM must be a PEM certificate request");
+              }
+              issued.delete(req.token);
+              return {
+                userID: inv.userID,
+                username: inv.username,
+                tenantID: req.tenantID || inv.tenantID,
+                certPEM: `-----BEGIN CERTIFICATE-----\nMOCK-${inv.username}\n-----END CERTIFICATE-----\n`,
+              };
+            },
+          };
+        })(),
         AdminBinding: {
           Health: async () => {
             maybeReject("AdminBinding.Health");
@@ -1013,6 +1170,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           GetAtRevision: async (key: string, revision: number) => {
             maybeReject("MVCCBinding.GetAtRevision");
+            if (revision < compactedRevision) {
+              throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
+            }
             const val = valueAtRevision(key, revision);
             if (val === null) throw new Error(`key "${key}" not found at revision ${revision}`);
             return { key: encodeB64(key), value: encodeB64(val), revision };
@@ -1044,8 +1204,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { kvs: kvs.map((kv) => ({ key: encodeB64(kv.key), value: encodeB64(kv.value) })), count: kvs.length };
           },
-          Compact: async (_revision: number) => {
+          Compact: async (revision: number) => {
             maybeReject("MVCCBinding.Compact");
+            if (revision > mvccRevision) {
+              throw new Error(`mvcc: required revision ${revision} is a future revision`);
+            }
+            if (revision > compactedRevision) compactedRevision = revision;
+            (window as unknown as { __mvccCompactedRevision?: number }).__mvccCompactedRevision = compactedRevision;
           },
           CurrentRevision: async () => {
             maybeReject("MVCCBinding.CurrentRevision");
@@ -1431,8 +1596,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }
@@ -1568,7 +1737,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("UserBinding.Get");
             const user = userStore.get(id);
             if (!user) throw new Error(`user "${id}" not found`);
-            return { ...user };
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
           },
           Update: async (req: { id: string; username?: string; tenant?: string }) => {
             maybeReject("UserBinding.Update");
@@ -1603,6 +1772,99 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               user.lifecycle = "disabled";
               user.updatedAt = new Date().toISOString();
             }
+          },
+          GetByCertThumbprint: async (thumbprint: string) => {
+            maybeReject("UserBinding.GetByCertThumbprint");
+            for (const user of userStore.values()) {
+              if ((user.certBindings ?? []).some((b) => b.thumbprint === thumbprint)) {
+                return { ...user, roleIds: [...(user.roleIds ?? [])] };
+              }
+            }
+            throw new Error(`no user bound to thumbprint "${thumbprint}"`);
+          },
+          AddCertBinding: async (id: string, thumbprint: string, notAfterUnix: number) => {
+            maybeReject("UserBinding.AddCertBinding");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            const bindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
+            user.certBindings = [...bindings, { thumbprint, notAfterUnix }];
+            user.updatedAt = new Date().toISOString();
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
+          },
+          RemoveCertBinding: async (id: string, thumbprint: string) => {
+            maybeReject("UserBinding.RemoveCertBinding");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            user.certBindings = (user.certBindings ?? []).filter((b) => b.thumbprint !== thumbprint);
+            user.updatedAt = new Date().toISOString();
+            return { ...user, roleIds: [...(user.roleIds ?? [])] };
+          },
+        },
+        VolumePoolBinding: {
+          List: async () => {
+            maybeReject("VolumePoolBinding.List");
+            return Array.from(volumePoolStore.values())
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map(volumePoolView);
+          },
+          Get: async (name: string) => {
+            maybeReject("VolumePoolBinding.Get");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            return {
+              ...volumePoolView(p),
+              nodeReports: [
+                { nodeId: "node-1", state: "ready", sizeBytes: p.capacityBytes, freeBytes: p.capacityBytes, detail: "mock", reportedAt: p.updatedAt },
+              ],
+            };
+          },
+          Create: async (req: { name: string; provider?: string; description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Create");
+            if (!req.name) throw new Error("volume pool name is required");
+            if (volumePoolStore.has(req.name)) throw new Error(`volume pool "${req.name}" already exists`);
+            const overcommit = req.overcommit && req.overcommit > 0 ? req.overcommit : 1;
+            if (overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            const now = new Date().toISOString();
+            const p: MockVolumePool = {
+              name: req.name,
+              provider: req.provider || "dir",
+              description: req.description || undefined,
+              capacityBytes: req.capacityBytes ?? 0,
+              reservedBytes: 0,
+              usedBytes: 0,
+              tenantCount: 0,
+              nodes: { ready: 1, locked: 0, unavailable: 0, unmapped: 0 },
+              overcommit,
+              createdAt: now,
+              updatedAt: now,
+            };
+            volumePoolStore.set(p.name, p);
+            return volumePoolView(p);
+          },
+          Update: async (name: string, req: { description?: string; capacityBytes?: number; overcommit?: number }) => {
+            maybeReject("VolumePoolBinding.Update");
+            const p = volumePoolStore.get(name);
+            if (!p) throw new Error(`volume pool "${name}" not found`);
+            if (req.overcommit !== undefined && req.overcommit < 1) throw new Error("overcommit must be >= 1.0");
+            if (req.description !== undefined) p.description = req.description;
+            if (req.capacityBytes !== undefined) p.capacityBytes = req.capacityBytes;
+            if (req.overcommit !== undefined) p.overcommit = req.overcommit;
+            p.updatedAt = new Date().toISOString();
+            return volumePoolView(p);
+          },
+          Delete: async (name: string) => {
+            maybeReject("VolumePoolBinding.Delete");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            const assigned = volumePoolAssignments.get(name) ?? [];
+            if (assigned.length > 0) {
+              throw new Error(`volume pool "${name}" has assigned tenants: ${assigned.map((a) => a.tenantId).join(", ")}`);
+            }
+            volumePoolStore.delete(name);
+          },
+          ListTenants: async (name: string, _pageSize: number, _pageToken: string) => {
+            maybeReject("VolumePoolBinding.ListTenants");
+            if (!volumePoolStore.has(name)) throw new Error(`volume pool "${name}" not found`);
+            return { tenants: [...(volumePoolAssignments.get(name) ?? [])] };
           },
         },
         RoleBinding: {
@@ -1646,11 +1908,18 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             const roles = Array.from(roleStore.values());
             return { roles, total: roles.length };
           },
-          Assign: async () => {
+          Assign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Assign");
+            const user = userStore.get(userId);
+            if (!user) throw new Error(`user "${userId}" not found`);
+            const roleIds = user.roleIds ?? [];
+            if (!roleIds.includes(roleId)) user.roleIds = [...roleIds, roleId];
           },
-          Unassign: async () => {
+          Unassign: async (userId: string, roleId: string) => {
             maybeReject("RoleBinding.Unassign");
+            const user = userStore.get(userId);
+            if (!user) throw new Error(`user "${userId}" not found`);
+            user.roleIds = (user.roleIds ?? []).filter((id) => id !== roleId);
           },
           ListPermissions: async () => {
             maybeReject("RoleBinding.ListPermissions");
@@ -1670,7 +1939,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -1700,7 +1969,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             certStore.set(serial, {
               serial,
               username: req.username,
-              tenantId: "default",
+              tenantID: "default",
               issuedAt: now,
               expiresAt,
               revoked: false,
@@ -2407,7 +2676,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               backup_id: req.backup_id,
               shards_restored: 3,
-              duration: "1.2s",
+              duration_ms: 1200,
               errors: [],
             };
           },
@@ -2564,7 +2833,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return {
               movesCompleted: plan.moves.length,
               movesFailed: 0,
-              duration: "3.5s",
+              duration_ms: 3500,
               finalImbalance: 0.05,
             };
           },

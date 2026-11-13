@@ -69,8 +69,9 @@ export interface WebMockState {
   databases: WebMockDatabaseInfo[];
   /**
    * Cluster topology returned by GET /admin/topology. The web UI derives its
-   * server mode from this (more than one distinct node ⇒ raft). Defaults to a
-   * single-node topology so the UI resolves to standalone.
+   * server mode from this (a readable topology with any node ⇒ raft; the
+   * database wizard's Raft steps need more than one). Defaults to a
+   * single-node topology: Cluster nav shown, single-node wizard steps.
    */
   topology?: WebMockTopology;
 }
@@ -148,6 +149,12 @@ export async function injectWebRestMock(
     });
   });
 
+  // Intercept the Prometheus exposition the dashboard polls; an empty one
+  // keeps the request off the network.
+  await page.route("**/metrics", (route) => {
+    void route.fulfill({ status: 200, contentType: "text/plain", body: "" });
+  });
+
   // Intercept barrier status endpoint (used to probe seal state).
   await page.route("**/v1/barrier/status", (route) => {
     void route.fulfill({
@@ -173,6 +180,15 @@ export async function injectWebRestMock(
       status: 200,
       contentType: "application/json",
       body: JSON.stringify(topology),
+    });
+  });
+
+  // The Dashboard Metrics card reads the Prometheus exposition at GET /metrics.
+  await page.route(/\/metrics(\?.*)?$/, (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "text/plain; version=0.0.4",
+      body: "# HELP go_goroutines Number of goroutines that currently exist.\n# TYPE go_goroutines gauge\ngo_goroutines 8\n",
     });
   });
 

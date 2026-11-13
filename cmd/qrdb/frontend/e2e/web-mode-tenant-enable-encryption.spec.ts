@@ -186,9 +186,9 @@ test.describe("Web mode - tenant enable encryption wizard", () => {
     await page.getByTestId("tenant-enable-encryption-submit").click();
 
     // The 409 surfaces as an error toast carrying the status and server message.
-    const alert = page.locator('[role="alert"]').filter({ hasText: "409" });
+    // The toast carries the server's reason (errorText), not the status line.
+    const alert = page.locator('[role="alert"]').filter({ hasText: "already in progress" });
     await expect(alert).toBeVisible({ timeout: LOAD_TIMEOUT });
-    await expect(alert).toContainText("already in progress");
 
     // The wizard must NOT advance to the in-progress or success state.
     await expect(page.getByTestId("tenant-enable-encryption-progress")).toHaveCount(0);

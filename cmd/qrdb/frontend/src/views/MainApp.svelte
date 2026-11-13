@@ -55,6 +55,7 @@
     connectProfile,
     disconnectProfile,
     setActiveProfile,
+    isMultiNodeServer,
   } from "../stores/connection-manager.svelte.ts";
   import type { ConnectionState } from "../stores/connection-manager.svelte.ts";
 
@@ -84,6 +85,7 @@
   import SealManager from "./admin/SealManager.svelte";
   import UserManager from "./admin/UserManager.svelte";
   import RoleManager from "./admin/RoleManager.svelte";
+  import VolumePoolManager from "./admin/VolumePoolManager.svelte";
   import CertManager from "./admin/CertManager.svelte";
   import AuditLog from "./admin/AuditLog.svelte";
   import DatabaseManager from "./admin/DatabaseManager.svelte";
@@ -255,8 +257,7 @@
     } else {
       dbWizardStore.mode = 'embedded';
     }
-    dbWizardStore.serverMode =
-      connManagerStore.activeServerMode === 'raft' ? 'raft' : 'standalone';
+    dbWizardStore.serverMode = isMultiNodeServer() ? 'raft' : 'standalone';
   });
 
   function handleWizardComplete(): void {
@@ -472,6 +473,8 @@
             <UserManager {client} />
           {:else if navStore.context.view === 'roles'}
             <RoleManager {client} />
+          {:else if navStore.context.view === 'volume-pools'}
+            <VolumePoolManager {client} />
           {:else if navStore.context.view === 'certificates'}
             <CertManager {client} />
           {:else if navStore.context.view === 'databases'}

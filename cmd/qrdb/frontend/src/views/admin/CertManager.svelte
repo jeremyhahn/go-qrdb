@@ -46,7 +46,7 @@
   // ---------------------------------------------------------------------------
 
   /** Tenant filter — defaults to the authenticated user's tenant. */
-  let filterTenantId: string = $state(identityStore.tenantId || "default");
+  let filterTenantId: string = $state(identityStore.tenantId || "");
 
   /** Certificate list state. */
   let certs: CertRecord[] = $state([]);
@@ -162,6 +162,32 @@
   function sortIndicator(key: SortKey): string {
     if (sortKey !== key) return "";
     return sortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  /** Serial of the row whose detail is expanded, or null. */
+  let expandedSerial: string | null = $state(null);
+
+  function toggleDetail(serial: string): void {
+    expandedSerial = expandedSerial === serial ? null : serial;
+  }
+
+  /** Opens the Revoke tab with the given serial filled in (no request is sent). */
+  function prefillRevoke(serial: string): void {
+    revokeSerial = serial;
+    showRevokeConfirm = false;
+    activeTab = "revoke";
+    actionPanelOpen = true;
+  }
+
+  /** Human-readable time until `expiresAt`, or "Expired". */
+  function validityRemaining(expiresAt: string): string {
+    const ms = new Date(expiresAt).getTime() - Date.now();
+    if (Number.isNaN(ms)) return "";
+    if (ms <= 0) return "Expired";
+    const days = Math.floor(ms / 86_400_000);
+    if (days >= 1) return `${days} day${days === 1 ? "" : "s"}`;
+    const hours = Math.floor(ms / 3_600_000);
+    return hours >= 1 ? `${hours} hour${hours === 1 ? "" : "s"}` : "less than an hour";
   }
 
   function formatDate(value: string): string {
@@ -734,9 +760,9 @@
               <th>
                 <button
                   class="flex items-center gap-1 font-semibold hover:text-primary"
-                  onclick={() => toggleSort("tenantId")}
+                  onclick={() => toggleSort("tenantID")}
                 >
-                  Tenant{sortIndicator("tenantId")}
+                  Tenant{sortIndicator("tenantID")}
                 </button>
               </th>
               <th>
@@ -763,6 +789,7 @@
                   Status{sortIndicator("status")}
                 </button>
               </th>
+              <th><span class="sr-only">Detail</span></th>
             </tr>
           </thead>
           <tbody>
@@ -771,7 +798,7 @@
               <tr>
                 <td class="font-mono text-xs">{cert.serial}</td>
                 <td>{cert.username}</td>
-                <td>{cert.tenantId}</td>
+                <td>{cert.tenantID}</td>
                 <td class="whitespace-nowrap text-xs">{formatDate(cert.issuedAt)}</td>
                 <td class="whitespace-nowrap text-xs">{formatDate(cert.expiresAt)}</td>
                 <td>
@@ -783,7 +810,47 @@
                     <span class="badge badge-success badge-sm">Active</span>
                   {/if}
                 </td>
+                <td class="text-right">
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    aria-expanded={expandedSerial === cert.serial}
+                    aria-controls="cert-detail-{cert.serial}"
+                    onclick={() => toggleDetail(cert.serial)}
+                  >
+                    {expandedSerial === cert.serial ? "Hide" : "Details"}
+                  </button>
+                </td>
               </tr>
+              {#if expandedSerial === cert.serial}
+                <tr id="cert-detail-{cert.serial}" data-testid="cert-detail">
+                  <td colspan="7" class="bg-base-200">
+                    <dl class="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-1 text-xs">
+                      <dt class="font-semibold">Serial</dt>
+                      <dd class="font-mono break-all">{cert.serial}</dd>
+                      <dt class="font-semibold">Username</dt>
+                      <dd>{cert.username}</dd>
+                      <dt class="font-semibold">Tenant</dt>
+                      <dd>{cert.tenantID}</dd>
+                      <dt class="font-semibold">Issued at (UTC)</dt>
+                      <dd class="font-mono">{cert.issuedAt}</dd>
+                      <dt class="font-semibold">Expires at (UTC)</dt>
+                      <dd class="font-mono">{cert.expiresAt}</dd>
+                      <dt class="font-semibold">Validity remaining</dt>
+                      <dd>{cert.revoked ? "—" : validityRemaining(cert.expiresAt)}</dd>
+                      <dt class="font-semibold">Status</dt>
+                      <dd>{status}</dd>
+                    </dl>
+                    {#if !cert.revoked}
+                      <button
+                        class="btn btn-warning btn-xs mt-2"
+                        onclick={() => prefillRevoke(cert.serial)}
+                      >
+                        Revoke this certificate…
+                      </button>
+                    {/if}
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>

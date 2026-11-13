@@ -20,6 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
+import { CertExportError } from '../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fetch mock helpers
@@ -88,6 +89,33 @@ async function connectedClient(): Promise<RestClient> {
 //        be snake_case: success_ops, failure_ops, create_revision, mod_revision,
 //        range_end, lease_id.
 // ---------------------------------------------------------------------------
+
+describe('batch wire format', () => {
+    beforeEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it('maps OpType numbers to server string names and snake_case fields', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({ responses: [] });
+
+        await client.batch.execute([
+            { type: 0, key: 'a', value: 'v' },
+            { type: 1, key: 'b' },
+            { type: 2, key: 'c' },
+            { type: 3, key: 'd', rangeEnd: 'e' },
+        ]);
+
+        expect(calls).toHaveLength(1);
+        const req = calls[0];
+        expect(req.url).toBe('https://localhost:63002/batch');
+        expect(req.method).toBe('POST');
+        const body = req.body as { ops: Array<Record<string, unknown>> };
+        expect(body.ops.map((o) => o['type'])).toEqual(['put', 'get', 'delete', 'range']);
+        expect(body.ops[3]['range_end']).toBe('e');
+        expect(body.ops[3]).not.toHaveProperty('rangeEnd');
+    });
+});
 
 describe('Bug 1 – transaction wire format', () => {
     beforeEach(() => {
@@ -630,6 +658,57 @@ describe('Outbound transform — tenants.create sends isolation_type', () => {
         vi.unstubAllGlobals();
     });
 
+    it('create sends the SO fields and splits the SO credential from the tenant', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            id: 't1',
+            name: 'T',
+            isolation_type: 'prefix',
+            admin: { username: 'admin', cert_pem: 'CERT', thumbprint: 'THUMB' },
+            so: { username: 'officer', cert_pem: 'SO_CERT', thumbprint: 'SO_THUMB' },
+        });
+
+        const result = await client.tenants.create({
+            id: 't1',
+            name: 'T',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+            soUsername: 'officer',
+            soCertPem: 'SO_CERT',
+            soChainPem: 'SO_CHAIN',
+            soPin: '1234',
+        });
+
+        const body = calls[0].body as Record<string, unknown>;
+        expect(body['so_username']).toBe('officer');
+        expect(body['so_cert_pem']).toBe('SO_CERT');
+        expect(body['so_chain_pem']).toBe('SO_CHAIN');
+        expect(body['so_pin']).toBe('1234');
+        expect(result.so?.username).toBe('officer');
+        expect(result.admin.username).toBe('admin');
+        expect('so' in result.tenant).toBe(false);
+    });
+
+    it('create sends so_csr_pem and omits so when the server names no SO', async () => {
+        const client = await connectedClient();
+        const calls = installMockFetch({
+            id: 't1',
+            name: 'T',
+            admin: { username: 'admin', cert_pem: 'CERT', thumbprint: 'THUMB' },
+        });
+
+        const result = await client.tenants.create({
+            id: 't1',
+            name: 'T',
+            adminUsername: 'admin',
+            adminCsrPem: 'CSR',
+            soCsrPem: 'SO_CSR',
+        });
+
+        expect((calls[0].body as Record<string, unknown>)['so_csr_pem']).toBe('SO_CSR');
+        expect('so' in result).toBe(false);
+    });
+
     it('isolationType is serialized as isolation_type in POST body', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({
@@ -719,7 +798,7 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
                 maxCertificates: 50,
                 maxBackups: 5,
                 maxVectorDims: 512,
-                maxTSMetrics: 100,
+                maxTsMetrics: 100,
             },
         });
 
@@ -734,6 +813,10 @@ describe('Outbound transform — tenants.updateQuotas sends snake_case quota fie
         expect(body['tenant_id']).toBeUndefined();
         expect(body['max_databases']).toBe(5);
         expect(body['max_keys']).toBe(1000);
+        // The handler's tag is max_ts_metrics; maxTSMetrics would go out as
+        // max_t_s_metrics and the quota would be dropped.
+        expect(body['max_ts_metrics']).toBe(100);
+        expect(body['max_t_s_metrics']).toBeUndefined();
         expect(body['max_storage_bytes']).toBe(500000);
         expect(body['max_database_size_bytes']).toBe(250000);
         expect(body['max_raft_groups']).toBe(3);
@@ -1204,18 +1287,16 @@ describe('Certs — issueCert/enrollCert send literal camelCase PEM fields', () 
         expect(body['cert_p_e_m']).toBeUndefined();
     });
 
-    it('export posts to /certs/export with certPEM/keyPEM verbatim', async () => {
+    it('export builds the archive locally and sends nothing to the server', async () => {
         const client = await connectedClient();
         const calls = installMockFetch({ pkcs12: 'BASE64DATA' });
 
-        await client.certs.export({ certPEM: 'LEAF', keyPEM: 'KEY', passphrase: 'secret' });
+        await expect(
+            client.certs.export({ certPEM: 'LEAF', keyPEM: 'KEY', passphrase: 'secret' }),
+        ).rejects.toBeInstanceOf(CertExportError);
 
-        expect(calls).toHaveLength(1);
-        const body = calls[0].body as Record<string, unknown>;
-        expect(body['certPEM']).toBe('LEAF');
-        expect(body['keyPEM']).toBe('KEY');
-        expect(body['cert_p_e_m']).toBeUndefined();
-        expect(body['key_p_e_m']).toBeUndefined();
+        // No request at all: a private key never leaves this process.
+        expect(calls).toHaveLength(0);
     });
 
     it('issueCertWithLocalKey throws DesktopOnlyError on REST transport', async () => {

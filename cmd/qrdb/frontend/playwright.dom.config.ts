@@ -16,13 +16,22 @@
  */
 
 import { defineConfig, devices } from "@playwright/test";
-import { resolveTLS } from "./playwright.tls.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PROXY_CLIENT_TLS_DIR_ENV, resolveTLS } from "./playwright.tls.ts";
 
 // The UI is served over https, as qrdbd serves web mode: every secret-bearing
 // SDK call refuses an http origin. The certificate is self-signed and
 // generated per run in memory (playwright.tls.ts); only this tier's
 // `ignoreHTTPSErrors` makes the browser accept it.
 resolveTLS();
+
+// The directory the Vite proxy reads a client certificate from on every
+// connection to the daemon (vite.config.ts); the fixture's tenantAdmin option
+// writes the tenant admin's there. One per run: workers and the webServer
+// inherit it from this process.
+process.env[PROXY_CLIENT_TLS_DIR_ENV] ??= mkdtempSync(join(tmpdir(), "qrdb-dom-proxy-client-"));
 
 export default defineConfig({
   testDir: "./e2e/dom",
@@ -52,6 +61,9 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
     reuseExistingServer: false,
     timeout: 60_000,
-    env: { QRDB_PROXY_TARGET: "https://127.0.0.1:63012" },
+    env: {
+      QRDB_PROXY_TARGET: "https://127.0.0.1:63012",
+      [PROXY_CLIENT_TLS_DIR_ENV]: process.env[PROXY_CLIENT_TLS_DIR_ENV]!,
+    },
   },
 });

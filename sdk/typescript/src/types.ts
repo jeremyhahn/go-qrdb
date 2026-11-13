@@ -26,6 +26,8 @@ export interface HealthResponse {
 
 /** Detailed host and shard status information. */
 export interface StatusResponse {
+    /** Build version of the server binary (what its --version prints). */
+    readonly version: string;
     /** Unique identifier for this node. */
     readonly nodeId: string;
     /** Raft transport address of this node. */
@@ -490,6 +492,11 @@ export interface BatchRequest {
 export interface BatchResponse {
     /** Per-operation results. */
     readonly responses: readonly OpResponse[];
+    /**
+     * The single store revision every write in the batch committed at (wire
+     * field `revision`). Zero or absent when the batch held no put or delete.
+     */
+    readonly revision?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +530,16 @@ export interface ImportOptions {
     readonly collection?: string;
     /** Optional target database name. */
     readonly database?: string;
+}
+
+/**
+ * Options for importing in-memory content (batch.importContent): the
+ * ImportOptions plus the original filename, which lets format "auto"
+ * infer the format from the extension.
+ */
+export interface ImportContentOptions extends ImportOptions {
+    /** Original filename of the content, e.g. "users.csv". */
+    readonly filename?: string;
 }
 
 /** A single row that failed during import. */
@@ -691,6 +708,9 @@ export interface IndexCreateRequest {
     readonly sparse?: boolean;
     /** Whether values are encoded as fixed-width integers for numeric range scans. */
     readonly numeric?: boolean;
+    /** Whether string values are lower-cased on write and on query, so a
+     * lookup matches regardless of case. */
+    readonly caseInsensitive?: boolean;
 }
 
 /** Parameters for querying an index by exact value. */
@@ -767,7 +787,7 @@ export interface TSQueryRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Optional tag filters. */
     readonly tags?: readonly TSTag[];
@@ -804,7 +824,7 @@ export interface TSAggregateRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Aggregation function to apply. */
     readonly function: AggFunc;
@@ -834,7 +854,7 @@ export interface TSRichQueryRequest {
     readonly metric: string;
     /** Start of the time range in nanoseconds (inclusive). */
     readonly startNs: number;
-    /** End of the time range in nanoseconds (exclusive). */
+    /** End of the time range in nanoseconds (inclusive: a point at exactly this time is returned). */
     readonly endNs: number;
     /** Optional tag filters. */
     readonly tags?: readonly TSTag[];
@@ -882,7 +902,7 @@ export interface TSDeleteRequest {
     readonly tags?: readonly TSTag[];
     /** Start of the time range in nanoseconds (inclusive, 0 for all). */
     readonly startNs?: number;
-    /** End of the time range in nanoseconds (exclusive, 0 for all). */
+    /** End of the time range in nanoseconds (inclusive, 0 for all). */
     readonly endNs?: number;
 }
 
@@ -1141,9 +1161,10 @@ export interface ListVectorsRequest {
     readonly namespace: string;
     /** Maximum number of vectors to return. */
     readonly limit?: number;
-    /** Number of vectors to skip. */
-    readonly offset?: number;
-    /** Cursor for cursor-based pagination. */
+    /**
+     * Opaque cursor from a previous page's nextCursor; omit for the first
+     * page. Listing pages by cursor only.
+     */
     readonly cursor?: string;
     /** Target shard identifier. */
     readonly shardId?: number;
@@ -1398,6 +1419,10 @@ export interface User {
     readonly id: string;
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email login key; absent for a user created without one. */
+    readonly email?: string;
+    /** Display name; presentation only. */
+    readonly name?: string;
     /** Tenant that owns this user. */
     readonly tenantId: string;
     /** Role IDs assigned to this user. */
@@ -1407,6 +1432,14 @@ export interface User {
      * or deleting. Only active can authenticate.
      */
     readonly lifecycle: string;
+    /** Permitted authentication methods; absent states no restriction. */
+    readonly authMethods?: readonly string[];
+    /** Last successful authentication (RFC 3339); absent if never. */
+    readonly lastAuth?: string;
+    /** Roles granted within a tenant scope, additive alongside `roleIds`. */
+    readonly roleBindings?: readonly RoleBinding[];
+    /** ABAC key/value attributes evaluated by policy. */
+    readonly attributes?: Readonly<Record<string, string>>;
     /** Whether this is a built-in system user. */
     readonly system: boolean;
     /** ISO 8601 creation timestamp. */
@@ -1419,10 +1452,35 @@ export interface User {
 export interface CreateUserRequest {
     /** Unique username within the tenant. */
     readonly username: string;
+    /** Email address: the user's email login key. The daemon requires it
+     *  unless withoutEmailLoginKey is set. */
+    readonly email?: string;
+    /** Create the user with no email login key (email may then be empty). */
+    readonly withoutEmailLoginKey?: boolean;
     /** Target tenant ID (defaults to the caller's tenant). */
     readonly tenantId?: string;
     /** Role IDs to assign at creation time. */
     readonly roleIds?: readonly string[];
+    /** Display name; presentation only. */
+    readonly name?: string;
+    /** Permitted authentication methods. Empty states no restriction. */
+    readonly authMethods?: readonly string[];
+    /**
+     * State to create the account in: pending, active or disabled only.
+     * Empty defaults to active, or pending when `pending` is set; both are
+     * refused unless they agree.
+     */
+    readonly lifecycle?: string;
+    /** Create the account pending activation (shorthand for lifecycle pending). */
+    readonly pending?: boolean;
+}
+
+/** A role granted within a tenant scope, additive alongside `roleIds`. */
+export interface RoleBinding {
+    /** The granted role's ID. */
+    readonly roleId: string;
+    /** The tenant the grant applies in. */
+    readonly tenantId: string;
 }
 
 /** Parameters for updating an existing user. */
@@ -1433,6 +1491,23 @@ export interface UpdateUserRequest {
     readonly username?: string;
     /** New set of role IDs. */
     readonly roleIds?: readonly string[];
+    /** New email login key; uniqueness is re-checked within the tenant. */
+    readonly email?: string;
+    /** New display name. */
+    readonly name?: string;
+    /** Replaces the permitted authentication methods when present; `[]` clears them. */
+    readonly authMethods?: readonly string[];
+    /** Transitions the account to this lifecycle state when non-empty. */
+    readonly lifecycle?: string;
+    /**
+     * Raises the last-authentication high-water mark (RFC 3339). A value at
+     * or before the stored one writes nothing.
+     */
+    readonly lastAuth?: string;
+    /** Replaces the tenant-scoped role bindings when present; `[]` clears them. */
+    readonly roleBindings?: readonly RoleBinding[];
+    /** Replaces the ABAC attributes when present; `{}` clears them. */
+    readonly attributes?: Readonly<Record<string, string>>;
 }
 
 /** Parameters for binding an mTLS certificate thumbprint to a user. */
@@ -1745,7 +1820,7 @@ export interface CertRecord {
     /** Username embedded in the certificate. */
     readonly username: string;
     /** Tenant the certificate belongs to. */
-    readonly tenantId: string;
+    readonly tenantID: string;
     /** ISO 8601 issuance timestamp. */
     readonly issuedAt: string;
     /** ISO 8601 expiration timestamp. */
@@ -2445,6 +2520,15 @@ export interface DatabaseProtocolConfig {
 
 /** The etcd wire protocol as a database reports it. The Go SDK's
  * `EtcdProtocolConfig`. */
+/** Wire protocols a database serves, as set at create. Unlike
+ * {@link DatabaseProtocolConfig} (what `updateProtocol` changes), it can
+ * also enable the etcd v3 listener, which is fixed for the database's
+ * lifetime. */
+export interface DatabaseCreateProtocolConfig extends DatabaseProtocolConfig {
+    /** etcd v3 wire protocol listener; absent means off. */
+    readonly etcd?: DatabaseEtcdProtocolInfo;
+}
+
 export interface DatabaseEtcdProtocolInfo {
     /** Whether the etcd wire protocol serves this database. */
     readonly enabled: boolean;
@@ -2519,6 +2603,28 @@ export interface MintJoinTokenResponse {
     readonly expiresAt: string;
 }
 
+/** One sample of a Prometheus metric family (text exposition format). */
+export interface MetricSample {
+    /** Sample name; differs from the family name for _bucket/_sum/_count etc. */
+    readonly name: string;
+    /** Label set, with escapes (\\, \", \n) already decoded. */
+    readonly labels: Record<string, string>;
+    /** Sample value; +Inf, -Inf and NaN are decoded to their number forms. */
+    readonly value: number;
+}
+
+/** A Prometheus metric family, as returned by GET /metrics. */
+export interface MetricFamily {
+    /** Family name. */
+    readonly name: string;
+    /** HELP text, unescaped; empty when the exposition has none. */
+    readonly help: string;
+    /** TYPE: counter, gauge, histogram, summary or untyped. */
+    readonly type: string;
+    /** Samples belonging to the family, in exposition order. */
+    readonly samples: MetricSample[];
+}
+
 /**
  * Raft consensus configuration as a request sets it on a database. There is no
  * shard ID: the cluster issues it when the database is created, it never
@@ -2532,7 +2638,7 @@ export interface MintJoinTokenResponse {
  * SDK's `transport.DatabaseRaftConfig`.
  */
 export interface DatabaseRaftConfig {
-    /** Cluster mode (e.g. "single", "multi"). */
+    /** Cluster mode: "none", "local" or "distributed". */
     readonly clusterMode: string;
     /** Replica identifier for this database. */
     readonly replicaId?: number;
@@ -2658,7 +2764,7 @@ export interface TokenDiscoveryInfo {
 /** Raft configuration as a database reports it. Discovery secrets are
  * write-only: each is reported only as set. The Go SDK's `DatabaseRaftInfo`. */
 export interface DatabaseRaftInfo {
-    /** Cluster mode (e.g. "single", "multi"). */
+    /** Cluster mode: "none", "local" or "distributed". */
     readonly clusterMode: string;
     /** Replica identifier for this database. */
     readonly replicaId?: number;
@@ -2707,6 +2813,9 @@ export interface DatabaseBarrierStatus {
     readonly hardwareBacked: boolean;
     /** RFC 3339 time the barrier was first initialized; absent until then. */
     readonly initializedAt?: string;
+    /** The database barrier's cluster seal state (wire `cluster_seal`).
+     * Absent from a server that does not report it. */
+    readonly clusterSeal?: ClusterSeal;
 }
 
 /** Encryption barrier settings a create request sets. The secret
@@ -2813,7 +2922,7 @@ export interface CreateDatabaseRequest {
     readonly backend: string;
     /** Wire protocol configuration (mysql/postgresql). The wire field name
      * is `protocol` to match the Go transport type. */
-    readonly protocol?: DatabaseProtocolConfig;
+    readonly protocol?: DatabaseCreateProtocolConfig;
     /** SQL settings (concurrency mode). Absent means the defaults. */
     readonly sql?: DatabaseSQLConfig;
     /** Custom data directory for file/pebble backends. */
@@ -2885,9 +2994,21 @@ export interface CollectionInfo {
     readonly id_strategy: string;
     readonly field_hash?: string;
     readonly schema?: Readonly<Record<string, string>>;
+    readonly indexes?: readonly CollectionIndexDefinition[];
     readonly document_count: number;
     readonly storage_codec?: string;
     readonly created_at: string;
+    /** Lifecycle state (e.g. `dropping`); absent for a live collection. */
+    readonly state?: string;
+    /** When the collection entered `state` (RFC 3339). */
+    readonly state_since?: string;
+}
+
+/** A secondary index declared on a collection's field at create. */
+export interface CollectionIndexDefinition {
+    readonly field_name: string;
+    readonly unique?: boolean;
+    readonly sparse?: boolean;
 }
 
 /** Request to create a new collection. */
@@ -2897,6 +3018,7 @@ export interface CreateCollectionRequest {
     readonly id_strategy?: string;
     readonly field_hash?: string;
     readonly storage_codec?: string;
+    readonly indexes?: readonly CollectionIndexDefinition[];
 }
 
 /** Response containing a list of collections. */
@@ -2993,8 +3115,11 @@ export interface TenantQuotas {
     readonly maxBackups: number;
     /** Maximum vector dimensions. */
     readonly maxVectorDims: number;
-    /** Maximum time-series metrics. */
-    readonly maxTSMetrics: number;
+    /**
+     * Maximum time-series metrics. Wire name: `max_ts_metrics`; the
+     * camel↔snake transform maps it to and from `maxTsMetrics` only.
+     */
+    readonly maxTsMetrics: number;
     /**
      * Bytes an isolated tenant may consume by opting to use the shared system
      * barrier: 0 makes that option unavailable, -1 unlimited, >0 a cap accounted
@@ -3056,6 +3181,14 @@ export interface TenantEntitlements {
 export type TenantIsolationType = 'prefix' | 'barrier' | 'volume' | 'raft';
 
 /** Information about a tenant. */
+/**
+ * A tenant's operational status (pkg/tenant Status). `"active"` is normal
+ * service; `"suspended"` is temporarily out of service, expected to be
+ * reactivated; `"disabled"` is out of service until a system administrator
+ * reactivates it.
+ */
+export type TenantStatus = "active" | "suspended" | "disabled";
+
 export interface TenantInfo {
     /** Unique tenant identifier. */
     readonly id: string;
@@ -3066,6 +3199,11 @@ export interface TenantInfo {
      * `"prefix"` (barrier isolation is strictly opt-in).
      */
     readonly isolationType?: TenantIsolationType;
+    /**
+     * Operational status. The server always sends it; a new tenant is
+     * `"active"`.
+     */
+    readonly status: TenantStatus;
     /** Resource quotas for this tenant, if configured. */
     readonly quotas?: TenantQuotas;
     /** Feature entitlements for this tenant, if configured. */
@@ -3075,6 +3213,10 @@ export interface TenantInfo {
      * for prefix/barrier tenants.
      */
     readonly volumePool?: string;
+    /** Free-text description; absent when empty. */
+    readonly description?: string;
+    /** Operator key/value metadata; absent when empty. */
+    readonly metadata?: Readonly<Record<string, string>>;
     /** ISO 8601 creation timestamp. */
     readonly createdAt: string;
     /** ISO 8601 last-updated timestamp. */
@@ -3143,6 +3285,21 @@ export interface CreateTenantRequest {
     readonly adminChainPem?: string;
     /** Registers the tenant's trust anchors with it. */
     readonly trustAnchorsPem?: string;
+    /**
+     * The tenant's security officer, optional: a second principal, distinct
+     * from the admin by name and by key, holding the tenant's so role alone.
+     * `soUsername`, exactly one of `soCsrPem` and `soCertPem`, and `soPin`
+     * are given together or not at all.
+     */
+    readonly soUsername?: string;
+    /** The SO's certificate signing request, signed as the admin's CSR is. */
+    readonly soCsrPem?: string;
+    /** The SO's own certificate, leaf first; it must chain to one of `trustAnchorsPem`. */
+    readonly soCertPem?: string;
+    /** Intermediates for `soCertPem`. */
+    readonly soChainPem?: string;
+    /** The SO's second factor (auth.so_dual_factor), the PIN the SO gate asks for. */
+    readonly soPin?: string;
 }
 
 /**
@@ -3185,6 +3342,10 @@ export interface UpdateTenantRequest {
      * data stored under the current strategy.
      */
     readonly isolationType?: TenantIsolationType;
+    /** Replaces the description when present (`""` clears it). */
+    readonly description?: string;
+    /** Replaces the whole metadata map when present; `{}` clears it. */
+    readonly metadata?: Readonly<Record<string, string>>;
 }
 
 /** Response from updating a tenant. */
@@ -3199,6 +3360,8 @@ export interface CreateTenantResponse {
     readonly tenant: TenantInfo;
     /** The tenant's first admin, as onboarding left it. */
     readonly admin: TenantAdminCredential;
+    /** The tenant's security officer, present when the request named one. */
+    readonly so?: TenantAdminCredential;
 }
 
 /**
@@ -3559,8 +3722,8 @@ export interface BackupInfo {
     readonly keyProviderId?: string;
     /** Metadata embedded in the backup manifest. */
     readonly metadata: Record<string, string>;
-    /** Human-readable backup duration. */
-    readonly duration: string;
+    /** Backup duration in milliseconds (wire field `duration_ms`). */
+    readonly durationMs: number;
     /** Non-empty when the backup failed. */
     readonly errorMessage: string;
 }
@@ -3596,8 +3759,8 @@ export interface RestoreResult {
     readonly backupId: string;
     /** Number of shards successfully restored. */
     readonly shardsRestored: number;
-    /** Human-readable restore duration. */
-    readonly duration: string;
+    /** Restore duration in milliseconds (wire field `duration_ms`). */
+    readonly durationMs: number;
     /** Per-shard errors, if any. Omitted on the wire when there are none. */
     readonly errors?: ShardError[];
 }

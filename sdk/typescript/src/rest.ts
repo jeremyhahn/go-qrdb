@@ -30,7 +30,17 @@ import {
     normalizeVectorEnumFields,
     normalizeVectorIDField,
     vectorIDToWire,
+    indexParamsToWire,
+    rebuildProgressFromWire,
+    compactionProgressFromWire,
+    searchResponseFromWire,
+    type WireSearchResponse,
+    type WireRebuildIndexResponse,
+    type WireRebuildProgress,
+    type WireCompactResponse,
+    type WireCompactionProgress,
 } from './transform.js';
+import { encodePKCS12Base64 } from './pkcs12.js';
 import type {
     AdminClient,
     AuditQueryClient,
@@ -94,6 +104,7 @@ import type {
     BatchUpsertResponse,
     BootstrapResult,
     ImportOptions,
+    ImportContentOptions,
     ImportResult,
     CapabilitiesResponse,
     CeremonyInitializeRequest,
@@ -108,6 +119,7 @@ import type {
     CompactNamespaceRequest,
     CompactNamespaceResponse,
     CompactionProgress,
+    AggFunc,
     CreateDatabaseRequest,
     CreateNamespaceRequest,
     DaemonStatus,
@@ -122,6 +134,7 @@ import type {
     UpdateDatabaseCompactionRequest,
     NodeCompactionBody,
     MintJoinTokenResponse,
+    MetricFamily,
     CreateNamespaceResponse,
     CreateRoleRequest,
     CreateUserRequest,
@@ -295,6 +308,7 @@ import {
     TransportError,
 } from './errors.js';
 import type { AuditFilter, AuditPage } from './audit.js';
+import { parsePrometheusText } from './metrics.js';
 
 // ---------------------------------------------------------------------------
 // SDK version constant
@@ -313,7 +327,38 @@ const SDK_VERSION = '0.1.0';
  * so that SDK consumers see the camelCase field names declared in types.ts.
  * Throws {@link TransportError} on non-OK status codes.
  */
-async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
+/**
+ * Returns the server's refusal of a request as an Error whose message is the
+ * server's own message: the `error` (a string, or an object's `message`) or
+ * `message` field of a JSON error body. A body in no such shape is kept as
+ * it came, so no refusal is ever shown blank.
+ */
+export function serverRefusal(body: string): Error {
+    try {
+        const parsed: unknown = JSON.parse(body);
+        if (parsed !== null && typeof parsed === 'object') {
+            const obj = parsed as Record<string, unknown>;
+            const e = obj['error'];
+            if (typeof e === 'string' && e !== '') return new Error(e);
+            if (e !== null && typeof e === 'object') {
+                const m = (e as Record<string, unknown>)['message'];
+                if (typeof m === 'string' && m !== '') return new Error(m);
+            }
+            const m = obj['message'];
+            if (typeof m === 'string' && m !== '') return new Error(m);
+        }
+    } catch {
+        // Not JSON: the body itself is the server's text.
+    }
+    return new Error(body);
+}
+
+async function requestJSON<T>(
+    baseUrl: string,
+    path: string,
+    init?: RequestInit,
+    camel = true,
+): Promise<T> {
     const url = baseUrl + path;
     const method = init?.method ?? 'GET';
     let resp: Response;
@@ -331,11 +376,11 @@ async function requestJSON<T>(baseUrl: string, path: string, init?: RequestInit)
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
     const raw = await resp.json();
-    return deepSnakeToCamel(raw) as T;
+    return (camel ? deepSnakeToCamel(raw) : raw) as T;
 }
 
 /**
@@ -361,7 +406,7 @@ async function requestVoid(baseUrl: string, path: string, init?: RequestInit): P
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
 }
@@ -411,7 +456,7 @@ async function requestOptionalJSON<T>(baseUrl: string, path: string, init?: Requ
         );
     }
     if (!resp.ok) {
-        throw new TransportError(`${method} ${path}`, resp.status, new Error(await resp.text()));
+        throw new TransportError(`${method} ${path}`, resp.status, serverRefusal(await resp.text()));
     }
     if (resp.status === 204) {
         return undefined;
@@ -455,7 +500,7 @@ async function requestText(baseUrl: string, path: string, init?: RequestInit): P
         throw new TransportError(
             `${method} ${path}`,
             resp.status,
-            new Error(body),
+            serverRefusal(body),
         );
     }
     return resp.text();
@@ -538,6 +583,15 @@ function jsonBody(data: unknown): RequestInit {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(deepCamelToSnake(data)),
     };
+}
+
+/** Size of one append chunk of a batch import session (1 MiB). */
+export const IMPORT_CHUNK_BYTES = 1024 * 1024;
+
+/** Wire shape of GET /batch/import/formats. */
+interface ImportFormatsWire {
+    readonly formats?: readonly string[];
+    readonly codecs?: readonly string[];
 }
 
 /**
@@ -631,7 +685,7 @@ export class RestClient implements Client {
                 // Attempt to retrieve server version from status endpoint.
                 try {
                     const status = await this.fetchJSON<StatusResponse>('/status');
-                    this.serverVersion = status.nodeId ?? '';
+                    this.serverVersion = status.version ?? '';
                 } catch {
                     // Non-fatal: version remains empty.
                 }
@@ -796,6 +850,10 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 return this.fetchJSON<CapabilitiesResponse>('/capabilities');
             },
+            metrics: async (): Promise<MetricFamily[]> => {
+                this.ensureConnected();
+                return parsePrometheusText(await this.fetchText('/metrics'));
+            },
         };
     }
 
@@ -934,7 +992,7 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 const resp = await this.fetchJSON<BatchResponse>('/batch', {
                     method: 'POST',
-                    ...jsonBody({ ops }),
+                    ...jsonBody({ ops: ops.map(serializeOp) }),
                 });
                 // Get/Range ops within the batch return MVCCKeyValue results
                 // whose key/value are base64 on the wire; decode them to
@@ -944,13 +1002,69 @@ export class RestClient implements Client {
             importFile: async (_filePath: string, _opts: ImportOptions): Promise<ImportResult> => {
                 throw new DesktopOnlyError('batch.importFile');
             },
+            importContent: async (data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult> => {
+                this.ensureConnected();
+                return this.importContentSession(data, opts);
+            },
             availableCodecs: async (): Promise<readonly string[]> => {
-                throw new DesktopOnlyError('batch.availableCodecs');
+                this.ensureConnected();
+                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
+                return resp.codecs ?? [];
             },
             availableImportFormats: async (): Promise<readonly string[]> => {
-                throw new DesktopOnlyError('batch.availableImportFormats');
+                this.ensureConnected();
+                const resp = await this.fetchJSON<ImportFormatsWire>('/batch/import/formats');
+                return resp.formats ?? [];
             },
         };
+    }
+
+    /**
+     * Runs one chunked import session: begin, append each IMPORT_CHUNK_BYTES
+     * piece with its sequence number, commit. Any failure after begin aborts
+     * the session (best effort) and rethrows the original error.
+     */
+    private async importContentSession(data: Uint8Array | Blob, opts: ImportContentOptions): Promise<ImportResult> {
+        // A copy into a plain ArrayBuffer: fetch's BodyInit refuses a view
+        // over a SharedArrayBuffer.
+        const bytes: Uint8Array<ArrayBuffer> =
+            data instanceof Uint8Array ? new Uint8Array(data) : new Uint8Array(await data.arrayBuffer());
+        const begin = await this.fetchJSON<{ sessionId: string }>('/batch/import/begin', {
+            method: 'POST',
+            ...jsonBody({
+                format: opts.format,
+                filename: opts.filename ?? '',
+                key_field: opts.key_field,
+                value_mode: opts.value_mode,
+                value_field: opts.value_field ?? '',
+                skip_header: opts.skip_header ?? false,
+                transactional: opts.transactional ?? false,
+                // The server refuses a non-empty collection (batch import
+                // writes the KV keyspace only) rather than dropping it.
+                ...(opts.collection ? { collection: opts.collection } : {}),
+            }),
+        });
+        const base = `/batch/import/${encodeURIComponent(begin.sessionId)}`;
+        try {
+            let seq = 0;
+            for (let off = 0; off < bytes.length; off += IMPORT_CHUNK_BYTES) {
+                await this.fetchVoid(`${base}/append?seq=${seq}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: bytes.subarray(off, Math.min(off + IMPORT_CHUNK_BYTES, bytes.length)),
+                });
+                seq++;
+            }
+            return await this.fetchJSON<ImportResult>(`${base}/commit`, { method: 'POST' });
+        } catch (err: unknown) {
+            try {
+                await this.fetchVoid(`${base}/abort`, { method: 'POST' });
+            } catch {
+                // The session may already be gone (a failed commit ends it);
+                // the original error is the one the caller needs.
+            }
+            throw err;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1067,7 +1181,7 @@ export class RestClient implements Client {
                 throw new TransportError(
                     'GET /watch',
                     resp.status,
-                    new Error(body),
+                    serverRefusal(body),
                 );
             }
             if (!resp.body) {
@@ -1315,13 +1429,7 @@ export class RestClient implements Client {
                 const tagsStr = req.tags
                     ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
                     : undefined;
-                interface RawTSPoint {
-                    metric: string;
-                    value: number;
-                    timestampNs: number;
-                    tags?: Record<string, string>;
-                }
-                const raw = await this.fetchJSON<{ points: RawTSPoint[] }>(`/ts/query${buildQuery({
+                const raw = await this.fetchJSON<{ points: RawTSPoint[] | null }>(`/ts/query${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1330,20 +1438,13 @@ export class RestClient implements Client {
                         descending: req.descending ? 'true' : undefined,
                     })}`,
                 );
-                return {
-                    points: (raw.points ?? []).map((p) => ({
-                        metric: p.metric,
-                        timestampNs: p.timestampNs,
-                        value: p.value,
-                        tags: p.tags
-                            ? Object.entries(p.tags).map(([key, value]) => ({ key, value }))
-                            : [],
-                    })),
-                };
+                return { points: (raw.points ?? []).map(rawTSPointToPoint) };
             },
             aggregate: async (req: TSAggregateRequest): Promise<TSAggregateResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSAggregateResponse>(`/ts/aggregate${buildQuery({
+                const raw = await this.fetchJSON<{
+                    results: { timestamp: number; value: number; count: number }[] | null;
+                }>(`/ts/aggregate${buildQuery({
                         metric: req.metric,
                         start_ns: req.startNs,
                         end_ns: req.endNs,
@@ -1351,6 +1452,13 @@ export class RestClient implements Client {
                         interval_ns: req.intervalNs,
                     })}`,
                 );
+                return {
+                    results: (raw.results ?? []).map((r) => ({
+                        timestampNs: r.timestamp,
+                        value: r.value,
+                        count: r.count,
+                    })),
+                };
             },
             writePoint: async (point: TSDataPoint): Promise<void> => {
                 this.ensureConnected();
@@ -1366,28 +1474,85 @@ export class RestClient implements Client {
             },
             richQuery: async (req: TSRichQueryRequest): Promise<TSRichQueryResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSRichQueryResponse>('/ts/rich-query', {
+                const raw = await this.fetchJSON<{
+                    metric: string;
+                    tags?: Record<string, string>;
+                    points: RawTSPoint[] | null;
+                    aggregatedValue?: number;
+                    groupedResults?: {
+                        tags: Record<string, string> | null;
+                        points?: RawTSPoint[] | null;
+                        aggregatedValue?: number;
+                    }[] | null;
+                }>('/ts/query-rich', {
                     method: 'POST',
-                    ...jsonBody(req),
+                    ...jsonBody({
+                        metric: req.metric,
+                        tags: tagsArrayToMap(req.tags),
+                        start_ns: req.startNs,
+                        end_ns: req.endNs,
+                        aggregation: req.aggregation ? aggFuncToString(req.aggregation) : undefined,
+                        interval_ns: req.intervalNs,
+                        group_by: req.groupBy,
+                        limit: req.limit,
+                        percentile: req.percentile,
+                    }),
                 });
+                return {
+                    metric: raw.metric,
+                    tags: tagsMapToArray(raw.tags),
+                    points: (raw.points ?? []).map(rawTSPointToPoint),
+                    aggregatedValue: raw.aggregatedValue,
+                    groupedResults: (raw.groupedResults ?? []).map((g) => ({
+                        tags: tagsMapToArray(g.tags ?? undefined),
+                        points: (g.points ?? []).map(rawTSPointToPoint),
+                        aggregatedValue: g.aggregatedValue,
+                    })),
+                };
             },
             deleteSeries: async (req: TSDeleteRequest): Promise<TSDeleteResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSDeleteResponse>('/ts/delete', {
-                    method: 'POST',
-                    ...jsonBody(req),
-                });
+                const tags = req.tags && req.tags.length > 0
+                    ? req.tags.map((t) => `${t.key}=${t.value}`).join(',')
+                    : undefined;
+                await this.fetchJSON<{ status: string }>(`/ts/series/${encodeURIComponent(req.metric)}${buildQuery({
+                        tags,
+                        start_ns: req.startNs || undefined,
+                        end_ns: req.endNs || undefined,
+                    })}`,
+                    { method: 'DELETE' },
+                );
+                return {};
             },
             getRetention: async (req: TSGetRetentionRequest): Promise<TSGetRetentionResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<TSGetRetentionResponse>(`/ts/retention${buildQuery({ metric: req.metric })}`,
-                );
+                const raw = await this.fetchJSON<{
+                    policy: { durationNs: number; resolutionNs?: number; aggregation?: string } | null;
+                }>(`/ts/series/${encodeURIComponent(req.metric)}/retention`);
+                // The server answers a zero-duration policy for a metric
+                // without one: that is no retention policy.
+                if (!raw.policy || !(raw.policy.durationNs > 0)) {
+                    return { policy: null };
+                }
+                return {
+                    policy: {
+                        durationNs: raw.policy.durationNs,
+                        resolutionNs: raw.policy.resolutionNs,
+                        aggregation: aggFuncFromString(raw.policy.aggregation),
+                    },
+                };
             },
             setRetention: async (req: TSSetRetentionRequest): Promise<void> => {
                 this.ensureConnected();
-                await this.fetchVoid('/ts/retention', {
-                    method: 'POST',
-                    ...jsonBody(req),
+                await this.fetchVoid(`/ts/series/${encodeURIComponent(req.metric)}/retention`, {
+                    method: 'PUT',
+                    ...jsonBody({
+                        duration_ns: req.policy.durationNs,
+                        resolution_ns: req.policy.resolutionNs,
+                        aggregation: req.policy.aggregation
+                            ? aggFuncToString(req.policy.aggregation)
+                            : undefined,
+                    }),
                 });
             },
             listMetrics: async (req: TSListMetricsRequest): Promise<TSListMetricsResponse> => {
@@ -1416,7 +1581,7 @@ export class RestClient implements Client {
                 // distance_metric / index_type as canonical service strings,
                 // not the SDK's numeric proto enums, and the index parameters
                 // under index_config.
-                return this.fetchJSON<CreateNamespaceResponse>('/vector/namespace',
+                const resp = await this.fetchJSON<{ success?: boolean; timestamp?: number }>('/vector/namespace',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1424,11 +1589,13 @@ export class RestClient implements Client {
                             dimension: req.dimension,
                             distance_metric: distanceMetricToRestWire(req.distanceMetric),
                             index_type: indexTypeToRestWire(req.indexType),
-                            index_config: req.indexParams,
+                            index_config: indexParamsToWire(req.indexParams),
                             shard_id: req.shardId,
                         }),
                     },
                 );
+                // The wire (vectorCreateNamespaceResponse) reports success.
+                return { created: resp.success === true, timestamp: resp.timestamp ?? 0 };
             },
             deleteNamespace: async (req: DeleteNamespaceRequest): Promise<void> => {
                 this.ensureConnected();
@@ -1487,7 +1654,9 @@ export class RestClient implements Client {
             },
             batchUpsert: async (req: BatchUpsertRequest): Promise<BatchUpsertResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchUpsertResponse>('/vector/batch/upsert',
+                // The wire answers {ids, versions, success, inserted_count}:
+                // the upserted count is inserted_count, the rest failed.
+                const resp = await this.fetchJSON<{ insertedCount?: number }>('/vector/batch/upsert',
                     {
                         method: 'POST',
                         ...jsonBody({
@@ -1496,31 +1665,46 @@ export class RestClient implements Client {
                         }),
                     },
                 );
+                const succeeded = resp.insertedCount ?? 0;
+                return { succeeded, failed: Math.max(0, req.vectors.length - succeeded) };
             },
             batchDeleteVectors: async (
                 req: BatchDeleteVectorsRequest,
             ): Promise<BatchDeleteVectorsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<BatchDeleteVectorsResponse>('/vector/batch/delete',
+                // The wire answers {deleted_count, failed_ids, success}.
+                const resp = await this.fetchJSON<{ deletedCount?: number; failedIds?: readonly (number | string)[] }>(
+                    '/vector/batch/delete',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, ids: req.ids.map(vectorIDToWire) }),
                     },
                 );
+                const failedIds = resp.failedIds ?? [];
+                return {
+                    deleted: resp.deletedCount ?? 0,
+                    failed: failedIds.length,
+                    errors: failedIds.map((id) => ({ id: String(id), error: 'not deleted' })),
+                };
             },
             listVectors: async (req: ListVectorsRequest): Promise<ListVectorsResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListVectorsResponse>(`/vector/list${buildQuery({
+                const resp = await this.fetchJSON<{
+                    vectors?: VectorData[] | null;
+                    nextCursor?: string;
+                    totalCount?: number;
+                }>(`/vector/list${buildQuery({
                         namespace: req.namespace,
                         limit: req.limit,
-                        offset: req.offset,
                         cursor: req.cursor,
                         shard_id: req.shardId,
                     })}`,
                 );
+                // The wire answers the namespace size as total_count.
                 return {
-                    ...resp,
                     vectors: (resp.vectors ?? []).map(normalizeVectorIDField),
+                    nextCursor: resp.nextCursor || undefined,
+                    total: resp.totalCount ?? 0,
                 };
             },
             updateMetadata: async (req: UpdateMetadataRequest): Promise<void> => {
@@ -1534,85 +1718,119 @@ export class RestClient implements Client {
                 req: SearchSimilarRequest,
             ): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/similar',
-                    { method: 'POST', ...jsonBody(req) },
+                // The wire (vectorSearchSimilarRequest) reads query_vector
+                // and answers the search time as query_duration.
+                const { vector, ...rest } = req;
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/similar',
+                    { method: 'POST', ...jsonBody({ ...rest, queryVector: vector }) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByMetadata: async (
                 req: SearchByMetadataRequest,
             ): Promise<SearchByMetadataResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchByMetadataResponse>('/vector/search/metadata',
+                // The wire answers the match count as total_count.
+                const resp = await this.fetchJSON<{ results?: VectorData[] | null; totalCount?: number }>(
+                    '/vector/search/metadata',
                     { method: 'POST', ...jsonBody(req) },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                const results = (resp.results ?? []).map(normalizeVectorIDField);
+                return { results, total: resp.totalCount ?? results.length };
             },
             hybridSearch: async (
                 req: HybridSearchRequest,
             ): Promise<HybridSearchResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<HybridSearchResponse>('/vector/search/hybrid',
-                    { method: 'POST', ...jsonBody(req) },
+                // The wire reads query_vector and metadata_filter; it has no
+                // weight fields, so vectorWeight/metadataWeight stay client-side.
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/hybrid',
+                    {
+                        method: 'POST',
+                        ...jsonBody({
+                            namespace: req.namespace,
+                            queryVector: req.vector,
+                            k: req.k,
+                            metadataFilter: req.metadataFilters,
+                            consistency: req.consistency,
+                            shardId: req.shardId,
+                        }),
+                    },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             searchByID: async (req: SearchByIDRequest): Promise<SearchSimilarResponse> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<SearchSimilarResponse>('/vector/search/by-id',
+                const resp = await this.fetchJSON<WireSearchResponse>('/vector/search/by-id',
                     {
                         method: 'POST',
                         ...jsonBody({ ...req, id: vectorIDToWire(req.id) }),
                     },
                 );
-                return { ...resp, results: (resp.results ?? []).map(normalizeVectorIDField) };
+                return searchResponseFromWire(resp);
             },
             rebuildIndex: async (
                 req: RebuildIndexRequest,
             ): Promise<RebuildIndexResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildIndexResponse>('/vector/index/rebuild',
+                // The wire answers {job_id, status, ..., timestamp, success}.
+                const resp = await this.fetchJSON<WireRebuildIndexResponse>('/vector/index/rebuild',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.jobId, started: resp.success, timestamp: resp.timestamp };
             },
             getRebuildProgress: async (
                 req: GetRebuildProgressRequest,
             ): Promise<RebuildProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<RebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
+                const resp = await this.fetchJSON<WireRebuildProgress>(`/vector/index/rebuild/progress${buildQuery({
                         namespace: req.namespace,
                         job_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return rebuildProgressFromWire(resp);
             },
             getIndexStats: async (req: GetIndexStatsRequest): Promise<IndexStats> => {
                 this.ensureConnected();
-                const stats = await this.fetchJSON<IndexStats>(`/vector/index/stats${buildQuery({
+                // The wire (vectorIndexStatsResponse) names the sizes
+                // memory_usage_bytes and index_size_bytes.
+                const stats = await this.fetchJSON<IndexStats & {
+                    memoryUsageBytes?: number;
+                    indexSizeBytes?: number;
+                }>(`/vector/index/stats${buildQuery({
                         namespace: req.namespace,
                         shard_id: req.shardId,
                     })}`,
                 );
-                return normalizeVectorEnumFields(stats);
+                const { memoryUsageBytes, indexSizeBytes, ...rest } = stats;
+                return normalizeVectorEnumFields({
+                    ...rest,
+                    memoryUsage: memoryUsageBytes ?? stats.memoryUsage ?? 0,
+                    diskUsage: indexSizeBytes ?? stats.diskUsage ?? 0,
+                });
             },
             compactNamespace: async (
                 req: CompactNamespaceRequest,
             ): Promise<CompactNamespaceResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactNamespaceResponse>('/vector/compact',
+                // The wire names the job operation_id and reports success.
+                const resp = await this.fetchJSON<WireCompactResponse>('/vector/compact',
                     { method: 'POST', ...jsonBody(req) },
                 );
+                return { jobId: resp.operationId, started: resp.success };
             },
             getCompactionProgress: async (
                 req: GetCompactionProgressRequest,
             ): Promise<CompactionProgress> => {
                 this.ensureConnected();
-                return this.fetchJSON<CompactionProgress>(`/vector/compact/progress${buildQuery({
+                const resp = await this.fetchJSON<WireCompactionProgress>(`/vector/compact/progress${buildQuery({
                         namespace: req.namespace,
-                        job_id: req.jobId,
+                        operation_id: req.jobId,
                         shard_id: req.shardId,
                     })}`,
                 );
+                return compactionProgressFromWire(resp);
             },
         };
     }
@@ -1831,15 +2049,12 @@ export class RestClient implements Client {
             },
             export: async (req: ExportCertRequest): Promise<ExportCertResponse> => {
                 this.ensureConnected();
-                // certPEM/keyPEM are also literal camelCase on the wire
-                // (ExportCertRequest); see issueCert above. Using jsonBody()
-                // here previously mangled them into "cert_p_e_m"/"key_p_e_m",
-                // silently breaking every export call.
-                return this.fetchSecretJSON<ExportCertResponse>('/certs/export', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(req),
-                }, Boolean(req.passphrase));
+                // Built locally, never posted: no node has a PKCS#12 route,
+                // because a private key must not be sent to a server to be
+                // packaged (docs/certificate-authority/api.md). The Go CLI
+                // (`qrdb ca export-bundle`) and the desktop binding do the
+                // same in-process.
+                return { pkcs12: await encodePKCS12Base64(req.certPEM, req.keyPEM, req.passphrase) };
             },
             revoke: async (serial: string): Promise<void> => {
                 this.ensureConnected();
@@ -1865,10 +2080,14 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateDatabaseRequest): Promise<DatabaseInfo> => {
                 this.ensureConnected();
+                // mode and connection describe how this client reaches the
+                // database; they are not part of the server's create request,
+                // whose strict decoder refuses an unknown field.
+                const { mode: _mode, connection: _connection, ...wire } = req;
                 return this.fetchSecretJSON<DatabaseInfo>('/v1/databases', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(req),
+                    body: JSON.stringify(wire),
                 }, Boolean(req.barrier?.secret) || raftSecret(req.raft));
             },
             get: async (name: string): Promise<DatabaseInfo> => {
@@ -1925,7 +2144,7 @@ export class RestClient implements Client {
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchSecretJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/raft`,
+                return this.fetchSecretJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/raft`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1936,7 +2155,7 @@ export class RestClient implements Client {
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/barrier`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/barrier`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1952,7 +2171,7 @@ export class RestClient implements Client {
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<DatabaseInfo>(`/databases/${encodeURIComponent(name)}/connection`,
+                return this.fetchJSON<DatabaseInfo>(`/v1/databases/${encodeURIComponent(name)}/connection`,
                     {
                         method: 'PATCH',
                         headers: { 'Content-Type': 'application/json' },
@@ -1982,7 +2201,7 @@ export class RestClient implements Client {
         return {
             create: async (req: CreateCollectionRequest): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<CollectionInfo>('/v1/collections', {
+                return this.fetchWireJSON<CollectionInfo>('/v1/collections', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(req),
@@ -1990,12 +2209,12 @@ export class RestClient implements Client {
             },
             get: async (database: string, name: string): Promise<CollectionInfo> => {
                 this.ensureConnected();
-                return this.fetchJSON<CollectionInfo>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
+                return this.fetchWireJSON<CollectionInfo>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(name)}`,
                 );
             },
             list: async (database: string): Promise<CollectionInfo[]> => {
                 this.ensureConnected();
-                const resp = await this.fetchJSON<ListCollectionsResponse>(`/v1/collections/list${buildQuery({ database })}`,
+                const resp = await this.fetchWireJSON<ListCollectionsResponse>(`/v1/collections/list${buildQuery({ database })}`,
                 );
                 return resp.collections as CollectionInfo[];
             },
@@ -2007,7 +2226,7 @@ export class RestClient implements Client {
             },
             insertDocument: async (req: InsertDocumentRequest): Promise<InsertDocumentResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<InsertDocumentResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
+                return this.fetchWireJSON<InsertDocumentResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents`,
                     {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -2021,7 +2240,7 @@ export class RestClient implements Client {
                 id: string,
             ): Promise<DocumentResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<DocumentResponse>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
+                return this.fetchWireJSON<DocumentResponse>(`/v1/collections/${encodeURIComponent(database)}/${encodeURIComponent(collection)}/documents/${encodeURIComponent(String(id))}`,
                 );
             },
             updateDocument: async (req: UpdateDocumentRequest): Promise<void> => {
@@ -2046,7 +2265,7 @@ export class RestClient implements Client {
             },
             listDocuments: async (req: ListDocumentsRequest): Promise<ListDocumentsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListDocumentsResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
+                return this.fetchWireJSON<ListDocumentsResponse>(`/v1/collections/${encodeURIComponent(req.database)}/${encodeURIComponent(req.collection)}/documents${buildQuery({
                         page_size: req.page_size,
                         page_token: req.page_token,
                     })}`,
@@ -2455,12 +2674,15 @@ export class RestClient implements Client {
                 // top level and adds an "admin" key (the Go handler's
                 // createTenantResponse anonymously embeds *tenantResponse);
                 // split them apart to match the SDK's {tenant, admin} contract.
-                const raw = await this.fetchJSON<TenantInfo & { admin: TenantAdminCredential }>('/v1/tenants', {
+                const raw = await this.fetchJSON<TenantInfo & {
+                    admin: TenantAdminCredential;
+                    so?: TenantAdminCredential;
+                }>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
                 });
-                const { admin, ...tenant } = raw;
-                return { tenant, admin };
+                const { admin, so, ...tenant } = raw;
+                return so === undefined ? { tenant, admin } : { tenant, admin, so };
             },
             get: async (tenantId: string): Promise<GetTenantResponse> => {
                 this.ensureConnected();
@@ -2672,7 +2894,7 @@ export class RestClient implements Client {
             },
             list: async (): Promise<ListBackupsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ListBackupsResponse>('/v1/backups');
+                return this.fetchJSON<ListBackupsResponse>('/v1/backups/list');
             },
             get: async (id: string): Promise<BackupInfo> => {
                 this.ensureConnected();
@@ -2688,7 +2910,7 @@ export class RestClient implements Client {
             },
             restore: async (req: RestoreRequest): Promise<RestoreResult> => {
                 this.ensureConnected();
-                return this.fetchJSON<RestoreResult>(`/v1/backups/${encodeURIComponent(req.backupId)}/restore`,
+                return this.fetchJSON<RestoreResult>('/v1/backups/restore',
                     { method: 'POST', ...jsonBody(req) },
                 );
             },
@@ -2710,7 +2932,7 @@ export class RestClient implements Client {
         return {
             getShardStats: async (shardId: number): Promise<ShardStatsResponse> => {
                 this.ensureConnected();
-                return this.fetchJSON<ShardStatsResponse>(`/v1/rebalance/shards/${encodeURIComponent(String(shardId))}/stats`,
+                return this.fetchJSON<ShardStatsResponse>(`/v1/rebalance/shards/${encodeURIComponent(String(shardId))}`,
                 );
             },
             createPlan: async (req: RebalancePlanRequest): Promise<RebalancePlan> => {
@@ -2745,14 +2967,14 @@ export class RestClient implements Client {
                 this.ensureConnected();
                 await this.fetchSecretVoid('/v1/credentials/submit', {
                     method: 'POST',
-                    ...jsonBody({ name, value }),
+                    ...jsonBody({ name, value: encodeBase64Utf8(value) }),
                 }, value !== '');
             },
             store: async (name: string, value: string): Promise<void> => {
                 this.ensureConnected();
                 await this.fetchSecretVoid('/v1/credentials/store', {
                     method: 'POST',
-                    ...jsonBody({ name, value }),
+                    ...jsonBody({ name, value: encodeBase64Utf8(value) }),
                 }, value !== '');
             },
             retrieve: async (name: string): Promise<string> => {
@@ -2760,7 +2982,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/value`,
                 );
-                return resp.value;
+                // The wire field is []byte: base64 on the wire.
+                return decodeBase64Utf8(resp.value);
             },
             list: async (): Promise<string[]> => {
                 this.ensureConnected();
@@ -2787,7 +3010,7 @@ export class RestClient implements Client {
                         method: 'POST',
                         ...jsonBody({
                             name,
-                            newValue,
+                            newValue: encodeBase64Utf8(newValue),
                             gracePeriodSeconds: gracePeriodSeconds ?? 0,
                         }),
                     },
@@ -2806,7 +3029,8 @@ export class RestClient implements Client {
                 interface ValueResponse { readonly value: string }
                 const resp = await this.fetchJSON<ValueResponse>(`/v1/credentials/${encodeURIComponent(name)}/versions/${encodeURIComponent(String(version))}`,
                 );
-                return resp.value;
+                // The wire field is []byte: base64 on the wire.
+                return decodeBase64Utf8(resp.value);
             },
             gcExpired: async (name: string): Promise<number> => {
                 this.ensureConnected();
@@ -2963,6 +3187,17 @@ export class RestClient implements Client {
     }
 
     /**
+     * Like fetchJSON, but returns the server's JSON keys as sent. The
+     * collection group's contract (CollectionInfo, ListDocumentsResponse,
+     * DocumentResponse) is the Go handlers' snake_case shape, which the
+     * Wails transport returns unchanged; a user document's own keys must
+     * never be renamed either.
+     */
+    private fetchWireJSON<T>(path: string, init?: RequestInit): Promise<T> {
+        return requestJSON<T>(this.baseUrl, path, this.scopedInit(path, init), false);
+    }
+
+    /**
      * Issues one init/begin, init/complete pair of a tenant barrier init under
      * base, returning the decoded answer, or undefined for 204 No Content.
      * Both requests go through the secret guard when body carries a
@@ -3060,6 +3295,37 @@ function sortTargetToString(target: number | undefined): string | undefined {
 /** Converts a numeric AggFunc to its REST API string. */
 function aggFuncToString(fn: number): string {
     return AGG_FUNC_STRINGS[fn] ?? 'avg';
+}
+
+/** Maps a wire aggregation name back to its AggFunc number (0, none, when unknown). */
+function aggFuncFromString(name: string | undefined): AggFunc | undefined {
+    if (!name) {
+        return undefined;
+    }
+    const entry = Object.entries(AGG_FUNC_STRINGS).find(([, v]) => v === name);
+    return (entry ? Number(entry[0]) : 0) as AggFunc;
+}
+
+/** A time-series point as the REST transport encodes it. */
+interface RawTSPoint {
+    metric: string;
+    value: number;
+    /** Nanoseconds since the epoch. */
+    timestamp: number;
+    tags?: Record<string, string>;
+}
+
+function rawTSPointToPoint(p: RawTSPoint): TSDataPoint {
+    return {
+        metric: p.metric,
+        timestampNs: p.timestamp,
+        value: p.value,
+        tags: tagsMapToArray(p.tags),
+    };
+}
+
+function tagsMapToArray(tags: Record<string, string> | undefined): { key: string; value: string }[] {
+    return tags ? Object.entries(tags).map(([key, value]) => ({ key, value })) : [];
 }
 
 /** Converts a TSTag array to a Record<string, string> map for the REST API. */

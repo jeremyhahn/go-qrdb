@@ -23,6 +23,10 @@
     ListVectorsResponse,
     SearchSimilarResponse,
     SearchByMetadataResponse,
+    VectorData,
+    BatchUpsertResponse,
+    BatchDeleteVectorsResponse,
+    HybridSearchResponse,
   } from "@qrdb/sdk";
   import type { Column, RowClickEvent } from "../../components/core/DataTable/types.ts";
   import type { VectorSearchEvent } from "../../components/core/SearchBar/types.ts";
@@ -106,12 +110,25 @@
   let showUpsertPanel: boolean = $state(false);
   let showVectorDetailPanel: boolean = $state(false);
   let selectedVector: unknown = $state(null);
+  /** Authoritative copy of the selected vector, fetched with getVector. */
+  let detailVector: VectorData | null = $state(null);
+  let detailMetadata: string = $state("{}");
+  let detailLoading: boolean = $state(false);
+  let detailError: string = $state("");
+  let showBatchUpsertPanel: boolean = $state(false);
+  let batchUpsertInput: string = $state('[\n  {"id": "v1", "vector": [0.1, 0.2, 0.3], "metadata": {}}\n]');
+  let batchUpsertResult: BatchUpsertResponse | null = $state(null);
 
   // ---------------------------------------------------------------------------
   // Search state
   // ---------------------------------------------------------------------------
 
   let searchResults: unknown[] = $state([]);
+  let hybridVector: string = $state("");
+  let hybridFilters: string = $state("{}");
+  let hybridK: string = $state("10");
+  let hybridVectorWeight: string = $state("0.7");
+  let hybridMetadataWeight: string = $state("0.3");
 
   // ---------------------------------------------------------------------------
   // Maintenance state
@@ -252,14 +269,25 @@
     }))
   );
 
+  /** The SDK maps the wire's metric and index names to enum numbers. */
+  const METRIC_LABELS: Record<number, string> = { 0: "Cosine", 1: "Euclidean", 2: "Dot product" };
+  const INDEX_LABELS: Record<number, string> = { 0: "HNSW", 1: "Flat", 2: "IVF" };
+
+  function enumLabel(value: unknown, labels: Record<number, string>): string {
+    if (typeof value === "number") return labels[value] ?? String(value);
+    if (typeof value === "string" && value !== "") return value;
+    return "unknown";
+  }
+
   const vectorTableData = $derived(
     vecListResults.map((vec, index) => {
       const v = vec as Record<string, unknown>;
-      const vector = v.vector as number[] | undefined;
+      const vector = v.vector as number[] | null | undefined;
       return {
         index: index + 1,
         id: (v.id as string) ?? "",
-        dimensions: vector?.length ?? 0,
+        // The list route omits the vector values; the namespace fixes the width.
+        dimensions: vector?.length || parsedNsInfo?.dimension || 0,
         metadata: JSON.stringify(v.metadata ?? {}),
         raw: vec,
       };
@@ -289,8 +317,8 @@
     return {
       totalVectors: (s.totalVectors as number) ?? (s.total_vectors as number) ?? 0,
       dimensions: (s.dimensions as number) ?? (s.dimension as number) ?? 0,
-      indexType: (s.indexType as string) ?? (s.index_type as string) ?? "unknown",
-      distanceMetric: (s.distanceMetric as string) ?? (s.distance_metric as string) ?? "unknown",
+      indexType: enumLabel(s.indexType ?? s.index_type, INDEX_LABELS),
+      distanceMetric: enumLabel(s.distanceMetric ?? s.distance_metric, METRIC_LABELS),
       lastRebuilt: (s.lastRebuilt as string) ?? (s.last_rebuilt as string) ?? "N/A",
     };
   });
@@ -300,8 +328,8 @@
     const n = nsInfoResult as Record<string, unknown>;
     return {
       dimension: (n.dimension as number) ?? (n.dimensions as number) ?? 0,
-      distanceMetric: (n.distanceMetric as string) ?? (n.distance_metric as string) ?? "unknown",
-      indexType: (n.indexType as string) ?? (n.index_type as string) ?? "unknown",
+      distanceMetric: enumLabel(n.distanceMetric ?? n.distance_metric, METRIC_LABELS),
+      indexType: enumLabel(n.indexType ?? n.index_type, INDEX_LABELS),
       vectorCount: (n.vectorCount as number) ?? (n.vector_count as number) ?? 0,
     };
   });
@@ -499,6 +527,8 @@
     try {
       const resp: ListVectorsResponse = await client.vector.listVectors({ namespace: selectedNamespace });
       vecListResults = [...resp.vectors];
+      // Every write relists; the namespace cards follow the same refresh.
+      nsInfoResult = await client.vector.getNamespaceInfo({ namespace: selectedNamespace });
     } catch (err: unknown) {
       showToast("error", err instanceof Error ? err.message : String(err));
     } finally {
@@ -516,20 +546,111 @@
       return;
     }
     if (selectedNamespace === "") return;
-    vectorsLoading = true;
+    const ids: string[] = [];
     for (const idx of indices) {
       const row = vectorTableData[idx];
-      if (row) {
-        try {
-          await client.vector.deleteVector({ namespace: selectedNamespace, id: row.id });
-        } catch (err: unknown) {
-          showToast("error", err instanceof Error ? err.message : String(err));
-        }
-      }
+      if (row) ids.push(row.id);
     }
-    showToast("success", `Deleted ${indices.size} vector${indices.size !== 1 ? "s" : ""}`);
-    await handleVecList();
-    vectorsLoading = false;
+    if (ids.length === 0) return;
+    vectorsLoading = true;
+    try {
+      const resp: BatchDeleteVectorsResponse = await client.vector.batchDeleteVectors({
+        namespace: selectedNamespace,
+        ids,
+      });
+      if (resp.failed > 0) {
+        const detail = (resp.errors ?? []).map((e) => `${e.id}: ${e.error}`).join("; ");
+        showToast("warning", `Deleted ${resp.deleted}, failed ${resp.failed}${detail ? ` (${detail})` : ""}`);
+      } else {
+        showToast("success", `Deleted ${resp.deleted} vector${resp.deleted !== 1 ? "s" : ""}`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      vectorsLoading = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Batch upsert
+  // ---------------------------------------------------------------------------
+
+  function parseBatchVectors(raw: string): VectorData[] | null {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      showToast("warning", "Batch must be a JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      showToast("warning", "Batch must be a non-empty JSON array of {id, vector, metadata?} objects.");
+      return null;
+    }
+    const out: VectorData[] = [];
+    for (const [i, item] of parsed.entries()) {
+      const o = item as Record<string, unknown> | null;
+      const vec = o?.vector;
+      if (
+        o === null || typeof o !== "object" || typeof o.id !== "string" || o.id === "" ||
+        !Array.isArray(vec) || vec.length === 0 || !vec.every((n) => typeof n === "number")
+      ) {
+        showToast("warning", `Batch item ${i + 1} needs a string id and a numeric vector array.`);
+        return null;
+      }
+      const md = o.metadata;
+      if (md !== undefined && (typeof md !== "object" || md === null || Array.isArray(md))) {
+        showToast("warning", `Batch item ${i + 1} metadata must be a JSON object.`);
+        return null;
+      }
+      out.push({
+        id: o.id,
+        vector: vec as number[],
+        ...(md !== undefined ? { metadata: md as Record<string, unknown> } : {}),
+        version: 0,
+        createdAt: 0,
+        updatedAt: 0,
+      });
+    }
+    return out;
+  }
+
+  async function handleBatchUpsert(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    if (selectedNamespace.trim() === "") {
+      showToast("warning", "Select a namespace first.");
+      return;
+    }
+    const vectors = parseBatchVectors(batchUpsertInput);
+    if (vectors === null) return;
+    loading = true;
+    batchUpsertResult = null;
+    try {
+      const resp: BatchUpsertResponse = await client.vector.batchUpsert({
+        namespace: selectedNamespace,
+        vectors,
+      });
+      batchUpsertResult = resp;
+      if (resp.failed > 0) {
+        showToast("warning", `Batch upsert: ${resp.succeeded} succeeded, ${resp.failed} failed.`);
+      } else {
+        showToast("success", `Batch upsert: ${resp.succeeded} succeeded.`);
+      }
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      loading = false;
+    }
+  }
+
+  function openBatchUpsertPanel(): void {
+    batchUpsertResult = null;
+    showBatchUpsertPanel = true;
   }
 
   // ---------------------------------------------------------------------------
@@ -599,6 +720,57 @@
 
   function clearSearchResults(): void {
     searchResults = [];
+  }
+
+  async function handleHybridSearch(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    if (selectedNamespace.trim() === "") {
+      showToast("warning", "Select a namespace first.");
+      return;
+    }
+    const vector = parseVectorValues(hybridVector);
+    if (vector.length === 0) {
+      showToast("warning", "Vector values are required for hybrid search.");
+      return;
+    }
+    const metadataFilters = parseJsonObjectStrict(hybridFilters, "Metadata filter");
+    if (metadataFilters === null) return;
+    const k = Number(hybridK);
+    const vectorWeight = Number(hybridVectorWeight);
+    const metadataWeight = Number(hybridMetadataWeight);
+    if (!Number.isInteger(k) || k <= 0) {
+      showToast("warning", "K must be a positive integer.");
+      return;
+    }
+    if (
+      !Number.isFinite(vectorWeight) || vectorWeight < 0 || vectorWeight > 1 ||
+      !Number.isFinite(metadataWeight) || metadataWeight < 0 || metadataWeight > 1
+    ) {
+      showToast("warning", "Weights must be numbers between 0 and 1.");
+      return;
+    }
+    loading = true;
+    try {
+      const resp: HybridSearchResponse = await client.vector.hybridSearch({
+        namespace: selectedNamespace,
+        vector,
+        metadataFilters,
+        k,
+        vectorWeight,
+        metadataWeight,
+      });
+      searchResults = [...resp.results];
+      if (searchResults.length === 0) {
+        showToast("info", "No matching vectors found.");
+      }
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      loading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -720,7 +892,83 @@
 
   function handleVectorRowClick(event: RowClickEvent<VectorRow>): void {
     selectedVector = event.row.raw;
+    detailVector = null;
+    detailMetadata = JSON.stringify(
+      ((event.row.raw as Record<string, unknown>).metadata as Record<string, unknown> | undefined) ?? {},
+      null,
+      2,
+    );
     showVectorDetailPanel = true;
+    void loadVectorDetail(event.row.id);
+  }
+
+  function closeVectorDetail(): void {
+    showVectorDetailPanel = false;
+    selectedVector = null;
+    detailVector = null;
+    detailError = "";
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vector detail: getVector + updateMetadata
+  // ---------------------------------------------------------------------------
+
+  async function loadVectorDetail(id: string): Promise<void> {
+    if (client.vector === null || selectedNamespace.trim() === "" || id === "") return;
+    detailLoading = true;
+    detailError = "";
+    try {
+      const v: VectorData = await client.vector.getVector({ namespace: selectedNamespace, id });
+      detailVector = v;
+      detailMetadata = JSON.stringify(v.metadata ?? {}, null, 2);
+    } catch (err: unknown) {
+      detailVector = null;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      detailLoading = false;
+    }
+  }
+
+  function parseJsonObjectStrict(raw: string, what: string): Record<string, unknown> | null {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // fall through
+    }
+    showToast("warning", `${what} must be a JSON object.`);
+    return null;
+  }
+
+  async function handleSaveMetadata(): Promise<void> {
+    if (client.vector === null) {
+      showToast("error", "Vector operations are not available on this connection.");
+      return;
+    }
+    const id = detailVector?.id ?? ((selectedVector as Record<string, unknown> | null)?.id as string | undefined) ?? "";
+    if (selectedNamespace.trim() === "" || id === "") {
+      showToast("warning", "Namespace and vector ID are required.");
+      return;
+    }
+    const metadata = parseJsonObjectStrict(detailMetadata, "Metadata");
+    if (metadata === null) return;
+    detailLoading = true;
+    try {
+      await client.vector.updateMetadata({
+        namespace: selectedNamespace,
+        id,
+        metadata,
+      });
+      showToast("success", `Metadata of vector "${id}" updated.`);
+      await loadVectorDetail(id);
+      await handleVecList();
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      detailLoading = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -872,6 +1120,13 @@
         </div>
       {/if}
 
+      <div class="mb-2 flex justify-end">
+        <button class="btn btn-outline btn-sm gap-1" onclick={openBatchUpsertPanel} disabled={loading}>
+          <Plus class="h-3.5 w-3.5" />
+          Batch upsert
+        </button>
+      </div>
+
       <CrudTable
         title="Vectors"
         data={vectorTableData}
@@ -902,6 +1157,60 @@
           onSearch={handleSearch}
           onClear={clearSearchResults}
         />
+      </div>
+
+      <div class="card bg-base-200 engine-vectors shadow-sm" data-testid="hybrid-search-card">
+        <div class="card-body p-5">
+          <h3 class="card-title text-base font-semibold gap-2">
+            <Search class="h-4 w-4" />
+            Hybrid
+          </h3>
+          <p class="text-base-content/50 text-xs">
+            Combine vector similarity with a metadata match in namespace
+            <span class="font-semibold">{selectedNamespace || "(none selected)"}</span>.
+          </p>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Vector (comma-separated floats)</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                aria-label="Hybrid vector"
+                placeholder="0.1, 0.5, -0.3"
+                bind:value={hybridVector}
+              />
+            </label>
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Metadata filter (JSON)</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full font-mono"
+                aria-label="Hybrid metadata filter"
+                placeholder={'{"label": "example"}'}
+                bind:value={hybridFilters}
+              />
+            </label>
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">K</span></div>
+              <input type="number" min="1" class="input input-bordered input-sm w-full" aria-label="Hybrid k" bind:value={hybridK} />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="form-control w-full">
+                <div class="label"><span class="label-text">Vector weight</span></div>
+                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid vector weight" bind:value={hybridVectorWeight} />
+              </label>
+              <label class="form-control w-full">
+                <div class="label"><span class="label-text">Metadata weight</span></div>
+                <input type="number" min="0" max="1" step="0.1" class="input input-bordered input-sm w-full" aria-label="Hybrid metadata weight" bind:value={hybridMetadataWeight} />
+              </label>
+            </div>
+          </div>
+          <div class="mt-2 flex justify-end">
+            <button class="btn btn-primary btn-sm" onclick={handleHybridSearch} disabled={loading}>
+              Hybrid search
+            </button>
+          </div>
+        </div>
       </div>
 
       <CrudTable
@@ -1100,22 +1409,104 @@
   </SlidePanel>
 
   <!-- =================================================================== -->
+  <!-- Batch Upsert SlidePanel                                              -->
+  <!-- =================================================================== -->
+  <SlidePanel
+    open={showBatchUpsertPanel}
+    title="Batch Upsert"
+    onclose={() => (showBatchUpsertPanel = false)}
+  >
+    {#snippet children()}
+      {#if showBatchUpsertPanel}
+      <div class="flex flex-col gap-5">
+        <div class="surface-panel rounded-lg p-4">
+          <div class="text-base-content/50 flex items-center gap-2 text-xs font-medium">
+            <Layers class="h-4 w-4" />
+            Namespace: <span class="text-base-content font-semibold">{selectedNamespace}</span>
+          </div>
+        </div>
+
+        <label class="form-control w-full">
+          <div class="label"><span class="label-text">Vectors (JSON array of {"{id, vector, metadata?}"})</span></div>
+          <textarea
+            class="textarea textarea-bordered h-48 w-full font-mono text-sm"
+            aria-label="Batch vectors JSON"
+            data-testid="batch-upsert-input"
+            bind:value={batchUpsertInput}
+          ></textarea>
+        </label>
+
+        {#if batchUpsertResult}
+          <div class="surface-panel rounded-lg p-4 text-sm" data-testid="batch-upsert-result">
+            <div>Succeeded: <span class="font-semibold" data-testid="batch-upsert-succeeded">{batchUpsertResult.succeeded}</span></div>
+            <div>Failed: <span class="font-semibold" data-testid="batch-upsert-failed">{batchUpsertResult.failed}</span></div>
+            {#if batchUpsertResult.errors && batchUpsertResult.errors.length > 0}
+              <ul class="text-error mt-2 list-disc pl-5" data-testid="batch-upsert-errors">
+                {#each batchUpsertResult.errors as e}
+                  <li>{e.id}: {e.error}</li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+      </div>
+      {/if}
+    {/snippet}
+    {#snippet footer()}
+      <div class="flex gap-2 justify-end">
+        <button class="btn btn-ghost btn-sm" onclick={() => (showBatchUpsertPanel = false)}>Close</button>
+        <button class="btn btn-primary btn-sm" onclick={handleBatchUpsert} disabled={loading}>
+          {#if loading}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Upsert batch
+        </button>
+      </div>
+    {/snippet}
+  </SlidePanel>
+
+  <!-- =================================================================== -->
   <!-- Vector Detail SlidePanel                                             -->
   <!-- =================================================================== -->
   <SlidePanel
     open={showVectorDetailPanel}
     title="Vector Details"
-    onclose={() => { showVectorDetailPanel = false; selectedVector = null; }}
+    onclose={closeVectorDetail}
   >
     {#snippet children()}
       {#if selectedVector !== null}
-        {@const v = selectedVector as Record<string, unknown>}
+        {@const v = (detailVector ?? selectedVector) as Record<string, unknown>}
         {@const vec = v.vector as number[] | undefined}
-        <div class="flex flex-col gap-5">
+        <div class="flex flex-col gap-5" data-testid="vector-detail">
+          {#if detailLoading}
+            <span class="loading loading-spinner loading-sm" data-testid="vector-detail-loading"></span>
+          {/if}
+          {#if detailError}
+            <div class="alert alert-error text-sm" role="alert" data-testid="vector-detail-error">
+              Could not load vector: {detailError}
+            </div>
+          {/if}
           <div class="grid grid-cols-2 gap-6">
             <StatCard label="ID" value={(v.id as string) ?? "N/A"} icon={Hash} accentColor={accent} />
             <StatCard label="Dimensions" value={vec?.length ?? 0} icon={Ruler} accentColor={accent} />
           </div>
+
+          {#if detailVector}
+            <dl class="grid grid-cols-3 gap-2 text-sm" data-testid="vector-detail-meta">
+              <div>
+                <dt class="text-base-content/50 text-xs">Version</dt>
+                <dd class="font-mono" data-testid="vector-detail-version">{detailVector.version}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Created</dt>
+                <dd class="font-mono" data-testid="vector-detail-created">{detailVector.createdAt}</dd>
+              </div>
+              <div>
+                <dt class="text-base-content/50 text-xs">Updated</dt>
+                <dd class="font-mono" data-testid="vector-detail-updated">{detailVector.updatedAt}</dd>
+              </div>
+            </dl>
+          {/if}
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Vector Values</h4>
@@ -1126,9 +1517,23 @@
 
           <div class="surface-panel rounded-lg p-4">
             <h4 class="text-base-content/50 mb-2 text-sm font-medium uppercase tracking-wider">Metadata</h4>
-            <div class="bg-base-300 rounded p-2">
-              <pre class="font-mono text-xs whitespace-pre-wrap">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
-            </div>
+            <pre class="bg-base-300 rounded p-2 font-mono text-xs whitespace-pre-wrap" data-testid="vector-detail-metadata-json">{JSON.stringify(v.metadata ?? {}, null, 2)}</pre>
+            <label class="form-control mt-3 w-full">
+              <div class="label"><span class="label-text">Edit metadata (JSON)</span></div>
+              <textarea
+                class="textarea textarea-bordered h-24 w-full font-mono text-sm"
+                aria-label="Edit metadata"
+                data-testid="vector-detail-metadata-input"
+                bind:value={detailMetadata}
+              ></textarea>
+            </label>
+            <button
+              class="btn btn-primary btn-sm mt-2"
+              onclick={handleSaveMetadata}
+              disabled={detailLoading}
+            >
+              Save metadata
+            </button>
           </div>
         </div>
       {/if}
@@ -1146,7 +1551,7 @@
           <Trash2 class="h-3.5 w-3.5" />
           Delete
         </button>
-        <button class="btn btn-ghost btn-sm" onclick={() => { showVectorDetailPanel = false; selectedVector = null; }}>
+        <button class="btn btn-ghost btn-sm" onclick={closeVectorDetail}>
           Close
         </button>
       </div>

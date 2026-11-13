@@ -36,6 +36,7 @@
     LogOut,
   } from "lucide-svelte";
   import type { ConnectionProfile, ConnectionState } from "../../stores/connection-manager.svelte.ts";
+  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
   import {
     navStore,
     toggleServerExpanded,
@@ -208,7 +209,9 @@
         {/if}
       {/if}
 
-      <!-- ── Server Admin section ──────────────────────────────────── -->
+      <!-- ── Server Admin section: not offered when the server refused the
+           caller its admin topology (403), i.e. to a tenant user. ── -->
+      {#if !connManagerStore.nonAdminProfileIds.includes(profile.id)}
       <button
         class="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-base-content/40 hover:text-base-content/60 transition-colors"
         onclick={toggleAdminSection}
@@ -227,6 +230,7 @@
             collapsed={false}
           />
         </div>
+      {/if}
       {/if}
 
       <!-- ── Disconnect ────────────────────────────────────────────── -->

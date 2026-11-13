@@ -12,6 +12,7 @@ gRPC wire over a UDS, so its methods match the gRPC column exactly.
 |---|---|---|---|---|---|---|
 | Execute transaction | `POST /tx` | `Transaction` | `tx.Transaction` | `qrdb_tx_execute` | `Client.Transaction().ExecuteTransaction` | `transaction:execute` |
 | Execute batch | `POST /batch` | `Batch` | `batch.Batch` | `qrdb_batch_execute` | `Client.Batch().ExecuteBatch` | `batch:execute` |
+| List import formats and codecs | `GET /batch/import/formats` | — | — | — | `sdk.AvailableCodecs` (codecs only) | `batch:execute` |
 | Begin an import session | `POST /batch/import/begin` | `ImportBegin` | `batch.ImportBegin` | `qrdb_batch_import_begin` | `Client.Batch().ImportBegin` | `batch:execute` |
 | Append a chunk | `POST /batch/import/{session}/append` | `ImportAppend` | `batch.ImportAppend` | `qrdb_batch_import_append` | `Client.Batch().ImportAppend` | `batch:execute` |
 | Commit a session | `POST /batch/import/{session}/commit` | `ImportCommit` | `batch.ImportCommit` | `qrdb_batch_import_commit` | `Client.Batch().ImportCommit` | `batch:execute` |
@@ -99,9 +100,28 @@ or delete; gRPC, Unix and QUIC carry it as `int64 revision = 2` of
 `BatchResponse`, the embedded client as `transport.BatchResponse.Revision`,
 and MCP `qrdb_batch_execute` answers `{"Revision": N, "Responses": [...]}`.
 
+`GET /batch/import/formats` — no body. Lists the import formats a session
+accepts and the compiled-in value codecs, the same lists the desktop app's
+`AvailableImportFormats` and `AvailableCodecs` bindings return:
+
+```json
+{ "formats": ["auto", "csv", "json", "ndjson", "yaml", "archive"], "codecs": ["json", "..."] }
+```
+
+The TypeScript SDK's `batch.importContent(data, opts)` (REST) runs one
+session over the routes below for content the caller holds in memory, such
+as a file picked in a browser: begin, append in 1 MiB chunks with `seq`
+from 0, commit, and abort on any failure. The browser UI's Import tab uses
+it; the desktop app imports from a path with `importFile`.
+
 `POST /batch/import/begin` — `ImportOptions` (`format`, `filename`,
-`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`).
-Response:
+`key_field`, `value_mode`, `value_field`, `skip_header`, `transactional`,
+`collection`). Batch import writes the raw KV keyspace only, so a non-empty
+`collection` is refused with `422` (`importing into a collection ... is not
+supported`), the same refusal the desktop binding's `ImportFile` makes; the
+rows are never written to KV in its place. `format` is one of the list
+`GET /batch/import/formats` reports (`codec.ImportFormats`, shared with the
+desktop binding's `AvailableImportFormats`). Response:
 
 ```json
 { "session_id": "a1b2c3d4e5f6a7b8" }

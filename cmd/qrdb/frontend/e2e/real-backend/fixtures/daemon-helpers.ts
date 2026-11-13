@@ -150,7 +150,7 @@ export async function waitForSealedWindow(
                 reject(new Error(`barrier not sealed yet: ${data}`));
               }
             } catch (e) {
-              reject(new Error(`failed to parse barrier status: ${data}`));
+              reject(new Error(`failed to parse barrier status: ${data}`, { cause: e }));
             }
           });
         },

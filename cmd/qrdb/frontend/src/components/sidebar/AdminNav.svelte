@@ -41,6 +41,7 @@
     Archive,
     Scale,
     KeyRound,
+    Layers,
     Settings as SettingsIcon,
   } from "lucide-svelte";
   // lucide-svelte icons are legacy Svelte 4 class components.
@@ -48,6 +49,7 @@
   type IconComponent = any;
   import { navStore, navigateToAdmin } from "../../stores/navigation.svelte.ts";
   import type { AdminView } from "../../stores/navigation.svelte.ts";
+  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -91,7 +93,9 @@
     readonly items: readonly AdminItem[];
   }
 
-  const allSections: AdminSection[] = $derived.by(() => [
+  // A server that refused the caller its admin topology (403) offers it no
+  // admin view: the caller is a user, not a server administrator.
+  const allSections: AdminSection[] = $derived.by(() => connManagerStore.nonAdminProfileIds.includes(profileId) ? [] : [
     {
       title: 'Overview',
       items: [
@@ -112,6 +116,7 @@
         { id: 'tenants',       label: 'Tenants',       icon: Building2 },
         { id: 'users',         label: 'Users',         icon: Users },
         { id: 'roles',         label: 'Roles',         icon: Shield },
+        { id: 'volume-pools',  label: 'Volume Pools',  icon: Layers },
         { id: 'certificates',  label: 'Certificates',  icon: FileText },
         { id: 'credentials' as AdminView, label: 'Credentials', icon: KeyRound },
       ],

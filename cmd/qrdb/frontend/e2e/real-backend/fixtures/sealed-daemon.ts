@@ -32,7 +32,6 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   findFreePort,
-  waitForHealthExported,
   waitForSealedWindow,
 } from "./daemon-helpers.ts";
 
@@ -233,6 +232,7 @@ async function spawnSealedDaemon(
     const stderr = Buffer.concat(stderrChunks).toString();
     throw new Error(
       `[sealed-daemon] sealed-window check failed.\nArgs: ${args.join(" ")}\nStderr:\n${stderr}\nOriginal: ${err}`,
+      { cause: err },
     );
   }
 

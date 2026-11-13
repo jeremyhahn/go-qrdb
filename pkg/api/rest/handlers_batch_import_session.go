@@ -41,6 +41,18 @@ type batchImportBeginResponse struct {
 	SessionID string `json:"session_id"`
 }
 
+// CollectionImportUnsupportedError is returned by POST /batch/import/begin
+// when the request names a collection: batch import writes the raw KV
+// keyspace only, the same refusal the desktop binding's ImportFile makes.
+type CollectionImportUnsupportedError struct {
+	Collection string
+}
+
+func (e *CollectionImportUnsupportedError) Error() string {
+	return "batch: importing into a collection (\"" + e.Collection + "\") is not supported; " +
+		"batch import always writes to the raw KV keyspace -- insert documents into the collection instead"
+}
+
 // handleBatchImportBegin handles POST /batch/import/begin -- starts a
 // chunked import session and returns its ID.
 func (s *Server) handleBatchImportBegin(w http.ResponseWriter, r *http.Request) {
@@ -61,12 +73,20 @@ func (s *Server) handleBatchImportBegin(w http.ResponseWriter, r *http.Request) 
 		ValueField    string `json:"value_field"`
 		SkipHeader    bool   `json:"skip_header"`
 		Transactional bool   `json:"transactional"`
+		Collection    string `json:"collection"`
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
 			writeErrorJSON(w, http.StatusBadRequest, &ReadBodyError{Err: err})
 			return
 		}
+	}
+	// Mirrors the desktop binding's ImportFile (ruling 109): batch import
+	// writes the raw KV keyspace only, so a collection target is refused
+	// rather than silently imported into KV.
+	if body.Collection != "" {
+		writeErrorJSON(w, http.StatusUnprocessableEntity, &CollectionImportUnsupportedError{Collection: body.Collection})
+		return
 	}
 
 	opts := service.ImportOptions{

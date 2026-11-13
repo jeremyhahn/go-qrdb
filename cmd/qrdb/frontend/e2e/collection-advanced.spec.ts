@@ -249,6 +249,38 @@ test.describe("Collection Advanced", () => {
     await clearError(page, "CollectionBinding.DeleteDocument");
   });
 
+  test("clicking a document row fetches it via collection.getDocument", async ({ page }) => {
+    await navigateToCollections(page);
+    await createCollection(page, "get-doc-coll");
+    await selectCollection(page, "get-doc-coll");
+
+    await insertDocumentJson(page, '{"name": "Fetched", "tags": ["a", "b"]}');
+
+    await page.locator("tr").filter({ hasText: "Fetched" }).click();
+
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog.getByText("Document Detail")).toBeVisible({ timeout: 5_000 });
+    const body = dialog.getByTestId("document-detail-body");
+    await expect(body).toContainText('"name": "Fetched"');
+    await expect(body).toContainText('"tags"');
+  });
+
+  test("error on collection.getDocument shows error toast and keeps the panel closed", async ({ page }) => {
+    await navigateToCollections(page);
+    await createCollection(page, "get-doc-err-coll");
+    await selectCollection(page, "get-doc-err-coll");
+
+    await insertDocumentJson(page, '{"name": "Unfetchable"}');
+
+    await injectError(page, "CollectionBinding.GetDocument", "document fetch failed");
+    await page.locator("tr").filter({ hasText: "Unfetchable" }).click();
+
+    await expect(page.getByText("document fetch failed")).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("document-detail-body")).toHaveCount(0);
+
+    await clearError(page, "CollectionBinding.GetDocument");
+  });
+
   test("update document field type from string to number", async ({ page }) => {
     await navigateToCollections(page);
     await createCollection(page, "type-change-coll");

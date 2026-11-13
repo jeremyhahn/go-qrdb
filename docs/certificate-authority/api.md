@@ -21,8 +21,14 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | MISSING | **public**, conditionally registered |
 
 Eight capabilities on all six transports, plus the public bootstrap route.
-PKCS#12 export is not a server capability: `qrdb ca export-bundle` builds the
-archive locally ([cli.md](cli.md#qrdb-ca-export-bundle)).
+PKCS#12 export is not a server capability, and no route exists for it: a
+private key is never sent to a node to be packaged on the caller's behalf.
+Every client builds the archive in the process that already holds the key:
+`qrdb ca export-bundle` ([cli.md](cli.md#qrdb-ca-export-bundle)), the desktop
+`CertBinding.Export`, and the TypeScript SDK's `certs.export` on the REST
+client, which encodes it on Web Crypto (PBES2 with PBKDF2-HMAC-SHA256 and
+AES-256-CBC for the key bag, an HMAC-SHA256 MAC; PKCS#8, PKCS#1 and SEC1 keys)
+and sends no request. The admin UI's Export tab uses that call.
 
 **No verb generates a client's private key.** Issue and delegate sign a
 certificate signing request the requester made with its own key; enrol binds a

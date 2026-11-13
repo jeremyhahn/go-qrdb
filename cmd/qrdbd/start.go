@@ -3066,6 +3066,7 @@ func runStart(f *startFlags) (err error) {
 				return err
 			}
 			serverOpts = append(serverOpts, handover...)
+			serverOpts = append(serverOpts, server.WithVersion(version))
 
 			srv := server.New(serverCfg, kvSvc, adminSvc, serverOpts...)
 			if err := srv.Start(); err != nil {

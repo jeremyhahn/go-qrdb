@@ -14,15 +14,18 @@
 
 import type {
     CeremonyOfficerRequest,
+    CompactionProgress,
     DatabaseBarrierStatus,
     DistanceMetric,
     MVCCKeyValue,
     OfficerRegisterRequest,
     OfficerStatus,
     OpResponse,
+    RebuildProgress,
     RestoreKeyChange,
     RestoreRevisionResult,
     VectorIndexType,
+    VectorSearchResult,
     WatchEvent,
 } from './types.js';
 
@@ -49,6 +52,20 @@ export function snakeToCamelKey(key: string): string {
  * IPC so that SDK consumers always see the camelCase field names declared in
  * types.ts, regardless of the server's snake_case JSON serialization.
  */
+/**
+ * Keys whose values are user-supplied maps (vector metadata, metadata
+ * filters). Their own keys are the user's data and cross the wire as
+ * typed: neither deep conversion renames them.
+ */
+const USER_MAP_KEYS: ReadonlySet<string> = new Set([
+    'metadata',
+    'attributes',
+    'filter',
+    'filters',
+    'metadataFilter',
+    'metadata_filter',
+]);
+
 export function deepSnakeToCamel(value: unknown): unknown {
     if (Array.isArray(value)) {
         return value.map(deepSnakeToCamel);
@@ -56,7 +73,7 @@ export function deepSnakeToCamel(value: unknown): unknown {
     if (value !== null && typeof value === 'object') {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            out[snakeToCamelKey(k)] = deepSnakeToCamel(v);
+            out[snakeToCamelKey(k)] = USER_MAP_KEYS.has(k) ? v : deepSnakeToCamel(v);
         }
         return out;
     }
@@ -83,7 +100,7 @@ export function deepCamelToSnake(value: unknown): unknown {
     if (value !== null && typeof value === 'object') {
         const out: Record<string, unknown> = {};
         for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-            out[camelToSnakeKey(k)] = deepCamelToSnake(v);
+            out[camelToSnakeKey(k)] = USER_MAP_KEYS.has(k) ? v : deepCamelToSnake(v);
         }
         return out;
     }
@@ -230,6 +247,113 @@ export function vectorIDToWire(id: string): number | string {
         return id;
     }
     return Number(id);
+}
+
+/**
+ * Converts vector index parameters to the REST wire's index_config, a
+ * map[string]string on the Go side (vectorCreateNamespaceRequest): a
+ * numeric or boolean parameter is sent as its decimal string, which the
+ * server parses, instead of being refused as a type mismatch.
+ */
+export function indexParamsToWire(
+    params: Readonly<Record<string, unknown>> | undefined,
+): Record<string, string> | undefined {
+    if (params === undefined) {
+        return undefined;
+    }
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(params)) {
+        if (value === undefined || value === null) {
+            continue;
+        }
+        out[key] = typeof value === 'string' ? value : String(value);
+    }
+    return out;
+}
+
+/** The REST wire's index-rebuild start answer, after snake-to-camel. */
+export interface WireRebuildIndexResponse {
+    readonly jobId: string;
+    readonly timestamp: number;
+    readonly success: boolean;
+}
+
+/** The REST wire's index-rebuild progress (vectorRebuildProgressResponse). */
+export interface WireRebuildProgress {
+    readonly jobId: string;
+    readonly status: string;
+    readonly percentComplete?: number;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly error?: string;
+}
+
+/** The REST wire's compaction start answer (vectorCompactResponse). */
+export interface WireCompactResponse {
+    readonly operationId: string;
+    readonly success: boolean;
+}
+
+/** The REST wire's compaction progress (vectorCompactionProgressResponse). */
+export interface WireCompactionProgress {
+    readonly operationId: string;
+    readonly percentComplete?: number;
+    readonly inProgress?: boolean;
+    readonly startedAt?: number;
+    readonly completedAt?: number;
+    readonly error?: string;
+}
+
+/**
+ * Maps the wire's rebuild progress to the SDK shape: percent_complete
+ * (0-100) becomes progress (0.0-1.0) and completed_at becomes finishedAt.
+ */
+export function rebuildProgressFromWire(w: WireRebuildProgress): RebuildProgress {
+    return {
+        jobId: w.jobId,
+        status: w.status,
+        progress: (w.percentComplete ?? 0) / 100,
+        startedAt: w.startedAt ?? 0,
+        finishedAt: w.completedAt || undefined,
+        error: w.error || undefined,
+    };
+}
+
+/**
+ * Maps the wire's compaction progress to the SDK shape: operation_id is
+ * the job id, in_progress and error give the status, percent_complete
+ * (0-100) becomes progress (0.0-1.0) and completed_at becomes finishedAt.
+ */
+export function compactionProgressFromWire(w: WireCompactionProgress): CompactionProgress {
+    const status = w.inProgress ? 'running' : w.error ? 'failed' : 'completed';
+    return {
+        jobId: w.operationId,
+        status,
+        progress: (w.percentComplete ?? 0) / 100,
+        startedAt: w.startedAt ?? 0,
+        finishedAt: w.completedAt || undefined,
+        error: w.error || undefined,
+    };
+}
+
+/** A REST vector search answer (similar, hybrid, by-id), after snake-to-camel. */
+export interface WireSearchResponse {
+    readonly results?: readonly VectorSearchResult[] | null;
+    readonly queryDuration?: number;
+}
+
+/**
+ * Maps a vector search answer to the SDK shape: result IDs become
+ * strings and query_duration becomes took.
+ */
+export function searchResponseFromWire(w: WireSearchResponse): {
+    results: VectorSearchResult[];
+    took: number;
+} {
+    return {
+        results: (w.results ?? []).map(normalizeVectorIDField),
+        took: w.queryDuration ?? 0,
+    };
 }
 
 /** Converts a wire vector ID (number or string) to the SDK string form. */

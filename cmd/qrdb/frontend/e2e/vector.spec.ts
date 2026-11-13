@@ -1039,7 +1039,9 @@ test.describe("Vector View - Namespace Info", () => {
     await selectNamespace(page, "info-err-ns");
     // The error toast should appear after the namespace info request fails.
     // Use a generous timeout since the async call and toast rendering may take time.
-    await expect(page.getByText("info unavailable")).toBeVisible({
+    // The namespace load and the vector relist both fetch the namespace info
+    // (the cards follow every relist), so each failed fetch raises a toast.
+    await expect(page.getByText("info unavailable").first()).toBeVisible({
       timeout: 10_000,
     });
     await clearError(page, "VectorBinding.GetNamespaceInfo");

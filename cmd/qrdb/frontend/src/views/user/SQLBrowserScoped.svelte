@@ -170,15 +170,15 @@
           <table class="table table-xs table-pin-rows">
             <thead>
               <tr>
-                {#each result.columns as col}
+                {#each result.columns as col, ci (ci)}
                   <th class="font-mono text-xs">{col}</th>
                 {/each}
               </tr>
             </thead>
             <tbody>
-              {#each result.rows as row}
+              {#each result.rows as row, ri (ri)}
                 <tr class="hover">
-                  {#each result.columns as col}
+                  {#each result.columns as col, ci (ci)}
                     <td class="font-mono text-sm">{row[col] ?? ""}</td>
                   {/each}
                 </tr>
@@ -201,7 +201,7 @@
     </div>
     <div class="collapse-content">
       <ul class="space-y-1 pt-2">
-        {#each queryHistory as historyQuery}
+        {#each queryHistory as historyQuery, hi (hi)}
           <li>
             <button
               class="btn btn-ghost btn-xs w-full justify-start font-mono text-xs truncate"

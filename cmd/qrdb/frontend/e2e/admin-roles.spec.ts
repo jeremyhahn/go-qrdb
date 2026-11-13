@@ -20,6 +20,7 @@ import {
   injectError,
   clearError,
 } from "./fixtures/wails-mock.ts";
+import { webTest } from "./fixtures/web-mode-mock.ts";
 import type { Page } from "@playwright/test";
 
 /** Timeout for async operations. */
@@ -237,6 +238,33 @@ test.describe("Admin - Role Management", () => {
     });
   });
 
+  test.describe("Create role without a default tenant", () => {
+    // A fresh daemon lists only the System tenant; there is no "default".
+    test.use({
+      mockState: {
+        ...secondLaunchEmbeddedState,
+        tenants: [{ id: "system", name: "System" }],
+      },
+    });
+
+    test("tenant defaults to the first tenant the server lists", async ({
+      page,
+    }) => {
+      await navigateToRoles(page);
+      await page.getByRole("button", { name: "Create Role" }).click();
+
+      const tenantSelect = page.locator("select#role-detail-tenant");
+      await expect(tenantSelect).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await expect(tenantSelect).toHaveValue("system");
+
+      await page.getByPlaceholder("Enter role name").fill("ops");
+      await page.getByRole("button", { name: "Create" }).click();
+      await expect(page.getByText("ops", { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+  });
+
   test.describe("Edit role", () => {
     test("clicking a role row opens the edit form", async ({ page }) => {
       await navigateToRoles(page);
@@ -256,12 +284,41 @@ test.describe("Admin - Role Management", () => {
       // Click the row
       await page.getByText("auditor").click();
 
-      // Should show the edit form
+      // Should show the edit form, and the click copied nothing
       await expect(page.getByText("Edit Role")).toBeVisible();
+      await expect(page.locator('[role="alert"]')).toHaveCount(0);
 
       // Name field should be populated
       const nameInput = page.getByPlaceholder("Enter role name");
       await expect(nameInput).toHaveValue("auditor");
+    });
+
+    test("a refused clipboard is an info toast and opens no row", async ({
+      page,
+    }) => {
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: () => Promise.reject(new Error("NotAllowedError")),
+          },
+        });
+      });
+      await navigateToRoles(page);
+      await seedRole(page, "copied-role");
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Roles").click();
+      const cell = page.getByRole("cell", { name: "copied-role" });
+      await expect(cell).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+      await cell.hover();
+      await cell.getByTestId("cell-copy").click();
+
+      const alert = page.locator('[role="alert"]');
+      await expect(alert).toContainText("Clipboard unavailable");
+      await expect(alert).toHaveClass(/alert-info/);
+      await expect(page.locator(".alert-error")).toHaveCount(0);
+      await expect(page.getByText("Edit Role")).toHaveCount(0);
     });
 
     test("back button returns to role list from edit form", async ({
@@ -321,6 +378,49 @@ test.describe("Admin - Role Management", () => {
       await expect(
         page.getByRole("button", { name: "Save" }),
       ).toBeVisible();
+    });
+  });
+
+  test.describe("Delete role", () => {
+    /** Re-fetches the role list and opens the named role's detail view. */
+    async function openRole(page: Page, name: string): Promise<void> {
+      await page.locator("aside").getByText("Dashboard").click();
+      await page.locator("aside").getByText("Roles").click();
+      await expect(page.getByText(name, { exact: true })).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+      await page.getByText(name, { exact: true }).click();
+      await expect(page.getByText("Edit Role")).toBeVisible();
+    }
+
+    test("deletes a custom role after confirmation", async ({ page }) => {
+      await navigateToRoles(page);
+      await seedRole(page, "doomed-role");
+      await openRole(page, "doomed-role");
+
+      const del = page.getByTestId("role-delete");
+      await del.click();
+      await expect(del).toHaveText("Confirm Delete");
+      await del.click();
+      await expect(page.getByText("No roles found.")).toBeVisible({
+        timeout: LOAD_TIMEOUT,
+      });
+    });
+
+    test("shows an error toast when role deletion fails", async ({ page }) => {
+      await navigateToRoles(page);
+      await seedRole(page, "sticky-role");
+      await openRole(page, "sticky-role");
+
+      await injectError(page, "RoleBinding.Delete", "role still assigned");
+      const del = page.getByTestId("role-delete");
+      await del.click();
+      await del.click();
+      await expect(page.locator('[role="alert"]').last()).toContainText(
+        "role still assigned",
+      );
+      await expect(page.getByText("Edit Role")).toBeVisible();
+      await clearError(page, "RoleBinding.Delete");
     });
   });
 
@@ -397,4 +497,52 @@ test.describe("Admin - Role Management", () => {
       });
     });
   });
+});
+
+webTest.describe("Admin - Role Management (web mode)", () => {
+  webTest(
+    "role creation failure shows the server's error text",
+    async ({ page }) => {
+      await page.route("**/roles", async (route) => {
+        if (route.request().method() === "POST") {
+          await route.fulfill({
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({ error: 'tenant "nope" not found' }),
+          });
+        } else {
+          await route.fallback();
+        }
+      });
+      await page.route("**/permissions", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ categories: [] }),
+        }),
+      );
+      await page.route("**/roles/list**", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ roles: [], total: 0, hasMore: false }),
+        }),
+      );
+
+      await page.goto("/");
+      await expect(
+        page.locator(".breadcrumbs").getByText("Dashboard"),
+      ).toBeVisible({ timeout: LOAD_TIMEOUT });
+      await page.locator("aside").getByText("Roles").click();
+      await page.getByRole("button", { name: "Create Role" }).click();
+      await page.getByPlaceholder("Enter role name").fill("ops");
+      await page.getByRole("button", { name: "Create" }).click();
+
+      const alert = page.locator('[role="alert"]').last();
+      await expect(alert).toContainText('tenant "nope" not found', {
+        timeout: LOAD_TIMEOUT,
+      });
+      await expect(alert).not.toContainText("transport:");
+    },
+  );
 });
