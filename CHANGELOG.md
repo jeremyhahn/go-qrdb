@@ -1113,6 +1113,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **The embedding errors no path returned are gone** (#1218):
+  `service.EmbeddingBatchTooLargeError`, `service.EmbeddingDimensionMismatchError`
+  and `embedding.DimensionMismatchError` (with its `sdk/go` alias). An oversize
+  batch is split into provider calls of at most `batch_size` texts, never refused.
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
   trust-domain setting** (#1150). It pins the mTLS authenticator, names the
   built-in CA's trust domain and is the trust domain no tenant may be. A
