@@ -84,7 +84,8 @@ func TestCLIMultiProtocolDatabaseBarrierEnableThenStatus(t *testing.T) {
 				execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
 			})
 
-			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName)
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName,
+				"--backend", "pebble")
 			if err != nil {
 				t.Logf("stdout: %s", stdout)
 				t.Logf("stderr: %s", stderr)
