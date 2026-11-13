@@ -1762,7 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1943,9 +1943,10 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // handed to BuildServices, which attaches the database catalog and opens every
 // database it records, and to the server, so a named database resolves
 // through the server's registry, is confined to its owning tenant, and is
-// refused while sealed.
-func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir)
+// refused while sealed. The manager carries the node's database_defaults
+// (standaloneDatabaseDefaults), as the daemon's does.
+func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
 	n.dbManager = dbManager
 	return dbManager
 }
@@ -1981,6 +1982,22 @@ func (n *Node) closeDatabaseManager() {
 // place of sm_storage, under the same data-plane file system; every other
 // type, the MVCC store included, refuses it with
 // statemachine.ReplicaStorageNotApplicableError.
+// standaloneDatabaseDefaults is the database_defaults of a standalone node:
+// cfg's, under the standalone run mode, exactly as the daemon builds them.
+func standaloneDatabaseDefaults(cfg *qrdbconfig.Config) database.Defaults {
+	d := database.DefaultsFromConfig(cfg.DatabaseDefaults)
+	d.RunMode = database.RunModeStandalone
+	return d
+}
+
+// clusteredDatabaseDefaults is the database_defaults of a clustered node:
+// cfg's, under the raft run mode, exactly as the daemon builds them.
+func clusteredDatabaseDefaults(cfg *qrdbconfig.Config) database.Defaults {
+	d := database.DefaultsFromConfig(cfg.DatabaseDefaults)
+	d.RunMode = database.RunModeRaft
+	return d
+}
+
 func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor, replicaStorage ReplicaStorageFactory) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
 		// The MVCC store opens its own Pebble database; a composer's replica
@@ -2352,7 +2369,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
-	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
+	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
+		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)))
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3152,7 +3170,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(dataDir)
+	dbManager := n.newStandaloneDatabaseManager(dataDir, cfg)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
@@ -3415,13 +3433,17 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(cfg),
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
-		ReplicaID:         cfg.Raft.ReplicaID,
-		Index:             cfg.Index,
-		TimeSeries:        cfg.TimeSeries,
-		Profile:           &profile,
-		Logger:            log,
-		SealEnabled:       cfg.Seal.Enabled,
-		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
+		// The manager BuildServices creates for this node records the
+		// node's database_defaults under the raft run mode.
+		Backend:          database.BackendRaft,
+		DatabaseDefaults: clusteredDatabaseDefaults(cfg),
+		ReplicaID:        cfg.Raft.ReplicaID,
+		Index:            cfg.Index,
+		TimeSeries:       cfg.TimeSeries,
+		Profile:          &profile,
+		Logger:           log,
+		SealEnabled:      cfg.Seal.Enabled,
+		RaftAddrToNodeID: raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
