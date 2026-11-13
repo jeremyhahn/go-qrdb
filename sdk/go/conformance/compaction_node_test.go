@@ -42,31 +42,6 @@ func (c *compactionCell) rawNodeCtx(t *testing.T) context.Context {
 	}), tenantid.System)
 }
 
-// TestNodeKeyspaceCompaction_OffByDefault: with no node-keyspace policy set,
-// the raw keyspace keeps its history across many passes.
-func TestNodeKeyspaceCompaction_OffByDefault(t *testing.T) {
-	c := bootCompactionCell(t, embeddedTransport, server.WithCompactionInterval(25*time.Millisecond))
-	ctx := c.rawNodeCtx(t)
-	raw := c.node.Client()
-	if err := raw.KV().Put(ctx, "node/raw-key", []byte("r1")); err != nil {
-		t.Fatalf("raw put: %v", err)
-	}
-	first, err := raw.MVCC().GetRevision(ctx, "node/raw-key")
-	if err != nil {
-		t.Fatalf("raw GetRevision: %v", err)
-	}
-	if err := raw.KV().Put(ctx, "node/raw-key", []byte("r2")); err != nil {
-		t.Fatalf("raw put: %v", err)
-	}
-	if got, err := raw.Admin().NodeCompaction(ctx); err != nil || got != nil {
-		t.Fatalf("NodeCompaction on a fresh node = %+v, %v; want none", got, err)
-	}
-	time.Sleep(250 * time.Millisecond)
-	if kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision); err != nil || string(kv.Value) != "r1" {
-		t.Fatalf("the raw keyspace was compacted with no policy set: %v, %v", kv, err)
-	}
-}
-
 // adminAs returns tenantID's admin client and the context it calls with: in
 // process the node's own client, scoped by the context's tenant; remote, the
 // client dialled with the tenant's certificate.
@@ -87,13 +62,19 @@ func (c *compactionCell) adminAs(t *testing.T, tenantID string) (transport.Admin
 // policy is set through the platform verb on each transport, by the system
 // tenant only. A tenant whose role holds admin:node_compaction -- the grant
 // a tenant Admin or SO could give itself -- is refused both the read and
-// the write and changes nothing. The policy the system tenant sets compacts
-// the raw keyspace on a real raft node, and no key of any tenant's database,
+// the write and changes nothing. With no policy set, the raw keyspace's
+// history on a real raft node survives many scheduler passes. The policy the
+// system tenant then sets compacts it, and no key of any tenant's database,
 // the system tenant's own databases included, over many passes.
 func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
+	const (
+		compactionInterval = 25 * time.Millisecond
+		// noPolicyWindow spans many scheduler passes with no policy set.
+		noPolicyWindow = 10 * compactionInterval
+	)
 	for _, tk := range transportKinds {
 		t.Run(string(tk), func(t *testing.T) {
-			c := bootCompactionCell(t, tk, server.WithCompactionInterval(25*time.Millisecond))
+			c := bootCompactionCell(t, tk, server.WithCompactionInterval(compactionInterval))
 			revA := c.writeHistory(t, "tenant-a", "k")
 			revSys := c.writeHistory(t, tenantid.System, "k")
 
@@ -125,13 +106,26 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 			if reason := classifyPlatformScopeRefusal(tk, err); reason != nil {
 				t.Fatalf("%s: tenant-a reading the platform's node-keyspace policy: %v", tk, reason)
 			}
-			time.Sleep(150 * time.Millisecond)
-			if kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision); err != nil || string(kv.Value) != "r1" {
-				t.Fatalf("%s: the raw keyspace was compacted after a refused policy: %v, %v", tk, kv, err)
+			sysAdmin, sysCtx := c.adminAs(t, tenantid.System)
+			if got, err := sysAdmin.NodeCompaction(sysCtx); err != nil || got != nil {
+				t.Fatalf("%s: NodeCompaction after a refused policy = %+v, %v; want none", tk, got, err)
+			}
+
+			// With no policy set, the raw keyspace keeps its history across
+			// many scheduler passes.
+			window := time.Now().Add(noPolicyWindow)
+			for {
+				kv, err := raw.MVCC().GetAtRevision(ctx, "node/raw-key", first.ModRevision)
+				if err != nil || kv == nil || string(kv.Value) != "r1" {
+					t.Fatalf("%s: the raw keyspace was compacted with no policy set: %+v, %v", tk, kv, err)
+				}
+				if time.Now().After(window) {
+					break
+				}
+				time.Sleep(compactionInterval)
 			}
 
 			// The system tenant sets it, and reads it back.
-			sysAdmin, sysCtx := c.adminAs(t, tenantid.System)
 			set, err := sysAdmin.SetNodeCompaction(sysCtx, policy)
 			if err != nil {
 				t.Fatalf("%s: the system tenant sets the node-keyspace policy: %v", tk, err)
@@ -158,8 +152,8 @@ func TestNodeKeyspaceCompaction_OnEveryTransport(t *testing.T) {
 				t.Fatalf("%s: the raw key lost its current value: %q, %v", tk, v, err)
 			}
 
-			// Many more passes; no tenant database's history moved.
-			time.Sleep(250 * time.Millisecond)
+			// The passes that compacted the raw keyspace moved no tenant
+			// database's history.
 			c.requireHistory(t, "tenant-a", "k", revA, "node-keyspace compaction")
 			c.requireHistory(t, tenantid.System, "k", revSys, "node-keyspace compaction")
 

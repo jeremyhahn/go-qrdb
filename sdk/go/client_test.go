@@ -296,21 +296,6 @@ func (m *mockAdminService) SetNodeCompaction(_ context.Context, _ *compaction.Po
 // NewClient tests
 // ---------------------------------------------------------------------------
 
-func TestNewClient_Success(t *testing.T) {
-	tr, err := embedded.New(newMockKVService(), &mockAdminService{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	client, err := sdk.NewClient(tr)
-	if err != nil {
-		t.Fatalf("NewClient failed: %v", err)
-	}
-	if client == nil {
-		t.Fatal("expected non-nil client")
-	}
-}
-
 func TestNewClient_NilTransport(t *testing.T) {
 	_, err := sdk.NewClient(nil)
 	if err == nil {

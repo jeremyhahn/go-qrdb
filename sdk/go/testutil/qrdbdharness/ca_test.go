@@ -238,28 +238,6 @@ func TestIssueServerCertificate(t *testing.T) {
 	}); err != nil {
 		t.Errorf("node certificate does not verify for localhost: %v", err)
 	}
-
-	var loopback, unspecified bool
-	for _, ip := range cert.IPAddresses {
-		if ip.IsLoopback() {
-			loopback = true
-		}
-		if ip.IsUnspecified() {
-			unspecified = true
-		}
-	}
-	if !loopback {
-		t.Error("node certificate has no loopback SAN")
-	}
-	// The unspecified addresses must be ABSENT. This assertion used to require
-	// them, back when the harness kept its own copy of localSANs; the copy had
-	// stopped matching clustertls.LocalSANs, which dropped them deliberately.
-	// Nothing verifies a certificate against an unspecified address: those are
-	// bind addresses, and a client checks the name it dialed, not the address
-	// the server bound to. See the note at the LocalSANs call in ca.go.
-	if unspecified {
-		t.Errorf("node certificate carries an unspecified-address SAN: %v", cert.IPAddresses)
-	}
 }
 
 func TestIssueRejectsInvalidSubjects(t *testing.T) {

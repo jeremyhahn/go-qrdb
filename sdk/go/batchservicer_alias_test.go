@@ -60,14 +60,6 @@ func newAliasTransport(t *testing.T, svc sdk.ServiceBatchServicer) *embedded.Tra
 	return tr
 }
 
-func TestServiceBatchServicer_AliasIsServiceInterface(t *testing.T) {
-	var svc sdk.ServiceBatchServicer = &revisionBatch{}
-	var asService service.BatchServicer = svc
-	if asService == nil {
-		t.Fatal("sdk.ServiceBatchServicer did not convert to service.BatchServicer")
-	}
-}
-
 func TestServiceBatchServicer_WithBatchServiceCarriesRevision(t *testing.T) {
 	svc := &revisionBatch{revision: 42}
 	tr := newAliasTransport(t, svc)

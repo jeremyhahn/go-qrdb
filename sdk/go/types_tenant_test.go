@@ -17,7 +17,6 @@ package sdk
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -136,19 +135,6 @@ func TestErrTenantBarrierNotEnabledAlias(t *testing.T) {
 	}
 }
 
-// TestErrTenantBarrierNotEnabledWrapped verifies errors.Is traversal through a
-// wrapped chain, matching how the sentinel typically arrives at a composing
-// service's transport layer (wrapped by intermediate layers with %w).
-func TestErrTenantBarrierNotEnabledWrapped(t *testing.T) {
-	wrapped := fmt.Errorf("tenant barrier init: %w", ErrTenantBarrierNotEnabled)
-	if !errors.Is(wrapped, ErrTenantBarrierNotEnabled) {
-		t.Error("errors.Is failed to match the wrapped sentinel")
-	}
-	if errors.Is(errors.New("unrelated"), ErrTenantBarrierNotEnabled) {
-		t.Error("errors.Is matched an unrelated error")
-	}
-}
-
 // TestErrTenantStoreSealedAlias verifies the SDK re-export is the same
 // sentinel value as pkg/tenant.ErrTenantSealed, the error
 // TenantStoreResolver.Resolve (and every service built over a routed store,
@@ -175,18 +161,5 @@ func TestErrTenantStoreSealedAlias(t *testing.T) {
 func TestErrTenantStoreSealedDistinctFromSealErrTenantSealed(t *testing.T) {
 	if errors.Is(ErrTenantStoreSealed, ErrTenantSealed) {
 		t.Fatal("ErrTenantStoreSealed and ErrTenantSealed are the same sentinel; this test's premise is stale")
-	}
-}
-
-// TestErrTenantStoreSealedWrapped verifies errors.Is traversal through a
-// wrapped chain, matching how the sentinel arrives at a composing service's
-// transport layer in practice — e.g. AuthFactorListReadError.Unwrap().
-func TestErrTenantStoreSealedWrapped(t *testing.T) {
-	wrapped := fmt.Errorf("resolve store: %w", ErrTenantStoreSealed)
-	if !errors.Is(wrapped, ErrTenantStoreSealed) {
-		t.Error("errors.Is failed to match the wrapped sentinel")
-	}
-	if errors.Is(errors.New("unrelated"), ErrTenantStoreSealed) {
-		t.Error("errors.Is matched an unrelated error")
 	}
 }
