@@ -125,6 +125,15 @@ list or resolve call. Until it finishes, those operations return the
 migration's error and serve, list or rotate nothing: the node does not answer
 from a store its own records have not reached.
 
+**A service built directly over a seal barrier.** An embedder that calls
+`NewCredentialService` (or `sdk.NewVersionedCredentialService`) with its seal
+barrier as the store, and no separate legacy store, migrates that barrier's
+old records in place: the barrier is both the old and the new store, and the
+service moves its `credentials/` and `credential-migrations/` records onto
+the `__sys:` prefixes before its first operation. The two key sets do not
+overlap, so nothing an upgraded embedder stored is lost from retrieval or
+listing.
+
 **Who wins.** Per credential name, the first node to migrate wins: it writes a
 migration claim beside the replicated record (the digests of its value,
 versions and policy, never the value) with a conditional write, then writes

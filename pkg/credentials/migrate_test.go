@@ -133,6 +133,26 @@ func versionString(t *testing.T, svc *CredentialService, name string, v uint64) 
 	return string(got)
 }
 
+// TestNewCredentialService_BarrierStoreMigratesBaseLayout proves an embedder
+// that upgrades and builds the service directly over its seal barrier, with
+// no WithLegacyStore, keeps every credential and version it stored under the
+// previous layout: the constructor takes the barrier as its legacy store and
+// migrates its old records in place before the first operation.
+func TestNewCredentialService_BarrierStoreMigratesBaseLayout(t *testing.T) {
+	b := newTestBarrier(t)
+	writeLegacy(t, b, "db", "v2", "v1", nil)
+
+	svc, err := NewCredentialService(&Config{Strategy: StrategyBarrier}, b, testLogger())
+	require.NoError(t, err)
+
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+	names, err := svc.ListCredentials(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, names, "db")
+	assert.Empty(t, legacyKeys(t, b))
+}
+
 var testPolicy = &RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}
 
 // TestMigrateLegacy_SingleNode verifies a name written on one node migrates
