@@ -1598,7 +1598,11 @@ func (e *KVEngine) lookupIndexQuery(q index.IndexQueryRequest) (interface{}, err
 	if !exists {
 		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
-	return idx.Get(q.Value)
+	keys, err := idx.Get(q.Value)
+	if err != nil {
+		return nil, err
+	}
+	return dropSystemKeys(keys), nil
 }
 
 // lookupIndexScan performs a range index scan.
@@ -1607,7 +1611,11 @@ func (e *KVEngine) lookupIndexScan(q index.IndexScanRequest) (interface{}, error
 	if !exists {
 		return nil, &index.NotFoundError{Name: q.IndexName}
 	}
-	return idx.Scan(q.Start, q.End)
+	entries, err := idx.Scan(q.Start, q.End)
+	if err != nil {
+		return nil, err
+	}
+	return dropSystemEntries(entries), nil
 }
 
 // lookupIndexList returns the names of all registered indexes.

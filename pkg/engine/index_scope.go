@@ -97,8 +97,14 @@ func ComposeIndexScope(name, declaredKeyPrefix string) []byte {
 }
 
 // KeyInScope reports whether key falls inside scope. An empty (or nil) scope
-// is the unscoped index and admits every key.
+// is the unscoped index and admits every key outside the reserved system
+// namespace; no scope admits a system key (see IsSystemKey), so no index
+// maintenance or backfill that asks KeyInScope ever indexes a credential
+// record.
 func KeyInScope(scope, key []byte) bool {
+	if IsSystemKey(key) {
+		return false
+	}
 	return len(scope) == 0 || bytes.HasPrefix(key, scope)
 }
 
@@ -107,6 +113,9 @@ func KeyInScope(scope, key []byte) bool {
 // index can possibly be interested in -- the common case on a shard that
 // holds many databases and one index.
 func anyIndexInScope(indexes map[string]index.Index, scopes map[string][]byte, key []byte) bool {
+	if IsSystemKey(key) {
+		return false
+	}
 	if len(scopes) == 0 {
 		return true
 	}
