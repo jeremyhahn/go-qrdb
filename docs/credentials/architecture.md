@@ -354,6 +354,17 @@ needed. The record is the lock: it lives in the replicated store on the system
 shard (above), and the compare-and-swap is one Raft transaction, so exactly
 one node takes each claim.
 
+**Every qrdbd node runs the check on a ticker.** The node's server
+(`pkg/server`) calls `CredentialRotateDue` once every
+`seal.credential_rotation_check_period` (default one minute,
+[configuration](../12-configuration.md)), on the started node and on the
+sealed-window listener alike. A pass is skipped while the node is sealed,
+since a sealed node serves no credential request, and a pass never starts
+while the previous one is still running. The pass itself has no deadline
+(below); the ticker stops with the server. The `qrdb` desktop's embedded
+mode builds no `pkg/server`, so it runs no check: its policies are stored and
+readable, and rotate only on a qrdbd node that shares the store.
+
 **Every writer of the current value commits once.** A rotation writes the
 retained previous version, the new current value and the metadata record in
 one guarded batch, one Raft transaction that applies only while the metadata

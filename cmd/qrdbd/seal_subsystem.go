@@ -499,6 +499,14 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 	}
 	if sealNode.Credential != nil {
 		serverOpts = append(serverOpts, server.WithCredentialService(sealNode.Credential))
+		// The sealed-window server runs the rotation scheduler too (it
+		// skips every pass while sealed), on the same configured period
+		// as the started node's server.
+		period, perr := f.sealConfig.CredentialRotationCheckPeriodDuration()
+		if perr != nil {
+			return nil, perr
+		}
+		serverOpts = append(serverOpts, server.WithCredentialRotationPeriod(period))
 	}
 	if sub.BarrierRegistry != nil {
 		serverOpts = append(serverOpts, server.WithBarrierRegistry(sub.BarrierRegistry))
