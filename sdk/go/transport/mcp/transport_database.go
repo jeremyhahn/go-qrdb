@@ -431,6 +431,9 @@ func applyRaftArgs(args map[string]any, raft *transport.DatabaseRaftConfig, pref
 	if raft.ClusterMode != "" {
 		args[prefix+"cluster_mode"] = raft.ClusterMode
 	}
+	if raft.StateStorage != "" {
+		args[prefix+"state_storage"] = raft.StateStorage
+	}
 	if raft.ReplicaID != 0 {
 		args[prefix+"replica_id"] = raft.ReplicaID
 	}

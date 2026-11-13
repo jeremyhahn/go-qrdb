@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 )
@@ -40,6 +41,10 @@ type fakeCertEnrollHandler struct {
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollHandler)(nil)

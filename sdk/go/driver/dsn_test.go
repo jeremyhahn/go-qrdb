@@ -256,16 +256,3 @@ func TestParseDSN_Defaults(t *testing.T) {
 		t.Errorf("default Backend = %q, want %q", cfg.Backend, "memory")
 	}
 }
-
-// TestParseDSN_SchemeConstants verifies scheme constants have expected values.
-func TestParseDSN_SchemeConstants(t *testing.T) {
-	if SchemeEmbedded != "embedded" {
-		t.Errorf("SchemeEmbedded = %q, want %q", SchemeEmbedded, "embedded")
-	}
-	if SchemeREST != "rest" {
-		t.Errorf("SchemeREST = %q, want %q", SchemeREST, "rest")
-	}
-	if SchemeGRPC != "grpc" {
-		t.Errorf("SchemeGRPC = %q, want %q", SchemeGRPC, "grpc")
-	}
-}

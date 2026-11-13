@@ -147,6 +147,12 @@ const (
 // can cure (an unverifiable certificate, a foreign ALPN) ends Connect at
 // once. With no bound at all there is nothing to retry within, so one
 // attempt is made.
+//
+// Health is a no-login verb on every transport (pkg/api/publicverbs), so
+// with no client certificate and no token Connect succeeds: the server
+// refuses the caller with StatusUnauthenticated at its first call that
+// needs an identity, not here (ruling 264(b)). A client certificate the
+// server cannot verify ends the handshake instead, so Connect fails.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -255,11 +261,10 @@ func callerRefusal(err error) (*transport.RequestError, bool) {
 }
 
 // dial opens the QUIC connection and negotiates ProtocolV3, without the
-// authenticated health probe Connect performs. ensureConn (used by
-// RedeemInvitation) calls it directly: RedeemInvitation is the one call an
-// unconnected, uncredentialed client may make (see
-// transport.InvitationClient), and Connect's health probe fails closed for
-// exactly that caller (see reachableButUnauthorized).
+// health probe Connect performs. ensureConn (used by RedeemInvitation)
+// calls it directly: RedeemInvitation, like Health, is a no-login verb
+// (pkg/api/publicverbs; see transport.InvitationClient), and an unconnected
+// client redeeming an invitation needs no health round trip first.
 func (t *Transport) dial(ctx context.Context) error {
 	tlsCfg, err := t.buildTLSConfig()
 	if err != nil {
@@ -359,9 +364,10 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 // authenticated the caller's TLS client certificate, and answered the
 // admin.Health RPC, but rejected it purely on AUTHORIZATION grounds
 // (wire.StatusPermissionDenied) rather than a connectivity failure.
-// wire.StatusUnauthenticated is deliberately EXCLUDED -- it means the
-// caller never authenticated at all (no/invalid TLS client certificate),
-// which Connect() must continue to fail closed on. See the identical
+// wire.StatusUnauthenticated is deliberately EXCLUDED: Health is a no-login
+// verb (pkg/api/publicverbs), so a caller with no credential is answered,
+// and an Unauthenticated answer is a typed refusal Connect returns as
+// such. See the identical
 // helper in sdk/go/transport/grpc/transport.go for the full rationale.
 func reachableButUnauthorized(err error) bool {
 	var reqErr *transport.RequestError

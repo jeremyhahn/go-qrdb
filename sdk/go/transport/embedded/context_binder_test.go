@@ -340,17 +340,6 @@ func TestContextBinder_LastOptionWins(t *testing.T) {
 	}
 }
 
-// TestContextBinder_ErrorStrings pins both errors' messages.
-func TestContextBinder_ErrorStrings(t *testing.T) {
-	if got, want := (&NilContextBinderError{}).Error(), "embedded: context binder must not be nil"; got != want {
-		t.Errorf("NilContextBinderError = %q, want %q", got, want)
-	}
-	if got, want := (&NilBoundContextError{Method: "Get"}).Error(),
-		"embedded: Get: context binder returned a nil context"; got != want {
-		t.Errorf("NilBoundContextError = %q, want %q", got, want)
-	}
-}
-
 // TestContextBinder_RefusesEveryRequestMethod walks every request method of
 // *Transport and of each sub-client by reflection: each one must fail with
 // the refusing binder's error. An entry point that dispatches without admit

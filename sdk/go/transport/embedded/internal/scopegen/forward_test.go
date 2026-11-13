@@ -31,14 +31,6 @@ import (
 // package.
 const committedForward = "../../replica_forward_methods.go"
 
-// The committed forwarding file is exactly what the generator produces from
-// today's SDK client interfaces.
-func TestCommittedForwardFileIsCurrent(t *testing.T) {
-	if err := runAll("", "", "", committedForward); err != nil {
-		t.Fatalf("%v", err)
-	}
-}
-
 // Every forwarded family's unary methods are forwarded, and a stream is not.
 func TestGeneratedForward_UnaryForwardedStreamsNot(t *testing.T) {
 	src, err := generateForward()

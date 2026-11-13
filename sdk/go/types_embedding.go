@@ -192,9 +192,6 @@ type EmbeddingProviderUnavailableError = embedding.ProviderUnavailableError
 // EmbeddingHTTPError is returned when the provider responds with a non-2xx status.
 type EmbeddingHTTPError = embedding.HTTPError
 
-// EmbeddingDimensionMismatchError is returned when dimensions do not match expectations.
-type EmbeddingDimensionMismatchError = embedding.DimensionMismatchError
-
 // EmbeddingProviderNotFoundError is returned when a named provider is not registered.
 type EmbeddingProviderNotFoundError = embedding.ProviderNotFoundError
 

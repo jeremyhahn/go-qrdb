@@ -1178,11 +1178,11 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 	}
 	if !awaiting {
 		// Auth: authenticate and authorize if middleware is configured. A
-		// method declared with RegisterPublic (invitation.Redeem, and a
-		// module's GRPCPublicMethodLister methods) skips both -- its caller
+		// method declared with RegisterPublic (publicverbs.Table's verbs, and
+		// a module's GRPCPublicMethodLister methods) skips both -- its caller
 		// holds no credential yet -- exactly as REST's RESTRoutePublic and gRPC's
 		// RegisterPublicGRPCMethods already skip auth for their own public
-		// routes.
+		// routes. It draws its pre-authentication bucket instead (limitPublic).
 		if !sealedPath && s.authMW != nil && !s.methodPerms.IsPublic(method) {
 			if onBehalf != nil {
 				ctx, err = s.authenticateOnBehalf(ctx, conn, method, payload, onBehalf)
@@ -1206,6 +1206,11 @@ func (s *Server) handleStream(conn *quicgo.Conn, stream *quicgo.Stream) {
 				s.logRequest(method, requestID, authStatus, start)
 				return
 			}
+		} else if limitErr := s.limitPublic(ctx, method); limitErr != nil {
+			st, body := errorFrame(authzStatus(limitErr), limitErr)
+			_ = s.writeResponse(stream, requestID, st, body)
+			s.logRequest(method, requestID, st, start)
+			return
 		}
 
 		// The SO dual-factor gate, after authorization and before any handler,

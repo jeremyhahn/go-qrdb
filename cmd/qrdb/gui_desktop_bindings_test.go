@@ -35,8 +35,8 @@ import (
 //	RoleBinding, CertBinding, DatabaseBinding, CollectionBinding, SQLBinding,
 //	SealBinding, ConfigBinding, TenantBinding, BackupBinding,
 //	OfficerBinding, CeremonyBinding, RebalanceBinding, LockBinding,
-//	CredentialBinding, AuditBinding, VolumePoolBinding, DaemonBinding
-const expectedBindingCount = 32
+//	CredentialBinding, AuditBinding, VolumePoolBinding, VlogBinding, DaemonBinding
+const expectedBindingCount = 33
 
 // TestGUIBindings_AllBindingsPresent verifies that bindList returns the
 // expected number of non-nil binding instances. A nil entry means a binding

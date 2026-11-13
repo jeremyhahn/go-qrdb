@@ -1127,8 +1127,14 @@ func retryAfterHeader(v string) time.Duration {
 // embedded, gRPC, unix, QUIC and MCP transports do, and the RequestError
 // around it keeps the method and status.
 func serverErrorFor(status int, msg string) error {
-	if status == http.StatusNotImplemented {
+	switch status {
+	case http.StatusNotImplemented:
 		return &transport.CapabilityUnsupportedError{Message: msg}
+	case http.StatusUnauthorized:
+		// The same wording the QUIC, MCP, gRPC and Unix clients give a
+		// refused credential, so a caller reads one refusal on every
+		// transport rather than an HTTP status and a server reason code.
+		return &serverError{Message: "unauthenticated: " + msg}
 	}
 	return &serverError{Message: msg}
 }

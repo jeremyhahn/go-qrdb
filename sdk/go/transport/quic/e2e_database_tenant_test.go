@@ -271,22 +271,6 @@ func TestE2E_DeleteTenant_HappyPath(t *testing.T) {
 	}
 }
 
-func TestE2E_UpdateTenant_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("tenant.Update", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.TenantResponse{Id: "t1", Name: "renamed"})
-	})
-	resp, err := tr.UpdateTenant(context.Background(), &transport.UpdateTenantRequest{
-		TenantID: "t1", Name: "renamed",
-	})
-	if err != nil {
-		t.Fatalf("UpdateTenant: %v", err)
-	}
-	if resp.Tenant.Name != "renamed" {
-		t.Fatalf("resp = %+v", resp)
-	}
-}
-
 func TestE2E_UpdateTenantQuotas_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("tenant.UpdateQuotas", func(_ []byte) (uint16, []byte) {

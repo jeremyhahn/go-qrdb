@@ -1086,17 +1086,11 @@ func (m *AuthMiddleware) decide(ctx context.Context, identity *auth.Identity, pe
 	// definitive 403 computed from an empty role set the store never
 	// actually served.
 	//
-	// admin:health is admitted for the same liveness rationale the SYSTEM
-	// sealed-window allowlist (pkg/api/sealedwindow) admits Health: the
-	// gRPC/QUIC/Unix SDK transports perform an authenticated Health RPC at
-	// Connect time, so without it a sealed tenant's identity cannot even
-	// OPEN the connection it needs to reach the IdentityGated barrier
-	// status/unseal endpoints that end the sealed window. Health reports
-	// node liveness only — no tenant data crosses the seal boundary.
+	// Health needs no exemption here: it is a no-login verb on every
+	// transport (pkg/api/publicverbs), served before authorization, so a
+	// sealed tenant's SDK still opens the connection it needs to reach the
+	// IdentityGated barrier status/unseal endpoints.
 	if identity != nil && identity.Metadata[tenantIAMSealedMetadataKey] == "true" {
-		if perm == permission.AdminHealth {
-			return nil
-		}
 		return &StoreUnavailableError{Err: tenant.ErrTenantSealed}
 	}
 

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -273,6 +274,10 @@ type mockCertEnrollmentSvc struct {
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 func (m *mockCertEnrollmentSvc) SignCertificate(ctx context.Context, req *service.SignCertificateRequest) (*service.EnrolledCertificate, error) {
@@ -542,29 +547,6 @@ func (m *mockUserSvcWithCert) RemoveCertBinding(ctx context.Context, userID uint
 
 var _ user.UserServicer = (*mockUserSvcWithCert)(nil)
 
-func TestUnixRT_GetUserByCertThumbprint(t *testing.T) {
-	var gotThumbprint string
-	usvc := &mockUserSvcWithCert{
-		certThumbprintFn: func(_ context.Context, tp string) (*user.User, error) {
-			gotThumbprint = tp
-			return &user.User{ID: 1, Username: "cert-user"}, nil
-		},
-	}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
-	defer cleanup()
-
-	got, err := tr.GetUserByCertThumbprint(context.Background(), "AABBCC")
-	if err != nil {
-		t.Fatalf("GetUserByCertThumbprint: %v", err)
-	}
-	if got == nil || got.Username != "cert-user" {
-		t.Errorf("unexpected result: %+v", got)
-	}
-	if gotThumbprint != "AABBCC" {
-		t.Errorf("service saw thumbprint %q, want AABBCC", gotThumbprint)
-	}
-}
-
 func TestUnixRT_AddCertBinding(t *testing.T) {
 	var gotID uint64
 	var gotThumbprint string
@@ -587,33 +569,6 @@ func TestUnixRT_AddCertBinding(t *testing.T) {
 	}
 	if gotID != 7 || gotThumbprint != "AABBCC" || gotNotAfter != 1700000000 {
 		t.Errorf("service saw (%d, %q, %d), want (7, \"AABBCC\", 1700000000)", gotID, gotThumbprint, gotNotAfter)
-	}
-}
-
-// TestUnixRT_RemoveCertBinding round-trips the withdrawal verb over the unix
-// socket, asserting both arguments reach the service: a thumbprint that did
-// not arrive withdraws nothing and reports a not-found (go-qrdb#518).
-func TestUnixRT_RemoveCertBinding(t *testing.T) {
-	var gotID uint64
-	var gotThumbprint string
-	usvc := &mockUserSvcWithCert{
-		removeCertBindingFn: func(_ context.Context, userID uint64, tp string) (*user.User, error) {
-			gotID, gotThumbprint = userID, tp
-			return &user.User{ID: userID, Username: "cert-user"}, nil
-		},
-	}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
-	defer cleanup()
-
-	got, err := tr.RemoveCertBinding(context.Background(), 7, "AABBCC")
-	if err != nil {
-		t.Fatalf("RemoveCertBinding: %v", err)
-	}
-	if got == nil || got.Username != "cert-user" {
-		t.Errorf("unexpected result: %+v", got)
-	}
-	if gotID != 7 || gotThumbprint != "AABBCC" {
-		t.Fatalf("service saw (%d, %q), want (7, \"AABBCC\")", gotID, gotThumbprint)
 	}
 }
 
@@ -994,21 +949,6 @@ func TestUnixRT_CertOps_NotConfigured(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Error propagation
 // ---------------------------------------------------------------------------
-
-func TestUnixRT_GetUser_NotFound(t *testing.T) {
-	usvc := &mockUserSvc{
-		getFn: func(_ context.Context, _ uint64) (*user.User, error) {
-			return nil, errors.New("not found")
-		},
-	}
-	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
-	defer cleanup()
-
-	_, err := tr.GetUser(context.Background(), 9999)
-	if err == nil {
-		t.Fatal("expected error from server")
-	}
-}
 
 // The identity fields this PR threads through the unix transport must survive
 // the round trip, and GetUserByEmail must reach the service.

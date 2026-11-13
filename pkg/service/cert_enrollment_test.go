@@ -102,7 +102,13 @@ func (b *certEnrollmentFakeBarrier) IsSealed() bool { return false }
 // always gives its CA.
 func newCertEnrollmentProvider(t *testing.T) cert.CertProvider {
 	t.Helper()
-	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), newCertEnrollmentFakeBarrier(t),
+	return newCertEnrollmentProviderOver(t, kvstoretest.NewGuardedMemoryStore())
+}
+
+// newCertEnrollmentProviderOver is newCertEnrollmentProvider over store.
+func newCertEnrollmentProviderOver(t *testing.T, store kvstore.MultiGuardedBatchKVStore) cert.CertProvider {
+	t.Helper()
+	p := cert.NewDefaultProvider(store, newCertEnrollmentFakeBarrier(t),
 		cert.WithTrustDomain(enrollmentTrustDomain))
 	if err := p.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize: %v", err)

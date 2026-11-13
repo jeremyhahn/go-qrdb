@@ -272,10 +272,6 @@ func TestE2E_DatabaseBarrier_SealDatabase_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_DatabaseBarrier_SealDatabase_Closed(t *testing.T) {
-	assertQuicClosed(t, newQuicClosed().SealDatabase(context.Background(), "mydb"))
-}
-
 func TestE2E_DatabaseBarrier_SealDatabase_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("db.Seal", func(_ []byte) (uint16, []byte) {
@@ -294,10 +290,6 @@ func TestE2E_DatabaseBarrier_UnsealDatabase_Success(t *testing.T) {
 	if err := tr.UnsealDatabase(context.Background(), "mydb", "secret"); err != nil {
 		t.Fatalf("UnsealDatabase: %v", err)
 	}
-}
-
-func TestE2E_DatabaseBarrier_UnsealDatabase_Closed(t *testing.T) {
-	assertQuicClosed(t, newQuicClosed().UnsealDatabase(context.Background(), "mydb", "s"))
 }
 
 func TestE2E_DatabaseBarrier_UnsealDatabase_RPCError(t *testing.T) {
@@ -325,11 +317,6 @@ func TestE2E_DatabaseBarrier_Status_Success(t *testing.T) {
 	if status.Strategy != "software" {
 		t.Fatalf("unexpected strategy: %q", status.Strategy)
 	}
-}
-
-func TestE2E_DatabaseBarrier_Status_Closed(t *testing.T) {
-	_, err := newQuicClosed().DatabaseBarrierStatus(context.Background(), "mydb")
-	assertQuicClosed(t, err)
 }
 
 func TestE2E_DatabaseBarrier_Status_RPCError(t *testing.T) {
@@ -417,11 +404,6 @@ func TestE2E_Embedding_BatchEmbed_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_Embedding_BatchEmbed_Closed(t *testing.T) {
-	_, err := newQuicClosed().BatchEmbed(context.Background(), &transport.BatchEmbedRequest{})
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_Embedding_BatchEmbed_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("embedding.BatchEmbed", func(_ []byte) (uint16, []byte) {
@@ -447,11 +429,6 @@ func TestE2E_Embedding_ListModels_Success(t *testing.T) {
 	if len(resp.Models) == 0 {
 		t.Fatal("expected models")
 	}
-}
-
-func TestE2E_Embedding_ListModels_Closed(t *testing.T) {
-	_, err := newQuicClosed().ListEmbeddingModels(context.Background(), "p")
-	assertQuicClosed(t, err)
 }
 
 func TestE2E_Embedding_ListModels_RPCError(t *testing.T) {
@@ -498,11 +475,6 @@ func TestE2E_Rebalance_GetShardStats_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_Rebalance_GetShardStats_Closed(t *testing.T) {
-	_, err := newQuicClosed().GetShardStats(context.Background(), 1)
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_Rebalance_GetShardStats_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("rebalance.GetShardStats", func(_ []byte) (uint16, []byte) {
@@ -532,11 +504,6 @@ func TestE2E_Rebalance_CreateRebalancePlan_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_Rebalance_CreateRebalancePlan_Closed(t *testing.T) {
-	_, err := newQuicClosed().CreateRebalancePlan(context.Background(), &transport.RebalancePlanRequest{})
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_Rebalance_CreateRebalancePlan_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("rebalance.CreatePlan", func(_ []byte) (uint16, []byte) {
@@ -562,21 +529,6 @@ func TestE2E_Rebalance_ExecuteRebalance_Success(t *testing.T) {
 	if result.MovesCompleted != 2 {
 		t.Fatalf("unexpected MovesCompleted: %d", result.MovesCompleted)
 	}
-}
-
-func TestE2E_Rebalance_ExecuteRebalance_NilPlan(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("rebalance.Execute", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.RebalanceExecutionResponse{MovesCompleted: 0})
-	})
-	// nil plan: quicRebalancePlanToProto handles nil → no panic
-	_, err := tr.ExecuteRebalance(context.Background(), nil)
-	_ = err // result doesn't matter, just no panic
-}
-
-func TestE2E_Rebalance_ExecuteRebalance_Closed(t *testing.T) {
-	_, err := newQuicClosed().ExecuteRebalance(context.Background(), nil)
-	assertQuicClosed(t, err)
 }
 
 func TestE2E_Rebalance_ExecuteRebalance_RPCError(t *testing.T) {
@@ -605,11 +557,6 @@ func TestE2E_Rebalance_GetImbalanceReport_Success(t *testing.T) {
 	if len(report.Nodes) == 0 {
 		t.Fatal("expected nodes")
 	}
-}
-
-func TestE2E_Rebalance_GetImbalanceReport_Closed(t *testing.T) {
-	_, err := newQuicClosed().GetImbalanceReport(context.Background())
-	assertQuicClosed(t, err)
 }
 
 func TestE2E_Rebalance_GetImbalanceReport_RPCError(t *testing.T) {

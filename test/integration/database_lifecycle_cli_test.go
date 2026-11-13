@@ -303,6 +303,79 @@ func TestDatabaseLifecycle_CLI_BackendVariants(t *testing.T) {
 	})
 }
 
+// TestDatabaseLifecycle_CLI_RaftStateStorage proves that every create
+// transport carries --state-storage: the database record read back with
+// `database info` holds the requested Raft state storage.
+func TestDatabaseLifecycle_CLI_RaftStateStorage(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("dbstate-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", dbName) })
+
+			out, err := runCLIProto(t, node, proto, "database", "create", dbName,
+				"--backend", "raft", "--cluster-mode", "local", "--replicas", "1",
+				"--state-storage", "file")
+			if err != nil {
+				t.Fatalf("[%s] database create %s --state-storage file: %v\noutput: %s", proto.name, dbName, err, out)
+			}
+			info := cliDatabaseInfo(t, node, proto, dbName)
+			if info.Raft == nil || info.Raft.StateStorage != "file" {
+				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=file", proto.name, dbName, info.Raft)
+			}
+
+			out, err = runCLIProto(t, node, proto, "database", "info", dbName)
+			if err != nil {
+				t.Fatalf("[%s] database info %s: %v\noutput: %s", proto.name, dbName, err, out)
+			}
+			if !strings.Contains(out, "State:    file") {
+				t.Fatalf("[%s] database info %s: output lacks %q\noutput: %s", proto.name, dbName, "State:    file", out)
+			}
+
+			// A raft block naming only its state storage takes the
+			// default cluster mode: no --cluster-mode is needed.
+			bare := dbName + "-bare"
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", bare) })
+			out, err = runCLIProto(t, node, proto, "database", "create", bare,
+				"--backend", "raft", "--state-storage", "file")
+			if err != nil {
+				t.Fatalf("[%s] database create %s --state-storage file without --cluster-mode: %v\noutput: %s", proto.name, bare, err, out)
+			}
+			info = cliDatabaseInfo(t, node, proto, bare)
+			if info.Raft == nil || info.Raft.StateStorage != "file" || info.Raft.ClusterMode == "" {
+				t.Fatalf("[%s] database info %s: Raft = %+v, want StateStorage=file and a cluster mode", proto.name, bare, info.Raft)
+			}
+		})
+	}
+}
+
+// TestDatabaseLifecycle_CLI_DefaultBackend pins that `database create` with
+// no --backend sends none and the node records its run mode's default
+// backend (the harness node runs in raft mode and names no
+// database_defaults backend), on every transport.
+func TestDatabaseLifecycle_CLI_DefaultBackend(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			dbName := fmt.Sprintf("dbdefault-%s-%d", proto.name, time.Now().UnixNano())
+			t.Cleanup(func() { _, _ = runCLIProto(t, node, proto, "database", "drop", dbName) })
+
+			out, err := runCLIProto(t, node, proto, "database", "create", dbName)
+			if err != nil {
+				t.Fatalf("[%s] database create %s without --backend: %v\noutput: %s", proto.name, dbName, err, out)
+			}
+			info := cliDatabaseInfo(t, node, proto, dbName)
+			if info.Backend != "raft" {
+				t.Fatalf("[%s] database info %s: Backend = %q, want the raft run mode's default %q", proto.name, dbName, info.Backend, "raft")
+			}
+		})
+	}
+}
+
 // TestDatabaseBarrier_CLI_PerProtocol drives create-with-barrier ->
 // barrier-status -> seal -> barrier-status -> unseal(wrong) ->
 // unseal(right) -> barrier-status -> drop through the CLI binary against
@@ -351,7 +424,7 @@ func testDatabaseBarrierOverProtocol(t *testing.T, node *multiProtoNode, proto m
 
 	out, err := runCLIProto(t, node, proto, "database", "create", dbName,
 		"--data-dir", dataDir,
-		"--barrier-enabled",
+		"--backend", "pebble", "--barrier-enabled",
 		"--barrier-strategy", "passphrase",
 		"--barrier-passphrase", passphrase,
 	)

@@ -15,6 +15,8 @@
 package sdk
 
 import (
+	"crypto/x509"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
@@ -226,6 +228,14 @@ type InvalidMTLSBindingPolicyError = auth.InvalidMTLSBindingPolicyError
 //
 // (Aliases pkg/auth.TenantFromClientCert.)
 var TenantFromClientCert = auth.TenantFromClientCert
+
+// TenantFromCert is the composer-side form of
+// pkg/auth.MTLSAuthenticator.TenantFromCert: it derives the tenant of a
+// verified client certificate under the given cluster trust domain, with
+// exactly the rule, refusals and errors of TenantFromClientCert.
+func TenantFromCert(cert *x509.Certificate, trustDomain string) (string, error) {
+	return auth.TenantFromClientCert(cert, trustDomain)
+}
 
 // ErrInvalidClientCertificate is what every TenantFromClientCert refusal
 // matches under errors.Is: a nil certificate, no tenant SPIFFE ID SAN, no

@@ -65,6 +65,7 @@ func FullRaftConfig() *database.DatabaseRaftConfig {
 			ClusterSize: 5,
 			Timeout:     "90s",
 		},
+		StateStorage: database.BackendFile,
 	}
 }
 
@@ -101,6 +102,7 @@ func FullRaftRequest() *transport.DatabaseRaftConfig {
 			ClusterSize: 5,
 			Timeout:     "90s",
 		},
+		StateStorage: "file",
 	}
 }
 

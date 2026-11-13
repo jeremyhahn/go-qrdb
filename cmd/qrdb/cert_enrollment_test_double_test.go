@@ -34,6 +34,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -49,6 +50,9 @@ type fakeCertEnrollment struct {
 	listAnchorsFn  func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeAnchorFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegateFn     func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollment)(nil)

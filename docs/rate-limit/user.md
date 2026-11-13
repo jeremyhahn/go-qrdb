@@ -102,6 +102,18 @@ no `Policy` is simply unthrottled — see
 [architecture.md](architecture.md) for why that is the deliberate default
 rather than a gap to fill in for every permission in the registry.
 
+**The no-login verbs have a bucket too.** Health and invitation redemption
+are served before anyone authenticates (`pkg/api/publicverbs.Table`), so they
+never reach that authorization function. Health is still charged, before it
+is served, against a `Policy` registered for `permission.AdminHealth`
+(`admin:health`) — its rate-limit dimension in the table — keyed by the
+caller's client address, since no principal exists yet. Every transport
+does this: REST `GET /health`, gRPC and unix-socket `Health`, QUIC
+`admin.Health` and MCP `qrdb_health`. With no `admin:health` Policy, Health
+is bounded only by the node's client-address limit above. `admin:health` is
+no longer a permission Health needs; a role that still lists it is
+unaffected.
+
 **Picking a number.** `RatePerSecond` and `Burst` are your call, not a
 derived constant — there is no protocol fact to compute a request-frequency
 budget from the way, for example, a request-body-size bound can be derived

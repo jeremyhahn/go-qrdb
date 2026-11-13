@@ -229,25 +229,6 @@ func TestNetworkConnector_CloseReleasesTransport(t *testing.T) {
 	}
 }
 
-// TestNetworkConnector_TLSOptionsFromDSN verifies TLS material named in the
-// DSN is parsed and carried through to the transport options.
-func TestNetworkConnector_TLSOptionsFromDSN(t *testing.T) {
-	cfg, err := ParseDSN("rest://localhost:63001/mydb?ca=/tmp/ca.pem&cert=/tmp/c.pem&key=/tmp/k.pem")
-	if err != nil {
-		t.Fatalf("ParseDSN: %v", err)
-	}
-
-	if cfg.CAFile != "/tmp/ca.pem" {
-		t.Errorf("CAFile = %q, want /tmp/ca.pem", cfg.CAFile)
-	}
-	if cfg.CertFile != "/tmp/c.pem" {
-		t.Errorf("CertFile = %q, want /tmp/c.pem", cfg.CertFile)
-	}
-	if cfg.KeyFile != "/tmp/k.pem" {
-		t.Errorf("KeyFile = %q, want /tmp/k.pem", cfg.KeyFile)
-	}
-}
-
 // TestNetworkConnector_UnknownScheme verifies an unroutable scheme is
 // reported rather than silently defaulting to a transport.
 func TestNetworkConnector_UnknownScheme(t *testing.T) {

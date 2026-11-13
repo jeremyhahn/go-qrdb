@@ -80,15 +80,20 @@ func TestCIDraftSkip_GateRunsAndFailsOnDraft(t *testing.T) {
 	t.Errorf("%s has no step that fails when DRAFT is true", draftSkipGateJob)
 }
 
-func TestCIDraftSkip_NoDraftLiftTrigger(t *testing.T) {
+// TestCIDraftSkip_DraftLiftTrigger: a draft runs no CI, so marking the PR
+// ready must start the run itself (ready_for_review, ci-template v1.35.3,
+// DS-8544); without it the lift waits for a push. edited stays out: a title or
+// body edit changes no code.
+func TestCIDraftSkip_DraftLiftTrigger(t *testing.T) {
 	types := loadDraftSkipWorkflow(t).On.PullRequest.Types
 	if !slices.Contains(types, "synchronize") {
 		t.Fatalf("pull_request types %v lack synchronize; the floor under this check", types)
 	}
-	for _, banned := range []string{"edited", "ready_for_review"} {
-		if slices.Contains(types, banned) {
-			t.Errorf("pull_request types %v include %s; a draft lift starts its run by a push (ruling 214)", types, banned)
-		}
+	if !slices.Contains(types, "ready_for_review") {
+		t.Errorf("pull_request types %v lack ready_for_review; a draft lift would start no run until a push (DS-8544)", types)
+	}
+	if slices.Contains(types, "edited") {
+		t.Errorf("pull_request types %v include edited; a title or body edit changes no code", types)
 	}
 }
 

@@ -153,25 +153,28 @@ type Config struct {
 	// node holds no replica of to a node that does.
 	ReplicaForwarding ReplicaForwardingConfig `yaml:"replica_forwarding"`
 
-	MVCC          MVCCConfig          `yaml:"mvcc"`
-	Watch         WatchConfig         `yaml:"watch"`
-	Lease         LeaseConfig         `yaml:"lease"`
-	Index         IndexConfig         `yaml:"index"`
-	TimeSeries    TimeSeriesConfig    `yaml:"timeseries"`
-	WriteMode     WriteModeConfig     `yaml:"write_mode"`
-	Auth          AuthConfig          `yaml:"auth"`
-	CORS          CORSConfig          `yaml:"cors"`
-	SQL           SQLConfig           `yaml:"sql"`
-	Codec         CodecConfig         `yaml:"codec"`
-	Seal          SealConfig          `yaml:"seal"`
-	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
-	ClusterJoin   ClusterJoinConfig   `yaml:"cluster_join"`
-	Databases     []DatabaseConfig    `yaml:"databases,omitempty" json:"databases,omitempty"`
-	Embedding     EmbeddingConfig     `yaml:"embedding"`
-	RAG           RAGConfig           `yaml:"rag"`
-	Tenant        TenantConfig        `yaml:"tenant"`
-	Transport     TransportConfig     `yaml:"transport"`
-	ImportSession ImportSessionConfig `yaml:"import_session"`
+	MVCC        MVCCConfig        `yaml:"mvcc"`
+	Watch       WatchConfig       `yaml:"watch"`
+	Lease       LeaseConfig       `yaml:"lease"`
+	Index       IndexConfig       `yaml:"index"`
+	TimeSeries  TimeSeriesConfig  `yaml:"timeseries"`
+	WriteMode   WriteModeConfig   `yaml:"write_mode"`
+	Auth        AuthConfig        `yaml:"auth"`
+	CORS        CORSConfig        `yaml:"cors"`
+	SQL         SQLConfig         `yaml:"sql"`
+	Codec       CodecConfig       `yaml:"codec"`
+	Seal        SealConfig        `yaml:"seal"`
+	Bootstrap   BootstrapConfig   `yaml:"bootstrap"`
+	ClusterJoin ClusterJoinConfig `yaml:"cluster_join"`
+	Databases   []DatabaseConfig  `yaml:"databases,omitempty" json:"databases,omitempty"`
+	// DatabaseDefaults are filled into a database record at creation when
+	// the caller left the field empty (docs/databases/architecture.md).
+	DatabaseDefaults DatabaseDefaults    `yaml:"database_defaults,omitempty" json:"database_defaults,omitempty"`
+	Embedding        EmbeddingConfig     `yaml:"embedding"`
+	RAG              RAGConfig           `yaml:"rag"`
+	Tenant           TenantConfig        `yaml:"tenant"`
+	Transport        TransportConfig     `yaml:"transport"`
+	ImportSession    ImportSessionConfig `yaml:"import_session"`
 }
 
 // TransportConfig bounds resources every API transport (REST, gRPC, the
@@ -2415,6 +2418,9 @@ func (c *Config) Validate() error {
 		return &ValidationError{Field: "storage.max_open_files", Reason: "must not be negative"}
 	}
 	if err := validateVolumePools(c.Storage.VolumePools, c.Raft.DataDir); err != nil {
+		return err
+	}
+	if err := c.DatabaseDefaults.Validate(); err != nil {
 		return err
 	}
 

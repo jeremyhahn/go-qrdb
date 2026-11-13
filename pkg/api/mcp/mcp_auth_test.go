@@ -24,6 +24,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -2019,6 +2020,10 @@ type fakeCertEnrollTool struct {
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollTool)(nil)
@@ -2372,6 +2377,9 @@ func TestEnrollmentTools_Registration(t *testing.T) {
 		"qrdb_cert_issue",
 		"qrdb_cert_enroll",
 		"qrdb_cert_delegate",
+		"qrdb_cert_delegation_policy_put",
+		"qrdb_cert_delegation_policy_list",
+		"qrdb_cert_delegation_policy_delete",
 		"qrdb_trust_anchor_add",
 		"qrdb_trust_anchor_list",
 		"qrdb_trust_anchor_remove",

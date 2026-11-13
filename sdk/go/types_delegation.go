@@ -61,6 +61,17 @@ const DelegationMaxLifetime = delegation.MaxLifetime
 // name. (Aliases pkg/auth/delegation.MaxScope.)
 const DelegationMaxScope = delegation.MaxScope
 
+// DelegationPolicy is a tenant's standing delegation policy (#1186): while
+// it stands, the node mints delegation certificates of Tenant to Principal,
+// on the principal's own request, within Scope and TTL. The tenant writes it
+// with certs:delegate and revokes it by deleting it. (Aliases
+// pkg/auth/delegation.Policy.)
+type DelegationPolicy = delegation.Policy
+
+// DelegationPolicyError reports a DelegationPolicy that is malformed, or a
+// mint request that exceeds one. (Aliases pkg/auth/delegation.PolicyError.)
+type DelegationPolicyError = delegation.PolicyError
+
 // ---------------------------------------------------------------------------
 // Tenant-issued delegation functions
 // ---------------------------------------------------------------------------

@@ -219,6 +219,16 @@ func SystemRoleID(tenantID, roleName string) string {
 	return role.SystemRoleID(tenantID, roleName)
 }
 
+// SystemRoleIDs returns the canonical ID of every built-in role (and the
+// owner role) in the given tenant, keyed by role name, each value equal to
+// SystemRoleID(tenantID, name). Each role has exactly one canonical (UUIDv8)
+// ID; this is not the removed UUIDv5/v8 dual-read set. An empty tenantID
+// defaults to the system tenant. The returned map is a fresh copy on every
+// call. (Wraps pkg/role.SystemRoleIDs.)
+func SystemRoleIDs(tenantID string) map[string]string {
+	return role.SystemRoleIDs(tenantID)
+}
+
 // RoleNameResolver is the narrow role-store surface role.HoldsSystemRole
 // needs: "which role is named N in tenant T". qrdb's own role service
 // satisfies it, as does any consumer adapter over its own role store.

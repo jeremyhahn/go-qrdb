@@ -377,9 +377,13 @@ Decisions, and why:
   variant or fallback does the same.
 - **Only the tenant mints one.** `certs:delegate` is tenant-only: it acts on
   the caller's own tenant, the system tenant is refused, and so is a caller
-  that is itself authenticated by a delegation. The issuer is that tenant's
+  that is itself authenticated by a delegation, except a renewal within a
+  standing policy the tenant wrote. The issuer is that tenant's
   Key B and no other key, so no platform identity — not a system-tenant Admin,
-  not a node — can produce a certificate the tenant did not ask for.
+  not a node — can produce a certificate the tenant did not ask for: a node
+  mints (`Node.MintDelegation`) only within such a policy, and deleting it stops
+  every further mint and renewal. See
+  [../identity-rbac/architecture.md](../identity-rbac/architecture.md#standing-delegation-policy).
 - **A named, registered extension.** The critical extension is `tp-delegation`,
   OID `1.3.6.1.4.1.29377.101.24`, under the company's IANA Private Enterprise
   Number certificate-extension arc (29377.101).
