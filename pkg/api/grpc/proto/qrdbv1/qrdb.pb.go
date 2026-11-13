@@ -38226,7 +38226,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x11VlogSignatureType\x12#\n" +
 	"\x1fVLOG_SIGNATURE_TYPE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bVLOG_SIGNATURE_TYPE_ED25519\x10\x01\x12)\n" +
-	"%VLOG_SIGNATURE_TYPE_ECDSA_P256_SHA256\x10\x022\xb9\xd2\x01\n" +
+	"%VLOG_SIGNATURE_TYPE_ECDSA_P256_SHA256\x10\x022\xbc\xd2\x01\n" +
 	"\vQRDBService\x12<\n" +
 	"\x03Put\x12\x13.qrdb.v1.PutRequest\x1a\x14.qrdb.v1.PutResponse\"\n" +
 	"\xc2\xf3\x18\x06kv:put\x12<\n" +
@@ -38326,8 +38326,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\bVlogHead\x12\x18.qrdb.v1.VlogHeadRequest\x1a\x19.qrdb.v1.VlogHeadResponse\"\r\xc2\xf3\x18\tvlog:head\x12_\n" +
 	"\fVlogSignHead\x12\x1c.qrdb.v1.VlogSignHeadRequest\x1a\x1d.qrdb.v1.VlogSignHeadResponse\"\x12\xc2\xf3\x18\x0evlog:sign_head\x12h\n" +
 	"\x10VlogExpireBodies\x12 .qrdb.v1.VlogExpireBodiesRequest\x1a!.qrdb.v1.VlogExpireBodiesResponse\"\x0f\xc2\xf3\x18\vvlog:expire\x12b\n" +
-	"\rVlogRotateKey\x12\x1d.qrdb.v1.VlogRotateKeyRequest\x1a\x1e.qrdb.v1.VlogRotateKeyResponse\"\x12\xc2\xf3\x18\x0evlog:sign_head\x12K\n" +
-	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.HealthResponse\"\x10\xc2\xf3\x18\fadmin:health\x12K\n" +
+	"\rVlogRotateKey\x12\x1d.qrdb.v1.VlogRotateKeyRequest\x1a\x1e.qrdb.v1.VlogRotateKeyResponse\"\x12\xc2\xf3\x18\x0evlog:sign_head\x12N\n" +
+	"\x06Health\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.HealthResponse\"\x13\xc2\xf3\x18\x0fidentity:public\x12K\n" +
 	"\x06Status\x12\x16.google.protobuf.Empty\x1a\x17.qrdb.v1.StatusResponse\"\x10\xc2\xf3\x18\fadmin:status\x12H\n" +
 	"\x05Peers\x12\x16.google.protobuf.Empty\x1a\x16.qrdb.v1.PeersResponse\"\x0f\xc2\xf3\x18\vadmin:peers\x12T\n" +
 	"\tAddMember\x12\x19.qrdb.v1.AddMemberRequest\x1a\x16.google.protobuf.Empty\"\x14\xc2\xf3\x18\x10admin:add_member\x12]\n" +

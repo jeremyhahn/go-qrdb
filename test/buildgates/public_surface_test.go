@@ -121,6 +121,89 @@ var restPublicAllowlist = map[string]struct{}{
 // TestPublicSurface_REST_ExactAllowlist scans pkg/api/rest/server.go for
 // every s.public/s.publicIf registration call and asserts the resulting set
 // is exactly restPublicAllowlist.
+// publicVerbsFile is relative to the repository root. Its Table is the one
+// registration point every transport reads its built-in no-login verbs
+// from: REST s.publicVerb(_, publicverbs.VerbXxx, _), QUIC
+// s.handlePublicVerb(_, publicverbs.VerbXxx, _), and gRPC/unix
+// RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(...)). The gates
+// below resolve those call sites through this file's text, so a verb added
+// to the table lands in each transport's found set and fails the gate until
+// it is reviewed into the allowlist.
+const publicVerbsFile = "pkg/api/publicverbs/publicverbs.go"
+
+// publicVerbsTableEntryPattern matches one `\tVerbXxx: { ... }` entry of
+// publicverbs.Table; publicVerbsFieldPattern matches a quoted field inside it.
+var (
+	publicVerbsTableEntryPattern = regexp.MustCompile(`(?m)^\t(Verb\w+):\s*\{([^}]*)\}`)
+	publicVerbsFieldPattern      = regexp.MustCompile(`(?m)^\t\t(\w+):\s*"([^"]*)"`)
+	publicVerbsListPattern       = regexp.MustCompile(`var Verbs = \[\]Verb\{([^}]*)\}`)
+)
+
+// publicVerbTable is publicverbs.Table read from source: names maps a verb
+// identifier (VerbHealth) to its per-transport field values, and verbs is
+// publicverbs.Verbs, the order GRPCFullMethods walks.
+type publicVerbTable struct {
+	names map[string]map[string]string
+	verbs []string
+}
+
+// readPublicVerbs parses publicverbs.Table and publicverbs.Verbs. It fails
+// when either is empty or the two disagree, so a scan that stopped matching
+// cannot pass as a table with no public verbs.
+func readPublicVerbs(t *testing.T, root string) publicVerbTable {
+	t.Helper()
+	src := readSourceFile(t, filepath.Join(root, publicVerbsFile))
+
+	tbl := publicVerbTable{names: map[string]map[string]string{}}
+	for _, m := range publicVerbsTableEntryPattern.FindAllStringSubmatch(src, -1) {
+		fields := map[string]string{}
+		for _, f := range publicVerbsFieldPattern.FindAllStringSubmatch(m[2], -1) {
+			fields[f[1]] = f[2]
+		}
+		tbl.names[m[1]] = fields
+	}
+	if len(tbl.names) == 0 {
+		t.Fatalf("found no VerbXxx: {...} entry in %s's Table; the scan likely stopped matching", publicVerbsFile)
+	}
+
+	list := publicVerbsListPattern.FindStringSubmatch(src)
+	if list == nil {
+		t.Fatalf("found no `var Verbs = []Verb{...}` in %s; the scan likely stopped matching", publicVerbsFile)
+	}
+	for _, ident := range strings.Split(list[1], ",") {
+		if ident = strings.TrimSpace(ident); ident != "" {
+			tbl.verbs = append(tbl.verbs, ident)
+		}
+	}
+	if len(tbl.verbs) != len(tbl.names) {
+		t.Fatalf("%s: Verbs lists %d verb(s) but Table has %d entries", publicVerbsFile, len(tbl.verbs), len(tbl.names))
+	}
+	for _, ident := range tbl.verbs {
+		if _, ok := tbl.names[ident]; !ok {
+			t.Fatalf("%s: Verbs lists %s, which Table has no entry for", publicVerbsFile, ident)
+		}
+	}
+	return tbl
+}
+
+// name resolves verb ident's field (REST, QUIC, GRPC, ...), failing when the
+// table has no such verb or the field is empty.
+func (p publicVerbTable) name(t *testing.T, ident, field string) string {
+	t.Helper()
+	fields, ok := p.names[ident]
+	if !ok {
+		t.Fatalf("public-verb registration names publicverbs.%s, which %s's Table has no entry for", ident, publicVerbsFile)
+	}
+	v := fields[field]
+	if v == "" {
+		t.Fatalf("%s: Table[%s] has no %s name", publicVerbsFile, ident, field)
+	}
+	return v
+}
+
+// restPublicVerbCallPattern matches `s.publicVerb(cond, publicverbs.VerbXxx, h)`.
+var restPublicVerbCallPattern = regexp.MustCompile(`s\.publicVerb\([^,]+,\s*publicverbs\.(\w+)\s*,`)
+
 func TestPublicSurface_REST_ExactAllowlist(t *testing.T) {
 	root := repoRoot(t)
 	src := readSourceFile(t, filepath.Join(root, restRegisterRoutesFile))
@@ -138,10 +221,14 @@ func TestPublicSurface_REST_ExactAllowlist(t *testing.T) {
 		}
 		found[strings.ToUpper(m[1])+" "+path] = struct{}{}
 	}
+	verbs := readPublicVerbs(t, root)
+	for _, m := range restPublicVerbCallPattern.FindAllStringSubmatch(src, -1) {
+		found[verbs.name(t, m[1], "REST")] = struct{}{}
+	}
 
 	if len(found) < minRESTPublicRoutes {
 		t.Fatalf("found only %d public REST route registration(s) in %s, floor is %d; "+
-			"the scan likely stopped matching s.public/s.publicIf call sites", len(found), restRegisterRoutesFile, minRESTPublicRoutes)
+			"the scan likely stopped matching s.public/s.publicIf/s.publicVerb call sites", len(found), restRegisterRoutesFile, minRESTPublicRoutes)
 	}
 
 	assertExactSet(t, "REST public route", found, restPublicAllowlist)
@@ -161,8 +248,12 @@ var quicMethodConstPattern = regexp.MustCompile(`(method[A-Za-z0-9_]*)\s*=\s*"([
 // quicPublicAllowlist is the curated, reviewed set of native QUIC frame
 // methods served without authentication or authorization.
 var quicPublicAllowlist = map[string]struct{}{
+	"admin.Health":      {}, // liveness probes reach it without a client cert, as on REST/gRPC/unix.
 	"invitation.Redeem": {}, // the one frame method with no registered permission at all.
 }
+
+// quicHandlePublicVerbPattern matches `s.handlePublicVerb(cond, publicverbs.VerbXxx, h)`.
+var quicHandlePublicVerbPattern = regexp.MustCompile(`s\.handlePublicVerb\([^,]+,\s*publicverbs\.(\w+)\s*,`)
 
 // quicModuleProjectionFile and quicModuleProjectionIdent name the one
 // handlePublicIf call whose method is not a constant: the module projection
@@ -184,9 +275,12 @@ func TestPublicSurface_QUIC_ExactAllowlist(t *testing.T) {
 	quicDir := filepath.Join(root, "pkg", "api", "quic")
 
 	constants := map[string]string{}
-	var calls []string
+	var calls, verbCalls []string
 	projections := 0
 	walkGoFilesText(t, quicDir, func(path, src string) {
+		for _, m := range quicHandlePublicVerbPattern.FindAllStringSubmatch(src, -1) {
+			verbCalls = append(verbCalls, m[1])
+		}
 		for _, m := range quicMethodConstPattern.FindAllStringSubmatch(src, -1) {
 			constants[m[1]] = m[2]
 		}
@@ -199,8 +293,8 @@ func TestPublicSurface_QUIC_ExactAllowlist(t *testing.T) {
 		}
 	})
 
-	if len(calls) == 0 {
-		t.Fatal("found no s.handlePublicIf(...) call under pkg/api/quic; the scan likely stopped matching")
+	if len(calls)+len(verbCalls) == 0 {
+		t.Fatal("found no s.handlePublicIf(...) or s.handlePublicVerb(...) call under pkg/api/quic; the scan likely stopped matching")
 	}
 	if projections != 1 {
 		t.Fatalf("found %d module-projection handlePublicIf(_, %s, _) calls in pkg/api/quic/%s, want exactly 1",
@@ -215,6 +309,12 @@ func TestPublicSurface_QUIC_ExactAllowlist(t *testing.T) {
 				"the scan cannot name the public method", ident)
 		}
 		found[lit] = struct{}{}
+	}
+	if len(verbCalls) > 0 {
+		verbs := readPublicVerbs(t, root)
+		for _, ident := range verbCalls {
+			found[verbs.name(t, ident, "QUIC")] = struct{}{}
+		}
 	}
 
 	assertExactSet(t, "QUIC public method", found, quicPublicAllowlist)
@@ -311,8 +411,14 @@ const (
 // registered public through the built-in literal call shape above. Adding to
 // it is a deliberate, reviewed edit -- see the file doc comment.
 var grpcUnixPublicAllowlist = map[string]struct{}{
-	"RedeemInvitation": {}, // the one PUBLIC built-in RPC: an invited user holds no credential yet.
+	"Health":           {}, // liveness probes reach it without a client cert (qrdb.proto identity:public).
+	"RedeemInvitation": {}, // an invited user holds no credential yet.
 }
+
+// grpcUnixVerbTablePublicPattern matches the
+// `s.authMW.RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(...))` call
+// that registers every publicverbs.Verbs entry as a public RPC at once.
+var grpcUnixVerbTablePublicPattern = regexp.MustCompile(`RegisterPublicGRPCMethods\(publicverbs\.GRPCFullMethods\(`)
 
 // TestPublicSurface_GRPCAndUnix_ExactAllowlist asserts two things about gRPC
 // and the Unix socket, which share AuthMiddleware.RegisterPublicGRPCMethods
@@ -357,9 +463,15 @@ func TestPublicSurface_GRPCAndUnix_ExactAllowlist(t *testing.T) {
 		for _, m := range grpcUnixBuiltinPublicPattern.FindAllStringSubmatch(src, -1) {
 			found[m[1]] = struct{}{}
 		}
+		if grpcUnixVerbTablePublicPattern.MatchString(src) {
+			verbs := readPublicVerbs(t, root)
+			for _, ident := range verbs.verbs {
+				found[verbs.name(t, ident, "GRPC")] = struct{}{}
+			}
+		}
 		if len(found) == 0 {
 			t.Fatalf("found no built-in RegisterPublicGRPCMethods([]string{pb.QRDBService_Xxx_FullMethodName}) "+
-				"call in %s; the scan likely stopped matching", file)
+				"or RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(...)) call in %s; the scan likely stopped matching", file)
 		}
 		assertExactSet(t, file+" built-in public RPC", found, grpcUnixPublicAllowlist)
 	}
