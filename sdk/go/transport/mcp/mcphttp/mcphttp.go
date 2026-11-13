@@ -233,18 +233,46 @@ func (m *message) isResponse() bool {
 	return m.Method == "" && m.hasID() && (m.Result != nil || m.Error != nil)
 }
 
-// answers reports whether the message's wire ID is id. IDs compare as
-// compact JSON, so the number 1 and the string "1" differ.
+// answers reports whether the message's wire ID is id. IDs compare by
+// decoded value, so an escaped spelling of a string ID matches it and the
+// number 1 and the string "1" differ.
 func (m *message) answers(id mcp.RequestId) bool {
 	want, err := json.Marshal(id)
 	if err != nil {
 		return false
 	}
-	var got, wantCompact bytes.Buffer
-	if json.Compact(&got, m.ID) != nil || json.Compact(&wantCompact, want) != nil {
+	got, ok := decodeWireID(m.ID)
+	if !ok {
 		return false
 	}
-	return bytes.Equal(got.Bytes(), wantCompact.Bytes())
+	wantID, ok := decodeWireID(want)
+	return ok && got == wantID
+}
+
+// wireID is a decoded JSON-RPC ID: a string by its decoded value, a number
+// by its exact number text. The two kinds never compare equal.
+type wireID struct {
+	number bool
+	value  string
+}
+
+// decodeWireID decodes raw as a JSON string or number. Null, a missing ID
+// or any other JSON value answers no request.
+func decodeWireID(raw json.RawMessage) (wireID, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if dec.Decode(&v) != nil || dec.More() {
+		return wireID{}, false
+	}
+	switch id := v.(type) {
+	case string:
+		return wireID{value: id}, true
+	case json.Number:
+		return wireID{number: true, value: id.String()}, true
+	default:
+		return wireID{}, false
+	}
 }
 
 // response decodes data, the message's raw form, as mcp-go's response type,
