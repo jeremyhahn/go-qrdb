@@ -18,7 +18,7 @@ are not reconstructed here — their history is in the git log.
 ### Added
 
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
-- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -27,7 +27,12 @@ are not reconstructed here — their history is in the git log.
 - **A tenant can hold standing delegation policies** (#1187). A policy is the
   tenant's grant written down once (one per principal: `scope` and `ttl`), so an
   embedder's server-owned work can mint and renew its delegation with no tenant
-  admin at hand. Writing, listing and deleting policies needs `certs:delegate`
+  admin at hand. REST `POST|GET /certs/delegate/policies` and
+  `DELETE /certs/delegate/policies/{principal}`, gRPC and Unix
+  `PutDelegationPolicy` / `ListDelegationPolicies` / `DeleteDelegationPolicy`,
+  QUIC `cert.DelegationPolicyPut|List|Delete`, the MCP tools
+  `qrdb_cert_delegation_policy_put|list|delete`, and the Go SDK methods of the
+  same names write, list and delete them. Each needs `certs:delegate`
   in the caller's own tenant and refuses the system tenant and a delegated
   caller; put and delete are audited as `cert.delegation_policy.put` /
   `cert.delegation_policy.delete`, and a missing policy is

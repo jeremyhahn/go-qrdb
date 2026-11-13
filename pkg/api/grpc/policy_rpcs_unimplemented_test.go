@@ -64,18 +64,6 @@ func TestQRDBService_PolicyRPCsUnimplementedUntilHandlers(t *testing.T) {
 			_, err := client.CredentialResolveMigrationConflict(ctx, &pb.CredentialResolveMigrationConflictRequest{})
 			return err
 		}},
-		{"PutDelegationPolicy", func() error {
-			_, err := client.PutDelegationPolicy(ctx, &pb.PutDelegationPolicyRequest{})
-			return err
-		}},
-		{"ListDelegationPolicies", func() error {
-			_, err := client.ListDelegationPolicies(ctx, &pb.ListDelegationPoliciesRequest{})
-			return err
-		}},
-		{"DeleteDelegationPolicy", func() error {
-			_, err := client.DeleteDelegationPolicy(ctx, &pb.DeleteDelegationPolicyRequest{})
-			return err
-		}},
 	}
 
 	for _, c := range calls {
