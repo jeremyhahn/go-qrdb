@@ -440,6 +440,18 @@ with the credential and are removed with it by `delete`.
 
 **Integration target:** `make integration-test-credentials` (no Docker; selection in `test/integration/features.mk`). It runs the credential CLI suite per protocol on one node, the tenant-store CLI suite per protocol, and the embedded tenant-store suite; and on a three-node cluster a credential, rotation and delete made through one node are read through the others, per protocol. Per-transport accounting is the `credentials` row of `test/integration/COVERAGE.md`.
 
+- **Replicated store, three nodes**: `TestReplicatedCluster`
+  (`pkg/credentials/replicated_cluster_test.go`) starts three Raft hosts
+  (`sdk/go/testutil/raftharness`) and builds every node's stores the way a
+  server does: the system store over the system shard's KV and transaction
+  services (`lifecycle.NewReplicatedSealBackend`, the store lifecycle binds),
+  and a tenant store over a home group's KV, index and transaction services
+  (`lifecycle.NewGuardedKVStoreAdapter`, the store `TenantHomes` serves)
+  derived with `ForTenant`. On both stores a value and a rotation policy
+  written through one node are read through the other two, a rotation and a
+  delete made through one node are seen through the others, and `RotateDue`
+  run on all three nodes at once rotates a due credential exactly once and
+  draws one rotation value.
 - **Unit**: store/retrieve/submit/delete for both strategies, rotation with and
   without a grace period, versioned retrieval including `0` meaning current, GC
   reaping only expired versions, and `CredentialStrategy()`.

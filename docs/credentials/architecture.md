@@ -361,7 +361,9 @@ key outside the store runs once per rotation, not once per node. The rest see
 the claim and do nothing. No leader election or extra coordination record is
 needed. The record is the lock: it lives in the replicated store on the system
 shard (above), and the compare-and-swap is one Raft transaction, so exactly
-one node takes each claim.
+one node takes each claim. `TestReplicatedCluster` runs `RotateDue` on three
+Raft nodes at once, on the system store and on a tenant home store, and
+requires exactly one rotation and one drawn value.
 
 **Every writer of the current value commits once.** A rotation writes the
 retained previous version, the new current value and the metadata record in
