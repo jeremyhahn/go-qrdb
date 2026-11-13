@@ -967,6 +967,10 @@ const (
 	// ServedByRaftTenantGroup is the data path of every database of a
 	// raft-isolated tenant.
 	ServedByRaftTenantGroup = "the raft-isolated tenant's dedicated raft group"
+	// ServedBySharedStore is the data path of a raft-backed database of a
+	// barrier-isolated tenant: the shared system store, under the
+	// tenant/database namespace prefix.
+	ServedBySharedStore = "the shared system store"
 )
 
 // BarrierOffDataPathWarning is the startup warning logged for a

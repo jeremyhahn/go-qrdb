@@ -491,6 +491,49 @@ func TestResolver_RoutesRaftTenantToDedicatedShard(t *testing.T) {
 	}
 }
 
+// TestResolver_BarrierTenantRaftDatabaseServedFromSharedStore pins the data
+// path behind the create-time DedicatedWALOffDataPathError refusal (#1517
+// Codex round 4): a barrier tenant's raft-backed database, which the create
+// path admits only without a dedicated WAL, is resolved to the shared system
+// store under the tenant/database prefix, never to a dedicated group, so its
+// KV writes land there and the raft factory holds no shard for it.
+func TestResolver_BarrierTenantRaftDatabaseServedFromSharedStore(t *testing.T) {
+	host, _ := newSharedTestHost(t)
+	reg := newVolumePooledRegistry(t)
+	src := newFakeRaftInfoSource()
+	f := NewRaftBackendFactory(host, sharedHostReplicaID, sharedHostRaftAddr, reg, src, volTestLogger())
+	t.Cleanup(func() { _ = f.CloseAll() })
+	registerVolumeTenant(t, reg, "bt")
+
+	shared, sharedSvcs := sharedCollectionStore()
+	dbReg := NewDatabaseServiceRegistry("system")
+	dbReg.Register("system", sharedSvcs)
+	info := &tenant.TenantInfo{ID: "bt", IsolationType: tenant.IsolationBarrier}
+	rr := &restServiceRegistry{
+		dbReg:        dbReg,
+		barrierReg:   reg,
+		tenantSvc:    &fakeRaftTenantSvc{info: info},
+		catalog:      raftCatalogStub{tenantID: "bt", db: "app"},
+		raftBackend:  f,
+		systemTenant: "system",
+	}
+
+	ctx := context.Background()
+	kv, err := rr.KVService("bt", "app")
+	if err != nil {
+		t.Fatalf("KVService(barrier tenant): %v", err)
+	}
+	if err := kv.Put(ctx, "routed", []byte("yes")); err != nil {
+		t.Fatalf("Put via resolver: %v", err)
+	}
+	if got := string(shared.store["bt/app/routed"]); got != "yes" {
+		t.Fatalf("shared store bt/app/routed = %q, want yes; keys = %v", got, storeKeys(shared))
+	}
+	if n := len(f.ListOnHost()); n != 0 {
+		t.Fatalf("raft factory holds %d shards after a barrier tenant's write, want 0", n)
+	}
+}
+
 // raftCatalogStub satisfies DatabaseCatalog for a single known (tenant, db).
 type raftCatalogStub struct {
 	tenantID string

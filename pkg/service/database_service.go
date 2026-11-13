@@ -1638,6 +1638,22 @@ var isolationBarrierDataPath = map[tenant.IsolationType]string{
 	tenant.IsolationRaft:   database.ServedByRaftTenantGroup,
 }
 
+// isolationDedicatedWALDataPath maps each tenant isolation mode whose
+// raft-backed databases restServiceRegistry.resolve does NOT serve through
+// the database's own raft group to the store it serves them from instead. A
+// volume tenant's databases share the tenant's store; a barrier tenant's
+// raft-backed database never has a per-database barrier route (that route
+// serves non-raft dedicated stores only), so it reaches the shared system
+// store. A dedicated group and WAL there would be persisted and metered but
+// never carry the database's data, so CreateForTenantWithCredentials
+// refuses backend raft + DedicatedWAL with
+// database.DedicatedWALOffDataPathError. Only IsolationRaft serves a
+// database from its own group.
+var isolationDedicatedWALDataPath = map[tenant.IsolationType]string{
+	tenant.IsolationVolume:  database.ServedByVolumeTenantStore,
+	tenant.IsolationBarrier: database.ServedBySharedStore,
+}
+
 // resolveTenantDataRoot resolves an IsolationVolume / IsolationRaft
 // tenant's local DataRoot via the configured TenantDataRootResolver.
 // Returns ("", nil) when no resolver is configured or volumePool is empty
@@ -1750,15 +1766,16 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		if servedBy, offPath := isolationBarrierDataPath[info.EffectiveIsolationType()]; offPath && cfg.Barrier != nil && cfg.Barrier.Enabled {
 			return nil, &database.BarrierOffDataPathError{Name: cfg.Name, ServedBy: servedBy}
 		}
+		// A dedicated group and WAL under an isolation that does not serve
+		// the database from its own group would be persisted and metered
+		// but never carry the database's data. Refused, not downgraded,
+		// before the strict-tenant check (a strict volume or barrier
+		// tenant gets this refusal) and before any quota or store I/O.
+		if servedBy, offPath := isolationDedicatedWALDataPath[info.EffectiveIsolationType()]; offPath && cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
+			return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: servedBy}
+		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:
-			// restServiceRegistry.resolve serves every database of a
-			// volume tenant through the tenant's shared shard, so a
-			// dedicated group and WAL would be persisted and metered but
-			// never carry the database's data. Refused, not downgraded.
-			if cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
-				return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: database.ServedByVolumeTenantStore}
-			}
 			if s.entitlementChecker != nil {
 				if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeVolume); err != nil {
 					return nil, err

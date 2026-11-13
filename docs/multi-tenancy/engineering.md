@@ -1079,6 +1079,17 @@ is refused with the entitlement or quota error, never downgraded to the shared
 WAL. On any other backend the flag is ignored. A strict tenant's database
 requires one (§ "Strict isolation").
 
+Only a `raft` tenant's database is served through its own Raft group, so only
+there does a dedicated WAL carry the database's data. Every database of a
+`volume` tenant is served from the tenant's own store, and a `barrier`
+tenant's raft-backed database is served from the shared system store (a
+per-database barrier route serves non-raft dedicated stores only). Under
+either isolation a `raft` + `dedicatedWal` request would persist and meter a
+group no KV write reaches, so it is refused with `DedicatedWALOffDataPathError`
+(422) naming the store that serves the database, before anything is persisted
+or metered. The refusal precedes the strict-tenant check, so a strict `volume`
+or `barrier` tenant's request gets it too.
+
 ## Deployment requirement
 
 **The tenant service must be configured in production.**
