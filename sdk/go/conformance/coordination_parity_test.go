@@ -451,7 +451,8 @@ func assertWatchEndsOnCancel(t *testing.T, parent context.Context, c *sdk.Client
 }
 
 // assertLockLifecycle: acquire, refuse a second holder, report status,
-// extend and release -- after which the second holder acquires it.
+// extend (checking the returned LockInfo: key, fencing token, holder and
+// TTL) and release -- after which the second holder acquires it.
 func assertLockLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 	held, err := c.Lock().LockTryLock(ctx, &transport.LockAcquireRequest{Key: "cp/lock/scheduler", HolderID: "a", TTL: 30})
 	if err != nil {
@@ -464,8 +465,18 @@ func assertLockLifecycle(t *testing.T, ctx context.Context, c *sdk.Client) {
 	if err != nil || status == nil || status.HolderID != "a" {
 		t.Fatalf("status = %+v, %v; want held by a", status, err)
 	}
-	if _, err := c.Lock().LockExtend(ctx, &transport.LockExtendRequest{Key: "cp/lock/scheduler", FencingToken: held.FencingToken}); err != nil {
+	ext, err := c.Lock().LockExtend(ctx, &transport.LockExtendRequest{Key: "cp/lock/scheduler", FencingToken: held.FencingToken})
+	if err != nil {
 		t.Fatalf("extend: %v", err)
+	}
+	if ext == nil {
+		t.Fatal("extend returned a nil LockInfo")
+	}
+	if ext.Key != "cp/lock/scheduler" || ext.FencingToken != held.FencingToken || ext.HolderID != "a" {
+		t.Fatalf("extend = %+v; want key cp/lock/scheduler, fencing token %d, holder a", ext, held.FencingToken)
+	}
+	if ext.TTL != 30 {
+		t.Fatalf("extend TTL = %d, want the acquire TTL 30", ext.TTL)
 	}
 	if err := c.Lock().LockRelease(ctx, &transport.LockReleaseRequest{Key: "cp/lock/scheduler", FencingToken: held.FencingToken}); err != nil {
 		t.Fatalf("release: %v", err)

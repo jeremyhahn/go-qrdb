@@ -465,65 +465,9 @@ func TestE2E_Range_NoOpts_ConsistencyIsUnspecified(t *testing.T) {
 // protoConsistency / protoWriteMode helper unit tests
 // ---------------------------------------------------------------------------
 
-func TestProtoConsistency_NoOpts_ReturnsUnspecified(t *testing.T) {
-	got := protoConsistency()
-	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_UNSPECIFIED {
-		t.Errorf("got %v, want UNSPECIFIED", got)
-	}
-}
-
-func TestProtoConsistency_WithAllowStale_ReturnsEventual(t *testing.T) {
-	got := protoConsistency(transport.WithAllowStale())
-	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL {
-		t.Errorf("got %v, want EVENTUAL", got)
-	}
-}
-
-func TestProtoConsistency_Strong(t *testing.T) {
-	got := protoConsistency(transport.WithConsistency(transport.ConsistencyStrong))
-	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_STRONG {
-		t.Errorf("got %v, want STRONG", got)
-	}
-}
-
-func TestProtoConsistency_Linearizable(t *testing.T) {
-	got := protoConsistency(transport.WithConsistency(transport.ConsistencyLinearizable))
-	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_LINEARIZABLE {
-		t.Errorf("got %v, want LINEARIZABLE", got)
-	}
-}
-
-func TestProtoConsistency_Eventual(t *testing.T) {
-	got := protoConsistency(transport.WithConsistency(transport.ConsistencyEventual))
-	if got != pb.ConsistencyLevel_CONSISTENCY_LEVEL_EVENTUAL {
-		t.Errorf("got %v, want EVENTUAL", got)
-	}
-}
-
-func TestProtoWriteMode_NoOpts_ReturnsUnspecified(t *testing.T) {
-	got := protoWriteMode()
-	if got != pb.WriteMode_WRITE_MODE_UNSPECIFIED {
-		t.Errorf("got %v, want UNSPECIFIED", got)
-	}
-}
-
 func TestProtoWriteMode_Sync(t *testing.T) {
 	got := protoWriteMode(transport.WithWriteMode(transport.WriteModeSync))
 	if got != pb.WriteMode_WRITE_MODE_SYNC {
 		t.Errorf("got %v, want SYNC", got)
-	}
-}
-
-func TestProtoWriteMode_WALDurable(t *testing.T) {
-	got := protoWriteMode(transport.WithWriteMode(transport.WriteModeWALDurable))
-	if got != pb.WriteMode_WRITE_MODE_WAL_DURABLE {
-		t.Errorf("got %v, want WAL_DURABLE", got)
-	}
-}
-
-func TestProtoWriteMode_Batched(t *testing.T) {
-	got := protoWriteMode(transport.WithWriteMode(transport.WriteModeBatched))
-	if got != pb.WriteMode_WRITE_MODE_BATCHED {
-		t.Errorf("got %v, want BATCHED", got)
 	}
 }

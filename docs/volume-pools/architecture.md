@@ -264,6 +264,12 @@ resolved on both sides, applied per pool.
 Not implemented. No transport exposes a move, and `volume.Catalog.MoveTenant`
 returns `*volume.MoveNotImplementedError`, classified `Unimplemented`.
 
+The proposed design, awaiting the owner's ruling, is
+[../decisions/volume-pool-tenant-moves.md](../decisions/volume-pool-tenant-moves.md):
+a rolling, per-node copy behind a move journal, cut over by one assignment
+write, with its open questions, options and recommendations. Until it is
+ruled and built, nothing in it is part of this contract.
+
 ## Trust boundaries
 
 - **Paths never cross a node boundary.** Nothing replicated names a filesystem

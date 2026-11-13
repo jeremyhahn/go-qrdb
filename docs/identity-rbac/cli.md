@@ -552,6 +552,14 @@ delegation certificate with `qrdb ca delegate` — see
 What that principal can then do is the delegated scope intersected with the
 grants the application gives it, so no `roles assign` is involved.
 
+For work the application runs on its own, write the grant down once with
+`qrdb ca delegate policy put --principal <p> --scope ... --ttl ...`: the
+delegation then renews itself within that policy, and
+`qrdb ca delegate policy delete <p>` revokes it (the next mint is refused) — see
+[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate-policy).
+`qrdb ca delegate policy list` shows your tenant's policies, never another
+tenant's.
+
 ## A complete enrolment
 
 The whole flow, create the account, issue its certificate and assign a role,

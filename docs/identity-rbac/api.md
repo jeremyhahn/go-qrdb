@@ -135,6 +135,14 @@ is not; that error matches `auth.ErrUnauthorized` under `errors.Is`.
 the resolve-permissions endpoint, so it needs `permissions:resolve`, and
 expands them the same way the own-permissions answer is expanded.
 
+A composer addresses qrdb's system roles by their canonical, cluster-stable
+IDs. `sdk.SystemRoleID(tenantID, name)` returns one role's ID, and
+`sdk.SystemRoleIDs(tenantID)` returns the name-to-ID map of every system role
+(the built-in roles and the owner role), each value equal to
+`sdk.SystemRoleID(tenantID, name)`. Each role has exactly one canonical
+(UUIDv8) ID; there is no legacy UUIDv5 alias. An empty tenant ID means the
+system tenant, and each call returns a fresh map the caller may change.
+
 ## Capability matrix — stored ABAC policies
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.ABACPolicies()`) | `scp` permission |
@@ -246,7 +254,10 @@ u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(
 ```
 
 `sdk.TenantFromClientCert` is `auth.TenantFromClientCert`, the one
-implementation `MTLSAuthenticator.TenantFromCert` delegates to. A tenant is a
+implementation `MTLSAuthenticator.TenantFromCert` delegates to.
+`sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of
+`MTLSAuthenticator.TenantFromCert`, with the trust domain passed in rather than
+pinned: the same rule, refusals and errors as `sdk.TenantFromClientCert`. A tenant is a
 SPIFFE trust domain: a tenant's principal is `spiffe://<tenant>/<kind>/<name>`,
 where the kind is `user` or `svc`. A certificate names a tenant only when two
 independent fields carry it and agree: the first Subject OU, and the trust
@@ -421,6 +432,9 @@ A certificate carrying the delegation extension authenticates as a service
 principal acting inside a tenant, never as a user. Issuing one is
 `certs:delegate` on every transport; see
 [../certificate-authority/api.md](../certificate-authority/api.md#issuing-a-delegation).
+So is writing a standing delegation policy, under which the node mints the
+first certificate and the delegation renews itself; see
+[../certificate-authority/api.md](../certificate-authority/api.md#standing-delegation-policies).
 Why it is shaped this way is in
 [architecture.md](architecture.md#tenant-issued-delegations).
 
