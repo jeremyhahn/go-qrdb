@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"reflect"
@@ -24,6 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -106,6 +108,7 @@ func TestDatabaseCreateTool_EveryRaftFieldReachesTheService(t *testing.T) {
 	args["raft_address"] = "db2.example.com:63001"
 	args["raft_peers"] = []any{"db2.example.com:63001", "db3.example.com:63001"}
 	args["raft_local_node_count"] = 5
+	args["raft_state_storage"] = "file"
 
 	r, err := handleDatabaseCreate(svc)(context.Background(), buildCallToolRequest(t, "qrdb_database_create", args))
 	if err != nil {
@@ -161,6 +164,37 @@ func TestDatabaseUpdateRaftTool_ReadModifyWriteKeepsEveryBlock(t *testing.T) {
 	}
 }
 
+// TestDatabaseUpdateRaftTool_StateStorageChangeIsRefused proves the update
+// tool carries state_storage to the service, so a change away from the
+// recorded storage is refused rather than dropped.
+func TestDatabaseUpdateRaftTool_StateStorageChangeIsRefused(t *testing.T) {
+	svc := newRealDatabaseService(t)
+	dbwiretest.Seed(t, svc)
+	before, err := svc.Get(dbwiretest.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := *before.Raft
+
+	_, err = handleDatabaseUpdateRaft(svc)(context.Background(), buildCallToolRequest(t, "qrdb_database_update_raft", map[string]any{
+		"name": dbwiretest.Name, "cluster_mode": "distributed", "state_storage": "memory",
+	}))
+	var storageErr *database.StateStorageUpdateError
+	if !errors.As(err, &storageErr) {
+		t.Fatalf("update naming another state storage: err = %v, want *database.StateStorageUpdateError", err)
+	}
+	if storageErr.Recorded != database.BackendFile || storageErr.Requested != database.BackendMemory {
+		t.Fatalf("StateStorageUpdateError = %+v, want Recorded=file Requested=memory", storageErr)
+	}
+	after, err := svc.Get(dbwiretest.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after.Raft, &want) {
+		t.Fatalf("stored Raft config after a refused update =\n%+v\nwant it unchanged\n%+v", after.Raft, &want)
+	}
+}
+
 // A block the update neither names nor carries an argument for is left out,
 // and so removed with its secret -- as on every other transport, where leaving
 // a block out of the request removes it.
@@ -206,6 +240,9 @@ func TestDatabaseRaftTools_DeclareEveryRaftArgument(t *testing.T) {
 		tool := tc.tool()
 		want := []string{"discovery_method", tc.names.clusterMode, tc.names.replicaID,
 			tc.names.address, tc.names.peers, tc.names.localNodeCount}
+		if tc.names.stateStorage != "" {
+			want = append(want, tc.names.stateStorage)
+		}
 		for _, block := range discoveryBlocks {
 			want = append(want, block.args...)
 		}
