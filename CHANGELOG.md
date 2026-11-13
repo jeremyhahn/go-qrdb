@@ -18,11 +18,28 @@ are not reconstructed here — their history is in the git log.
 
 ### Added
 
+- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
   and CI Gate requires it.
 
+- **A tenant can hold standing delegation policies** (#1187). A policy is the
+  tenant's grant written down once (one per principal: `scope` and `ttl`), so an
+  embedder's server-owned work can mint and renew its delegation with no tenant
+  admin at hand. Writing, listing and deleting policies needs `certs:delegate`
+  in the caller's own tenant and refuses the system tenant and a delegated
+  caller; put and delete are audited as `cert.delegation_policy.put` /
+  `cert.delegation_policy.delete`, and a missing policy is
+  `DelegationPolicyNotFoundError` (404 / `NOT_FOUND`). Embedders mint under a
+  policy with `Node.MintDelegation`, from the tenant's own login CA, bounded by
+  the policy and the principal's grants; a renewal needs `certs:delegate` in
+  both. Policies live under `__sys:cert_delegation_policy/`, which the embedded
+  transport confines whole (every read, write, list, scan, watch and
+  transaction is refused), so no KV writer can forge one. Deleting a tenant
+  deletes its policies, and a mint for a tenant that is deleted or retired is
+  refused with `TenantNotFoundError`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -1118,6 +1135,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **The embedding errors no path returned are gone** (#1218):
+  `service.EmbeddingBatchTooLargeError`, `service.EmbeddingDimensionMismatchError`
+  and `embedding.DimensionMismatchError` (with its `sdk/go` alias). An oversize
+  batch is split into provider calls of at most `batch_size` texts, never refused.
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
   trust-domain setting** (#1150). It pins the mTLS authenticator, names the
   built-in CA's trust domain and is the trust domain no tenant may be. A

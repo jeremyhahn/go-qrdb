@@ -13,8 +13,6 @@
 
 package service
 
-import "strconv"
-
 // EmbeddingProviderRegistrationError is returned when registering a provider
 // fails, for example when the name is already in use.
 type EmbeddingProviderRegistrationError struct {
@@ -45,38 +43,6 @@ type EmbeddingProviderNotFoundError struct {
 // Error returns a human-readable description of the missing provider.
 func (e *EmbeddingProviderNotFoundError) Error() string {
 	return "service: embedding provider not found: " + e.Provider
-}
-
-// EmbeddingBatchTooLargeError is returned when a batch embedding request
-// exceeds the configured maximum batch size.
-type EmbeddingBatchTooLargeError struct {
-	// Requested is the number of texts in the request.
-	Requested int
-
-	// Maximum is the maximum number of texts allowed per batch call.
-	Maximum int
-}
-
-// Error returns a human-readable description of the batch size violation.
-func (e *EmbeddingBatchTooLargeError) Error() string {
-	return "service: embedding batch too large: requested " +
-		strconv.Itoa(e.Requested) + ", maximum " + strconv.Itoa(e.Maximum)
-}
-
-// EmbeddingDimensionMismatchError is returned when the embedding dimensions
-// returned by the provider do not match expectations at the service level.
-type EmbeddingDimensionMismatchError struct {
-	// Expected is the number of dimensions that was anticipated.
-	Expected int
-
-	// Received is the number of dimensions that the provider returned.
-	Received int
-}
-
-// Error returns a human-readable description of the dimension mismatch.
-func (e *EmbeddingDimensionMismatchError) Error() string {
-	return "service: embedding dimension mismatch: expected " +
-		strconv.Itoa(e.Expected) + ", received " + strconv.Itoa(e.Received)
 }
 
 // EmbeddingServiceClosedError is returned when an operation is attempted on
