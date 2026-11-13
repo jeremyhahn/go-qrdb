@@ -34,6 +34,10 @@ func mustP256(t *testing.T) *ecdsa.PrivateKey {
 	return k
 }
 
+// testMode is an arbitrary delivery mode: this package defines none, it only
+// binds the named mode into the HPKE context.
+const testMode Mode = "test-mode"
+
 func goodMeta() Meta {
 	return Meta{
 		TenantID:     "acme",
@@ -41,7 +45,7 @@ func goodMeta() Meta {
 		ShardID:      42,
 		ReplicaID:    3,
 		TargetNodeID: "node-b",
-		Mode:         ModeSelfManaged,
+		Mode:         testMode,
 	}
 }
 
@@ -72,7 +76,7 @@ func newReceiver(t *testing.T, priv *ecdsa.PrivateKey, nodeID string, now time.T
 }
 
 func TestSealOpen_RoundTrip(t *testing.T) {
-	for _, mode := range []Mode{ModeSelfManaged} {
+	for _, mode := range []Mode{testMode, "another-mode"} {
 		t.Run(string(mode), func(t *testing.T) {
 			recip := mustP256(t)
 			meta := goodMeta()
@@ -257,7 +261,7 @@ func TestSeal_InputValidation(t *testing.T) {
 		t.Fatalf("missing tenant: %v", err)
 	}
 	badMode := good
-	badMode.Mode = "bogus"
+	badMode.Mode = ""
 	if _, err := Seal(&recip.PublicKey, badMode, secret); !errors.Is(err, ErrInvalidMode) {
 		t.Fatalf("bad mode: %v", err)
 	}
@@ -277,7 +281,7 @@ func TestMeta_ValidateBranches(t *testing.T) {
 		{"no-shard", mut(func(m *Meta) { m.ShardID = 0 }), ErrInvalidMeta},
 		{"no-replica", mut(func(m *Meta) { m.ReplicaID = 0 }), ErrInvalidMeta},
 		{"no-target", mut(func(m *Meta) { m.TargetNodeID = "" }), ErrInvalidMeta},
-		{"bad-mode", mut(func(m *Meta) { m.Mode = "x" }), ErrInvalidMode},
+		{"no-mode", mut(func(m *Meta) { m.Mode = "" }), ErrInvalidMode},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

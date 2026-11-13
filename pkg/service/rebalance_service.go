@@ -221,7 +221,7 @@ const bytesPerSecondEstimate = 100 * 1024 * 1024 // 100 MB/s
 const hotspotThreshold = 1.5
 
 // RebalanceService implements RebalanceServicer backed by a QuicRaft host.
-// The optional placementStore, keyDeliverer, barrierLookup, and selfNodeID
+// The optional placementStore and selfNodeID
 // fields enable Phase 4c-2 dedicated-tenant Raft group MOVE operations. The
 // optional raftHost field enables the observer-first membership change and
 // live-leader routing moveTenantGroupShard performs for that MOVE -- see
@@ -231,8 +231,6 @@ const hotspotThreshold = 1.5
 type RebalanceService struct {
 	host           AdminHost
 	placementStore *placement.Store
-	keyDeliverer   RebalanceKeyDeliverer
-	barrierLookup  RebalanceBarrierLookup
 	selfNodeID     string
 	raftHost       RaftHost
 	logger         *slog.Logger
@@ -249,23 +247,18 @@ func NewRebalanceService(host AdminHost, opts ...RebalanceServiceOption) Rebalan
 	return s
 }
 
-// SetRebalanceDeps injects the placement store, key deliverer, barrier lookup,
-// and local node ID after construction. This mirrors the SetDistributor pattern
-// used by DatabaseService: lifecycle.BuildServices constructs RebalanceService
-// before the clusterkeys.Sender (which needs the LeaderAdminResolver built in
-// start.go) is available, so post-construction injection is required.
+// SetRebalanceDeps injects the placement store and local node ID after
+// construction: lifecycle composes the multi-node half of tenant isolation
+// after lifecycle.BuildServices constructs RebalanceService, so
+// post-construction injection is required.
 //
 // Passing nil for any argument disables the corresponding capability without
 // affecting generic-shard rebalancing.
 func (s *RebalanceService) SetRebalanceDeps(
 	ps *placement.Store,
-	d RebalanceKeyDeliverer,
-	lookup RebalanceBarrierLookup,
 	selfNodeID string,
 ) {
 	s.placementStore = ps
-	s.keyDeliverer = d
-	s.barrierLookup = lookup
 	s.selfNodeID = selfNodeID
 }
 
@@ -820,16 +813,7 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 	}
 
 	// Step 4: admit the destination, observer-first.
-	updated, kerr, placementFailed, err := addObserverReplica(
-		ctx, s.raftHost, s.placementStore, s.keyDeliverer, s.barrierLookup, p, dstReplica, s.selfNodeID)
-	if kerr != nil {
-		s.logger.Warn("clusterkeys: key distribution failed for rebalance MOVE destination, follower will reconcile",
-			slog.String("tenant", p.TenantID),
-			slog.String("database", p.Database),
-			slog.Uint64("shard_id", move.ShardID),
-			slog.String("dst_node", move.ToNode),
-			slog.Any("error", kerr))
-	}
+	updated, placementFailed, err := addObserverReplica(ctx, s.raftHost, s.placementStore, p, dstReplica)
 	if err != nil {
 		step := "add-observer"
 		if placementFailed {

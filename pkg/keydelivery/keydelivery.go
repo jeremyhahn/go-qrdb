@@ -50,22 +50,12 @@ const maxClockSkew = 30 * time.Second
 // nonceLen is the byte length of the anti-replay nonce.
 const nonceLen = 32
 
-// Mode identifies how the transported payload is protected and how the receiver
+// Mode names how the transported payload is protected and how the receiver
 // must install it. It is part of the HPKE context binding, so a payload sealed
-// for one mode cannot be opened as any other.
+// for one mode cannot be opened as any other. This package defines no modes:
+// the transport only requires one to be named, and the receiving layer
+// dispatches on it and refuses a mode it has no handler for.
 type Mode string
-
-const (
-	// ModeSelfManaged carries the tenant's already-sealed PORTABLE blob
-	// (HPKE-sealed on top). No plaintext root key ever transits; the receiver
-	// persists the blob and the tenant must unseal that replica itself.
-	ModeSelfManaged Mode = "self-managed"
-)
-
-// valid reports whether m is a recognized mode.
-func (m Mode) valid() bool {
-	return m == ModeSelfManaged
-}
 
 // Meta is the delivery context. Every field binds into the HPKE `info`, so the
 // sealed payload is cryptographically tied to exactly one tenant/database/
@@ -95,7 +85,7 @@ func (m Meta) validate() error {
 		return ErrInvalidMeta
 	case m.TargetNodeID == "":
 		return ErrInvalidMeta
-	case !m.Mode.valid():
+	case m.Mode == "":
 		return ErrInvalidMode
 	}
 	return nil
@@ -121,7 +111,7 @@ var (
 	// ErrInvalidMeta indicates a structurally incomplete delivery context.
 	ErrInvalidMeta = errors.New("keydelivery: incomplete delivery context")
 
-	// ErrInvalidMode indicates an unrecognized protection mode.
+	// ErrInvalidMode indicates a delivery context that names no mode.
 	ErrInvalidMode = errors.New("keydelivery: invalid mode")
 
 	// ErrEmptyPlaintext indicates Seal was given no key material.

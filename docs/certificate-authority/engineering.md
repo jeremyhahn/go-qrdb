@@ -248,18 +248,10 @@ func (m *AuthMiddleware) RevocationChecker() auth.RevocationChecker
 // revocation is REQUIRED as a parameter and may be nil as a value: nil is
 // "not enforced", the posture of a node with no certificate authority wired.
 // A parameter rather than an option, so every construction site states which.
-func NewReceiver(kd *keydelivery.Receiver, registry *seal.BarrierRegistry,
-	placements PlacementGetter, pinnedTrustDomain, selfNodeID string,
+func NewReceiver(kd *keydelivery.Receiver, placements PlacementGetter,
+	pinnedTrustDomain, selfNodeID string,
 	caPool *x509.CertPool, revocation auth.RevocationChecker,
 	deliveryCertPEM []byte, logger *slog.Logger) (*Receiver, error)
-
-func NewSender(resolver AdminURLResolver, client *http.Client,
-	caPool *x509.CertPool, pinnedTrustDomain string,
-	revocation auth.RevocationChecker, logger *slog.Logger) (*Sender, error)
-
-// The leader's two refusals are distinct sentinels because they mean
-// different things to an operator: withdraw the node, versus retry.
-var ErrRecipientRevoked, ErrRecipientRevocationUnknown error
 ```
 
 `pkg/auth/wiring` (the single production wiring point):
@@ -387,9 +379,9 @@ type AuthMiddlewareConfig struct {
   certificate without running the authenticator chain, so it gates on
   revocation itself via `middleware.WithRevocationChecker`. The cluster key
   plane (`pkg/clusterkeys`) authorizes on routes that are on the REST public
-  allowlist and never reach the middleware at all, so it gates on both its
-  receiving and its sending side, through a REQUIRED `auth.RevocationChecker`
-  parameter on `clusterkeys.NewReceiver` and `clusterkeys.NewSender`. Required
+  allowlist and never reach the middleware at all, so its receiver gates on
+  revocation itself, through a REQUIRED `auth.RevocationChecker` parameter on
+  `clusterkeys.NewReceiver`. Required
   rather than optional: a nil checker is a legitimate posture for a node with
   no certificate authority wired, and making it a parameter is what forces
   every construction site to say which posture it chose.

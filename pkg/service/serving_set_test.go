@@ -90,7 +90,7 @@ func TestAddObserverReplica_ServingSetRefusesNodeOutside(t *testing.T) {
 	store, db := servingSetStore(t)
 	ctx := context.Background()
 	outside := placement.Replica{ReplicaID: 3, NodeID: "n3", RaftAddr: "n3", State: placement.ReplicaStateObserver}
-	_, _, placementFailed, err := addObserverReplica(ctx, nil, store, nil, nil, db, outside, "n1")
+	_, placementFailed, err := addObserverReplica(ctx, nil, store, db, outside)
 	var sse *placement.ServingSetError
 	if !errors.As(err, &sse) {
 		t.Fatalf("addObserverReplica on n3: err = %v, want *placement.ServingSetError", err)
@@ -113,7 +113,7 @@ func TestAddObserverReplica_ServingSetAdmitsSharedTenantAnywhere(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	r := placement.Replica{ReplicaID: 2, NodeID: "n3", RaftAddr: "n3", State: placement.ReplicaStateObserver}
-	if _, _, _, err := addObserverReplica(ctx, nil, store, nil, nil, shared, r, "n1"); err != nil {
+	if _, _, err := addObserverReplica(ctx, nil, store, shared, r); err != nil {
 		t.Fatalf("shared tenant's replica on n3: %v", err)
 	}
 }

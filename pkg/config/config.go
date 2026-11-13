@@ -1358,9 +1358,8 @@ type AuthConfig struct {
 	// ClusterTrustDomain is the operator-pinned trust domain used for
 	// cluster-peer node identities. It is encoded into every auto-generated
 	// node certificate as a SPIFFE URI SAN
-	// (spiffe://<trust-domain>/node/<raftAddress>) and is pinned by both the
-	// clusterkeys.Receiver (checking incoming peer certs) and the
-	// clusterkeys.Sender (verifying recipient delivery certs). A single value
+	// (spiffe://<trust-domain>/node/<raftAddress>) and is pinned by the
+	// clusterkeys.Receiver (checking incoming peer certs). A single value
 	// must be consistent across all nodes in the cluster.
 	//
 	// It is also the cluster's own trust domain, the one a certificate

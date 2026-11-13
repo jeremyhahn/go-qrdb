@@ -39,6 +39,9 @@ type watchFixture struct {
 	handleErr error
 	// servesErr fails the placement read Serves stands for.
 	servesErr error
+	// placedLater places globex's barrier group on this node, as a
+	// scale-out or a rebalance move does after globex's init.
+	placedLater bool
 	// notify receives each delivered epoch.
 	notify chan uint64
 }
@@ -62,7 +65,7 @@ func (f *watchFixture) config(t *testing.T) WatcherConfig {
 			if f.servesErr != nil {
 				return false, f.servesErr
 			}
-			return b == clusterseal.TenantBarrier("acme"), nil
+			return b == clusterseal.TenantBarrier("acme") || (f.placedLater && b == clusterseal.TenantBarrier("globex")), nil
 		},
 		Handle: func(_ context.Context, s InitStatement) error {
 			f.mu.Lock()
@@ -192,6 +195,24 @@ func TestWatcher_RetriesWhenServesFails(t *testing.T) {
 	}
 	wantEpochs(t, f)
 	f.servesErr = nil
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	wantEpochs(t, f, 1)
+}
+
+// A replica added after the init -- by a scale-out or a rebalance move --
+// keys itself from the same signed statement on the next poll; no key is
+// shipped to it.
+func TestWatcher_KeysAReplicaPlacedAfterTheInit(t *testing.T) {
+	ctx, f := context.Background(), newWatchFixture(t)
+	w := f.watcher(t)
+	f.claim(t, clusterseal.TenantBarrier("globex"))
+	if err := w.Poll(ctx); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	wantEpochs(t, f)
+	f.placedLater = true
 	if err := w.Poll(ctx); err != nil {
 		t.Fatalf("Poll: %v", err)
 	}

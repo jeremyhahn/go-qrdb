@@ -1332,10 +1332,10 @@ key.
   no `WithRaftMTLS` -- has no signer, and such a create is
   `*tenant.InitStatementRequiredError`. The statement is never optional.
 - A raft tenant whose owner initialises a `none` or `passphrase` barrier is
-  keyed on every node of its groups by that node, and the key is never
-  shipped: `clusterkeys.Sender.DistributeTenantKey` returns without contacting
-  a follower for either strategy (`ownKeyOnEveryNode`), nor for a barrier not
-  yet initialised. A `none` barrier's other nodes initialise from the owner's
+  keyed on every node of its groups by that node, and no key is ever
+  shipped: the tenant-key transport is deleted, and a node placed later by
+  scale-out or a rebalance move keys itself from the claimed statement on the
+  init watcher's next poll. A `none` barrier's other nodes initialise from the owner's
   claimed statement. A `passphrase` barrier's nodes each need the passphrase,
   which only the owner holds, so the client sends the init to every serving
   node, concurrently, and returns one result per node; each call proves the
@@ -1345,23 +1345,15 @@ key.
   replica of the tenant's groups, with the API endpoints its member record
   publishes, sourced by `lifecycle` from the placement table and member
   records. A standalone node lists none, and a list the node cannot read is
-  logged and left out of the status rather than failing it. A Shamir key is
-  not shipped either (`ownKeyOnEveryNode` names it, read from the persisted
-  blob so a leader still sealed after a restart is covered): each serving node
-  is armed from the claimed statement's roster and check value and keys itself
-  at its holders' first quorum. `StorageBarrier.ImportSealedBlob` refuses a
-  Shamir blob with `seal.ErrImportSealedBlobShamir` and persists nothing,
-  because the blob carries none of the node's wrapped-key and roster records:
-  imported, it would leave the replica unable to key itself
-  (`ErrAlreadyInitialized`) or to unwrap the import (`ErrHolderRosterMissing`).
+  logged and left out of the status rather than failing it. A Shamir
+  replica is armed from the claimed statement's roster and check value and
+  keys itself at its holders' first quorum.
 - A node placement assigns to a raft tenant's group, holding no barrier for
   it, registers the tenant's shell (`TenantService.RegisterTenantShell`,
   reached from `TenantShardReconciler` through `server.ShellRegistrar`):
   registered, uninitialised and sealed, with the tenant's custody persisted.
-  The shard stays deferred; self-init, an owner's init or
-  `BarrierRegistry.ImportTenant` initialises that same barrier, and an
-  initialised barrier still refuses an imported blob
-  (`ErrAlreadyInitialized`).
+  The shard stays deferred; self-init or an owner's init initialises that
+  same barrier.
 - `TenantBarrierSelfInit` initialises only a strategy with
   `seal.CredentialNone`; Shamir and credential-bearing strategies return nil
   untouched. An already-initialised barrier is nil, so redelivery is
