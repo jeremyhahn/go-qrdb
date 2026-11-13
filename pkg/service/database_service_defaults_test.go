@@ -73,3 +73,64 @@ func TestCreateForTenant_Defaults_RaftBackendEntitled(t *testing.T) {
 		t.Fatalf("a refused create reserved %d replicas", f.incTotal)
 	}
 }
+
+// newSystemDefaultsDatabaseService returns a system-scope database service
+// whose manager carries the node database_defaults d.
+func newSystemDefaultsDatabaseService(t *testing.T, d database.Defaults) DatabaseServicer {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := databasetest.NewManager(logger, t.TempDir(), database.WithDefaults(d))
+	mgr.SetShardIDClaimer(testShardClaimer(t))
+	t.Cleanup(func() { _ = mgr.Close() })
+	return NewDatabaseService(mgr)
+}
+
+// TestCreate_Defaults_RaftTopologyResolvedFirst pins that the raft topology
+// is validated on the config the manager records, on both the tenant and the
+// system create path: a defaulted distributed cluster mode needs placement,
+// an omitted backend under a raft default still meets the explicit cluster
+// mode none refusal, and the cluster mode none the defaults fall back to when
+// nothing names one passes.
+func TestCreate_Defaults_RaftTopologyResolvedFirst(t *testing.T) {
+	raftDefault := database.Defaults{Backend: database.BackendRaft}
+	distributed := database.Defaults{Backend: database.BackendRaft, RaftClusterMode: database.RaftDistributed}
+	prefix := &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationPrefix}
+	paths := []struct {
+		name   string
+		create func(t *testing.T, d database.Defaults, cfg database.DatabaseConfig) (*database.DatabaseInfo, error)
+	}{
+		{"tenant", func(t *testing.T, d database.Defaults, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+			f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 3, MaxTotalReplicas: 10}}
+			svc := newDefaultsDatabaseService(t, d, prefix, &mockEntitlementChecker{}, f)
+			return svc.CreateForTenant(tenant.WithTenantID(context.Background(), "acme"), cfg)
+		}},
+		{"system", func(t *testing.T, d database.Defaults, cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+			return newSystemDefaultsDatabaseService(t, d).Create(cfg)
+		}},
+	}
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			_, err := p.create(t, distributed, database.DatabaseConfig{Name: "dist"})
+			var rdu *RaftDistributedUnavailableError
+			if !errors.As(err, &rdu) {
+				t.Fatalf("defaulted distributed create without placement = %v, want *RaftDistributedUnavailableError", err)
+			}
+
+			_, err = p.create(t, raftDefault, database.DatabaseConfig{
+				Name: "none", Raft: &database.DatabaseRaftConfig{ClusterMode: database.RaftNone},
+			})
+			var irt *InvalidRaftTopologyError
+			if !errors.As(err, &irt) {
+				t.Fatalf("defaulted raft backend naming cluster mode none = %v, want *InvalidRaftTopologyError", err)
+			}
+
+			info, err := p.create(t, raftDefault, database.DatabaseConfig{Name: "fallback"})
+			if err != nil {
+				t.Fatalf("defaulted raft create with the fallback block = %v", err)
+			}
+			if info.Raft == nil || info.Raft.ClusterMode != database.RaftNone {
+				t.Fatalf("recorded raft = %+v, want the cluster mode none fallback", info.Raft)
+			}
+		})
+	}
+}

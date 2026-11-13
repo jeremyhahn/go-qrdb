@@ -987,7 +987,11 @@ func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg databas
 	if err := RefuseEtcdNotCompiled(cfg.Protocol.Etcd); err != nil {
 		return nil, err
 	}
-	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
+	// The topology is checked on the config the manager records, with the
+	// node's database_defaults resolved (see validateRaftTopology).
+	requested := cfg
+	cfg = s.manager.ResolveDefaults(cfg)
+	if err := s.validateRaftTopology(cfg.Name, &requested, &cfg); err != nil {
 		return nil, err
 	}
 	db, err := s.manager.CreateWithCredentials(ctx, cfg, creds)
@@ -1652,18 +1656,18 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 
 	// Reject an incoherent or unsupported raft topology request before any
 	// quota reservation, placement, or store I/O -- see validateRaftTopology.
-	// It checks the topology the request names, before the node defaults
-	// fill in an unnamed one, as the manager always has.
-	if err := s.validateRaftTopology(cfg.Name, &cfg); err != nil {
+	// It checks the database the manager records: the node's
+	// database_defaults (backend, replicas, raft block) are resolved first,
+	// so a defaulted raft backend or cluster mode meets the same rules as a
+	// named one. The resolved config then goes through every gate: a request
+	// that omits its backend under a raft default, or its replicas under a
+	// replicas default, is entitled, normalised, quota-checked and metered as
+	// the database the manager records, never as the request it arrived as.
+	requested := cfg
+	cfg = s.manager.ResolveDefaults(cfg)
+	if err := s.validateRaftTopology(cfg.Name, &requested, &cfg); err != nil {
 		return nil, err
 	}
-
-	// Resolve the node's database_defaults (backend, replicas, raft block)
-	// before any gate: a request that omits its backend under a raft
-	// default, or its replicas under a replicas default, is entitled,
-	// normalised, quota-checked and metered as the database the manager
-	// records, never as the request it arrived as.
-	cfg = s.manager.ResolveDefaults(cfg)
 
 	// Entitlement plane (consulted before the numeric quota plane): verify the
 	// tenant's plan permits the requested isolation tier / dedicated feature.
@@ -1922,12 +1926,23 @@ func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name str
 //     happens to be wired and Replicas > 1 is also requested, the request is
 //     still honored via the same pipeline as today -- this method only adds
 //     new, additive validation and never changes existing accepted requests.
-func (s *DatabaseService) validateRaftTopology(name string, cfg *database.DatabaseConfig) error {
-	if cfg.Backend != database.BackendRaft || cfg.Raft == nil {
+//
+// It checks resolved, the request with the node's database_defaults applied
+// (database.Manager.ResolveDefaults), so a backend or cluster mode the node
+// supplies is held to the same rules as one the request names. The one
+// exception is a cluster mode of none the request did not name: that is the
+// fallback the defaults record when neither the request nor the node names a
+// cluster mode, and it passes.
+func (s *DatabaseService) validateRaftTopology(name string, requested, resolved *database.DatabaseConfig) error {
+	if resolved.Backend != database.BackendRaft || resolved.Raft == nil {
 		return nil
 	}
+	cfg := resolved
 	switch cfg.Raft.ClusterMode {
 	case database.RaftNone:
+		if requested.Raft == nil || requested.Raft.ClusterMode == "" {
+			return nil
+		}
 		return &InvalidRaftTopologyError{
 			Database: name,
 			Mode:     string(cfg.Raft.ClusterMode),
