@@ -553,6 +553,7 @@ var databaseRules = []rule{
 	as(&database.InvalidModeError{Mode: "x"}, InvalidArgument),
 	as(&database.ConnectionRequiredError{}, InvalidArgument),
 	as(&database.InvalidRaftClusterModeError{Mode: "x"}, InvalidArgument),
+	as(&database.InvalidRaftStateStorageError{StateStorage: "x"}, InvalidArgument),
 	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),
 	as(&database.DiscoveryConfigRequiredError{Method: "multicast"}, InvalidArgument),
 	as(&database.DiscoverySharedSecretRequiredError{Method: "multicast"}, InvalidArgument),
