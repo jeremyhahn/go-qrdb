@@ -218,28 +218,36 @@ func (s *CredentialService) tryPolicyMetaWrite(ctx context.Context, name, key st
 // RotationPolicy returns the named credential's rotation policy, the zero
 // policy when none is set. An unknown credential is ErrCredentialNotFound.
 func (s *CredentialService) RotationPolicy(ctx context.Context, name string) (RotationPolicy, error) {
-	if err := s.ensureMigrated(ctx); err != nil {
-		return RotationPolicy{}, err
-	}
-	meta, err := s.rotationMeta(ctx, name)
-	if err != nil || meta.Policy == nil {
-		return RotationPolicy{}, err
-	}
-	return *meta.Policy, nil
+	policy, _, err := s.RotationStatus(ctx, name)
+	return policy, err
 }
 
 // NextRotation returns when the named credential's enabled policy next
 // falls due, the zero time when no enabled policy is set. An unknown
 // credential is ErrCredentialNotFound.
 func (s *CredentialService) NextRotation(ctx context.Context, name string) (time.Time, error) {
+	_, next, err := s.RotationStatus(ctx, name)
+	return next, err
+}
+
+// RotationStatus returns the named credential's rotation policy and when
+// it next falls due, both from one read of its metadata record, so a
+// concurrent SetRotationPolicy is seen wholly or not at all: never an
+// enabled policy with no schedule, or a disabled one with a schedule. An
+// unknown credential is ErrCredentialNotFound.
+func (s *CredentialService) RotationStatus(ctx context.Context, name string) (RotationPolicy, time.Time, error) {
 	if err := s.ensureMigrated(ctx); err != nil {
-		return time.Time{}, err
+		return RotationPolicy{}, time.Time{}, err
 	}
 	meta, err := s.rotationMeta(ctx, name)
 	if err != nil {
-		return time.Time{}, err
+		return RotationPolicy{}, time.Time{}, err
 	}
-	return meta.NextRotation, nil
+	var policy RotationPolicy
+	if meta.Policy != nil {
+		policy = *meta.Policy
+	}
+	return policy, meta.NextRotation, nil
 }
 
 // rotationMeta loads the metadata record of an existing credential. A

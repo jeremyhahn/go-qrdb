@@ -402,11 +402,9 @@ func (s *CredentialService) CredentialRotationPolicy(ctx context.Context, name s
 	if err != nil {
 		return nil, err
 	}
-	policy, err := c.RotationPolicy(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	next, err := c.NextRotation(ctx, name)
+	// One read of the metadata record: two separate reads could straddle a
+	// concurrent SetRotationPolicy and report a status that never existed.
+	policy, next, err := c.RotationStatus(ctx, name)
 	if err != nil {
 		return nil, err
 	}
