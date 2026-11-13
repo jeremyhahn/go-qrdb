@@ -85,10 +85,6 @@ var (
 	// deleted credential or overwrites a newer value.
 	ErrRotationClaimLost = errors.New("credentials: scheduled rotation claim lost")
 
-	// ErrInvalidRotationCheckPeriod is returned by Config.Validate for a
-	// negative rotation check period.
-	ErrInvalidRotationCheckPeriod = errors.New("credentials: rotation check period must be positive")
-
 	// ErrInvalidMigrationResolution is returned when a migration conflict
 	// is resolved by neither MigrationImport nor MigrationDiscard.
 	ErrInvalidMigrationResolution = errors.New("credentials: migration resolution must be import or discard")
