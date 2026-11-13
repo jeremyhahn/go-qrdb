@@ -106,6 +106,11 @@ func (d Defaults) fillFor(cfg *DatabaseConfig, synthesize bool) {
 	if raft.StateStorage == "" {
 		raft.StateStorage = d.RaftStateStorage
 	}
+	// The built-in fallback is recorded too, so a later change of the
+	// node's default never moves an existing database to another store.
+	if raft.StateStorage == "" {
+		raft.StateStorage = DefaultRaftStateStorage
+	}
 	cfg.Raft = &raft
 }
 

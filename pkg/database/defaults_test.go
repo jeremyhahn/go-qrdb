@@ -65,7 +65,7 @@ func TestDefaultsFill(t *testing.T) {
 			name: "added raft block falls back to cluster mode none",
 			cfg:  DatabaseConfig{Name: "app", Backend: BackendRaft},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: DefaultRaftStateStorage}},
 		},
 		{
 			name: "supplied state-storage-only block falls back to cluster mode none",
@@ -91,7 +91,7 @@ func TestDefaultsFill(t *testing.T) {
 			d:    Defaults{RunMode: RunModeRaft, RaftClusterMode: RaftLocal},
 			cfg:  DatabaseConfig{Name: "app"},
 			want: DatabaseConfig{Name: "app", Backend: BackendRaft,
-				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal}},
+				Raft: &DatabaseRaftConfig{ClusterMode: RaftLocal, StateStorage: DefaultRaftStateStorage}},
 		},
 		{
 			name: "standalone run mode records the pebble backend",
@@ -264,6 +264,35 @@ func TestManagerProvisionConfiguredRaftBackendOnFreshNode(t *testing.T) {
 		got := db.Config()
 		if got.Backend != BackendRaft || got.Raft != nil {
 			t.Fatalf("Provision(%s) recorded backend %q raft %+v, want raft on the shared group", cfg.Name, got.Backend, got.Raft)
+		}
+	}
+}
+
+// With neither the request nor the node naming state storage, the record
+// carries the built-in fallback, so changing the node's default later never
+// moves the database to another store.
+func TestManagerCreateRecordsBuiltInStateStorage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	m := newCatalogManager(logger, t.TempDir())
+	m.SetShardIDClaimer(testShardClaimer(t))
+	t.Cleanup(func() { _ = m.Close() })
+
+	db, err := m.Create(DatabaseConfig{Name: "fallback", Backend: BackendRaft})
+	if err != nil {
+		t.Fatalf("Create() = %v", err)
+	}
+	cfg := db.Config()
+	if cfg.Raft == nil || cfg.Raft.StateStorage != DefaultRaftStateStorage {
+		t.Fatalf("recorded raft = %+v, want state storage %q", cfg.Raft, DefaultRaftStateStorage)
+	}
+	for _, changed := range []BackendType{BackendFile, BackendMemory} {
+		rb, err := resolveRaftBinding(&cfg, "", isolationPlacement{}, Defaults{RaftStateStorage: changed})
+		if err != nil {
+			t.Fatalf("resolveRaftBinding(node default %q) = %v", changed, err)
+		}
+		if rb.StateStorage != DefaultRaftStateStorage {
+			t.Fatalf("node default %q moved the database to %q, want the recorded %q",
+				changed, rb.StateStorage, DefaultRaftStateStorage)
 		}
 	}
 }
