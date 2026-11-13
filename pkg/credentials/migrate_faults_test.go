@@ -2,6 +2,7 @@ package credentials
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -526,4 +527,60 @@ func TestEnsureMigrated_EndedContextJoinedToFailure(t *testing.T) {
 	requireOperationError(t, err, "migrate")
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.ErrorIs(t, err, errInjectedFault)
+}
+
+// captureBackend keeps every buffer its Get returns, so a test can see
+// what the caller did with it.
+type captureBackend struct {
+	*faultBackend
+	mu   sync.Mutex
+	read map[string][]byte
+}
+
+func (c *captureBackend) Get(ctx context.Context, key string) ([]byte, error) {
+	value, err := c.faultBackend.Get(ctx, key)
+	if err == nil {
+		c.mu.Lock()
+		c.read[key] = value
+		c.mu.Unlock()
+	}
+	return value, err
+}
+
+// TestLoadReplicated_FailureWipesWhatWasRead fails the replicated store
+// after the current value has been read, and requires every buffer the
+// failing load received to be zeroed.
+func TestLoadReplicated_FailureWipesWhatWasRead(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		fault func(*faultBackend)
+	}{
+		{name: "read version", fault: func(b *faultBackend) { arm(&b.failGet, versionKey("db", 1)) }},
+		{name: "list versions", fault: func(b *faultBackend) { arm(&b.failList, VersionKeyPrefix+encodedName("db")+"/") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &captureBackend{faultBackend: &faultBackend{MemoryBackend: seal.NewMemoryBackend()}, read: map[string][]byte{}}
+			svc := newUnboundService(t)
+			require.NoError(t, svc.BindStore(ctx, store))
+			seedGraceVersion(t, svc, "db")
+
+			store.mu.Lock()
+			clear(store.read)
+			store.mu.Unlock()
+			tc.fault(store.faultBackend)
+			rec, err := svc.loadReplicated(ctx, "db")
+			require.ErrorIs(t, err, errInjectedFault)
+			assert.Nil(t, rec)
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			value, ok := store.read[credentialPrefix+"db"]
+			require.True(t, ok, "the current value was read before the fault")
+			require.NotEmpty(t, value)
+			for key, buf := range store.read {
+				assert.Equal(t, make([]byte, len(buf)), buf, "%s is wiped", key)
+			}
+		})
+	}
 }

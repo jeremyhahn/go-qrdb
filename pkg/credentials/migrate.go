@@ -551,8 +551,15 @@ func wipeCopies(copies map[string]*legacyCopy) {
 
 // loadReplicated reads the bound store's records for name, without its
 // migration claim.
-func (s *CredentialService) loadReplicated(ctx context.Context, name string) (credentialRecord, error) {
+func (s *CredentialService) loadReplicated(ctx context.Context, name string) (_ credentialRecord, err error) {
 	rec := credentialRecord{}
+	// rec holds plaintext values as they are read; an unsuccessful exit
+	// wipes every one of them before it returns.
+	defer func() {
+		if err != nil {
+			rec.wipe()
+		}
+	}()
 	// The value and the metadata record are keyed by the name itself; a
 	// listing by that prefix also returns longer names, which are other
 	// credentials.
@@ -585,6 +592,13 @@ func (s *CredentialService) loadReplicated(ctx context.Context, name string) (cr
 		rec[versionPrefix+strings.TrimPrefix(key, prefix)] = value
 	}
 	return rec, nil
+}
+
+// wipe zeroes every value r holds.
+func (r credentialRecord) wipe() {
+	for _, value := range r {
+		secure.Wipe(value)
+	}
 }
 
 // replicatedKey is the bound store's key for the record of name that
