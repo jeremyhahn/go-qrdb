@@ -155,6 +155,81 @@ func TestServerClosesConnectionForInvalidSessionID(t *testing.T) {
 	}
 }
 
+// TestServerReleasesIncompleteBidirectionalStreams opens more incomplete
+// bidirectional streams than the connection allows (an empty FIN, a truncated
+// type varint, a send-side reset) and checks the server resets each one and
+// returns its credit, so a request on a later stream still gets a response.
+func TestServerReleasesIncompleteBidirectionalStreams(t *testing.T) {
+	const maxStreams = 2
+	s := webtransport.Server{H3: &http3.Server{
+		TLSConfig:  tlsConf,
+		QUICConfig: &quic.Config{MaxIncomingStreams: maxStreams},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}}
+	defer s.Close()
+
+	udpConn, err := net.ListenUDP("udp", nil)
+	require.NoError(t, err)
+	defer udpConn.Close()
+	webtransport.ConfigureHTTP3Server(s.H3)
+	go s.Serve(udpConn)
+	addr := fmt.Sprintf("localhost:%d", udpConn.LocalAddr().(*net.UDPAddr).Port)
+
+	conn, err := quic.DialAddr(
+		context.Background(),
+		addr,
+		&tls.Config{RootCAs: certPool, NextProtos: []string{http3.NextProtoH3}},
+		&quic.Config{EnableDatagrams: true, EnableStreamResetPartialDelivery: true},
+	)
+	require.NoError(t, err)
+	defer conn.CloseWithError(0, "")
+
+	incomplete := []struct {
+		name string
+		end  func(t *testing.T, str *quic.Stream)
+	}{
+		{"empty FIN", func(t *testing.T, str *quic.Stream) {
+			require.NoError(t, str.Close())
+		}},
+		{"truncated type", func(t *testing.T, str *quic.Stream) {
+			// 0x40 announces a two-byte varint; the FIN cuts it short.
+			_, err := str.Write([]byte{0x40})
+			require.NoError(t, err)
+			require.NoError(t, str.Close())
+		}},
+		{"send-side reset", func(t *testing.T, str *quic.Stream) {
+			str.CancelWrite(0)
+		}},
+	}
+	for round := range 2 * maxStreams {
+		for _, tt := range incomplete {
+			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(2*time.Second))
+			str, err := conn.OpenStreamSync(ctx)
+			cancel()
+			require.NoError(t, err, "round %d, %s: stream credit not released", round, tt.name)
+			tt.end(t, str)
+
+			require.NoError(t, str.SetReadDeadline(time.Now().Add(scaleDuration(2*time.Second))))
+			_, err = str.Read(make([]byte, 1))
+			var streamErr *quic.StreamError
+			require.ErrorAs(t, err, &streamErr, "round %d, %s: server left the stream open", round, tt.name)
+			require.True(t, streamErr.Remote)
+			require.Equal(t, quic.StreamErrorCode(http3.ErrCodeGeneralProtocolError), streamErr.ErrorCode)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(2*time.Second))
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/", nil)
+	require.NoError(t, err)
+	resp, err := (&http3.Transport{}).NewClientConn(conn).RoundTrip(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
 func TestServerReorderedUpgradeRequest(t *testing.T) {
 	s := webtransport.Server{
 		H3: &http3.Server{TLSConfig: tlsConf},
