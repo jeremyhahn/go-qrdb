@@ -306,7 +306,8 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
 	// The node's defaults are filled in once, here, and recorded with the
 	// rest of the config; opening the database never consults them again.
-	m.defaults.fill(&cfg)
+	// Boot provisioning (shared) never synthesizes a raft block: see fillFor.
+	m.defaults.fillFor(&cfg, !shared)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

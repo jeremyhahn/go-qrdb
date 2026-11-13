@@ -241,3 +241,29 @@ func TestManagerCreateStateStorageOnlyRaftBlock(t *testing.T) {
 		t.Fatalf("recorded raft = %+v, want state storage %q and cluster mode %q", raft, BackendFile, RaftNone)
 	}
 }
+
+// A fresh node provisions the raft databases its configuration lists before
+// the cluster's feature gate starts, so no shard issuer is attached yet. A
+// configured raft database without a raft block keeps running on the shared
+// group: boot neither synthesizes a block nor allocates a shard.
+func TestManagerProvisionConfiguredRaftBackendOnFreshNode(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	// No SetShardIDClaimer: the feature gate has not started.
+	m := newCatalogManager(logger, t.TempDir(),
+		WithDefaults(Defaults{RunMode: RunModeRaft, RaftClusterMode: RaftDistributed}))
+	t.Cleanup(func() { _ = m.Close() })
+
+	for _, cfg := range []DatabaseConfig{
+		{Name: "configured", Backend: BackendRaft},
+		{Name: "defaulted"},
+	} {
+		db, err := m.Provision(context.Background(), cfg)
+		if err != nil {
+			t.Fatalf("Provision(%s) on a fresh node = %v", cfg.Name, err)
+		}
+		got := db.Config()
+		if got.Backend != BackendRaft || got.Raft != nil {
+			t.Fatalf("Provision(%s) recorded backend %q raft %+v, want raft on the shared group", cfg.Name, got.Backend, got.Raft)
+		}
+	}
+}
