@@ -49,8 +49,17 @@ type SendStream struct {
 	// Made by Write while sendingHdr, nil otherwise. Close and CancelWrite
 	// close it to release a Write waiting on the header with writeErr.
 	hdrAbort chan struct{}
+	// Set while a goroutine sends the stream header or runs the stop
+	// deferred behind it (Write's header goroutine or stopAfterHeader's
+	// sender). The stream stays in the session's map until it clears, so
+	// session shutdown still resets the stream and ends that goroutine.
+	hdrBusy bool
+	// Set by Write when it fails while hdrBusy; the header goroutine then
+	// takes the stream out of the session's map once it is done.
+	removeAfterHdr bool
 
-	onClose func() // to remove the stream from the streamsMap
+	onClose    func() // to remove the stream from the streamsMap
+	removeOnce sync.Once
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -93,9 +102,41 @@ func (s *SendStream) Write(b []byte) (int, error) {
 		err = s.handleSessionGoneError()
 	}
 	if err != nil && !isTimeoutError(err) {
-		s.onClose()
+		s.removeWhenHdrDone()
 	}
 	return n, maybeConvertStreamError(err)
+}
+
+// remove takes the stream out of the session's map, once.
+func (s *SendStream) remove() {
+	s.removeOnce.Do(s.onClose)
+}
+
+// removeWhenHdrDone removes the stream now, or, while a goroutine still
+// sends the stream header or the stop behind it, leaves the removal to that
+// goroutine: until then session shutdown must still reach the stream.
+func (s *SendStream) removeWhenHdrDone() {
+	s.streamHdrMu.Lock()
+	if s.hdrBusy {
+		s.removeAfterHdr = true
+		s.streamHdrMu.Unlock()
+		return
+	}
+	s.streamHdrMu.Unlock()
+	s.remove()
+}
+
+// hdrDone ends a header goroutine's hdrBusy period and runs a removal Write
+// left for it.
+func (s *SendStream) hdrDone() {
+	s.streamHdrMu.Lock()
+	s.hdrBusy = false
+	remove := s.removeAfterHdr
+	s.removeAfterHdr = false
+	s.streamHdrMu.Unlock()
+	if remove {
+		s.remove()
+	}
 }
 
 // handleSessionGoneError waits for the session to be closed after receiving a WTSessionGoneErrorCode.
@@ -149,6 +190,7 @@ func (s *SendStream) write(b []byte) (int, error) {
 	// leave their action for the header goroutine and close hdrAbort, which
 	// releases this Write at once while the header and the stop complete.
 	s.sendingHdr = true
+	s.hdrBusy = true
 	abort := make(chan struct{})
 	s.hdrAbort = abort
 	s.streamHdrMu.Unlock()
@@ -171,6 +213,7 @@ func (s *SendStream) write(b []byte) (int, error) {
 		if stop != nil {
 			stop()
 		}
+		s.hdrDone()
 		done <- hdrResult{err: err, stopped: stop != nil, stopErr: stopErr}
 	}()
 
@@ -285,7 +328,7 @@ func (s *SendStream) CancelWrite(e StreamErrorCode) {
 	// The stop function returns nil, so stopAfterHeader does too.
 	_ = s.stopAfterHeader(&StreamError{ErrorCode: e}, func() error {
 		s.str.CancelWrite(webtransportCodeToHTTPCode(e))
-		s.onClose()
+		s.remove()
 		return nil
 	})
 }
@@ -334,8 +377,12 @@ func (s *SendStream) stopAfterHeader(writeErr error, stop func() error) error {
 		s.writeErr = writeErr
 		streamHdr := s.streamHdr
 		s.streamHdr = nil
+		s.hdrBusy = true
 		s.streamHdrMu.Unlock()
-		go sendHdrAndStop(streamHdr)
+		go func() {
+			sendHdrAndStop(streamHdr)
+			s.hdrDone()
+		}()
 		return nil
 	}
 	s.streamHdrMu.Unlock()
@@ -366,7 +413,7 @@ func (s *SendStream) Close() error {
 	})
 
 	return s.stopAfterHeader(closeErr, func() error {
-		s.onClose()
+		s.remove()
 		return maybeConvertStreamError(s.str.Close())
 	})
 }

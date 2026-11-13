@@ -627,6 +627,91 @@ func TestSendStreamCancelWriteThenCloseSessionAbortsHeader(t *testing.T) {
 	})
 }
 
+// TestSendStreamStopDuringHeaderStaysInStreamsMap stops a stream held in a
+// session's streams map while Write's header goroutine is blocked without
+// credit. The released Write must not take the stream out of the map before
+// that goroutine is done: closing the session through the map must still
+// reset the stream with WT_SESSION_GONE, which ends the header write, and the
+// stream leaves the map exactly once, after the header goroutine.
+func TestSendStreamStopDuringHeaderStaysInStreamsMap(t *testing.T) {
+	const errorCode StreamErrorCode = 42
+
+	testCases := []struct {
+		name        string
+		stop        func(*SendStream) error
+		expectedErr error
+	}{
+		{
+			name:        "cancel",
+			stop:        func(s *SendStream) error { s.CancelWrite(errorCode); return nil },
+			expectedErr: &StreamError{ErrorCode: errorCode},
+		},
+		{
+			name:        "close",
+			stop:        (*SendStream).Close,
+			expectedErr: errors.New("write on closed stream"),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), scaleDuration(time.Second))
+			defer cancel()
+
+			qstr := newCancellableHeaderStream()
+			sm := newOutgoingUniStreamsMap(nil, 0, maxOutgoingStreams, nil, func(c capsule) {
+				t.Errorf("unexpected capsule: %#v", c)
+			})
+			removed := make(chan struct{})
+			var removals int
+			var removalsMu sync.Mutex
+			str := newSendStream(qstr, []byte("hdr"), nil, nil, func() {
+				sm.removeStream(qstr.StreamID())
+				removalsMu.Lock()
+				defer removalsMu.Unlock()
+				removals++
+				if removals == 1 {
+					close(removed)
+				}
+			})
+			sm.mx.Lock()
+			sm.m[qstr.StreamID()] = str
+			sm.mx.Unlock()
+
+			errChan := make(chan error, 1)
+			go func() {
+				_, err := str.Write([]byte("payload"))
+				errChan <- err
+			}()
+			<-qstr.started
+
+			require.NoError(t, tc.stop(str))
+			select {
+			case err := <-errChan:
+				require.Equal(t, tc.expectedErr, err)
+			case <-ctx.Done():
+				t.Fatal("Write stayed blocked in the stream header after the stop")
+			}
+
+			sm.mx.Lock()
+			_, inMap := sm.m[qstr.StreamID()]
+			sm.mx.Unlock()
+			require.True(t, inMap, "stream left the session's map before its header goroutine ended")
+
+			sm.CloseSession(&SessionError{ErrorCode: 1, Message: "bye"})
+			select {
+			case <-removed:
+			case <-ctx.Done():
+				t.Fatal("session shutdown left the stream header write blocked")
+			}
+			require.Equal(t, quic.StreamErrorCode(WTSessionGoneErrorCode), qstr.firstCode())
+			removalsMu.Lock()
+			defer removalsMu.Unlock()
+			require.Equal(t, 1, removals)
+		})
+	}
+}
+
 func TestSendStreamDataFlowControl(t *testing.T) {
 	sendStr, recvStr := newUniStreamPair(t)
 	var capsules []capsule
