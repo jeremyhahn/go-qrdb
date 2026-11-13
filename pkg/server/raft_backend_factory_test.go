@@ -89,6 +89,10 @@ type fakeRaftInfoSource struct {
 	incarnations   map[raftShardKey]string
 	dropped        map[raftShardKey]bool
 	incarnationErr error
+	// databaseIDs, when set for a key, is the database id the catalog
+	// records for it; a key with no entry is recorded with no id, as a
+	// database created before ids existed.
+	databaseIDs map[raftShardKey]string
 }
 
 func newFakeRaftInfoSource() *fakeRaftInfoSource {
@@ -132,15 +136,15 @@ func (s *fakeRaftInfoSource) dedicatedWAL(tenantID, db string) bool {
 	return s.dedicated[raftShardKey{tenantID: tenantID, database: db}]
 }
 
-func (s *fakeRaftInfoSource) recordedIncarnation(_ context.Context, tenantID, db string) (string, bool, error) {
+func (s *fakeRaftInfoSource) recordedIdentity(_ context.Context, tenantID, db string) (string, string, bool, error) {
 	if s.incarnationErr != nil {
-		return "", false, s.incarnationErr
+		return "", "", false, s.incarnationErr
 	}
 	key := raftShardKey{tenantID: tenantID, database: db}
 	if s.dropped[key] {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return s.incarnations[key], true, nil
+	return s.databaseIDs[key], s.incarnations[key], true, nil
 }
 
 // newRaftFactory wires a RaftBackendFactory over a fresh shared Host and the
@@ -962,14 +966,14 @@ func TestManagerRaftInfoSource_RecordedIncarnation(t *testing.T) {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
 	src := &managerRaftInfoSource{manager: mgr}
-	if got, ok, err := src.recordedIncarnation(ctx, "owner", "mdb"); err != nil || !ok || got != db.Incarnation() {
-		t.Fatalf("recordedIncarnation() = (%q, %v, %v), want (%q, true, nil)", got, ok, err, db.Incarnation())
+	if id, got, ok, err := src.recordedIdentity(ctx, "owner", "mdb"); err != nil || !ok || got != db.Incarnation() || id == "" || id != db.ID() {
+		t.Fatalf("recordedIdentity() = (%q, %q, %v, %v), want (%q, %q, true, nil)", id, got, ok, err, db.ID(), db.Incarnation())
 	}
 	if err := mgr.DropForTenant(ctx, "mdb"); err != nil {
 		t.Fatalf("DropForTenant: %v", err)
 	}
-	if _, ok, err := src.recordedIncarnation(ctx, "owner", "mdb"); err != nil || ok {
-		t.Fatalf("recordedIncarnation() after the drop = (ok %v, %v), want no record", ok, err)
+	if _, _, ok, err := src.recordedIdentity(ctx, "owner", "mdb"); err != nil || ok {
+		t.Fatalf("recordedIdentity() after the drop = (ok %v, %v), want no record", ok, err)
 	}
 }
 
@@ -978,8 +982,8 @@ func TestManagerRaftInfoSource_RecordedIncarnation(t *testing.T) {
 // reads no record as the incarnation being superseded.
 func TestManagerRaftInfoSource_RecordedIncarnationNilManager(t *testing.T) {
 	src := &managerRaftInfoSource{}
-	if _, ok, err := src.recordedIncarnation(context.Background(), "t", "db"); !errors.Is(err, ErrRaftBackendUnavailable) || ok {
-		t.Fatalf("recordedIncarnation() with no manager = (ok %v, %v), want ErrRaftBackendUnavailable", ok, err)
+	if _, _, ok, err := src.recordedIdentity(context.Background(), "t", "db"); !errors.Is(err, ErrRaftBackendUnavailable) || ok {
+		t.Fatalf("recordedIdentity() with no manager = (ok %v, %v), want ErrRaftBackendUnavailable", ok, err)
 	}
 }
 

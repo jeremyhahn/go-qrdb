@@ -165,6 +165,9 @@ var dominantRules = []rule{
 	// A placement record names a path for a replica: refused, never opened;
 	// the database must be dropped and re-created.
 	as(&placement.ReplicaDataRootError{}, FailedPrecondition),
+	// The placement entry a catalog record's database id keys names another
+	// database: a drop refuses to fence it.
+	as(&placement.IdentityMismatchError{}, FailedPrecondition),
 
 	// Cluster sealing. Dominant, because the tenant and database services
 	// wrap them in their own barrier errors: a seal or clear record whose

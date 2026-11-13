@@ -1536,7 +1536,10 @@ Strict isolation requires these additions:
   reserved `database.TenantHomeID`. A node that holds the catalog record
   addresses the entry by id (`placement.Store.Get`); one that does not (a
   follower, the leader serving a forwarded scale) finds it by the name the
-  entry's value still carries (`placement.Store.GetByName`). The key-delivery
+  entry's value still carries (`placement.Store.GetByName`). A drop's fence
+  never resolves by name: it reads the entry under the catalog record's id
+  (`placement.Store.GetBound`), which refuses an entry naming another
+  database, since a dropped predecessor's entry can share the name. The key-delivery
   envelope names the database by id (`keydelivery.Meta.DatabaseID`).
   Remaining: the name in the placement value, which these readers need until
   the catalog resolves on every serving node.

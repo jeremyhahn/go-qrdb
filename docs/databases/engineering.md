@@ -697,7 +697,15 @@ Invariants:
     the database's OWN shard (resolved through
     `RaftBackendFactory.FenceServices`, the one resolution that ignores the
     marker, because the drop sets the marker first), is what refuses the
-    writes of handles already resolved.
+    writes of handles already resolved. `FenceServices` reads the placement
+    entry keyed by the catalog record's database id
+    (`placement.Store.GetBound`), never one found by the name: after a drop
+    whose placement delete failed, the name created again and dropped in turn
+    leaves two dropping entries under one name, and a lookup by name would
+    retire the successor's cached shard and fence the predecessor's. An entry
+    under the id that names another database is refused with
+    `placement.IdentityMismatchError` (FailedPrecondition) and the cached
+    shard is left alone.
   - **A failed placement-entry removal is not swallowed.** Deleting the
     placement entry is what removes the replicated fence, so a failure
     there is surfaced rather than logged and ignored: the fence survives

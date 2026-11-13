@@ -1000,3 +1000,121 @@ func TestRaftBackendFactory_CachedShardOfADroppedIncarnation(t *testing.T) {
 		t.Fatalf("cached shard = %+v, want the new incarnation's shard 5031", rs)
 	}
 }
+
+// TestRaftBackendFactory_FenceServicesBindsTheCatalogDatabaseID is the
+// recreate-after-a-failed-drop case: a drop whose placement delete failed
+// leaves its entry marked dropping, the name is created again, and the
+// successor is dropped in turn. Two dropping entries then share the name, and
+// GetByName returns whichever it lists first -- the predecessor's -- so a
+// fence resolved by name retired the successor's cached shard and fenced the
+// predecessor's. The fence is pinned to the catalog record's database id: it
+// targets the successor's shard, and the predecessor's shard and data are
+// left alone. An entry under the id that names another database is refused
+// with *placement.IdentityMismatchError and the cached shard is kept.
+func TestRaftBackendFactory_FenceServicesBindsTheCatalogDatabaseID(t *testing.T) {
+	store := newPlacementStore(t)
+	reg := newVolumePooledRegistry(t)
+	registerVolumeTenant(t, reg, "rt")
+	ctx := context.Background()
+	key := raftShardKey{tenantID: "rt", database: "orders"}
+	place := func(databaseID, name string, shardID uint64) {
+		t.Helper()
+		if err := store.Put(ctx, &placement.Placement{
+			TenantID: "rt", DatabaseID: databaseID, Database: name, ShardID: shardID, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{
+				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+			},
+		}); err != nil {
+			t.Fatalf("Put(%s): %v", databaseID, err)
+		}
+	}
+	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+	catalog := f.dbInfo.(*placementRaftInfoSource).fallback.(*fakeRaftInfoSource)
+	catalog.dropped = map[raftShardKey]bool{}
+	record := func(databaseID, incarnation string) {
+		catalog.databaseIDs = map[raftShardKey]string{key: databaseID}
+		catalog.incarnations = map[raftShardKey]string{key: incarnation}
+	}
+	read := func(svcs *DatabaseServices) string {
+		t.Helper()
+		got, err := svcs.KV.Get(ctx, "who")
+		if err != nil {
+			t.Fatalf("KV.Get: %v", err)
+		}
+		return string(got)
+	}
+	cached := func() *raftShard {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.shards[key]
+	}
+
+	// The predecessor: created, written, then dropped with its placement
+	// delete failing, so its entry stays marked dropping.
+	place("orders-1", "orders", 5040)
+	record("orders-1", "first")
+	svcs, err := f.Services(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("Services() for the predecessor: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "who", []byte("predecessor")); err != nil {
+		t.Fatalf("KV.Put into the predecessor: %v", err)
+	}
+	if err := store.SetDropping(ctx, "rt", "orders-1", true); err != nil {
+		t.Fatalf("SetDropping(orders-1): %v", err)
+	}
+	if svcs, err := f.FenceServices(ctx, "rt", "orders", "first"); err != nil || read(svcs) != "predecessor" {
+		t.Fatalf("FenceServices() for the predecessor's drop = %v, want its shard", err)
+	}
+	if err := f.Close("rt", "orders"); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The successor: the same name, a new id and shard, written and dropped.
+	place("orders-2", "orders", 5041)
+	record("orders-2", "second")
+	svcs, err = f.Services(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("Services() for the successor: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "who", []byte("successor")); err != nil {
+		t.Fatalf("KV.Put into the successor: %v", err)
+	}
+	successor := cached()
+	if err := store.SetDropping(ctx, "rt", "orders-2", true); err != nil {
+		t.Fatalf("SetDropping(orders-2): %v", err)
+	}
+	fenced, err := f.FenceServices(ctx, "rt", "orders", "second")
+	if err != nil {
+		t.Fatalf("FenceServices() for the successor's drop: %v", err)
+	}
+	if got := read(fenced); got != "successor" {
+		t.Fatalf("the successor's fence reached the store holding %q, want the successor's", got)
+	}
+	if rs := cached(); rs != successor || rs.shardID != 5041 {
+		t.Fatalf("cached shard after the fence = %+v, want the successor's shard 5041 kept", rs)
+	}
+
+	// An entry under the recorded id that names another database: refused,
+	// and the cached shard is neither retired nor replaced.
+	place("orders-3", "other", 5042)
+	record("orders-3", "third")
+	var mismatch *placement.IdentityMismatchError
+	if _, err := f.FenceServices(ctx, "rt", "orders", "third"); !errors.As(err, &mismatch) {
+		t.Fatalf("FenceServices() over another database's entry = %v, want *placement.IdentityMismatchError", err)
+	}
+	if rs := cached(); rs != successor {
+		t.Fatalf("cached shard after the refused fence = %+v, want the successor's kept", rs)
+	}
+
+	// The predecessor's shard was never touched: fenced by its own id, it
+	// still holds its own data.
+	record("orders-1", "first")
+	prior, err := f.FenceServices(ctx, "rt", "orders", "first")
+	if err != nil {
+		t.Fatalf("FenceServices() for the predecessor: %v", err)
+	}
+	if got := read(prior); got != "predecessor" {
+		t.Fatalf("the predecessor's shard holds %q, want its own data", got)
+	}
+}

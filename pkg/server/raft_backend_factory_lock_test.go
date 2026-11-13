@@ -577,7 +577,7 @@ func TestRaftBackendFactory_StartSucceedsAgainAfterUnseal(t *testing.T) {
 	}
 	// A plan made while the barrier was unsealed, then started after the
 	// seal began: startPlanned refuses it.
-	plan, err := f.planStart(ctx, "su", "app", true, false)
+	plan, err := f.planStart(ctx, "su", "app", true, false, "")
 	if err != nil {
 		t.Fatalf("planStart: %v", err)
 	}

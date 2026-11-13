@@ -158,6 +158,27 @@ func (e *ReplicaDataRootError) Error() string {
 		" -- drop and re-create the database"
 }
 
+// IdentityMismatchError reports that the placement entry stored under a
+// catalog record's database id does not name that database: its recorded
+// database id or name differs. A drop fences only the entry the catalog
+// record names, so it is refused rather than acting on another database's
+// shard -- a dropped predecessor of the same name above all.
+type IdentityMismatchError struct {
+	TenantID string
+	Database string
+	// DatabaseID is the id the catalog record holds; GotDatabaseID and
+	// GotDatabase are what the placement entry under it records.
+	DatabaseID    string
+	GotDatabaseID string
+	GotDatabase   string
+}
+
+// Error implements the error interface.
+func (e *IdentityMismatchError) Error() string {
+	return "placement: the entry under database id " + e.DatabaseID + " of " + e.TenantID + "/" + e.Database +
+		" records database " + e.GotDatabase + " (id " + e.GotDatabaseID + "); refusing to act on another database's shard"
+}
+
 // NotAReplicaError refuses serving a dedicated-raft database on a node its
 // placement does not name. The node must not resolve the database through its
 // own catalog or start a shard of its own: a write it acknowledged there would

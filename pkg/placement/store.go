@@ -607,6 +607,27 @@ func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placemen
 	return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrPlacementNotFound}
 }
 
+// GetBound returns the placement entry of the database a catalog record
+// names: the entry keyed by its database id, never one found by the name. A
+// dropped predecessor whose entry outlived its drop shares the name, so a
+// lookup that must act on exactly this database -- a drop's fence above all --
+// keys by the id. An entry under the id that records another database id or
+// name is refused with *IdentityMismatchError; a missing entry is
+// ErrPlacementNotFound, as from Get.
+func (s *Store) GetBound(ctx context.Context, tenantID, databaseID, name string) (*Placement, error) {
+	p, err := s.Get(ctx, tenantID, databaseID)
+	if err != nil {
+		return nil, err
+	}
+	if p.DatabaseID != databaseID || p.Database != name {
+		return nil, &IdentityMismatchError{
+			TenantID: tenantID, Database: name, DatabaseID: databaseID,
+			GotDatabaseID: p.DatabaseID, GotDatabase: p.Database,
+		}
+	}
+	return p, nil
+}
+
 // Watch returns a typed placement change stream when the backing KV implements
 // Watcher; otherwise it returns ErrWatchUnsupported. The returned channel is
 // closed when ctx is cancelled or the underlying feed ends.

@@ -178,6 +178,43 @@ func TestStore_GetByNameFindsAFencedEntryAlone(t *testing.T) {
 	}
 }
 
+// TestStore_GetBoundKeysByTheCatalogDatabaseID proves GetBound returns the
+// entry the catalog record's id keys even when a dropped predecessor's entry,
+// which GetByName lists first, shares the name; refuses an entry under the id
+// that names another database; and reports a missing id as not found.
+func TestStore_GetBoundKeysByTheCatalogDatabaseID(t *testing.T) {
+	s, err := NewStore(newFakeKV())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	const predecessor = "00000000000000000000000000000001"
+	const successor = "ffffffffffffffffffffffffffffff01"
+	putNamed(t, s, predecessor, 1000, true)
+	putNamed(t, s, successor, 1001, true)
+	if got, err := s.GetByName(ctx, "acme", "orders"); err != nil || got.DatabaseID != predecessor {
+		t.Fatalf("GetByName = %+v, %v; want the predecessor's entry, which it lists first", got, err)
+	}
+	got, err := s.GetBound(ctx, "acme", successor, "orders")
+	if err != nil || got.DatabaseID != successor || got.ShardID != 1001 {
+		t.Fatalf("GetBound = %+v, %v; want the successor's entry", got, err)
+	}
+
+	other := samplePlacement("acme", "other", 1002)
+	other.DatabaseID = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+	if err := s.Put(ctx, other); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	var mismatch *IdentityMismatchError
+	if _, err := s.GetBound(ctx, "acme", other.DatabaseID, "orders"); !errors.As(err, &mismatch) ||
+		mismatch.GotDatabase != "other" || mismatch.DatabaseID != other.DatabaseID {
+		t.Fatalf("GetBound of another database's entry: err = %v, want *IdentityMismatchError", err)
+	}
+	if _, err := s.GetBound(ctx, "acme", "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e", "orders"); !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("GetBound of an unplaced id: err = %v, want ErrPlacementNotFound", err)
+	}
+}
+
 // TestStore_GetByNameRefusesTwoLiveEntries proves the lookup fails closed
 // when two live entries name the database, rather than pick one by scan
 // order.
