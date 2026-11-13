@@ -300,8 +300,6 @@ func TestCADelegatePolicy_CLI_ConsumerOperations_PerProtocol(t *testing.T) {
 	}
 }
 
-// delegationPolicyStore is the node's CA, read directly: the record a
-// transport must not be able to reach.
 // assertCrossTenantPolicyDeleteNotFound: tenant B deleting tenant A's
 // policy fails exactly as B deleting a policy no tenant holds does, a
 // not-found refusal with a non-zero exit, so B learns nothing of A's.
@@ -331,6 +329,8 @@ func assertCrossTenantPolicyDeleteNotFound(t *testing.T, node *multiProtoNode, c
 	}
 }
 
+// delegationPolicyStore is the node's CA, read directly: the record a
+// transport must not be able to reach.
 func delegationPolicyStore(t *testing.T, n *node.Node) cert.DelegationPolicyStore {
 	t.Helper()
 	policies, ok := n.Services().CertProv.(cert.DelegationPolicyStore)
