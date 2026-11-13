@@ -112,13 +112,34 @@ var hardConfinedMaterialPrefixes = []string{
 // credential's metadata, its retained versions and its staged rotation
 // values: former and future secret values, and the record that says which
 // version is current and when it rotates.
+// "__sys:cert_delegation_policy/" duplicates pkg/cert's unexported
+// prefixDelegationPolicy, for the same reason hardConfinedMaterialSuffix
+// duplicates cakey's record name (go-qrdb#1187): a standing delegation
+// policy authorizes certificate issuance, so an embedded caller holding
+// only kv:put must not be able to write one around
+// CertEnrollmentService's own policy-admin check. pkg/cert's own narrow
+// self-scan of one tenant's policies (ListDelegationPolicies) stays
+// visible through FilterInternalMap's owner escape, exactly as
+// CACertPEMs' certificate scan does (isHardConfinedKeyForScan).
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
 	credentials.MetaKeyPrefix,
 	credentials.VersionKeyPrefix,
 	credentials.StagedKeyPrefix,
+	delegationPolicyConfinedPrefix,
 }
+
+// delegationPolicyConfinedPrefix duplicates pkg/cert's unexported
+// prefixDelegationPolicy; TestDelegationPolicy_RecordsSitUnderTheConfinedPrefix
+// fails if the two drift apart.
+const delegationPolicyConfinedPrefix = "__sys:cert_delegation_policy/"
+
+// hardConfinedAllPrefixes is every confined namespace, for the root,
+// range and overlap tests below that do not look at a key's suffix:
+// hardConfinedPrefixes already lists hardConfinedMaterialPrefixes followed
+// by hardConfinedWholePrefixes.
+var hardConfinedAllPrefixes = hardConfinedPrefixes
 
 // hardConfinedMaterialSuffix is cakey.SoftwareProvider's literal record
 // name for the private half of any CA it manages (keyMaterial in
@@ -140,8 +161,8 @@ const hardConfinedMaterialSuffix = "/material"
 // benefit, since every candidate is re-checked by isHardConfinedKey (or
 // filterHardConfinedKeys/Map) before it is ever returned to a caller.
 var hardConfinedPrefixEnds = func() []string {
-	ends := make([]string, len(hardConfinedPrefixes))
-	for i, p := range hardConfinedPrefixes {
+	ends := make([]string, len(hardConfinedAllPrefixes))
+	for i, p := range hardConfinedAllPrefixes {
 		b := []byte(p)
 		b[len(b)-1]++
 		ends[i] = string(b)
@@ -153,33 +174,39 @@ var hardConfinedPrefixEnds = func() []string {
 // message, when the specific offending key is not available to the
 // caller (a bulk Transaction/Batch op that only reports "touches the
 // confined namespace", not which key within it).
-var hardConfinedPrefixesLabel = strings.Join(hardConfinedPrefixes, " or ")
+var hardConfinedPrefixesLabel = strings.Join(hardConfinedAllPrefixes, " or ")
 
 // isHardConfinedKey reports whether key is a CA's own "material" record --
 // never its "certificate" sibling, which is public (see this file's own
-// doc comment above).
+// doc comment above) -- or any key under hardConfinedWholePrefixes.
 func isHardConfinedKey(key string) bool {
-	return isHardConfinedMaterial(key) || isUnderHardConfinedWholePrefix(key)
+	return isHardConfinedWholeKey(key) || isHardConfinedMaterialKey(key)
 }
 
-// isHardConfinedMaterial reports whether key is a CA's own "material"
-// record under one of hardConfinedMaterialPrefixes.
-func isHardConfinedMaterial(key string) bool {
+// isHardConfinedWholeKey reports whether key lies under one of
+// hardConfinedWholePrefixes, whatever its suffix.
+func isHardConfinedWholeKey(key string) bool {
+	return hardConfinedWholePrefix(key) != ""
+}
+
+// hardConfinedWholePrefix returns the entry of hardConfinedWholePrefixes
+// key lies under, or "" when it lies under none.
+func hardConfinedWholePrefix(key string) string {
+	for _, p := range hardConfinedWholePrefixes {
+		if strings.HasPrefix(key, p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// isHardConfinedMaterialKey reports whether key is a CA's own "material"
+// record under one of hardConfinedPrefixes.
+func isHardConfinedMaterialKey(key string) bool {
 	if !strings.HasSuffix(key, hardConfinedMaterialSuffix) {
 		return false
 	}
 	for _, p := range hardConfinedMaterialPrefixes {
-		if strings.HasPrefix(key, p) {
-			return true
-		}
-	}
-	return false
-}
-
-// isUnderHardConfinedWholePrefix reports whether key lies under one of
-// hardConfinedWholePrefixes, every record of which is confined.
-func isUnderHardConfinedWholePrefix(key string) bool {
-	for _, p := range hardConfinedWholePrefixes {
 		if strings.HasPrefix(key, p) {
 			return true
 		}
@@ -203,7 +230,7 @@ func isUnderHardConfinedWholePrefix(key string) bool {
 // for asking the question isHardConfinedRoot answers about a DIFFERENT
 // kind of caller.
 func isHardConfinedRoot(prefix string) bool {
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedAllPrefixes {
 		if prefix == p {
 			return true
 		}
@@ -220,7 +247,7 @@ func hardConfinedRangeOverlaps(start, end string) bool {
 	if end == "" {
 		return isHardConfinedKey(start)
 	}
-	for i, p := range hardConfinedPrefixes {
+	for i, p := range hardConfinedAllPrefixes {
 		if start < hardConfinedPrefixEnds[i] && end > p {
 			return true
 		}
@@ -234,7 +261,7 @@ func hardConfinedRangeOverlaps(start, end string) bool {
 // confined namespace lies inside prefix (a broader sweep -- "__sys:", "",
 // or any other ancestor prefix -- that would reach it too).
 func hardConfinedPrefixOverlaps(prefix string) bool {
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedAllPrefixes {
 		if strings.HasPrefix(p, prefix) || strings.HasPrefix(prefix, p) {
 			return true
 		}
@@ -251,7 +278,7 @@ func hardConfinedPrefixOverlaps(prefix string) bool {
 // confined portion, e.g. for a dedicated count-only sub-query.
 func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 	var out [][2][]byte
-	for i, p := range hardConfinedPrefixes {
+	for i, p := range hardConfinedAllPrefixes {
 		pEnd := hardConfinedPrefixEnds[i]
 		overlaps := false
 		if len(end) == 0 {
@@ -289,12 +316,15 @@ func hardConfinedOverlapRanges(start, end []byte) [][2][]byte {
 // enumeration) or an embedded caller naming the CA's root directly,
 // whose certificate confinement never protected from a point Get either
 // (it is public data; see this file's own doc comment above
-// hardConfinedPrefixes).
+// hardConfinedPrefixes). A key under hardConfinedWholePrefixes follows
+// the certificate rule: stripped from a broader sweep, left in pkg/cert's
+// own narrow self-scan (ListDelegationPolicies), which the embedded
+// decorators never reach because they refuse such a scan root outright.
 func isHardConfinedKeyForScan(key, scanPrefix string) bool {
-	if isHardConfinedMaterial(key) {
+	if isHardConfinedMaterialKey(key) {
 		return true
 	}
-	for _, p := range hardConfinedPrefixes {
+	for _, p := range hardConfinedAllPrefixes {
 		if !strings.HasPrefix(key, p) {
 			continue
 		}
@@ -350,7 +380,13 @@ type HardConfinedKeyError struct {
 	Key string
 }
 
-// Error returns a human-readable description.
+// Error returns a human-readable description. A key under
+// hardConfinedWholePrefixes is reported as its confined namespace only:
+// a delegation policy's key names a tenant and a principal, which the
+// refusal does not echo back.
 func (e *HardConfinedKeyError) Error() string {
+	if p := hardConfinedWholePrefix(e.Key); p != "" {
+		return "service: " + p + " is not reachable through this surface"
+	}
 	return "service: " + e.Key + " is not reachable through this surface"
 }

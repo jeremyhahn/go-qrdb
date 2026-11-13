@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -27,6 +28,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc/codes"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -375,6 +377,32 @@ func authzToolError(err error) *mcpgo.CallToolResult {
 	return toolErrorResult("", code, "authorization denied: "+err.Error())
 }
 
+// limitPublicTool applies the rate-limit dimension publicverbs.Table
+// declares for a public tool before it is served without authentication.
+// AuthorizeMCP admits a public tool before authorize() runs, so without
+// this the verb's policy (admin:health for qrdb_health) would never be
+// drawn on. It mirrors QUIC's limitPublic: the bucket is keyed by the
+// caller's source address (host part), and a refusal is answered as the
+// rate-limited tool error authzToolError produces. Tools that are not
+// public, or whose RateLimit is empty, pass.
+func limitPublicTool(ctx context.Context, m *authmw.AuthMiddleware, tools *authmw.MCPToolRegistry, toolName string) error {
+	if m == nil || !tools.IsPublic(toolName) {
+		return nil
+	}
+	for _, v := range publicverbs.Verbs {
+		names := publicverbs.Table[v]
+		if names.MCP != toolName || names.RateLimit == "" {
+			continue
+		}
+		source, _ := auth.RemoteAddrFromContext(ctx)
+		if host, _, err := net.SplitHostPort(source); err == nil {
+			source = host
+		}
+		return m.CheckLoginRateLimit(ctx, "", source, names.RateLimit)
+	}
+	return nil
+}
+
 // authorizeTenantBarrierOp authorizes a per-tenant barrier tool invocation
 // against the TRUE target tenant carried in the tool arguments (not the
 // caller's ambient tenant). It delegates to the tenant-scoped authorizer,
@@ -461,6 +489,11 @@ func (s *Server) toolAuthzMiddleware() mcpserver.ToolHandlerMiddleware {
 						"tool", req.Params.Name, "error", err)
 					return authzToolError(err), nil
 				}
+				if err := limitPublicTool(ctx, s.authMW, s.toolPerms, req.Params.Name); err != nil {
+					slog.Warn("mcp: public tool call rate limited",
+						"tool", req.Params.Name, "error", err)
+					return authzToolError(err), nil
+				}
 			}
 			if s.soGate != nil {
 				if perm, ok := s.toolPerms.Lookup(req.Params.Name); ok {
@@ -515,6 +548,19 @@ func (s *Server) filterToolList(ctx context.Context, _ any, _ *mcpgo.ListToolsRe
 // declared tool that reaches data (*authmw.PublicMCPToolRefusedError); a
 // declared name no tool answers is refused with *UnknownPublicToolError.
 func (s *Server) registerPublicTools() error {
+	// The built-in no-login tools are publicverbs.Table's, the same table
+	// REST, gRPC and QUIC register theirs from. A row whose tool this
+	// endpoint does not serve is skipped: invitation redemption is on the
+	// separate invitation endpoint, and health is absent when the admin
+	// service is.
+	for name := range publicverbs.MCPTools() {
+		if s.mcpSrv.GetTool(name) == nil {
+			continue
+		}
+		if err := s.toolPerms.RegisterPublic(name); err != nil {
+			return err
+		}
+	}
 	for _, m := range s.modules {
 		lister, ok := m.(apimodule.MCPPublicToolLister)
 		if !ok {

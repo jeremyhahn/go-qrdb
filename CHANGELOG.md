@@ -11,6 +11,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
+
 ### Added
 
 - **Named credentials rotate on a policy, once per interval across the cluster.**
@@ -30,6 +34,21 @@ are not reconstructed here — their history is in the git log.
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
   and CI Gate requires it.
 
+- **A tenant can hold standing delegation policies** (#1187). A policy is the
+  tenant's grant written down once (one per principal: `scope` and `ttl`), so an
+  embedder's server-owned work can mint and renew its delegation with no tenant
+  admin at hand. Writing, listing and deleting policies needs `certs:delegate`
+  in the caller's own tenant and refuses the system tenant and a delegated
+  caller; put and delete are audited as `cert.delegation_policy.put` /
+  `cert.delegation_policy.delete`, and a missing policy is
+  `DelegationPolicyNotFoundError` (404 / `NOT_FOUND`). Embedders mint under a
+  policy with `Node.MintDelegation`, from the tenant's own login CA, bounded by
+  the policy and the principal's grants; a renewal needs `certs:delegate` in
+  both. Policies live under `__sys:cert_delegation_policy/`, which the embedded
+  transport confines whole (every read, write, list, scan, watch and
+  transaction is refused), so no KV writer can forge one. Deleting a tenant
+  deletes its policies, and a mint for a tenant that is deleted or retired is
+  refused with `TenantNotFoundError`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
