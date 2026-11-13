@@ -41,6 +41,8 @@ func newCredentialCmd() *cobra.Command {
 		newCredentialStrategyCmd(),
 		newCredentialDeleteCmd(),
 		newCredentialRotateCmd(),
+		newCredentialRotationPolicyCmd(),
+		newCredentialMigrationConflictsCmd(),
 		newCredentialVersionsCmd(),
 		newCredentialRetrieveVersionCmd(),
 		newCredentialGCCmd(),
@@ -181,6 +183,152 @@ func newCredentialRotateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&value, "value", "", "New credential value")
 	_ = cmd.MarkFlagRequired("value")
 	cmd.Flags().Int64Var(&gracePeriodS, "grace-period", 0, "Seconds the previous version remains retrievable (0 = wipe immediately)")
+	return cmd
+}
+
+func newCredentialRotationPolicyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rotation-policy",
+		Short: "Set or show a credential's automatic rotation policy",
+	}
+	cmd.AddCommand(
+		newCredentialRotationPolicySetCmd(),
+		newCredentialRotationPolicyGetCmd(),
+	)
+	return cmd
+}
+
+func newCredentialRotationPolicySetCmd() *cobra.Command {
+	var (
+		enabled        bool
+		interval       string
+		retainVersions int
+	)
+	cmd := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Set a credential's automatic rotation policy",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := &transport.CredentialSetRotationPolicyRequest{
+				Name:           args[0],
+				Enabled:        enabled,
+				Interval:       interval,
+				RetainVersions: retainVersions,
+			}
+			if err := client.Credentials().CredentialSetRotationPolicy(cmd.Context(), req); err != nil {
+				return err
+			}
+			switch outputFormat {
+			case "json":
+				return printJSON(req)
+			case "yaml":
+				return printYAML(req)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "rotation policy for %s: enabled=%t interval=%s retain-versions=%d\n",
+					req.Name, req.Enabled, req.Interval, req.RetainVersions)
+				return nil
+			}
+		},
+	}
+	cmd.Flags().BoolVar(&enabled, "enabled", false, "Rotate the credential automatically on the interval")
+	cmd.Flags().StringVar(&interval, "interval", "", "Time between rotations, as a Go duration (for example 720h)")
+	cmd.Flags().IntVar(&retainVersions, "retain-versions", 0, "Versions kept after each rotation, the new one included")
+	return cmd
+}
+
+func newCredentialRotationPolicyGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <name>",
+		Short: "Show a credential's automatic rotation policy and its next rotation",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := client.Credentials().CredentialRotationPolicy(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "rotation policy for %s: enabled=%t interval=%s retain-versions=%d",
+					resp.Name, resp.Enabled, resp.Interval, resp.RetainVersions)
+				if resp.NextRotation != "" {
+					_, _ = fmt.Fprintf(outputWriter, " next-rotation=%s", resp.NextRotation)
+				}
+				_, _ = fmt.Fprintln(outputWriter)
+				return nil
+			}
+		},
+	}
+}
+
+func newCredentialMigrationConflictsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "migration-conflicts",
+		Short: "List or resolve this node's credential migration conflicts",
+	}
+	cmd.AddCommand(
+		newCredentialMigrationConflictsListCmd(),
+		newCredentialMigrationConflictsResolveCmd(),
+	)
+	return cmd
+}
+
+func newCredentialMigrationConflictsListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List the credentials whose node-local copy differs from the replicated record",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resp, err := client.Credentials().CredentialMigrationConflicts(cmd.Context())
+			if err != nil {
+				return err
+			}
+			switch outputFormat {
+			case "json":
+				return printJSON(resp)
+			case "yaml":
+				return printYAML(resp)
+			default:
+				for _, c := range resp.Conflicts {
+					_, _ = fmt.Fprintf(outputWriter, "%s: value=%t versions=%t policy=%t\n",
+						c.Name, c.Value, c.Versions, c.Policy)
+				}
+				return nil
+			}
+		},
+	}
+}
+
+func newCredentialMigrationConflictsResolveCmd() *cobra.Command {
+	var resolution string
+	cmd := &cobra.Command{
+		Use:   "resolve <name>",
+		Short: "Resolve a credential migration conflict by importing or discarding the node-local copy",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := &transport.CredentialResolveMigrationConflictRequest{
+				Name:       args[0],
+				Resolution: resolution,
+			}
+			if err := client.Credentials().CredentialResolveMigrationConflict(cmd.Context(), req); err != nil {
+				return err
+			}
+			switch outputFormat {
+			case "json":
+				return printJSON(req)
+			case "yaml":
+				return printYAML(req)
+			default:
+				_, _ = fmt.Fprintf(outputWriter, "migration conflict for %s resolved: %s\n", req.Name, req.Resolution)
+				return nil
+			}
+		},
+	}
+	cmd.Flags().StringVar(&resolution, "resolution", "", "import (the node-local value becomes a new version) or discard (keep the replicated record)")
+	_ = cmd.MarkFlagRequired("resolution")
 	return cmd
 }
 
