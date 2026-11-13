@@ -278,6 +278,7 @@ export type {
     RoleBinding,
     UpdateUserRequest,
     AddCertBindingRequest,
+    CertBinding,
     ListUsersRequest,
     ListUsersResponse,
 
