@@ -130,7 +130,7 @@ func newGateFixture(t *testing.T) *gateFixture {
 	now := time.Now().UTC()
 	v := &cacheVerifier{evidence: map[string]cachedEvidence{}}
 	gate, err := NewPeerAttestationGate(v, PeerAttestationPolicy{
-		Permissions:    []permission.Permission{gatedPerm, permission.IdentityGated, permission.AdminHealth},
+		Permissions:    []permission.Permission{gatedPerm, permission.IdentityGated},
 		MaxEvidenceAge: 5 * time.Minute,
 	})
 	if err != nil {
@@ -334,9 +334,8 @@ func TestPeerAttestationGate_RunsOnlyAfterRBACGrants(t *testing.T) {
 	}
 }
 
-// TestPeerAttestationGate_GatesTheRBACBypassingBranches: IdentityGated and the
-// sealed-tenant health allowance skip RBAC; a gated permission on either is
-// still gated.
+// TestPeerAttestationGate_GatesTheRBACBypassingBranches: IdentityGated skips
+// RBAC; a gated permission on it is still gated.
 func TestPeerAttestationGate_GatesTheRBACBypassingBranches(t *testing.T) {
 	t.Run("IdentityGated", func(t *testing.T) {
 		f := newGateFixture(t)
@@ -344,17 +343,6 @@ func TestPeerAttestationGate_GatesTheRBACBypassingBranches(t *testing.T) {
 		f.attest()
 		if err := f.m.authorize(f.ctx, f.identity, permission.IdentityGated); err != nil {
 			t.Fatalf("attested IdentityGated refused: %v", err)
-		}
-	})
-	t.Run("sealed tenant health", func(t *testing.T) {
-		f := newGateFixture(t)
-		// Sealed tenant IAM resolves no account, so the Subject stays the CN.
-		f.subject = "bob"
-		sealed := &auth.Identity{Subject: f.subject, TenantID: "acme", Metadata: map[string]string{tenantIAMSealedMetadataKey: "true"}}
-		requirePeerRefusal(t, f.m.authorize(f.ctx, sealed, permission.AdminHealth), f.subject, PeerAttestationNoEvidence, false)
-		f.attest()
-		if err := f.m.authorize(f.ctx, sealed, permission.AdminHealth); err != nil {
-			t.Fatalf("attested sealed-tenant health refused: %v", err)
 		}
 	})
 }

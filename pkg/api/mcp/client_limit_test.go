@@ -44,10 +44,13 @@ func clientFrom(t *testing.T, tlsCfg *tls.Config, local string) *http.Client {
 	return c
 }
 
-func postInitialize(t *testing.T, c *http.Client, url string, header ...string) (int, http.Header) {
+// postAnonymousCall POSTs a credential-less tools/call of qrdb_get. The
+// no-login verbs (initialize, qrdb_health) are answered anonymously, so the
+// request names a tool that needs a credential and is refused with 401.
+func postAnonymousCall(t *testing.T, c *http.Client, url string, header ...string) (int, http.Header) {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, url,
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"anon","version":"1"}}}`))
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qrdb_get","arguments":{}}}`))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -88,15 +91,15 @@ func TestClientLimit_MCP(t *testing.T) {
 
 	flooder := clientFrom(t, tlsCfg, "127.0.0.1")
 	for i := 0; i < 2; i++ {
-		if status, _ := postInitialize(t, flooder, url); status != http.StatusUnauthorized {
+		if status, _ := postAnonymousCall(t, flooder, url); status != http.StatusUnauthorized {
 			t.Fatalf("request %d: status %d, want 401", i, status)
 		}
 	}
-	status, header := postInitialize(t, flooder, url, "X-Forwarded-For", "203.0.113.9")
+	status, header := postAnonymousCall(t, flooder, url, "X-Forwarded-For", "203.0.113.9")
 	if status != http.StatusTooManyRequests || header.Get("Retry-After") == "" {
 		t.Fatalf("over the burst: status %d Retry-After %q, want 429 with Retry-After", status, header.Get("Retry-After"))
 	}
-	if status, _ := postInitialize(t, clientFrom(t, tlsCfg, "127.0.0.2"), url); status != http.StatusUnauthorized {
+	if status, _ := postAnonymousCall(t, clientFrom(t, tlsCfg, "127.0.0.2"), url); status != http.StatusUnauthorized {
 		t.Fatalf("other address: status %d, want 401", status)
 	}
 }
@@ -106,7 +109,7 @@ func TestClientLimit_MCP(t *testing.T) {
 func TestClientLimit_MCPUnlimitedByDefault(t *testing.T) {
 	url, client := startAuthenticatedMCP(t)
 	for i := 0; i < 4; i++ {
-		if status, _ := postInitialize(t, client, url); status != http.StatusUnauthorized {
+		if status, _ := postAnonymousCall(t, client, url); status != http.StatusUnauthorized {
 			t.Fatalf("request %d: status %d, want 401", i, status)
 		}
 	}

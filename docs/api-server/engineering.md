@@ -360,9 +360,16 @@ request.
 
 ## Public and authenticated-only routes
 
+The no-login client verbs (Health and invitation redemption) are one table,
+`pkg/api/publicverbs.Table`, with each verb's name on every transport and its
+pre-authentication rate-limit dimension. REST, gRPC, Unix, QUIC and MCP read
+their public set from it, so a verb's login requirement is the same on every
+transport (rulings 158 and 264(b)).
+
 | Route | Marker |
 |---|---|
-| `GET /health` | **public** (registered when admin is on) |
+| `GET /health`, gRPC / Unix `/qrdb.v1.QRDBService/Health`, QUIC `admin.Health`, MCP `qrdb_health` | **public** on every transport (registered when admin is on); each draws the `admin:health` rate-limit bucket by caller address before serving |
+| `POST /v1/invitations/redeem`, gRPC `RedeemInvitation`, QUIC `invitation.Redeem`, MCP `qrdb_invitation_redeem` | **public** (registered when invitations are on) |
 | `GET /v1/config/initialized` | **public** |
 | `GET /v1/ca/bootstrap` | **public**, only when exactly one bundle source is configured (cluster CA or host bundle); unconfigured it is not even claimed, so a host never collides with it |
 | `GET /v1/cluster/nodekey`, `POST /v1/cluster/keydelivery` | **public**, only when a cluster key receiver is wired |

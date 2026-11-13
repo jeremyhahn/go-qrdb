@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/x509"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
@@ -48,9 +49,18 @@ func (s *Server) AuthenticateDelegation(ctx context.Context, chain []*x509.Certi
 // principal (#1186). It is the first mint: once the principal holds a
 // delegation, it renews it over any transport through IssueDelegation, within
 // the same policy.
+//
+// A delegated caller is refused here with *service.DelegationDeniedError
+// before the service is reached: this entry point runs no transport
+// authorization, so a delegated identity renews only through
+// IssueDelegation, which re-authenticates its certificate and checks
+// certs:delegate.
 func (s *Server) MintDelegation(ctx context.Context, req *service.MintDelegationRequest) (*service.IssuedDelegation, error) {
 	if s.opts.certEnroll == nil {
 		return nil, &service.CertEnrollmentNotConfiguredError{Capability: "delegation policies"}
+	}
+	if _, delegated := auth.DelegationOf(auth.IdentityFromContext(ctx)); delegated {
+		return nil, &service.DelegationDeniedError{Reason: "a delegated caller renews through IssueDelegation, not the in-process first mint"}
 	}
 	return s.opts.certEnroll.MintDelegation(ctx, req)
 }

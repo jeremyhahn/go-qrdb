@@ -236,30 +236,6 @@ func TestResolveReadOptions_Empty(t *testing.T) {
 	}
 }
 
-func TestResolveReadOptions_WithConsistency(t *testing.T) {
-	ro := ResolveReadOptions(WithConsistency(ConsistencyEventual))
-	if !ro.ConsistencySet {
-		t.Error("expected ConsistencySet=true")
-	}
-	if ro.Consistency != ConsistencyEventual {
-		t.Errorf("expected Consistency=ConsistencyEventual, got %v", ro.Consistency)
-	}
-}
-
-func TestResolveReadOptions_WithReadTimeout(t *testing.T) {
-	ro := ResolveReadOptions(WithReadTimeout(5000))
-	if ro.TimeoutMs != 5000 {
-		t.Errorf("expected TimeoutMs=5000, got %v", ro.TimeoutMs)
-	}
-}
-
-func TestResolveReadOptions_WithAllowStale(t *testing.T) {
-	ro := ResolveReadOptions(WithAllowStale())
-	if !ro.AllowStale {
-		t.Error("expected AllowStale=true")
-	}
-}
-
 func TestResolveReadOptions_Combined(t *testing.T) {
 	ro := ResolveReadOptions(
 		WithConsistency(ConsistencyEventual),

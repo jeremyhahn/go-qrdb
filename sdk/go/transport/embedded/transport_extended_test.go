@@ -64,31 +64,6 @@ var errSentinel = errors.New("ext: sentinel error")
 // CredentialSubmit / Strategy / Delete (0% coverage previously)
 // ===========================================================================
 
-func TestEmbeddedCredential_Submit(t *testing.T) {
-	var (
-		captured  string
-		capturedV []byte
-	)
-	svc := &mockCredentialService{
-		submitFn: func(_ context.Context, name string, value []byte) error {
-			captured = name
-			capturedV = value
-			return nil
-		},
-	}
-	tr := newExtTransport(t, WithCredentialService(svc))
-
-	if err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{
-		Name:  "db",
-		Value: []byte("secret"),
-	}); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if captured != "db" || string(capturedV) != "secret" {
-		t.Errorf("captured (%q, %q)", captured, string(capturedV))
-	}
-}
-
 func TestEmbeddedCredential_Submit_NilService(t *testing.T) {
 	tr := newExtTransport(t)
 	err := tr.CredentialSubmit(context.Background(), &transport.CredentialSubmitRequest{})
@@ -107,21 +82,6 @@ func TestEmbeddedCredential_Submit_Closed(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCredential_Strategy(t *testing.T) {
-	svc := &mockCredentialService{
-		strategyFn: func() string { return "vault" },
-	}
-	tr := newExtTransport(t, WithCredentialService(svc))
-
-	resp, err := tr.CredentialStrategy(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if resp.Strategy != "vault" {
-		t.Errorf("Strategy = %q, want vault", resp.Strategy)
-	}
-}
-
 func TestEmbeddedCredential_Strategy_NilService(t *testing.T) {
 	tr := newExtTransport(t)
 	_, err := tr.CredentialStrategy(context.Background())
@@ -137,24 +97,6 @@ func TestEmbeddedCredential_Strategy_Closed(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbeddedCredential_Delete(t *testing.T) {
-	var captured string
-	svc := &mockCredentialService{
-		deleteFn: func(_ context.Context, name string) error {
-			captured = name
-			return nil
-		},
-	}
-	tr := newExtTransport(t, WithCredentialService(svc))
-
-	if err := tr.CredentialDelete(context.Background(), "expired-token"); err != nil {
-		t.Fatalf("unexpected: %v", err)
-	}
-	if captured != "expired-token" {
-		t.Errorf("captured = %q", captured)
 	}
 }
 
@@ -177,11 +119,24 @@ func TestEmbeddedCredential_Delete_Closed(t *testing.T) {
 }
 
 func TestEmbeddedCredential_Submit_Dispatch(t *testing.T) {
-	svc := &mockCredentialService{}
+	var (
+		captured  string
+		capturedV []byte
+	)
+	svc := &mockCredentialService{
+		submitFn: func(_ context.Context, name string, value []byte) error {
+			captured = name
+			capturedV = value
+			return nil
+		},
+	}
 	tr := newExtTransport(t, WithCredentialService(svc))
 	if err := tr.Request(context.Background(), "CredentialSubmit",
-		&transport.CredentialSubmitRequest{Name: "k", Value: []byte("v")}, nil); err != nil {
+		&transport.CredentialSubmitRequest{Name: "db", Value: []byte("secret")}, nil); err != nil {
 		t.Fatalf("dispatch: %v", err)
+	}
+	if captured != "db" || string(capturedV) != "secret" {
+		t.Errorf("captured (%q, %q)", captured, string(capturedV))
 	}
 }
 
@@ -207,10 +162,20 @@ func TestEmbeddedCredential_Strategy_Dispatch(t *testing.T) {
 }
 
 func TestEmbeddedCredential_Delete_Dispatch(t *testing.T) {
-	tr := newExtTransport(t, WithCredentialService(&mockCredentialService{}))
+	var captured string
+	svc := &mockCredentialService{
+		deleteFn: func(_ context.Context, name string) error {
+			captured = name
+			return nil
+		},
+	}
+	tr := newExtTransport(t, WithCredentialService(svc))
 	if err := tr.Request(context.Background(), "CredentialDelete",
-		&transport.CredentialDeleteRequest{Name: "x"}, nil); err != nil {
+		&transport.CredentialDeleteRequest{Name: "expired-token"}, nil); err != nil {
 		t.Fatalf("dispatch: %v", err)
+	}
+	if captured != "expired-token" {
+		t.Errorf("captured = %q", captured)
 	}
 }
 
@@ -693,17 +658,6 @@ func TestEmbeddedSealStore_Status_Closed(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestEmbeddedSealStore_WithOptionAssigns(t *testing.T) {
-	// We can not construct a real *seal.SealStore without heavy
-	// dependencies. Verify the option is invocable with nil and the
-	// pointer is stored. Closed/nil paths above already cover nil.
-	opt := WithSealStore(nil)
-	tr := newExtTransport(t, opt)
-	if tr.sealStoreSvc != nil {
-		t.Errorf("sealStoreSvc = %v, want nil", tr.sealStoreSvc)
 	}
 }
 

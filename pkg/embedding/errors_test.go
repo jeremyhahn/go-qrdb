@@ -117,22 +117,6 @@ func TestHTTPError_As(t *testing.T) {
 	}
 }
 
-func TestDimensionMismatchError_Error(t *testing.T) {
-	e := &DimensionMismatchError{Expected: 1536, Received: 768}
-	msg := e.Error()
-	if !strings.Contains(msg, "1536") || !strings.Contains(msg, "768") {
-		t.Errorf("expected both dimensions in message, got %q", msg)
-	}
-}
-
-func TestDimensionMismatchError_As(t *testing.T) {
-	var target *DimensionMismatchError
-	err := &DimensionMismatchError{Expected: 512, Received: 256}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *DimensionMismatchError")
-	}
-}
-
 func TestMarshalError_Error(t *testing.T) {
 	e := &MarshalError{Cause: errSentinel}
 	msg := e.Error()

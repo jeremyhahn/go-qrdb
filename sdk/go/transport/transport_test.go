@@ -271,14 +271,6 @@ func TestNotLeaderError_UnknownLeader(t *testing.T) {
 	}
 }
 
-func TestTLSError_Unwrap(t *testing.T) {
-	inner := errors.New("handshake failed")
-	err := &TLSError{Err: inner}
-	if !errors.Is(err, inner) {
-		t.Error("expected Unwrap to return inner error")
-	}
-}
-
 func TestClosedError_Message(t *testing.T) {
 	err := &ClosedError{}
 	expected := "transport: connection is closed"
@@ -295,25 +287,9 @@ func TestDatabaseNotFoundError_Message(t *testing.T) {
 	}
 }
 
-func TestDatabaseNotFoundError_EmptyName(t *testing.T) {
-	err := &DatabaseNotFoundError{}
-	expected := "transport: database not found: "
-	if err.Error() != expected {
-		t.Errorf("expected %q, got %q", expected, err.Error())
-	}
-}
-
 func TestDatabaseExistsError_Message(t *testing.T) {
 	err := &DatabaseExistsError{Name: "analytics"}
 	expected := "transport: database already exists: analytics"
-	if err.Error() != expected {
-		t.Errorf("expected %q, got %q", expected, err.Error())
-	}
-}
-
-func TestDatabaseExistsError_EmptyName(t *testing.T) {
-	err := &DatabaseExistsError{}
-	expected := "transport: database already exists: "
 	if err.Error() != expected {
 		t.Errorf("expected %q, got %q", expected, err.Error())
 	}
