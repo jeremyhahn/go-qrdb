@@ -192,3 +192,99 @@ func TestMintDelegation_WhileThePolicyStands(t *testing.T) {
 		t.Fatalf("renewal after the delete: err = %v, want *service.DelegationPolicyNotFoundError", err)
 	}
 }
+
+// countingIssuer is the real provider with its client-certificate issuer
+// counted, so a test can tell a refused mint never reached it.
+type countingIssuer struct {
+	cert.CertProvider
+	issued int
+}
+
+func (c *countingIssuer) IssueClientCert(ctx context.Context, req *cert.IssueRequest) (*cert.IssuedCert, error) {
+	c.issued++
+	return c.CertProvider.IssueClientCert(ctx, req)
+}
+
+// mintEvents counts the delegation mint events in an audit snapshot.
+func mintEvents(events []audit.AuditEvent) int {
+	n := 0
+	for i := range events {
+		if events[i].Action == service.ActionCertDelegationMint {
+			n++
+		}
+	}
+	return n
+}
+
+// countedPolicyService is newPolicyService with its issuer counted and its
+// policy store optionally wrapped.
+func countedPolicyService(t *testing.T, ring *audit.RingBuffer, wrap func(cert.DelegationPolicyStore) cert.DelegationPolicyStore) (*service.CertEnrollmentService, *countingIssuer) {
+	t.Helper()
+	p := cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), sealtest.UnsealedBarrier(t),
+		cert.WithTrustDomain("qrdb.example.com"))
+	if err := p.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var store cert.DelegationPolicyStore = p
+	if wrap != nil {
+		store = wrap(store)
+	}
+	issuer := &countingIssuer{CertProvider: p}
+	svc := service.NewCertEnrollmentService(issuer, nil, nil, service.WithDelegationPolicyStore(store),
+		service.WithEnrollmentTenants(acmeTenant{}), service.WithEnrollmentAuditLogger(ring))
+	return svc, issuer
+}
+
+// A renewal needs certs:delegate in the policy's scope, not only in the
+// certificate's: a delegation minted before the policy was replaced by one
+// without it does not renew once more.
+func TestMintDelegation_ARenewalNeedsDelegateInThePolicyScope(t *testing.T) {
+	ring := audit.NewRingBuffer(16)
+	svc, issuer := countedPolicyService(t, ring, nil)
+	admin := anchorCaller("acme", "alice")
+
+	if _, err := svc.PutDelegationPolicy(admin, billingPolicy()); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	issued, err := svc.MintDelegation(servicePrincipalCtx("billing"), &service.MintDelegationRequest{TenantID: "acme", CSRPEM: delegationCSR(t)})
+	if err != nil {
+		t.Fatalf("MintDelegation: %v", err)
+	}
+	g, _ := mintedGrant(t, issued.CertPEM)
+	if !slices.Contains(g.Scope, "certs:delegate") {
+		t.Fatalf("minted scope %v holds no certs:delegate", g.Scope)
+	}
+	renewing := delegatedCtx(t, g)
+
+	// The policy is replaced by one that no longer allows a renewal.
+	if _, err := svc.PutDelegationPolicy(admin, &service.DelegationPolicyRequest{Principal: "billing", Scope: []string{"kv:get", "kv:put"}, TTL: 30 * time.Minute}); err != nil {
+		t.Fatalf("PutDelegationPolicy without certs:delegate: %v", err)
+	}
+	calls, events := issuer.issued, mintEvents(ring.Snapshot())
+	var denied *service.DelegationDeniedError
+	got, err := svc.IssueDelegation(renewing, &service.IssueDelegationRequest{Scope: []string{"kv:get"}, TTL: 10 * time.Minute, CSRPEM: delegationCSR(t)})
+	if got != nil || !errors.As(err, &denied) {
+		t.Fatalf("renewal under a policy without certs:delegate: issued %v, err = %v; want *service.DelegationDeniedError", got != nil, err)
+	}
+	if issuer.issued != calls {
+		t.Fatalf("the refused renewal reached the issuer: %d calls, want %d", issuer.issued, calls)
+	}
+	if n := mintEvents(ring.Snapshot()); n != events {
+		t.Fatalf("the refused renewal wrote a mint event: %d events, want %d", n, events)
+	}
+
+	// With certs:delegate back in the policy's scope the renewal issues.
+	if _, err := svc.PutDelegationPolicy(admin, billingPolicy()); err != nil {
+		t.Fatalf("PutDelegationPolicy with certs:delegate: %v", err)
+	}
+	renewed, err := svc.IssueDelegation(renewing, &service.IssueDelegationRequest{Scope: []string{"kv:get"}, TTL: 10 * time.Minute, CSRPEM: delegationCSR(t)})
+	if err != nil {
+		t.Fatalf("renewal under a policy with certs:delegate: %v", err)
+	}
+	if rg, _ := mintedGrant(t, renewed.CertPEM); !slices.Equal(rg.Scope, []string{"kv:get"}) {
+		t.Fatalf("renewed %+v", rg)
+	}
+	if issuer.issued != calls+1 {
+		t.Fatalf("the allowed renewal made %d issuer calls, want %d", issuer.issued, calls+1)
+	}
+}
