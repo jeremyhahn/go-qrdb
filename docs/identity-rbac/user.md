@@ -358,6 +358,27 @@ Your Admin role grants no data permissions (`kv:get` and the like) of its own,
 so the application's own grants are what bound the delegation, not yours.
 Full reference: [../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
 
+### Letting it renew on its own: a standing policy
+
+Issuing a fresh certificate every day is a chore. Instead, write a **standing
+delegation policy** once: it names the principal, the most it may be handed,
+and the longest each certificate may live. Writing, listing and deleting
+policies needs `certs:delegate`, and deleting a policy revokes it: no further
+certificate is minted under it.
+
+While the policy stands, the application mints its first certificate itself
+and renews it with the certificate it holds, with no one from your tenant at
+hand. A renewal may ask for less scope or a shorter life than the policy, never
+more, and never past 24 hours. A renewal needs `certs:delegate` twice: in the
+policy's scope, and in the grants of the principal's role. Every put, delete
+and mint is recorded in your tenant's audit trail. Deleting the tenant
+deletes its policies.
+
+Deleting the policy stops every further mint and renewal at once. The
+certificate the application already holds keeps working until it expires;
+revoke its serial too if you want it out now. Writing, listing and deleting a
+policy all need `certs:delegate`, in your own tenant.
+
 ## Telling whether a caller owns its tenant
 
 An application built on the embedded SDK often needs one answer: is this
