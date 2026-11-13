@@ -22,7 +22,12 @@ are not reconstructed here — their history is in the git log.
 - **A tenant can hold standing delegation policies** (#1187). A policy is the
   tenant's grant written down once (one per principal: `scope` and `ttl`), so an
   embedder's server-owned work can mint and renew its delegation with no tenant
-  admin at hand. Writing, listing and deleting policies needs `certs:delegate`
+  admin at hand. REST `POST|GET /certs/delegate/policies` and
+  `DELETE /certs/delegate/policies/{principal}`, gRPC and Unix
+  `PutDelegationPolicy` / `ListDelegationPolicies` / `DeleteDelegationPolicy`,
+  QUIC `cert.DelegationPolicyPut|List|Delete`, the MCP tools
+  `qrdb_cert_delegation_policy_put|list|delete`, and the Go SDK methods of the
+  same names write, list and delete them. Each needs `certs:delegate`
   in the caller's own tenant and refuses the system tenant and a delegated
   caller; put and delete are audited as `cert.delegation_policy.put` /
   `cert.delegation_policy.delete`, and a missing policy is
