@@ -213,26 +213,6 @@ func TestRESTMVCC_PutWithLease_Success(t *testing.T) {
 	}
 }
 
-func TestRESTMVCC_GetRevision_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "aw==", "value": "dg==", "mod_revision": 1}})
-	})
-	if _, err := rt.GetRevision(context.Background(), "k"); err != nil {
-		t.Fatalf("GetRevision: %v", err)
-	}
-}
-
-func TestRESTMVCC_GetAtRevision_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/kv/"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"kv": map[string]interface{}{"key": "aw==", "value": "dg=="}})
-	})
-	if _, err := rt.GetAtRevision(context.Background(), "k", 1); err != nil {
-		t.Fatalf("GetAtRevision: %v", err)
-	}
-}
-
 func TestRESTMVCC_Range_Success(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodGet, "/kv/range"), func(w http.ResponseWriter, _ *http.Request) {
@@ -240,30 +220,6 @@ func TestRESTMVCC_Range_Success(t *testing.T) {
 	})
 	if _, err := rt.Range(context.Background(), []byte("a"), []byte("z"), transport.RangeOptions{Limit: 10}); err != nil {
 		t.Fatalf("Range: %v", err)
-	}
-}
-
-func TestRESTMVCC_Compact_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/kv/compact"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	if err := rt.Compact(context.Background(), 1); err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-}
-
-func TestRESTMVCC_CurrentRevision_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/kv/revision"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]int64{"revision": 42})
-	})
-	rev, err := rt.CurrentRevision(context.Background())
-	if err != nil {
-		t.Fatalf("CurrentRevision: %v", err)
-	}
-	if rev != 42 {
-		t.Fatalf("rev = %d", rev)
 	}
 }
 

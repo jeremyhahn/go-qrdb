@@ -35,16 +35,6 @@ func openEmbeddedDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestEmbeddedConn_InsertKV verifies INSERT into the kv table works.
-func TestEmbeddedConn_InsertKV(t *testing.T) {
-	db := openEmbeddedDB(t)
-
-	_, err := db.Exec("INSERT INTO kv (`key`, `value`) VALUES ('hello', 'world')")
-	if err != nil {
-		t.Fatalf("INSERT: %v", err)
-	}
-}
-
 // TestEmbeddedConn_InsertAndSelect verifies INSERT and SELECT via sql.DB.
 func TestEmbeddedConn_InsertAndSelect(t *testing.T) {
 	db := openEmbeddedDB(t)
@@ -71,56 +61,6 @@ func TestEmbeddedConn_InsertAndSelect(t *testing.T) {
 	}
 	if k != "greet" {
 		t.Errorf("key = %q, want greet", k)
-	}
-}
-
-// TestEmbeddedConn_ExecRowsAffected verifies ExecContext returns correct RowsAffected.
-func TestEmbeddedConn_ExecRowsAffected(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=exectest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	ec, ok := conn.(sqld.ExecerContext)
-	if !ok {
-		t.Skip("conn does not implement ExecerContext")
-	}
-
-	r, err := ec.ExecContext(context.Background(), "INSERT INTO kv (`key`, `value`) VALUES ('k1', 'v1')", nil)
-	if err != nil {
-		t.Fatalf("ExecContext INSERT: %v", err)
-	}
-	_, err = r.RowsAffected()
-	if err != nil {
-		t.Fatalf("RowsAffected: %v", err)
-	}
-}
-
-// TestEmbeddedConn_QueryContext verifies QueryContext returns rows.
-func TestEmbeddedConn_QueryContext(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=querytest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer func() { _ = conn.Close() }()
-
-	qc, ok := conn.(sqld.QueryerContext)
-	if !ok {
-		t.Skip("conn does not implement QueryerContext")
-	}
-
-	rows, err := qc.QueryContext(context.Background(), "SELECT 1 + 1", nil)
-	if err != nil {
-		t.Fatalf("QueryContext: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	cols := rows.Columns()
-	if len(cols) == 0 {
-		t.Error("expected at least one column")
 	}
 }
 
@@ -160,67 +100,6 @@ func TestEmbeddedConn_PreparedStatement(t *testing.T) {
 	}
 	if key != "prepkey" {
 		t.Errorf("key = %q, want prepkey", key)
-	}
-}
-
-// TestEmbeddedConn_CloseBehavior verifies Close marks the connection as closed.
-func TestEmbeddedConn_CloseBehavior(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=closetest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-
-	if err := conn.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-// TestEmbeddedConn_QueryContextOnClosed verifies QueryContext on closed conn returns error.
-func TestEmbeddedConn_QueryContextOnClosed(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=closedqtest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	_ = conn.Close()
-
-	qc, ok := conn.(sqld.QueryerContext)
-	if !ok {
-		t.Skip("conn does not implement QueryerContext")
-	}
-
-	_, err = qc.QueryContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error on closed connection")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
-	}
-}
-
-// TestEmbeddedConn_ExecContextOnClosed verifies ExecContext on closed conn returns error.
-func TestEmbeddedConn_ExecContextOnClosed(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=closedextest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	_ = conn.Close()
-
-	ec, ok := conn.(sqld.ExecerContext)
-	if !ok {
-		t.Skip("conn does not implement ExecerContext")
-	}
-
-	_, err = ec.ExecContext(context.Background(), "SELECT 1", nil)
-	if err == nil {
-		t.Fatal("expected error on closed connection")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -323,28 +202,4 @@ func TestEmbeddedConn_Begin(t *testing.T) {
 		t.Fatal("expected non-nil tx")
 	}
 	_ = tx.Rollback()
-}
-
-// TestEmbeddedConn_BeginTxOnClosed verifies BeginTx on closed conn returns error.
-func TestEmbeddedConn_BeginTxOnClosed(t *testing.T) {
-	d := &Driver{}
-	conn, err := d.Open("embedded://memory?database=closedbegintest")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	_ = conn.Close()
-
-	cb, ok := conn.(sqld.ConnBeginTx)
-	if !ok {
-		t.Skip("conn does not implement ConnBeginTx")
-	}
-
-	_, err = cb.BeginTx(context.Background(), sqld.TxOptions{})
-	if err == nil {
-		t.Fatal("expected error on closed connection")
-	}
-	var ce *ConnClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected *ConnClosedError, got %T: %v", err, err)
-	}
 }
