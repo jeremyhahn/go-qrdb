@@ -48,7 +48,29 @@ func rebalancePlanToProto(p *service.RebalancePlanResult) *pb.RebalancePlan {
 		Moves:               moves,
 		EstimatedDurationNs: int64(p.EstimatedDuration),
 		CurrentImbalance:    p.CurrentImbalance,
+		Skipped:             rebalanceSkippedToProto(p.Skipped),
 	}
+}
+
+// rebalanceSkippedToProto carries the planner's refused moves and their
+// reasons onto the wire, so an operator sees why a plan is short.
+func rebalanceSkippedToProto(skipped []service.RebalanceSkippedMove) []*pb.RebalanceSkippedMove {
+	if len(skipped) == 0 {
+		return nil
+	}
+	out := make([]*pb.RebalanceSkippedMove, len(skipped))
+	for i, s := range skipped {
+		out[i] = &pb.RebalanceSkippedMove{
+			ShardId:  s.ShardID,
+			FromNode: s.FromNode,
+			ToNode:   s.ToNode,
+			Reason:   s.Reason,
+		}
+		if s.Err != nil {
+			out[i].Error = s.Err.Error()
+		}
+	}
+	return out
 }
 
 // protoToRebalancePlan converts a proto RebalancePlan to a service-layer

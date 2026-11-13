@@ -127,7 +127,27 @@ func protoToRebalancePlan(p *pb.RebalancePlan) *transport.RebalancePlan {
 		Moves:             moves,
 		EstimatedDuration: time.Duration(p.GetEstimatedDurationNs()),
 		CurrentImbalance:  p.GetCurrentImbalance(),
+		Skipped:           protoToRebalanceSkipped(p.GetSkipped()),
 	}
+}
+
+// protoToRebalanceSkipped carries the planner's refused moves and their
+// reasons from the wire into the transport plan.
+func protoToRebalanceSkipped(skipped []*pb.RebalanceSkippedMove) []transport.RebalanceSkippedMove {
+	if len(skipped) == 0 {
+		return nil
+	}
+	out := make([]transport.RebalanceSkippedMove, len(skipped))
+	for i, s := range skipped {
+		out[i] = transport.RebalanceSkippedMove{
+			ShardID:  s.GetShardId(),
+			FromNode: s.GetFromNode(),
+			ToNode:   s.GetToNode(),
+			Reason:   s.GetReason(),
+			Error:    s.GetError(),
+		}
+	}
+	return out
 }
 
 // rebalancePlanToProto converts a transport RebalancePlan to its proto form.
