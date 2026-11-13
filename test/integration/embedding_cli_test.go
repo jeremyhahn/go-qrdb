@@ -56,7 +56,13 @@
 package integration_test
 
 import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -152,5 +158,122 @@ func testEmbeddingUnconfiguredOverProtocol(t *testing.T, node *multiProtoNode, p
 	out, err = runCLIProto(t, node, proto, "embedding", "models", "--provider", "openai")
 	if err == nil {
 		t.Fatalf("[%s] embedding models --provider succeeded against an unconfigured embedding service, got: %s", proto.name, out)
+	}
+}
+
+// fakeEmbeddingProvider is an OpenAI-compatible /embeddings endpoint. Each
+// input text ends in "-<n>"; its embedding is [n], so a reordered result is
+// visible to the caller. It records the largest input it was sent.
+type fakeEmbeddingProvider struct {
+	mu       sync.Mutex
+	maxBatch int
+	calls    int
+}
+
+func (f *fakeEmbeddingProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Input []string `json:"input"`
+		Model string   `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	f.calls++
+	if len(req.Input) > f.maxBatch {
+		f.maxBatch = len(req.Input)
+	}
+	f.mu.Unlock()
+
+	type datum struct {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	}
+	data := make([]datum, len(req.Input))
+	for i, text := range req.Input {
+		n, err := strconv.Atoi(text[strings.LastIndex(text, "-")+1:])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		data[i] = datum{Embedding: []float32{float32(n)}, Index: i}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data":  data,
+		"model": req.Model,
+		"usage": map[string]int{"prompt_tokens": len(req.Input), "total_tokens": len(req.Input)},
+	})
+}
+
+func (f *fakeEmbeddingProvider) snapshot() (calls, maxBatch int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls, f.maxBatch
+}
+
+// TestEmbedding_CLI_BatchEmbedSplitsOversize_PerProtocol proves, on one node
+// with an embedding provider configured and over every transport, that
+// `qrdb embedding batch-embed` with more texts than --batch-size is split
+// into provider calls of at most --batch-size texts and returns every
+// embedding in input order, not refused.
+func TestEmbedding_CLI_BatchEmbedSplitsOversize_PerProtocol(t *testing.T) {
+	t.Parallel()
+	fake := &fakeEmbeddingProvider{}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	cfg := fmt.Sprintf(`embedding:
+  default_provider: default
+  providers:
+    - name: default
+      base_url: %s
+      model: test-embedding
+`, srv.URL)
+	node := startMultiProtocolNodeWithConfig(t, "mvcc", cfg)
+
+	const texts, batchSize = 5, 2
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			args := []string{"--output", "json", "embedding", "batch-embed"}
+			for i := 0; i < texts; i++ {
+				// Per-protocol texts: the shared node's cache must not
+				// answer one transport from another's run.
+				args = append(args, fmt.Sprintf("%s-%d", proto.name, i))
+			}
+			args = append(args, "--batch-size", strconv.Itoa(batchSize))
+
+			callsBefore, _ := fake.snapshot()
+			out, err := runCLIProto(t, node, proto, args...)
+			if err != nil {
+				t.Fatalf("[%s] embedding batch-embed: %v (output: %s)", proto.name, err, out)
+			}
+			start := strings.Index(out, "{")
+			if start < 0 {
+				t.Fatalf("[%s] embedding batch-embed printed no JSON: %s", proto.name, out)
+			}
+			var got struct {
+				Embeddings [][]float32 `json:"embeddings"`
+			}
+			if err := json.Unmarshal([]byte(out[start:]), &got); err != nil {
+				t.Fatalf("[%s] decode batch-embed output: %v (output: %s)", proto.name, err, out)
+			}
+			if len(got.Embeddings) != texts {
+				t.Fatalf("[%s] batch-embed returned %d embeddings, want %d", proto.name, len(got.Embeddings), texts)
+			}
+			for i, emb := range got.Embeddings {
+				if len(emb) != 1 || emb[0] != float32(i) {
+					t.Fatalf("[%s] embedding %d = %v, want [%d] (input order lost)", proto.name, i, emb, i)
+				}
+			}
+			callsAfter, maxBatch := fake.snapshot()
+			if maxBatch > batchSize {
+				t.Fatalf("[%s] provider was sent %d texts in one call, want at most %d", proto.name, maxBatch, batchSize)
+			}
+			if callsAfter == callsBefore {
+				t.Fatalf("[%s] batch-embed never reached the provider", proto.name)
+			}
+		})
 	}
 }

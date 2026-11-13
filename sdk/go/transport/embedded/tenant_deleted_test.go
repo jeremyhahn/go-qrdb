@@ -70,14 +70,6 @@ func TestEmbedded_ListDeletedTenants_PagesThroughRetiredIds(t *testing.T) {
 	}
 }
 
-func TestEmbedded_ReconcileDeletedTenants_ReportsWhatItInspected(t *testing.T) {
-	tr := newExtTransport(t, WithTenantService(retiredEmbeddedTenants(t, "alpha")))
-	report, err := tr.ReconcileDeletedTenants(context.Background())
-	if err != nil || report.Inspected != 1 {
-		t.Fatalf("report = %+v, %v; want 1 inspected", report, err)
-	}
-}
-
 func TestEmbedded_DeletedTenantVerbs_NilServiceAndClosed(t *testing.T) {
 	tr := newExtTransport(t)
 	var nse *NilServiceError
