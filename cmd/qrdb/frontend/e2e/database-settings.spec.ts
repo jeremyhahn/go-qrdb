@@ -325,3 +325,109 @@ test.describe("Admin - Database settings forms", () => {
     await clearError(page, "DatabaseBinding.UpdateSQL");
   });
 });
+
+// ---------------------------------------------------------------------------
+// User workspace: the Settings tab of a database's workspace renders the
+// user-role subset of the forms and propagates a save into the shared
+// database store, which the workspace reads its database from.
+// ---------------------------------------------------------------------------
+
+const OTHER_DB = "reportsdb";
+
+const workspaceState: MockState = {
+  ...secondLaunchEmbeddedState,
+  databases: [
+    { name: DB_NAME, backend: "pebble", status: "open" },
+    {
+      name: OTHER_DB,
+      backend: "memory",
+      status: "open",
+      sql: { concurrency: "optimistic" },
+      compaction: { mode: "revision", retainRevisions: 5 },
+    },
+  ],
+};
+
+/** Opens the named database's workspace on its Settings tab. */
+async function openWorkspaceSettings(page: Page, name: string): Promise<Locator> {
+  await page.locator("aside").getByText(name, { exact: true }).click();
+  await expect(
+    page.locator(".breadcrumbs").getByText(name, { exact: false }),
+  ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  const main = page.locator("main");
+  await main.getByRole("tab", { name: "Settings" }).click();
+  await expect(main.getByTestId("db-settings-sql")).toBeVisible({
+    timeout: LOAD_TIMEOUT,
+  });
+  return main;
+}
+
+test.describe("User workspace - database settings", () => {
+  test.use({ mockState: workspaceState });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await expect(
+      page.locator("aside").getByText(DB_NAME, { exact: true }),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
+  });
+
+  test("renders only the user sections", async ({ page }) => {
+    const main = await openWorkspaceSettings(page, DB_NAME);
+    await expect(main.getByTestId("db-settings-sql")).toBeVisible();
+    await expect(main.getByTestId("db-settings-compaction")).toBeVisible();
+    for (const id of ["raft", "barrier", "connection"]) {
+      await expect(main.getByTestId(`db-settings-${id}`)).toHaveCount(0);
+    }
+  });
+
+  test("saves SQL and compaction into the shared store and follows the selected database", async ({
+    page,
+  }) => {
+    let main = await openWorkspaceSettings(page, DB_NAME);
+
+    const sql = main.getByTestId("db-settings-sql");
+    await sql.getByRole("combobox").selectOption("pessimistic");
+    await sql.getByRole("button", { name: "Save SQL Settings" }).click();
+    await expect(sql.getByTestId("outcome-success")).toHaveText(
+      "SQL settings saved.",
+    );
+    await expect(sql.getByRole("combobox")).toHaveValue("pessimistic");
+    expect((await storedDb(page)).sql).toEqual({ concurrency: "pessimistic" });
+
+    const compaction = main.getByTestId("db-settings-compaction");
+    await compaction.getByRole("combobox").selectOption("period");
+    await compaction.getByLabel("Retention period").fill("24h");
+    await compaction
+      .getByRole("button", { name: "Save Compaction Policy" })
+      .click();
+    await expect(compaction.getByTestId("outcome-success")).toHaveText(
+      "Compaction policy saved.",
+    );
+    await expect(compaction.getByRole("combobox")).toHaveValue("period");
+    await expect(compaction.getByLabel("Retention period")).toHaveValue("24h");
+    expect((await storedDb(page)).compaction).toEqual({
+      mode: "period",
+      retainPeriod: "24h",
+    });
+
+    // Switching shows the second database's own settings, not the first's.
+    main = await openWorkspaceSettings(page, OTHER_DB);
+    await expect(
+      main.getByTestId("db-settings-sql").getByRole("combobox"),
+    ).toHaveValue("optimistic");
+    await expect(
+      main.getByTestId("db-settings-compaction").getByRole("combobox"),
+    ).toHaveValue("revision");
+
+    // Returning re-reads the first database from the shared store without a
+    // reload: it must carry the saved settings, so onUpdated reached the store.
+    main = await openWorkspaceSettings(page, DB_NAME);
+    await expect(
+      main.getByTestId("db-settings-sql").getByRole("combobox"),
+    ).toHaveValue("pessimistic");
+    const back = main.getByTestId("db-settings-compaction");
+    await expect(back.getByRole("combobox")).toHaveValue("period");
+    await expect(back.getByLabel("Retention period")).toHaveValue("24h");
+  });
+});
