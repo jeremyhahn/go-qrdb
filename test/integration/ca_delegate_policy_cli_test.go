@@ -82,9 +82,7 @@ func TestCADelegatePolicy_CLI_PerProtocol(t *testing.T) {
 			if out, err := runQRDB(t, node.cli, connB, "ca", "delegate", "policy", "list"); err != nil || strings.Contains(out, delegationPrincipal) {
 				t.Fatalf("[%s] tenant B's policy list shows tenant A's %s: %v\noutput: %s", proto.name, delegationPrincipal, err, out)
 			}
-			if out, err := runQRDB(t, node.cli, connB, "ca", "delegate", "policy", "delete", delegationPrincipal); err != nil {
-				t.Logf("[%s] tenant B's policy delete refused: %s", proto.name, strings.TrimSpace(out))
-			}
+			assertCrossTenantPolicyDeleteNotFound(t, node, connB, proto)
 			kept, found, err := policies.DelegationPolicy(context.Background(), delegationTenantA, delegationPrincipal)
 			if err != nil || !found || !slices.Equal(kept.Scope, []string{"certs:delegate", "kv:get"}) {
 				t.Fatalf("[%s] tenant A's policy after tenant B's delete: %+v, found %v, %v", proto.name, kept, found, err)
@@ -186,6 +184,35 @@ func TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol(t *testing.T) {
 
 // delegationPolicyStore is the node's CA, read directly: the record a
 // transport must not be able to reach.
+// assertCrossTenantPolicyDeleteNotFound: tenant B deleting tenant A's
+// policy fails exactly as B deleting a policy no tenant holds does, a
+// not-found refusal with a non-zero exit, so B learns nothing of A's.
+func assertCrossTenantPolicyDeleteNotFound(t *testing.T, node *multiProtoNode, connB []string, proto multiProtocol) {
+	t.Helper()
+	const missing = "dlg-never-held"
+	refusal := func(principal string) string {
+		out, err := runQRDB(t, node.cli, connB, "ca", "delegate", "policy", "delete", principal)
+		if err == nil {
+			t.Fatalf("[%s] tenant B's policy delete of %s succeeded, want not found\noutput: %s", proto.name, principal, out)
+		}
+		return strings.ReplaceAll(strings.TrimSpace(out), principal, "<principal>")
+	}
+	cross, absent := refusal(delegationPrincipal), refusal(missing)
+	// REST carries the not-found class as its 404; every other transport
+	// as the SDK's key-not-found error.
+	notFound := "key not found"
+	if proto.name == "rest" {
+		notFound = "(status 404)"
+	}
+	if !strings.Contains(absent, notFound) ||
+		!strings.Contains(absent, "no delegation policy stands for <principal> in tenant "+delegationTenantB) {
+		t.Fatalf("[%s] tenant B's delete of a missing policy: want a not-found refusal, got: %s", proto.name, absent)
+	}
+	if cross != absent {
+		t.Fatalf("[%s] tenant B's delete of tenant A's policy is told apart from a missing one:\ncross-tenant: %s\nmissing:      %s", proto.name, cross, absent)
+	}
+}
+
 func delegationPolicyStore(t *testing.T, n *node.Node) cert.DelegationPolicyStore {
 	t.Helper()
 	policies, ok := n.Services().CertProv.(cert.DelegationPolicyStore)
