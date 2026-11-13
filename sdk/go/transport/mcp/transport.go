@@ -220,9 +220,8 @@ func (c *connCapture) TLSState() *tls.ConnectionState {
 // has no connection, and capture records nothing.
 func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCapture) (*mcpclient.Client, error) {
 	var (
-		client   *mcpclient.Client
-		err      error
-		refusals *initializeRefusalCapture
+		client *mcpclient.Client
+		err    error
 	)
 
 	if t.mcpServer != nil {
@@ -254,8 +253,7 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 			capture.next = rt
 			rt = capture
 		}
-		refusals = newInitializeRefusalCapture(rt)
-		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: refusals}))
+		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: &refusalCapture{next: rt}}))
 	}
 	if err != nil {
 		return nil, &transport.ConnectionError{
@@ -281,20 +279,16 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 	}
 
 	initCtx, cancel := t.callContext(ctx)
+	initCtx, refusals := withRefusalSlot(initCtx, "initialize")
 	_, err = client.Initialize(initCtx, initReq)
 	cancel()
-	if refusals != nil {
-		refusals.disarm()
-	}
 	if err != nil {
 		_ = client.Close()
 		// The auth chain refused the caller's credential: its typed refusal
 		// is the answer, as on every other transport, not a connection
 		// failure.
-		if refusals != nil {
-			if refusal := refusals.Refusal(); refusal != nil {
-				return nil, refusal
-			}
+		if refusal := refusals.Refusal(); refusal != nil {
+			return nil, refusal
 		}
 		return nil, &transport.ConnectionError{
 			Address: address,
@@ -1139,8 +1133,16 @@ func callToolOn(ctx context.Context, client *mcpclient.Client, tool string, args
 		req.Params.Arguments = args
 	}
 
+	ctx, refusals := withRefusalSlot(ctx, tool)
 	result, err := client.CallTool(ctx, req)
 	if err != nil {
+		// The auth chain refused the caller's credential at this call (a
+		// server serving no-login tools answers initialize and refuses at
+		// the first tool that needs an identity): its typed refusal is the
+		// answer.
+		if refusal := refusals.Refusal(); refusal != nil {
+			return "", refusal
+		}
 		return "", &transport.RequestError{Method: tool, Err: &toolCallError{Tool: tool, Err: err}}
 	}
 

@@ -270,7 +270,7 @@ func newTestReceiverFull(
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
-	mux.HandleFunc("/v1/cluster/keydelivery", recv.Handler())
+	mux.HandleFunc("/v1/cluster/keydelivery", asNode(t, ca, recv.Handler()))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return recv, srv
@@ -545,12 +545,12 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 func TestHandler_MalformedBody(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	recv := newMinimalReceiver(t, follower, nil, nil)
+	recv := newMinimalReceiver(t, follower, ca.pool, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery",
 		strings.NewReader("{not valid json"))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", rec.Code)
@@ -561,7 +561,7 @@ func TestHandler_PlacementNotFound(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	placements := &staticPlacementGetter{err: errors.New("not found")}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
@@ -576,7 +576,7 @@ func TestHandler_PlacementNotFound(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403, got %d", rec.Code)
@@ -588,7 +588,7 @@ func TestHandler_PlacementGate_WrongReplica(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	p := newTestPlacement("tenant-1", "db-1", 1, 99, "follower-node-1", "")
 	placements := &staticPlacementGetter{p: p}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	// Envelope says replicaID=2 but placement has replicaID=99 for this node.
 	env := &keydelivery.Envelope{
@@ -604,7 +604,7 @@ func TestHandler_PlacementGate_WrongReplica(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403 (wrong replica), got %d", rec.Code)
@@ -616,7 +616,7 @@ func TestHandler_PlacementGate_WrongShard(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	p := newTestPlacement("tenant-1", "db-1", 7, 2, "follower-node-1", "")
 	placements := &staticPlacementGetter{p: p}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	// Envelope says shardID=1 but placement has shardID=7.
 	env := &keydelivery.Envelope{
@@ -632,7 +632,7 @@ func TestHandler_PlacementGate_WrongShard(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403 (wrong shard), got %d", rec.Code)
@@ -654,7 +654,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 		},
 	}
 	placements := &staticPlacementGetter{p: p}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	env := &keydelivery.Envelope{
 		Meta: keydelivery.Meta{
@@ -669,7 +669,7 @@ func TestHandler_PlacementGate_NodeNotInPlacement(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403 (node not in placement), got %d", rec.Code)
@@ -683,7 +683,7 @@ func TestHandler_WrongTargetNode(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	p := newTestPlacement("tenant-1", "db-1", 1, 2, "follower-node-1", "")
 	placements := &staticPlacementGetter{p: p}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	// Seal to the follower's public key but with TargetNodeID = "other-node".
 	// The keydelivery.Receiver checks TargetNodeID != nodeID → ErrWrongTarget.
@@ -702,7 +702,7 @@ func TestHandler_WrongTargetNode(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("expected 403 (wrong target), got %d", rec.Code)
@@ -718,7 +718,7 @@ func TestHandler_TamperedPayload(t *testing.T) {
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
 	p := newTestPlacement("tenant-1", "db-1", 1, 2, "follower-node-1", "")
 	placements := &staticPlacementGetter{p: p}
-	recv := newMinimalReceiver(t, follower, nil, placements)
+	recv := newMinimalReceiver(t, follower, ca.pool, placements)
 
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
@@ -739,7 +739,7 @@ func TestHandler_TamperedPayload(t *testing.T) {
 	body, _ := json.Marshal(env)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	// LOW-1 fix: ErrDecrypt → 403 (was 401). All non-structural Open rejections
 	// collapse to a single opaque 403 to avoid a reconstruction oracle.
@@ -754,13 +754,13 @@ func TestHandler_TamperedPayload(t *testing.T) {
 func TestHandler_OversizedBody(t *testing.T) {
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	recv := newMinimalReceiver(t, follower, nil, nil)
+	recv := newMinimalReceiver(t, follower, ca.pool, nil)
 
 	// Body is 65 KiB — one KiB over the 64 KiB cap.
 	oversized := make([]byte, 65*1024)
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery", bytes.NewReader(oversized))
 	rec := httptest.NewRecorder()
-	recv.Handler()(rec, req)
+	asNode(t, ca, recv.Handler())(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 (oversized body), got %d", rec.Code)
@@ -879,7 +879,7 @@ func TestHandler_IdempotentDelivery(t *testing.T) {
 // certificate is present the delivery still succeeds (falling back to HPKE
 // recipient-binding + placement gate) and that the downgrade warning fires only
 // once across repeated requests.
-func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
+func TestHandler_NoPeerCert_Refused(t *testing.T) {
 	ctx := context.Background()
 
 	leaderReg, leaderAlloc := newTestRegistry(t)
@@ -895,23 +895,28 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 	initTestSystemBarrier(t, followerReg)
 	sealtest.ReserveVolumeTenant(t, followerAlloc, "tenant-nodl")
 
-	// Use nil caPool so the receiver does not enforce TLS cert chain checks.
-	// The plain httptest.Server carries no peer certs, so the handler falls
-	// through to the HPKE + placement gate path (downgrade warning).
+	// The plain httptest.Server carries no peer certificate: HPKE base mode
+	// authenticates no sender, so the receiver refuses before the envelope.
+	var postCount atomic.Int64
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	recv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
+	var lastCode atomic.Int64
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
-	mux.HandleFunc("/v1/cluster/keydelivery", recv.Handler())
+	mux.HandleFunc("/v1/cluster/keydelivery", func(w http.ResponseWriter, r *http.Request) {
+		postCount.Add(1)
+		rec := httptest.NewRecorder()
+		recv.Handler()(rec, r)
+		lastCode.Store(int64(rec.Code))
+		w.WriteHeader(rec.Code)
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	// Sender authenticates the delivery cert against the cluster CA before
-	// sealing, even though the transport channel is plain HTTP (no mTLS).
 	resolver := &staticURLResolver{raftAddr: "follower-node-1:9000", adminURL: srv.URL}
 	sender, err := clusterkeys.NewSender(resolver, srv.Client(), ca.pool, "cluster.local", nil, newTestLogger())
 	if err != nil {
@@ -929,18 +934,15 @@ func TestHandler_NoPeerCert_DowngradeWarning(t *testing.T) {
 		},
 	}
 
-	// Delivery must succeed despite no mTLS.
-	if err := sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1"); err != nil {
-		t.Fatalf("DistributeTenantKey (no-TLS): %v", err)
+	err = sender.DistributeTenantKey(ctx, distPlacement, leaderBarrier, "leader-node-1")
+	if !errors.Is(err, clusterkeys.ErrDelivery) {
+		t.Fatalf("DistributeTenantKey (no client certificate) = %v, want ErrDelivery", err)
 	}
-
-	// Follower must hold the imported blob, sealed until its owner unseals it.
-	followerTB, err := followerReg.GetTenant("tenant-nodl")
-	if err != nil {
-		t.Fatalf("GetTenant (follower): %v", err)
+	if postCount.Load() != 1 {
+		t.Fatalf("deliveries posted = %d, want 1", postCount.Load())
 	}
-	if !followerTB.IsSealed() {
-		t.Error("follower tenant barrier must remain sealed after delivery")
+	if got := lastCode.Load(); got != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", got)
 	}
 }
 
@@ -1132,7 +1134,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	var postCount atomic.Int64
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	recv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
@@ -1140,7 +1142,7 @@ func TestDistributeTenantKey_SkipsSelf(t *testing.T) {
 	mux.HandleFunc("/v1/cluster/nodekey", recv.NodeKeyHandler())
 	mux.HandleFunc("/v1/cluster/keydelivery", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		postCount.Add(1)
-		recv.Handler()(w, r)
+		asNode(t, ca, recv.Handler())(w, r)
 	}))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -1635,6 +1637,15 @@ func newMinimalReceiver(t *testing.T, follower *testNodeBundle, caPool *x509.Cer
 	return recv
 }
 
+// asNode wraps h so each request arrives as from a cluster node: a TLS
+// connection whose client certificate is a node certificate ca issued for
+// leader-node-1, the sender every delivery needs.
+func asNode(t *testing.T, ca *testCABundle, h http.Handler) http.HandlerFunc {
+	t.Helper()
+	leader := newTestNodeCert(t, ca, "cluster.local", "leader-node-1")
+	return (&peerCertInjector{peer: leader.cert, next: h}).ServeHTTP
+}
+
 // mustP256Key generates a P-256 key or fails the test.
 func mustP256Key(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()
@@ -1716,33 +1727,57 @@ func newTestNodeCertWrongDomain(t *testing.T, ca *testCABundle, nodeID string) *
 // and the peer cert has no SPIFFE SAN, both verifyCert (nil pool → skip) and
 // checkNodeSAN (ErrNoNodeSPIFFEID → proceed) return nil. The handler continues
 // and the malformed body produces 400.
-func TestHandler_NilCAPool_NoSAN(t *testing.T) {
-	// Peer cert is self-signed (no CA) — caPool is nil so chain check skipped.
-	_, selfSignedCert, selfSignedPEM := simpleNodeCert(t)
-
+func TestHandler_NilCAPool_Refused(t *testing.T) {
+	// With no cluster CA the receiver cannot verify any sender, so even a
+	// genuine node certificate is refused as unauthenticated.
 	ca := newTestCA(t)
 	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
-	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
-	reg, _ := newTestRegistry(t)
-	placements := &staticPlacementGetter{err: errors.New("not reached yet")}
-	// nil caPool: verifyCert skips chain check entirely.
-	recv, err := clusterkeys.NewReceiver(kd, reg, placements, "cluster.local", "follower-node-1",
-		nil, nil, selfSignedPEM, newTestLogger())
-	if err != nil {
-		t.Fatalf("NewReceiver: %v", err)
-	}
+	recv := newMinimalReceiver(t, follower, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery",
 		strings.NewReader("{not valid json"))
-	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{selfSignedCert}}
+	rec := httptest.NewRecorder()
+	asNode(t, ca, recv.Handler())(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 (no cluster CA to verify against), got %d", rec.Code)
+	}
+}
+
+// TestHandler_NoPeerCert_401 pins the refusal of a request with no client
+// certificate, before the body is read.
+func TestHandler_NoPeerCert_401(t *testing.T) {
+	ca := newTestCA(t)
+	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
+	recv := newMinimalReceiver(t, follower, ca.pool, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery",
+		strings.NewReader("{not valid json"))
 	rec := httptest.NewRecorder()
 	recv.Handler()(rec, req)
 
-	// verifyCert: caPool nil → return nil
-	// checkNodeSAN: no SPIFFE SAN → ErrNoNodeSPIFFEID → return nil (proceed)
-	// decode envelope: malformed → 400
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 (malformed body after cert proceed), got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 (no client certificate), got %d", rec.Code)
+	}
+}
+
+// TestHandler_CertWithoutNodeSAN_401 pins that a certificate the cluster CA
+// issued that names no node is not a node's, and is refused as
+// unauthenticated.
+func TestHandler_CertWithoutNodeSAN_401(t *testing.T) {
+	ca := newTestCA(t)
+	follower := newTestNodeCert(t, ca, "cluster.local", "follower-node-1")
+	recv := newMinimalReceiver(t, follower, ca.pool, nil)
+	notNode := newTestNodeCertNoSAN(t, ca)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cluster/keydelivery",
+		strings.NewReader("{not valid json"))
+	req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{notNode.cert}}
+	rec := httptest.NewRecorder()
+	recv.Handler()(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 (certificate names no node), got %d", rec.Code)
 	}
 }
 
@@ -1848,11 +1883,11 @@ func TestHandler_SelfManaged_InvalidSealedBlob(t *testing.T) {
 	// Rebuild the receiver so it has the correct follower registry.
 	kd := newTestKDReceiver(t, follower.key, "follower-node-1")
 	fullRecv, err := clusterkeys.NewReceiver(kd, followerReg, &staticPlacementGetter{p: p},
-		"cluster.local", "follower-node-1", nil, nil, follower.pem, newTestLogger())
+		"cluster.local", "follower-node-1", ca.pool, nil, follower.pem, newTestLogger())
 	if err != nil {
 		t.Fatalf("NewReceiver: %v", err)
 	}
-	fullRecv.Handler()(rec, req)
+	asNode(t, ca, fullRecv.Handler())(rec, req)
 
 	// ImportSealedBlob fails → importSelfManaged returns error → 500
 	if rec.Code != http.StatusInternalServerError {

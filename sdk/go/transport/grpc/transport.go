@@ -114,6 +114,13 @@ func (t *Transport) ensureClient() error {
 // Connect establishes the gRPC connection to the QRDB server. When TLS
 // is configured, the connection uses TLS credentials; otherwise it uses
 // insecure credentials for development.
+//
+// Connect confirms the connection with a health check, and health is a
+// no-login verb on every transport (pkg/api/publicverbs), so with no client
+// certificate Connect succeeds: the server refuses the caller with
+// Unauthenticated at its first call that needs an identity, not here. A
+// client certificate the server cannot verify is different: it ends the TLS
+// handshake, so Connect fails.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
