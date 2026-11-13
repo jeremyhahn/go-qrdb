@@ -18,8 +18,6 @@ import (
 	"errors"
 	"net/http"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
@@ -32,8 +30,8 @@ var errForwardRedirect = errors.New("mcp forward: the peer answered with a redir
 // newForwardClient returns an MCP client for the peer's endpoint that
 // sends through rt and never follows a redirect: any 3xx is a forward
 // failure.
-func newForwardClient(endpoint string, rt http.RoundTripper) *mcpclient.Client {
-	return mcpclient.NewClient(mcphttp.New("https://"+endpoint+"/mcp", &http.Client{
+func newForwardClient(endpoint string, rt http.RoundTripper) *mcphttp.Client {
+	return mcphttp.NewClient(mcphttp.New("https://"+endpoint+"/mcp", &http.Client{
 		Transport:     rt,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errForwardRedirect },
 	}))
