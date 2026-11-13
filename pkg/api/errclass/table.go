@@ -1158,6 +1158,13 @@ var credentialRules = []rule{
 	is(credentials.ErrEmptyCredentialName, InvalidArgument),
 	is(credentials.ErrEmptyCredentialValue, InvalidArgument),
 	is(credentials.ErrInvalidGracePeriod, InvalidArgument),
+	as(&credentials.InvalidRotationPolicyError{}, InvalidArgument),
+	is(credentials.ErrMigrationConflictNotFound, NotFound),
+	is(credentials.ErrInvalidMigrationResolution, InvalidArgument),
+	is(credentials.ErrRotationMetaContended, Aborted),
+	// The replicated credential store is bound once the node has unsealed
+	// and its system shard's KV has started; a call before then is retryable.
+	is(credentials.ErrStoreUnavailable, Unavailable),
 }
 
 // dekRules are the tenant DEK keyring's conditions. Every keyring error
@@ -1577,7 +1584,7 @@ var genericRules = []rule{
 	// The credential service validates its strategy at construction; meeting
 	// either at request time is a server fault, not the caller's.
 	is(credentials.ErrInvalidStrategy, Internal),
-	is(credentials.ErrNilBarrier, Internal),
+	is(credentials.ErrNilStore, Internal),
 }
 
 // memberIdentityClasses is the class of each member-identity refusal kind.

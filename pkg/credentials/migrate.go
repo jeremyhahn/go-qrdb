@@ -1,0 +1,809 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
+package credentials
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
+)
+
+// legacyCredentialPrefix is the key prefix the barrier strategy kept its
+// records under in each node's own seal store, before the records moved to
+// the replicated store. Under it the metadata and version records are keyed
+// by the name followed by metaSuffix or versionPrefix+n (splitRecordKey);
+// the replicated store keys them under prefixes of their own
+// (replicatedKey).
+const legacyCredentialPrefix = "credentials/" //nolint:gosec // G101: a key prefix, not a credential
+
+// The migration records are keyed by credential name under prefixes of their
+// own: the claim naming the copy the first node to migrate wrote, in the
+// replicated store, and this node's note that its copy is settled and its old
+// records are being deleted, in its own seal store. A credential name may be
+// any non-blank string, '#' included, so every key under credentialPrefix or
+// legacyCredentialPrefix is a credential's; a key under neither is none.
+const (
+	MigrationClaimPrefix      = "__sys:credential-migrations/"
+	legacyMigrationNotePrefix = "credential-migrations/"
+)
+
+// MigrationResolution is how an operator settles a migration conflict.
+type MigrationResolution string
+
+const (
+	// MigrationImport writes the kept copy's current value as a new
+	// version of the replicated record, retaining the version it replaces,
+	// then deletes the kept copy.
+	MigrationImport MigrationResolution = "import"
+	// MigrationDiscard deletes the kept copy and leaves the replicated
+	// record as it is.
+	MigrationDiscard MigrationResolution = "discard"
+)
+
+// WithLegacyStore names the node-local store that holds this node's records
+// under the old credentials/ layout. BindStore migrates them into the bound
+// store (docs/credentials/architecture.md, "Prefix migration").
+func WithLegacyStore(st Store) Option {
+	return func(s *CredentialService) { s.legacy = st }
+}
+
+// migrationClaim is the record under migrationClaimPrefix+name.
+// It holds the digests of the copy that became the replicated record, never
+// a value, so a later node can tell whether its copy is the same one and,
+// if not, which parts differ.
+type migrationClaim struct {
+	Digest   string `json:"digest"`
+	Value    string `json:"value"`
+	Versions string `json:"versions"`
+	Policy   string `json:"policy"`
+	// Complete is set once every record of the winning copy is written.
+	// Until then a node holding the same copy finishes the write.
+	Complete bool `json:"complete"`
+}
+
+// credentialRecord is one credential's records, keyed by the suffix after
+// its name: "" for the current value, metaSuffix, and versionPrefix+n.
+type credentialRecord map[string][]byte
+
+// claim computes the digests of r.
+func (r credentialRecord) claim() migrationClaim {
+	suffixes := make([]string, 0, len(r))
+	for k := range r {
+		suffixes = append(suffixes, k)
+	}
+	sort.Strings(suffixes)
+
+	all, versions := sha256.New(), sha256.New()
+	for _, k := range suffixes {
+		writeField(all, k)
+		writeField(all, string(r[k]))
+		if strings.HasPrefix(k, versionPrefix) {
+			writeField(versions, k)
+			writeField(versions, string(r[k]))
+		}
+	}
+	value := sha256.New()
+	if v, ok := r[""]; ok {
+		writeField(value, string(v))
+	}
+	policy := sha256.New()
+	if raw, ok := r[metaSuffix]; ok {
+		var m credentialMeta
+		if err := json.Unmarshal(raw, &m); err != nil {
+			writeField(policy, string(raw))
+		} else {
+			hist, _ := json.Marshal(struct {
+				Current uint64                `json:"c"`
+				History []credentialMetaEntry `json:"h"`
+			}{m.CurrentVersion, m.History})
+			writeField(versions, string(hist))
+			pol, _ := json.Marshal(m.Policy)
+			writeField(policy, string(pol))
+		}
+	}
+	return migrationClaim{
+		Digest:   hex.EncodeToString(all.Sum(nil)),
+		Value:    hex.EncodeToString(value.Sum(nil)),
+		Versions: hex.EncodeToString(versions.Sum(nil)),
+		Policy:   hex.EncodeToString(policy.Sum(nil)),
+	}
+}
+
+// writeField writes s length-prefixed, so field boundaries are unambiguous.
+func writeField(w interface{ Write([]byte) (int, error) }, s string) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+	_, _ = w.Write(n[:])
+	_, _ = w.Write([]byte(s))
+}
+
+// legacyCopy is one credential as this node's legacy store holds it.
+type legacyCopy struct {
+	record credentialRecord
+	// settled reports this node's migration note: the copy was migrated or
+	// resolved and only its deletion was interrupted.
+	settled bool
+}
+
+// BindStore attaches the store the barrier strategy keeps its records in,
+// replacing any store the service was built with. A node calls it once the
+// system shard's replicated KV exists (lifecycle.BuildServices), with
+// lifecycle.NewReplicatedSealBackend over that KV, so every node reads and
+// conditionally writes the same records. A nil st is refused with
+// ErrNilStore. A manual-strategy service keeps no records and ignores it.
+//
+// When the service has a legacy store (WithLegacyStore), BindStore then
+// migrates this node's old credentials/ records into st (MigrateLegacy). A
+// migration that cannot finish, such as one whose legacy store is still
+// sealed or one bound before the system shard has a leader, leaves the store
+// bound and is logged, so the bind error is only ErrNilStore. It runs again
+// before the next ordinary operation (store, retrieve, list, rotate, delete,
+// the policy verbs and RotateDue, through ensureMigrated), which returns the
+// migration's error and does nothing else until it finishes, and on the next
+// MigrateLegacy, ListMigrationConflicts or ResolveMigrationConflict.
+func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
+	if err := s.store.bind(st); err != nil {
+		return err
+	}
+	if err := s.MigrateLegacy(ctx); err != nil {
+		s.logger.Error("credential migration from the node-local layout did not finish",
+			slog.String("error", err.Error()))
+	}
+	return nil
+}
+
+// MigrateLegacy moves this node's records from the legacy store's old
+// credentials/ layout to the bound store, per credential name, under
+// ruling 279 option A:
+//
+//   - the first node to migrate a name wins: its copy becomes the
+//     replicated record;
+//   - a later node whose copy is byte-identical in value, versions and
+//     policy deletes its old records;
+//   - a later node whose copy differs keeps its old records untouched and
+//     reports a CredentialMigrationConflictError to the log, the audit log
+//     and ListMigrationConflicts.
+//
+// It runs once per service and is idempotent: a run interrupted at any
+// point and run again reaches the same result. A service with no legacy
+// store, or of the manual strategy, has nothing to migrate.
+func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
+	s.migrateMu.Lock()
+	defer s.migrateMu.Unlock()
+	return s.migrateLocked(ctx)
+}
+
+// ensureMigrated runs the migration when it has not finished, before an
+// ordinary operation reads or writes credentials: a migration that failed
+// when the store was bound (the system shard had no leader yet) would
+// otherwise leave this node's records out of reach until an operator asked
+// for the conflicts. A finished migration, with or without conflicts, costs
+// one lock and no store read. The error is the migration's, as an
+// OperationError with Op "migrate"; the caller serves nothing over a store
+// the node's own records have not reached. It takes migrateMu, so nothing
+// the migration or the resolve verbs call may call it.
+func (s *CredentialService) ensureMigrated(ctx context.Context) error {
+	if s.legacy == nil || s.strategy != StrategyBarrier {
+		return nil
+	}
+	s.migrateMu.Lock()
+	defer s.migrateMu.Unlock()
+	if s.migrated {
+		return nil
+	}
+	// The retry holds the lock every credential operation takes first, and
+	// a caller such as the rotation scheduler sets no deadline: bound it,
+	// so a store that never answers cannot hold them all.
+	rctx := ctx
+	if s.rotationAttemptTimeout > 0 {
+		var cancel context.CancelFunc
+		rctx, cancel = context.WithTimeout(ctx, s.rotationAttemptTimeout)
+		defer cancel()
+	}
+	if err := s.migrateLocked(rctx); err != nil {
+		if cerr := rctx.Err(); cerr != nil && !errors.Is(err, cerr) {
+			err = errors.Join(cerr, err)
+		}
+		return &OperationError{Op: "migrate", Cause: err}
+	}
+	return nil
+}
+
+// migrateLocked runs the migration unless it already ran. Callers hold
+// migrateMu.
+func (s *CredentialService) migrateLocked(ctx context.Context) error {
+	if s.migrated || s.legacy == nil || s.strategy != StrategyBarrier {
+		return nil
+	}
+	copies, err := s.loadLegacy(ctx, "")
+	if err != nil {
+		return err
+	}
+	defer wipeCopies(copies)
+	names := make([]string, 0, len(copies))
+	for name := range copies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	conflicts := make(map[string]*CredentialMigrationConflictError)
+	for _, name := range names {
+		conflict, err := s.migrateOne(ctx, name, copies[name])
+		if err != nil {
+			return err
+		}
+		if conflict != nil {
+			conflicts[name] = conflict
+			s.logger.Warn("credential migration conflict: local copy kept",
+				slog.String("name", name),
+				slog.String("error", conflict.Error()))
+			s.emitAuditOutcome(ctx, "migrate", name, audit.OutcomeFailure, map[string]any{
+				"conflict": conflict.Fields(),
+			})
+			continue
+		}
+		s.emitAudit(ctx, "migrate", name, nil)
+	}
+	s.conflicts = conflicts
+	s.migrated = true
+	return nil
+}
+
+// migrateOne settles one name and returns its conflict, if any.
+func (s *CredentialService) migrateOne(ctx context.Context, name string, c *legacyCopy) (*CredentialMigrationConflictError, error) {
+	if c.settled {
+		return nil, s.deleteLegacy(ctx, name, c)
+	}
+	ours := c.record.claim()
+	claim, err := s.loadOrClaim(ctx, name, ours)
+	if err != nil {
+		return nil, err
+	}
+	if claim.Digest == ours.Digest && !claim.Complete {
+		// The claim that stands afterwards is another one when a live
+		// write reached the name before this copy was installed.
+		if claim, err = s.writeWinningCopy(ctx, name, c.record, claim); err != nil {
+			return nil, err
+		}
+	}
+	if claim.Digest != ours.Digest {
+		return &CredentialMigrationConflictError{
+			Name:     name,
+			Value:    claim.Value != ours.Value,
+			Versions: claim.Versions != ours.Versions,
+			Policy:   claim.Policy != ours.Policy,
+		}, nil
+	}
+	return nil, s.deleteLegacy(ctx, name, c)
+}
+
+// loadOrClaim returns the name's migration claim, writing ours when there is
+// none. A replicated record written before any node migrated the name was
+// first, so the claim then names that record, complete.
+func (s *CredentialService) loadOrClaim(ctx context.Context, name string, ours migrationClaim) (migrationClaim, error) {
+	key := MigrationClaimPrefix + name
+	claim, ok, err := s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if ok {
+		return claim, nil
+	}
+	existing, err := s.loadReplicated(ctx, name)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	want := ours
+	if len(existing) > 0 {
+		want = existing.claim()
+		want.Complete = true
+	}
+	for _, value := range existing {
+		secure.Wipe(value)
+	}
+	raw, err := json.Marshal(want)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
+	}
+	won, err := s.store.PutIfAbsent(ctx, key, raw)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "write migration claim", Cause: err}
+	}
+	if won {
+		return want, nil
+	}
+	claim, ok, err = s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if !ok {
+		return migrationClaim{}, &OperationError{Op: "read migration claim", Cause: ErrStoreUnavailable}
+	}
+	return claim, nil
+}
+
+// loadClaim reads and decodes the claim at key. A claim the store could not
+// read is an error, not a claim nobody holds.
+func (s *CredentialService) loadClaim(ctx context.Context, key string) (migrationClaim, bool, error) {
+	raw, err := s.store.Get(ctx, key)
+	if err != nil {
+		return migrationClaim{}, false, readFailure("read migration claim", err, nil)
+	}
+	if len(raw) == 0 {
+		return migrationClaim{}, false, nil
+	}
+	var claim migrationClaim
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		return migrationClaim{}, false, nil
+	}
+	return claim, true, nil
+}
+
+// writeWinningCopy installs the winning copy and returns the claim that
+// stands afterwards. The copy's records and the completed claim are one
+// guarded write, applied only while the claim is still this copy's pending
+// one and the name has no replicated record: no value, no metadata and none
+// of the copy's own records. A rerun after a crash therefore writes again.
+// A value stored meanwhile by a live writer refuses the write and is kept:
+// the claim is re-pointed at the live record, whose digest differs, so the
+// caller reports the copy as a conflict.
+func (s *CredentialService) writeWinningCopy(ctx context.Context, name string, rec credentialRecord, claim migrationClaim) (migrationClaim, error) {
+	key := MigrationClaimPrefix + name
+	pending, err := json.Marshal(claim)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
+	}
+	claim.Complete = true
+	done, err := json.Marshal(claim)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
+	}
+	absent := map[string]struct{}{credentialPrefix + name: {}, metaKey(name): {}}
+	writes := make([]kvstore.KV, 0, len(rec)+1)
+	for k, value := range rec {
+		absent[replicatedKey(name, k)] = struct{}{}
+		writes = append(writes, kvstore.KV{Key: replicatedKey(name, k), Value: value})
+	}
+	writes = append(writes, kvstore.KV{Key: key, Value: done})
+	// A guard with no value holds only while its key is absent.
+	guards := make([]kvstore.Guard, 0, len(absent)+1)
+	guards = append(guards, kvstore.Guard{Key: key, Value: pending})
+	for k := range absent {
+		guards = append(guards, kvstore.Guard{Key: k})
+	}
+	applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
+	if err != nil {
+		return migrationClaim{}, &OperationError{Op: "write migrated record", Cause: err}
+	}
+	if applied {
+		return claim, nil
+	}
+	existing, err := s.loadReplicated(ctx, name)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if len(existing) > 0 {
+		live := existing.claim()
+		live.Complete = true
+		for _, value := range existing {
+			secure.Wipe(value)
+		}
+		raw, err := json.Marshal(live)
+		if err != nil {
+			return migrationClaim{}, &OperationError{Op: "encode migration claim", Cause: err}
+		}
+		// A failed swap means another node settled the claim first.
+		if _, err := s.store.CompareAndSwap(ctx, key, pending, raw); err != nil {
+			return migrationClaim{}, &OperationError{Op: "write migration claim", Cause: err}
+		}
+	}
+	claim, ok, err := s.loadClaim(ctx, key)
+	if err != nil {
+		return migrationClaim{}, err
+	}
+	if !ok {
+		return migrationClaim{}, &OperationError{Op: "read migration claim", Cause: ErrStoreUnavailable}
+	}
+	if !claim.Complete {
+		return migrationClaim{}, &OperationError{Op: "write migrated record", Cause: ErrRotationMetaContended}
+	}
+	return claim, nil
+}
+
+// deleteLegacy deletes this node's old records for name. It writes the
+// settled note first and deletes it last, so a run interrupted part-way
+// finishes the deletion instead of mistaking what is left for a different
+// copy.
+func (s *CredentialService) deleteLegacy(ctx context.Context, name string, c *legacyCopy) error {
+	note := legacyMigrationNotePrefix + name
+	if !c.settled {
+		if err := s.legacy.Put(ctx, note, []byte{1}); err != nil {
+			return &OperationError{Op: "write migration note", Cause: err}
+		}
+	}
+	// The version records go first and the metadata after them: while a
+	// version record is left, the metadata that makes it one of name's is
+	// too. The value goes last.
+	for k := range c.record {
+		if k == "" || k == metaSuffix {
+			continue
+		}
+		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name+k); err != nil {
+			return &OperationError{Op: "delete legacy record", Cause: err}
+		}
+	}
+	if _, ok := c.record[metaSuffix]; ok {
+		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name+metaSuffix); err != nil {
+			return &OperationError{Op: "delete legacy record", Cause: err}
+		}
+	}
+	if _, ok := c.record[""]; ok {
+		if err := s.legacy.Delete(ctx, legacyCredentialPrefix+name); err != nil {
+			return &OperationError{Op: "delete legacy record", Cause: err}
+		}
+	}
+	if err := s.legacy.Delete(ctx, note); err != nil {
+		return &OperationError{Op: "delete migration note", Cause: err}
+	}
+	return nil
+}
+
+// loadLegacy reads the legacy store's records, grouped by the name
+// splitRecordKey parses from each key. A non-empty only restricts the result
+// to that name. A name is held when the listing holds its value, when this
+// node's migration note names it (its deletion was interrupted), or when it
+// is the name asked for. A key ending in a record suffix after a held name
+// is that name's record only when validated metadata accounts for it;
+// otherwise it is a credential of its own. Every value read ends in a copy,
+// which the caller wipes, or is wiped here.
+func (s *CredentialService) loadLegacy(ctx context.Context, only string) (map[string]*legacyCopy, error) {
+	keys, err := s.legacy.List(ctx, legacyCredentialPrefix+only)
+	if err != nil {
+		return nil, &OperationError{Op: "list legacy records", Cause: err}
+	}
+	notes, err := s.legacy.List(ctx, legacyMigrationNotePrefix+only)
+	if err != nil {
+		return nil, &OperationError{Op: "list migration notes", Cause: err}
+	}
+	held := make(map[string]struct{}, len(keys)+len(notes)+1)
+	for _, key := range keys {
+		held[strings.TrimPrefix(key, legacyCredentialPrefix)] = struct{}{}
+	}
+	for _, key := range notes {
+		held[strings.TrimPrefix(key, legacyMigrationNotePrefix)] = struct{}{}
+	}
+	if only != "" {
+		held[only] = struct{}{}
+	}
+	values := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		value, err := s.legacy.Get(ctx, key)
+		if err != nil {
+			for _, v := range values {
+				secure.Wipe(v)
+			}
+			return nil, &OperationError{Op: "read legacy record", Cause: err}
+		}
+		values[strings.TrimPrefix(key, legacyCredentialPrefix)] = value
+	}
+	copies := make(map[string]*legacyCopy)
+	for rest, value := range values {
+		name, suffix := splitRecordKey(rest, held, values)
+		if only != "" && name != only {
+			secure.Wipe(value)
+			continue
+		}
+		c := copies[name]
+		if c == nil {
+			c = &legacyCopy{record: credentialRecord{}}
+			copies[name] = c
+		}
+		c.record[suffix] = value
+	}
+	for _, key := range notes {
+		name := strings.TrimPrefix(key, legacyMigrationNotePrefix)
+		if only != "" && name != only {
+			continue
+		}
+		c := copies[name]
+		if c == nil {
+			c = &legacyCopy{record: credentialRecord{}}
+			copies[name] = c
+		}
+		c.settled = true
+	}
+	return copies, nil
+}
+
+// wipeCopies zeroes every record value of the legacy copies. Whoever loaded
+// the copies calls it when done with them: they hold the node's plaintext
+// values, and the stores keep their own.
+func wipeCopies(copies map[string]*legacyCopy) {
+	for _, c := range copies {
+		for _, value := range c.record {
+			secure.Wipe(value)
+		}
+	}
+}
+
+// loadReplicated reads the bound store's records for name, without its
+// migration claim.
+func (s *CredentialService) loadReplicated(ctx context.Context, name string) (credentialRecord, error) {
+	rec := credentialRecord{}
+	// The value and the metadata record are keyed by the name itself; a
+	// listing by that prefix also returns longer names, which are other
+	// credentials.
+	for prefix, part := range map[string]string{credentialPrefix: "", MetaKeyPrefix: metaSuffix} {
+		keys, err := s.store.List(ctx, prefix+name)
+		if err != nil {
+			return nil, &OperationError{Op: "list replicated records", Cause: err}
+		}
+		for _, key := range keys {
+			if key != prefix+name {
+				continue
+			}
+			value, err := s.store.Get(ctx, key)
+			if err != nil {
+				return nil, &OperationError{Op: "read replicated record", Cause: err}
+			}
+			rec[part] = value
+		}
+	}
+	prefix := VersionKeyPrefix + encodedName(name) + "/"
+	keys, err := s.store.List(ctx, prefix)
+	if err != nil {
+		return nil, &OperationError{Op: "list replicated records", Cause: err}
+	}
+	for _, key := range keys {
+		value, err := s.store.Get(ctx, key)
+		if err != nil {
+			return nil, &OperationError{Op: "read replicated record", Cause: err}
+		}
+		rec[versionPrefix+strings.TrimPrefix(key, prefix)] = value
+	}
+	return rec, nil
+}
+
+// replicatedKey is the bound store's key for the record of name that
+// splitRecordKey parsed suffix for: "" is the value, metaSuffix the
+// metadata, and versionPrefix+n version n.
+func replicatedKey(name, suffix string) string {
+	if suffix == metaSuffix {
+		return metaKey(name)
+	}
+	if n, ok := strings.CutPrefix(suffix, versionPrefix); ok {
+		if version, err := strconv.ParseUint(n, 10, 64); err == nil {
+			return versionKey(name, version)
+		}
+	}
+	return credentialPrefix + name + suffix
+}
+
+// splitRecordKey splits a key relative to the legacy prefix into the
+// credential name and the record's suffix. The legacy store appended
+// metaSuffix or versionPrefix+n to the name, but it also accepted any
+// non-blank name, so a key ending that way may be a credential of its own.
+// The key is read from its end, and it is a record of <name> only when held,
+// the names of the same listing, holds <name> and validated metadata
+// accounts for it: a metadata record must decode as metadata, and a version
+// record must be a version <name>'s metadata lists. values holds the listed
+// values by key. Any other key is the value of the credential the whole key
+// names.
+func splitRecordKey(rest string, held map[string]struct{}, values map[string][]byte) (name, suffix string) {
+	base, ok := strings.CutSuffix(rest, metaSuffix)
+	if !ok {
+		i := strings.LastIndex(rest, versionPrefix)
+		if i < 0 {
+			return rest, ""
+		}
+		if _, err := strconv.ParseUint(rest[i+len(versionPrefix):], 10, 64); err != nil {
+			return rest, ""
+		}
+		base = rest[:i]
+	}
+	if _, ok := held[base]; !ok {
+		return rest, ""
+	}
+	// base is a credential's value only when it is not itself a record of
+	// a shorter name.
+	if _, sub := splitRecordKey(base, held, values); sub != "" {
+		return rest, ""
+	}
+	suffix = rest[len(base):]
+	if suffix == metaSuffix {
+		if _, ok := legacyMeta(values[rest]); !ok {
+			return rest, ""
+		}
+		return base, suffix
+	}
+	meta, ok := legacyMeta(values[base+metaSuffix])
+	n, _ := strconv.ParseUint(suffix[len(versionPrefix):], 10, 64)
+	if !ok || !slices.ContainsFunc(meta.History, func(e credentialMetaEntry) bool { return e.Version == n }) {
+		return rest, ""
+	}
+	return base, suffix
+}
+
+// legacyMeta decodes raw as a credential's metadata record. It is one only
+// when it decodes strictly, with no unknown field, and says something: a
+// version, a history entry or a policy. Anything else under a metadata key
+// is a credential's own value.
+func legacyMeta(raw []byte) (*credentialMeta, bool) {
+	var meta credentialMeta
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&meta); err != nil {
+		return nil, false
+	}
+	// The whole value must be the one metadata document: trailing data
+	// (another JSON value or bytes that are not JSON) makes it a credential.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	if meta.CurrentVersion == 0 && len(meta.History) == 0 && meta.Policy == nil {
+		return nil, false
+	}
+	return &meta, true
+}
+
+// ListMigrationConflicts returns the unresolved migration conflicts on this
+// node, sorted by name. It first finishes a migration that has not run or
+// did not finish.
+func (s *CredentialService) ListMigrationConflicts(ctx context.Context) ([]CredentialMigrationConflictError, error) {
+	s.migrateMu.Lock()
+	defer s.migrateMu.Unlock()
+	if err := s.migrateLocked(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]CredentialMigrationConflictError, 0, len(s.conflicts))
+	for _, c := range s.conflicts {
+		out = append(out, *c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// migrationResolvers dispatches a MigrationResolution.
+var migrationResolvers = map[MigrationResolution]func(*CredentialService, context.Context, string, *legacyCopy) (map[string]any, error){
+	MigrationImport:  (*CredentialService).importLegacy,
+	MigrationDiscard: (*CredentialService).discardLegacy,
+}
+
+// ResolveMigrationConflict settles the named conflict: MigrationImport
+// writes the kept copy's current value as a new version of the replicated
+// record, retaining the version it replaces, and MigrationDiscard drops the
+// kept copy. Either way the kept copy's old records are then deleted, and
+// the resolution is audited with the versions it did not carry over.
+func (s *CredentialService) ResolveMigrationConflict(ctx context.Context, name string, how MigrationResolution) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	resolve, ok := migrationResolvers[how]
+	if !ok {
+		return ErrInvalidMigrationResolution
+	}
+	s.migrateMu.Lock()
+	defer s.migrateMu.Unlock()
+	if err := s.migrateLocked(ctx); err != nil {
+		return err
+	}
+	if _, ok := s.conflicts[name]; !ok {
+		return ErrMigrationConflictNotFound
+	}
+	copies, err := s.loadLegacy(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer wipeCopies(copies)
+	c := copies[name]
+	if c == nil {
+		delete(s.conflicts, name)
+		return ErrMigrationConflictNotFound
+	}
+	// A settled copy was resolved by an earlier call whose deletion was
+	// interrupted, and what is left of it is not the copy that was decided
+	// on: only the deletion runs again.
+	attrs := map[string]any{"already_resolved": true}
+	if !c.settled {
+		if attrs, err = resolve(s, ctx, name, c); err != nil {
+			return err
+		}
+	}
+	if err := s.deleteLegacy(ctx, name, c); err != nil {
+		return err
+	}
+	delete(s.conflicts, name)
+	attrs["resolution"] = string(how)
+	attrs["dropped_records"] = droppedRecords(c.record, how == MigrationImport)
+	s.emitAudit(ctx, "migrate_resolve", name, attrs)
+	return nil
+}
+
+// errAlreadyImported is rotateBarrier's refusal of an import whose digest the
+// credential's metadata already records. It never leaves the package:
+// importLegacy reports it as a copy already imported.
+var errAlreadyImported = errors.New("credentials: legacy copy already imported")
+
+// importLegacy writes the kept copy's current value as a new version.
+func (s *CredentialService) importLegacy(ctx context.Context, name string, c *legacyCopy) (map[string]any, error) {
+	value, ok := c.record[""]
+	if !ok || len(value) == 0 {
+		return nil, ErrCredentialNotFound
+	}
+	digest := c.record.claim().Digest
+	meta, err := s.loadBarrierMeta(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if slices.Contains(meta.Imported, digest) {
+		// An earlier resolve committed this copy and failed deleting it.
+		// The credential may have been rotated since, so nothing is
+		// imported or replaced; only the deletion is left.
+		return map[string]any{"already_imported": true}, nil
+	}
+	imported := bytes.Clone(value)
+	// The rotation copies what it stores, so this buffer is wiped whatever
+	// the outcome: written, already imported or failed.
+	defer secure.Wipe(imported)
+	res, err := s.rotateBarrier(ctx, name, RotateOptions{
+		NewValue:       imported,
+		retainPrevious: true,
+		importDigest:   digest,
+	})
+	if errors.Is(err, errAlreadyImported) {
+		// Another service derived over the same stores committed this copy
+		// between the check above and the write. Nothing was written.
+		return map[string]any{"already_imported": true}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"previous_version": res.PreviousVersion,
+		"new_version":      res.NewVersion,
+	}, nil
+}
+
+// discardLegacy keeps the replicated record as it is.
+func (s *CredentialService) discardLegacy(context.Context, string, *legacyCopy) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+// droppedRecords lists the suffixes of the kept copy's records a resolution
+// does not carry into the replicated record ("current" for the value): all
+// of them, but for the current value when it was imported.
+func droppedRecords(rec credentialRecord, imported bool) []string {
+	out := make([]string, 0, len(rec))
+	for k := range rec {
+		if k == "" {
+			if imported {
+				continue
+			}
+			k = "current"
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

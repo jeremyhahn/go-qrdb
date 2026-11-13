@@ -142,6 +142,22 @@ func (m *coverageCredentialService) CredentialDelete(ctx context.Context, name s
 	}
 	return nil
 }
+
+func (*coverageCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
+	return nil
+}
+
+func (*coverageCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
+	return &service.CredentialRotationPolicyStatus{}, nil
+}
+
+func (*coverageCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return nil, nil
+}
+
+func (*coverageCredentialService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
+	return nil
+}
 func (m *coverageCredentialService) CredentialStore(ctx context.Context, name string, value []byte) error {
 	if m.storeFn != nil {
 		return m.storeFn(ctx, name, value)

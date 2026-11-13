@@ -174,8 +174,12 @@ func initEmbeddedBarrier(dataDir string, sealCfg *SealConfig, trail audit.AuditL
 		return nil, nil, nil, "", &EmbeddedBarrierError{Step: "registry", Err: regErr}
 	}
 
+	// No store yet: lifecycle.BuildServices binds the system shard's
+	// replicated KV once it exists (docs/credentials/architecture.md,
+	// "Storage"); until then it fails closed.
 	credSvc, credErr := credentials.NewCredentialService(
-		&credentials.Config{Strategy: "barrier"}, b, slog.Default())
+		&credentials.Config{Strategy: "barrier"}, nil, slog.Default(),
+		credentials.WithLegacyStore(b))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, nil, nil, "", &EmbeddedBarrierError{Step: "credential", Err: credErr}
