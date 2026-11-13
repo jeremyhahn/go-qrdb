@@ -1579,8 +1579,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           GetCompactionProgress: async () => ({}),
         },
         UserBinding: {
-          Create: async (req: { username: string; email?: string; name?: string; tenant?: string }) => {
+          Create: async (req: { username: string; email?: string; name?: string; tenant?: string; lifecycle?: string }) => {
             maybeReject("UserBinding.Create");
+            // The server creates an account only as pending, active or disabled.
+            const initial = req.lifecycle || "active";
+            if (!["pending", "active", "disabled"].includes(initial)) {
+              throw new Error(`cannot create a user in lifecycle "${initial}"`);
+            }
             const id = fakeUUID();
             const now = new Date().toISOString();
             const user = {
@@ -1589,7 +1594,7 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               ...(req.email ? { email: req.email } : {}),
               ...(req.name ? { name: req.name } : {}),
               tenant: req.tenant ?? "default",
-              lifecycle: "active",
+              lifecycle: initial,
               createdAt: now,
               updatedAt: now,
             };
@@ -1640,6 +1645,28 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
               user.lifecycle = "disabled";
               user.updatedAt = new Date().toISOString();
             }
+          },
+          // Suspend and Unsuspend are narrower than Enable/Disable, as on the
+          // server: only active suspends and only suspended unsuspends.
+          Suspend: async (id: string) => {
+            maybeReject("UserBinding.Suspend");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            if (user.lifecycle !== "active") {
+              throw new Error(`cannot suspend a user in lifecycle "${user.lifecycle}"`);
+            }
+            user.lifecycle = "suspended";
+            user.updatedAt = new Date().toISOString();
+          },
+          Unsuspend: async (id: string) => {
+            maybeReject("UserBinding.Unsuspend");
+            const user = userStore.get(id);
+            if (!user) throw new Error(`user "${id}" not found`);
+            if (user.lifecycle !== "suspended") {
+              throw new Error(`cannot unsuspend a user in lifecycle "${user.lifecycle}"`);
+            }
+            user.lifecycle = "active";
+            user.updatedAt = new Date().toISOString();
           },
           GetByCertThumbprint: async (thumbprint: string) => {
             maybeReject("UserBinding.GetByCertThumbprint");

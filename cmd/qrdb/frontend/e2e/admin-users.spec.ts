@@ -370,6 +370,61 @@ test.describe("Admin - User Management", () => {
       expect((await mockUser(page, id)).lifecycle).toBe("active");
     });
 
+    test("an active user offers Disable only", async ({ page }) => {
+      await navigateToUsers(page);
+      await seedUser(page, "act-user");
+      await openUser(page, "act-user");
+
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+    });
+
+    test("enables a pending user: the invitee activates", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await page.evaluate((u: string) => {
+        const w = window as unknown as {
+          go: {
+            main: {
+              UserBinding: {
+                Create: (req: { username: string; lifecycle: string }) => Promise<{ id: string }>;
+              };
+            };
+          };
+        };
+        return w.go.main.UserBinding.Create({ username: u, lifecycle: "pending" }).then((r) => r.id);
+      }, "pend-user");
+      await openUser(page, "pend-user");
+
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("pending");
+      // Pending moves to active or to disabled: both actions are offered.
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await page.getByTestId("user-enable").click();
+      await expect(badge).toHaveText("active");
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
+    test("enables a suspended user: the account is reinstated", async ({ page }) => {
+      await navigateToUsers(page);
+      const id = await seedUser(page, "susp-user");
+      await page.evaluate((uid: string) => {
+        const w = window as unknown as {
+          go: { main: { UserBinding: { Suspend: (id: string) => Promise<void> } } };
+        };
+        return w.go.main.UserBinding.Suspend(uid);
+      }, id);
+      await openUser(page, "susp-user");
+
+      const badge = page.getByTestId("user-lifecycle-badge");
+      await expect(badge).toHaveText("suspended");
+      await expect(page.getByTestId("user-disable")).toBeVisible();
+      await page.getByTestId("user-enable").click();
+      await expect(badge).toHaveText("active");
+      await expect(page.getByTestId("user-enable")).toHaveCount(0);
+      expect((await mockUser(page, id)).lifecycle).toBe("active");
+    });
+
     test("deletes a user after confirmation", async ({ page }) => {
       await navigateToUsers(page);
       await seedUser(page, "del-user");

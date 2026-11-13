@@ -221,6 +221,22 @@
     }
   }
 
+  /**
+   * The lifecycle states the backend moves to active (EnableUser) and to
+   * disabled (DisableUser), mirroring the transition graph in
+   * pkg/user/lifecycle.go. Deleting is terminal and offers neither.
+   */
+  const ENABLEABLE = new Set(["pending", "suspended", "locked", "disabled"]);
+  const DISABLEABLE = new Set(["pending", "active", "suspended", "locked"]);
+
+  function canEnable(lifecycle: string): boolean {
+    return ENABLEABLE.has(lifecycle);
+  }
+
+  function canDisable(lifecycle: string): boolean {
+    return DISABLEABLE.has(lifecycle);
+  }
+
   /** Enables or disables the existing user. */
   async function handleSetEnabled(enable: boolean): Promise<void> {
     try {
@@ -565,7 +581,7 @@
         Cancel
       </button>
       {#if existingUser !== null && !existingUser.system}
-        {#if existingUser.lifecycle === "disabled"}
+        {#if canEnable(existingUser.lifecycle)}
           <button
             class="btn btn-outline btn-success btn-sm"
             data-testid="user-enable"
@@ -574,7 +590,8 @@
           >
             Enable
           </button>
-        {:else}
+        {/if}
+        {#if canDisable(existingUser.lifecycle)}
           <button
             class="btn btn-outline btn-warning btn-sm"
             data-testid="user-disable"
