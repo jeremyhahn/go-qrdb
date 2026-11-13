@@ -124,8 +124,9 @@ type restTenantBarrierStatus struct {
 
 	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 
-	KeyFingerprint string                        `json:"key_fingerprint,omitempty"`
-	Nodes          []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	KeyFingerprint  string                        `json:"key_fingerprint,omitempty"`
+	Nodes           []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	NodesUnreadable bool                          `json:"nodes_unreadable,omitempty"`
 }
 
 // toTenantInfo converts the flat REST payload into the transport-side
@@ -751,6 +752,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     wire.ClusterSeal,
 		KeyFingerprint:  wire.KeyFingerprint,
 		Nodes:           wire.Nodes,
+		NodesUnreadable: wire.NodesUnreadable,
 	}, nil
 }
 

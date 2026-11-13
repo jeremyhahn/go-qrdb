@@ -468,6 +468,12 @@ type TenantBarrierStatus struct {
 	// the API endpoints a client fans a barrier init out to. Empty where the
 	// node cannot list them, or serves the barrier alone.
 	Nodes []BarrierNode `json:"nodes,omitempty"`
+
+	// NodesUnreadable is true when the node has a serving-node source but
+	// could not read it, so an empty Nodes does not mean a standalone
+	// barrier: the serving set is unknown and a client must not fall back
+	// to one node.
+	NodesUnreadable bool `json:"nodes_unreadable,omitempty"`
 }
 
 // TenantBarrierInitResult reports the outcome of a per-tenant barrier

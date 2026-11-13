@@ -635,6 +635,11 @@ type TenantBarrierStatusResponse struct {
 	// with the API endpoints it publishes: the nodes a barrier init fans out
 	// to, since each holds its own key. Empty on a standalone node.
 	Nodes []TenantBarrierNode `json:"nodes,omitempty"`
+
+	// NodesUnreadable is true when the server could not read the nodes
+	// serving the barrier: an empty Nodes then means the serving set is
+	// unknown, not a standalone barrier.
+	NodesUnreadable bool `json:"nodes_unreadable,omitempty"`
 }
 
 // TenantBarrierNode is one node serving a tenant barrier. Endpoints maps a

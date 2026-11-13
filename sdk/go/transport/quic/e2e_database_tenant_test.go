@@ -437,3 +437,21 @@ func TestE2E_TenantBarrierStatus_HappyPath(t *testing.T) {
 		t.Fatalf("resp = %+v", resp)
 	}
 }
+
+// TestE2E_TenantBarrierStatus_NodesUnreadable pins the decode of a status
+// whose serving-node source failed, from the server's wire key: the client
+// must report NodesUnreadable, not a standalone barrier the CLI would act on
+// alone.
+func TestE2E_TenantBarrierStatus_NodesUnreadable(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	srv.SetResponder("tenant.BarrierStatus", func(_ []byte) (uint16, []byte) {
+		return wire.StatusOK, []byte(`{"tenant_id":"t1","sealed":true,"nodes_unreadable":true}`)
+	})
+	resp, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "t1"})
+	if err != nil {
+		t.Fatalf("TenantBarrierStatus: %v", err)
+	}
+	if !resp.NodesUnreadable || len(resp.Nodes) != 0 {
+		t.Fatalf("NodesUnreadable = %v, Nodes = %+v; want true and none", resp.NodesUnreadable, resp.Nodes)
+	}
+}

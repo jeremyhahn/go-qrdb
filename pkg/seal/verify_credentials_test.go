@@ -123,6 +123,92 @@ func TestStorageBarrier_VerifyCredentials(t *testing.T) {
 	}
 }
 
+// TestStorageBarrier_VerifyCredentialsWithStrategy pins that the check uses
+// the caller's strategy, not the registered one: a same-ID strategy whose key
+// cannot unwrap the persisted root key is refused, even though the
+// registered strategy would pass, and the barrier stays unsealed.
+func TestStorageBarrier_VerifyCredentialsWithStrategy(t *testing.T) {
+	ctx := context.Background()
+	registered := newMockHSMStrategy(t, "verify-hsm")
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
+		BarrierConfig{RootKeyPath: "verify/root-key"}, registered)
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		strategy SealingStrategy
+		want     error
+	}{
+		{name: "registered strategy", strategy: registered},
+		{name: "same-ID strategy with another key", strategy: newMockHSMStrategy(t, "verify-hsm"), want: ErrCredentialMismatch},
+		{name: "strategy with another ID", strategy: newMockHSMStrategy(t, "other-hsm"), want: ErrCredentialMismatch},
+		{name: "no strategy", want: ErrStrategyNotFound},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := b.VerifyCredentialsWithStrategy(ctx, tc.strategy, Credentials{})
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("VerifyCredentialsWithStrategy = %v, want nil", err)
+				}
+			} else if !errors.Is(err, tc.want) {
+				t.Fatalf("VerifyCredentialsWithStrategy = %v, want %v", err, tc.want)
+			}
+			if b.IsSealed() {
+				t.Fatal("barrier sealed after VerifyCredentialsWithStrategy")
+			}
+		})
+	}
+	if err := b.VerifyCredentials(ctx, Credentials{}); err != nil {
+		t.Fatalf("VerifyCredentials with the registered strategy = %v, want nil", err)
+	}
+}
+
+// TestStorageBarrier_VerifyCredentials_StrategyNone pins the plaintext rule:
+// an open none barrier holds no root key and takes no secret, so there is
+// nothing to compare and the check passes; a non-none strategy still fails
+// the ID check, and a sealed none barrier is still ErrSealed.
+func TestStorageBarrier_VerifyCredentials_StrategyNone(t *testing.T) {
+	ctx := context.Background()
+	b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(), BarrierConfig{
+		RootKeyPath:     "verify/none-root-key",
+		PreferenceOrder: []StrategyID{StrategyNone},
+	}, NewNoneStrategy())
+	if err != nil {
+		t.Fatalf("NewStorageBarrier: %v", err)
+	}
+	if err := b.Initialize(ctx, Credentials{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if err := b.VerifyCredentials(ctx, Credentials{}); err != nil {
+		t.Fatalf("VerifyCredentials on an open none barrier = %v, want nil", err)
+	}
+	if err := b.VerifyCredentialsWithStrategy(ctx, NewNoneStrategy(), Credentials{}); err != nil {
+		t.Fatalf("VerifyCredentialsWithStrategy(none) = %v, want nil", err)
+	}
+	passphrase, _, _ := tunedPassphraseStrategy(t, "a-passphrase-for-none")
+	err = b.VerifyCredentialsWithStrategy(ctx, passphrase, Credentials{})
+	if !errors.Is(err, ErrCredentialMismatch) {
+		t.Fatalf("VerifyCredentialsWithStrategy(passphrase) = %v, want ErrCredentialMismatch", err)
+	}
+	if b.IsSealed() {
+		t.Fatal("barrier sealed after VerifyCredentials")
+	}
+
+	if err := b.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := b.VerifyCredentials(ctx, Credentials{}); !errors.Is(err, ErrSealed) {
+		t.Fatalf("VerifyCredentials on a sealed none barrier = %v, want ErrSealed", err)
+	}
+}
+
 func TestStorageBarrier_CeremonyDistributor(t *testing.T) {
 	b := newVerifyBarrier(t, NewMemoryBackend(), "distributor-pass")
 	if got := b.CeremonyDistributor(); got != nil {

@@ -590,6 +590,10 @@ func newTenantBarrierInitCmd() *cobra.Command {
 				// A barrier served by one node -- a single-member Raft
 				// deployment's -- is that node's, reached on --server's
 				// client over any transport, unix and embedded included.
+				// An unreadable serving set is not a standalone barrier.
+				if status.NodesUnreadable {
+					return &TenantServingNodesUnknownError{Command: "barrier-init", TenantID: tenantID}
+				}
 				if len(status.Nodes) > 1 {
 					return runOnServingNodes(cmd, status.Nodes, "the barrier init", func(ctx context.Context, tenants transport.TenantClient) error {
 						_, err := tenants.TenantBarrierInit(ctx, req)
@@ -747,7 +751,13 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "barrier-unseal",
 		Short: "Unseal the per-tenant cryptographic barrier",
-		Args:  cobra.NoArgs,
+		Long: "Unseal the per-tenant cryptographic barrier with the credential in --key.\n\n" +
+			"A barrier served by several nodes holds its own key on each. The unseal reads\n" +
+			"the nodes from --server's barrier status and is sent to every one of them,\n" +
+			"over --server's transport (rest, grpc, quic or mcp) at the endpoint each node\n" +
+			"publishes, with one result printed per node. A barrier served by one node is\n" +
+			"unsealed on --server's node.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if keyFlag == "" {
 				return &TenantUnsealInputError{}
@@ -758,6 +768,24 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 			}
 			req := &transport.TenantBarrierUnsealRequest{TenantID: tenantID, Key: decoded}
 			defer secure.Wipe(req.Key)
+
+			status, err := client.Tenants().TenantBarrierStatus(cmd.Context(), &transport.TenantBarrierStatusRequest{TenantID: tenantID})
+			if err != nil {
+				return err
+			}
+			// Every node serving the barrier holds its own key sealed
+			// under the same credential, so each one is unsealed. A
+			// barrier served by one node is unsealed on --server's client
+			// over any transport, unix and embedded included.
+			// An unreadable serving set is not a standalone barrier:
+			// unsealing --server's node alone could leave the others
+			// sealed while reporting success.
+			if status.NodesUnreadable {
+				return &TenantServingNodesUnknownError{Command: "barrier-unseal", TenantID: tenantID}
+			}
+			if len(status.Nodes) > 1 {
+				return runOnServingNodes(cmd, status.Nodes, "the barrier unseal", barrierUnseal(req))
+			}
 
 			if err := client.Tenants().TenantBarrierUnseal(cmd.Context(), req); err != nil {
 				return err
@@ -773,6 +801,13 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 	cmd.Flags().StringVar(&keyFlag, "key", "", "Base64-encoded barrier credential")
 
 	return cmd
+}
+
+// barrierUnseal returns the unseal sent to each node serving the barrier.
+func barrierUnseal(req *transport.TenantBarrierUnsealRequest) func(context.Context, transport.TenantClient) error {
+	return func(ctx context.Context, tenants transport.TenantClient) error {
+		return tenants.TenantBarrierUnseal(ctx, req)
+	}
 }
 
 // newTenantBarrierSealCmd creates the "tenant barrier-seal" subcommand. It

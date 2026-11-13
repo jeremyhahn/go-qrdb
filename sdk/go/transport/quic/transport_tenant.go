@@ -466,8 +466,9 @@ type quicTenantBarrierStatusResponse struct {
 
 	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 
-	KeyFingerprint string                        `json:"key_fingerprint,omitempty"`
-	Nodes          []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	KeyFingerprint  string                        `json:"key_fingerprint,omitempty"`
+	Nodes           []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	NodesUnreadable bool                          `json:"nodes_unreadable,omitempty"`
 }
 
 // nilTenantBarrierRequestError is returned when a per-tenant barrier method
@@ -716,6 +717,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     wire.ClusterSeal,
 		KeyFingerprint:  wire.KeyFingerprint,
 		Nodes:           wire.Nodes,
+		NodesUnreadable: wire.NodesUnreadable,
 	}, nil
 }
 

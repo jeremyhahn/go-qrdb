@@ -445,6 +445,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
 		KeyFingerprint:  resp.GetKeyFingerprint(),
 		Nodes:           holderconv.TenantBarrierNodesFromPB(resp.GetNodes()),
+		NodesUnreadable: resp.GetNodesUnreadable(),
 	}, nil
 }
 

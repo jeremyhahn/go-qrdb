@@ -91,8 +91,9 @@ type mcpTenantBarrierStatus struct {
 
 	ClusterSeal *transport.ClusterSeal `json:"cluster_seal,omitempty"`
 
-	KeyFingerprint string                        `json:"key_fingerprint,omitempty"`
-	Nodes          []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	KeyFingerprint  string                        `json:"key_fingerprint,omitempty"`
+	Nodes           []transport.TenantBarrierNode `json:"nodes,omitempty"`
+	NodesUnreadable bool                          `json:"nodes_unreadable,omitempty"`
 }
 
 // CreateTenant creates a new tenant by calling the qrdb_tenant_create MCP tool.
@@ -742,6 +743,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     raw.ClusterSeal,
 		KeyFingerprint:  raw.KeyFingerprint,
 		Nodes:           raw.Nodes,
+		NodesUnreadable: raw.NodesUnreadable,
 	}, nil
 }
 

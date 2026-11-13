@@ -358,8 +358,10 @@ and is never sent. An embedded connection is in process and asks no proof.
 A barrier served by several nodes holds its own key on each. A `passphrase`
 init reads the serving nodes from `--server`'s `barrier-status` and is sent to
 every one of them, over `--server`'s transport at the endpoint each node
-publishes, with one result printed per node. Under any other strategy the init
-goes to `--server`'s node and the others initialize their own keys from it.
+publishes, with one result printed per node. When the serving nodes cannot be
+listed (`nodes_unreadable` in the status), the init fails with
+`TenantServingNodesUnknownError` and sends nothing. Under any other strategy the
+init goes to `--server`'s node and the others initialize their own keys from it.
 
 | Flag | Type | Meaning |
 |---|---|---|
@@ -406,6 +408,22 @@ qrdb tenant barrier-init --id secure-co --strategy shamir --threshold 2 --shares
 
 The credential unseal. A Shamir tenant barrier refuses it: M of its share
 holders unseal it with `qrdb tenant barrier-quorum submit --op unseal`.
+
+A barrier served by several nodes holds its own key on each. The unseal reads
+the nodes from `--server`'s barrier status and is sent to every one of them,
+over `--server`'s transport (rest, grpc, quic or mcp) at the endpoint each node
+publishes, with one result printed per node; the command fails naming the
+nodes that refused. A barrier served by one node is unsealed on `--server`'s
+node. When `--server`'s node cannot list the serving nodes (its status reports
+`nodes_unreadable`), the command fails with `TenantServingNodesUnknownError`
+naming the tenant and sends nothing: unsealing one node could leave the others
+sealed.
+
+A rerun after a partial unseal is safe: a node whose barrier is already open
+checks the credential against the key it holds and reports success when it
+matches, so the rerun unseals the nodes that refused before and reports every
+node OK. A wrong credential is still refused on an open node, which stays
+unsealed.
 
 | Flag | Type | Meaning |
 |---|---|---|

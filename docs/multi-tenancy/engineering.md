@@ -1635,10 +1635,18 @@ phase 5 on.
 > `TestRegisterTenantShell_*`,
 > `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`
 > and `TestBarrierRegistry_ImportTenant_InitializesRegisteredShell`.
-> Not yet built: the serving-set check before a shell is registered, and a
-> node without a cluster identity, which refuses a platform-custody raft
-> tenant and claims nothing for a barrier or volume one (a standalone node
-> composes no signer and needs none).
+> A node without a cluster identity (no CA pool, node certificate or signing
+> key) refuses a platform-custody raft tenant and claims nothing for a barrier
+> or volume one: `wirePlatformInit` wires no platform signer, a raft create
+> then fails with `*tenant.InitStatementRequiredError` and is undone, and a
+> barrier or volume create succeeds unclaimed (a standalone node composes no
+> signer and needs none). Pinned by
+> `TestWirePlatformInit_WiresNothingWithoutItsParts`,
+> `TestCreateTenant_ARefusedPlatformClaimUndoesTheCreate` (`no platform
+> signer`) and `TestCreateTenant_NoPlatformClaim` (`no platform
+> signer/barrier`, `no platform signer/volume`).
+> Not yet built: the serving-set check before a shell is registered (needs
+> `pkg/placement/serving_set.go`, draft PR #1494).
 >
 > **PN-4, owner custody under `none` and `passphrase`.** Every node serving
 > the barrier initialises its own key, and neither key is shipped:
@@ -1660,14 +1668,25 @@ phase 5 on.
 >   record publishes (`tenant.BarrierNode`, sourced by
 >   `pkg/server/lifecycle` from the placement table and member records). It
 >   reaches clients on every transport and the CLI status table. A
->   standalone node lists none; a list the node cannot read is logged and
->   left out.
+>   standalone node lists none; a list the node cannot read is logged, left
+>   out, and reported as `NodesUnreadable` (`nodes_unreadable`) so a client
+>   can tell an unknown serving set from a standalone barrier.
 > - **Fan-out.** `qrdb tenant barrier-init` under `passphrase` sends the init
 >   to every listed node at once, over `--server`'s transport (rest, grpc,
 >   quic or mcp), and prints one result per node; each call proves the init
 >   on its own connection, and the claim book accepts the re-signed
 >   statement as the same init. A `none`, Shamir or hardware init goes to
 >   `--server`'s node alone, the other nodes initialising from its claim.
+>   `qrdb tenant barrier-unseal` fans out the same way: it reads the listed
+>   nodes from `--server`'s barrier status and sends the credential unseal
+>   to each of them at once, since each node's own key is sealed under that
+>   credential, printing one result per node; a `BarrierFanOutError` names
+>   the nodes that refused while the others unseal. A barrier served by one
+>   node is unsealed on `--server`'s node. When the status reports
+>   `NodesUnreadable`, both `barrier-init` (passphrase) and `barrier-unseal`
+>   fail with `TenantServingNodesUnknownError` naming the tenant and send
+>   nothing, rather than act on `--server`'s node alone and leave the other
+>   replicas sealed.
 > - **First-admin window.** Once the pending first admin's record is
 >   consumed, a node initialising later admits the certificate whose
 >   thumbprint was pinned for the barrier at onboarding
@@ -1676,6 +1695,7 @@ phase 5 on.
 > Pinned by `TestClusterEnableEncryption_TenantScope_RF3` (through the CLI,
 > no key delivered and no unseal on the followers),
 > `TestSendToServingNodes_*`, `TestTenantBarrierInit_FansOutToServingNodes`,
+> `TestTenantBarrierUnseal_*`,
 > `TestBarrierNodes_*`, `TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing`,
 > `TestDistributeTenantKey_Uninitialized_ShipsNothing`,
 > `TestDistributeTenantKey_Shamir_ShipsNothing`,
