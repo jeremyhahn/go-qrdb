@@ -390,6 +390,18 @@ certificate the application already holds keeps working until it expires;
 revoke its serial too if you want it out now. Writing, listing and deleting a
 policy all need `certs:delegate`, in your own tenant.
 
+A policy-minted certificate is enough for the four things an embedded
+application does for your tenant on its own: read one account's roles and
+effective permissions before that account signs in (`roles:read`,
+`users:read`, `permissions:resolve`; `qrdb users get`, `qrdb roles
+get-by-name`, `qrdb roles resolve-permissions`), bind and unbind roles for
+federated login (`roles:assign`, `roles:unassign`; `qrdb roles assign|unassign`),
+and list the barrier's officers and seal it (`tenant_barrier:officer_list`,
+`tenant_barrier:seal`; `qrdb tenant barrier-officer list`, `qrdb tenant
+barrier-seal`). Put exactly those permissions in the policy's scope. Each works
+only in your tenant, is recorded in your audit trail, and stops on the next
+call once you delete the policy and revoke the serial.
+
 ## Telling whether a caller owns its tenant
 
 An application built on the embedded SDK often needs one answer: is this
