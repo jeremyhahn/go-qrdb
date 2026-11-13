@@ -18,12 +18,14 @@ package integration_test
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 )
@@ -178,6 +180,122 @@ func TestCADelegatePolicy_CLI_TenantDeleteReclaims_PerProtocol(t *testing.T) {
 			}) {
 				t.Fatalf("[%s] deleted tenant %s still holds policies for %v", proto.name, id, left)
 			}
+		})
+	}
+}
+
+// consumerCLIScope is the grant an embedder needs for its four server-owned
+// operations in a tenant (#1187): role and effective-permission reads for
+// one account, role-binding writes, and the tenant barrier's officer list
+// and seal.
+var consumerCLIScope = []permission.Permission{
+	permission.RolesRead, permission.UsersRead, permission.PermissionsResolve,
+	permission.RolesAssign, permission.RolesUnassign,
+	permission.TenantBarrierOfficerList, permission.TenantBarrierSeal,
+}
+
+// cliJSONID decodes the "id" of a qrdb --output json reply.
+func cliJSONID(t *testing.T, what, out string) string {
+	t.Helper()
+	var v struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil || v.ID == "" {
+		t.Fatalf("%s: no id in the reply: %v\noutput: %s", what, err, out)
+	}
+	return v.ID
+}
+
+// TestCADelegatePolicy_CLI_ConsumerOperations_PerProtocol drives the four
+// embedder operations through the qrdb CLI under a delegation minted on
+// tenant A's standing policy, on every transport: each is allowed in A,
+// refused in B, and refused once the policy is deleted and the serial
+// revoked. Sealing is terminal for A, so each transport gets its own node.
+func TestCADelegatePolicy_CLI_ConsumerOperations_PerProtocol(t *testing.T) {
+	t.Parallel()
+	permission.RegisterRoleGrant(delegationPrincipal, consumerCLIScope...)
+	scope := []string{string(permission.CertsDelegate)}
+	for _, p := range consumerCLIScope {
+		scope = append(scope, string(p))
+	}
+
+	for _, proto := range multiProtocols {
+		t.Run(proto.name, func(t *testing.T) {
+			t.Parallel()
+			node, adminB, _, _ := startDelegationNodeWith(t)
+			waitForDelegationNode(t, node, []multiProtocol{proto})
+			admin := node.cliArgsFor(proto)
+			connB := tenantCLIArgsForProto(node, proto, adminB.certPath, adminB.keyPath)
+			run := func(conn []string, args ...string) (string, error) {
+				return runQRDB(t, node.cli, conn, args...)
+			}
+			must := func(what string, conn []string, args ...string) string {
+				out, err := run(conn, args...)
+				if err != nil {
+					t.Fatalf("[%s] %s: %v\noutput: %s", proto.name, what, err, out)
+				}
+				return out
+			}
+
+			// Tenant A grants the consumer scope; a bootstrap delegation
+			// mints the working ones on that policy.
+			must("ca delegate policy put", admin, "ca", "delegate", "policy", "put",
+				"--principal", delegationPrincipal, "--scope", strings.Join(scope, ","), "--ttl", "15m")
+			_, boot := issueDelegationCLI(t, node.cli, admin, proto, delegationPrincipal, "15m", string(permission.CertsDelegate))
+			bootConn := tenantCLIArgsForProto(node, proto, boot.certPath, boot.keyPath)
+			issued, work := issueDelegationCLI(t, node.cli, bootConn, proto, delegationPrincipal, "10m", scope[1:]...)
+			_, sealer := issueDelegationCLI(t, node.cli, bootConn, proto, delegationPrincipal, "10m", string(permission.TenantBarrierSeal))
+			delegated := tenantCLIArgsForProto(node, proto, work.certPath, work.keyPath)
+
+			account := cliJSONID(t, "users create in A", must("users create in A", admin, "--output", "json",
+				"users", "create", "--without-email-login-key", "--username", "consumer-a-"+proto.name, "--tenant-id", delegationTenantA))
+			accountB := cliJSONID(t, "users create in B", must("users create in B", connB, "--output", "json",
+				"users", "create", "--without-email-login-key", "--username", "consumer-b-"+proto.name, "--tenant-id", delegationTenantB))
+
+			// 1. Role and effective-permission reads for one account.
+			must("users get", delegated, "users", "get", account)
+			userRole := cliJSONID(t, "roles get-by-name user", must("roles get-by-name user", delegated, "--output", "json",
+				"roles", "get-by-name", "user", "--tenant-id", delegationTenantA))
+			must("roles resolve-permissions", delegated, "roles", "resolve-permissions", userRole)
+
+			// 2. Role-binding writes for federated login.
+			auditor := cliJSONID(t, "roles get-by-name auditor", must("roles get-by-name auditor", delegated, "--output", "json",
+				"roles", "get-by-name", "auditor", "--tenant-id", delegationTenantA))
+			must("roles assign", delegated, "roles", "assign", "--user", account, "--role", auditor)
+			must("roles unassign", delegated, "roles", "unassign", "--user", account, "--role", auditor)
+
+			// 3. The tenant barrier's officer list.
+			must("tenant barrier-officer list", delegated, "tenant", "barrier-officer", "list", "--tenant-id", delegationTenantA)
+
+			// Every operation is refused in tenant B.
+			for what, args := range map[string][]string{
+				"users get":                   {"users", "get", accountB},
+				"roles get-by-name":           {"roles", "get-by-name", "auditor", "--tenant-id", delegationTenantB},
+				"roles assign":                {"roles", "assign", "--user", accountB, "--role", auditor},
+				"roles unassign":              {"roles", "unassign", "--user", accountB, "--role", auditor},
+				"tenant barrier-officer list": {"tenant", "barrier-officer", "list", "--tenant-id", delegationTenantB},
+				"tenant barrier-seal":         {"tenant", "barrier-seal", "--id", delegationTenantB},
+			} {
+				if out, err := run(delegated, args...); err == nil {
+					t.Errorf("[%s] %s in %s admitted a delegation from %s: %s", proto.name, what, delegationTenantB, delegationTenantA, out)
+				}
+			}
+
+			// Deleting the policy stops the mint; revoking the serial
+			// refuses the next call.
+			must("ca delegate policy delete", admin, "ca", "delegate", "policy", "delete", delegationPrincipal)
+			if out, err := run(bootConn, "ca", "delegate", "--out", t.TempDir(),
+				"--principal", delegationPrincipal, "--scope", string(permission.UsersRead)); err == nil {
+				t.Fatalf("[%s] a mint after the policy was deleted was admitted: %s", proto.name, out)
+			}
+			must("ca revoke", admin, "ca", "revoke", "--serial", issued.Serial)
+			if out, err := run(delegated, "tenant", "barrier-officer", "list", "--tenant-id", delegationTenantA); err == nil {
+				t.Fatalf("[%s] a revoked delegation listed the officers: %s", proto.name, out)
+			}
+
+			// The seal, under a delegation minted while the policy stood.
+			must("tenant barrier-seal", tenantCLIArgsForProto(node, proto, sealer.certPath, sealer.keyPath),
+				"tenant", "barrier-seal", "--id", delegationTenantA)
 		})
 	}
 }
