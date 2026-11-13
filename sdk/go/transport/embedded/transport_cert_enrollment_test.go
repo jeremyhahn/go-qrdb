@@ -158,6 +158,59 @@ func TestRemoveTrustAnchor_ServiceError(t *testing.T) {
 	}
 }
 
+// TestTrustAnchors_CrossTenantDenied: the transport refuses another tenant's
+// trust anchors before it dispatches to the cert-enrollment service. The
+// injected service fails the test if any verb reaches it, so this pins the
+// transport's own confinement, which the real service's check would mask.
+func TestTrustAnchors_CrossTenantDenied(t *testing.T) {
+	reached := map[string]bool{}
+	mock := &mockCertEnrollmentServicer{
+		addTrustAnchorsFn: func(context.Context, string, []byte) ([]trustanchor.Anchor, error) {
+			reached["AddTrustAnchors"] = true
+			return nil, nil
+		},
+		listTrustAnchorsFn: func(context.Context, string) ([]trustanchor.Anchor, error) {
+			reached["ListTrustAnchors"] = true
+			return nil, nil
+		},
+		removeTrustAnchorFn: func(context.Context, string, string) error {
+			reached["RemoveTrustAnchor"] = true
+			return nil
+		},
+	}
+	tr := newAuthTransport(t, WithCertEnrollment(mock))
+	ctx := callerCtx("acme")
+
+	verbs := []struct {
+		name string
+		call func() error
+	}{
+		{"AddTrustAnchors", func() error {
+			_, err := tr.AddTrustAnchors(ctx, &transport.AddTrustAnchorsRequest{TenantID: "globex"})
+			return err
+		}},
+		{"ListTrustAnchors", func() error {
+			_, err := tr.ListTrustAnchors(ctx, "globex")
+			return err
+		}},
+		{"RemoveTrustAnchor", func() error {
+			return tr.RemoveTrustAnchor(ctx, "globex", "fp1")
+		}},
+	}
+	for _, v := range verbs {
+		t.Run(v.name, func(t *testing.T) {
+			err := v.call()
+			if reached[v.name] {
+				t.Fatalf("%s: the service must not be reached for a cross-tenant request", v.name)
+			}
+			var denied *tenant.CrossTenantDeniedError
+			if !errors.As(err, &denied) {
+				t.Fatalf("err = %v (%T); want *tenant.CrossTenantDeniedError", err, err)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateTenant admin fields
 // ---------------------------------------------------------------------------
