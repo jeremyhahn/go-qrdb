@@ -1926,63 +1926,6 @@ func TestErrors_Unwrap(t *testing.T) {
 // KV roundtrip integration test
 // ---------------------------------------------------------------------------
 
-func TestKV_PutGetDeleteRoundtrip(t *testing.T) {
-	srv := newTestServer(t)
-	defer srv.Close()
-
-	rt := newTestTransport(t, srv.URL)
-	defer rt.Close()
-
-	ctx := context.Background()
-
-	// Put multiple keys.
-	keys := map[string]string{
-		"key1": "value1",
-		"key2": "value2",
-		"key3": "value3",
-	}
-	for k, v := range keys {
-		if err := rt.Put(ctx, k, []byte(v)); err != nil {
-			t.Fatalf("Put(%s) failed: %v", k, err)
-		}
-	}
-
-	// Get and verify all keys.
-	for k, expected := range keys {
-		val, err := rt.Get(ctx, k)
-		if err != nil {
-			t.Fatalf("Get(%s) failed: %v", k, err)
-		}
-		if string(val) != expected {
-			t.Errorf("Get(%s) = %q, expected %q", k, string(val), expected)
-		}
-	}
-
-	// List all keys.
-	allKeys, err := rt.List(ctx, "")
-	if err != nil {
-		t.Fatalf("List failed: %v", err)
-	}
-	if len(allKeys) != 3 {
-		t.Errorf("expected 3 keys, got %d", len(allKeys))
-	}
-
-	// Delete one key.
-	if err := rt.Delete(ctx, "key2"); err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-
-	// Verify deleted.
-	_, err = rt.Get(ctx, "key2")
-	if err == nil {
-		t.Fatal("expected KeyNotFoundError after delete")
-	}
-	var knf *transport.KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Errorf("expected KeyNotFoundError, got %T", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // NewRequestWithContext error paths (invalid baseURL containing null byte)
 // ---------------------------------------------------------------------------

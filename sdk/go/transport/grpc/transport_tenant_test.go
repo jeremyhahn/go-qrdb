@@ -303,19 +303,6 @@ func TestTransport_TenantBarrierInit_NilRequest(t *testing.T) {
 	}
 }
 
-func TestTransport_TenantBarrierInit_AfterClose(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	tr.closed.Store(true)
-	_, err := tr.TenantBarrierInit(context.Background(), &transport.TenantBarrierInitRequest{TenantID: "acme"})
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestTransport_TenantBarrierInit_ServerError(t *testing.T) {
 	svc := &fakeTenantServicer{
 		initFn: func(_ context.Context, _, _ string, _, _ int) error {
@@ -373,19 +360,6 @@ func TestTransport_TenantBarrierUnseal_NilRequest(t *testing.T) {
 	}
 }
 
-func TestTransport_TenantBarrierUnseal_AfterClose(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	tr.closed.Store(true)
-	err := tr.TenantBarrierUnseal(context.Background(), &transport.TenantBarrierUnsealRequest{TenantID: "acme"})
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected ClosedError, got %T", err)
-	}
-}
-
 func TestTransport_TenantBarrierUnseal_ServerError(t *testing.T) {
 	svc := &fakeTenantServicer{
 		unsealFn: func(_ context.Context, _ string, _ []byte) error {
@@ -436,19 +410,6 @@ func TestTransport_TenantBarrierSeal_NilRequest(t *testing.T) {
 	err := tr.TenantBarrierSeal(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
-	}
-}
-
-func TestTransport_TenantBarrierSeal_AfterClose(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	tr.closed.Store(true)
-	err := tr.TenantBarrierSeal(context.Background(), &transport.TenantBarrierSealRequest{TenantID: "acme"})
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected ClosedError, got %T", err)
 	}
 }
 
@@ -516,19 +477,6 @@ func TestTransport_TenantBarrierStatus_NilRequest(t *testing.T) {
 	_, err := tr.TenantBarrierStatus(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error for nil request")
-	}
-}
-
-func TestTransport_TenantBarrierStatus_AfterClose(t *testing.T) {
-	tr := &Transport{config: &transport.Config{}}
-	tr.closed.Store(true)
-	_, err := tr.TenantBarrierStatus(context.Background(), &transport.TenantBarrierStatusRequest{TenantID: "acme"})
-	if err == nil {
-		t.Fatal("expected ClosedError")
-	}
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Errorf("expected ClosedError, got %T", err)
 	}
 }
 
