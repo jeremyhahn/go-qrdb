@@ -15,26 +15,28 @@
 package lifecycle
 
 import (
-	"slices"
-
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
-// strictIsolationRequired is the strict-isolation activation check for host.
-// It refuses with *feature.NotActiveError while this binary does not support
-// the feature (phase 5's dedicated WALs are not built), on every host,
-// standalone included. Once supported, a standalone host is active from the
-// start and a clustered one once the cluster has activated the feature.
+// strictIsolationRequired is the strict-isolation activation check for host
+// (featuregate.StrictIsolation). It always returns a check, never nil: the
+// tenant service reads a missing check as not active. A standalone host is
+// active from the start; a clustered one once the cluster has activated the
+// feature, judged cluster-wide (group 0, so no group is named). Until then the
+// isolation-policy verbs, a strict tenant's database create and an isolated
+// tenant's placement are refused with *feature.NotActiveError. A nil host or
+// one that carries no feature gate is never active. A mixed-version cluster,
+// whose older members do not advertise the feature, never activates it, so
+// there a strict tenant's create and an isolated tenant's placement stay
+// refused.
 func strictIsolationRequired(host service.Host) func() error {
 	gated, _ := host.(service.FeatureGatedHost)
 	return func() error {
-		if slices.Contains(featuregate.Supported(), tenant.StrictIsolation) &&
-			(standaloneHost(host) || gated != nil && gated.FeatureEnabled(0, tenant.StrictIsolation)) {
+		if standaloneHost(host) || gated != nil && gated.FeatureEnabled(0, featuregate.StrictIsolation) {
 			return nil
 		}
-		return &feature.NotActiveError{Feature: tenant.StrictIsolation}
+		return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
 	}
 }

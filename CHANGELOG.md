@@ -49,7 +49,7 @@ are not reconstructed here — their history is in the git log.
   transaction is refused), so no KV writer can forge one. Deleting a tenant
   deletes its policies, and a mint for a tenant that is deleted or retired is
   refused with `TenantNotFoundError`.
-- **Isolation-policy verbs, refused until strict-isolation is active**
+- **Isolation-policy verbs, gated on strict-isolation**
   (#1423). REST (`GET`/`PUT /v1/cluster/isolation-policy`), gRPC
   (`Get`/`SetClusterIsolationPolicy`), QUIC (`cluster.IsolationPolicyGet`/
   `Set`) and MCP (`qrdb_cluster_isolation_policy_get`/`_set`) read and set the
@@ -59,9 +59,9 @@ are not reconstructed here — their history is in the git log.
   `qrdb cluster-isolation-policy get|set` and
   `qrdb tenant update --isolation-policy`. Each verb
   answers `feature.NotActiveError` (HTTP 503, `Unavailable`) and changes
-  nothing until the new `strict-isolation` feature is active. This build does
-  not support that feature: it is supported once G1 (a dedicated WAL for
-  every database of a strict tenant) lands. An unknown policy value is
+  nothing until the `strict-isolation` feature (`featuregate.StrictIsolation`)
+  is active: from the start on a standalone node, and on a cluster once it has
+  activated the feature. An unknown policy value is
   `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
   to `strict` in one compare-and-swap, so a racing writer is refused and the
   floor is never unset in between. The Go SDK's `TenantInfo` reports the

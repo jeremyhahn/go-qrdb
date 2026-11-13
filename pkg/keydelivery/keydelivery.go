@@ -72,8 +72,10 @@ func (m Mode) valid() bool {
 // shard/replica/target-node/mode. Meta is also what the placement-table
 // authorization gate is checked against by the transport layer.
 type Meta struct {
-	TenantID     string `json:"tenant_id"`
-	Database     string `json:"database"`
+	TenantID string `json:"tenant_id"`
+	// DatabaseID is the database's opaque placement id; the envelope never
+	// carries the database name.
+	DatabaseID   string `json:"database_id"`
 	ShardID      uint64 `json:"shard_id"`
 	ReplicaID    uint64 `json:"replica_id"`
 	TargetNodeID string `json:"target_node_id"`
@@ -85,7 +87,7 @@ func (m Meta) validate() error {
 	switch {
 	case m.TenantID == "":
 		return ErrInvalidMeta
-	case m.Database == "":
+	case m.DatabaseID == "":
 		return ErrInvalidMeta
 	case m.ShardID == 0:
 		return ErrInvalidMeta

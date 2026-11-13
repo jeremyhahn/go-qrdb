@@ -37,7 +37,7 @@ func mustP256(t *testing.T) *ecdsa.PrivateKey {
 func goodMeta() Meta {
 	return Meta{
 		TenantID:     "acme",
-		Database:     "ledger",
+		DatabaseID:   "ledger",
 		ShardID:      42,
 		ReplicaID:    3,
 		TargetNodeID: "node-b",
@@ -156,7 +156,7 @@ func TestOpen_TamperedContextFailsClosed(t *testing.T) {
 		wantErr error
 	}{
 		{"tenant", func(e *Envelope) { e.TenantID = "evil" }, ErrDecrypt},
-		{"database", func(e *Envelope) { e.Database = "other" }, ErrDecrypt},
+		{"database", func(e *Envelope) { e.DatabaseID = "other" }, ErrDecrypt},
 		{"shard", func(e *Envelope) { e.ShardID = 99 }, ErrDecrypt},
 		{"replica", func(e *Envelope) { e.ReplicaID = 99 }, ErrDecrypt},
 		{"nonce", func(e *Envelope) { e.Nonce[0] ^= 0xFF }, ErrDecrypt},
@@ -273,7 +273,7 @@ func TestMeta_ValidateBranches(t *testing.T) {
 	}{
 		{"ok", base, nil},
 		{"no-tenant", mut(func(m *Meta) { m.TenantID = "" }), ErrInvalidMeta},
-		{"no-db", mut(func(m *Meta) { m.Database = "" }), ErrInvalidMeta},
+		{"no-db", mut(func(m *Meta) { m.DatabaseID = "" }), ErrInvalidMeta},
 		{"no-shard", mut(func(m *Meta) { m.ShardID = 0 }), ErrInvalidMeta},
 		{"no-replica", mut(func(m *Meta) { m.ReplicaID = 0 }), ErrInvalidMeta},
 		{"no-target", mut(func(m *Meta) { m.TargetNodeID = "" }), ErrInvalidMeta},

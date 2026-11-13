@@ -14,19 +14,16 @@
 
 package tenant
 
-import "github.com/jeremyhahn/go-qrdb/pkg/feature"
+import (
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+)
 
-// StrictIsolation is the cluster isolation floor's strict mode and the
-// per-tenant isolation_policy that opts into it: the cluster.IsolationPolicy
-// get and set verbs and a tenant update carrying isolation_policy are refused
-// with *feature.NotActiveError until it is active, and before then behaviour
-// is unchanged. It is deliberately NOT in featuregate's supported list: strict
-// isolation is only real once a strict tenant's databases have dedicated WALs
-// (multi-tenancy phase 5, G1), which this binary does not build, so
-// advertising it would let
-// a cluster activate a strict floor that does not isolate
-// (docs/multi-tenancy/engineering.md phase 5).
-const StrictIsolation feature.Feature = "strict-isolation"
+// The cluster isolation floor's strict mode and the per-tenant
+// isolation_policy that opts into it are gated on featuregate.StrictIsolation:
+// the cluster.IsolationPolicy get and set verbs and a tenant update carrying
+// isolation_policy are refused with *feature.NotActiveError until it is
+// active, and before then behaviour is unchanged.
 
 // RequireStrictIsolation answers the strict-isolation activation check for a
 // transport's tenant service: nil once the service's injected check passes,
@@ -40,7 +37,7 @@ func RequireStrictIsolation(svc any) error {
 			return check()
 		}
 	}
-	return &feature.NotActiveError{Feature: StrictIsolation}
+	return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
 }
 
 // StrictIsolationGate is implemented by a tenant service that carries the
@@ -55,9 +52,8 @@ type StrictIsolationGate interface {
 }
 
 // strictIsolationGate holds the strict-isolation activation check. Unlike
-// the other activation gates a missing check means not active: this binary
-// does not implement strict isolation's dedicated WALs, and a composition
-// that forgot the option must not open the verbs.
+// the other activation gates a missing check means not active: a
+// composition that forgot the option must not open the verbs.
 type strictIsolationGate struct {
 	strictIsolationRequired func() error
 }

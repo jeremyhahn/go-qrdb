@@ -179,6 +179,21 @@ const LeaseCheckpoint feature.Feature = "lease-checkpoint"
 // refused (docs/multi-tenancy/architecture.md "Feature gate and upgrade").
 const PerNodeBarrierKeys feature.Feature = "per-node-barrier-keys"
 
+// StrictIsolation is strict tenant isolation from phase 5 onward: every
+// database of a strict tenant is a raft group on a dedicated WAL (no log
+// under a node key), and an isolated tenant's database groups are placed
+// only on its serving set (its home group's nodes). It adds no Raft
+// command, but a node that predates it neither refuses a strict tenant's
+// shared-WAL database nor confines its placement, so a mixed-version
+// cluster would serve the tenant unconfined. It is enforced per node, so
+// it is judged by ACTIVATION, cluster-wide (group 0): until then a strict
+// tenant's database create is refused and the scheduler places nothing for
+// an isolated tenant (docs/multi-tenancy/architecture.md "Feature gate and
+// upgrade"). Keying placements and key-delivery envelopes by the opaque
+// database id is NOT gated: it is a format change, and pre-release tenants
+// are re-created, never migrated.
+const StrictIsolation feature.Feature = "strict-isolation"
+
 // VerifiableLog is protocol.OpVerifiableLog: a deterministic, apply-time
 // create, append, checkpoint or body expiry on a named verifiable log. A
 // replica that does not implement it answers the opcode with UnknownOpError
@@ -252,12 +267,9 @@ const CommandCaps feature.Feature = "command-caps"
 // engineering.md).
 const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
-// strict-isolation (tenant.StrictIsolation, tenant.RequireStrictIsolation in
-// pkg/tenant) is deliberately NOT in supported.
-
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, StrictIsolation}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

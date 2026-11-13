@@ -296,10 +296,11 @@ func databaseBarrierStatusToProto(st *service.DatabaseBarrierStatusInfo) *pb.Dat
 // domain DatabaseConfig.
 func protoDatabaseCreateToConfig(req *pb.DatabaseCreateRequest) database.DatabaseConfig {
 	cfg := database.DatabaseConfig{
-		Name:     req.GetName(),
-		Backend:  database.BackendType(req.GetBackend()),
-		DataDir:  req.GetDataDir(),
-		Replicas: int(req.GetReplicas()),
+		Name:         req.GetName(),
+		Backend:      database.BackendType(req.GetBackend()),
+		DataDir:      req.GetDataDir(),
+		Replicas:     int(req.GetReplicas()),
+		DedicatedWAL: req.GetDedicatedWal(),
 	}
 
 	if p := req.GetProtocol(); p != nil {

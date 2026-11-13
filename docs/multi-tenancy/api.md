@@ -537,10 +537,10 @@ a refused transition is logged and the stored floor stands. The key predates
 the verbs below and is not behind their gate.
 
 The floor and a tenant's policy have transport verbs, refused until the
-`strict-isolation` feature is active. This build does not support the feature
-(it is supported once G1, a dedicated WAL for every database of a strict
-tenant, lands), so every one of them answers `feature.NotActiveError` and
-changes nothing:
+`strict-isolation` feature is active. A standalone node is active from the
+start; a cluster is active once it has activated the feature cluster-wide (a
+mixed-version cluster never does). Until then every one of them answers
+`feature.NotActiveError` and changes nothing:
 
 | Verb | REST | gRPC | QUIC | MCP | Go SDK (`Tenants()`, every transport) | CLI |
 |------|------|------|------|-----|------|-----|

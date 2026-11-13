@@ -103,10 +103,19 @@ func (t *Transport) CreateRebalancePlan(ctx context.Context, req *transport.Reba
 			EstimatedBytes: m.EstimatedBytes,
 		}
 	}
+	var skipped []transport.RebalanceSkippedMove
+	for _, s := range plan.Skipped {
+		sk := transport.RebalanceSkippedMove{ShardID: s.ShardID, FromNode: s.FromNode, ToNode: s.ToNode, Reason: s.Reason}
+		if s.Err != nil {
+			sk.Error = s.Err.Error()
+		}
+		skipped = append(skipped, sk)
+	}
 	return &transport.RebalancePlan{
 		Moves:             moves,
 		EstimatedDuration: plan.EstimatedDuration,
 		CurrentImbalance:  plan.CurrentImbalance,
+		Skipped:           skipped,
 	}, nil
 }
 

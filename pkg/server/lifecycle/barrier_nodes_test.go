@@ -67,11 +67,11 @@ func (scanFailingKV) Scan(context.Context, string, func(string, []byte) error) e
 
 func TestBarrierNodes_ListsEveryNodeHoldingAReplicaWithItsEndpoints(t *testing.T) {
 	placements := placementTable(t,
-		&placement.Placement{TenantID: "acme", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
+		&placement.Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 2, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n2:1", RaftAddr: "n2:1"}, {ReplicaID: 2, NodeID: "n1:1", RaftAddr: "n1:1"}}},
-		&placement.Placement{TenantID: "acme", Database: "users", ShardID: 1002, RF: 2, LeaderReplicaID: 1,
+		&placement.Placement{TenantID: "acme", DatabaseID: "users", Database: "users", ShardID: 1002, RF: 2, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1:1", RaftAddr: "n1:1"}, {ReplicaID: 2, NodeID: "n3:1", RaftAddr: "n3:1"}}},
-		&placement.Placement{TenantID: "other", Database: "orders", ShardID: 2001, RF: 1, LeaderReplicaID: 1,
+		&placement.Placement{TenantID: "other", DatabaseID: "orders", Database: "orders", ShardID: 2001, RF: 1, LeaderReplicaID: 1,
 			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n5:1", RaftAddr: "n5:1"}}},
 	)
 	members := memberRecords(t,
@@ -114,7 +114,7 @@ func TestBarrierNodes_ReadErrors(t *testing.T) {
 		t.Fatal("BarrierNodes listed nodes from an unreadable placement table")
 	}
 
-	placements := placementTable(t, &placement.Placement{TenantID: "acme", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
+	placements := placementTable(t, &placement.Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1001, RF: 1, LeaderReplicaID: 1,
 		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1:1", RaftAddr: "n1:1"}}})
 	down := errors.New("members unreadable")
 	members := &mockKVServicer{scanFn: func(context.Context, string) (map[string][]byte, error) { return nil, down }}

@@ -92,19 +92,28 @@ func (m *Manager) GetOwnedIgnoringFence(name, tenantID string) (*Database, error
 // the database open here. ok is false when the catalog holds no record of
 // the name: it was dropped, or never created. Nothing is opened.
 func (m *Manager) RecordedIncarnation(ctx context.Context, tenantID, name string) (incarnation string, ok bool, err error) {
+	_, incarnation, ok, err = m.RecordedIdentity(ctx, tenantID, name)
+	return incarnation, ok, err
+}
+
+// RecordedIdentity is RecordedIncarnation together with the database id the
+// same catalog record holds: the id that keys the database's placement entry.
+// A drop fences the placement this id names, never one found by the name,
+// which a dropped predecessor whose placement outlived it shares.
+func (m *Manager) RecordedIdentity(ctx context.Context, tenantID, name string) (databaseID, incarnation string, ok bool, err error) {
 	cat, err := m.catalog("resolve incarnation")
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	meta, err := cat.Get(ctx, tenantID, name)
 	var notFound *NotFoundError
 	if errors.As(err, &notFound) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
-	return meta.Incarnation, true, nil
+	return meta.ID, meta.Incarnation, true, nil
 }
 
 // revalidate reconciles db, the entry this node holds open for key, with

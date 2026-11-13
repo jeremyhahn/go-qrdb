@@ -598,6 +598,34 @@ type IncarnationError struct {
 	Err error
 }
 
+// DatabaseIDError reports that a new database id could not be generated
+// because the system random source failed.
+type DatabaseIDError struct {
+	Err error
+}
+
+// Error returns a human-readable description of the failure.
+func (e *DatabaseIDError) Error() string {
+	return "database: cannot generate a database id: " + e.Err.Error()
+}
+
+// Unwrap returns the random source's error.
+func (e *DatabaseIDError) Unwrap() error {
+	return e.Err
+}
+
+// DatabaseIDRequiredError is returned by Catalog.Create for a record with no
+// id (DatabaseMeta.ID). Every record outside the catalog names the database
+// by that id, so a record without one could never be placed.
+type DatabaseIDRequiredError struct {
+	Name string
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *DatabaseIDRequiredError) Error() string {
+	return "database: catalog record of database " + strconv.Quote(e.Name) + " has no database id"
+}
+
 // Error returns a human-readable description of the failure.
 func (e *IncarnationError) Error() string {
 	return "database: cannot generate a database incarnation: " + e.Err.Error()
@@ -898,11 +926,52 @@ type BarrierOffDataPathError struct {
 	ServedBy string
 }
 
+// StrictTenantDedicatedWALRequiredError refuses creating a database of a
+// strict-isolation tenant without a dedicated WAL (docs/multi-tenancy
+// engineering.md phase 5, G1): a strict tenant never has a log under a node
+// key, so every one of its databases is a raft group on a dedicated WAL.
+// Backend is set when the requested backend cannot carry a dedicated WAL at
+// all (any non-raft backend).
+type StrictTenantDedicatedWALRequiredError struct {
+	Name    string
+	Tenant  string
+	Backend string
+}
+
+func (e *StrictTenantDedicatedWALRequiredError) Error() string {
+	msg := "database " + strconv.Quote(e.Name) + ": tenant " + strconv.Quote(e.Tenant) +
+		" has the strict isolation policy; its databases need a dedicated WAL"
+	if e.Backend != "" {
+		return msg + ", which backend " + strconv.Quote(e.Backend) +
+			" cannot carry (use the raft backend with a dedicated WAL)"
+	}
+	return msg + " (request one with --dedicated-wal)"
+}
+
 // Error returns a human-readable description of the refused request.
 func (e *BarrierOffDataPathError) Error() string {
 	return "database: a per-database barrier would not protect database " +
 		strconv.Quote(e.Name) + ": its data is served from " + e.ServedBy +
 		", not from a store the barrier wraps"
+}
+
+// DedicatedWALOffDataPathError refuses a raft database with a dedicated WAL
+// under a tenant whose databases are not served from their own raft
+// groups: every database of a volume-isolated tenant is served from the
+// tenant's shared store, so the dedicated group and WAL the request names
+// would be persisted and metered while no KV traffic ever reached them.
+type DedicatedWALOffDataPathError struct {
+	Name   string
+	Tenant string
+	// ServedBy names the store the database's data is actually served from.
+	ServedBy string
+}
+
+// Error returns a human-readable description of the refused request.
+func (e *DedicatedWALOffDataPathError) Error() string {
+	return "database " + strconv.Quote(e.Name) + ": tenant " + strconv.Quote(e.Tenant) +
+		" serves its databases from " + e.ServedBy +
+		", so a raft database with a dedicated WAL would never carry its data"
 }
 
 // Barrier data-path descriptions carried by BarrierOffDataPathError.ServedBy.
@@ -915,6 +984,10 @@ const (
 	// ServedByRaftTenantGroup is the data path of every database of a
 	// raft-isolated tenant.
 	ServedByRaftTenantGroup = "the raft-isolated tenant's dedicated raft group"
+	// ServedBySharedStore is the data path of a raft-backed database of a
+	// barrier-isolated tenant: the shared system store, under the
+	// tenant/database namespace prefix.
+	ServedBySharedStore = "the shared system store"
 )
 
 // BarrierOffDataPathWarning is the startup warning logged for a

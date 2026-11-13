@@ -165,6 +165,9 @@ var dominantRules = []rule{
 	// A placement record names a path for a replica: refused, never opened;
 	// the database must be dropped and re-created.
 	as(&placement.ReplicaDataRootError{}, FailedPrecondition),
+	// The placement entry a catalog record's database id keys names another
+	// database: a drop refuses to fence it.
+	as(&placement.IdentityMismatchError{}, FailedPrecondition),
 
 	// Cluster sealing. Dominant, because the tenant and database services
 	// wrap them in their own barrier errors: a seal or clear record whose
@@ -548,6 +551,11 @@ var databaseRules = []rule{
 	// caller can restore.
 	as(&database.SharedStoreBarrierUnsupportedError{}, Unprocessable),
 	as(&database.BarrierOffDataPathError{}, Unprocessable),
+	as(&database.DedicatedWALOffDataPathError{}, Unprocessable),
+	// A strict tenant's database created without a dedicated WAL (phase 5
+	// G1) is refused by the tenant's isolation policy, not by the request's
+	// shape: the same request succeeds for an operator-access tenant.
+	as(&database.StrictTenantDedicatedWALRequiredError{}, FailedPrecondition),
 	as(&database.InvalidConcurrencyError{}, InvalidArgument),
 	// A database configuration that fails validation is the caller's error,
 	// not the server's: each of these used to reach REST as a 500.
@@ -649,6 +657,12 @@ var placementRules = []rule{
 	// Within quota, but the cluster has no free node: retryable once capacity
 	// changes, which a quota refusal is not.
 	as(&placement.InsufficientNodesError{}, Unavailable),
+	// An isolated tenant's group needs a node outside its serving set: the
+	// serving set must grow first; a retry alone never succeeds.
+	as(&placement.ServingSetError{}, FailedPrecondition),
+	// A tenant's home group spans the cluster and a rebalance never moves
+	// it; a retry of the same move never succeeds.
+	as(&service.HomeGroupMoveError{}, FailedPrecondition),
 	as(&service.ReplicaFloorError{}, InvalidArgument),
 	as(&service.NotDedicatedRaftDatabaseError{}, InvalidArgument),
 	// The dedicated shard's leader was not stable within the wait bound.

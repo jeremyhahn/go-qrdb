@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
@@ -35,8 +36,8 @@ func (s strictIsolationService) StrictIsolationCheck() func() error { return s.c
 func TestRequireStrictIsolation_FailsClosed(t *testing.T) {
 	for name, svc := range map[string]any{"no gate": struct{}{}, "nil service": nil, "nil check": strictIsolationService{}} {
 		var notActive *feature.NotActiveError
-		if err := RequireStrictIsolation(svc); !errors.As(err, &notActive) || notActive.Feature != StrictIsolation {
-			t.Fatalf("%s: RequireStrictIsolation = %v, want NotActiveError(%s)", name, err, StrictIsolation)
+		if err := RequireStrictIsolation(svc); !errors.As(err, &notActive) || notActive.Feature != featuregate.StrictIsolation {
+			t.Fatalf("%s: RequireStrictIsolation = %v, want NotActiveError(%s)", name, err, featuregate.StrictIsolation)
 		}
 	}
 	refused := errors.New("not yet")

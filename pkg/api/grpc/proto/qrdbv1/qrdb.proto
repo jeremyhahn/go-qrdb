@@ -4012,6 +4012,10 @@ message DatabaseCreateRequest {
     DatabaseBarrierConfig barrier = 8;
     // sql holds the database's SQL settings; unset means the defaults.
     DatabaseSQLConfig sql = 9;
+    // dedicated_wal requests a dedicated WAL, keyed by the tenant's own key,
+    // for a dedicated-raft database (raft backend only). Required for every
+    // database of a strict-isolation tenant.
+    bool dedicated_wal = 10;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -5731,6 +5735,19 @@ message RebalancePlan {
     repeated RebalanceMove moves                 = 1;
     int64                  estimated_duration_ns = 2;
     double                 current_imbalance     = 3;
+    // skipped names the moves the planner considered and refused, each
+    // with its reason (an isolated tenant's serving set or home group).
+    repeated RebalanceSkippedMove skipped        = 4;
+}
+
+// RebalanceSkippedMove is a move the planner considered and refused.
+message RebalanceSkippedMove {
+    uint64 shard_id  = 1;
+    string from_node = 2;
+    string to_node   = 3;
+    string reason    = 4;
+    // error is the refusal's detail; empty when reason says it all.
+    string error     = 5;
 }
 
 // RebalanceExecutionResponse reports the outcome of an executed plan.

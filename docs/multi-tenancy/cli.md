@@ -283,9 +283,9 @@ and a strict tenant cannot go back to `inherit`.
 
 Every one of these is refused, changing nothing, until the `strict-isolation`
 feature is active (HTTP 503, gRPC/QUIC `Unavailable`, refusal reason
-`FEATURE_NOT_ACTIVE`). This build does not support the feature: it is
-supported once G1 (a dedicated WAL for every database of a strict tenant)
-lands. The `tenant.isolation_policy` configuration key is not behind this gate.
+`FEATURE_NOT_ACTIVE`). A standalone node is active from the start; a cluster
+once it has activated the feature cluster-wide. The `tenant.isolation_policy`
+configuration key is not behind this gate.
 
 ### `qrdb tenant set-entitlement <id>`
 

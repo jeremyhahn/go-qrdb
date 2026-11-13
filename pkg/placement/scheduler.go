@@ -62,6 +62,10 @@ type PlaceRequest struct {
 	// TenantID owns the database. Required.
 	TenantID string
 
+	// DatabaseID is the database's opaque id from its catalog record: the
+	// key the placement is stored under. Required.
+	DatabaseID string
+
 	// Database is the database name. Required.
 	Database string
 
@@ -130,6 +134,7 @@ type Scheduler struct {
 	topo    TopologyProvider
 	epsilon float64
 	filter  ReplicaFilter
+	serving ServingSetFunc
 }
 
 // NewScheduler constructs a Scheduler over the given TopologyProvider. The
@@ -172,6 +177,9 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	if req.TenantID == "" {
 		return nil, ErrEmptyTenant
 	}
+	if req.DatabaseID == "" {
+		return nil, ErrEmptyDatabaseID
+	}
 	if req.Database == "" {
 		return nil, ErrEmptyDatabase
 	}
@@ -181,7 +189,11 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 	if req.RF < 1 {
 		return nil, ErrInvalidRF
 	}
-	candidates := s.admitted(req.TenantID, req.ShardID, healthyDistinct(s.topo.Nodes()))
+	candidates, err := s.confine(ctx, req.TenantID, req.Database,
+		s.admitted(req.TenantID, req.ShardID, healthyDistinct(s.topo.Nodes())), req.RF)
+	if err != nil {
+		return nil, err
+	}
 	if len(candidates) < req.RF {
 		return nil, &InsufficientNodesError{Have: len(candidates), Need: req.RF}
 	}
@@ -199,6 +211,7 @@ func (s *Scheduler) Place(ctx context.Context, req PlaceRequest) (*Placement, er
 
 	return &Placement{
 		TenantID:        req.TenantID,
+		DatabaseID:      req.DatabaseID,
 		Database:        req.Database,
 		ShardID:         req.ShardID,
 		RF:              req.RF,
@@ -250,6 +263,10 @@ func (s *Scheduler) PlaceAdditional(ctx context.Context, existing *Placement, ad
 			continue
 		}
 		candidates = append(candidates, n)
+	}
+	candidates, err := s.confine(ctx, existing.TenantID, existing.Database, candidates, addCount)
+	if err != nil {
+		return nil, err
 	}
 	if len(candidates) < addCount {
 		return nil, &InsufficientNodesError{Have: len(candidates), Need: addCount}

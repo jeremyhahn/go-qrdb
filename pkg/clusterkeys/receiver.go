@@ -47,7 +47,7 @@ import (
 // PlacementGetter retrieves a Placement for a (tenant, database) pair.
 // placement.Store satisfies this interface directly.
 type PlacementGetter interface {
-	Get(ctx context.Context, tenantID, database string) (*placement.Placement, error)
+	Get(ctx context.Context, tenantID, databaseID string) (*placement.Placement, error)
 }
 
 // Receiver handles incoming cluster key-delivery requests for this node.
@@ -239,12 +239,12 @@ func (r *Receiver) Handler() http.HandlerFunc {
 		}
 
 		// --- c: placement gate -------------------------------------------
-		p, err := r.placements.Get(ctx, env.TenantID, env.Database)
+		p, err := r.placements.Get(ctx, env.TenantID, env.DatabaseID)
 		if err != nil {
 			writeJSONError(w, http.StatusForbidden, "placement gate rejected")
 			r.logger.Warn("clusterkeys: placement lookup failed",
 				slog.String("tenant", env.TenantID),
-				slog.String("database", env.Database),
+				slog.String("database_id", env.DatabaseID),
 				slog.String("error", err.Error()))
 			return
 		}
@@ -253,7 +253,7 @@ func (r *Receiver) Handler() http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "placement gate rejected")
 			r.logger.Warn("clusterkeys: placement gate denied: shard/replica mismatch",
 				slog.String("tenant", env.TenantID),
-				slog.String("database", env.Database),
+				slog.String("database_id", env.DatabaseID),
 				slog.Uint64("envelope_replica", env.ReplicaID),
 				slog.Uint64("envelope_shard", env.ShardID))
 			return

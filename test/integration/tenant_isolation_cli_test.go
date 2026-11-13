@@ -74,8 +74,8 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
 
@@ -1140,62 +1140,66 @@ func compactionRevision(t *testing.T, node *multiProtoNode, proto multiProtocol,
 	return resp.Revision
 }
 
-// TestTenantIsolation_IsolationPolicyVerbs_RefusedUntilActive_PerProtocol
-// proves every isolation-policy verb is refused, with the strict-isolation
-// not-active refusal, on every protocol until the feature is active, and that
-// a refusal changes nothing: the tenant record reads back identically and the
-// floor is still unreadable through the gated verb.
-func TestTenantIsolation_IsolationPolicyVerbs_RefusedUntilActive_PerProtocol(t *testing.T) {
+// TestTenantIsolation_IsolationPolicyVerbs_StandaloneActive_PerProtocol
+// proves every isolation-policy verb serves on a standalone node, where
+// strict-isolation is active from the start, on every protocol. The
+// not-active refusal on a cluster that has not activated the feature is
+// pinned by the lifecycle gate's and the transports' unit tests.
+func TestTenantIsolation_IsolationPolicyVerbs_StandaloneActive_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNode(t)
 
 	for _, proto := range multiProtocols {
 		proto := proto
 		t.Run(proto.name, func(t *testing.T) {
-			testIsolationPolicyVerbsRefusedOverProtocol(t, node, proto)
+			testIsolationPolicyVerbsOverProtocol(t, node, proto)
 		})
 	}
 }
 
-func testIsolationPolicyVerbsRefusedOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+// testIsolationPolicyVerbsOverProtocol drives the isolation-policy verbs on
+// a standalone node, where strict-isolation (featuregate.StrictIsolation) is
+// active from the start: the floor tightens to strict and reads back, a
+// loosening and an unknown value are refused and leave it strict, and a
+// tenant update carrying --isolation-policy stores the tenant's policy. The
+// subtests share the node, so each sets the floor to strict again (setting
+// the current value is a no-op).
+func testIsolationPolicyVerbsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
 	t.Helper()
 
 	tenantID := fmt.Sprintf("isopol-%s-%d", proto.name, time.Now().UnixNano())
 	createTenant(t, node, proto, tenantID, "Isolation Policy Tenant", "prefix", false)
 	sys := node.cliArgsFor(proto)
+	const strictFloor = "Cluster isolation policy: strict"
 
-	before, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
-	if err != nil {
-		t.Fatalf("[%s] tenant get before: %v\noutput: %s", proto.name, err, before)
-	}
-
-	refusals := [][]string{
-		{"cluster-isolation-policy", "get"},
+	for _, args := range [][]string{
 		{"cluster-isolation-policy", "set", "strict"},
-		{"tenant", "update", tenantID, "--isolation-policy", "strict"},
-	}
-	for _, args := range refusals {
+		{"cluster-isolation-policy", "get"},
+	} {
 		out, err := runQRDB(t, node.cli, sys, args...)
-		if err == nil {
-			t.Fatalf("[%s] qrdb %s succeeded before %s is active\noutput: %s",
-				proto.name, strings.Join(args, " "), tenant.StrictIsolation, out)
-		}
-		if !strings.Contains(out, strconv.Quote(string(tenant.StrictIsolation))) || !strings.Contains(out, "is not active") {
-			t.Fatalf("[%s] qrdb %s: want the %s not-active refusal\noutput: %s",
-				proto.name, strings.Join(args, " "), tenant.StrictIsolation, out)
+		if err != nil || !strings.Contains(out, strictFloor) {
+			t.Fatalf("[%s] qrdb %s = %v, want %q with %s active\noutput: %s",
+				proto.name, strings.Join(args, " "), err, strictFloor, featuregate.StrictIsolation, out)
 		}
 	}
 
-	after, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	for _, value := range []string{"operator-access", "loose"} {
+		if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "set", value); err == nil {
+			t.Fatalf("[%s] cluster-isolation-policy set %s succeeded under a strict floor\noutput: %s", proto.name, value, out)
+		}
+	}
+	if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "get"); err != nil || !strings.Contains(out, strictFloor) {
+		t.Fatalf("[%s] floor after the refused sets = %v, want %q\noutput: %s", proto.name, err, strictFloor, out)
+	}
+
+	if out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict"); err != nil {
+		t.Fatalf("[%s] tenant update --isolation-policy strict: %v\noutput: %s", proto.name, err, out)
+	}
+	got, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
 	if err != nil {
-		t.Fatalf("[%s] tenant get after: %v\noutput: %s", proto.name, err, after)
+		t.Fatalf("[%s] tenant get: %v\noutput: %s", proto.name, err, got)
 	}
-	if after != before {
-		t.Fatalf("[%s] a refused isolation-policy verb changed the tenant\nbefore:\n%s\nafter:\n%s", proto.name, before, after)
-	}
-	// The floor is still behind the gate: the read is refused exactly as
-	// before, so no refused set reached it.
-	if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "get"); err == nil || !strings.Contains(out, "is not active") {
-		t.Fatalf("[%s] floor read after the refusals = %v\noutput: %s", proto.name, err, out)
+	if !strings.Contains(got, "Isolation policy: strict") {
+		t.Fatalf("[%s] tenant get after the policy update: want \"Isolation policy: strict\"\noutput: %s", proto.name, got)
 	}
 }

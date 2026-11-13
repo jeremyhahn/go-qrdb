@@ -25,7 +25,9 @@ import (
 // are hidden from user-facing KV list/scan (which filter that prefix) and kept
 // out of the tenant key space, exactly as the cluster-membership store does.
 // Each database's placement is stored at
-// "__sys:placement/{tenantID}/{database}".
+// "__sys:placement/{tenantID}/{databaseID}", keyed by the database's opaque
+// id (Placement.DatabaseID), never by its name: the name <-> id mapping lives
+// only in the tenant's catalog.
 const PlacementPrefix = "__sys:placement/"
 
 // KV is the minimal replicated system-KV substrate the placement store needs.
@@ -103,7 +105,7 @@ type AtomicKV interface {
 // provide. When the configured KV also implements PutIfAbsentKV,
 // Store.ClaimPlacement commits a BRAND NEW placement entry with a
 // cluster-wide "first write wins" guarantee: two nodes racing to create the
-// same (tenant, database) -- the case a local binding's single owner must
+// same (tenant, databaseID) -- the case a local binding's single owner must
 // be decided by, not a Put each node could issue unconditionally -- settle
 // on exactly one winner everywhere, never "whichever Put committed last on
 // this entry," which is what an unconditional Put would give (go-qrdb Lane
@@ -133,8 +135,14 @@ type Event struct {
 	// Type is the kind of change.
 	Type EventType
 
-	// TenantID and Database identify the affected placement.
-	TenantID string
+	// TenantID and DatabaseID identify the affected placement: the table's
+	// key.
+	TenantID   string
+	DatabaseID string
+
+	// Database is the database name the entry's value carries. Empty for
+	// an EventDelete whose prior value was not delivered: the key holds
+	// only the id.
 	Database string
 
 	// Placement is the decoded placement for an EventPut; nil for an
@@ -157,9 +165,9 @@ func NewStore(kv KV) (*Store, error) {
 	return &Store{kv: kv}, nil
 }
 
-// placementKey returns the storage key for a (tenant, database) placement.
-func placementKey(tenantID, database string) string {
-	return PlacementPrefix + tenantID + "/" + database
+// placementKey returns the storage key for a (tenant, databaseID) placement.
+func placementKey(tenantID, databaseID string) string {
+	return PlacementPrefix + tenantID + "/" + databaseID
 }
 
 // Put stores (or replaces) the placement for its (TenantID, Database). The
@@ -169,61 +177,61 @@ func (s *Store) Put(ctx context.Context, p *Placement) error {
 		return &StoreError{Op: "put", Err: ErrPlacementNotFound}
 	}
 	if p.TenantID == "" {
-		return &StoreError{Database: p.Database, Op: "put", Err: ErrEmptyTenant}
+		return &StoreError{DatabaseID: p.DatabaseID, Op: "put", Err: ErrEmptyTenant}
 	}
-	if p.Database == "" {
-		return &StoreError{TenantID: p.TenantID, Op: "put", Err: ErrEmptyDatabase}
+	if p.DatabaseID == "" {
+		return &StoreError{TenantID: p.TenantID, Op: "put", Err: ErrEmptyDatabaseID}
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
-		return &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "put", Err: err}
+		return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
 	}
-	if err := s.kv.Put(ctx, placementKey(p.TenantID, p.Database), data); err != nil {
-		return &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "put", Err: err}
+	if err := s.kv.Put(ctx, placementKey(p.TenantID, p.DatabaseID), data); err != nil {
+		return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
 	}
 	return nil
 }
 
-// Get returns the placement for (tenantID, database). It returns a *StoreError
+// Get returns the placement for (tenantID, databaseID). It returns a *StoreError
 // wrapping ErrPlacementNotFound when no entry exists.
-func (s *Store) Get(ctx context.Context, tenantID, database string) (*Placement, error) {
+func (s *Store) Get(ctx context.Context, tenantID, databaseID string) (*Placement, error) {
 	if tenantID == "" {
-		return nil, &StoreError{Database: database, Op: "get", Err: ErrEmptyTenant}
+		return nil, &StoreError{DatabaseID: databaseID, Op: "get", Err: ErrEmptyTenant}
 	}
-	if database == "" {
-		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabase}
+	if databaseID == "" {
+		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabaseID}
 	}
-	raw, err := s.kv.Get(ctx, placementKey(tenantID, database))
+	raw, err := s.kv.Get(ctx, placementKey(tenantID, databaseID))
 	if err != nil {
-		return nil, &StoreError{TenantID: tenantID, Database: database, Op: "get", Err: err}
+		return nil, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "get", Err: err}
 	}
 	if raw == nil {
-		return nil, &StoreError{TenantID: tenantID, Database: database, Op: "get", Err: ErrPlacementNotFound}
+		return nil, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "get", Err: ErrPlacementNotFound}
 	}
 	var p Placement
 	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil, &StoreError{TenantID: tenantID, Database: database, Op: "get", Err: err}
+		return nil, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "get", Err: err}
 	}
 	return &p, nil
 }
 
-// Delete removes the placement for (tenantID, database). Deleting a missing
+// Delete removes the placement for (tenantID, databaseID). Deleting a missing
 // entry is a no-op (it mirrors the underlying KV delete semantics).
-func (s *Store) Delete(ctx context.Context, tenantID, database string) error {
+func (s *Store) Delete(ctx context.Context, tenantID, databaseID string) error {
 	if tenantID == "" {
-		return &StoreError{Database: database, Op: "delete", Err: ErrEmptyTenant}
+		return &StoreError{DatabaseID: databaseID, Op: "delete", Err: ErrEmptyTenant}
 	}
-	if database == "" {
-		return &StoreError{TenantID: tenantID, Op: "delete", Err: ErrEmptyDatabase}
+	if databaseID == "" {
+		return &StoreError{TenantID: tenantID, Op: "delete", Err: ErrEmptyDatabaseID}
 	}
-	if err := s.kv.Delete(ctx, placementKey(tenantID, database)); err != nil {
-		return &StoreError{TenantID: tenantID, Database: database, Op: "delete", Err: err}
+	if err := s.kv.Delete(ctx, placementKey(tenantID, databaseID)); err != nil {
+		return &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "delete", Err: err}
 	}
 	return nil
 }
 
 // CompareAndSwapPlacement replaces the placement for (next.TenantID,
-// next.Database) with next, but only if the entry currently marshals to
+// next.DatabaseID) with next, but only if the entry currently marshals to
 // the exact bytes expected does (nil expected is not supported -- every
 // caller in this package holds a value it just read). It is the primitive
 // a read-modify-write of an EXISTING placement entry should commit through
@@ -245,36 +253,36 @@ func (s *Store) CompareAndSwapPlacement(ctx context.Context, expected, next *Pla
 		return false, &StoreError{Op: "compare-and-swap", Err: ErrPlacementNotFound}
 	}
 	if next.TenantID == "" {
-		return false, &StoreError{Database: next.Database, Op: "compare-and-swap", Err: ErrEmptyTenant}
+		return false, &StoreError{DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: ErrEmptyTenant}
 	}
-	if next.Database == "" {
-		return false, &StoreError{TenantID: next.TenantID, Op: "compare-and-swap", Err: ErrEmptyDatabase}
+	if next.DatabaseID == "" {
+		return false, &StoreError{TenantID: next.TenantID, Op: "compare-and-swap", Err: ErrEmptyDatabaseID}
 	}
 	atomicKV, ok := s.kv.(AtomicKV)
 	if !ok {
-		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: &AtomicWriteUnsupportedError{}}
+		return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: &AtomicWriteUnsupportedError{}}
 	}
 	var expectedBytes []byte
 	if expected != nil {
 		b, err := json.Marshal(expected)
 		if err != nil {
-			return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+			return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
 		}
 		expectedBytes = b
 	}
 	nextBytes, err := json.Marshal(next)
 	if err != nil {
-		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+		return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
 	}
-	swapped, err := atomicKV.CompareAndSwap(ctx, placementKey(next.TenantID, next.Database), expectedBytes, nextBytes)
+	swapped, err := atomicKV.CompareAndSwap(ctx, placementKey(next.TenantID, next.DatabaseID), expectedBytes, nextBytes)
 	if err != nil {
-		return false, &StoreError{TenantID: next.TenantID, Database: next.Database, Op: "compare-and-swap", Err: err}
+		return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
 	}
 	return swapped, nil
 }
 
 // ClaimPlacement commits p as a brand-new placement entry for (p.TenantID,
-// p.Database), atomically and cluster-wide: the first call to reach the
+// p.DatabaseID), atomically and cluster-wide: the first call to reach the
 // store -- on this node or any other racing it for the same name -- wins,
 // and every other call observes claimed=false together with the winner's
 // own entry in existing, never a second write that silently overwrote it.
@@ -301,27 +309,27 @@ func (s *Store) ClaimPlacement(ctx context.Context, p *Placement) (claimed bool,
 		return false, nil, &StoreError{Op: "claim", Err: ErrPlacementNotFound}
 	}
 	if p.TenantID == "" {
-		return false, nil, &StoreError{Database: p.Database, Op: "claim", Err: ErrEmptyTenant}
+		return false, nil, &StoreError{DatabaseID: p.DatabaseID, Op: "claim", Err: ErrEmptyTenant}
 	}
-	if p.Database == "" {
-		return false, nil, &StoreError{TenantID: p.TenantID, Op: "claim", Err: ErrEmptyDatabase}
+	if p.DatabaseID == "" {
+		return false, nil, &StoreError{TenantID: p.TenantID, Op: "claim", Err: ErrEmptyDatabaseID}
 	}
 	creator, ok := s.kv.(PutIfAbsentKV)
 	if !ok {
-		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
+		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
-		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: err}
+		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
 	}
-	stored, err := creator.PutIfAbsent(ctx, placementKey(p.TenantID, p.Database), data)
+	stored, err := creator.PutIfAbsent(ctx, placementKey(p.TenantID, p.DatabaseID), data)
 	if err != nil {
-		return false, nil, &StoreError{TenantID: p.TenantID, Database: p.Database, Op: "claim", Err: err}
+		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
 	}
 	if stored {
 		return true, nil, nil
 	}
-	current, err := s.Get(ctx, p.TenantID, p.Database)
+	current, err := s.Get(ctx, p.TenantID, p.DatabaseID)
 	if err != nil {
 		return false, nil, err
 	}
@@ -336,7 +344,7 @@ func (s *Store) ClaimPlacement(ctx context.Context, p *Placement) (claimed bool,
 const setDroppingMaxAttempts = 10
 
 // SetDropping sets or clears the replicated drop fence (Placement.Dropping)
-// on the placement for (tenantID, database). A no-op write (the flag
+// on the placement for (tenantID, databaseID). A no-op write (the flag
 // already holds the requested value) still succeeds without a store round
 // trip beyond the read, matching Get's own idempotence contract rather
 // than adding a special case a caller has to reason about.
@@ -357,11 +365,11 @@ const setDroppingMaxAttempts = 10
 // fence at all; every production KV (see AtomicKV) supports it.
 //
 // Returns a *StoreError wrapping ErrPlacementNotFound when no placement
-// entry exists for (tenantID, database) -- there is nothing to fence -- or
+// entry exists for (tenantID, databaseID) -- there is nothing to fence -- or
 // *ConflictError when every attempt in the retry loop lost the race.
-func (s *Store) SetDropping(ctx context.Context, tenantID, database string, dropping bool) error {
+func (s *Store) SetDropping(ctx context.Context, tenantID, databaseID string, dropping bool) error {
 	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
-		p, err := s.Get(ctx, tenantID, database)
+		p, err := s.Get(ctx, tenantID, databaseID)
 		if err != nil {
 			return err
 		}
@@ -380,11 +388,11 @@ func (s *Store) SetDropping(ctx context.Context, tenantID, database string, drop
 		// Lost the race: another mutation committed between Get and
 		// CompareAndSwap. Retry with a fresh read.
 	}
-	return &StoreError{TenantID: tenantID, Database: database, Op: "set-dropping", Err: &ConflictError{}}
+	return &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "set-dropping", Err: &ConflictError{}}
 }
 
 // TryMarkDropping attempts to transition the replicated drop fence for
-// (tenantID, database) from not-dropping to dropping, and reports whether
+// (tenantID, databaseID) from not-dropping to dropping, and reports whether
 // THIS call performed that exact transition (owned=true), as opposed to
 // finding the fence already set (owned=false, nil error).
 //
@@ -406,9 +414,9 @@ func (s *Store) SetDropping(ctx context.Context, tenantID, database string, drop
 // SetDropping, and the same refusal -- not a fallback to Put -- when the
 // backing KV cannot compare-and-swap: see SetDropping's doc comment for why
 // a fallback here would let two concurrent callers both observe owned=true.
-func (s *Store) TryMarkDropping(ctx context.Context, tenantID, database string) (owned bool, err error) {
+func (s *Store) TryMarkDropping(ctx context.Context, tenantID, databaseID string) (owned bool, err error) {
 	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
-		p, err := s.Get(ctx, tenantID, database)
+		p, err := s.Get(ctx, tenantID, databaseID)
 		if err != nil {
 			return false, err
 		}
@@ -427,10 +435,10 @@ func (s *Store) TryMarkDropping(ctx context.Context, tenantID, database string) 
 		// Lost the race: another mutation committed between Get and
 		// CompareAndSwap. Retry with a fresh read.
 	}
-	return false, &StoreError{TenantID: tenantID, Database: database, Op: "try-mark-dropping", Err: &ConflictError{}}
+	return false, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "try-mark-dropping", Err: &ConflictError{}}
 }
 
-// MarkDropCommitted sets Placement.DropCommitted for (tenantID, database), a
+// MarkDropCommitted sets Placement.DropCommitted for (tenantID, databaseID), a
 // one-way marker (never cleared -- the whole entry is removed together with
 // it once the drop finishes) recording that some node's database.Manager has
 // completed the local half of this drop. See DropCommitted's doc comment for
@@ -441,9 +449,9 @@ func (s *Store) TryMarkDropping(ctx context.Context, tenantID, database string) 
 // Commits through CompareAndSwapPlacement with the same bounded retry as
 // SetDropping, and the same refusal (not a Put fallback) when the backing
 // KV cannot compare-and-swap.
-func (s *Store) MarkDropCommitted(ctx context.Context, tenantID, database string) error {
+func (s *Store) MarkDropCommitted(ctx context.Context, tenantID, databaseID string) error {
 	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
-		p, err := s.Get(ctx, tenantID, database)
+		p, err := s.Get(ctx, tenantID, databaseID)
 		if err != nil {
 			if errors.Is(err, ErrPlacementNotFound) {
 				return nil
@@ -464,11 +472,11 @@ func (s *Store) MarkDropCommitted(ctx context.Context, tenantID, database string
 		}
 		// Lost the race: retry with a fresh read.
 	}
-	return &StoreError{TenantID: tenantID, Database: database, Op: "mark-drop-committed", Err: &ConflictError{}}
+	return &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "mark-drop-committed", Err: &ConflictError{}}
 }
 
 // RemoveReplica drops replicaID from the entry for (target.TenantID,
-// target.Database) and returns the entry as stored afterwards, with RF
+// target.DatabaseID) and returns the entry as stored afterwards, with RF
 // following the remaining replicas.
 //
 // Unlike a compare-and-swap against target, it applies to whatever the entry
@@ -486,7 +494,7 @@ func (s *Store) RemoveReplica(ctx context.Context, target *Placement, replicaID 
 		return nil, &StoreError{Op: "remove-replica", Err: ErrPlacementNotFound}
 	}
 	for attempt := 0; attempt < setDroppingMaxAttempts; attempt++ {
-		p, err := s.Get(ctx, target.TenantID, target.Database)
+		p, err := s.Get(ctx, target.TenantID, target.DatabaseID)
 		if err != nil {
 			return nil, err
 		}
@@ -511,7 +519,7 @@ func (s *Store) RemoveReplica(ctx context.Context, target *Placement, replicaID 
 		}
 		// Lost the race: retry with a fresh read.
 	}
-	return nil, &StoreError{TenantID: target.TenantID, Database: target.Database, Op: "remove-replica", Err: &ConflictError{}}
+	return nil, &StoreError{TenantID: target.TenantID, DatabaseID: target.DatabaseID, Op: "remove-replica", Err: &ConflictError{}}
 }
 
 // List returns every placement in the table, decoded from the values so the
@@ -551,6 +559,73 @@ func (s *Store) ListForTenant(ctx context.Context, tenantID string) ([]*Placemen
 		return nil, &StoreError{TenantID: tenantID, Op: "list", Err: err}
 	}
 	return out, nil
+}
+
+// GetByName returns the tenant's placement entry for the database named
+// name. The table is keyed by the opaque database id, so this scans the
+// tenant's entries for the one whose record names the database; a caller
+// that holds the id uses Get. It returns ErrPlacementNotFound when no entry
+// names the database.
+//
+// A drop removes the catalog record before it deletes the placement entry,
+// and that delete can fail, so a fenced (Dropping) entry can outlive its
+// database and share its name with a re-created one. GetByName therefore
+// prefers the live (not Dropping) entry; it returns a Dropping entry only
+// when no live one names the database, so a resumed drop still finds its
+// own entry. More than one live entry naming the database fails closed with
+// ErrAmbiguousPlacement rather than picking one by scan order.
+func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placement, error) {
+	if name == "" {
+		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabase}
+	}
+	placements, err := s.ListForTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	var live, dropping *Placement
+	for _, p := range placements {
+		if p.Database != name {
+			continue
+		}
+		if p.Dropping {
+			if dropping == nil {
+				dropping = p
+			}
+			continue
+		}
+		if live != nil {
+			return nil, &StoreError{TenantID: tenantID, DatabaseID: name, Op: "get", Err: ErrAmbiguousPlacement}
+		}
+		live = p
+	}
+	if live != nil {
+		return live, nil
+	}
+	if dropping != nil {
+		return dropping, nil
+	}
+	return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrPlacementNotFound}
+}
+
+// GetBound returns the placement entry of the database a catalog record
+// names: the entry keyed by its database id, never one found by the name. A
+// dropped predecessor whose entry outlived its drop shares the name, so a
+// lookup that must act on exactly this database -- a drop's fence above all --
+// keys by the id. An entry under the id that records another database id or
+// name is refused with *IdentityMismatchError; a missing entry is
+// ErrPlacementNotFound, as from Get.
+func (s *Store) GetBound(ctx context.Context, tenantID, databaseID, name string) (*Placement, error) {
+	p, err := s.Get(ctx, tenantID, databaseID)
+	if err != nil {
+		return nil, err
+	}
+	if p.DatabaseID != databaseID || p.Database != name {
+		return nil, &IdentityMismatchError{
+			TenantID: tenantID, Database: name, DatabaseID: databaseID,
+			GotDatabaseID: p.DatabaseID, GotDatabase: p.Database,
+		}
+	}
+	return p, nil
 }
 
 // Watch returns a typed placement change stream when the backing KV implements
@@ -597,24 +672,24 @@ func translateEvent(ev WatchEvent) (Event, bool) {
 	if ev.Deleted {
 		var p Placement
 		if len(ev.PrevValue) > 0 && json.Unmarshal(ev.PrevValue, &p) == nil {
-			return Event{Type: EventDelete, TenantID: p.TenantID, Database: p.Database}, true
+			return Event{Type: EventDelete, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database}, true
 		}
-		tenantID, database, ok := splitPlacementKey(ev.Key)
+		tenantID, databaseID, ok := splitPlacementKey(ev.Key)
 		if !ok {
 			return Event{}, false
 		}
-		return Event{Type: EventDelete, TenantID: tenantID, Database: database}, true
+		return Event{Type: EventDelete, TenantID: tenantID, DatabaseID: databaseID}, true
 	}
 	var p Placement
 	if len(ev.Value) == 0 || json.Unmarshal(ev.Value, &p) != nil {
 		return Event{}, false
 	}
-	return Event{Type: EventPut, TenantID: p.TenantID, Database: p.Database, Placement: &p}, true
+	return Event{Type: EventPut, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, Placement: &p}, true
 }
 
-// splitPlacementKey parses a placement key back into its (tenant, database)
+// splitPlacementKey parses a placement key back into its (tenant, databaseID)
 // components. It reports false when key is not a placement key or is malformed.
-func splitPlacementKey(key string) (tenantID, database string, ok bool) {
+func splitPlacementKey(key string) (tenantID, databaseID string, ok bool) {
 	if len(key) < len(PlacementPrefix) || key[:len(PlacementPrefix)] != PlacementPrefix {
 		return "", "", false
 	}

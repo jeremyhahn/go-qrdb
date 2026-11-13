@@ -226,7 +226,7 @@ func TestPlacement_RefusalForNode_UnassignedNodeNamesTheReplicaSet(t *testing.T)
 // only on ShardID and Replicas, not on Backend.
 func TestPlacement_RefusalForNode_LocalBinding(t *testing.T) {
 	p := &Placement{
-		TenantID: "acme", Database: "cache", ShardID: 1000, RF: 1,
+		TenantID: "acme", DatabaseID: "cache", Database: "cache", ShardID: 1000, RF: 1,
 		LeaderReplicaID: 1, Backend: BackendMemory,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"}},
 	}

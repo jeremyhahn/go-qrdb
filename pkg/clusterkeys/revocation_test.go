@@ -133,7 +133,7 @@ func deliveryRequest(t *testing.T, peer *x509.Certificate) *http.Request {
 	body, err := json.Marshal(&keydelivery.Envelope{
 		Meta: keydelivery.Meta{
 			TenantID:     "tenant-1",
-			Database:     "db-1",
+			DatabaseID:   "db-1",
 			ShardID:      1,
 			ReplicaID:    2,
 			TargetNodeID: "follower-node-1",
@@ -413,6 +413,7 @@ func revocationRoundTrip(t *testing.T, tenantID string, revocation auth.Revocati
 
 	distPlacement := &placement.Placement{
 		TenantID:        tenantID,
+		DatabaseID:      "db-main",
 		Database:        "db-main",
 		ShardID:         1,
 		RF:              2,
@@ -522,7 +523,7 @@ func deliverTo(t *testing.T, sender *clusterkeys.Sender) error {
 	target := placement.Replica{ReplicaID: 2, NodeID: "follower-node-1", RaftAddr: "follower-node-1:9000"}
 	meta := keydelivery.Meta{
 		TenantID:     "tenant-1",
-		Database:     "db-main",
+		DatabaseID:   "db-main",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower-node-1",

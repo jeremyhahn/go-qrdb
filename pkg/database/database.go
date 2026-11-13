@@ -94,6 +94,12 @@ type Database struct {
 	// or with no store to mark. See Incarnation.
 	incarnation string
 
+	// id is the database's opaque, never-reused id (DatabaseMeta.ID), the
+	// name it goes by in every record outside its tenant's catalog -- the
+	// placement table above all. Set once, like incarnation, before the
+	// database is published.
+	id string
+
 	// ownerNode is the node the catalog records as holding the database
 	// (DatabaseMeta.OwnerNode). Set once, like incarnation, before the
 	// database is published; empty when any node opens it.
@@ -255,6 +261,12 @@ func (d *Database) Unserved() <-chan struct{} {
 // live while the marker is absent.
 func (d *Database) Incarnation() string {
 	return d.incarnation
+}
+
+// ID returns the database's opaque, never-reused id (DatabaseMeta.ID): the
+// key every record outside the tenant's catalog names the database by.
+func (d *Database) ID() string {
+	return d.id
 }
 
 // Dropping reports whether Manager.Drop has fenced this database ahead of
@@ -440,6 +452,7 @@ func (d *Database) Info() DatabaseInfo {
 	info := DatabaseInfo{
 		TenantID:     cfg.TenantID,
 		Name:         cfg.Name,
+		ID:           d.id,
 		Backend:      cfg.Backend,
 		Status:       d.reportedStatus(),
 		Protocol:     cfg.Protocol,

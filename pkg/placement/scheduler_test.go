@@ -41,10 +41,11 @@ func newScheduler(t *testing.T, nodes []NodeLoad) *Scheduler {
 // baseRequest returns a valid PlaceRequest with the given RF.
 func baseRequest(rf int) PlaceRequest {
 	return PlaceRequest{
-		TenantID: "acme",
-		Database: "orders",
-		ShardID:  1000,
-		RF:       rf,
+		TenantID:   "acme",
+		DatabaseID: "orders",
+		Database:   "orders",
+		ShardID:    1000,
+		RF:         rf,
 	}
 }
 
@@ -210,6 +211,7 @@ func TestPlace_Validation(t *testing.T) {
 		want error
 	}{
 		{"empty tenant", func(r *PlaceRequest) { r.TenantID = "" }, ErrEmptyTenant},
+		{"empty database id", func(r *PlaceRequest) { r.DatabaseID = "" }, ErrEmptyDatabaseID},
 		{"empty database", func(r *PlaceRequest) { r.Database = "" }, ErrEmptyDatabase},
 		{"zero shard", func(r *PlaceRequest) { r.ShardID = 0 }, ErrZeroShard},
 		{"bad rf", func(r *PlaceRequest) { r.RF = 0 }, ErrInvalidRF},
@@ -248,6 +250,7 @@ func TestPlaceAdditional_ExcludesExistingNodesAndAssignsIDs(t *testing.T) {
 	})
 	existing := &Placement{
 		TenantID:        "acme",
+		DatabaseID:      "orders",
 		Database:        "orders",
 		ShardID:         1000,
 		RF:              1,
@@ -307,10 +310,11 @@ func TestPlaceAdditional_ReplicaIDStartsAtMaxPlusOne(t *testing.T) {
 		{NodeID: "n5", RaftAddr: "n5:1", Healthy: true},
 	})
 	existing := &Placement{
-		TenantID: "acme",
-		Database: "orders",
-		ShardID:  1000,
-		RF:       1,
+		TenantID:   "acme",
+		DatabaseID: "orders",
+		Database:   "orders",
+		ShardID:    1000,
+		RF:         1,
 		Replicas: []Replica{
 			{ReplicaID: 4, NodeID: "n1", RaftAddr: "n1:1"},
 		},
@@ -333,10 +337,11 @@ func TestPlaceAdditional_InsufficientNodes(t *testing.T) {
 		{NodeID: "n2", RaftAddr: "n2:1", Healthy: true},
 	})
 	existing := &Placement{
-		TenantID: "acme",
-		Database: "orders",
-		ShardID:  1000,
-		RF:       1,
+		TenantID:   "acme",
+		DatabaseID: "orders",
+		Database:   "orders",
+		ShardID:    1000,
+		RF:         1,
 		Replicas: []Replica{
 			{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1:1"},
 		},
@@ -359,7 +364,7 @@ func TestPlaceAdditional_InsufficientNodes(t *testing.T) {
 func TestPlaceAdditional_Validation(t *testing.T) {
 	s := newScheduler(t, []NodeLoad{{NodeID: "n1", RaftAddr: "n1:1", Healthy: true}})
 	existing := &Placement{
-		TenantID: "acme", Database: "orders", ShardID: 1000, RF: 1,
+		TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1000, RF: 1,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n2", RaftAddr: "n2:1"}},
 	}
 	if _, err := s.PlaceAdditional(context.Background(), nil, 1); err == nil {

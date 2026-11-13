@@ -30,7 +30,7 @@ import (
 func followerMeta() keydelivery.Meta {
 	return keydelivery.Meta{
 		TenantID:     "t",
-		Database:     "db",
+		DatabaseID:   "db",
 		ShardID:      1,
 		ReplicaID:    2,
 		TargetNodeID: "follower",

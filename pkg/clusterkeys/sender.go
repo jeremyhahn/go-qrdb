@@ -300,7 +300,7 @@ func (s *Sender) DistributeTenantKey(
 func (s *Sender) distributeTo(ctx context.Context, p *placement.Placement, replica placement.Replica, b *seal.StorageBarrier) error {
 	meta := keydelivery.Meta{
 		TenantID:     p.TenantID,
-		Database:     p.Database,
+		DatabaseID:   p.DatabaseID,
 		ShardID:      p.ShardID,
 		ReplicaID:    replica.ReplicaID,
 		TargetNodeID: replica.NodeID,

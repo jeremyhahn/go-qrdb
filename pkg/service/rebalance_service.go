@@ -101,11 +101,27 @@ type RebalancePlanResult struct {
 	// Moves is the ordered list of shard move operations.
 	Moves []RebalanceMovePlan
 
+	// Skipped names the moves the planner considered and refused, each with
+	// its reason (an isolated tenant's serving set excludes the target).
+	Skipped []RebalanceSkippedMove
+
 	// EstimatedDuration is the estimated time to complete all moves.
 	EstimatedDuration time.Duration
 
 	// CurrentImbalance is the current imbalance score before rebalancing.
 	CurrentImbalance float64
+}
+
+// RebalanceSkippedMove is a move CreateRebalancePlan considered and did not
+// propose. Err is the typed refusal (*placement.ServingSetError, or
+// *HomeGroupMoveError for a tenant home group shard, which carries no
+// ToNode); Reason is its text.
+type RebalanceSkippedMove struct {
+	ShardID  uint64
+	FromNode string
+	ToNode   string
+	Reason   string
+	Err      error
 }
 
 // RebalanceExecutionResult contains the outcome of an executed rebalance.
@@ -361,7 +377,14 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 	// Generate moves by shifting load from overloaded to underloaded nodes.
 	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
+	// An isolated tenant's database moves only within its serving set.
+	shardIdx, err := s.buildShardPlacementIndex(ctx)
+	if err != nil {
+		return nil, &RebalancePlanError{Err: err}
+	}
+
 	moves := make([]RebalanceMovePlan, 0)
+	var skipped []RebalanceSkippedMove
 	moveCount := 0
 
 	for i := 0; i < len(balances); i++ {
@@ -386,10 +409,40 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 				continue
 			}
 
+			// A tenant's home group spans the cluster and is never moved:
+			// list the skip and leave the shard where it is.
+			if current := shardIdx[si.ShardID]; current != nil && database.IsTenantHome(current.Database) {
+				herr := &HomeGroupMoveError{TenantID: current.TenantID, ShardID: si.ShardID}
+				skipped = append(skipped, RebalanceSkippedMove{
+					ShardID:  si.ShardID,
+					FromNode: balances[i].node.Address,
+					Reason:   herr.Error(),
+					Err:      herr,
+				})
+				continue
+			}
+
 			// Find the most underloaded node (last in sorted order).
 			for j := len(balances) - 1; j > i; j-- {
 				if balances[j].delta >= 0 {
 					continue
+				}
+				if current := shardIdx[si.ShardID]; current != nil {
+					serr := checkReplicaInServingSet(ctx, s.placementStore, current, balances[j].node.Address)
+					var sse *placement.ServingSetError
+					if errors.As(serr, &sse) {
+						skipped = append(skipped, RebalanceSkippedMove{
+							ShardID:  si.ShardID,
+							FromNode: balances[i].node.Address,
+							ToNode:   balances[j].node.Address,
+							Reason:   serr.Error(),
+							Err:      serr,
+						})
+						continue
+					}
+					if serr != nil {
+						return nil, &RebalancePlanError{Err: serr}
+					}
 				}
 
 				// Estimate the bytes for this shard as a fraction of node total.
@@ -434,6 +487,7 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 
 	return &RebalancePlanResult{
 		Moves:             moves,
+		Skipped:           skipped,
 		EstimatedDuration: estimatedDuration,
 		CurrentImbalance:  report.ImbalanceScore,
 	}, nil
@@ -689,6 +743,19 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 			TenantID: p.TenantID,
 			Step:     "dropping",
 			Err:      &database.DroppingError{Name: p.Database, TenantID: p.TenantID},
+		}
+	}
+
+	// A tenant's home group spans the cluster and is never moved: moving
+	// its source replica would strand the tenant's database replicas
+	// outside the serving set. CreateRebalancePlan never proposes it; a
+	// hand-built plan is refused here before any mutation.
+	if database.IsTenantHome(p.Database) {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "home-group",
+			Err:      &HomeGroupMoveError{TenantID: p.TenantID, ShardID: move.ShardID},
 		}
 	}
 

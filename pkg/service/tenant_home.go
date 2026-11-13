@@ -59,7 +59,7 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	if s.placementStore == nil || s.placementScheduler == nil {
 		return nil, &TenantHomeUnplaceableError{TenantID: tenantID}
 	}
-	existing, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeName)
+	existing, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeID)
 	if err == nil {
 		return existing, nil
 	}
@@ -80,10 +80,11 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	}
 	rf := max(s.placementScheduler.ClusterSize(), 1)
 	plan, err := s.placementScheduler.Place(ctx, placement.PlaceRequest{
-		TenantID: tenantID,
-		Database: database.TenantHomeName,
-		ShardID:  shardID,
-		RF:       rf,
+		TenantID:   tenantID,
+		DatabaseID: database.TenantHomeID,
+		Database:   database.TenantHomeName,
+		ShardID:    shardID,
+		RF:         rf,
 	})
 	if err != nil {
 		return nil, err
@@ -119,5 +120,5 @@ func (s *DatabaseService) RetireTenantHome(ctx context.Context, tenantID string)
 	if s.placementStore == nil {
 		return nil
 	}
-	return s.placementStore.Delete(ctx, tenantID, database.TenantHomeName)
+	return s.placementStore.Delete(ctx, tenantID, database.TenantHomeID)
 }
