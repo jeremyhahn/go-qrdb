@@ -409,7 +409,7 @@ func TestInit_CLI_HostnameSANs(t *testing.T) {
 // envelope claim and a quorum -- by officer_ceremony_cli_test.go's
 // TestCLI_Init_ShamirWithOfficers_EndToEnd. The claim and quorum are separate
 // RPCs already proven reachable multi-protocol by
-// TestBarrierPermutations_ShamirLifecycle_PerProtocol, so only the
+// TestBarrierCLI_ShamirLifecycle_PerProtocol, so only the
 // ceremony-initialize RPC is looped here. The node boots with a Shamir
 // barrier left uninitialized: `qrdb init` runs against the sealed window and
 // the ceremony initializes the barrier over the named holders.

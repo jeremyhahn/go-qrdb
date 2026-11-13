@@ -16,21 +16,14 @@
 
 // batch_import_cli_test.go exercises the `qrdb batch import` and
 // `qrdb batch import-formats` CLI surface (cmd/qrdb/batch.go) end-to-end
-// against a real, freshly-spawned qrdbd node. TestCLI_BatchImport_CSV,
-// TestCLI_BatchImport_CSV_Unix, TestCLI_BatchImport_Stdin, and
-// TestCLI_BatchImportFormats_ListsSupportedFormats below predate the
-// multi-protocol harness and only ever drove REST (plus a dedicated
-// Unix-only parity check); TestBatchImport_CLI_PerProtocol closes that
-// gap by exercising both commands over all five CLI-selectable transports
-// (REST, gRPC, QUIC, MCP, Unix) against one shared multiProtoNode.
+// against a real qrdbd node: TestBatchImport_CLI_PerProtocol exercises
+// both commands over all five CLI-selectable transports (REST, gRPC, QUIC,
+// MCP, Unix) against one shared multiProtoNode.
 package integration_test
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -51,198 +44,10 @@ func runQRDBStdin(t *testing.T, cli, stdin string, connArgs []string, subArgs ..
 	return string(out), err
 }
 
-// TestCLI_BatchImport_CSV imports a small CSV file and verifies the
-// reported statistics and that the imported records are readable
-// afterward via `qrdb kv get`.
-func TestCLI_BatchImport_CSV(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import] ")
-	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
-
-	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	csvPath := writeTempFile(t, "import.csv", []byte("id,value\nk1,v1\nk2,v2\n"))
-
-	out, err := runQRDB(t, cli, node.restArgsAdmin(), "batch", "import",
-		"--file", csvPath, "--format", "csv", "--key-field", "id", "--value-mode", "row",
-		"--skip-header", "--output", "json")
-	if err != nil {
-		t.Fatalf("batch import: %v\noutput: %s", err, out)
-	}
-	var result struct {
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
-	}
-	decodeJSON(t, out, &result)
-	if result.Total != 2 || result.Succeeded != 2 || result.Failed != 0 {
-		t.Fatalf("unexpected import result: %+v (output: %s)", result, out)
-	}
-
-	getOut, err := runQRDB(t, cli, node.restArgsAdmin(), "kv", "get", "k1")
-	if err != nil {
-		t.Fatalf("kv get k1 after import: %v\noutput: %s", err, getOut)
-	}
-	if !strings.Contains(getOut, "k1") {
-		t.Errorf("expected the imported row's key to appear in the row-mode value, got: %s", getOut)
-	}
-}
-
-// TestCLI_BatchImport_CSV_Unix is the multi-transport-parity counterpart of
-// TestCLI_BatchImport_CSV: it drives `qrdb batch import` over the Unix
-// socket (grpc-over-UDS) transport, which is the qrdb CLI's DEFAULT
-// transport (see cmd/qrdb/CLAUDE.md). Prior to the BatchImport gRPC/Unix/
-// QUIC/MCP RPC, ImportFile on every transport but REST and embedded
-// returned transport.NotImplementedError, so `qrdb batch import` with no
-// --transport/--server override (i.e. the CLI's out-of-the-box default)
-// failed outright. This test boots the daemon with --enable-unix and
-// exercises the identical CSV-import scenario as TestCLI_BatchImport_CSV
-// over node.unixArgsAdmin, proving the two transports are at parity.
-func TestCLI_BatchImport_CSV_Unix(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	dataDir := t.TempDir()
-	sockDir, err := os.MkdirTemp("", "qrdb-batch-import-unix-")
-	if err != nil {
-		t.Fatalf("socket dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
-	unixSocket := filepath.Join(sockDir, "qrdbd.sock")
-
-	cfgPath := writeSealYAML(t, "seal:\n  enabled: true\n  strategy: none\n")
-	raftPort := allocatePorts(t, 1)[0]
-	adminPort := allocateTCPPorts(t, 1)[0]
-	grpcPort := allocateTCPPorts(t, 1)[0]
-
-	args := []string{
-		"start",
-		"--config", cfgPath,
-		"--listen", fmt.Sprintf("0.0.0.0:%d", raftPort),
-		"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPort),
-		"--data-dir", dataDir,
-		"--sm", "pebble",
-		"--discovery", "static",
-		"--peers", fmt.Sprintf("1=127.0.0.1:%d", raftPort),
-		"--shard-id", "1",
-		"--replica-id", "1",
-		"--admin-port", fmt.Sprintf("%d", adminPort),
-		"--grpc-port", fmt.Sprintf("%d", grpcPort),
-		"--enable-unix", "--unix-socket-path", unixSocket,
-	}
-	startNode(t, bin, args, "[batch-import-unix] ")
-
-	credDir := t.TempDir()
-	node := &selfGenCANode{
-		dataDir:       dataDir,
-		adminPort:     adminPort,
-		grpcPort:      grpcPort,
-		raftPort:      raftPort,
-		caPath:        filepath.Join(dataDir, "ca.pem"),
-		adminCertPath: filepath.Join(credDir, "bootstrap-admin-cert.pem"),
-		adminKeyPath:  filepath.Join(credDir, "bootstrap-admin-key.pem"),
-	}
-	waitForFile(t, node.caPath, 30*time.Second)
-
-	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
-	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-
-	unixArgs := node.unixArgsAdmin(unixSocket)
-	pollUntilCLISucceeds(t, cli, unixArgs, 60*time.Second)
-
-	csvPath := writeTempFile(t, "import.csv", []byte("id,value\nk1,v1\nk2,v2\n"))
-
-	out, err := runQRDB(t, cli, unixArgs, "batch", "import",
-		"--file", csvPath, "--format", "csv", "--key-field", "id", "--value-mode", "row",
-		"--skip-header", "--output", "json")
-	if err != nil {
-		t.Fatalf("batch import over unix: %v\noutput: %s", err, out)
-	}
-	var result struct {
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
-	}
-	decodeJSON(t, out, &result)
-	if result.Total != 2 || result.Succeeded != 2 || result.Failed != 0 {
-		t.Fatalf("unexpected import result: %+v (output: %s)", result, out)
-	}
-
-	getOut, err := runQRDB(t, cli, unixArgs, "kv", "get", "k1")
-	if err != nil {
-		t.Fatalf("kv get k1 after import (unix): %v\noutput: %s", err, getOut)
-	}
-	if !strings.Contains(getOut, "k1") {
-		t.Errorf("expected the imported row's key to appear in the row-mode value, got: %s", getOut)
-	}
-}
-
-// TestCLI_BatchImport_Stdin verifies the "-" stdin form.
-func TestCLI_BatchImport_Stdin(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-stdin] ")
-	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
-
-	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	out, err := runQRDBStdin(t, cli, `{"id":"s1","value":"a"}`+"\n", node.restArgsAdmin(),
-		"batch", "import", "--file", "-", "--format", "ndjson",
-		"--key-field", "id", "--value-mode", "row", "--output", "json")
-	if err != nil {
-		t.Fatalf("batch import --file -: %v\noutput: %s", err, out)
-	}
-	var result struct {
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-	}
-	decodeJSON(t, out, &result)
-	if result.Total != 1 || result.Succeeded != 1 {
-		t.Fatalf("unexpected import result: %+v (output: %s)", result, out)
-	}
-}
-
-// TestCLI_BatchImportFormats_ListsSupportedFormats verifies
-// `qrdb batch import-formats` lists the formats `batch import --format`
-// accepts.
-func TestCLI_BatchImportFormats_ListsSupportedFormats(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[batch-import-formats] ")
-	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
-
-	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	out, err := runQRDB(t, cli, node.restArgsAdmin(), "batch", "import-formats")
-	if err != nil {
-		t.Fatalf("batch import-formats: %v\noutput: %s", err, out)
-	}
-	for _, want := range []string{"auto", "csv", "json", "ndjson", "yaml", "archive"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("expected format %q in output, got: %s", want, out)
-		}
-	}
-}
-
 // TestBatchImport_CLI_PerProtocol drives `qrdb batch import` (CSV and
 // stdin/ndjson forms) and `qrdb batch import-formats` through the CLI
 // binary against every transport sharing one multiProtoNode. Neither
-// command is identity-gated; TestCLI_BatchImport_CSV/CSV_Unix/Stdin and
-// TestCLI_BatchImportFormats_ListsSupportedFormats above only ever
-// exercised REST (plus a dedicated Unix-only parity check), leaving
-// gRPC/QUIC/MCP unverified for `import`, and REST alone for
-// `import-formats`.
+// command is identity-gated, so every transport takes the same path.
 func TestBatchImport_CLI_PerProtocol(t *testing.T) {
 	t.Parallel()
 	node := startMultiProtocolNode(t)

@@ -29,68 +29,6 @@ import (
 	"time"
 )
 
-// TestCLI_SqlQuery_KVRoundTrip proves the SQL-over-KV round trip: a
-// dedicated database is created, a key/value pair is written via
-// `qrdb kv put --database`, and `qrdb sql query --database "SELECT * FROM
-// kv"` reads it back, both as a positional argument and via --file.
-func TestCLI_SqlQuery_KVRoundTrip(t *testing.T) {
-	bin := buildBinary(t)
-	cli := buildCLIBinary(t)
-
-	node := bootSelfGenCANode(t, bin, "seal:\n  enabled: true\n  strategy: none\n", "[sql-query] ")
-	pollUntilSealedListenerUp(t, cli, node.restArgsNoAuth(), 30*time.Second)
-
-	node.bootAdmin(t, cli, "SOPIN12345", "USERPIN12345", "--barrier-strategy", "none")
-	waitForHealthy(t, node.dataDir, 60*time.Second)
-	pollUntilCLISucceeds(t, cli, node.restArgsAdmin(), 60*time.Second)
-
-	if out, err := runQRDB(t, cli, node.restArgsAdmin(), "database", "create", "sqltestdb",
-		"--backend", "memory"); err != nil {
-		t.Fatalf("database create: %v\noutput: %s", err, out)
-	}
-
-	if out, err := runQRDB(t, cli, node.restArgsAdmin(),
-		"--database", "sqltestdb", "kv", "put", "greeting", "hello world"); err != nil {
-		t.Fatalf("kv put: %v\noutput: %s", err, out)
-	}
-
-	// Positional-argument form, JSON output.
-	out, err := runQRDB(t, cli, node.restArgsAdmin(), "sql", "query",
-		"--database", "sqltestdb", "--output", "json", "SELECT * FROM kv")
-	if err != nil {
-		t.Fatalf("sql query: %v\noutput: %s", err, out)
-	}
-	var result struct {
-		Columns  []string         `json:"columns"`
-		Rows     []map[string]any `json:"rows"`
-		RowCount int              `json:"rowCount"`
-	}
-	decodeJSON(t, out, &result)
-	if result.RowCount != 1 {
-		t.Fatalf("expected 1 row, got %d: %s", result.RowCount, out)
-	}
-	if fmt.Sprint(result.Rows[0]["key"]) != "greeting" {
-		t.Errorf("expected row key 'greeting', got %v: %s", result.Rows[0]["key"], out)
-	}
-	if fmt.Sprint(result.Rows[0]["value"]) != "hello world" {
-		t.Errorf("expected row value 'hello world', got %v: %s", result.Rows[0]["value"], out)
-	}
-
-	// --file form, table output.
-	queryFile := writeTempFile(t, "query.sql", []byte("SELECT * FROM kv\n"))
-	fileOut, err := runQRDB(t, cli, node.restArgsAdmin(), "sql", "query",
-		"--database", "sqltestdb", "--file", queryFile)
-	if err != nil {
-		t.Fatalf("sql query --file: %v\noutput: %s", err, fileOut)
-	}
-	if !strings.Contains(fileOut, "greeting") || !strings.Contains(fileOut, "hello world") {
-		t.Errorf("expected the seeded row in table output, got: %s", fileOut)
-	}
-	if !strings.Contains(fileOut, "1 rows") {
-		t.Errorf("expected a row-count summary line, got: %s", fileOut)
-	}
-}
-
 // TestCLI_SqlQuery_EmptyDatabase verifies an empty SELECT against a
 // freshly created, unseeded database returns zero rows rather than an
 // error.
