@@ -17,14 +17,18 @@
 package integration_test
 
 import (
+	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 )
 
 // TestPublicHealth_CLI_NoCertificate_PerProtocol drives the qrdb binary
 // against a real qrdbd on every transport with no client certificate:
-// `admin health`, a publicverbs.Table verb, succeeds, and `admin status`,
-// which needs an identity, is refused. The same `admin status` with the
+// `admin health`, a publicverbs.Table verb, succeeds and prints the status,
+// and `admin status` and `kv get`, which need an identity, exit non-zero
+// with the typed unauthenticated refusal (ruling 264(b): Connect succeeds,
+// the first authenticated call is refused). The same `admin status` with the
 // operator's certificate is the control that the command exists and is
 // served, so its refusal is the missing certificate's alone.
 func TestPublicHealth_CLI_NoCertificate_PerProtocol(t *testing.T) {
@@ -39,17 +43,29 @@ func TestPublicHealth_CLI_NoCertificate_PerProtocol(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%s] admin health with no certificate: %v\noutput: %s", proto.name, err, out)
 			}
+			if !strings.Contains(strings.ToLower(out), "status") {
+				t.Fatalf("[%s] admin health with no certificate printed no status: %s", proto.name, out)
+			}
 
 			if out, err := runCLIProto(t, node, proto, "admin", "status"); err != nil {
 				t.Fatalf("[%s] admin status with a certificate (control): %v\noutput: %s", proto.name, err, out)
 			}
 
-			out, err = runCLI(t, node.cli, append(append([]string{}, anon...), "admin", "status")...)
-			if err == nil {
-				t.Fatalf("[%s] admin status with no certificate succeeded, want a refusal: %s", proto.name, out)
-			}
-			if strings.Contains(strings.ToLower(out), "unknown command") {
-				t.Fatalf("[%s] admin status is not a command: %s", proto.name, out)
+			for _, cmd := range [][]string{{"admin", "status"}, {"kv", "get", "public-health-probe"}} {
+				out, err = runCLI(t, node.cli, append(append([]string{}, anon...), cmd...)...)
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+					t.Fatalf("[%s] %v with no certificate: err %v, want a non-zero exit: %s", proto.name, cmd, err, out)
+				}
+				if strings.Contains(strings.ToLower(out), "unknown command") {
+					t.Fatalf("[%s] %v is not a command: %s", proto.name, cmd, out)
+				}
+				// REST reports Unauthenticated as its HTTP status; every
+				// other transport names the status code.
+				lower := strings.ToLower(out)
+				if !strings.Contains(lower, "unauthenticated") && !strings.Contains(lower, "status 401") {
+					t.Fatalf("[%s] %v with no certificate: want the typed unauthenticated refusal, got: %s", proto.name, cmd, out)
+				}
 			}
 		})
 	}
