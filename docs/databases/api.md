@@ -271,12 +271,16 @@ arguments are named alike in both.
 | `raftAddress` | `raft_address` | `raft_address` |
 | `peers` | `raft_peers` (array) | `peers` (array) |
 | `localNodeCount` | `raft_local_node_count` | `local_node_count` |
-| `stateStorage` | `raft_state_storage` | -- (create only) |
+| `stateStorage` | `raft_state_storage` | `state_storage` |
 | `discovery` | `discovery_method` | `discovery_method` |
 | `static` | `static_peers` (array), `static_shared_secret` | same |
 | `multicast` | `multicast_shared_secret`, `multicast_group`, `multicast_interface`, `multicast_min_peers`, `multicast_announce_interval`, `multicast_discover_timeout` | same |
 | `dns` | `dns_domain`, `dns_service`, `dns_proto`, `dns_lookup_timeout` | same |
 | `token` | `token_endpoint`, `token_value`, `token_cluster_size`, `token_timeout` | same |
+
+The state storage is recorded at create. An update that leaves `state_storage`
+out keeps the recorded storage; one naming a storage other than the recorded
+one is refused with `StateStorageUpdateError` (InvalidArgument).
 
 A discovery block is sent when `discovery_method` names it or any of its
 arguments is given -- an empty string counts, which is how a block whose only

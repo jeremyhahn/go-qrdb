@@ -753,9 +753,10 @@ type raftArgs struct {
 	address        string
 	peers          string
 	localNodeCount string
-	// stateStorage names the Raft state storage argument. Only create takes
-	// one: the storage is recorded at create and an update never moves it,
-	// so the update tool leaves it empty and declares no such argument.
+	// stateStorage names the Raft state storage argument. Both tools take
+	// it. Create records the resolved storage; on update it is checked
+	// against the recorded storage: left out, the recorded storage is kept,
+	// and naming another storage is refused with StateStorageUpdateError.
 	stateStorage string
 }
 
@@ -774,6 +775,7 @@ var (
 		address:        "raft_address",
 		peers:          "peers",
 		localNodeCount: "local_node_count",
+		stateStorage:   "state_storage",
 	}
 )
 
@@ -805,7 +807,7 @@ func raftToolOptions(names raftArgs) []mcp.ToolOption {
 	opts := raftCommonToolOptions(names)
 	if names.stateStorage != "" {
 		opts = append(opts, mcp.WithString(names.stateStorage,
-			mcp.Description("Storage of the Raft group state: pebble, file, or memory. Omitted, the node's database_defaults decide; create records the resolved value."),
+			mcp.Description("Storage of the Raft group state: pebble, file, or memory. On create, omitted, the node's database_defaults decide and the resolved value is recorded. On update, omitted keeps the recorded storage; naming a different storage is refused."),
 		))
 	}
 	return opts
