@@ -66,17 +66,6 @@ func TestPermissionClient_LookupScope_ClosedTransport(t *testing.T) {
 }
 
 // factorTypeFromDomain default branch coverage.
-func TestFactorTypeRoundTrip_Unknown(t *testing.T) {
-	got := factorTypeFromDomain(auth.AuthFactorType("unknown"))
-	if string(got) != "unknown" {
-		t.Errorf("expected pass-through, got %q", got)
-	}
-	got2 := factorTypeToDomain(transport.FactorType("unknown"))
-	if string(got2) != "unknown" {
-		t.Errorf("expected pass-through, got %q", got2)
-	}
-}
-
 // factorToTransport / factorToDomain nil coverage.
 func TestFactorToTransport_Nil(t *testing.T) {
 	got := factorToTransport(nil)

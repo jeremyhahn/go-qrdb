@@ -997,6 +997,10 @@ the policy is that grant written down.
 - **First mint, in process.** `Node.MintDelegation` mints the first
   certificate as the node's service principal, for the principal the node
   runs as; it is refused unless a policy names that principal in that tenant.
+  The in-process entry point refuses a delegated caller with
+  `DelegationDeniedError`: a delegated caller renews only through
+  `IssueDelegation`, which re-authenticates its certificate and checks
+  `certs:delegate`.
 - **Renewal, by the delegation itself.** The one exception to "a delegated
   caller cannot issue another": a caller authenticated by a delegation may call
   `IssueDelegation` for its own principal in its own tenant while a policy
