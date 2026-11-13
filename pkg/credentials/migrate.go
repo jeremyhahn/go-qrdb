@@ -162,6 +162,9 @@ type legacyCopy struct {
 // migration's error and does nothing else until it finishes, and on the next
 // MigrateLegacy, ListMigrationConflicts or ResolveMigrationConflict.
 func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
+	if isTypedNilStore(st) {
+		return ErrNilBarrier
+	}
 	if err := s.store.bind(st); err != nil {
 		return err
 	}

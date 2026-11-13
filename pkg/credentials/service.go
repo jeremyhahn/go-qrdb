@@ -11,6 +11,7 @@ package credentials
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -163,6 +164,9 @@ func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ..
 	if !validStrategies[strategy] {
 		return nil, ErrInvalidStrategy
 	}
+	if isTypedNilStore(store) {
+		return nil, ErrNilBarrier
+	}
 
 	s := &CredentialService{
 		store:       newBoundStore(store),
@@ -183,6 +187,23 @@ func NewCredentialService(cfg *Config, store Store, logger *slog.Logger, opts ..
 		}
 	}
 	return s, nil
+}
+
+// isTypedNilStore reports whether st is a non-nil interface holding a nil
+// pointer, such as (*seal.StorageBarrier)(nil). Such a store passes an
+// st == nil check yet panics on first use, so NewCredentialService and
+// BindStore refuse it with ErrNilBarrier before binding.
+func isTypedNilStore(st Store) bool {
+	if st == nil {
+		return false
+	}
+	v := reflect.ValueOf(st)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // ForTenant returns a barrier-strategy CredentialService over a tenant's
