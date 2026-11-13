@@ -18,7 +18,8 @@
 // It replaces mcp-go's transport.NewStreamableHTTP, which carries
 // GO-2026-6911 (an unvalidated Location header) with no fixed release.
 // Here the caller's http.Client alone decides whether a redirect is
-// followed, and a 3xx it does not follow is a failure.
+// followed, and a 3xx it does not follow is a failure. A reply is the
+// request's only when its wire ID equals the request's ID.
 package mcphttp
 
 import (
@@ -123,11 +124,21 @@ func (t *Transport) SendRequest(ctx context.Context, request mcptransport.JSONRP
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	switch mediaType {
 	case "application/json":
-		var out mcptransport.JSONRPCResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		var data json.RawMessage
+		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 			return nil, fmt.Errorf("mcphttp: decode the reply: %w", err)
 		}
-		return &out, nil
+		var msg message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, fmt.Errorf("mcphttp: decode the reply: %w", err)
+		}
+		if !msg.isResponse() {
+			return nil, fmt.Errorf("mcphttp: request %s: the reply is not a JSON-RPC response with an id", request.Method)
+		}
+		if !msg.answers(request.ID) {
+			return nil, fmt.Errorf("mcphttp: request %s: reply id %s does not match request id %s", request.Method, msg.ID, request.ID.String())
+		}
+		return msg.response(data)
 	case "text/event-stream":
 		return t.readEventStream(resp.Body, request.ID)
 	default:
@@ -204,8 +215,46 @@ func (t *Transport) setSessionHeaders(req *http.Request) {
 
 // message is any JSON-RPC message the server sends on a stream.
 type message struct {
-	ID     *mcp.RequestId `json:"id,omitempty"`
-	Method string         `json:"method,omitempty"`
+	ID     json.RawMessage `json:"id,omitempty"`
+	Method string          `json:"method,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
+}
+
+// hasID reports whether the message carries an ID that is not null.
+func (m *message) hasID() bool {
+	id := bytes.TrimSpace(m.ID)
+	return len(id) > 0 && !bytes.Equal(id, []byte("null"))
+}
+
+// isResponse reports whether the message is a result or an error with an
+// ID; a response with a missing or null ID answers no request.
+func (m *message) isResponse() bool {
+	return m.Method == "" && m.hasID() && (m.Result != nil || m.Error != nil)
+}
+
+// answers reports whether the message's wire ID is id. IDs compare as
+// compact JSON, so the number 1 and the string "1" differ.
+func (m *message) answers(id mcp.RequestId) bool {
+	want, err := json.Marshal(id)
+	if err != nil {
+		return false
+	}
+	var got, wantCompact bytes.Buffer
+	if json.Compact(&got, m.ID) != nil || json.Compact(&wantCompact, want) != nil {
+		return false
+	}
+	return bytes.Equal(got.Bytes(), wantCompact.Bytes())
+}
+
+// response decodes data, the message's raw form, as mcp-go's response type,
+// keeping the wire ID it arrived with. Callers check answers first.
+func (m *message) response(data []byte) (*mcptransport.JSONRPCResponse, error) {
+	var resp mcptransport.JSONRPCResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("mcphttp: decode the reply: %w", err)
+	}
+	return &resp, nil
 }
 
 // readEventStream reads server-sent events until the reply to id arrives,
@@ -250,13 +299,17 @@ func (t *Transport) dispatchEvent(data []byte, id mcp.RequestId) *mcptransport.J
 		return nil
 	}
 	switch {
-	case msg.Method == "" && msg.ID != nil && msg.ID.String() == id.String():
-		var resp mcptransport.JSONRPCResponse
-		if json.Unmarshal(data, &resp) != nil {
+	case msg.isResponse():
+		// A response to another request is not this request's reply.
+		if !msg.answers(id) {
 			return nil
 		}
-		return &resp
-	case msg.Method != "" && msg.ID == nil:
+		resp, err := msg.response(data)
+		if err != nil {
+			return nil
+		}
+		return resp
+	case msg.Method != "" && !msg.hasID():
 		var n mcp.JSONRPCNotification
 		if json.Unmarshal(data, &n) != nil {
 			return nil
