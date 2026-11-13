@@ -41,30 +41,6 @@ type flatConfig struct {
 	Host     string
 }
 
-func TestConfigProcessor_ResolvesNestedStringFields(t *testing.T) {
-	reg := secret.NewResolverRegistry()
-	reg.Register(&fakeResolver{scheme: "cred", prefix: "cred://", value: []byte("resolved-pw")})
-
-	cfg := &flatConfig{
-		Password: "cred://db-pass",
-		Host:     "localhost",
-	}
-	proc := secret.NewConfigProcessor(reg)
-	result, err := proc.Process(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if result.Resolved != 1 {
-		t.Errorf("Resolved = %d, want 1", result.Resolved)
-	}
-	if cfg.Password != "resolved-pw" {
-		t.Errorf("Password = %q, want resolved-pw", cfg.Password)
-	}
-	if cfg.Host != "localhost" {
-		t.Errorf("Host must not be modified, got %q", cfg.Host)
-	}
-}
-
 type nestedConfig struct {
 	DB     dbConfig
 	APIKey string

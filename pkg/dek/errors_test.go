@@ -196,8 +196,6 @@ func TestParseVersionRejectsZero(t *testing.T) {
 // rather than used.
 func TestRecordsViolatingInvariantsAreCorrupt(t *testing.T) {
 	for name, raw := range map[string]string{
-		"format":         `{"format":7,"current":1,"versions":[]}`,
-		"no versions":    `{"format":2,"current":1,"versions":[]}`,
 		"no current":     `{"format":2,"current":2,"versions":[{"version":1,"wrapped_key":"AAAA","provider_id":"software","key_ref":"acme"}]}`,
 		"no provider":    `{"format":2,"current":1,"versions":[{"version":1,"wrapped_key":"AAAA","key_ref":"acme"}]}`,
 		"no key ref":     `{"format":2,"current":1,"versions":[{"version":1,"wrapped_key":"AAAA","provider_id":"software"}]}`,

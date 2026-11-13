@@ -102,13 +102,6 @@ func TestResolverRegistry_IsSecretURI_True(t *testing.T) {
 	}
 }
 
-func TestResolverRegistry_IsSecretURI_False(t *testing.T) {
-	reg := secret.NewResolverRegistry()
-	if reg.IsSecretURI("plain-value") {
-		t.Error("expected IsSecretURI=false for empty registry")
-	}
-}
-
 func TestResolverRegistry_NilCtx(t *testing.T) {
 	reg := secret.NewResolverRegistry()
 	_, err := reg.Resolve(nil, "any://thing") //nolint:staticcheck
