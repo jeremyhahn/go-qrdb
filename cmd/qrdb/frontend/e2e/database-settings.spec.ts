@@ -259,6 +259,53 @@ test.describe("Admin - Database settings forms", () => {
     });
   });
 
+  test("a new REST connection takes an http(s) URL, not host:port", async ({ page }) => {
+    const main = await openDetail(page);
+    const form = main.getByTestId("db-settings-connection");
+    const save = form.getByRole("button", { name: "Save Connection" });
+    await form.getByLabel("Transport").selectOption("rest");
+
+    await form.getByLabel("Address").fill("db.example.com:8080");
+    await expect(form.getByText("Address must be an http:// or https:// URL.")).toBeVisible();
+    await expect(save).toBeDisabled();
+    await form.getByLabel("Address").fill("ftp://db.example.com");
+    await expect(save).toBeDisabled();
+
+    await form.getByLabel("Address").fill("https://db.example.com");
+    await expect(form.getByTestId("validation-error")).toHaveCount(0);
+    await save.click();
+
+    await expect(form.getByTestId("outcome-success")).toHaveText(
+      "Connection configuration saved.",
+    );
+    expect((await storedDb(page)).connection).toEqual({
+      transport: "rest",
+      address: "https://db.example.com",
+    });
+  });
+
+  test.describe("with an existing REST connection", () => {
+    test.use({
+      mockState: {
+        ...stateWithDb,
+        databases: [{
+          name: DB_NAME,
+          backend: "pebble",
+          status: "open",
+          connection: { transport: "rest", address: "https://db.example.com" },
+        }],
+      },
+    });
+
+    test("the form opens valid with Save enabled", async ({ page }) => {
+      const main = await openDetail(page);
+      const form = main.getByTestId("db-settings-connection");
+      await expect(form.getByLabel("Address")).toHaveValue("https://db.example.com");
+      await expect(form.getByTestId("validation-error")).toHaveCount(0);
+      await expect(form.getByRole("button", { name: "Save Connection" })).toBeEnabled();
+    });
+  });
+
   test("a server error shows the error state and keeps the stored value", async ({
     page,
   }) => {

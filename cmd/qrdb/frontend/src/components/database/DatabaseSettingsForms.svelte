@@ -79,6 +79,17 @@
     return total;
   }
 
+  /** An http: or https: URL with a non-empty host (the REST transport's address). */
+  function isHttpUrl(text: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(text);
+    } catch {
+      return false;
+    }
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "";
+  }
+
   /** A host:port (or [ipv6]:port) address with a port in 1..65535. */
   function isHostPort(text: string): boolean {
     const m = /^(\[[0-9a-fA-F:.]+\]|[^\s:[\]]+):(\d{1,5})$/.exec(text);
@@ -311,7 +322,9 @@
   let connError = $derived.by((): string => {
     const addr = connAddress.trim();
     if (addr === "") return "Address is required.";
-    if (connTransport !== "unix" && !isHostPort(addr)) {
+    if (connTransport === "rest") {
+      if (!isHttpUrl(addr)) return "Address must be an http:// or https:// URL.";
+    } else if (connTransport !== "unix" && !isHostPort(addr)) {
       return "Address must be host:port.";
     }
     if ((connCertFile.trim() === "") !== (connKeyFile.trim() === "")) {
@@ -679,7 +692,7 @@
         </label>
         <label class="form-control">
           <span class="label-text text-xs">Address</span>
-          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
+          <input type="text" class="input input-bordered input-sm font-mono" aria-label="Address" placeholder={connTransport === "unix" ? "/run/qrdb/qrdb.sock" : connTransport === "rest" ? "https://db.example.com" : "db.example.com:9090"} bind:value={connAddress} disabled={connSaving} />
         </label>
         <label class="form-control">
           <span class="label-text text-xs">CA file</span>
