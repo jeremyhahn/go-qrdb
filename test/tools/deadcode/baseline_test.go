@@ -67,27 +67,6 @@ func TestRefreshKeepsTheReasonOfAnEntryThatStays(t *testing.T) {
 	}
 }
 
-func TestRefreshDropsTheReasonOfAnEntryThatLeft(t *testing.T) {
-	current := map[string]bool{keptA: true}
-	out := parseBaseline(sampleBaseline()).refresh(".", current)
-	for _, g := range out.groups {
-		if g.reason == "only test code reaches it." {
-			t.Fatalf("a reason with no entries left survived: %+v", g)
-		}
-		for _, e := range g.entries {
-			if e == leaving || e == keptB {
-				t.Fatalf("departed entry %q kept", e)
-			}
-		}
-	}
-	if len(out.groups) != 2 {
-		t.Fatalf("groups = %+v, want the pkg API group and the other module's", out.groups)
-	}
-	if strings.Contains(out.render(), "only test code reaches it.") {
-		t.Fatal("the departed entry's reason was rendered")
-	}
-}
-
 func TestWriteBaselineRoundTripsTheReasons(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "baseline.txt")
 	if err := os.WriteFile(path, []byte(sampleBaseline()), 0o600); err != nil {

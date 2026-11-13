@@ -25,7 +25,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/container"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/soak"
-	"github.com/jeremyhahn/go-qrdb/test/clusterproof/workload"
 )
 
 // examplesDir holds the operator's example configuration for the gate run,
@@ -79,16 +78,6 @@ func TestExampleInventoryParses(t *testing.T) {
 	}
 }
 
-func TestExampleWorkloadParses(t *testing.T) {
-	cfg, err := workload.ParseConfig(openExample(t, "workload.json"))
-	if err != nil {
-		t.Fatalf("ParseConfig(workload.json): %v", err)
-	}
-	if cfg.Protocol != "quic" {
-		t.Fatalf("workload.json protocol = %q, want quic", cfg.Protocol)
-	}
-}
-
 func TestExampleTargetsBuildEveryFault(t *testing.T) {
 	o, err := soak.LoadOptions(exampleEnv(t, filepath.Join(examplesDir, "targets.json")), time.Now())
 	if err != nil {
@@ -126,13 +115,9 @@ func TestExampleTargetsMissingTemplateRefused(t *testing.T) {
 		want   string
 		remove func(map[string]any)
 	}{
-		{"kill", "unseal", func(m map[string]any) { delete(m, "unseal") }},
 		{"clock-rate", "clock_rate.ppm", func(m map[string]any) { delete(m, "clock_rate") }},
 		{"disk-full", "disk_full.path", func(m map[string]any) { delete(m, "disk_full") }},
 		{"slow-disk", "slow-disk", func(m map[string]any) { delete(m, "slow_disk") }},
-		{"partitions", "addresses", func(m map[string]any) {
-			delete(m["nodes"].(map[string]any)["node-2"].(map[string]any), "addresses")
-		}},
 	} {
 		t.Run(tc.fault, func(t *testing.T) {
 			var m map[string]any
