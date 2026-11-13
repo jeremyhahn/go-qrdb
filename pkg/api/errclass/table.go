@@ -792,8 +792,6 @@ var embeddingRules = []rule{
 	// not-found), and the refusal to register is what the caller asked about.
 	as(&service.EmbeddingProviderRegistrationError{}, AlreadyExists),
 	as(&service.EmbeddingProviderNotFoundError{}, NotFound),
-	as(&service.EmbeddingBatchTooLargeError{}, InvalidArgument),
-	as(&service.EmbeddingDimensionMismatchError{}, InvalidArgument),
 	as(&service.EmbeddingServiceClosedError{}, Unavailable),
 	as(&service.EmbeddingProviderAlreadyRegisteredError{}, AlreadyExists),
 }
