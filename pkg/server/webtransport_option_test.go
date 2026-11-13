@@ -37,7 +37,7 @@ func TestWithWebTransportHandler_EmptyPathNilHandlerRefusedAtStart(t *testing.T)
 // option as it is through REST's, and that a path beside it still starts.
 func TestWithWebTransportHandler_PublicPathRefusedAtStart(t *testing.T) {
 	h := func(*rest.WebTransportSession, *auth.Identity, string) {}
-	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/health", h))
+	srv := New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/v1/ca/bootstrap", h))
 	err := srv.Start()
 	var e *rest.InvalidWebTransportHandlerError
 	if !errors.As(err, &e) {
@@ -46,8 +46,8 @@ func TestWithWebTransportHandler_PublicPathRefusedAtStart(t *testing.T) {
 		}
 		t.Fatalf("Start = %v, want *rest.InvalidWebTransportHandlerError", err)
 	}
-	if e.Path != "/health" || !e.PublicPath || e.NilHandler {
-		t.Fatalf("refusal = %+v, want the public /health path", e)
+	if e.Path != "/v1/ca/bootstrap" || !e.PublicPath || e.NilHandler {
+		t.Fatalf("refusal = %+v, want the public /v1/ca/bootstrap path", e)
 	}
 
 	srv = New(testConfig(t, true, true), newMockKVService(), &mockAdminService{}, WithCeremonyCA(testServerCA), WithWebTransportHandler("/health/wt", h))
