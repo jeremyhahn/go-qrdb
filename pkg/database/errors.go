@@ -938,6 +938,25 @@ func (e *BarrierOffDataPathError) Error() string {
 		", not from a store the barrier wraps"
 }
 
+// DedicatedWALOffDataPathError refuses a raft database with a dedicated WAL
+// under a tenant whose databases are not served from their own raft
+// groups: every database of a volume-isolated tenant is served from the
+// tenant's shared store, so the dedicated group and WAL the request names
+// would be persisted and metered while no KV traffic ever reached them.
+type DedicatedWALOffDataPathError struct {
+	Name   string
+	Tenant string
+	// ServedBy names the store the database's data is actually served from.
+	ServedBy string
+}
+
+// Error returns a human-readable description of the refused request.
+func (e *DedicatedWALOffDataPathError) Error() string {
+	return "database " + strconv.Quote(e.Name) + ": tenant " + strconv.Quote(e.Tenant) +
+		" serves its databases from " + e.ServedBy +
+		", so a raft database with a dedicated WAL would never carry its data"
+}
+
 // Barrier data-path descriptions carried by BarrierOffDataPathError.ServedBy.
 const (
 	// ServedByRaftGroup is the data path of a backend: raft database.

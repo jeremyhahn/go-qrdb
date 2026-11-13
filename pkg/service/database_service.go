@@ -1752,6 +1752,13 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:
+			// restServiceRegistry.resolve serves every database of a
+			// volume tenant through the tenant's shared shard, so a
+			// dedicated group and WAL would be persisted and metered but
+			// never carry the database's data. Refused, not downgraded.
+			if cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
+				return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: database.ServedByVolumeTenantStore}
+			}
 			if s.entitlementChecker != nil {
 				if err := s.entitlementChecker.CheckIsolation(ctx, tenantID, quota.IsolationModeVolume); err != nil {
 					return nil, err
