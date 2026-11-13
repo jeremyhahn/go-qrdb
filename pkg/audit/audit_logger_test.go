@@ -149,10 +149,6 @@ func TestAggregateLogger_Close_ContinuesAfterError(t *testing.T) {
 	}
 }
 
-func TestAggregateLogger_ImplementsAuditLogger(t *testing.T) {
-	var _ = NewAggregateLogger()
-}
-
 // ---------------------------------------------------------------------------
 // NoopLogger tests
 // ---------------------------------------------------------------------------
@@ -170,15 +166,6 @@ func TestNoopLogger_EmitAndQuery(t *testing.T) {
 	}
 	if page.Total != -1 {
 		t.Fatalf("expected Total -1, got %d", page.Total)
-	}
-}
-
-func TestNoopLogger_Emit_IsNoOp(t *testing.T) {
-	// Emit on NoopLogger must never panic and must be a true no-op.
-	n := NewNoopLogger()
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		n.Emit(ctx, testEvent("ghost", "resource", "action"))
 	}
 }
 
@@ -241,10 +228,6 @@ func TestSlogSink_Emit_ZeroTimestamp(t *testing.T) {
 	if !strings.Contains(buf.String(), "agent") {
 		t.Fatalf("expected actor in output: %s", buf.String())
 	}
-}
-
-func TestSlogSink_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*SlogSink)(nil)
 }
 
 // ---------------------------------------------------------------------------

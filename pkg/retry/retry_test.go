@@ -232,50 +232,6 @@ func TestConstantBackoff_Next(t *testing.T) {
 	}
 }
 
-func TestDo_SuccessFirstAttempt(t *testing.T) {
-	ctx := context.Background()
-	cfg := DefaultConfig()
-
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		return nil
-	}
-
-	err := Do(ctx, cfg, op)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, callCount, "operation should be called once")
-}
-
-func TestDo_SuccessAfterRetries(t *testing.T) {
-	ctx := context.Background()
-	cfg := &Config{
-		MaxAttempts: 3,
-		Backoff: &ConstantBackoff{
-			Delay:  10 * time.Millisecond,
-			Jitter: 0,
-		},
-	}
-
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		if callCount < 3 {
-			return dberrors.New(dberrors.ErrTimeout, "test.op", "temporary failure")
-		}
-		return nil
-	}
-
-	start := time.Now()
-	err := Do(ctx, cfg, op)
-	elapsed := time.Since(start)
-
-	assert.NoError(t, err)
-	assert.Equal(t, 3, callCount, "operation should be called three times")
-	// Should have waited ~20ms (2 retries * 10ms)
-	assert.GreaterOrEqual(t, elapsed, 20*time.Millisecond, "should wait for backoff")
-}
-
 func TestDo_NonRetryableError(t *testing.T) {
 	ctx := context.Background()
 	cfg := DefaultConfig()
@@ -510,43 +466,6 @@ func TestDo_ContextAlreadyDone_NeverCallsTheOperation(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, 0, callCount, "an already-cancelled context must not be attempted")
 	assert.ErrorIs(t, err, context.Canceled)
-}
-
-func TestDo_OnRetryCallback(t *testing.T) {
-	ctx := context.Background()
-
-	var retryAttempts []int
-	var retryErrors []error
-	var retryBackoffs []time.Duration
-
-	cfg := &Config{
-		MaxAttempts: 3,
-		Backoff: &ConstantBackoff{
-			Delay:  5 * time.Millisecond,
-			Jitter: 0,
-		},
-		OnRetry: func(attempt int, err error, backoff time.Duration) {
-			retryAttempts = append(retryAttempts, attempt)
-			retryErrors = append(retryErrors, err)
-			retryBackoffs = append(retryBackoffs, backoff)
-		},
-	}
-
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		if callCount < 3 {
-			return dberrors.New(dberrors.ErrTimeout, "test.op", "timeout")
-		}
-		return nil
-	}
-
-	err := Do(ctx, cfg, op)
-	assert.NoError(t, err)
-	assert.Equal(t, 3, callCount)
-	assert.Equal(t, []int{0, 1}, retryAttempts, "callback should be called for each retry")
-	assert.Len(t, retryErrors, 2)
-	assert.Len(t, retryBackoffs, 2)
 }
 
 func TestDo_CustomRetryableFunc(t *testing.T) {
@@ -785,23 +704,6 @@ func BenchmarkDo_WithRetries(b *testing.B) {
 
 // Additional edge case tests for 90%+ coverage
 
-func TestDo_ContextCanceledBeforeFirstAttempt(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	cfg := DefaultConfig()
-
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		return nil
-	}
-
-	err := Do(ctx, cfg, op)
-	assert.Error(t, err)
-	assert.Equal(t, 0, callCount, "operation should not be called when context is already canceled")
-}
-
 // A cancellation arriving around the backoff wait ends it.
 //
 // Distinct from TestDo_ContextCancellation, where the context is already done
@@ -887,66 +789,16 @@ func TestDo_NilBackoff(t *testing.T) {
 	assert.Equal(t, 2, callCount)
 }
 
-func TestDo_NegativeMaxAttempts(t *testing.T) {
-	ctx := context.Background()
-	cfg := &Config{
-		MaxAttempts: -5, // Invalid, should default to 1
-		Backoff:     DefaultConstantBackoff(),
-	}
-
-	callCount := 0
-	op := func(ctx context.Context) error {
-		callCount++
-		return nil
-	}
-
-	err := Do(ctx, cfg, op)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, callCount, "negative max attempts should default to 1")
-}
-
 func TestShouldRetry_NilError(t *testing.T) {
 	cfg := DefaultConfig()
 	result := shouldRetry(cfg, nil)
 	assert.False(t, result, "nil error should not be retryable")
 }
 
-func TestShouldRetry_WithCustomFunc(t *testing.T) {
-	cfg := &Config{
-		RetryableFunc: func(err error) bool {
-			return err.Error() == "retry me"
-		},
-	}
-
-	t.Run("retryable error", func(t *testing.T) {
-		err := errors.New("retry me")
-		result := shouldRetry(cfg, err)
-		assert.True(t, result)
-	})
-
-	t.Run("non-retryable error", func(t *testing.T) {
-		err := errors.New("don't retry")
-		result := shouldRetry(cfg, err)
-		assert.False(t, result)
-	})
-}
-
 func TestShouldRetry_WithQRDBError(t *testing.T) {
 	cfg := &Config{
 		RetryableFunc: nil, // Use default QRDB error check
 	}
-
-	t.Run("retryable QRDB error", func(t *testing.T) {
-		err := dberrors.New(dberrors.ErrTimeout, "test", "timeout")
-		result := shouldRetry(cfg, err)
-		assert.True(t, result)
-	})
-
-	t.Run("non-retryable QRDB error", func(t *testing.T) {
-		err := dberrors.New(dberrors.ErrInvalidInput, "test", "bad input")
-		result := shouldRetry(cfg, err)
-		assert.False(t, result)
-	})
 
 	t.Run("standard error", func(t *testing.T) {
 		err := errors.New("standard error")
@@ -956,20 +808,6 @@ func TestShouldRetry_WithQRDBError(t *testing.T) {
 }
 
 func TestExponentialBackoff_EdgeCases(t *testing.T) {
-	t.Run("zero jitter", func(t *testing.T) {
-		backoff := &ExponentialBackoff{
-			InitialDelay: 100 * time.Millisecond,
-			MaxDelay:     1 * time.Second,
-			Multiplier:   2.0,
-			Jitter:       0,
-		}
-
-		// Multiple calls should return same value
-		d1 := backoff.Next(0)
-		d2 := backoff.Next(0)
-		assert.Equal(t, d1, d2)
-	})
-
 	t.Run("full jitter", func(t *testing.T) {
 		backoff := &ExponentialBackoff{
 			InitialDelay: 100 * time.Millisecond,

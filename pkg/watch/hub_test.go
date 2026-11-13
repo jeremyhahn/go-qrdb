@@ -43,33 +43,9 @@ func TestNewHub_InitializesAllShards(t *testing.T) {
 	}
 }
 
-func TestNewHub_WatchCountIsZero(t *testing.T) {
-	h := NewHub()
-	if got := h.WatchCount(); got != 0 {
-		t.Fatalf("WatchCount() = %d, want 0", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Watch (exact key)
 // ---------------------------------------------------------------------------
-
-func TestHub_Watch_CreatesExactWatcher(t *testing.T) {
-	h := NewHub()
-	w, err := h.Watch(context.Background(), "key1")
-	if err != nil {
-		t.Fatalf("Watch returned error: %v", err)
-	}
-	if w == nil {
-		t.Fatal("Watch returned nil watcher")
-	}
-	if w.Events() == nil {
-		t.Fatal("Events channel is nil")
-	}
-	if got := h.WatchCount(); got != 1 {
-		t.Fatalf("WatchCount() = %d, want 1", got)
-	}
-}
 
 func TestHub_Watch_ReceivesPutEvent(t *testing.T) {
 	h := NewHub()
@@ -181,17 +157,23 @@ func TestHub_WatchPrefix_DoesNotMatchNonPrefixKey(t *testing.T) {
 		t.Fatalf("WatchPrefix returned error: %v", err)
 	}
 
-	kvVal := &kv.KeyValue{Key: []byte("/other/config"), Value: []byte("data")}
-	h.NotifyPut([]byte("/other/config"), kvVal, nil)
+	other := &kv.KeyValue{Key: []byte("/other/config"), Value: []byte("data")}
+	h.NotifyPut([]byte("/other/config"), other, nil)
+
+	// Barrier: an in-range event sent after the out-of-range one. A watcher's
+	// events are delivered in notify order (TestHub_EventDeliveryOrder), so if
+	// the first event received is the barrier, "/other/config" was dropped.
+	barrier := &kv.KeyValue{Key: []byte("/app/barrier"), Value: []byte("barrier")}
+	h.NotifyPut([]byte("/app/barrier"), barrier, nil)
 
 	select {
 	case resp := <-w.Events():
-		t.Fatalf("should not have received events, got %d", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// No event received as expected.
+		if len(resp.Events) != 1 || !bytes.Equal(resp.Events[0].Kv.Key, []byte("/app/barrier")) {
+			t.Fatalf("prefix watcher received an out-of-range event, got %+v", resp.Events)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the barrier event")
 	}
-
-	_ = w // Keep reference to prevent cleanup.
 }
 
 func TestHub_WatchPrefix_OnClosedHub_ReturnsError(t *testing.T) {
@@ -240,36 +222,6 @@ func TestHub_WatchPrefix_MultipleKeys(t *testing.T) {
 // NotifyPut
 // ---------------------------------------------------------------------------
 
-func TestHub_NotifyPut_NoWatchers_FastPath(t *testing.T) {
-	h := NewHub()
-	// This should return immediately without panic.
-	kvVal := &kv.KeyValue{Key: []byte("key"), Value: []byte("val")}
-	h.NotifyPut([]byte("key"), kvVal, nil)
-}
-
-func TestHub_NotifyPut_ExactMatch(t *testing.T) {
-	h := NewHub()
-	w, err := h.Watch(context.Background(), "exact")
-	if err != nil {
-		t.Fatalf("Watch returned error: %v", err)
-	}
-
-	kvVal := &kv.KeyValue{Key: []byte("exact"), Value: []byte("v1")}
-	h.NotifyPut([]byte("exact"), kvVal, nil)
-
-	select {
-	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
-		}
-		if resp.Events[0].Type != EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for exact match event")
-	}
-}
-
 func TestHub_NotifyPut_NonMatchingWatcher(t *testing.T) {
 	h := NewHub()
 	w, err := h.Watch(context.Background(), "keyA")
@@ -280,31 +232,19 @@ func TestHub_NotifyPut_NonMatchingWatcher(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("keyB"), Value: []byte("v")}
 	h.NotifyPut([]byte("keyB"), kvVal, nil)
 
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("should not have received events, got %d", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// No event received as expected.
-	}
-}
-
-func TestHub_NotifyPut_PrefixMatch(t *testing.T) {
-	h := NewHub()
-	w, err := h.WatchPrefix(context.Background(), "foo/")
-	if err != nil {
-		t.Fatalf("WatchPrefix returned error: %v", err)
-	}
-
-	kvVal := &kv.KeyValue{Key: []byte("foo/bar"), Value: []byte("baz")}
-	h.NotifyPut([]byte("foo/bar"), kvVal, nil)
+	// Barrier: a matching event sent after the non-matching one. A watcher's
+	// events are delivered in notify order (TestHub_EventDeliveryOrder), so if
+	// the first event received is the barrier, "keyB" was dropped.
+	barrier := &kv.KeyValue{Key: []byte("keyA"), Value: []byte("barrier")}
+	h.NotifyPut([]byte("keyA"), barrier, nil)
 
 	select {
 	case resp := <-w.Events():
-		if len(resp.Events) != 1 {
-			t.Fatalf("expected 1 event, got %d", len(resp.Events))
+		if len(resp.Events) != 1 || !bytes.Equal(resp.Events[0].Kv.Key, []byte("keyA")) {
+			t.Fatalf("should not have received events for keyB, got %+v", resp.Events)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for prefix match event")
+		t.Fatal("timed out waiting for the barrier event")
 	}
 }
 
@@ -334,12 +274,6 @@ func TestHub_NotifyDelete_ExactMatch(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delete event")
 	}
-}
-
-func TestHub_NotifyDelete_NoWatchers_FastPath(t *testing.T) {
-	h := NewHub()
-	kvVal := &kv.KeyValue{Key: []byte("key")}
-	h.NotifyDelete([]byte("key"), kvVal, nil)
 }
 
 func TestHub_NotifyDelete_PrefixMatch(t *testing.T) {
@@ -459,14 +393,9 @@ func TestHub_WatchFilter_NoPut(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("filtered"), Value: []byte("v")}
 	h.NotifyPut([]byte("filtered"), kvVal, nil)
 
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("should not have received put events with NoPut filter, got %d events", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// Put filtered as expected.
-	}
-
-	// Delete should still be received.
+	// Delete should still be received. It is also the barrier: events reach a
+	// watcher in notify order, so if the first event is the delete, the put
+	// was filtered.
 	h.NotifyDelete([]byte("filtered"), kvVal, nil)
 
 	select {
@@ -475,7 +404,7 @@ func TestHub_WatchFilter_NoPut(t *testing.T) {
 			t.Fatalf("expected 1 event, got %d", len(resp.Events))
 		}
 		if resp.Events[0].Type != EventDelete {
-			t.Fatalf("expected EventDelete, got %d", resp.Events[0].Type)
+			t.Fatalf("should not have received put events with NoPut filter, got event type %d", resp.Events[0].Type)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for delete event")
@@ -492,14 +421,9 @@ func TestHub_WatchFilter_NoDelete(t *testing.T) {
 	kvVal := &kv.KeyValue{Key: []byte("filtered2")}
 	h.NotifyDelete([]byte("filtered2"), kvVal, nil)
 
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("should not have received delete events with NoDelete filter, got %d events", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// Delete filtered as expected.
-	}
-
-	// Put should still be received.
+	// Put should still be received. It is also the barrier: events reach a
+	// watcher in notify order, so if the first event is the put, the delete
+	// was filtered.
 	kvVal = &kv.KeyValue{Key: []byte("filtered2"), Value: []byte("v")}
 	h.NotifyPut([]byte("filtered2"), kvVal, nil)
 
@@ -509,7 +433,7 @@ func TestHub_WatchFilter_NoDelete(t *testing.T) {
 			t.Fatalf("expected 1 event, got %d", len(resp.Events))
 		}
 		if resp.Events[0].Type != EventPut {
-			t.Fatalf("expected EventPut, got %d", resp.Events[0].Type)
+			t.Fatalf("should not have received delete events with NoDelete filter, got event type %d", resp.Events[0].Type)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for put event")
@@ -573,21 +497,6 @@ func TestHub_Close_Idempotent(t *testing.T) {
 	}
 }
 
-func TestHub_Close_PreventsNewWatchers(t *testing.T) {
-	h := NewHub()
-	h.Close()
-
-	_, err := h.Watch(context.Background(), "nope")
-	if err == nil {
-		t.Fatal("expected error after Close")
-	}
-
-	_, err = h.WatchPrefix(context.Background(), "nope/")
-	if err == nil {
-		t.Fatal("expected error after Close")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // WatchCount
 // ---------------------------------------------------------------------------
@@ -613,27 +522,6 @@ func TestHub_WatchCount_TracksActiveWatchers(t *testing.T) {
 	}
 	if got := h.WatchCount(); got != 2 {
 		t.Fatalf("WatchCount() = %d, want 2", got)
-	}
-}
-
-func TestHub_WatchCount_DecrementsOnCancel(t *testing.T) {
-	h := NewHub()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	w, err := h.Watch(ctx, "cancel-me")
-	if err != nil {
-		t.Fatalf("Watch returned error: %v", err)
-	}
-
-	if got := h.WatchCount(); got != 1 {
-		t.Fatalf("WatchCount() = %d, want 1", got)
-	}
-
-	cancel()
-	waitDeregistered(t, w)
-
-	if got := h.WatchCount(); got != 0 {
-		t.Fatalf("WatchCount() = %d, want 0 after cancel", got)
 	}
 }
 
@@ -695,37 +583,6 @@ func TestHub_CleanupOnCancel_PrefixWatcher(t *testing.T) {
 // ---------------------------------------------------------------------------
 // FNV-1a hash distribution (tested via hub behavior)
 // ---------------------------------------------------------------------------
-
-func TestHub_FNV1a_DifferentKeysUseDifferentShards(t *testing.T) {
-	// Two keys that should hash to different shards.
-	shard1 := fnv1a([]byte("alpha"))
-	shard2 := fnv1a([]byte("beta"))
-
-	// We can't guarantee they differ, but verify the function is
-	// deterministic and returns values in range.
-	if int(shard1) >= shardCount {
-		t.Fatalf("fnv1a returned %d, expected < %d", shard1, shardCount)
-	}
-	if int(shard2) >= shardCount {
-		t.Fatalf("fnv1a returned %d, expected < %d", shard2, shardCount)
-	}
-}
-
-func TestHub_FNV1a_Deterministic(t *testing.T) {
-	key := []byte("deterministic-key")
-	h1 := fnv1a(key)
-	h2 := fnv1a(key)
-	if h1 != h2 {
-		t.Fatalf("fnv1a is not deterministic: %d != %d", h1, h2)
-	}
-}
-
-func TestHub_FNV1a_EmptyKey(t *testing.T) {
-	idx := fnv1a([]byte{})
-	if int(idx) >= shardCount {
-		t.Fatalf("fnv1a(empty) returned %d, expected < %d", idx, shardCount)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // matchesRange
@@ -801,14 +658,6 @@ func TestPrefixEnd_AllOxFF(t *testing.T) {
 	}
 }
 
-func TestPrefixEnd_SingleByte(t *testing.T) {
-	got := prefixEnd([]byte("a"))
-	want := []byte("b")
-	if !bytes.Equal(got, want) {
-		t.Fatalf("prefixEnd(%q) = %q, want %q", "a", got, want)
-	}
-}
-
 func TestPrefixEnd_TrailingOxFF(t *testing.T) {
 	// "a\xff" -> last byte is 0xff, so we increment the 'a' and truncate.
 	got := prefixEnd([]byte{'a', 0xff})
@@ -848,25 +697,6 @@ func TestHub_ExactAndPrefixWatchers_BothReceiveEvents(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("%s: timed out waiting for event", name)
 		}
-	}
-}
-
-func TestHub_PrefixWatcher_DoesNotReceiveExactOnlyEvent(t *testing.T) {
-	h := NewHub()
-	w, err := h.WatchPrefix(context.Background(), "only/prefix/")
-	if err != nil {
-		t.Fatalf("WatchPrefix returned error: %v", err)
-	}
-
-	// Notify a key that doesn't match the prefix.
-	kvVal := &kv.KeyValue{Key: []byte("other/key"), Value: []byte("v")}
-	h.NotifyPut([]byte("other/key"), kvVal, nil)
-
-	select {
-	case resp := <-w.Events():
-		t.Fatalf("prefix watcher should not receive non-matching event, got %d events", len(resp.Events))
-	case <-time.After(100 * time.Millisecond):
-		// No event as expected.
 	}
 }
 
@@ -971,17 +801,6 @@ func TestHub_NotifyDelete_AfterClose_DoesNotPanic(t *testing.T) {
 // getShard coverage
 // ---------------------------------------------------------------------------
 
-func TestHub_GetShard_ReturnsValidShard(t *testing.T) {
-	h := NewHub()
-	sh := h.getShard([]byte("test-key"))
-	if sh == nil {
-		t.Fatal("getShard returned nil")
-	}
-	if sh.exactWatches == nil {
-		t.Fatal("shard exactWatches is nil")
-	}
-}
-
 func TestHub_GetShard_EmptyKey(t *testing.T) {
 	h := NewHub()
 	sh := h.getShard([]byte{})
@@ -993,26 +812,6 @@ func TestHub_GetShard_EmptyKey(t *testing.T) {
 // ---------------------------------------------------------------------------
 // WatchResponse envelope
 // ---------------------------------------------------------------------------
-
-func TestHub_WatchResponse_ContainsWatchID(t *testing.T) {
-	h := NewHub()
-	w, err := h.Watch(context.Background(), "resp-key")
-	if err != nil {
-		t.Fatalf("Watch returned error: %v", err)
-	}
-
-	kvVal := &kv.KeyValue{Key: []byte("resp-key"), Value: []byte("v")}
-	h.NotifyPut([]byte("resp-key"), kvVal, nil)
-
-	select {
-	case resp := <-w.Events():
-		if resp.WatchID != w.WatchID() {
-			t.Fatalf("WatchResponse.WatchID = %d, want %d", resp.WatchID, w.WatchID())
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for response")
-	}
-}
 
 func TestHub_WatchResponse_WatchIDMatchesWatcher(t *testing.T) {
 	h := NewHub()

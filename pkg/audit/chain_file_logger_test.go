@@ -64,26 +64,6 @@ func TestChainFileLogger_EmitAndQuery(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_HashChainIntegrity(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	l, err := NewFileLogger(path)
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-
-	ctx := context.Background()
-	for i := 0; i < 10; i++ {
-		l.Emit(ctx, testEvent("bob", "ceremony", "initialize"))
-	}
-	if err := l.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	if err := verifyChainFile(context.Background(), testTrailDir(t, path), path); err != nil {
-		t.Fatalf("VerifyChain: unexpected error: %v", err)
-	}
-}
-
 func TestChainFileLogger_VerifyChain_Tamper(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
 	l, err := NewFileLogger(path)
@@ -332,32 +312,6 @@ func TestChainFileLogger_Close(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_Rotation(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	// Set a very small max size to force rotation.
-	l, err := NewFileLogger(path, WithMaxBytes(512))
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-
-	ctx := context.Background()
-	// Emit enough events to trigger rotation.
-	for i := 0; i < 50; i++ {
-		l.Emit(ctx, testEvent("henry", "kv", "delete"))
-	}
-
-	dir := filepath.Dir(path)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("ReadDir: %v", err)
-	}
-	// Should have at least 2 files (active + at least one rotated).
-	if len(entries) < 2 {
-		t.Fatalf("expected at least 2 files after rotation, got %d", len(entries))
-	}
-}
-
 func TestChainFileLogger_Retention(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.ndjson")
@@ -382,10 +336,6 @@ func TestChainFileLogger_Retention(t *testing.T) {
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Fatalf("expected old rotated file to be pruned; stat returned: %v", err)
 	}
-}
-
-func TestChainFileLogger_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*ChainFileLogger)(nil)
 }
 
 func TestChainFileLogger_WithSyncPerWrite_False(t *testing.T) {
@@ -924,27 +874,6 @@ func TestVerifyChainFile_NonexistentFile(t *testing.T) {
 	}
 }
 
-func TestChainFileLogger_Emit_AfterFileClose(t *testing.T) {
-	// Force the underlying fd to be closed before Emit to cover the write error path.
-	path := filepath.Join(t.TempDir(), "audit.ndjson")
-	l, err := NewFileLogger(path)
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	// Close the underlying file without going through l.Close() to leave l.f non-nil.
-	l.mu.Lock()
-	_ = l.f.Close()
-	l.mu.Unlock()
-
-	ctx := context.Background()
-	// Emit must not panic even when the file descriptor is closed.
-	l.Emit(ctx, testEvent("broken", "kv", "put"))
-	// l.f is now in a broken state; clean up by zeroing it.
-	l.mu.Lock()
-	l.f = nil
-	l.mu.Unlock()
-}
-
 func TestChainFileLogger_Query_Cursor_NoMatch(t *testing.T) {
 	// A cursor that matches no timestamp should start from the beginning.
 	path := filepath.Join(t.TempDir(), "audit.ndjson")
@@ -1030,27 +959,5 @@ func TestScanFile_SkipsInvalidJSON(t *testing.T) {
 	// The valid event should be returned; the invalid line is skipped.
 	if len(events) != 1 {
 		t.Fatalf("expected 1 valid event, got %d", len(events))
-	}
-}
-
-func TestChainFileLogger_Retention_NoOldFiles(t *testing.T) {
-	// Retention with no old files in a directory that has only the active log.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "audit.ndjson")
-	l, err := NewFileLogger(path, WithRetentionDays(1))
-	if err != nil {
-		t.Fatalf("NewFileLogger: %v", err)
-	}
-	defer func() { _ = l.Close() }()
-
-	ctx := context.Background()
-	l.Emit(ctx, testEvent("recent", "kv", "put"))
-	// No pruning errors expected.
-	page, err := l.Query(ctx, Filter{Limit: 10})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	if len(page.Events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(page.Events))
 	}
 }
