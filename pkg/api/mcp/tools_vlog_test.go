@@ -33,8 +33,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -198,11 +198,7 @@ func newVlogFixtureOver(t *testing.T, svc service.LogService) *vlogFixture {
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
-		transport.WithHTTPBasicClient(httpClient))
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+srv.Addr()+"/mcp", httpClient))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {

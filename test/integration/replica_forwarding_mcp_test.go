@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -55,10 +55,7 @@ func (mcpFwdTransport) call(t *testing.T, c *fwdCluster, i int, caller fwdCaller
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: c.ca.Pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient(fmt.Sprintf("https://127.0.0.1:%d/mcp", c.nodes[i].mcp), transport.WithHTTPBasicClient(hc))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := mcpclient.NewClient(mcphttp.New(fmt.Sprintf("https://127.0.0.1:%d/mcp", c.nodes[i].mcp), hc))
 	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

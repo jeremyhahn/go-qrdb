@@ -18,15 +18,14 @@ package node
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	"github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -198,14 +197,11 @@ func bearerTransports() []bearerTransport {
 				cfg.MCP.Port = freeTCPPort(t)
 			},
 			call: func(ctx context.Context, n *Node, ca *qrdbdharness.CA, cred callerCredential) error {
-				opts := []mcptransport.StreamableHTTPCOption{mcptransport.WithHTTPBasicClient(bearerHTTPClient(ca, cred))}
+				hc := bearerHTTPClient(ca, cred)
 				if cred.authorization != "" {
-					opts = append(opts, mcptransport.WithHTTPHeaders(map[string]string{"Authorization": cred.authorization}))
+					hc.Transport = authorizationTransport{base: hc.Transport, authorization: cred.authorization}
 				}
-				c, err := client.NewStreamableHttpClient("https://"+n.Server().MCPAddr()+"/mcp", opts...)
-				if err != nil {
-					return err
-				}
+				c := client.NewClient(mcphttp.New("https://"+n.Server().MCPAddr()+"/mcp", hc))
 				defer func() { _ = c.Close() }()
 				if err := c.Start(ctx); err != nil {
 					return err
@@ -227,11 +223,11 @@ func bearerTransports() []bearerTransport {
 				}
 				return nil
 			},
-			// A 401 surfaces from mcp-go's transport as ErrAuthorizationRequired;
+			// A 401 surfaces from mcphttp as the server's status;
 			// a refusal inside the tool gate as an unauthenticated tool error.
 			unauthenticated: func(err error) bool {
-				return errors.Is(err, mcptransport.ErrAuthorizationRequired) ||
-					strings.Contains(strings.ToLower(err.Error()), "unauthenticated")
+				msg := strings.ToLower(err.Error())
+				return strings.Contains(msg, "401 unauthorized") || strings.Contains(msg, "unauthenticated")
 			},
 		},
 	}
@@ -241,6 +237,19 @@ func bearerTransports() []bearerTransport {
 // certificate, if any.
 func bearerHTTPClient(ca *qrdbdharness.CA, cred callerCredential) *http.Client {
 	return &http.Client{Transport: &http.Transport{TLSClientConfig: cred.clientTLS(ca)}}
+}
+
+// authorizationTransport sets the caller's Authorization header on every
+// MCP HTTP request it sends.
+type authorizationTransport struct {
+	base          http.RoundTripper
+	authorization string
+}
+
+func (a authorizationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", a.authorization)
+	return a.base.RoundTrip(req)
 }
 
 type restStatusError struct{ code int }
