@@ -58,24 +58,25 @@ func TestPublicHealth_RateLimited_REST(t *testing.T) {
 		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13},
 	}}
 	_, path := publicverbs.RESTRoute(publicverbs.VerbHealth)
-	get := func() *http.Response {
+	get := func() (int, http.Header) {
 		t.Helper()
 		resp, err := client.Get("https://" + srv.Addr() + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
+		status, header := resp.StatusCode, resp.Header.Clone()
 		_ = resp.Body.Close()
-		return resp
+		return status, header
 	}
 
-	if resp := get(); resp.StatusCode != http.StatusOK {
-		t.Fatalf("first GET %s status = %d, want %d", path, resp.StatusCode, http.StatusOK)
+	if status, _ := get(); status != http.StatusOK {
+		t.Fatalf("first GET %s status = %d, want %d", path, status, http.StatusOK)
 	}
-	resp := get()
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("second GET %s status = %d, want %d", path, resp.StatusCode, http.StatusTooManyRequests)
+	status, header := get()
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("second GET %s status = %d, want %d", path, status, http.StatusTooManyRequests)
 	}
-	if resp.Header.Get("Retry-After") == "" {
+	if header.Get("Retry-After") == "" {
 		t.Fatal("refused GET carries no Retry-After header")
 	}
 	if served != 1 {
