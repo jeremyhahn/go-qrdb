@@ -83,6 +83,11 @@ func TestGRPC_IssueDelegation_Refusals(t *testing.T) {
 				return nil, &service.DelegationDeniedError{Reason: "a delegated caller cannot delegate"}
 			},
 		}, &pb.IssueDelegationRequest{Principal: "billing"}, codes.PermissionDenied},
+		{"no policy", &fakeCertEnrollHandler{
+			delegFn: func(context.Context, *service.IssueDelegationRequest) (*service.IssuedDelegation, error) {
+				return nil, &service.DelegationPolicyNotFoundError{TenantID: "acme", Principal: "billing"}
+			},
+		}, &pb.IssueDelegationRequest{Principal: "billing"}, codes.NotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/certenroll"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -55,6 +56,22 @@ type CertEnrollmentServicer interface {
 	// (pkg/auth/delegation). Its permission is certs:delegate, which is
 	// tenant-only: the system tenant never delegates.
 	IssueDelegation(ctx context.Context, req *IssueDelegationRequest) (*IssuedDelegation, error)
+
+	// PutDelegationPolicy writes the caller's tenant's standing delegation
+	// policy (delegation.Policy) for a principal; certs:delegate, audited.
+	PutDelegationPolicy(ctx context.Context, req *DelegationPolicyRequest) (*delegation.Policy, error)
+
+	// ListDelegationPolicies lists the caller's tenant's standing
+	// delegation policies; certs:delegate.
+	ListDelegationPolicies(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+
+	// DeleteDelegationPolicy revokes the caller's tenant's standing
+	// delegation policy for a principal; certs:delegate, audited.
+	DeleteDelegationPolicy(ctx context.Context, tenantID, principal string) error
+
+	// MintDelegation issues a delegation certificate under the standing
+	// policy naming the caller, the policy's principal, within its bounds.
+	MintDelegation(ctx context.Context, req *MintDelegationRequest) (*IssuedDelegation, error)
 
 	// AddTrustAnchors registers every CA certificate in a PEM bundle as one
 	// of tenantID's trust anchors.
@@ -116,6 +133,8 @@ type CertEnrollmentService struct {
 	audit       audit.AuditLogger
 	auditPolicy audit.FailurePolicy
 	clientTrust ClientTrustRefresher
+	policies    cert.DelegationPolicyStore
+	tenants     TenantGetter
 }
 
 // Compile-time interface check.
