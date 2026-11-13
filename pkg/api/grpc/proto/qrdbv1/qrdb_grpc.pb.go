@@ -486,7 +486,8 @@ type QRDBServiceClient interface {
 	// VlogRotateKey makes a new key the one that signs the log's heads; heads
 	// signed under an earlier key still verify against it.
 	VlogRotateKey(ctx context.Context, in *VlogRotateKeyRequest, opts ...grpc.CallOption) (*VlogRotateKeyResponse, error)
-	// Health returns the node health status.
+	// Health returns the node health status. It needs no login on any
+	// transport (pkg/api/publicverbs).
 	Health(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Status returns detailed node status information.
 	Status(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StatusResponse, error)
@@ -3726,7 +3727,8 @@ type QRDBServiceServer interface {
 	// VlogRotateKey makes a new key the one that signs the log's heads; heads
 	// signed under an earlier key still verify against it.
 	VlogRotateKey(context.Context, *VlogRotateKeyRequest) (*VlogRotateKeyResponse, error)
-	// Health returns the node health status.
+	// Health returns the node health status. It needs no login on any
+	// transport (pkg/api/publicverbs).
 	Health(context.Context, *emptypb.Empty) (*HealthResponse, error)
 	// Status returns detailed node status information.
 	Status(context.Context, *emptypb.Empty) (*StatusResponse, error)

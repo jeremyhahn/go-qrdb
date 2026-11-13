@@ -35,6 +35,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -735,16 +736,15 @@ func (s *Server) Start() error {
 				return err
 			}
 		}
-		// RedeemInvitation is the one PUBLIC built-in RPC (not a module): an
-		// invited user holds no credential yet, so the token from InviteUser
-		// is the authority, exactly as REST's RESTRoutePublic and QUIC's
-		// RegisterPublic skip auth for their own redemption route.
-		if s.invitationSvc != nil {
-			if err := s.authMW.RegisterPublicGRPCMethods([]string{pb.QRDBService_RedeemInvitation_FullMethodName}); err != nil {
-				_ = ln.Close()
-				s.listener = nil
-				return err
-			}
+		// The built-in no-login RPCs (Health, RedeemInvitation) are the ones
+		// publicverbs.Table names, exactly as REST and QUIC register theirs
+		// from the same table. A health probe holds no credential, and an
+		// invited user holds none yet: the token from InviteUser is the
+		// authority.
+		if err := s.authMW.RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(pb.QRDBService_ServiceDesc.ServiceName)); err != nil {
+			_ = ln.Close()
+			s.listener = nil
+			return err
 		}
 	}
 

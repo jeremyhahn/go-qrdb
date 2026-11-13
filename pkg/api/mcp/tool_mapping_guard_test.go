@@ -129,7 +129,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_vector_get_index_stats":             permission.VectorGetIndexStats,
 	"qrdb_vector_compact_namespace":           permission.VectorCompact,
 	"qrdb_vector_get_compaction_progress":     permission.VectorGetCompactProg,
-	"qrdb_health":                             permission.AdminHealth,
+	"qrdb_health":                             permission.Public,
 	"qrdb_status":                             permission.AdminStatus,
 	"qrdb_peers":                              permission.AdminPeers,
 	"qrdb_add_member":                         permission.AdminAddMember,

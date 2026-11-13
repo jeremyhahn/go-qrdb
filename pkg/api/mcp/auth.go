@@ -27,6 +27,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"google.golang.org/grpc/codes"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -515,6 +516,19 @@ func (s *Server) filterToolList(ctx context.Context, _ any, _ *mcpgo.ListToolsRe
 // declared tool that reaches data (*authmw.PublicMCPToolRefusedError); a
 // declared name no tool answers is refused with *UnknownPublicToolError.
 func (s *Server) registerPublicTools() error {
+	// The built-in no-login tools are publicverbs.Table's, the same table
+	// REST, gRPC and QUIC register theirs from. A row whose tool this
+	// endpoint does not serve is skipped: invitation redemption is on the
+	// separate invitation endpoint, and health is absent when the admin
+	// service is.
+	for name := range publicverbs.MCPTools() {
+		if s.mcpSrv.GetTool(name) == nil {
+			continue
+		}
+		if err := s.toolPerms.RegisterPublic(name); err != nil {
+			return err
+		}
+	}
 	for _, m := range s.modules {
 		lister, ok := m.(apimodule.MCPPublicToolLister)
 		if !ok {

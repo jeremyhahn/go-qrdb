@@ -74,9 +74,10 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		ctx = auth.WithDPoPFromHTTP(ctx, r)
 
 		// A small set of endpoints is public -- skip authentication entirely.
-		// Load balancers and probes must reach /health without a client
-		// certificate; /v1/ca/bootstrap lets joining nodes fetch the trust
-		// anchor before they have credentials; /v1/config/initialized lets the
+		// The no-login client verbs (publicverbs.Table: /health, invitation
+		// redemption) are not here: they are RESTRoutePublic in the registry,
+		// which the lookup below honours. /v1/ca/bootstrap lets joining
+		// nodes fetch the trust anchor before they have credentials; /v1/config/initialized lets the
 		// first-boot setup wizard check provisioning state before any user or
 		// certificate exists; the two /v1/cluster/ key-transport routes are the
 		// cluster peer plane — authorized by node identity (peer cert SPIFFE SAN)
@@ -87,8 +88,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// unauthenticated; each exact path here is a route that self-authorizes.
 		// The same routes are registered as RESTRoutePublic in the registry so
 		// the server's default-deny startup assertion accounts for them.
-		if r.URL.Path == "/health" ||
-			r.URL.Path == "/v1/ca/bootstrap" ||
+		if r.URL.Path == "/v1/ca/bootstrap" ||
 			r.URL.Path == "/v1/config/initialized" ||
 			r.URL.Path == "/v1/cluster/keydelivery" ||
 			r.URL.Path == "/v1/cluster/nodekey" {
