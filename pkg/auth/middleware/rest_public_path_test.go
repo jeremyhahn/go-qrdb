@@ -21,7 +21,7 @@ import (
 )
 
 func TestIsPublicPath_BuiltInAllowlist(t *testing.T) {
-	for _, path := range []string{"/health", "/v1/ca/bootstrap", "/v1/config/initialized", "/v1/cluster/keydelivery", "/v1/cluster/nodekey"} {
+	for _, path := range []string{"/v1/ca/bootstrap", "/v1/config/initialized", "/v1/cluster/keydelivery", "/v1/cluster/nodekey"} {
 		if !IsPublicPath(path) {
 			t.Errorf("IsPublicPath(%q) = false, want true", path)
 		}
@@ -29,7 +29,7 @@ func TestIsPublicPath_BuiltInAllowlist(t *testing.T) {
 }
 
 func TestIsPublicPath_ExactMatchOnly(t *testing.T) {
-	for _, path := range []string{"", "/", "/health/", "/health/wt", "/healthz", "/v1/cluster/", "/v1/cluster/other", "/v1/kv"} {
+	for _, path := range []string{"", "/", "/health", "/health/", "/health/wt", "/healthz", "/v1/cluster/", "/v1/cluster/other", "/v1/kv"} {
 		if IsPublicPath(path) {
 			t.Errorf("IsPublicPath(%q) = true, want false", path)
 		}
@@ -48,12 +48,12 @@ func TestRESTMiddleware_PublicPathSkipsAuthenticationForEveryMethod(t *testing.T
 			served = true
 			w.WriteHeader(http.StatusOK)
 		})
-		req := httptest.NewRequest(method, "/health", nil)
+		req := httptest.NewRequest(method, "/v1/ca/bootstrap", nil)
 		req.Header.Set("Authorization", "Bearer good")
 		w := httptest.NewRecorder()
 		m.RESTMiddleware(NewRESTRouteRegistry(), next).ServeHTTP(w, req)
 		if !served || w.Code != http.StatusOK {
-			t.Fatalf("%s /health: served=%v code=%d, want served", method, served, w.Code)
+			t.Fatalf("%s /v1/ca/bootstrap: served=%v code=%d, want served", method, served, w.Code)
 		}
 	}
 	if n := authn.calls.Load(); n != 0 {

@@ -45,11 +45,16 @@ func TestIssueDelegation_DelegatedCallerCannotDelegate(t *testing.T) {
 	// The refusal precedes the CA, so an uninitialized one is enough.
 	svc := service.NewCertEnrollmentService(cert.NewDefaultProvider(kvstoretest.NewGuardedMemoryStore(), nil), nil, nil)
 
-	for _, principal := range []string{g.Principal, "reports"} {
-		got, err := svc.IssueDelegation(ctx, &service.IssueDelegationRequest{Principal: principal, Scope: []string{"kv:get"}, CSRPEM: csrPEM})
-		var denied *service.DelegationDeniedError
-		if got != nil || !errors.As(err, &denied) {
-			t.Fatalf("delegated caller delegating to %s = %+v, %v; want *service.DelegationDeniedError", principal, got, err)
-		}
+	// To another principal: never, whatever policy stands.
+	got, err := svc.IssueDelegation(ctx, &service.IssueDelegationRequest{Principal: "reports", Scope: []string{"kv:get"}, CSRPEM: csrPEM})
+	var denied *service.DelegationDeniedError
+	if got != nil || !errors.As(err, &denied) {
+		t.Fatalf("delegated caller delegating to reports = %+v, %v; want *service.DelegationDeniedError", got, err)
+	}
+	// To itself: only under a standing policy, and this node keeps none.
+	got, err = svc.IssueDelegation(ctx, &service.IssueDelegationRequest{Principal: g.Principal, Scope: []string{"kv:get"}, CSRPEM: csrPEM})
+	var notConfigured *service.CertEnrollmentNotConfiguredError
+	if got != nil || !errors.As(err, &notConfigured) {
+		t.Fatalf("delegated caller renewing with no policy store = %+v, %v; want *service.CertEnrollmentNotConfiguredError", got, err)
 	}
 }

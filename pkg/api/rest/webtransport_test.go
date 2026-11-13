@@ -523,7 +523,6 @@ func TestWithWebTransportHandler_InvalidRefusedAtStart(t *testing.T) {
 		"empty path":    {path: "", h: h.handle},
 		// The middleware exempts these from authentication for every
 		// method, so a CONNECT there could never carry a caller.
-		"public /health":             {path: "/health", h: h.handle, public: true},
 		"public /v1/ca/bootstrap":    {path: "/v1/ca/bootstrap", h: h.handle, public: true},
 		"public /v1/cluster/nodekey": {path: "/v1/cluster/nodekey", h: h.handle, public: true},
 	} {

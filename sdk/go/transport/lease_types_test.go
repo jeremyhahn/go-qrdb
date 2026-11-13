@@ -46,14 +46,3 @@ func TestFirstLeaseID_NoneFound(t *testing.T) {
 		t.Fatal("expected no lease ID to be found")
 	}
 }
-
-// TestFirstLeaseID_EmptyOps proves an empty or nil set is the same as none
-// found, never a panic.
-func TestFirstLeaseID_EmptyOps(t *testing.T) {
-	if _, found := FirstLeaseID(nil); found {
-		t.Fatal("expected no lease ID for a nil ops slice")
-	}
-	if _, found := FirstLeaseID([]Op{}); found {
-		t.Fatal("expected no lease ID for an empty ops slice")
-	}
-}

@@ -17,11 +17,14 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -91,7 +94,7 @@ func (p provisionTenants) GetTenant(context.Context, string) (*tenant.TenantInfo
 func TestProvisioningAuthorizedDatabaseService_RefusesBeforeCreating(t *testing.T) {
 	inner := &provisionCreates{}
 	authz := &provisionDeny{deny: map[permission.Permission]bool{permission.DatabasesCreateVolume: true}}
-	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{info: &tenant.TenantInfo{ID: "vol", IsolationType: tenant.IsolationVolume}})
+	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{info: &tenant.TenantInfo{ID: "vol", IsolationType: tenant.IsolationVolume}}, nil)
 	ctx := tenant.WithTenantID(context.Background(), "vol")
 
 	_, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "db", Backend: database.BackendPebble})
@@ -116,7 +119,7 @@ func TestProvisioningAuthorizedDatabaseService_RefusesBeforeCreating(t *testing.
 func TestProvisioningAuthorizedDatabaseService_Passes(t *testing.T) {
 	inner := &provisionCreates{}
 	authz := &provisionDeny{}
-	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationPrefix}})
+	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationPrefix}}, nil)
 	ctx := tenant.WithTenantID(context.Background(), "acme")
 
 	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "plain", Backend: database.BackendPebble}); err != nil {
@@ -141,12 +144,69 @@ func TestProvisioningAuthorizedDatabaseService_Passes(t *testing.T) {
 	}
 }
 
+// TestProvisioningAuthorizedDatabaseService_ChecksResolvedDefaults pins that
+// a create omitting its backend under a node raft default is authorized as
+// the raft database the manager records: databases:create_raft is required.
+func TestProvisioningAuthorizedDatabaseService_ChecksResolvedDefaults(t *testing.T) {
+	resolve := func(cfg database.DatabaseConfig) database.DatabaseConfig {
+		if cfg.Backend == "" {
+			cfg.Backend = database.BackendRaft
+		}
+		return cfg
+	}
+	prefix := provisionTenants{info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationPrefix}}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+
+	inner := &provisionCreates{}
+	denied := &provisionDeny{deny: map[permission.Permission]bool{permission.DatabasesCreateRaft: true}}
+	svc := NewProvisioningAuthorizedDatabaseService(inner, denied, prefix, resolve)
+	_, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "dflt"})
+	var refused *ProvisioningDeniedError
+	if !errors.As(err, &refused) || refused.Permission != permission.DatabasesCreateRaft {
+		t.Fatalf("defaulted raft create without databases:create_raft = %v, want *ProvisioningDeniedError for it", err)
+	}
+	if len(inner.created) != 0 {
+		t.Fatalf("a refused create reached the service: %v", inner.created)
+	}
+
+	granted := &provisionDeny{}
+	svc = NewProvisioningAuthorizedDatabaseService(inner, granted, prefix, resolve)
+	if _, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "dflt"}); err != nil {
+		t.Fatalf("defaulted raft create with databases:create_raft: %v", err)
+	}
+	if !reflect.DeepEqual(granted.asked, []string{"acme databases:create_raft"}) {
+		t.Fatalf("asked %v, want the raft check against acme", granted.asked)
+	}
+	if !reflect.DeepEqual(inner.created, []string{"dflt"}) {
+		t.Fatalf("created %v", inner.created)
+	}
+}
+
+// TestDatabaseService_ResolveDefaults_AppliesTheManagersDefaults: the service
+// resolves a create request against the defaults of the manager it creates
+// through, so a provisioning check built on it sees the effective backend.
+func TestDatabaseService_ResolveDefaults_AppliesTheManagersDefaults(t *testing.T) {
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithDefaults(database.Defaults{Backend: database.BackendRaft}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, ok := NewDatabaseService(mgr).(DatabaseDefaultsResolver)
+	if !ok {
+		t.Fatal("DatabaseService does not implement DatabaseDefaultsResolver")
+	}
+	if got := svc.ResolveDefaults(database.DatabaseConfig{Name: "a"}).Backend; got != database.BackendRaft {
+		t.Fatalf("resolved backend = %q, want %q from the manager's defaults", got, database.BackendRaft)
+	}
+	if got := svc.ResolveDefaults(database.DatabaseConfig{Name: "a", Backend: database.BackendPebble}).Backend; got != database.BackendPebble {
+		t.Fatalf("explicit backend resolved to %q, want %q", got, database.BackendPebble)
+	}
+}
+
 // A tenant whose tier cannot be read is refused with the lookup's error: the
 // tier decides what the create provisions.
 func TestProvisioningAuthorizedDatabaseService_TenantLookupFailsClosed(t *testing.T) {
 	inner := &provisionCreates{}
 	lookupErr := &TenantNotFoundError{TenantID: "ghost"}
-	svc := NewProvisioningAuthorizedDatabaseService(inner, &provisionDeny{}, provisionTenants{err: lookupErr})
+	svc := NewProvisioningAuthorizedDatabaseService(inner, &provisionDeny{}, provisionTenants{err: lookupErr}, nil)
 	_, err := svc.CreateForTenant(tenant.WithTenantID(context.Background(), "ghost"), database.DatabaseConfig{Name: "db"})
 	if !errors.Is(err, lookupErr) || len(inner.created) != 0 {
 		t.Fatalf("CreateForTenant = %v (created %v), want the lookup's refusal", err, inner.created)
@@ -224,7 +284,7 @@ func (p *provisionHolders) DatabaseBarrierOfficerUnenrol(_ context.Context, name
 // the underlying *DatabaseService also happens to implement.
 func TestProvisioningAuthorizedDatabaseService_HolderMethods_Unsupported(t *testing.T) {
 	inner := &provisionCreates{}
-	svc := NewProvisioningAuthorizedDatabaseService(inner, &provisionDeny{}, provisionTenants{})
+	svc := NewProvisioningAuthorizedDatabaseService(inner, &provisionDeny{}, provisionTenants{}, nil)
 	hs, ok := svc.(DatabaseHolderServicer)
 	if !ok {
 		t.Fatalf("NewProvisioningAuthorizedDatabaseService does not implement DatabaseHolderServicer")
@@ -266,7 +326,7 @@ func TestProvisioningAuthorizedDatabaseService_HolderMethods_Unsupported(t *test
 func TestProvisioningAuthorizedDatabaseService_HolderMethods_Delegate(t *testing.T) {
 	inner := &provisionHolders{}
 	authz := &provisionDeny{}
-	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{})
+	svc := NewProvisioningAuthorizedDatabaseService(inner, authz, provisionTenants{}, nil)
 	hs, ok := svc.(DatabaseHolderServicer)
 	if !ok {
 		t.Fatalf("NewProvisioningAuthorizedDatabaseService does not implement DatabaseHolderServicer")

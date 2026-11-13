@@ -22,6 +22,7 @@ import (
 	"time"
 
 	mcpapi "github.com/jeremyhahn/go-qrdb/pkg/api/mcp"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -424,6 +425,10 @@ type mockCertEnrollmentServicer struct {
 	lastDelegation *service.IssueDelegationRequest
 	delegationResp *service.IssuedDelegation
 	delegationErr  error
+
+	policyPutFn    func(context.Context, *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(context.Context, string) ([]delegation.Policy, error)
+	policyDeleteFn func(context.Context, string, string) error
 }
 
 var _ service.CertEnrollmentServicer = (*mockCertEnrollmentServicer)(nil)

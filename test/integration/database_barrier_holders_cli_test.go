@@ -170,7 +170,7 @@ func TestCLI_DatabaseBarrier_ShamirHolderLifecycle_AllTransports(t *testing.T) {
 			})
 
 			if createOut, err := runDBAdmin(t, node.cli, flags, "database", "create", dbName,
-				"--data-dir", dataDir, "--barrier-enabled", "--barrier-strategy", "shamir",
+				"--data-dir", dataDir, "--backend", "pebble", "--barrier-enabled", "--barrier-strategy", "shamir",
 				"--barrier-shamir-threshold", "2", "--barrier-shamir-total", "3"); err != nil {
 				t.Fatalf("database create: %v\noutput: %s", err, createOut)
 			}
@@ -344,7 +344,7 @@ func TestCLI_DatabaseBarrier_PassphraseLifecycle_AllTransports(t *testing.T) {
 			})
 
 			if _, err := runCLIProto(t, node, proto, "database", "create", dbName,
-				"--data-dir", dataDir, "--barrier-enabled", "--barrier-strategy", "passphrase",
+				"--data-dir", dataDir, "--backend", "pebble", "--barrier-enabled", "--barrier-strategy", "passphrase",
 				"--barrier-passphrase", passphrase); err != nil {
 				t.Fatalf("database create: %v", err)
 			}

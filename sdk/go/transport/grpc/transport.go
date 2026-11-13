@@ -114,6 +114,13 @@ func (t *Transport) ensureClient() error {
 // Connect establishes the gRPC connection to the QRDB server. When TLS
 // is configured, the connection uses TLS credentials; otherwise it uses
 // insecure credentials for development.
+//
+// Connect confirms the connection with a health check, and Health is a
+// no-login verb on every transport (pkg/api/publicverbs), so with no client
+// certificate and no token Connect succeeds: the server refuses the caller
+// with Unauthenticated at its first call that needs an identity, not here
+// (ruling 264(b)). A client certificate the server cannot verify is
+// different: it ends the TLS handshake, so Connect fails.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -185,12 +192,13 @@ func (t *Transport) connectHealthy(ctx context.Context) error {
 // conflating "can't reach the server" with "not personally allowed to
 // call Health".
 //
-// codes.Unauthenticated is deliberately EXCLUDED: it means the caller
-// never authenticated at all (no / invalid TLS client certificate), which
-// is a genuine "you are not a recognized identity" rejection that
-// Connect() must continue to fail closed on -- see
-// pkg/server's TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated,
-// which pins exactly this behavior for the sibling Unix transport.
+// codes.Unauthenticated is deliberately EXCLUDED. Health is a no-login verb
+// (pkg/api/publicverbs), so a caller with no credential is answered, not
+// refused; an Unauthenticated answer is still a typed refusal of the caller
+// by the server, and Connect returns it as such (see connectHealthy). pkg/server's
+// TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated pins the
+// no-credential case for the sibling Unix transport: Connect succeeds and
+// the first authenticated call is refused.
 func reachableButUnauthorized(err error) bool {
 	st, ok := status.FromError(err)
 	if !ok {

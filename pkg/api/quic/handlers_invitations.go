@@ -23,13 +23,11 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// Frame methods of invitation self-enrolment. methodRedeemInvitation is the
-// one PUBLIC frame method: an invited user holds no credential yet, so the
-// token is the authority (see handleStream).
-const (
-	methodInviteUser       = "user.Invite"
-	methodRedeemInvitation = "invitation.Redeem"
-)
+// methodInviteUser is the frame method of invitation issuance. Redemption,
+// the one PUBLIC invitation method, is named by publicverbs.Table: an invited
+// user holds no credential yet, so the token is the authority (see
+// handleStream).
+const methodInviteUser = "user.Invite"
 
 // inviteUserWireRequest is the JSON wire payload for user.Invite.
 type inviteUserWireRequest struct {

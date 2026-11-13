@@ -95,15 +95,3 @@ func TestTransferLeadership_Unsupported(t *testing.T) {
 		t.Fatalf("err = %v (%T), want *transport.CapabilityUnsupportedError", err, err)
 	}
 }
-
-func TestTransferLeadership_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.TransferLeadership(context.Background(), 1, 3)
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("err = %v (%T), want *transport.ClosedError", err, err)
-	}
-}

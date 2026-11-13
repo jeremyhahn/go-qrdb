@@ -23,6 +23,7 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 )
 
 func TestGRPC_DatabaseList_Success(t *testing.T) {
@@ -226,6 +227,15 @@ func TestProtoRaftConfigToDomain_WithDNS(t *testing.T) {
 	}
 	if result.DNS.Domain != "example.com" {
 		t.Fatalf("expected Domain 'example.com', got %q", result.DNS.Domain)
+	}
+}
+
+// TestProtoRaftConfigToDomain_StateStorage checks that a gRPC create carries
+// the requested Raft state storage into the domain config.
+func TestProtoRaftConfigToDomain_StateStorage(t *testing.T) {
+	result := protoRaftConfigToDomain(&pb.DatabaseRaftConfig{StateStorage: "file"})
+	if result.StateStorage != database.BackendFile {
+		t.Fatalf("StateStorage = %q, want %q", result.StateStorage, database.BackendFile)
 	}
 }
 
