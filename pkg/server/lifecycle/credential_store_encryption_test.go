@@ -61,13 +61,19 @@ func TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane(t *testing.T)
 	}
 	defer func() { _ = node.Stop(ctx) }()
 
-	// The legacy record is still in the barrier: binding it lost nothing.
-	got, err := barrier.Get(ctx, legacyKey)
+	// Binding lost nothing: the service built over the barrier migrates the
+	// legacy record to its own layout and still answers it.
+	buf, err := credSvc.RetrieveCredentialBuffer(ctx, "db-password")
 	if err != nil {
 		t.Fatalf("legacy credential after the bind: %v", err)
 	}
-	if !bytes.Equal(got, want) {
-		t.Fatalf("legacy credential = %q, want %q", got, want)
+	equal, err := buf.EqualBytes(want)
+	buf.Destroy()
+	if err != nil {
+		t.Fatalf("EqualBytes: %v", err)
+	}
+	if !equal {
+		t.Fatalf("legacy credential after the bind does not match %q", want)
 	}
 
 	// A new credential is stored by the barrier, which encrypts it.
@@ -75,7 +81,7 @@ func TestBuildServices_BindsTheSealBarrierOnAnUnencryptedDataPlane(t *testing.T)
 	if err := credSvc.StoreCredential(ctx, "api-key", fresh); err != nil {
 		t.Fatalf("StoreCredential: %v", err)
 	}
-	got, err = barrier.Get(ctx, "__sys:credentials/api-key")
+	got, err := barrier.Get(ctx, "__sys:credentials/api-key")
 	if err != nil {
 		t.Fatalf("barrier.Get new credential: %v", err)
 	}
