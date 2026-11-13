@@ -1598,6 +1598,10 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// can skip a platform-custody tenant, whose every node self-initializes
 	// under its own key, without a second GetTenant call.
 	var tenantBarrierAutoUnseal bool
+	// dedicatedRaft records that an IsolationRaft tenant forced the raft
+	// backend, so an unnamed cluster mode falls back to local after the
+	// node's database_defaults are resolved.
+	var dedicatedRaft bool
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
@@ -1636,13 +1640,14 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			}
 			// Every database of an IsolationRaft tenant is a dedicated Raft group.
 			// Force the raft backend and ensure a Raft config exists so the
-			// Manager claims the database a cluster-wide shard ID.
+			// Manager claims the database a cluster-wide shard ID. The cluster
+			// mode is left to the node's database_defaults below; only a mode
+			// neither the request nor the node names falls back to local.
 			cfg.Backend = database.BackendRaft
 			if cfg.Raft == nil {
-				cfg.Raft = &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal}
-			} else if cfg.Raft.ClusterMode == "" {
-				cfg.Raft.ClusterMode = database.RaftLocal
+				cfg.Raft = &database.DatabaseRaftConfig{}
 			}
+			dedicatedRaft = true
 			if root, rerr := s.resolveTenantDataRoot(ctx, tenantID, info.VolumePool); rerr != nil {
 				return nil, rerr
 			} else if root != "" {
@@ -1665,6 +1670,14 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// the database the manager records, never as the request it arrived as.
 	requested := cfg
 	cfg = s.manager.ResolveDefaults(cfg)
+	// A dedicated Raft group needs a real cluster mode: when neither the
+	// request nor the node's database_defaults name one, the resolution
+	// records none (or, with no manager defaults, leaves it empty), and the
+	// IsolationRaft tenant falls back to local.
+	if dedicatedRaft && requested.Raft.ClusterMode == "" && cfg.Raft != nil &&
+		(cfg.Raft.ClusterMode == "" || cfg.Raft.ClusterMode == database.RaftNone) {
+		cfg.Raft.ClusterMode = database.RaftLocal
+	}
 	if err := s.validateRaftTopology(cfg.Name, &requested, &cfg); err != nil {
 		return nil, err
 	}

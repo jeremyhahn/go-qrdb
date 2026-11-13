@@ -24,6 +24,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -1092,5 +1093,55 @@ func TestDatabaseService_UnsealDatabase_UpdatesDatabaseStatus(t *testing.T) {
 	}
 	if info.Status != database.StatusOpen {
 		t.Errorf("Status() after successful unseal = %q, want %q", info.Status, database.StatusOpen)
+	}
+}
+
+// TestCreateForTenant_IsolationRaft_ClusterModeDefault pins that an
+// IsolationRaft tenant create omitting its cluster mode records the node's
+// database_defaults.raft.clusterMode, and falls back to local only when the
+// node names none.
+func TestCreateForTenant_IsolationRaft_ClusterModeDefault(t *testing.T) {
+	tests := []struct {
+		name     string
+		defaults database.Defaults
+		want     database.RaftClusterMode
+	}{
+		{"distributed default", database.Defaults{RaftClusterMode: database.RaftDistributed}, database.RaftDistributed},
+		{"no default", database.Defaults{}, database.RaftLocal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+			mgr := databasetest.NewManager(logger, t.TempDir(), database.WithDefaults(tt.defaults))
+			mgr.SetShardIDClaimer(testShardClaimer(t))
+			t.Cleanup(func() { _ = mgr.Close() })
+			store, err := placement.NewStore(newMemPlacementKV())
+			if err != nil {
+				t.Fatalf("placement.NewStore: %v", err)
+			}
+			scheduler, err := placement.NewScheduler(&staticTopology{nodes: healthyNodes("n1", "n2", "n3")})
+			if err != nil {
+				t.Fatalf("placement.NewScheduler: %v", err)
+			}
+			f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}}
+			svc := NewDatabaseService(mgr,
+				WithEntitlementChecker(&mockEntitlementChecker{}),
+				WithTenantInfoLookup(&fakeTenantInfoLookup{info: raftTenant(t)}),
+				WithQuotaChecker(newReplicaQuotaChecker(t, f)),
+				WithQuotaUsageRecorder(f),
+				WithPlacementStore(store),
+				WithPlacementScheduler(scheduler),
+				WithDatabaseLogger(logger),
+			)
+			ctx := tenant.WithTenantID(context.Background(), "rt")
+
+			info, err := svc.CreateForTenant(ctx, database.DatabaseConfig{Name: "orders"})
+			if err != nil {
+				t.Fatalf("CreateForTenant: %v", err)
+			}
+			if info.Raft == nil || info.Raft.ClusterMode != tt.want {
+				t.Fatalf("Raft = %+v, want cluster mode %q", info.Raft, tt.want)
+			}
+		})
 	}
 }
