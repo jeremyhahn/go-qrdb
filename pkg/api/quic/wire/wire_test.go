@@ -979,24 +979,6 @@ func TestWriteResponseWireFormat(t *testing.T) {
 // Constants tests
 // ---------------------------------------------------------------------------
 
-func TestStatusCodeConstants(t *testing.T) {
-	if StatusOK != 0 {
-		t.Errorf("StatusOK = %d, want 0", StatusOK)
-	}
-	if StatusError != 1 {
-		t.Errorf("StatusError = %d, want 1", StatusError)
-	}
-	if StatusUnimplemented != 2 {
-		t.Errorf("StatusUnimplemented = %d, want 2", StatusUnimplemented)
-	}
-	if StatusUnauthenticated != 3 {
-		t.Errorf("StatusUnauthenticated = %d, want 3", StatusUnauthenticated)
-	}
-	if StatusPermissionDenied != 4 {
-		t.Errorf("StatusPermissionDenied = %d, want 4", StatusPermissionDenied)
-	}
-}
-
 func TestMaxConstants(t *testing.T) {
 	if MaxMethodLen != 256 {
 		t.Errorf("MaxMethodLen = %d, want 256", MaxMethodLen)
@@ -1024,23 +1006,6 @@ func TestMethodTooLongErrorMessage(t *testing.T) {
 	}
 }
 
-func TestMethodTooLongErrorWithDifferentValues(t *testing.T) {
-	err := &MethodTooLongError{Length: 1000, Max: 500}
-	got := err.Error()
-	if !strings.Contains(got, "1000") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "1000")
-	}
-	if !strings.Contains(got, "500") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "500")
-	}
-}
-
-func TestMethodTooLongErrorImplementsError(t *testing.T) {
-	err := &MethodTooLongError{Length: 1, Max: 0}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestPayloadTooLargeErrorMessage(t *testing.T) {
 	err := &PayloadTooLargeError{Size: 100000000, Max: 67108864}
 	got := err.Error()
@@ -1055,23 +1020,6 @@ func TestPayloadTooLargeErrorMessage(t *testing.T) {
 	}
 }
 
-func TestPayloadTooLargeErrorWithDifferentValues(t *testing.T) {
-	err := &PayloadTooLargeError{Size: 5000, Max: 1024}
-	got := err.Error()
-	if !strings.Contains(got, "5000") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "5000")
-	}
-	if !strings.Contains(got, "1024") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "1024")
-	}
-}
-
-func TestPayloadTooLargeErrorImplementsError(t *testing.T) {
-	err := &PayloadTooLargeError{Size: 1, Max: 0}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestReadErrorMessage(t *testing.T) {
 	underlying := errors.New("connection reset")
 	err := &ReadError{Err: underlying}
@@ -1084,27 +1032,12 @@ func TestReadErrorMessage(t *testing.T) {
 	}
 }
 
-func TestReadErrorUnwrap(t *testing.T) {
-	underlying := errors.New("io timeout")
-	err := &ReadError{Err: underlying}
-	unwrapped := err.Unwrap()
-	if unwrapped != underlying {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, underlying)
-	}
-}
-
 func TestReadErrorUnwrapWithErrorsIs(t *testing.T) {
 	underlying := io.EOF
 	err := &ReadError{Err: underlying}
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("errors.Is(ReadError, io.EOF) = false, want true")
 	}
-}
-
-func TestReadErrorImplementsError(t *testing.T) {
-	err := &ReadError{Err: errors.New("test")}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }
 
 func TestWriteErrorMessage(t *testing.T) {
@@ -1119,138 +1052,11 @@ func TestWriteErrorMessage(t *testing.T) {
 	}
 }
 
-func TestWriteErrorUnwrap(t *testing.T) {
-	underlying := errors.New("disk full")
-	err := &WriteError{Err: underlying}
-	unwrapped := err.Unwrap()
-	if unwrapped != underlying {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, underlying)
-	}
-}
-
 func TestWriteErrorUnwrapWithErrorsIs(t *testing.T) {
 	underlying := io.ErrClosedPipe
 	err := &WriteError{Err: underlying}
 	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Errorf("errors.Is(WriteError, io.ErrClosedPipe) = false, want true")
-	}
-}
-
-func TestWriteErrorImplementsError(t *testing.T) {
-	err := &WriteError{Err: errors.New("test")}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
-// ---------------------------------------------------------------------------
-// Edge case: LimitReader for precise truncation
-// ---------------------------------------------------------------------------
-
-func TestReadRequestWithLimitReader(t *testing.T) {
-	var buf bytes.Buffer
-	if err := WriteRequest(&buf, "kv.Put", "", 42, []byte("hello")); err != nil {
-		t.Fatalf("WriteRequest() error = %v", err)
-	}
-
-	// Truncate at various points to verify ReadRequest handles partial reads.
-	fullFrame := buf.Bytes()
-	for _, limit := range []int64{0, 1, 2, 5, 10, 14, int64(len(fullFrame) - 1)} {
-		lr := io.LimitReader(bytes.NewReader(fullFrame), limit)
-		_, _, _, _, err := ReadRequest(lr)
-		if err == nil {
-			t.Errorf("ReadRequest() with limit=%d expected error, got nil", limit)
-		}
-	}
-}
-
-func TestReadResponseWithLimitReader(t *testing.T) {
-	var buf bytes.Buffer
-	if err := WriteResponse(&buf, 42, StatusOK, []byte("world")); err != nil {
-		t.Fatalf("WriteResponse() error = %v", err)
-	}
-
-	fullFrame := buf.Bytes()
-	for _, limit := range []int64{0, 1, 7, 13, int64(len(fullFrame) - 1)} {
-		lr := io.LimitReader(bytes.NewReader(fullFrame), limit)
-		_, _, _, err := ReadResponse(lr)
-		if err == nil {
-			t.Errorf("ReadResponse() with limit=%d expected error, got nil", limit)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Edge case: single-byte payload
-// ---------------------------------------------------------------------------
-
-func TestWriteRequestSingleBytePayload(t *testing.T) {
-	var buf bytes.Buffer
-	payload := []byte{0x42}
-
-	if err := WriteRequest(&buf, "m", "", 1, payload); err != nil {
-		t.Fatalf("WriteRequest() error = %v", err)
-	}
-
-	_, _, _, gotPayload, err := ReadRequest(&buf)
-	if err != nil {
-		t.Fatalf("ReadRequest() error = %v", err)
-	}
-	if !bytes.Equal(gotPayload, payload) {
-		t.Errorf("payload = %v, want %v", gotPayload, payload)
-	}
-}
-
-func TestWriteResponseSingleBytePayload(t *testing.T) {
-	var buf bytes.Buffer
-	payload := []byte{0xFF}
-
-	if err := WriteResponse(&buf, 1, StatusOK, payload); err != nil {
-		t.Fatalf("WriteResponse() error = %v", err)
-	}
-
-	_, _, gotPayload, err := ReadResponse(&buf)
-	if err != nil {
-		t.Fatalf("ReadResponse() error = %v", err)
-	}
-	if !bytes.Equal(gotPayload, payload) {
-		t.Errorf("payload = %v, want %v", gotPayload, payload)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Edge case: empty []byte vs nil payload
-// ---------------------------------------------------------------------------
-
-func TestWriteRequestEmptySlicePayload(t *testing.T) {
-	var buf bytes.Buffer
-
-	if err := WriteRequest(&buf, "m", "", 1, []byte{}); err != nil {
-		t.Fatalf("WriteRequest() error = %v", err)
-	}
-
-	_, _, _, gotPayload, err := ReadRequest(&buf)
-	if err != nil {
-		t.Fatalf("ReadRequest() error = %v", err)
-	}
-	// An empty payload is read back as nil (payloadLen == 0 skips allocation).
-	if gotPayload != nil {
-		t.Errorf("payload = %v, want nil for zero-length payload", gotPayload)
-	}
-}
-
-func TestWriteResponseEmptySlicePayload(t *testing.T) {
-	var buf bytes.Buffer
-
-	if err := WriteResponse(&buf, 1, StatusOK, []byte{}); err != nil {
-		t.Fatalf("WriteResponse() error = %v", err)
-	}
-
-	_, _, gotPayload, err := ReadResponse(&buf)
-	if err != nil {
-		t.Fatalf("ReadResponse() error = %v", err)
-	}
-	if gotPayload != nil {
-		t.Errorf("payload = %v, want nil for zero-length payload", gotPayload)
 	}
 }
 

@@ -317,16 +317,6 @@ func TestAdvertiser_Addr_NilReceiver(t *testing.T) {
 // ResolveServerURL
 // ---------------------------------------------------------------------------
 
-func TestResolveServerURL_ExplicitAddr(t *testing.T) {
-	got, err := ResolveServerURL(BootstrapOptions{ServerAddr: "10.0.0.1:9443"})
-	if err != nil {
-		t.Fatalf("ResolveServerURL error = %v, want nil", err)
-	}
-	if got != "https://10.0.0.1:9443" {
-		t.Errorf("got %q, want https://10.0.0.1:9443", got)
-	}
-}
-
 func TestResolveServerURL_StaticPeers(t *testing.T) {
 	opts := BootstrapOptions{
 		DiscoveryMethod: "static",

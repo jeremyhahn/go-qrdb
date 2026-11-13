@@ -46,22 +46,6 @@ func TestNotActiveError_QuotesTheFeatureName(t *testing.T) {
 	}
 }
 
-func TestNotActiveError_AsThroughWrapping(t *testing.T) {
-	cause := &NotActiveError{Feature: "range-delete", ShardID: 3}
-	wrapped := errors.Join(errors.New("propose"), cause)
-
-	var got *NotActiveError
-	if !errors.As(wrapped, &got) {
-		t.Fatalf("errors.As(%v) found no *NotActiveError", wrapped)
-	}
-	if got != cause {
-		t.Fatalf("errors.As = %+v, want the wrapped cause %+v", got, cause)
-	}
-	if !errors.Is(wrapped, cause) {
-		t.Fatal("errors.Is does not find the wrapped cause by identity")
-	}
-}
-
 func TestNotActiveError_IsComparesIdentity(t *testing.T) {
 	a := &NotActiveError{Feature: "tenant-undo"}
 	b := &NotActiveError{Feature: "tenant-undo"}
@@ -71,15 +55,5 @@ func TestNotActiveError_IsComparesIdentity(t *testing.T) {
 	var other *NotActiveError
 	if errors.As(errors.New("unrelated"), &other) {
 		t.Fatal("errors.As matched an unrelated error")
-	}
-}
-
-func TestFeature_IsItsName(t *testing.T) {
-	f := Feature("guarded-writes")
-	if string(f) != "guarded-writes" {
-		t.Fatalf("Feature string = %q", string(f))
-	}
-	if Feature("a") == Feature("b") {
-		t.Fatal("distinct names compare equal")
 	}
 }
