@@ -1,7 +1,7 @@
 # go-qrdb row table
 
 One SPEC row = one row issue = one branch `row/<epic>-<slug>` = one lane
-session = one PR ([sdlc.md](../../handbook/software/conventions/sdlc.md) §2b).
+session = one PR (handbook `software/conventions/sdlc.md` §2b).
 Every open issue is a row issue, sits under one, or is listed below as kept.
 The row's PR closes its row issue and marks the row shipped in
 [docs/SPEC.md](../docs/SPEC.md). Rows with no open work are not listed.
