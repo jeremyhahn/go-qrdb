@@ -22,7 +22,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
@@ -107,10 +106,8 @@ func TestDecoyEnrollment_DeterministicForEveryKind(t *testing.T) {
 
 // TestDecoyDerivationError_Message pins the typed refusal.
 func TestDecoyDerivationError_Message(t *testing.T) {
-	var e error = &DecoyDerivationError{}
-	var target *DecoyDerivationError
-	if !errors.As(e, &target) || e.Error() == "" {
-		t.Fatal("DecoyDerivationError")
+	if (&DecoyDerivationError{}).Error() == "" {
+		t.Fatal("DecoyDerivationError has an empty message")
 	}
 	if _, ok := PublicKeyKind(nil); ok {
 		t.Fatal("a nil key has no kind")

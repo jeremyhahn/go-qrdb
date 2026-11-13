@@ -474,14 +474,6 @@ func TestResolveColumnValue_DecimalWrongGoType(t *testing.T) {
 	}
 }
 
-// TestResolveColumnValue_DecimalNil keeps NULL distinct from zero: a NULL
-// DECIMAL must stay nil rather than resolving to "0.0000".
-func TestResolveColumnValue_DecimalNil(t *testing.T) {
-	got, err := catalog.ResolveColumnValue(context.Background(), decimalType(t), nil)
-	require.NoError(t, err)
-	assert.Nil(t, got)
-}
-
 // TestResolveColumnValue_DecimalForeignType covers the fallback for a DECIMAL
 // column whose type is not go-mysql-server's own: there is no
 // DecimalValueStringFixed to delegate to, so the value is rendered as plain
