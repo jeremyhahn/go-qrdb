@@ -315,6 +315,8 @@ func raftOptionSet(cfg *DatabaseConfig) string {
 		return "raft.peers"
 	case r.LocalNodeCount != 0:
 		return "raft.localNodeCount"
+	case r.StateStorage != "":
+		return "raft.stateStorage"
 	case r.Discovery != "" || r.Static != nil || r.Multicast != nil || r.DNS != nil || r.Token != nil:
 		return "raft.discovery"
 	}
