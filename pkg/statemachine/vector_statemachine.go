@@ -743,6 +743,31 @@ func (vsm *VectorStateMachine) applyEntry(entry sm.Entry) (sm.Result, error) {
 }
 
 // handleUpsert handles vector upsert operations.
+// vectorStored reports whether store holds vector id in namespace. Apply
+// reads it before a write so that every replica, holding the same applied
+// state, decides the same way whether the write adds or removes a vector.
+func vectorStored(ctx context.Context, store vector.Storage, namespace string, id uint64) bool {
+	vec, err := store.GetVector(ctx, namespace, id)
+	return err == nil && vec != nil
+}
+
+// newVectorIDs counts the distinct ids of a batch that store does not yet
+// hold in namespace: the vectors a batch upsert adds to VectorCount.
+func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, ids []uint64) int {
+	seen := make(map[uint64]struct{}, len(ids))
+	added := 0
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		if !vectorStored(ctx, store, namespace, id) {
+			added++
+		}
+	}
+	return added
+}
+
 func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
 	defer func() {
@@ -765,16 +790,21 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 		return sm.Result{}, api.NewInvalidLengthError("VectorStateMachine.handleUpsert", "vector dimension", int(ns.Dimension), len(cmd.Vector))
 	}
 
-	// Check quota before upsert
-	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
-	if err := ns.CheckQuota(1, estimatedBytes); err != nil {
-		return sm.Result{}, err
-	}
-
 	// Get the underlying vector storage from adapter
 	vectorStorage, ok := vsm.adapter.(interface{ VectorStorage() vector.Storage })
 	if !ok {
 		return sm.Result{}, api.NewServiceUnavailableError("vector storage")
+	}
+
+	// Check quota before upsert: a re-upsert of a stored id adds no vector,
+	// so it neither raises VectorCount nor counts against the vector quota.
+	added := 0
+	if !vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID) {
+		added = 1
+	}
+	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
+	if err := ns.CheckQuota(added, estimatedBytes); err != nil {
+		return sm.Result{}, err
 	}
 
 	// Store vector via vector storage API
@@ -816,7 +846,7 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount++
+	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is 0 or 1
 	ns.StorageBytes += estimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()
@@ -867,6 +897,10 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	// Delete all vectors
 	deletedCount := 0
 	for _, id := range idsToDelete {
+		// Only an id stored before the delete removes a vector; a missing
+		// or repeated id leaves VectorCount where it is, on every replica.
+		stored := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, id)
+
 		// Delete via vector storage API
 		if err := vectorStorage.VectorStorage().DeleteVector(ctx, cmd.Namespace, id); err != nil {
 			// Log error but continue with other deletes
@@ -895,7 +929,9 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 			_ = vsm.cache.Delete(ctx, []byte(cacheKey))
 		}
 
-		deletedCount++
+		if stored {
+			deletedCount++
+		}
 	}
 
 	// Update namespace stats
@@ -951,15 +987,17 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 		totalEstimatedBytes += EstimateVectorBytes(len(cmd.Vectors[i]), metaCount)
 	}
 
-	// Check vector count and storage quotas
-	if err := ns.CheckQuota(len(cmd.IDs), totalEstimatedBytes); err != nil {
-		return sm.Result{}, err
-	}
-
 	// Get the underlying vector storage from adapter
 	vectorStorage, ok := vsm.adapter.(interface{ VectorStorage() vector.Storage })
 	if !ok {
 		return sm.Result{}, api.NewServiceUnavailableError("vector storage")
+	}
+
+	// Check vector count and storage quotas: only the batch's distinct ids
+	// not yet stored are new vectors.
+	added := newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
+	if err := ns.CheckQuota(added, totalEstimatedBytes); err != nil {
+		return sm.Result{}, err
 	}
 
 	// Get or create namespace-specific HNSW index (SECURITY FIX: per-namespace isolation)
@@ -1014,7 +1052,7 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 	// Update namespace stats and storage bytes
 	ns.mu.Lock()
-	ns.VectorCount += uint64(len(cmd.IDs))
+	ns.VectorCount += uint64(added) //nolint:gosec // G115: added is non-negative
 	ns.StorageBytes += totalEstimatedBytes
 	ns.UpdatedAt = time.Now().UnixNano()
 	ns.mu.Unlock()

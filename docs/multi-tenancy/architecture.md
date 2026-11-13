@@ -960,7 +960,7 @@ is in
 | Tenant-scope encryption-migration records | `__sys:encmig/{t}/{db}` | home store |
 | Audit events about the tenant's identities and data | one node-local file shared by every tenant | a per-tenant, hash-chained trail replicated in the tenant's home group, under the tenant's key (S9). Platform events about the tenant go to the platform trail. |
 | Identity-object usage counters (`CurrentUsers`, `CurrentRoles`, `CurrentCertificates`, `CurrentCollections`, `CurrentKeys`, `CurrentTSMetrics`) | on the tenant registry entry | home store; the home group enforces them against the plan's limits |
-| Vector namespace names in metric labels | `qrdb_vector_*{tenant, namespace}` | the namespace label is removed; a tenant's data names are not metric labels |
+| Vector namespace names in metric labels | `qrdb_vector_*{tenant}` | the namespace label is removed (built); the gauges sum per tenant ID, and a tenant's data names are not metric labels |
 
 ### What stays in the system tenant, and why
 
