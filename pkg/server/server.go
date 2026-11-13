@@ -2328,6 +2328,9 @@ func (s *Server) startREST() error {
 	if len(s.opts.modules) > 0 {
 		restOpts = append(restOpts, rest.WithServiceModules(s.opts.modules))
 	}
+	if s.opts.webTransportSet {
+		restOpts = append(restOpts, rest.WithWebTransportHandler(s.opts.webTransportPath, s.opts.webTransportHandler))
+	}
 	if gw := s.grpcWebConfig(); gw.Enabled {
 		restOpts = append(restOpts, rest.WithGRPCWeb(gw, http.HandlerFunc(s.serveGRPCWeb)))
 	}
