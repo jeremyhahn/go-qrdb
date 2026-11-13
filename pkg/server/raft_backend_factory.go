@@ -1560,6 +1560,41 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	if !ok {
 		return nil
 	}
+	return f.stopAndPurge(tenantID, db, rs)
+}
+
+// CloseShardIfOwned stops the shard for (tenantID, db), and with purge
+// removes its data directory, only when the shard under that name on this
+// host is shardID. The comparison, the invalidation of any start still
+// being planned and the cache eviction run in one critical section, so a
+// successor recreated under the same name between a check and the
+// teardown is never stopped or purged. When no shard is started under the
+// name the generation still moves, so a start still in planStart re-reads
+// a placement that no longer names the predecessor. It reports whether a
+// shard of another placement was left running.
+func (f *RaftBackendFactory) CloseShardIfOwned(tenantID, db string, shardID uint64, purge bool) (otherShard uint64, err error) {
+	f.mu.Lock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	f.awaitStartsLocked(func(k raftShardKey, _ *startingShard) bool { return k == key })
+	rs, ok := f.shards[key]
+	if ok && rs.shardID != shardID {
+		f.mu.Unlock()
+		return rs.shardID, nil
+	}
+	f.forgetLocked(key)
+	f.mu.Unlock()
+	if !ok {
+		return 0, nil
+	}
+	if !purge {
+		return 0, f.stopShard(rs)
+	}
+	return 0, f.stopAndPurge(tenantID, db, rs)
+}
+
+// stopAndPurge stops rs, already evicted from the cache, and removes its
+// data directory.
+func (f *RaftBackendFactory) stopAndPurge(tenantID, db string, rs *raftShard) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
 	}

@@ -53,10 +53,13 @@ type ShardLifecycle interface {
 	// detect orphans.
 	ListStarted() []StartedShard
 
-	// ListOnHost returns every shard on this host, serving or with a start
-	// in flight, each with its ShardID. Used to close a demoted or deleted
-	// entry's shard only when the shard under that name is the entry's own.
-	ListOnHost() []StartedShard
+	// CloseShardIfOwned stops the shard for (tenantID, db), purging its
+	// dataDir when purge is set, only when the shard under that name on
+	// this host is shardID. The comparison, the invalidation of a start
+	// still being planned and the cache eviction are one atomic step, so a
+	// successor recreated under the name is never stopped. It returns the
+	// other placement's shard id when a different shard was left running.
+	CloseShardIfOwned(tenantID, db string, shardID uint64, purge bool) (otherShard uint64, err error)
 
 	// StartedAsObserver reports whether the locally running shard for
 	// (tenantID, db) was started with the observer role latched into its
@@ -382,44 +385,31 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 	}
 }
 
-// closeDemoted stops a demoted or deleted shard, purging its on-disk dataDir
-// when r.purgeOnDemotion is true (the default) via ShardLifecycle.
-// CloseAndPurge. Purging is correct here because a demotion or delete means
-// this node is no longer (and, for a delete, no node anywhere is) a replica
-// of the shard — unlike graceful process shutdown (CloseAll), which must
-// never purge because the data must survive for the next restart's
-// re-attach.
-func (r *TenantShardReconciler) closeDemoted(tenantID, db string) error {
-	if r.purgeOnDemotion {
-		return r.factory.CloseAndPurge(tenantID, db)
-	}
-	return r.factory.Close(tenantID, db)
-}
-
 // closeDemotedShard stops (and, by default, purges) the shard for
 // (tenantID, db) only when the shard on this host is shardID: the entry
 // being torn down owns it. A recreated database of the same name runs a
 // different shard, so a fenced predecessor's demotion or delete leaves the
-// successor running. A shard id of 0 (unknown) closes nothing.
+// successor running. The identity check and the teardown are one factory
+// operation (ShardLifecycle.CloseShardIfOwned), so a successor recreated
+// between them cannot be stopped. A shard id of 0 (unknown) closes nothing.
+// Purging is correct here because a demotion or delete means
+// this node is no longer (and, for a delete, no node anywhere is) a replica
+// of the shard — unlike graceful process shutdown (CloseAll), which must
+// never purge because the data must survive for the next restart's
+// re-attach.
 func (r *TenantShardReconciler) closeDemotedShard(tenantID, db string, shardID uint64) error {
 	if shardID == 0 {
 		return nil
 	}
-	for _, s := range r.factory.ListOnHost() {
-		if s.TenantID != tenantID || s.Database != db {
-			continue
-		}
-		if s.ShardID != shardID {
-			r.logger.Info("placement reconciler: shard under this name belongs to another placement, left running",
-				slog.String("tenant", tenantID),
-				slog.String("database", db),
-				slog.Uint64("shard_id", s.ShardID),
-				slog.Uint64("entry_shard_id", shardID))
-			return nil
-		}
-		return r.closeDemoted(tenantID, db)
+	other, err := r.factory.CloseShardIfOwned(tenantID, db, shardID, r.purgeOnDemotion)
+	if other != 0 {
+		r.logger.Info("placement reconciler: shard under this name belongs to another placement, left running",
+			slog.String("tenant", tenantID),
+			slog.String("database", db),
+			slog.Uint64("shard_id", other),
+			slog.Uint64("entry_shard_id", shardID))
 	}
-	return nil
+	return err
 }
 
 // maybeRestartPromotedLocal restarts the LOCAL replica of p as a full

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -639,5 +640,106 @@ func TestRaftBackendFactory_PurgeDuringReadDropsThePlan(t *testing.T) {
 	}
 	if got := f.ListOnHost(); len(got) != 0 {
 		t.Fatalf("ListOnHost = %v, want none: the purged database was started", got)
+	}
+}
+
+// A predecessor's delayed teardown names its own shard; the successor
+// recreated under the same name runs another shard and is neither stopped
+// nor purged, the identity check and the teardown being one step.
+func TestRaftBackendFactory_CloseShardIfOwnedLeavesTheSuccessor(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", shardOfb, dataRoot)
+	ctx := context.Background()
+	svcs, err := f.Services(ctx, "rt", "a")
+	if err != nil {
+		t.Fatalf("Services(a) = %v, want the successor started", err)
+	}
+	f.mu.Lock()
+	dataDir := f.shards[raftShardKey{tenantID: "rt", database: "a"}].dataDir
+	f.mu.Unlock()
+
+	var other uint64
+	within(t, "the predecessor's CloseShardIfOwned", func() {
+		var err error
+		if other, err = f.CloseShardIfOwned("rt", "a", shardOfa, true); err != nil {
+			t.Errorf("CloseShardIfOwned(a, predecessor) = %v, want nil", err)
+		}
+	})
+	if other != shardOfb {
+		t.Fatalf("CloseShardIfOwned other = %d, want the successor's shard %d", other, shardOfb)
+	}
+	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a", ShardID: shardOfb}}) {
+		t.Fatalf("ListOnHost = %v, want the successor still running", got)
+	}
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("successor data dir: %v, want it kept", err)
+	}
+	again, err := f.Services(ctx, "rt", "a")
+	if err != nil || again != svcs {
+		t.Fatalf("Services(a) after the predecessor's teardown = %v, %v, want the successor's services", again, err)
+	}
+
+	if other, err := f.CloseShardIfOwned("rt", "a", shardOfb, true); err != nil || other != 0 {
+		t.Fatalf("CloseShardIfOwned(a, own shard) = %d, %v, want 0, nil", other, err)
+	}
+	if got := f.ListOnHost(); len(got) != 0 {
+		t.Fatalf("ListOnHost = %v, want none after the owner's teardown", got)
+	}
+	if _, err := os.Stat(dataDir); !os.IsNotExist(err) {
+		t.Fatalf("data dir after the owner's purge: %v, want it removed", err)
+	}
+}
+
+// A predecessor start still in planStart when its teardown arrives holds
+// neither a cached shard nor a start in flight; the teardown still voids
+// the plan, which re-reads a placement that no longer names it.
+func TestRaftBackendFactory_CloseShardIfOwnedVoidsAPlanInFlight(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", shardOfa, dataRoot)
+	held := holdRead(t, f, shardOfa)
+
+	a := resolveAsync(context.Background(), f, "rt", "a")
+	held.awaitHeld(t)
+	delete(src.entries, raftShardKey{tenantID: "rt", database: "a"})
+	within(t, "CloseShardIfOwned of the database being planned", func() {
+		if other, err := f.CloseShardIfOwned("rt", "a", shardOfa, true); err != nil || other != 0 {
+			t.Errorf("CloseShardIfOwned(a) = %d, %v, want 0, nil", other, err)
+		}
+	})
+
+	held.unhold()
+	if r := <-a; !errors.Is(r.err, ErrRaftDatabaseUnknown) {
+		t.Fatalf("Services(a) = %v, want ErrRaftDatabaseUnknown: the teardown must void the plan made before it", r.err)
+	}
+	if got := f.ListOnHost(); len(got) != 0 {
+		t.Fatalf("ListOnHost = %v, want none: the torn-down database was started", got)
+	}
+}
+
+// A successor's start held in planStart when the predecessor's teardown
+// arrives is sent back to read the placement again, and starts the
+// successor's shard: the teardown voids the plan without harming it.
+func TestRaftBackendFactory_CloseShardIfOwnedReplansTheSuccessor(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", shardOfb, dataRoot)
+	held := holdRead(t, f, shardOfb)
+
+	a := resolveAsync(context.Background(), f, "rt", "a")
+	held.awaitHeld(t)
+	within(t, "the predecessor's CloseShardIfOwned during the successor's plan", func() {
+		if other, err := f.CloseShardIfOwned("rt", "a", shardOfa, true); err != nil || other != 0 {
+			t.Errorf("CloseShardIfOwned(a, predecessor) = %d, %v, want 0, nil", other, err)
+		}
+	})
+
+	held.unhold()
+	if r := <-a; r.err != nil {
+		t.Fatalf("Services(a) = %v, want the successor started after a re-plan", r.err)
+	}
+	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a", ShardID: shardOfb}}) {
+		t.Fatalf("ListOnHost = %v, want the successor running", got)
 	}
 }

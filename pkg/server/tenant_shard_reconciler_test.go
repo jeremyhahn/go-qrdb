@@ -117,6 +117,27 @@ func (f *fakeShardLifecycle) Close(tenantID, db string) error {
 // CloseAndPurge mirrors RaftBackendFactory.CloseAndPurge: it stops the shard
 // (same bookkeeping as Close, so existing tests asserting closeCount() after
 // a demotion continue to hold) and additionally records the purge.
+// CloseShardIfOwned mirrors RaftBackendFactory.CloseShardIfOwned: it
+// closes (and with purge purges) the shard under the name only when it is
+// shardID, and leaves a different shard running.
+func (f *fakeShardLifecycle) CloseShardIfOwned(tenantID, db string, shardID uint64, purge bool) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := raftShardKey{tenantID: tenantID, database: db}
+	if !f.started[key] {
+		return 0, nil
+	}
+	if got := f.shardIDs[key]; got != shardID {
+		return got, nil
+	}
+	delete(f.started, key)
+	f.closed = append(f.closed, key)
+	if purge {
+		f.purged = append(f.purged, key)
+	}
+	return 0, nil
+}
+
 func (f *fakeShardLifecycle) CloseAndPurge(tenantID, db string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
