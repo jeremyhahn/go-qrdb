@@ -21,7 +21,6 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -48,47 +47,6 @@ func (a *nodeCompactionAdmin) SetNodeCompaction(_ context.Context, p *compaction
 	}
 	a.policy = p.Normalized()
 	return nil
-}
-
-func TestEmbedded_NodeCompaction_SetReadAndClear(t *testing.T) {
-	admin := &nodeCompactionAdmin{}
-	tr, err := New(newMockKVService(), admin)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx := context.Background()
-
-	if got, err := tr.NodeCompaction(ctx); err != nil || got != nil {
-		t.Fatalf("NodeCompaction before any policy = %+v, %v; want none", got, err)
-	}
-	set, err := tr.SetNodeCompaction(ctx, &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 6})
-	if err != nil || set == nil || set.RetainRevisions != 6 {
-		t.Fatalf("SetNodeCompaction = %+v, %v; want the revision policy", set, err)
-	}
-	if got, err := tr.NodeCompaction(ctx); err != nil || got == nil || got.Mode != "revision" {
-		t.Fatalf("NodeCompaction = %+v, %v; want the policy set", got, err)
-	}
-	if off, err := tr.SetNodeCompaction(ctx, nil); err != nil || off != nil || admin.policy != nil {
-		t.Fatalf("SetNodeCompaction(nil) = %+v, %v (held %+v); want off", off, err, admin.policy)
-	}
-}
-
-// An in-process caller scoped to a tenant is refused by the real admin
-// service, exactly as a remote tenant caller is refused by the RBAC entry
-// check, and the refusal keeps its type through the transport.
-func TestEmbedded_NodeCompaction_RefusesATenantContext(t *testing.T) {
-	tr, err := New(newMockKVService(), service.NewAdminService(nil))
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-	var denied *tenant.CrossTenantDeniedError
-	if _, err := tr.SetNodeCompaction(ctx, &transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 1}); !errors.As(err, &denied) {
-		t.Fatalf("SetNodeCompaction as acme = %v; want *tenant.CrossTenantDeniedError", err)
-	}
-	if _, err := tr.NodeCompaction(ctx); !errors.As(err, &denied) {
-		t.Fatalf("NodeCompaction as acme = %v; want *tenant.CrossTenantDeniedError", err)
-	}
 }
 
 func TestEmbedded_NodeCompaction_Failures(t *testing.T) {

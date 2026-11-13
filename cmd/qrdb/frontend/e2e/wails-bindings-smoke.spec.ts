@@ -94,6 +94,7 @@ const EXPECTED_BINDINGS = [
   "CredentialBinding",
   "AuditBinding",
   "VolumePoolBinding",
+  "VlogBinding",
   "DaemonBinding",
 ] as const;
 
@@ -200,6 +201,18 @@ test.describe("Wails Binding Registration — method presence", () => {
     ],
     AuditBinding: ["Query"],
     VolumePoolBinding: ["List", "Get", "Create", "Update", "Delete", "ListTenants"],
+    VlogBinding: [
+      "Create",
+      "List",
+      "Append",
+      "Get",
+      "ProveInclusion",
+      "ProveConsistency",
+      "Head",
+      "SignHead",
+      "RotateKey",
+      "ExpireBodies",
+    ],
     UserBinding: ["List", "Get", "Create", "Update", "Delete"],
     RoleBinding: ["List", "Get", "Create", "Update", "Delete"],
     CertBinding: ["List", "Issue", "Enroll", "Export", "Revoke"],

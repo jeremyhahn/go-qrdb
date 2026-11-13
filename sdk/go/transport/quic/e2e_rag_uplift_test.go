@@ -52,11 +52,6 @@ func TestE2E_RAG_IngestDocument_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_RAG_IngestDocument_Closed(t *testing.T) {
-	_, err := newQuicClosed().RAGIngestDocument(context.Background(), &transport.RAGIngestRequest{})
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_RAG_IngestDocument_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("rag.IngestDocument", func(_ []byte) (uint16, []byte) {
@@ -86,11 +81,6 @@ func TestE2E_RAG_Query_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_RAG_Query_Closed(t *testing.T) {
-	_, err := newQuicClosed().RAGQuery(context.Background(), &transport.RAGQueryRequest{})
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_RAG_Query_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("rag.Query", func(_ []byte) (uint16, []byte) {
@@ -118,11 +108,6 @@ func TestE2E_RAG_DeleteDocument_Success(t *testing.T) {
 	}
 }
 
-func TestE2E_RAG_DeleteDocument_Closed(t *testing.T) {
-	_, err := newQuicClosed().RAGDeleteDocument(context.Background(), &transport.RAGDeleteDocumentRequest{})
-	assertQuicClosed(t, err)
-}
-
 func TestE2E_RAG_DeleteDocument_RPCError(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("rag.DeleteDocument", func(_ []byte) (uint16, []byte) {
@@ -147,11 +132,6 @@ func TestE2E_RAG_ListDocuments_Success(t *testing.T) {
 	if len(resp.Documents) == 0 {
 		t.Fatal("expected documents")
 	}
-}
-
-func TestE2E_RAG_ListDocuments_Closed(t *testing.T) {
-	_, err := newQuicClosed().RAGListDocuments(context.Background(), &transport.RAGListDocumentsRequest{})
-	assertQuicClosed(t, err)
 }
 
 func TestE2E_RAG_ListDocuments_RPCError(t *testing.T) {

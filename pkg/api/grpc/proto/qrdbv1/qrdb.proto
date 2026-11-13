@@ -499,9 +499,10 @@ service QRDBService {
     // Admin operations (unchanged)
     // -----------------------------------------------------------------------
 
-    // Health returns the node health status.
+    // Health returns the node health status. It needs no login on any
+    // transport (pkg/api/publicverbs).
     rpc Health(google.protobuf.Empty) returns (HealthResponse) {
-        option (qrdb.v1.permission) = "admin:health";
+        option (qrdb.v1.permission) = "identity:public";
     }
 
     // Status returns detailed node status information.
@@ -837,8 +838,28 @@ service QRDBService {
     // IssueDelegation has the caller's own tenant's CA issue a short-lived
     // delegation certificate from a CSR: the named service principal may act
     // inside the tenant with at most the delegated scope. The system tenant
-    // and a delegated caller are refused.
+    // is refused; a delegated caller renews its own delegation, within the
+    // standing policy its tenant wrote for it, and nothing more.
     rpc IssueDelegation(IssueDelegationRequest) returns (IssuedDelegationResponse) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // PutDelegationPolicy writes the caller's own tenant's standing
+    // delegation policy for a service principal. A delegated caller is
+    // refused.
+    rpc PutDelegationPolicy(PutDelegationPolicyRequest) returns (DelegationPolicy) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // ListDelegationPolicies lists the caller's own tenant's standing
+    // delegation policies.
+    rpc ListDelegationPolicies(ListDelegationPoliciesRequest) returns (ListDelegationPoliciesResponse) {
+        option (qrdb.v1.permission) = "certs:delegate";
+    }
+
+    // DeleteDelegationPolicy revokes the caller's own tenant's standing
+    // delegation policy for a service principal.
+    rpc DeleteDelegationPolicy(DeleteDelegationPolicyRequest) returns (DeleteDelegationPolicyResponse) {
         option (qrdb.v1.permission) = "certs:delegate";
     }
 
@@ -1300,6 +1321,32 @@ service QRDBService {
     // CredentialRotate atomically replaces the current value of a credential,
     // optionally keeping the previous version retrievable for a grace period.
     rpc CredentialRotate(CredentialRotateRequest) returns (CredentialRotateResponse) {
+        option (qrdb.v1.permission) = "credentials:rotate";
+    }
+
+    // CredentialSetRotationPolicy sets a credential's scheduled rotation
+    // policy. A refused policy is INVALID_ARGUMENT.
+    rpc CredentialSetRotationPolicy(CredentialSetRotationPolicyRequest) returns (google.protobuf.Empty) {
+        option (qrdb.v1.permission) = "credentials:rotate";
+    }
+
+    // CredentialRotationPolicy returns a credential's scheduled rotation
+    // policy and the time of its next scheduled rotation.
+    rpc CredentialRotationPolicy(CredentialRotationPolicyRequest) returns (CredentialRotationPolicyResponse) {
+        option (qrdb.v1.permission) = "credentials:rotate";
+    }
+
+    // CredentialMigrationConflicts lists the credentials whose node-local
+    // copy in the old credentials/ layout differs from the replicated record
+    // another node migrated first. No value is returned.
+    rpc CredentialMigrationConflicts(CredentialMigrationConflictsRequest) returns (CredentialMigrationConflictsResponse) {
+        option (qrdb.v1.permission) = "credentials:list";
+    }
+
+    // CredentialResolveMigrationConflict settles one migration conflict by
+    // import or discard. A name with no conflict is NOT_FOUND; any other
+    // resolution is INVALID_ARGUMENT.
+    rpc CredentialResolveMigrationConflict(CredentialResolveMigrationConflictRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "credentials:rotate";
     }
 
@@ -3658,6 +3705,37 @@ message IssueDelegationRequest {
     string ttl = 4;
 }
 
+// PutDelegationPolicyRequest writes the caller's own tenant's standing
+// delegation policy for principal.
+message PutDelegationPolicyRequest {
+    string principal = 1;
+    repeated string scope = 2;
+    // ttl is a Go duration, the longest a minted certificate may live; empty
+    // is the delegation default of one hour, and more than 24h is refused.
+    string ttl = 3;
+}
+
+// DelegationPolicy is a tenant's standing delegation policy.
+message DelegationPolicy {
+    string tenant_id = 1;
+    string principal = 2;
+    repeated string scope = 3;
+    // ttl is the policy's lifetime as a Go duration.
+    string ttl = 4;
+}
+
+message ListDelegationPoliciesRequest {}
+
+message ListDelegationPoliciesResponse {
+    repeated DelegationPolicy policies = 1;
+}
+
+message DeleteDelegationPolicyRequest {
+    string principal = 1;
+}
+
+message DeleteDelegationPolicyResponse {}
+
 // IssuedDelegationResponse is a delegation certificate the tenant's CA
 // issued; it is revoked by serial like any other.
 message IssuedDelegationResponse {
@@ -3992,6 +4070,9 @@ message DatabaseRaftInfo {
     DatabaseMulticastDiscoveryInfo multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscoveryInfo token = 11;
+    // state_storage is the storage of the Raft group state (pebble, file or
+    // memory) the database recorded at create.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscoveryInfo reports static peer discovery.
@@ -4132,6 +4213,10 @@ message DatabaseRaftConfig {
     DatabaseMulticastDiscovery multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscovery token = 11;
+    // state_storage is the storage of the Raft group state: pebble, file or
+    // memory. Empty takes the node's database_defaults; create records the
+    // resolved value.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscovery holds static peer discovery configuration.
@@ -5350,6 +5435,59 @@ message CredentialRotateResponse {
     uint64 previous_version = 2;
     uint64 new_version      = 3;
     int64  grace_until_unix = 4;
+}
+
+// CredentialSetRotationPolicyRequest sets a credential's scheduled rotation
+// policy. interval is a Go duration string ("720h"), empty only when the
+// policy is disabled.
+message CredentialSetRotationPolicyRequest {
+    string name            = 1;
+    bool   enabled         = 2;
+    string interval        = 3;
+    int32  retain_versions = 4;
+}
+
+// CredentialRotationPolicyRequest names the credential whose rotation
+// policy is read.
+message CredentialRotationPolicyRequest {
+    string name = 1;
+}
+
+// CredentialRotationPolicyResponse is a credential's scheduled rotation
+// policy. interval is a Go duration string; next_rotation is the RFC 3339
+// time of the next scheduled rotation, empty when none is scheduled.
+message CredentialRotationPolicyResponse {
+    string name            = 1;
+    bool   enabled         = 2;
+    string interval        = 3;
+    int32  retain_versions = 4;
+    string next_rotation   = 5;
+}
+
+// CredentialMigrationConflictsRequest lists the caller's store's migration
+// conflicts.
+message CredentialMigrationConflictsRequest {}
+
+// CredentialMigrationConflict is one credential whose node-local copy
+// differs from the replicated record; each flag names a part that differs.
+message CredentialMigrationConflict {
+    string name     = 1;
+    bool   value    = 2;
+    bool   versions = 3;
+    bool   policy   = 4;
+}
+
+// CredentialMigrationConflictsResponse lists the conflicts, sorted by name.
+message CredentialMigrationConflictsResponse {
+    repeated CredentialMigrationConflict conflicts = 1;
+}
+
+// CredentialResolveMigrationConflictRequest settles one conflict.
+// resolution is "import", which rotates the node-local current value in as
+// a new version, or "discard", which keeps the replicated record.
+message CredentialResolveMigrationConflictRequest {
+    string name       = 1;
+    string resolution = 2;
 }
 
 // CredentialRetrieveVersionRequest selects a specific version of a

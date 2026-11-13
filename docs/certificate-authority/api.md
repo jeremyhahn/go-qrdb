@@ -13,11 +13,14 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | Issue a client certificate from a CSR | `POST /certs/issue` | `IssueCert` | `cert.Issue` | `qrdb_cert_issue` | `IssueCert` | `certs:issue` |
 | Enrol a bring-your-own certificate | `POST /certs/enroll` | `EnrollCert` | `cert.Enroll` | `qrdb_cert_enroll` | `EnrollCert` | `certs:enroll` |
 | Issue a delegation to a service principal | `POST /certs/delegate` | `IssueDelegation` | `cert.Delegate` | `qrdb_cert_delegate` | `IssueDelegation` | `certs:delegate` |
+| Write a standing delegation policy | `POST /certs/delegate/policies` | `PutDelegationPolicy` | `cert.DelegationPolicyPut` | `qrdb_cert_delegation_policy_put` | `PutDelegationPolicy` | `certs:delegate` |
+| List standing delegation policies | `GET /certs/delegate/policies` | `ListDelegationPolicies` | `cert.DelegationPolicyList` | `qrdb_cert_delegation_policy_list` | `ListDelegationPolicies` | `certs:delegate` |
+| Delete a standing delegation policy | `DELETE /certs/delegate/policies/{principal}` | `DeleteDelegationPolicy` | `cert.DelegationPolicyDelete` | `qrdb_cert_delegation_policy_delete` | `DeleteDelegationPolicy` | `certs:delegate` |
 | Revoke certificate | `POST /certs/revoke` | `RevokeCert` | `cert.Revoke` | `qrdb_cert_revoke` | `RevokeCert` | `certs:revoke` |
 | List certificates | `GET /certs/list` | `ListCerts` | `cert.List` | `qrdb_cert_list` | `ListCerts` | `certs:list` |
 | Fetch the CA bootstrap certificate | `GET /v1/ca/bootstrap` | MISSING | MISSING | MISSING | MISSING | **public**, conditionally registered |
 
-Five capabilities on all six transports, plus the public bootstrap route.
+Eight capabilities on all six transports, plus the public bootstrap route.
 PKCS#12 export is not a server capability, and no route exists for it: a
 private key is never sent to a node to be packaged on the caller's behalf.
 Every client builds the archive in the process that already holds the key:
@@ -46,6 +49,7 @@ tenant. A second check establishes the target:
 |---|---|---|
 | Issue, Enrol | the **caller's own** tenant — no request field names a tenant | — (`certs:issue` / `certs:enroll` re-checked against it) |
 | Delegate | the **caller's own** tenant, never the system tenant — no request field names a tenant | — (`certs:delegate` re-checked against it) |
+| Delegation policy put, list, delete | the **caller's own** tenant, never the system tenant, never a delegated caller — no request field names a tenant | — (`certs:delegate` re-checked against it) |
 | List | the request's `tenantID` / `tenant_id` | — (`certs:list` re-checked against the target) |
 | Revoke, serial **known** to this node | the owning tenant, resolved from the serial | — (`certs:revoke` re-checked against the owner) |
 | Revoke, serial **unknown** to this node | none — deny-by-serial | **`certs:revoke:cross`** (system tenant only) |
@@ -137,7 +141,8 @@ the certificate rather than reading it as a user login. EKU is ClientAuth only.
 
 Only a tenant delegates. The system tenant is refused, and so is a caller
 that is itself authenticated by a delegation: a delegation that could renew
-itself would have no lifetime. Every issuance is written to the tenant's audit
+itself would have no lifetime. The one exception is a renewal within a
+standing policy ([below](#standing-delegation-policies)). Every issuance is written to the tenant's audit
 trail as `cert.delegate` with the principal and scope, before the CA signs.
 
 Returns `201` with the certificate — never a key:
@@ -155,6 +160,53 @@ takes `principal`, `scope`, `csr_pem` and `ttl`.
 A delegation is revoked like any certificate this CA issued, by serial with
 `POST /certs/revoke`, and appears in `GET /certs/list`. It is refused within
 `auth.revocation_cache_ttl` of revocation, and outright at `notAfter`.
+
+## Standing delegation policies
+
+A standing policy is the tenant's grant written down once, so a delegation can
+be minted and renewed with no tenant admin at hand. One policy stands per
+(tenant, principal), stored under `__sys:cert_delegation_policy/`.
+
+`POST /certs/delegate/policies` writes or replaces the policy for a principal
+in the caller's own tenant:
+
+```json
+{ "principal": "billing", "scope": ["certs:delegate", "kv:get", "kv:put"], "ttl": "1h" }
+```
+
+It returns `201` with `{ "tenantID", "principal", "scope", "ttl" }`. `ttl` is
+the longest lifetime a certificate minted under it may have, at most 24 hours.
+`GET /certs/delegate/policies` returns `{ "policies": [...] }`, each element
+that same shape. `DELETE /certs/delegate/policies/{principal}` returns `204`.
+A renewal needs `certs:delegate` both in the policy's `scope` and in the grants
+of the principal's role. A mint for a tenant that no longer exists is refused
+with `404`, and deleting a tenant deletes its policies.
+
+All three are `certs:delegate` in the caller's own tenant; the system tenant
+and a delegated caller are refused (`service.DelegationDeniedError`). The put
+and the delete are written to the tenant's audit trail as
+`cert.delegation_policy.put` and `cert.delegation_policy.delete`.
+
+gRPC and Unix use `PutDelegationPolicy`, `ListDelegationPolicies` and
+`DeleteDelegationPolicy`; QUIC uses `cert.DelegationPolicyPut`,
+`cert.DelegationPolicyList` and `cert.DelegationPolicyDelete` with the REST
+bodies; the MCP tools are `qrdb_cert_delegation_policy_put`,
+`qrdb_cert_delegation_policy_list` and `qrdb_cert_delegation_policy_delete`;
+the Go SDK has `PutDelegationPolicy`, `ListDelegationPolicies` and
+`DeleteDelegationPolicy(principal)`.
+
+**Minting and renewal.** The embedding host mints the first certificate in
+process with `Node.MintDelegation`, as its service principal; it is audited as
+`cert.delegation.mint`. Before it expires, the delegation renews itself: a
+caller authenticated by a delegation may call `IssueDelegation` for its own
+principal while a policy stands for it. The request is bounded by the policy
+(`Policy.Bound`): it may narrow the scope and shorten the lifetime, never widen
+either.
+
+**Revocation.** Deleting the policy stops every further mint and renewal: each
+is then refused with `service.DelegationPolicyNotFoundError` (404,
+`NOT_FOUND`). A certificate already minted lives until it expires or is
+revoked by serial.
 
 `GET /certs/list` — `tenantID` query parameter, optional; empty means the
 caller's own tenant, the only one `certs:list` admits. The response is
@@ -212,7 +264,9 @@ than merely inert.
 | Field validation failure | 400 | `INVALID_ARGUMENT` — `ValidationError`, `service.CertEnrollmentFieldError` |
 | CSR does not parse, its signature does not verify, or its key is not accepted | 400 | `INVALID_ARGUMENT` — `cert.InvalidCSRError` |
 | Delegation names a malformed or built-in-role principal, an unregistered or duplicate permission, or a lifetime over 24 hours | 400 | `INVALID_ARGUMENT` — `service.DelegationRequestError` |
-| Delegation requested by the system tenant or by a delegated caller | 403 | `PERMISSION_DENIED` — `service.DelegationDeniedError` |
+| Delegation requested by the system tenant, or by a delegated caller outside a standing policy | 403 | `PERMISSION_DENIED` — `service.DelegationDeniedError` |
+| Delegation policy written, listed or deleted by the system tenant or by a delegated caller | 403 | `PERMISSION_DENIED` — `service.DelegationDeniedError` |
+| A mint, renewal or policy delete for a principal no standing policy names | 404 | `NOT_FOUND` — `service.DelegationPolicyNotFoundError` |
 | The named account does not exist in the caller's tenant | 404 | `NOT_FOUND` — `user.UserNotFoundError` |
 | Enrolled certificate does not chain to a trust anchor of the tenant | 400 | `INVALID_ARGUMENT` — `trustanchor.CertificateNotTrustedError` |
 | Enrolled certificate authenticates as another account or tenant | 400 | `INVALID_ARGUMENT` — `certenroll.IdentityMismatchError` |

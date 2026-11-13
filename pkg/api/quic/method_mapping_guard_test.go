@@ -138,7 +138,6 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"vlog.SignHead":                      permission.VlogSignHead,
 	"vlog.RotateKey":                     permission.VlogSignHead,
 	"vlog.ExpireBodies":                  permission.VlogExpire,
-	"admin.Health":                       permission.AdminHealth,
 	"admin.Status":                       permission.AdminStatus,
 	"admin.Peers":                        permission.AdminPeers,
 	"admin.AddMember":                    permission.AdminAddMember,
@@ -177,6 +176,9 @@ var expectedMethodPerms = map[string]permission.Permission{
 	"cert.Issue":                         permission.CertsIssue,
 	"cert.Enroll":                        permission.CertsEnroll,
 	"cert.Delegate":                      permission.CertsDelegate,
+	"cert.DelegationPolicyPut":           permission.CertsDelegate,
+	"cert.DelegationPolicyList":          permission.CertsDelegate,
+	"cert.DelegationPolicyDelete":        permission.CertsDelegate,
 	"cert.Revoke":                        permission.CertsRevoke,
 	"cert.List":                          permission.CertsList,
 	"user.Invite":                        permission.UsersInvite,
@@ -501,7 +503,7 @@ func TestMethodMappingGuard_DefaultDenyRegression(t *testing.T) {
 	}
 
 	// A few known methods spanning permission families resolve and authorize.
-	for _, method := range []string{"kv.Put", "admin.Health", "tenant.UpdateEntitlements", "audit.Query"} {
+	for _, method := range []string{"kv.Put", "admin.Status", "tenant.UpdateEntitlements", "audit.Query"} {
 		if err := srv.authorize(ctx, method); err != nil {
 			t.Errorf("registered method %q: unexpected authorize error: %v", method, err)
 		}

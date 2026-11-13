@@ -48,6 +48,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -554,12 +555,16 @@ func TestRouteMappingGuard_RoutePermissions(t *testing.T) {
 func TestRouteMappingGuard_ExemptRoutesAreExactlyDeclared(t *testing.T) {
 	srv := newFullyWiredGuardServer(t)
 
+	// The no-login client verbs come from publicverbs.Table, never from a
+	// list here; the rest are node-plane and first-boot exemptions.
 	public := map[string]struct{}{
-		"GET /health":                  {}, // load balancer / liveness probes reach it without a client cert.
 		"GET /v1/ca/bootstrap":         {}, // joining nodes fetch the trust anchor before they hold credentials.
 		"GET /v1/config/initialized":   {}, // first-boot setup wizard checks provisioning state pre-credential.
 		"POST /v1/cluster/keydelivery": {}, // cluster peer plane: self-authorized by node cert + placement table.
 		"GET /v1/cluster/nodekey":      {}, // cluster peer plane: self-authorized by node cert + placement table.
+	}
+	for _, route := range publicverbs.RESTRoutes() {
+		public[route] = struct{}{}
 	}
 	authenticated := map[string]struct{}{
 		"GET /metrics": {}, // Prometheus scrape target: any authenticated peer.

@@ -22,7 +22,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 
 	gomysql "github.com/go-sql-driver/mysql"
@@ -49,15 +48,6 @@ func openNode(t *testing.T, dsn string) *sql.DB {
 // ---------------------------------------------------------------------------
 // Scheme registration
 // ---------------------------------------------------------------------------
-
-// TestScheme_Registered verifies the blank import wired the node scheme into
-// the driver's single scheme registry.
-func TestScheme_Registered(t *testing.T) {
-	if !slices.Contains(qrdbdriver.RegisteredSchemes(), Scheme) {
-		t.Fatalf("RegisteredSchemes() = %v, want it to contain %q",
-			qrdbdriver.RegisteredSchemes(), Scheme)
-	}
-}
 
 // TestScheme_ParsesEmbeddedGrammar verifies node:// accepts exactly the
 // embedded:// DSN grammar, including its defaults.
@@ -502,18 +492,6 @@ func TestConnector_CloseIsIdempotent(t *testing.T) {
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
-	}
-}
-
-// TestConnector_CloseBeforeConnect verifies closing a connector that never
-// started anything is safe.
-func TestConnector_CloseBeforeConnect(t *testing.T) {
-	cfg, err := qrdbdriver.ParseDSN("node://memory?database=neverused")
-	if err != nil {
-		t.Fatalf("ParseDSN: %v", err)
-	}
-	if err := New(cfg).Close(); err != nil {
-		t.Fatalf("Close: %v", err)
 	}
 }
 

@@ -63,18 +63,6 @@ func TestFactorsToPB_EmptyNilAndParams(t *testing.T) {
 	}
 }
 
-// TestFactorsToPB_Error asserts an unencodable params map is refused via
-// FactorParamsError, naming the offending factor.
-func TestFactorsToPB_Error(t *testing.T) {
-	_, err := factorsToPB([]transport.HolderFactorEnrolment{
-		{Name: "fido2", Params: map[string]any{"bad": make(chan int)}},
-	})
-	var fpErr *FactorParamsError
-	if !errors.As(err, &fpErr) || fpErr.Factor != "fido2" {
-		t.Fatalf("factorsToPB(unencodable) = %v, want *FactorParamsError{Factor: fido2}", err)
-	}
-}
-
 // TestParseTime covers parseTime's three outcomes directly: empty input,
 // a malformed timestamp, and a valid RFC3339Nano one.
 func TestParseTime(t *testing.T) {

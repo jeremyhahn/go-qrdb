@@ -101,6 +101,34 @@ permission, more than 64 permissions, or a `--ttl` over `24h`. Refused with a
 permission error: a caller in the `system` tenant, and a caller that is itself
 authenticated by a delegation.
 
+## `qrdb ca delegate policy`
+
+A **delegation policy** writes your tenant's grant down once, so an embedding
+application's server-owned work can mint and renew its delegation for one
+service principal with no tenant admin at hand. Each policy names one
+principal, the scope delegated and the lifetime of each minted certificate; a
+renewal is admitted only within it. Every verb needs `certs:delegate` in your
+own tenant, and is refused for the system tenant and for a delegated caller.
+
+| Command | Flags | Meaning |
+|---|---|---|
+| `qrdb ca delegate policy put` | `--principal` (required), `--scope` (required, repeated or comma-separated), `--ttl` (default `1h`, at most `24h`) | write or replace the policy for that principal |
+| `qrdb ca delegate policy list` | — | list your tenant's policies (`--output json\|yaml` too) |
+| `qrdb ca delegate policy delete <principal>` | — | delete the policy; a missing one is a not-found error |
+
+```bash
+qrdb ca delegate policy put --principal billing --scope certs:delegate,kv:get --ttl 15m
+qrdb ca delegate policy list
+qrdb ca delegate policy delete billing
+```
+
+Deleting a policy revokes it: the next mint or renewal for its principal is
+refused (certificates already minted run to their own expiry, or end sooner
+with `qrdb ca revoke --serial`). A policy belongs to one tenant: another tenant
+neither lists nor deletes it, and a delegation it issues cannot renew under it.
+The policy lives in the CA's own keyspace, so a `kv put` naming its record
+changes nothing, and deleting the tenant deletes its policies.
+
 ## `qrdb ca csr`
 
 Generate an ECDSA P-256 key and a certificate signing request **locally**, with

@@ -33,5 +33,6 @@
     "token": "discovery-token-5c9e1b7d3a",
     "clusterSize": 5,
     "timeout": "90s"
-  }
+  },
+  "stateStorage": "file"
 }

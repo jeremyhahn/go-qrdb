@@ -35,6 +35,7 @@ import (
 func TestGRPCDatabase_RaftRequestReachesTheService(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := databasetest.NewManager(logger, t.TempDir())
+	dbwiretest.ClaimShards(t, mgr)
 	t.Cleanup(func() { _ = mgr.Close() })
 	svc := service.NewDatabaseService(mgr)
 	dbwiretest.Seed(t, svc)

@@ -43,12 +43,23 @@ func TestMCPToolRegistry_RegisterPublic_UnmappedTool(t *testing.T) {
 
 func TestMCPToolRegistry_RegisterPublic_HealthEligible(t *testing.T) {
 	r := NewMCPToolRegistry()
-	r.Register("qrdb_health", permission.AdminHealth)
+	r.Register("qrdb_health", permission.Public)
 	if err := r.RegisterPublic("qrdb_health"); err != nil {
-		t.Fatalf("admin:health must be eligible to be public: %v", err)
+		t.Fatalf("identity:public must be eligible to be public: %v", err)
 	}
 	if !r.IsPublic("qrdb_health") {
 		t.Fatal("qrdb_health should be public")
+	}
+}
+
+// admin:health is no longer the public-eligible exception: health is public
+// by carrying identity:public, so a tool carrying admin:health is refused.
+func TestMCPToolRegistry_RegisterPublic_AdminHealthRefused(t *testing.T) {
+	r := NewMCPToolRegistry()
+	r.Register("qrdb_health", permission.AdminHealth)
+	var refused *PublicMCPToolRefusedError
+	if err := r.RegisterPublic("qrdb_health"); !errors.As(err, &refused) {
+		t.Fatalf("RegisterPublic = %v, want *PublicMCPToolRefusedError", err)
 	}
 }
 
@@ -140,8 +151,8 @@ func TestMCPToolRegistry_Register_PublicHealthAllowed(t *testing.T) {
 	if err := r.RegisterPublic("qrdb_health"); err != nil {
 		t.Fatal(err)
 	}
-	r.Register("qrdb_health", permission.AdminHealth)
-	if perm, ok := r.Lookup("qrdb_health"); !ok || perm != permission.AdminHealth {
+	r.Register("qrdb_health", permission.Public)
+	if perm, ok := r.Lookup("qrdb_health"); !ok || perm != permission.Public {
 		t.Fatalf("Lookup = %q, %v", perm, ok)
 	}
 }
