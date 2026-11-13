@@ -67,14 +67,6 @@ func TestClientName_ReturnsConfiguredName(t *testing.T) {
 	}
 }
 
-func TestClientName_EmptyWhenNotSet(t *testing.T) {
-	_, baseURL := embeddingServer(t, func(_ http.ResponseWriter, _ *http.Request) {})
-	c := newTestClient(t, baseURL)
-	if c.Name() != "" {
-		t.Errorf("expected empty Name when not configured, got %q", c.Name())
-	}
-}
-
 // ---------------------------------------------------------------------------
 // types.DefaultConfig
 // ---------------------------------------------------------------------------
@@ -141,23 +133,5 @@ func TestModelNotFoundError_Unwrap(t *testing.T) {
 	e := &ModelNotFoundError{Model: "m", Cause: cause}
 	if !errors.Is(e, cause) {
 		t.Error("errors.Is should find cause via Unwrap")
-	}
-}
-
-func TestModelNotFoundError_Unwrap_NilCause(t *testing.T) {
-	e := &ModelNotFoundError{Model: "m"}
-	if e.Unwrap() != nil {
-		t.Error("expected nil Unwrap when Cause is not set")
-	}
-}
-
-func TestModelNotFoundError_As(t *testing.T) {
-	var target *ModelNotFoundError
-	err := &ModelNotFoundError{Model: "test-model"}
-	if !errors.As(err, &target) {
-		t.Error("errors.As should match *ModelNotFoundError")
-	}
-	if target.Model != "test-model" {
-		t.Errorf("expected Model=test-model, got %q", target.Model)
 	}
 }

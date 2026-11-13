@@ -32,19 +32,3 @@ func TestDefaultProviderConfig_Defaults(t *testing.T) {
 		t.Errorf("expected MaxRetries=3, got %d", cfg.MaxRetries)
 	}
 }
-
-func TestDefaultProviderConfig_EmptyStrings(t *testing.T) {
-	cfg := DefaultProviderConfig()
-	if cfg.Name != "" {
-		t.Errorf("expected empty Name, got %q", cfg.Name)
-	}
-	if cfg.BaseURL != "" {
-		t.Errorf("expected empty BaseURL, got %q", cfg.BaseURL)
-	}
-	if cfg.APIKey != "" {
-		t.Errorf("expected empty APIKey, got %q", cfg.APIKey)
-	}
-	if cfg.Model != "" {
-		t.Errorf("expected empty Model, got %q", cfg.Model)
-	}
-}

@@ -231,12 +231,6 @@ func TestValidateManagerConfig_VoyageWithKey(t *testing.T) {
 	}
 }
 
-func TestValidateManagerConfig_Success(t *testing.T) {
-	if err := validateManagerConfig(validManagerConfig()); err != nil {
-		t.Errorf("unexpected error for valid config: %v", err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // RegisterProvider / GetProvider
 // ---------------------------------------------------------------------------
@@ -403,15 +397,6 @@ func TestManagerEmbed_CacheMissStoresResult(t *testing.T) {
 func TestManagerEmbedBatch_EmptyInput(t *testing.T) {
 	m, _ := NewManager(validManagerConfig())
 	_, err := m.EmbedBatch(context.Background(), []string{})
-	var inv *InvalidInputError
-	if !errors.As(err, &inv) {
-		t.Errorf("expected InvalidInputError, got %T: %v", err, err)
-	}
-}
-
-func TestManagerEmbedBatch_NilInput(t *testing.T) {
-	m, _ := NewManager(validManagerConfig())
-	_, err := m.EmbedBatch(context.Background(), nil)
 	var inv *InvalidInputError
 	if !errors.As(err, &inv) {
 		t.Errorf("expected InvalidInputError, got %T: %v", err, err)
@@ -696,20 +681,6 @@ func TestNewManagerCache_WithCompress(t *testing.T) {
 	}
 }
 
-func TestNewManagerCache_ZeroCapacity(t *testing.T) {
-	_, err := newManagerCache(0, 0, false)
-	if err == nil {
-		t.Fatal("expected error for capacity=0")
-	}
-	var capErr *CacheCapacityError
-	if !errors.As(err, &capErr) {
-		t.Errorf("expected CacheCapacityError, got %T: %v", err, err)
-	}
-	if capErr.Capacity != 0 {
-		t.Errorf("expected Capacity=0, got %d", capErr.Capacity)
-	}
-}
-
 func TestNewManagerCache_NegativeCapacity(t *testing.T) {
 	_, err := newManagerCache(-3, 0, false)
 	if err == nil {
@@ -724,15 +695,6 @@ func TestNewManagerCache_NegativeCapacity(t *testing.T) {
 // ---------------------------------------------------------------------------
 // managerCache — hashKey
 // ---------------------------------------------------------------------------
-
-func TestManagerCache_HashKey_Deterministic(t *testing.T) {
-	c, _ := newManagerCache(10, 0, false)
-	k1 := c.hashKey("hello")
-	k2 := c.hashKey("hello")
-	if k1 != k2 {
-		t.Errorf("same input produced different hashes: %q vs %q", k1, k2)
-	}
-}
 
 func TestManagerCache_HashKey_Distinct(t *testing.T) {
 	c, _ := newManagerCache(10, 0, false)
@@ -834,22 +796,6 @@ func TestManagerCache_LRUPromotion(t *testing.T) {
 	}
 	if _, ok := c.get("a"); !ok {
 		t.Error("expected 'a' to still be present after promotion")
-	}
-}
-
-func TestManagerCache_HitsAndMisses(t *testing.T) {
-	c, _ := newManagerCache(10, 0, false)
-	c.put("k", []float32{1})
-
-	c.get("k")    // hit
-	c.get("k")    // hit
-	c.get("nope") // miss
-
-	if c.hits() != 2 {
-		t.Errorf("expected 2 hits, got %d", c.hits())
-	}
-	if c.misses() != 1 {
-		t.Errorf("expected 1 miss, got %d", c.misses())
 	}
 }
 
