@@ -17,6 +17,7 @@ package mcphttp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,6 +113,42 @@ func TestTransport_RepliesCarryTheRequestID(t *testing.T) {
 		}
 		wantRight(t, resp, `"req-7"`)
 	})
+
+	// A reply may spell the same JSON string with escapes; it still answers
+	// the request. escape(r) is the JSON escape sequence of r.
+	escape := func(r rune) string { return fmt.Sprintf("%cu%04x", rune(0x5c), r) }
+	for name, handler := range map[string]http.HandlerFunc{
+		"json escaped string id": jsonBody(`{"jsonrpc":"2.0","id":"req` + escape('-') + `7","result":{"which":"right"}}`),
+		"stream escaped string id": eventStream(
+			`{"jsonrpc":"2.0","id":"req-8","result":{"which":"other"}}`,
+			`{"jsonrpc":"2.0","id":"`+escape('r')+`eq-7","result":{"which":"right"}}`,
+		),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := request(mcp.MethodInitialize)
+			req.ID = mcp.NewRequestId("req-7")
+			resp, err := send(t, handler, req)
+			if err != nil {
+				t.Fatalf("SendRequest: %v", err)
+			}
+			wantRight(t, resp, `"req-7"`)
+		})
+	}
+
+	// A number never answers a string request of the same text.
+	for name, handler := range map[string]http.HandlerFunc{
+		"json int for string":   jsonBody(`{"jsonrpc":"2.0","id":1,"result":{"which":"other"}}`),
+		"stream int for string": eventStream(`{"jsonrpc":"2.0","id":1,"result":{"which":"other"}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := request(mcp.MethodInitialize)
+			req.ID = mcp.NewRequestId("1")
+			resp, err := send(t, handler, req)
+			if err == nil || resp != nil {
+				t.Fatalf("reply %+v, err %v; want a failure", resp, err)
+			}
+		})
+	}
 
 	t.Run("error reply with the id", func(t *testing.T) {
 		resp, err := send(t, jsonBody(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no"}}`), request(mcp.MethodToolsCall))
