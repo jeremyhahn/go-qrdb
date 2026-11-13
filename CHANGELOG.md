@@ -11,11 +11,17 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
+- **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
+
 ### Added
 
 - **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
-- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
+- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -1136,6 +1142,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **The embedding errors no path returned are gone** (#1218):
+  `service.EmbeddingBatchTooLargeError`, `service.EmbeddingDimensionMismatchError`
+  and `embedding.DimensionMismatchError` (with its `sdk/go` alias). An oversize
+  batch is split into provider calls of at most `batch_size` texts, never refused.
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
   trust-domain setting** (#1150). It pins the mTLS authenticator, names the
   built-in CA's trust domain and is the trust domain no tenant may be. A

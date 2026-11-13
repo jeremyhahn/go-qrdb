@@ -17,12 +17,14 @@ package middleware
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 )
 
 // RESTMiddleware returns an http.Handler that wraps the given handler with
@@ -74,9 +76,10 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		ctx = auth.WithDPoPFromHTTP(ctx, r)
 
 		// A small set of endpoints is public -- skip authentication entirely.
-		// Load balancers and probes must reach /health without a client
-		// certificate; /v1/ca/bootstrap lets joining nodes fetch the trust
-		// anchor before they have credentials; /v1/config/initialized lets the
+		// The no-login client verbs (publicverbs.Table: /health, invitation
+		// redemption) are not here: they are RESTRoutePublic in the registry,
+		// which the lookup below honours. /v1/ca/bootstrap lets joining
+		// nodes fetch the trust anchor before they have credentials; /v1/config/initialized lets the
 		// first-boot setup wizard check provisioning state before any user or
 		// certificate exists; the two /v1/cluster/ key-transport routes are the
 		// cluster peer plane — authorized by node identity (peer cert SPIFFE SAN)
@@ -87,8 +90,7 @@ func (m *AuthMiddleware) RESTMiddleware(routes *RESTRouteRegistry, next http.Han
 		// unauthenticated; each exact path here is a route that self-authorizes.
 		// The same routes are registered as RESTRoutePublic in the registry so
 		// the server's default-deny startup assertion accounts for them.
-		if r.URL.Path == "/health" ||
-			r.URL.Path == "/v1/ca/bootstrap" ||
+		if r.URL.Path == "/v1/ca/bootstrap" ||
 			r.URL.Path == "/v1/config/initialized" ||
 			r.URL.Path == "/v1/cluster/keydelivery" ||
 			r.URL.Path == "/v1/cluster/nodekey" {
@@ -317,6 +319,33 @@ func setRetryAfterHeader(w http.ResponseWriter, err error) {
 		return
 	}
 	w.Header().Set("Retry-After", strconv.FormatInt(RetryAfterSeconds(delay), 10))
+}
+
+// LimitPublicHTTP draws perm's pre-authentication bucket for a no-login
+// REST route (publicverbs.Names.RateLimit) before its handler runs, the REST
+// counterpart of QUIC's limitPublic and gRPC's
+// PublicRateLimitUnaryInterceptor. A public route runs no authentication,
+// so the caller's source host is the only identity there is; the port is
+// dropped so a caller cannot reset its bucket by reconnecting. On refusal it
+// writes the 429 (with Retry-After) and returns false; a nil receiver, an
+// unwired limiter or an undeclared policy admits the request.
+func (m *AuthMiddleware) LimitPublicHTTP(w http.ResponseWriter, r *http.Request, perm permission.Permission) bool {
+	if m == nil {
+		return true
+	}
+	source, ok := auth.RemoteAddrFromContext(r.Context())
+	if !ok {
+		source = r.RemoteAddr
+	}
+	if host, _, err := net.SplitHostPort(source); err == nil {
+		source = host
+	}
+	if err := m.CheckLoginRateLimit(r.Context(), "", source, perm); err != nil {
+		setRetryAfterHeader(w, err)
+		WriteJSONError(w, mapHTTPAuthError(err), err.Error())
+		return false
+	}
+	return true
 }
 
 // restErrorResponse is the JSON payload for auth error responses.

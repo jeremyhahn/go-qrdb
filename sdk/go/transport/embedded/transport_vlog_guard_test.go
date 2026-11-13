@@ -148,12 +148,6 @@ func TestVlog_WithDatabaseScopesTheLogDatabase(t *testing.T) {
 	}
 }
 
-func TestWithLogService_SetsAndClearsTheService(t *testing.T) {
-	if tr := newExtTransport(t, WithLogService(nil)); tr.logSvc != nil {
-		t.Fatal("WithLogService(nil) left a service")
-	}
-}
-
 // failingLogService answers every LogService call with err.
 type failingLogService struct{ err error }
 

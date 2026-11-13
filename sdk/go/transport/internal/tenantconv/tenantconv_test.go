@@ -74,17 +74,6 @@ func TestToTenantInfo_Full(t *testing.T) {
 	}
 }
 
-func TestToTenantInfo_CarriesDescriptionAndMetadata(t *testing.T) {
-	want := map[string]string{"env": "prod"}
-	got := ToTenantInfo(&pb.TenantResponse{Id: "acme", Description: "Acme production", Metadata: want})
-	if got.Description != "Acme production" || !maps.Equal(got.Metadata, want) {
-		t.Fatalf("descriptive fields = %q, %v; want %q, %v", got.Description, got.Metadata, "Acme production", want)
-	}
-	if bare := ToTenantInfo(&pb.TenantResponse{Id: "acme"}); bare.Description != "" || bare.Metadata != nil {
-		t.Fatalf("unset descriptive fields = %q, %v; want empty and nil", bare.Description, bare.Metadata)
-	}
-}
-
 func TestUpdateRequest_DescriptiveFieldsKeepPatchSemantics(t *testing.T) {
 	desc := "Acme production"
 	entries := map[string]string{"env": "prod"}

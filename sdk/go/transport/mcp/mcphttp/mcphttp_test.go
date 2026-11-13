@@ -212,6 +212,43 @@ func TestTransport_UnusableRepliesAreFailures(t *testing.T) {
 	}
 }
 
+// TestStatusError_DecodesTheJSONErrorBody pins that a refusal the server
+// answers as {"error": "..."} reaches the caller as the plain message, with
+// the status kept, and that a body that is not that object is kept verbatim.
+func TestStatusError_DecodesTheJSONErrorBody(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{
+			name: "json error object",
+			body: `{"error":"qrdb/auth: invalid_cert: subject OU \"system\" and SPIFFE ID tenant \"acme\" disagree"}` + "\n",
+			want: `mcphttp: the server answered 401 Unauthorized: qrdb/auth: invalid_cert: subject OU "system" and SPIFFE ID tenant "acme" disagree`,
+		},
+		{
+			name: "plain text",
+			body: "not json\n",
+			want: "mcphttp: the server answered 401 Unauthorized: not json",
+		},
+		{
+			name: "json without error",
+			body: `{"message":"x"}`,
+			want: `mcphttp: the server answered 401 Unauthorized: {"message":"x"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{
+				Status:     "401 Unauthorized",
+				StatusCode: http.StatusUnauthorized,
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+			if got := statusError(resp).Error(); got != tc.want {
+				t.Fatalf("statusError = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func request(method mcp.MCPMethod) mcptransport.JSONRPCRequest {
 	return mcptransport.JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: string(method)}
 }

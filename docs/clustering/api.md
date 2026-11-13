@@ -13,7 +13,7 @@ and refuses in standalone with `requires mode: raft`.
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.Admin()`) | `scp` permission |
 |---|---|---|---|---|---|---|
-| Health | `GET /health` — **public** | `Health` | `admin.Health` | `qrdb_health` | `Health` | none on REST; `admin:health` on the others |
+| Health | `GET /health` — **public** | `Health` — **public** | `admin.Health` — **public** | `qrdb_health` — **public** | `Health` | none on any transport (`pkg/api/publicverbs.Table`); each draws the `admin:health` rate-limit bucket by caller address |
 | Status | `GET /status` | `Status` | `admin.Status` | `qrdb_status` | `Status` | `admin:status` |
 | Peers | `GET /peers` | `Peers` | `admin.Peers` | `qrdb_peers` | `Peers` | `admin:peers` |
 | Capabilities | `GET /capabilities` | `Capabilities` | `admin.Capabilities` | `qrdb_capabilities` | `Capabilities` | `admin:capabilities` |
