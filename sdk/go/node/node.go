@@ -3428,22 +3428,29 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 
+	// The node builds the database manager, as the sealed clustered path
+	// does, so the service BuildServices wires and both provisioning
+	// authorization wrappers (embedded and network) resolve the node's
+	// database_defaults against the same manager. The node owns its
+	// lifetime; lifecycle adds no closer for a supplied manager.
+	dbManager := database.NewManager(n.logger, dataDir,
+		database.WithDefaults(clusteredDatabaseDefaults(cfg)))
+	n.dbManager = dbManager
+
 	infra, err := withCryptoInfra(lifecycle.Infra{
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(cfg),
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
-		// The manager BuildServices creates for this node records the
-		// node's database_defaults under the raft run mode.
-		Backend:          database.BackendRaft,
-		DatabaseDefaults: clusteredDatabaseDefaults(cfg),
-		ReplicaID:        cfg.Raft.ReplicaID,
-		Index:            cfg.Index,
-		TimeSeries:       cfg.TimeSeries,
-		Profile:          &profile,
-		Logger:           log,
-		SealEnabled:      cfg.Seal.Enabled,
-		RaftAddrToNodeID: raftAddrToNodeIDMap(members),
+		Backend:           database.BackendRaft,
+		DatabaseManager:   dbManager,
+		ReplicaID:         cfg.Raft.ReplicaID,
+		Index:             cfg.Index,
+		TimeSeries:        cfg.TimeSeries,
+		Profile:           &profile,
+		Logger:            log,
+		SealEnabled:       cfg.Seal.Enabled,
+		RaftAddrToNodeID:  raftAddrToNodeIDMap(members),
 		// Under "required" the user store refuses to withdraw the bootstrap
 		// admin's last live binding (go-qrdb#517).
 		MTLSBindingPolicy:  cfg.Auth.MTLSBindingPolicy,
@@ -3457,12 +3464,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}, cfg, serverOpts)
 	if err != nil {
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 
 	svcNode, err := lifecycle.BuildServices(ctx, infra)
 	if err != nil {
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -3486,6 +3495,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		n.bgWG.Wait()
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 	n.startFeatureGate(host, svcNode.KV)
