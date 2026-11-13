@@ -20,7 +20,10 @@ limitations under the License.
 -->
 
 The composition seams a release exposes to upstream composers (go-xkms,
-go-quicbaas) are inventoried in [extension-seams.md](extension-seams.md).
+go-quicbaas) are inventoried in [extension-seams.md](extension-seams.md). How far the
+tree is from the first public release, item by item against the checklist
+of SPEC row `release-readiness` (#566), is recorded in
+[readiness.md](readiness.md).
 
 ## What a release is
 

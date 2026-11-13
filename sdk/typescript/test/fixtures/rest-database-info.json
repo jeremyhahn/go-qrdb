@@ -54,7 +54,8 @@
       "tokenSet": true,
       "clusterSize": 3,
       "timeout": "30s"
-    }
+    },
+    "stateStorage": "file"
   },
   "barrier": {
     "enabled": true,

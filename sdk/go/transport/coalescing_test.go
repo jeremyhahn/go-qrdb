@@ -21,6 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -245,60 +246,84 @@ func TestCoalescing_ConcurrentPuts(t *testing.T) {
 }
 
 func TestCoalescing_WindowFlush(t *testing.T) {
-	const window = 20 * time.Millisecond
-	ct, mock := newCoalescing(WithBatchWindow(window))
-	defer ct.Close()
+	synctest.Test(t, func(t *testing.T) {
+		// A window well above the 1ms default: a no-op WithBatchWindow would
+		// flush long before it elapses.
+		const window = 50 * time.Millisecond
+		ct, mock := newCoalescing(WithBatchWindow(window))
+		defer ct.Close()
 
-	done := make(chan error, 1)
-	go func() {
-		done <- ct.Put(context.Background(), "wk", []byte("wv"))
-	}()
+		done := make(chan error, 1)
+		go func() {
+			done <- ct.Put(context.Background(), "wk", []byte("wv"))
+		}()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Put error: %v", err)
+		// Just before the window elapses: queued, not flushed.
+		time.Sleep(window - time.Millisecond)
+		synctest.Wait()
+		if got := mock.callCount(); got != 0 {
+			t.Fatalf("expected no ExecuteBatch call before the window elapsed, got %d", got)
 		}
-	case <-time.After(window * 10):
-		t.Fatal("Put did not complete within expected window")
-	}
-	if mock.callCount() != 1 {
-		t.Errorf("expected 1 ExecuteBatch call after window, got %d", mock.callCount())
-	}
+		select {
+		case err := <-done:
+			t.Fatalf("Put returned before the window elapsed: %v", err)
+		default:
+		}
+
+		// The window elapses: exactly one flush, and the Put completes.
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Put error: %v", err)
+			}
+		default:
+			t.Fatal("Put did not complete once the window elapsed")
+		}
+		if got := mock.callCount(); got != 1 {
+			t.Errorf("expected 1 ExecuteBatch call after the window, got %d", got)
+		}
+	})
 }
 
 func TestCoalescing_BatchSizeTrigger(t *testing.T) {
-	const maxBatch = 4
-	ct, mock := newCoalescing(
-		WithMaxBatchSize(maxBatch),
-		// Use a very long window so the only flush trigger is the size limit.
-		WithBatchWindow(10*time.Second),
-	)
-	defer ct.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const maxBatch = 4
+		ct, mock := newCoalescing(
+			WithMaxBatchSize(maxBatch),
+			// A very long window so the only flush trigger is the size limit.
+			WithBatchWindow(10*time.Second),
+		)
+		defer ct.Close()
 
-	var wg sync.WaitGroup
-	var errCount atomic.Int32
-	wg.Add(maxBatch)
-	for i := 0; i < maxBatch; i++ {
-		go func() {
-			defer wg.Done()
-			if err := ct.Put(context.Background(), "bk", []byte("bv")); err != nil {
-				errCount.Add(1)
-				t.Logf("Put error: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
+		var completed, errCount atomic.Int32
+		for i := 0; i < maxBatch; i++ {
+			go func() {
+				if err := ct.Put(context.Background(), "bk", []byte("bv")); err != nil {
+					errCount.Add(1)
+					t.Logf("Put error: %v", err)
+				}
+				completed.Add(1)
+			}()
+		}
 
-	if errCount.Load() != 0 {
-		t.Fatalf("%d Put calls failed", errCount.Load())
-	}
-	if mock.callCount() < 1 {
-		t.Error("expected at least 1 ExecuteBatch call triggered by batch size")
-	}
-	if got := len(mock.allOps()); got != maxBatch {
-		t.Errorf("expected %d ops, got %d", maxBatch, got)
-	}
+		// No fake-clock advance: the batch must flush because it reached
+		// the configured size, not because the window elapsed.
+		synctest.Wait()
+		if got := completed.Load(); got != maxBatch {
+			t.Fatalf("expected %d Puts done by the size trigger before the window, got %d", maxBatch, got)
+		}
+		if errCount.Load() != 0 {
+			t.Fatalf("%d Put calls failed", errCount.Load())
+		}
+		if got := mock.callCount(); got != 1 {
+			t.Errorf("expected 1 ExecuteBatch call triggered by batch size, got %d", got)
+		}
+		if got := len(mock.allOps()); got != maxBatch {
+			t.Errorf("expected %d ops, got %d", maxBatch, got)
+		}
+	})
 }
 
 func TestCoalescing_ContextCancellation(t *testing.T) {
@@ -329,30 +354,33 @@ func TestCoalescing_ContextCancellation(t *testing.T) {
 }
 
 func TestCoalescing_Close_DrainsPending(t *testing.T) {
-	const window = 10 * time.Second
-	ct, mock := newCoalescing(WithBatchWindow(window))
+	synctest.Test(t, func(t *testing.T) {
+		const window = 10 * time.Second
+		ct, mock := newCoalescing(WithBatchWindow(window))
 
-	var wg sync.WaitGroup
-	const n = 3
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func() {
-			defer wg.Done()
-			// Context has a generous deadline so it does not expire before Close.
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = ct.Put(ctx, "dk", []byte("dv"))
-		}()
-	}
+		var wg sync.WaitGroup
+		const n = 3
+		wg.Add(n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer wg.Done()
+				// Context has a generous deadline so it does not expire before Close.
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = ct.Put(ctx, "dk", []byte("dv"))
+			}()
+		}
 
-	// Give goroutines time to enqueue their ops before we close.
-	time.Sleep(20 * time.Millisecond)
-	ct.Close()
-	wg.Wait()
+		// Every Put is queued and blocked on its result, and the drain loop
+		// is idle inside its window, before Close runs.
+		synctest.Wait()
+		ct.Close()
+		wg.Wait()
 
-	if got := len(mock.allOps()); got != n {
-		t.Errorf("expected %d ops flushed on Close, got %d", n, got)
-	}
+		if got := len(mock.allOps()); got != n {
+			t.Errorf("expected %d ops flushed on Close, got %d", n, got)
+		}
+	})
 }
 
 func TestCoalescing_MixedOps(t *testing.T) {
@@ -631,14 +659,6 @@ func TestBatchIndexError_Message(t *testing.T) {
 	}
 }
 
-func TestBatchIndexError_ZeroIndex(t *testing.T) {
-	err := &BatchIndexError{Index: 0}
-	want := "transport: batch response missing result at index 0"
-	if got := err.Error(); got != want {
-		t.Errorf("BatchIndexError.Error() = %q, want %q", got, want)
-	}
-}
-
 // TestCoalescing_BatchIndexError exercises the flush branch where the server
 // returns fewer responses than ops submitted.
 func TestCoalescing_BatchIndexError(t *testing.T) {
@@ -722,22 +742,6 @@ func TestCoalescing_GetError_FromBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 // CoalescingOption tests
 // ---------------------------------------------------------------------------
-
-func TestWithMaxBatchSize(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithMaxBatchSize(10)(&cfg)
-	if cfg.maxBatch != 10 {
-		t.Errorf("expected maxBatch=10, got %d", cfg.maxBatch)
-	}
-}
-
-func TestWithBatchWindow(t *testing.T) {
-	cfg := coalescingConfig{maxBatch: 256, window: time.Millisecond}
-	WithBatchWindow(50 * time.Millisecond)(&cfg)
-	if cfg.window != 50*time.Millisecond {
-		t.Errorf("expected window=50ms, got %v", cfg.window)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // mergeDeadlines tests

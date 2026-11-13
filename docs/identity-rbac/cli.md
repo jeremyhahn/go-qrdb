@@ -548,12 +548,17 @@ See [../firstboot/cli.md](../firstboot/cli.md).
 There is no user or role verb for a service principal: it is not an account.
 A tenant lets an embedding application's principal act inside it by issuing a
 delegation certificate with `qrdb ca delegate` — see
-[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate),
-or by writing a standing policy with `qrdb ca delegate policy put`, under which
-the application mints and renews its own delegation — see
-[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate-policy).
+[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
 What that principal can then do is the delegated scope intersected with the
 grants the application gives it, so no `roles assign` is involved.
+
+For work the application runs on its own, write the grant down once with
+`qrdb ca delegate policy put --principal <p> --scope ... --ttl ...`: the
+delegation then renews itself within that policy, and
+`qrdb ca delegate policy delete <p>` revokes it (the next mint is refused) — see
+[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate-policy).
+`qrdb ca delegate policy list` shows your tenant's policies, never another
+tenant's.
 
 ## A complete enrolment
 

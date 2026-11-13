@@ -52,6 +52,9 @@ type HeadSignerRequest = vlog.HeadSignerRequest
 // records it. (Aliases pkg/vlog.HeadKey.)
 type HeadKey = vlog.HeadKey
 
+// VlogInvalidDescriptorError reports a log descriptor the service refuses. (Aliases pkg/vlog.InvalidDescriptorError.)
+type VlogInvalidDescriptorError = vlog.InvalidDescriptorError
+
 // HeadSignatureType names a head-signing key's algorithm. (Aliases
 // pkg/vlog.SignatureType.)
 type HeadSignatureType = vlog.SignatureType

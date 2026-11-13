@@ -27,6 +27,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
@@ -276,8 +277,11 @@ func TestRegisterPublicTools_NoListerNoPublic(t *testing.T) {
 	if srv.publicToolsErr != nil {
 		t.Fatalf("registerPublicTools: %v", srv.publicToolsErr)
 	}
-	if srv.toolPerms.HasPublic() {
-		t.Fatal("no module declared a public tool")
+	for _, tool := range srv.mcpSrv.ListTools() {
+		_, builtin := publicverbs.MCPTools()[tool.Tool.Name]
+		if srv.toolPerms.IsPublic(tool.Tool.Name) != builtin {
+			t.Errorf("tool %s: public = %v, want %v (publicverbs.Table only)", tool.Tool.Name, !builtin, builtin)
+		}
 	}
 }
 

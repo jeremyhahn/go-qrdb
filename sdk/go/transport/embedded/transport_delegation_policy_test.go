@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -152,4 +154,76 @@ func TestDeleteDelegationPolicy_NilService(t *testing.T) {
 	tr := newAuthTransport(t)
 	err := tr.DeleteDelegationPolicy(context.Background(), "billing")
 	assertNotImplementedError(t, err, "DeleteDelegationPolicy")
+}
+
+// countingPolicyService is a cert enrollment double that counts every
+// delegation policy call that reaches it.
+func countingPolicyService(calls *int) *mockCertEnrollmentServicer {
+	return &mockCertEnrollmentServicer{
+		policyPutFn: func(_ context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error) {
+			*calls++
+			return &delegation.Policy{Tenant: req.TenantID, Principal: req.Principal, Scope: req.Scope, TTL: req.TTL}, nil
+		},
+		policyListFn: func(context.Context, string) ([]delegation.Policy, error) {
+			*calls++
+			return nil, nil
+		},
+		policyDeleteFn: func(context.Context, string, string) error {
+			*calls++
+			return nil
+		},
+	}
+}
+
+// delegationPolicyOps drives each delegation policy method through tr.
+func delegationPolicyOps() map[string]func(context.Context, *Transport) error {
+	return map[string]func(context.Context, *Transport) error{
+		"Put": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.PutDelegationPolicy(ctx, &transport.DelegationPolicyRequest{Principal: "billing", Scope: []string{"kv:get"}, TTL: "15m"})
+			return err
+		},
+		"List": func(ctx context.Context, tr *Transport) error {
+			_, err := tr.ListDelegationPolicies(ctx)
+			return err
+		},
+		"Delete": func(ctx context.Context, tr *Transport) error {
+			return tr.DeleteDelegationPolicy(ctx, "billing")
+		},
+	}
+}
+
+func TestDelegationPolicy_CertsDelegateAdmitted(t *testing.T) {
+	for name, op := range delegationPolicyOps() {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			tr := newAuthTransport(t, WithCertEnrollment(countingPolicyService(&calls)),
+				WithAuthMiddleware(newGrantingAuthMW(permission.CertsDelegate)))
+
+			if err := op(identityCtx("tenant-a", "member"), tr); err != nil {
+				t.Fatalf("a caller holding certs:delegate was refused: %v", err)
+			}
+			if calls != 1 {
+				t.Errorf("service calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestDelegationPolicy_WithoutCertsDelegateRefused(t *testing.T) {
+	for name, op := range delegationPolicyOps() {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			// Every other certificate grant, but not certs:delegate.
+			tr := newAuthTransport(t, WithCertEnrollment(countingPolicyService(&calls)),
+				WithAuthMiddleware(newGrantingAuthMW(permission.CertsIssue, permission.CertsEnroll, permission.CertsRevoke, permission.CertsList)))
+
+			err := op(identityCtx("tenant-a", "member"), tr)
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("err = %v, want %v", err, auth.ErrUnauthorized)
+			}
+			if calls != 0 {
+				t.Errorf("a refused call reached the service %d time(s)", calls)
+			}
+		})
+	}
 }

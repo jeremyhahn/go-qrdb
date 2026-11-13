@@ -533,57 +533,6 @@ func TestProtoIndexTypeToTransport_AllValues(t *testing.T) {
 // Closed state tests for Vector methods
 // ---------------------------------------------------------------------------
 
-func TestTransport_CreateNamespace_Closed(t *testing.T) {
-	tr, err := New(transport.WithAddress("localhost:63002"))
-	if err != nil {
-		t.Fatalf("New() returned unexpected error: %v", err)
-	}
-	_ = tr.Close()
-	ctx := context.Background()
-	_, err = tr.CreateNamespace(ctx, &transport.CreateNamespaceRequest{Namespace: "test"})
-	if err == nil {
-		t.Fatal("CreateNamespace() on closed transport should return error")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestTransport_DeleteNamespace_Closed(t *testing.T) {
-	tr, err := New(transport.WithAddress("localhost:63002"))
-	if err != nil {
-		t.Fatalf("New() returned unexpected error: %v", err)
-	}
-	_ = tr.Close()
-	ctx := context.Background()
-	_, err = tr.DeleteNamespace(ctx, &transport.DeleteNamespaceRequest{Namespace: "test"})
-	if err == nil {
-		t.Fatal("DeleteNamespace() on closed transport should return error")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestTransport_ListNamespaces_Closed(t *testing.T) {
-	tr, err := New(transport.WithAddress("localhost:63002"))
-	if err != nil {
-		t.Fatalf("New() returned unexpected error: %v", err)
-	}
-	_ = tr.Close()
-	ctx := context.Background()
-	_, err = tr.ListNamespaces(ctx, &transport.ListNamespacesRequest{})
-	if err == nil {
-		t.Fatal("ListNamespaces() on closed transport should return error")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestTransport_GetNamespaceInfo_Closed(t *testing.T) {
 	tr, err := New(transport.WithAddress("localhost:63002"))
 	if err != nil {

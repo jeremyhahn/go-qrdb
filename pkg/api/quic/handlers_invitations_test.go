@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -138,14 +139,14 @@ func TestInvitationMethods_Registration(t *testing.T) {
 		NewServer(nil, nil, "localhost:0"),
 		NewServer(nil, nil, "localhost:0", WithInvitations(&fakeInvitations{})),
 	} {
-		if !srv.methodPerms.IsPublic(methodRedeemInvitation) || srv.methodPerms.IsPublic(methodInviteUser) {
+		if !srv.methodPerms.IsPublic(publicverbs.Table[publicverbs.VerbInvitationRedeem].QUIC) || srv.methodPerms.IsPublic(methodInviteUser) {
 			t.Fatal("public registration is wrong")
 		}
-		if !srv.methodPerms.Covered(methodRedeemInvitation) || !srv.methodPerms.Covered(methodInviteUser) {
+		if !srv.methodPerms.Covered(publicverbs.Table[publicverbs.VerbInvitationRedeem].QUIC) || !srv.methodPerms.Covered(methodInviteUser) {
 			t.Fatal("an invitation method is not covered")
 		}
 	}
-	if _, served := NewServer(nil, nil, "localhost:0").handlers[methodRedeemInvitation]; served {
+	if _, served := NewServer(nil, nil, "localhost:0").handlers[publicverbs.Table[publicverbs.VerbInvitationRedeem].QUIC]; served {
 		t.Fatal("redeem is dispatched with no invitation service")
 	}
 }

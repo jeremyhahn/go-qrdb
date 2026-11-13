@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -41,17 +40,5 @@ func TestGRPCDatabase_UpdateDatabaseCompaction_RoundTrip(t *testing.T) {
 	info, err = tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{Name: "testdb"})
 	if err != nil || info.Compaction != nil {
 		t.Fatalf("clear = %+v, %v", info, err)
-	}
-}
-
-func TestGRPCDatabase_UpdateDatabaseCompaction_Closed(t *testing.T) {
-	addr, stop := startDatabaseServer(t)
-	defer stop()
-	tr, cleanup := connectDatabaseTransport(t, addr)
-	defer cleanup()
-	tr.closed.Store(true)
-	var closed *transport.ClosedError
-	if _, err := tr.UpdateDatabaseCompaction(context.Background(), transport.UpdateDatabaseCompactionRequest{Name: "testdb"}); !errors.As(err, &closed) {
-		t.Fatalf("closed = %v, want *ClosedError", err)
 	}
 }

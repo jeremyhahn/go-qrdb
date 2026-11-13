@@ -198,7 +198,7 @@ func TestLookupGRPCFromDescriptor_Found(t *testing.T) {
 		{"/qrdb.v1.QRDBService/VectorGetIndexStats", permission.VectorGetIndexStats},
 		{"/qrdb.v1.QRDBService/VectorCompactNamespace", permission.VectorCompact},
 		{"/qrdb.v1.QRDBService/VectorGetCompactionProgress", permission.VectorGetCompactProg},
-		{"/qrdb.v1.QRDBService/Health", permission.AdminHealth},
+		{"/qrdb.v1.QRDBService/Health", permission.Public},
 		{"/qrdb.v1.QRDBService/Status", permission.AdminStatus},
 		{"/qrdb.v1.QRDBService/Peers", permission.AdminPeers},
 		{"/qrdb.v1.QRDBService/AddMember", permission.AdminAddMember},
@@ -207,6 +207,36 @@ func TestLookupGRPCFromDescriptor_Found(t *testing.T) {
 		{"/qrdb.v1.QRDBService/Drain", permission.AdminDrain},
 		{"/qrdb.v1.QRDBService/Capabilities", permission.AdminCapabilities},
 		{"/qrdb.v1.QRDBService/RedeemInvitation", permission.Public},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			got, ok := LookupGRPCFromDescriptor(tt.method)
+			if !ok {
+				t.Fatalf("expected a permission option for %q", tt.method)
+			}
+			if got != tt.want {
+				t.Errorf("LookupGRPCFromDescriptor(%q) = %q, want %q", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGRPCPermissions_RotationAndDelegationPolicyRPCs pins the permission
+// each credential rotation policy RPC (#1201) and tenant delegation policy
+// RPC (#1187) declares through its (qrdb.v1.permission) option.
+func TestGRPCPermissions_RotationAndDelegationPolicyRPCs(t *testing.T) {
+	tests := []struct {
+		method string
+		want   permission.Permission
+	}{
+		{"/qrdb.v1.QRDBService/CredentialSetRotationPolicy", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/CredentialRotationPolicy", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/CredentialMigrationConflicts", permission.CredentialsList},
+		{"/qrdb.v1.QRDBService/CredentialResolveMigrationConflict", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/PutDelegationPolicy", permission.CertsDelegate},
+		{"/qrdb.v1.QRDBService/ListDelegationPolicies", permission.CertsDelegate},
+		{"/qrdb.v1.QRDBService/DeleteDelegationPolicy", permission.CertsDelegate},
 	}
 
 	for _, tt := range tests {

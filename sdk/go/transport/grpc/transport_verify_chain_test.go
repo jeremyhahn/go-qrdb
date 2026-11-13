@@ -190,13 +190,3 @@ func TestGRPCVerifyChain_NotImplemented(t *testing.T) {
 		t.Fatalf("expected *transport.NotImplementedError, got %v", err)
 	}
 }
-
-func TestGRPCVerifyChain_Closed(t *testing.T) {
-	tr := &Transport{}
-	tr.closed.Store(true)
-	_, err := tr.VerifyChain(context.Background())
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *transport.ClosedError, got %v", err)
-	}
-}

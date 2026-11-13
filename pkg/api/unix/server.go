@@ -40,6 +40,7 @@ import (
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -670,14 +671,12 @@ func (s *Server) Start() error {
 				return err
 			}
 		}
-		// RedeemInvitation is the one PUBLIC built-in RPC (not a module): see
+		// The built-in no-login RPCs are publicverbs.Table's: see
 		// pkg/api/grpc/server.go Start's identical registration. s.authMW may
-		// be the SAME instance the TCP gRPC server registered this on, but
+		// be the SAME instance the TCP gRPC server registered them on, but
 		// this keeps the Unix transport correct standalone.
-		if s.invitationSvc != nil {
-			if err := s.authMW.RegisterPublicGRPCMethods([]string{pb.QRDBService_RedeemInvitation_FullMethodName}); err != nil {
-				return err
-			}
+		if err := s.authMW.RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(pb.QRDBService_ServiceDesc.ServiceName)); err != nil {
+			return err
 		}
 	}
 
@@ -975,7 +974,7 @@ func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor
 		grpcpkg.DatabaseScopeUnaryInterceptor,
 	}
 	if p.authMW != nil {
-		unaryInterceptors = append(unaryInterceptors, p.authMW.UnaryInterceptor())
+		unaryInterceptors = append(unaryInterceptors, grpcpkg.PublicRateLimitUnaryInterceptor(p.authMW), p.authMW.UnaryInterceptor())
 	}
 	// The SO gate installs whenever there is one, auth middleware or not:
 	// with nothing to authenticate the caller there is no SO to admit, so it

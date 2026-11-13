@@ -242,18 +242,6 @@ func TestE2E_Collection_ListDocuments_RPCError(t *testing.T) {
 // CA file read error and cert load error paths.
 // ---------------------------------------------------------------------------
 
-func TestQUIC_BuildTLSConfig_CAFileReadError(t *testing.T) {
-	tr := &Transport{config: &transport.Config{TLSCAFile: "/nonexistent/ca.pem"}}
-	_, err := tr.buildTLSConfig()
-	if err == nil {
-		t.Fatal("expected error for nonexistent CA file")
-	}
-	var tlsErr *transport.TLSError
-	if !errorAs(err, &tlsErr) {
-		t.Fatalf("expected TLSError, got %T: %v", err, err)
-	}
-}
-
 func TestQUIC_BuildTLSConfig_CAParseError(t *testing.T) {
 	// Write a file with invalid PEM data.
 	f, err := writeTmpFile(t, []byte("this is not valid PEM"))

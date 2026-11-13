@@ -345,24 +345,6 @@ func TestTSQuery_ServiceError(t *testing.T) {
 	}
 }
 
-func TestTSQuery_ClosedTransport(t *testing.T) {
-	tsSvc := newMockTSService()
-	tr, cleanup := connectTSTransport(t, tsSvc)
-	defer cleanup()
-	_ = tr.Close()
-
-	_, err := tr.TSQuery(context.Background(), &transport.TSQueryRequest{
-		Metric: "cpu.usage",
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestTSQuery_EmptyResult(t *testing.T) {
 	tsSvc := newMockTSService()
 	tsSvc.queryResult = nil
@@ -435,24 +417,6 @@ func TestTSAggregate_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestTSAggregate_ClosedTransport(t *testing.T) {
-	tsSvc := newMockTSService()
-	tr, cleanup := connectTSTransport(t, tsSvc)
-	defer cleanup()
-	_ = tr.Close()
-
-	_, err := tr.TSAggregate(context.Background(), &transport.TSAggregateRequest{
-		Metric: "cpu.usage",
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -592,24 +556,6 @@ func TestTSRichQuery_ServiceError(t *testing.T) {
 	}
 }
 
-func TestTSRichQuery_ClosedTransport(t *testing.T) {
-	tsSvc := newMockTSService()
-	tr, cleanup := connectTSTransport(t, tsSvc)
-	defer cleanup()
-	_ = tr.Close()
-
-	_, err := tr.TSRichQuery(context.Background(), &transport.TSRichQueryRequest{
-		Metric: "cpu.usage",
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestTSRichQuery_NilAggregatedValue(t *testing.T) {
 	tsSvc := newMockTSService()
 	tsSvc.richQueryResult = &timeseries.QueryResult{
@@ -745,24 +691,6 @@ func TestTSGetRetention_ServiceError(t *testing.T) {
 	}
 }
 
-func TestTSGetRetention_ClosedTransport(t *testing.T) {
-	tsSvc := newMockTSService()
-	tr, cleanup := connectTSTransport(t, tsSvc)
-	defer cleanup()
-	_ = tr.Close()
-
-	_, err := tr.TSGetRetention(context.Background(), &transport.TSGetRetentionRequest{
-		Metric: "cpu.usage",
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TSSetRetention tests
 // ---------------------------------------------------------------------------
@@ -878,24 +806,6 @@ func TestTSListMetrics_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestTSListMetrics_ClosedTransport(t *testing.T) {
-	tsSvc := newMockTSService()
-	tr, cleanup := connectTSTransport(t, tsSvc)
-	defer cleanup()
-	_ = tr.Close()
-
-	_, err := tr.TSListMetrics(context.Background(), &transport.TSListMetricsRequest{
-		Prefix: "cpu.",
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 

@@ -358,6 +358,7 @@ func fromTransportRaftConfig(rc *transport.DatabaseRaftConfig) *database.Databas
 	}
 	out := &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(rc.ClusterMode),
+		StateStorage:   database.BackendType(rc.StateStorage),
 		ReplicaID:      rc.ReplicaID,
 		RaftAddress:    rc.RaftAddress,
 		Peers:          rc.Peers,

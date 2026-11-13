@@ -2369,6 +2369,208 @@ export interface AuditQueryClient {
     query(f?: AuditFilter): Promise<AuditPage>;
 }
 
+// ============================================================================
+// Verifiable logs (RFC 9162 transparency logs)
+// ============================================================================
+
+/**
+ * Head-signing signature algorithm of a verifiable log: `ed25519` or
+ * `ecdsa-p256-sha256`.
+ */
+export type VlogSignatureType = 'ed25519' | 'ecdsa-p256-sha256';
+
+/** A head-signing public key of a log. Byte fields are base64 strings. */
+export interface VlogHeadKey {
+    /** Key version; heads signed under it name it. */
+    readonly version: number;
+    /** Public key, base64. */
+    readonly publicKey: string;
+}
+
+/** Request to create a verifiable log. */
+export interface VlogCreateRequest {
+    /** Log name within the database. */
+    readonly log: string;
+    /**
+     * Checkpoint origin line (C2SP tlog-checkpoint), e.g. "example.com/log".
+     * Required: the server refuses an empty origin and never derives one.
+     */
+    readonly origin: string;
+    /** C2SP note verifier keys of external witnesses. */
+    readonly verifierKeys?: readonly string[];
+    /** Allow ExpireBodies on this log. */
+    readonly allowExpireBodies?: boolean;
+    /** Create a head-signing key of this type. */
+    readonly signingKeyType?: VlogSignatureType;
+}
+
+/** Result of creating a verifiable log. */
+export interface VlogCreateResult {
+    readonly tenantId: string;
+    readonly database: string;
+    readonly log: string;
+    /** The head-signing key, when the request named a key type. */
+    readonly key?: VlogHeadKey;
+}
+
+/** Logs of the database. */
+export interface VlogListResult {
+    readonly logs: readonly string[];
+}
+
+/** Request to append entries to a log. */
+export interface VlogAppendRequest {
+    readonly log: string;
+    /** Entry bodies, base64. */
+    readonly entries: readonly string[];
+}
+
+/** Result of an append: the first new leaf index and the entry count. */
+export interface VlogAppendResult {
+    readonly firstIndex: number;
+    readonly count: number;
+}
+
+/** Request to read a run of a log's entries. */
+export interface VlogGetRequest {
+    readonly log: string;
+    /** First leaf index; 0 when omitted. */
+    readonly from?: number;
+    /** Maximum entries; the server default when omitted. */
+    readonly limit?: number;
+}
+
+/** One log entry. */
+export interface VlogEntry {
+    readonly index: number;
+    /** Entry body, base64; absent once expired. */
+    readonly body?: string;
+    /** True when the body was expired. */
+    readonly expired?: boolean;
+}
+
+/** A run of log entries. */
+export interface VlogGetResult {
+    readonly entries: readonly VlogEntry[];
+}
+
+/** Request for an inclusion proof of leaf `index` in the tree of `size`. */
+export interface VlogInclusionRequest {
+    readonly log: string;
+    readonly index: number;
+    readonly size: number;
+}
+
+/** RFC 9162 inclusion proof; hashes are base64. */
+export interface VlogInclusionProof {
+    readonly index: number;
+    readonly size: number;
+    readonly hashes: readonly string[];
+}
+
+/** Request for a consistency proof between tree sizes `size1` and `size2`. */
+export interface VlogConsistencyRequest {
+    readonly log: string;
+    readonly size1: number;
+    readonly size2: number;
+}
+
+/** RFC 9162 consistency proof; hashes are base64. */
+export interface VlogConsistencyProof {
+    readonly size1: number;
+    readonly size2: number;
+    readonly hashes: readonly string[];
+}
+
+/** A log's current tree head and latest checkpoint. */
+export interface VlogHead {
+    readonly size: number;
+    /** Root hash, base64. */
+    readonly root: string;
+    /** First index whose body is still held. */
+    readonly bodiesFrom: number;
+    /** Latest checkpoint (C2SP signed note), base64; absent before the first signing. */
+    readonly checkpoint?: string;
+    readonly checkpointSize: number;
+}
+
+/** A signed tree head. */
+export interface VlogSignedHead {
+    readonly size: number;
+    /** Root hash, base64. */
+    readonly root: string;
+    readonly keyVersion: number;
+    readonly signatureType: VlogSignatureType;
+    /** Signature, base64. */
+    readonly signature: string;
+}
+
+/** Result of signing a head: the signed head and its checkpoint note (base64). */
+export interface VlogSignHeadResult {
+    readonly head: VlogSignedHead;
+    readonly checkpoint: string;
+}
+
+/** Request to rotate a log's head-signing key. */
+export interface VlogRotateKeyRequest {
+    readonly log: string;
+    readonly signingKeyType: VlogSignatureType;
+}
+
+/** Result of a key rotation: the new head key. */
+export interface VlogRotateKeyResult {
+    readonly key: VlogHeadKey;
+}
+
+/** Request to expire the bodies of the entries before `cutoff`. */
+export interface VlogExpireRequest {
+    readonly log: string;
+    readonly cutoff: number;
+}
+
+/** Number of entry bodies expired. */
+export interface VlogExpireResult {
+    readonly expired: number;
+}
+
+/**
+ * VlogClient serves the verifiable (RFC 9162 transparency) logs of the
+ * client's database: append-only logs with inclusion and consistency
+ * proofs and C2SP signed-note checkpoints. Byte fields are base64 strings,
+ * as on the JSON wire.
+ */
+export interface VlogClient {
+    /** Creates a log, with a head-signing key when the request names a key type. */
+    create(req: VlogCreateRequest): Promise<VlogCreateResult>;
+
+    /** Lists the logs of the database. */
+    list(): Promise<VlogListResult>;
+
+    /** Appends entries to a log. */
+    append(req: VlogAppendRequest): Promise<VlogAppendResult>;
+
+    /** Reads a run of a log's entries. */
+    get(req: VlogGetRequest): Promise<VlogGetResult>;
+
+    /** Returns the RFC 9162 proof that a leaf is in a tree of the log. */
+    proveInclusion(req: VlogInclusionRequest): Promise<VlogInclusionProof>;
+
+    /** Returns the RFC 9162 proof that one tree of the log is a prefix of another. */
+    proveConsistency(req: VlogConsistencyRequest): Promise<VlogConsistencyProof>;
+
+    /** Returns a log's current tree head and latest checkpoint. */
+    head(log: string): Promise<VlogHead>;
+
+    /** Signs a log's current head, answering its checkpoint as a C2SP signed note. */
+    signHead(log: string): Promise<VlogSignHeadResult>;
+
+    /** Rotates a log's head-signing key; earlier checkpoints still verify under their key. */
+    rotateKey(req: VlogRotateKeyRequest): Promise<VlogRotateKeyResult>;
+
+    /** Removes the bodies of the entries before a cutoff, on a log that allows it. */
+    expireBodies(req: VlogExpireRequest): Promise<VlogExpireResult>;
+}
+
 // ---------------------------------------------------------------------------
 // Connection manager operations
 // ---------------------------------------------------------------------------
@@ -2528,6 +2730,9 @@ export interface Client {
 
     /** Compliance-grade audit event querying. */
     readonly audit: AuditQueryClient;
+
+    /** Verifiable (RFC 9162 transparency) logs of the database. */
+    readonly vlog: VlogClient;
 
     /** Server configuration queries. */
     readonly config: ServerConfigClient;

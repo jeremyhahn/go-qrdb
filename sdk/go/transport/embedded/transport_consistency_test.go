@@ -662,14 +662,6 @@ func TestResolveReadConsistency_AllowStaleOnly(t *testing.T) {
 	}
 }
 
-// TestResolveReadConsistency_NoOptions verifies that the absence of any read
-// option leaves consistency unspecified (server default).
-func TestResolveReadConsistency_NoOptions(t *testing.T) {
-	if _, set := resolveReadConsistency(nil); set {
-		t.Error("expected specified=false when no read options are given")
-	}
-}
-
 // CompareAndSwap satisfies the guarded-swap half of the interface (go-qrdb#56).
 func (*captureKVSvc) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
 	return false, nil

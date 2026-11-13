@@ -33,7 +33,7 @@ func adminTools(adminSvc service.AdminServicer) []serverTool {
 	return []serverTool{
 		{
 			Tool:    toolHealth(),
-			Perm:    permission.AdminHealth,
+			Perm:    permission.Public,
 			Handler: handleHealth(adminSvc),
 		},
 		{

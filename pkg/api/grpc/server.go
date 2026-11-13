@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -735,16 +737,15 @@ func (s *Server) Start() error {
 				return err
 			}
 		}
-		// RedeemInvitation is the one PUBLIC built-in RPC (not a module): an
-		// invited user holds no credential yet, so the token from InviteUser
-		// is the authority, exactly as REST's RESTRoutePublic and QUIC's
-		// RegisterPublic skip auth for their own redemption route.
-		if s.invitationSvc != nil {
-			if err := s.authMW.RegisterPublicGRPCMethods([]string{pb.QRDBService_RedeemInvitation_FullMethodName}); err != nil {
-				_ = ln.Close()
-				s.listener = nil
-				return err
-			}
+		// The built-in no-login RPCs (Health, RedeemInvitation) are the ones
+		// publicverbs.Table names, exactly as REST and QUIC register theirs
+		// from the same table. A health probe holds no credential, and an
+		// invited user holds none yet: the token from InviteUser is the
+		// authority.
+		if err := s.authMW.RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(pb.QRDBService_ServiceDesc.ServiceName)); err != nil {
+			_ = ln.Close()
+			s.listener = nil
+			return err
 		}
 	}
 
@@ -950,7 +951,7 @@ func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor
 		DatabaseScopeUnaryInterceptor,
 	}
 	if p.authMW != nil {
-		unaryInterceptors = append(unaryInterceptors, p.authMW.UnaryInterceptor())
+		unaryInterceptors = append(unaryInterceptors, PublicRateLimitUnaryInterceptor(p.authMW), p.authMW.UnaryInterceptor())
 	}
 	// The SO gate installs whenever there is one, auth middleware or not:
 	// with nothing to authenticate the caller there is no SO to admit, so it
@@ -985,6 +986,42 @@ func (s *Server) interceptorChains(p admissionPath) (grpc.UnaryServerInterceptor
 		streamInterceptors = append(streamInterceptors, sealedWindowStream(p.probe, nil, p.listener))
 	}
 	return ChainUnaryServerInterceptors(unaryInterceptors...), ChainStreamServerInterceptors(streamInterceptors...)
+}
+
+// PublicRateLimitUnaryInterceptor applies the rate-limit dimension
+// publicverbs.Table declares for a public QRDB verb before the method is
+// served without authentication. AuthMiddleware.UnaryInterceptor returns
+// for a public method before authorize() runs, so without this the
+// verb's policy (admin:health for Health) would never be drawn on. It
+// mirrors QUIC's limitPublic: the bucket is keyed by the caller's source
+// address (the host part of the address RemoteAddrUnaryInterceptor
+// records), and a refusal maps to the transport's rate-limit error
+// (ResourceExhausted). Verbs whose RateLimit is empty throttle
+// themselves and pass through, as does every non-public method. The TCP
+// gRPC and Unix chains install it ahead of the auth interceptor.
+func PublicRateLimitUnaryInterceptor(m *authmw.AuthMiddleware) grpc.UnaryServerInterceptor {
+	prefix := "/" + pb.QRDBService_ServiceDesc.ServiceName + "/"
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if m == nil || !strings.HasPrefix(info.FullMethod, prefix) {
+			return handler(ctx, req)
+		}
+		tail := strings.TrimPrefix(info.FullMethod, prefix)
+		for _, v := range publicverbs.Verbs {
+			names := publicverbs.Table[v]
+			if names.GRPC != tail || names.RateLimit == "" {
+				continue
+			}
+			source, _ := auth.RemoteAddrFromContext(ctx)
+			if host, _, err := net.SplitHostPort(source); err == nil {
+				source = host
+			}
+			if err := m.CheckLoginRateLimit(ctx, "", source, names.RateLimit); err != nil {
+				return nil, authmw.GRPCError(err, codes.Unauthenticated)
+			}
+			break
+		}
+		return handler(ctx, req)
+	}
 }
 
 // closePrebound closes a listener handed over by WithListener when Start

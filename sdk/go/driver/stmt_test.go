@@ -79,14 +79,6 @@ func TestValuesToNamed(t *testing.T) {
 	}
 }
 
-// TestValuesToNamed_Empty verifies empty slice returns empty named slice.
-func TestValuesToNamed_Empty(t *testing.T) {
-	named := valuesToNamed(nil)
-	if len(named) != 0 {
-		t.Errorf("len = %d, want 0", len(named))
-	}
-}
-
 // TestStmt_CloseAndOpsReturnError verifies stmt operations on closed stmt return StmtClosedError.
 func TestStmt_CloseAndOpsReturnError(t *testing.T) {
 	d := &Driver{}

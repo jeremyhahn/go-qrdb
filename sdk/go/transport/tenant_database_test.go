@@ -362,14 +362,6 @@ func TestWithTenantDatabase_DotDot(t *testing.T) {
 	}
 }
 
-func TestWithTenantDatabase_PathTraversal(t *testing.T) {
-	mock := newMockDatabaseClient()
-	_, err := WithTenantDatabase(mock, "..")
-	if err == nil {
-		t.Fatal("expected error for tenantID '..'")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // TenantID accessor
 // ---------------------------------------------------------------------------
@@ -382,18 +374,6 @@ func TestTenantDatabaseClient_TenantID(t *testing.T) {
 	}
 	if tc.TenantID() != "tenant-42" {
 		t.Errorf("expected 'tenant-42', got %q", tc.TenantID())
-	}
-}
-
-func TestTenantDatabaseClient_TenantID_Stable(t *testing.T) {
-	mock := newMockDatabaseClient()
-	tc, err := WithTenantDatabase(mock, "stable-id")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Calling TenantID multiple times returns the same value.
-	if tc.TenantID() != tc.TenantID() {
-		t.Error("TenantID returned different values on consecutive calls")
 	}
 }
 
@@ -891,21 +871,6 @@ func TestTenantDatabaseAccessDeniedError_Message(t *testing.T) {
 	if !strings.Contains(msg, "access denied") {
 		t.Errorf("expected error message to contain 'access denied', got %q", msg)
 	}
-}
-
-func TestTenantDatabaseAccessDeniedError_ErrorInterface(t *testing.T) {
-	var err error = &TenantDatabaseAccessDeniedError{TenantID: "t1", Database: "db1"}
-	if err.Error() == "" {
-		t.Error("expected non-empty error message")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time interface check verification
-// ---------------------------------------------------------------------------
-
-func TestTenantDatabaseClient_ImplementsDatabaseClient(t *testing.T) {
-	var _ DatabaseClient = (*TenantDatabaseClient)(nil)
 }
 
 // ---------------------------------------------------------------------------

@@ -78,31 +78,6 @@ func TestBarrierSecretFieldsAreWipeableBytes(t *testing.T) {
 	}
 }
 
-// TestBarrierSecretFieldsSurviveWipe demonstrates the capability the type
-// change buys, on the request type itself: after the call the caller zeroes
-// the slice it handed over and the plaintext is gone from the struct. The
-// same three lines do not compile against a string field.
-func TestBarrierSecretFieldsSurviveWipe(t *testing.T) {
-	secret := []byte("correct-horse-battery-staple")
-	req := &BarrierUnsealRequest{Secret: secret}
-
-	// What a caller does after the transport call returns.
-	for i := range req.Secret {
-		req.Secret[i] = 0
-	}
-
-	for i, b := range secret {
-		if b != 0 {
-			t.Fatalf("byte %d of the caller's slice survived the wipe: %q", i, secret)
-		}
-	}
-	// The request aliases the caller's slice; wiping one wipes both. That
-	// aliasing is the point: no hidden second copy is left behind.
-	if len(req.Secret) != len(secret) {
-		t.Fatalf("request no longer aliases the caller's slice")
-	}
-}
-
 // TestBarrierSecretFieldsMarshalAsBase64 pins the REST wire encoding. A
 // []byte marshals to base64 in JSON, which is the same convention every other
 // []byte field in this package already uses, and which the server's decoder

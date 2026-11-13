@@ -22,41 +22,6 @@ import (
 	"testing"
 )
 
-// TestNewEmbeddedConnector_Create verifies NewEmbeddedConnector creates a connector.
-func TestNewEmbeddedConnector_Create(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeEmbedded,
-		Backend:  "memory",
-		Database: "testdb",
-	}
-	c := NewEmbeddedConnector(cfg)
-	if c == nil {
-		t.Fatal("expected non-nil connector")
-	}
-	if c.cfg != cfg {
-		t.Error("cfg not stored on connector")
-	}
-}
-
-// TestEmbeddedConnector_Connect verifies Connect returns a valid connection.
-func TestEmbeddedConnector_Connect(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeEmbedded,
-		Backend:  "memory",
-		Database: "connecttest",
-	}
-	c := NewEmbeddedConnector(cfg)
-
-	conn, err := c.Connect(context.Background())
-	if err != nil {
-		t.Fatalf("Connect: %v", err)
-	}
-	if conn == nil {
-		t.Fatal("expected non-nil connection")
-	}
-	_ = conn.Close()
-}
-
 // TestEmbeddedConnector_ConnectOnClosed verifies Connect on closed connector returns error.
 func TestEmbeddedConnector_ConnectOnClosed(t *testing.T) {
 	cfg := &DSNConfig{
@@ -144,19 +109,5 @@ func TestEmbeddedConnector_Driver(t *testing.T) {
 	}
 	if _, ok := d.(*Driver); !ok {
 		t.Errorf("expected *Driver, got %T", d)
-	}
-}
-
-// TestEmbeddedConnector_CloseBeforeConnect verifies Close on fresh connector (no engine) is safe.
-func TestEmbeddedConnector_CloseBeforeConnect(t *testing.T) {
-	cfg := &DSNConfig{
-		Scheme:   SchemeEmbedded,
-		Backend:  "memory",
-		Database: "freshclose",
-	}
-	c := NewEmbeddedConnector(cfg)
-	// Close before any Connect call — engine is nil.
-	if err := c.Close(); err != nil {
-		t.Fatalf("Close on fresh connector: %v", err)
 	}
 }

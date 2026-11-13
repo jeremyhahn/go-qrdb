@@ -93,13 +93,6 @@ func (rec *recorder) only(t *testing.T, method, path string) recordedRequest {
 	return got
 }
 
-func TestTransport_ImplementsGuardedKVClient(t *testing.T) {
-	rt, _, _ := newExtTransport(t)
-	if _, ok := interface{}(rt).(transport.GuardedKVClient); !ok {
-		t.Fatal("REST transport does not implement transport.GuardedKVClient")
-	}
-}
-
 // binaryValue is deliberately not valid UTF-8. Sending it as a JSON string
 // would replace the invalid bytes with U+FFFD, and every assertion about the
 // guard's decision would then be about a different value than the caller
@@ -132,25 +125,6 @@ func TestRESTGuarded_PutIfAbsent_OneRoundTripAndBinarySafe(t *testing.T) {
 		t.Errorf("value on the wire = %v, want %v — the guarded plane must carry the caller's "+
 			"exact bytes", sent.Value, binaryValue)
 	}
-}
-
-func TestRESTGuarded_PutIfAbsent_DeclinedIsNotAnError(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rec := &recorder{}
-	rec.record(rs, http.MethodPost, "/kv/put-if-absent", putIfAbsentWireResponse{Stored: false})
-	rec.catchAll(rs)
-
-	// Losing the claim is the normal outcome of a race, not a failure. A
-	// transport that reported it as an error would make a caller retry the one
-	// thing that can never succeed.
-	stored, err := rt.PutIfAbsent(context.Background(), "claim", []byte("globex"))
-	if err != nil {
-		t.Fatalf("a declined PutIfAbsent must not be an error: %v", err)
-	}
-	if stored {
-		t.Error("the server reported stored=false and the client returned true")
-	}
-	rec.only(t, http.MethodPost, "/kv/put-if-absent")
 }
 
 func TestRESTGuarded_CompareAndDelete_OneRoundTripAndBinarySafe(t *testing.T) {

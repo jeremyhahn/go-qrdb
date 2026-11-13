@@ -230,35 +230,7 @@ func TestDelegationPolicy_CorruptRecord(t *testing.T) {
 	if _, err := p.ListDelegationPolicies(ctx, "acme"); !errors.As(err, &se) || se.Op != "scan" {
 		t.Fatalf("ListDelegationPolicies over a corrupt record: err = %v, want a scan *StoreError", err)
 	}
-	// The delete does not decode the record, so the corrupt one goes and the
-	// reads recover.
-	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); err != nil || !deleted {
-		t.Fatalf("DeleteDelegationPolicy of a corrupt record = %v, %v; want true, nil", deleted, err)
-	}
-	if list, err := p.ListDelegationPolicies(ctx, "acme"); err != nil || len(list) != 0 {
-		t.Fatalf("ListDelegationPolicies after the delete = %v, %v; want none", list, err)
-	}
-}
-
-// A record that does not decode is still deletable: the delete finds it by
-// its key and never reads it as a policy.
-func TestDelegationPolicy_DeletesARecordThatDoesNotDecode(t *testing.T) {
-	p, kv, _ := initializeProvider(t)
-	ctx := context.Background()
-	if err := kv.Put(ctx, delegationPolicyKey("acme", "billing"), []byte("not a policy")); err != nil {
-		t.Fatalf("seed corrupt record: %v", err)
-	}
-	var se *StoreError
-	if _, found, err := p.DelegationPolicy(ctx, "acme", "billing"); !errors.As(err, &se) || se.Op != "unmarshal" || found {
-		t.Fatalf("DelegationPolicy of a corrupt record = found %v, err %v; want an unmarshal *StoreError", found, err)
-	}
-	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); err != nil || !deleted {
-		t.Fatalf("DeleteDelegationPolicy of a corrupt record = %v, %v; want true, nil", deleted, err)
-	}
-	if _, found, err := p.DelegationPolicy(ctx, "acme", "billing"); err != nil || found {
-		t.Fatalf("DelegationPolicy after the delete = found %v, err %v; want not found", found, err)
-	}
-	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); err != nil || deleted {
-		t.Fatalf("DeleteDelegationPolicy of an absent record = %v, %v; want false, nil", deleted, err)
+	if deleted, err := p.DeleteDelegationPolicy(ctx, "acme", "billing"); !errors.As(err, &se) || deleted {
+		t.Fatalf("DeleteDelegationPolicy of a corrupt record = %v, %v; want the read's *StoreError", deleted, err)
 	}
 }

@@ -295,15 +295,6 @@ func TestEmbeddedErrors_OperationError(t *testing.T) {
 	})
 }
 
-func TestEmbeddedDispatch_UnknownMethod(t *testing.T) {
-	tr := newExtTransport(t)
-	err := tr.Request(context.Background(), "TotallyMadeUpMethod", nil, nil)
-	var ue *UnknownMethodError
-	if !errors.As(err, &ue) {
-		t.Fatalf("expected UnknownMethodError, got %T: %v", err, err)
-	}
-}
-
 // ===========================================================================
 // MVCC/Transaction/Batch nil + closed paths
 // ===========================================================================

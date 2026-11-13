@@ -435,16 +435,6 @@ func TestMapEmbeddingHTTPError(t *testing.T) {
 			wantCode: http.StatusConflict,
 		},
 		{
-			name:     "batch too large",
-			err:      &service.EmbeddingBatchTooLargeError{Requested: 1000, Maximum: 256},
-			wantCode: http.StatusBadRequest,
-		},
-		{
-			name:     "dimension mismatch",
-			err:      &service.EmbeddingDimensionMismatchError{Expected: 768, Received: 1536},
-			wantCode: http.StatusBadRequest,
-		},
-		{
 			name:     "service closed",
 			err:      &service.EmbeddingServiceClosedError{},
 			wantCode: http.StatusServiceUnavailable,

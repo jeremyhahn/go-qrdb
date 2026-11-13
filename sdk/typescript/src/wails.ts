@@ -15,6 +15,24 @@
 import type {
     AdminClient,
     AuditQueryClient,
+    VlogClient,
+    VlogCreateRequest,
+    VlogCreateResult,
+    VlogListResult,
+    VlogAppendRequest,
+    VlogAppendResult,
+    VlogGetRequest,
+    VlogGetResult,
+    VlogInclusionRequest,
+    VlogInclusionProof,
+    VlogConsistencyRequest,
+    VlogConsistencyProof,
+    VlogHead,
+    VlogSignHeadResult,
+    VlogRotateKeyRequest,
+    VlogRotateKeyResult,
+    VlogExpireRequest,
+    VlogExpireResult,
     BackupClient,
     BatchClient,
     CeremonyClient,
@@ -359,6 +377,7 @@ interface WailsBindings {
         LockBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         CredentialBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         AuditBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
+        VlogBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
         ConnectionManagerBinding: Record<string, (...args: unknown[]) => Promise<unknown>>;
     };
 }
@@ -1608,6 +1627,27 @@ export class WailsClient implements Client {
             query: async (f: AuditFilter = {}): Promise<AuditPage> => {
                 return b.Query(toSnake(f)) as Promise<AuditPage>;
             },
+        };
+    }
+
+    /** @inheritdoc */
+    get vlog(): VlogClient {
+        const b = wrapBindings(getBindings().main.VlogBinding);
+        return {
+            create: async (req: VlogCreateRequest) => b.Create(toSnake(req)) as Promise<VlogCreateResult>,
+            list: async () => b.List() as Promise<VlogListResult>,
+            append: async (req: VlogAppendRequest) => b.Append(toSnake(req)) as Promise<VlogAppendResult>,
+            get: async (req: VlogGetRequest) => b.Get(toSnake(req)) as Promise<VlogGetResult>,
+            proveInclusion: async (req: VlogInclusionRequest) =>
+                b.ProveInclusion(toSnake(req)) as Promise<VlogInclusionProof>,
+            proveConsistency: async (req: VlogConsistencyRequest) =>
+                b.ProveConsistency(toSnake(req)) as Promise<VlogConsistencyProof>,
+            head: async (log: string) => b.Head({ log }) as Promise<VlogHead>,
+            signHead: async (log: string) => b.SignHead({ log }) as Promise<VlogSignHeadResult>,
+            rotateKey: async (req: VlogRotateKeyRequest) =>
+                b.RotateKey(toSnake(req)) as Promise<VlogRotateKeyResult>,
+            expireBodies: async (req: VlogExpireRequest) =>
+                b.ExpireBodies(toSnake(req)) as Promise<VlogExpireResult>,
         };
     }
 

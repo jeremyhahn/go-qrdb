@@ -34,263 +34,267 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	QRDBService_Put_FullMethodName                               = "/qrdb.v1.QRDBService/Put"
-	QRDBService_Get_FullMethodName                               = "/qrdb.v1.QRDBService/Get"
-	QRDBService_Delete_FullMethodName                            = "/qrdb.v1.QRDBService/Delete"
-	QRDBService_PutIfAbsent_FullMethodName                       = "/qrdb.v1.QRDBService/PutIfAbsent"
-	QRDBService_CompareAndDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CompareAndDelete"
-	QRDBService_CompareAndSwap_FullMethodName                    = "/qrdb.v1.QRDBService/CompareAndSwap"
-	QRDBService_List_FullMethodName                              = "/qrdb.v1.QRDBService/List"
-	QRDBService_Scan_FullMethodName                              = "/qrdb.v1.QRDBService/Scan"
-	QRDBService_PutWithLease_FullMethodName                      = "/qrdb.v1.QRDBService/PutWithLease"
-	QRDBService_GetRevision_FullMethodName                       = "/qrdb.v1.QRDBService/GetRevision"
-	QRDBService_GetAtRevision_FullMethodName                     = "/qrdb.v1.QRDBService/GetAtRevision"
-	QRDBService_Range_FullMethodName                             = "/qrdb.v1.QRDBService/Range"
-	QRDBService_Compact_FullMethodName                           = "/qrdb.v1.QRDBService/Compact"
-	QRDBService_CurrentRevision_FullMethodName                   = "/qrdb.v1.QRDBService/CurrentRevision"
-	QRDBService_RestoreToRevision_FullMethodName                 = "/qrdb.v1.QRDBService/RestoreToRevision"
-	QRDBService_Transaction_FullMethodName                       = "/qrdb.v1.QRDBService/Transaction"
-	QRDBService_Batch_FullMethodName                             = "/qrdb.v1.QRDBService/Batch"
-	QRDBService_ImportBegin_FullMethodName                       = "/qrdb.v1.QRDBService/ImportBegin"
-	QRDBService_ImportAppend_FullMethodName                      = "/qrdb.v1.QRDBService/ImportAppend"
-	QRDBService_ImportCommit_FullMethodName                      = "/qrdb.v1.QRDBService/ImportCommit"
-	QRDBService_ImportAbort_FullMethodName                       = "/qrdb.v1.QRDBService/ImportAbort"
-	QRDBService_Watch_FullMethodName                             = "/qrdb.v1.QRDBService/Watch"
-	QRDBService_LeaseGrant_FullMethodName                        = "/qrdb.v1.QRDBService/LeaseGrant"
-	QRDBService_LeaseRevoke_FullMethodName                       = "/qrdb.v1.QRDBService/LeaseRevoke"
-	QRDBService_LeaseKeepAlive_FullMethodName                    = "/qrdb.v1.QRDBService/LeaseKeepAlive"
-	QRDBService_LeaseTimeToLive_FullMethodName                   = "/qrdb.v1.QRDBService/LeaseTimeToLive"
-	QRDBService_LeaseList_FullMethodName                         = "/qrdb.v1.QRDBService/LeaseList"
-	QRDBService_LockAcquire_FullMethodName                       = "/qrdb.v1.QRDBService/LockAcquire"
-	QRDBService_LockTryLock_FullMethodName                       = "/qrdb.v1.QRDBService/LockTryLock"
-	QRDBService_LockRelease_FullMethodName                       = "/qrdb.v1.QRDBService/LockRelease"
-	QRDBService_LockExtend_FullMethodName                        = "/qrdb.v1.QRDBService/LockExtend"
-	QRDBService_LockStatus_FullMethodName                        = "/qrdb.v1.QRDBService/LockStatus"
-	QRDBService_LockList_FullMethodName                          = "/qrdb.v1.QRDBService/LockList"
-	QRDBService_IndexCreate_FullMethodName                       = "/qrdb.v1.QRDBService/IndexCreate"
-	QRDBService_IndexDrop_FullMethodName                         = "/qrdb.v1.QRDBService/IndexDrop"
-	QRDBService_IndexQuery_FullMethodName                        = "/qrdb.v1.QRDBService/IndexQuery"
-	QRDBService_IndexScan_FullMethodName                         = "/qrdb.v1.QRDBService/IndexScan"
-	QRDBService_IndexList_FullMethodName                         = "/qrdb.v1.QRDBService/IndexList"
-	QRDBService_TSWrite_FullMethodName                           = "/qrdb.v1.QRDBService/TSWrite"
-	QRDBService_TSWriteBatch_FullMethodName                      = "/qrdb.v1.QRDBService/TSWriteBatch"
-	QRDBService_TSQuery_FullMethodName                           = "/qrdb.v1.QRDBService/TSQuery"
-	QRDBService_TSAggregate_FullMethodName                       = "/qrdb.v1.QRDBService/TSAggregate"
-	QRDBService_TSWritePoint_FullMethodName                      = "/qrdb.v1.QRDBService/TSWritePoint"
-	QRDBService_TSRichQuery_FullMethodName                       = "/qrdb.v1.QRDBService/TSRichQuery"
-	QRDBService_TSDeleteSeries_FullMethodName                    = "/qrdb.v1.QRDBService/TSDeleteSeries"
-	QRDBService_TSGetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSGetRetention"
-	QRDBService_TSSetRetention_FullMethodName                    = "/qrdb.v1.QRDBService/TSSetRetention"
-	QRDBService_TSListMetrics_FullMethodName                     = "/qrdb.v1.QRDBService/TSListMetrics"
-	QRDBService_VectorCreateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorCreateNamespace"
-	QRDBService_VectorUpdateNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorUpdateNamespace"
-	QRDBService_VectorDeleteNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
-	QRDBService_VectorListNamespaces_FullMethodName              = "/qrdb.v1.QRDBService/VectorListNamespaces"
-	QRDBService_VectorGetNamespaceInfo_FullMethodName            = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
-	QRDBService_VectorUpsert_FullMethodName                      = "/qrdb.v1.QRDBService/VectorUpsert"
-	QRDBService_VectorGet_FullMethodName                         = "/qrdb.v1.QRDBService/VectorGet"
-	QRDBService_VectorDelete_FullMethodName                      = "/qrdb.v1.QRDBService/VectorDelete"
-	QRDBService_VectorBatchUpsert_FullMethodName                 = "/qrdb.v1.QRDBService/VectorBatchUpsert"
-	QRDBService_VectorBatchDelete_FullMethodName                 = "/qrdb.v1.QRDBService/VectorBatchDelete"
-	QRDBService_VectorList_FullMethodName                        = "/qrdb.v1.QRDBService/VectorList"
-	QRDBService_VectorUpdateMetadata_FullMethodName              = "/qrdb.v1.QRDBService/VectorUpdateMetadata"
-	QRDBService_VectorSearchSimilar_FullMethodName               = "/qrdb.v1.QRDBService/VectorSearchSimilar"
-	QRDBService_VectorSearchByMetadata_FullMethodName            = "/qrdb.v1.QRDBService/VectorSearchByMetadata"
-	QRDBService_VectorHybridSearch_FullMethodName                = "/qrdb.v1.QRDBService/VectorHybridSearch"
-	QRDBService_VectorSearchByID_FullMethodName                  = "/qrdb.v1.QRDBService/VectorSearchByID"
-	QRDBService_VectorRebuildIndex_FullMethodName                = "/qrdb.v1.QRDBService/VectorRebuildIndex"
-	QRDBService_VectorGetRebuildProgress_FullMethodName          = "/qrdb.v1.QRDBService/VectorGetRebuildProgress"
-	QRDBService_VectorGetIndexStats_FullMethodName               = "/qrdb.v1.QRDBService/VectorGetIndexStats"
-	QRDBService_VectorCompactNamespace_FullMethodName            = "/qrdb.v1.QRDBService/VectorCompactNamespace"
-	QRDBService_VectorGetCompactionProgress_FullMethodName       = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
-	QRDBService_VlogCreate_FullMethodName                        = "/qrdb.v1.QRDBService/VlogCreate"
-	QRDBService_VlogList_FullMethodName                          = "/qrdb.v1.QRDBService/VlogList"
-	QRDBService_VlogAppend_FullMethodName                        = "/qrdb.v1.QRDBService/VlogAppend"
-	QRDBService_VlogGet_FullMethodName                           = "/qrdb.v1.QRDBService/VlogGet"
-	QRDBService_VlogProveInclusion_FullMethodName                = "/qrdb.v1.QRDBService/VlogProveInclusion"
-	QRDBService_VlogProveConsistency_FullMethodName              = "/qrdb.v1.QRDBService/VlogProveConsistency"
-	QRDBService_VlogHead_FullMethodName                          = "/qrdb.v1.QRDBService/VlogHead"
-	QRDBService_VlogSignHead_FullMethodName                      = "/qrdb.v1.QRDBService/VlogSignHead"
-	QRDBService_VlogExpireBodies_FullMethodName                  = "/qrdb.v1.QRDBService/VlogExpireBodies"
-	QRDBService_VlogRotateKey_FullMethodName                     = "/qrdb.v1.QRDBService/VlogRotateKey"
-	QRDBService_Health_FullMethodName                            = "/qrdb.v1.QRDBService/Health"
-	QRDBService_Status_FullMethodName                            = "/qrdb.v1.QRDBService/Status"
-	QRDBService_Peers_FullMethodName                             = "/qrdb.v1.QRDBService/Peers"
-	QRDBService_AddMember_FullMethodName                         = "/qrdb.v1.QRDBService/AddMember"
-	QRDBService_RemoveMember_FullMethodName                      = "/qrdb.v1.QRDBService/RemoveMember"
-	QRDBService_PromoteMember_FullMethodName                     = "/qrdb.v1.QRDBService/PromoteMember"
-	QRDBService_TransferLeadership_FullMethodName                = "/qrdb.v1.QRDBService/TransferLeadership"
-	QRDBService_RequestSnapshot_FullMethodName                   = "/qrdb.v1.QRDBService/RequestSnapshot"
-	QRDBService_Drain_FullMethodName                             = "/qrdb.v1.QRDBService/Drain"
-	QRDBService_Capabilities_FullMethodName                      = "/qrdb.v1.QRDBService/Capabilities"
-	QRDBService_StartShard_FullMethodName                        = "/qrdb.v1.QRDBService/StartShard"
-	QRDBService_StopShard_FullMethodName                         = "/qrdb.v1.QRDBService/StopShard"
-	QRDBService_GetShardState_FullMethodName                     = "/qrdb.v1.QRDBService/GetShardState"
-	QRDBService_GetTopology_FullMethodName                       = "/qrdb.v1.QRDBService/GetTopology"
-	QRDBService_GetReplicaStates_FullMethodName                  = "/qrdb.v1.QRDBService/GetReplicaStates"
-	QRDBService_GetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/GetNodeCompaction"
-	QRDBService_SetNodeCompaction_FullMethodName                 = "/qrdb.v1.QRDBService/SetNodeCompaction"
-	QRDBService_GetStateHashes_FullMethodName                    = "/qrdb.v1.QRDBService/GetStateHashes"
-	QRDBService_MintJoinToken_FullMethodName                     = "/qrdb.v1.QRDBService/MintJoinToken"
-	QRDBService_AddObserverMember_FullMethodName                 = "/qrdb.v1.QRDBService/AddObserverMember"
-	QRDBService_ListPendingJoinRequests_FullMethodName           = "/qrdb.v1.QRDBService/ListPendingJoinRequests"
-	QRDBService_ApproveJoinRequest_FullMethodName                = "/qrdb.v1.QRDBService/ApproveJoinRequest"
-	QRDBService_RejectJoinRequest_FullMethodName                 = "/qrdb.v1.QRDBService/RejectJoinRequest"
-	QRDBService_RetireJoinIdentity_FullMethodName                = "/qrdb.v1.QRDBService/RetireJoinIdentity"
-	QRDBService_CreateUser_FullMethodName                        = "/qrdb.v1.QRDBService/CreateUser"
-	QRDBService_GetUser_FullMethodName                           = "/qrdb.v1.QRDBService/GetUser"
-	QRDBService_GetUserByUsername_FullMethodName                 = "/qrdb.v1.QRDBService/GetUserByUsername"
-	QRDBService_GetUserByEmail_FullMethodName                    = "/qrdb.v1.QRDBService/GetUserByEmail"
-	QRDBService_GetUserByCertThumbprint_FullMethodName           = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
-	QRDBService_AddCertBinding_FullMethodName                    = "/qrdb.v1.QRDBService/AddCertBinding"
-	QRDBService_RemoveCertBinding_FullMethodName                 = "/qrdb.v1.QRDBService/RemoveCertBinding"
-	QRDBService_UpdateUser_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateUser"
-	QRDBService_DeleteUser_FullMethodName                        = "/qrdb.v1.QRDBService/DeleteUser"
-	QRDBService_ListUsers_FullMethodName                         = "/qrdb.v1.QRDBService/ListUsers"
-	QRDBService_EnableUser_FullMethodName                        = "/qrdb.v1.QRDBService/EnableUser"
-	QRDBService_DisableUser_FullMethodName                       = "/qrdb.v1.QRDBService/DisableUser"
-	QRDBService_SuspendUser_FullMethodName                       = "/qrdb.v1.QRDBService/SuspendUser"
-	QRDBService_UnsuspendUser_FullMethodName                     = "/qrdb.v1.QRDBService/UnsuspendUser"
-	QRDBService_CreateRole_FullMethodName                        = "/qrdb.v1.QRDBService/CreateRole"
-	QRDBService_GetRole_FullMethodName                           = "/qrdb.v1.QRDBService/GetRole"
-	QRDBService_GetRoleByName_FullMethodName                     = "/qrdb.v1.QRDBService/GetRoleByName"
-	QRDBService_UpdateRole_FullMethodName                        = "/qrdb.v1.QRDBService/UpdateRole"
-	QRDBService_DeleteRole_FullMethodName                        = "/qrdb.v1.QRDBService/DeleteRole"
-	QRDBService_ListRoles_FullMethodName                         = "/qrdb.v1.QRDBService/ListRoles"
-	QRDBService_AssignRole_FullMethodName                        = "/qrdb.v1.QRDBService/AssignRole"
-	QRDBService_UnassignRole_FullMethodName                      = "/qrdb.v1.QRDBService/UnassignRole"
-	QRDBService_ListPermissions_FullMethodName                   = "/qrdb.v1.QRDBService/ListPermissions"
-	QRDBService_ResolveRolePermissions_FullMethodName            = "/qrdb.v1.QRDBService/ResolveRolePermissions"
-	QRDBService_ListOwnPermissions_FullMethodName                = "/qrdb.v1.QRDBService/ListOwnPermissions"
-	QRDBService_Authorize_FullMethodName                         = "/qrdb.v1.QRDBService/Authorize"
-	QRDBService_ReconcileBuiltInRoles_FullMethodName             = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
-	QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName   = "/qrdb.v1.QRDBService/ReconcileBuiltInRolesAllTenants"
-	QRDBService_IssueCert_FullMethodName                         = "/qrdb.v1.QRDBService/IssueCert"
-	QRDBService_EnrollCert_FullMethodName                        = "/qrdb.v1.QRDBService/EnrollCert"
-	QRDBService_IssueDelegation_FullMethodName                   = "/qrdb.v1.QRDBService/IssueDelegation"
-	QRDBService_PutDelegationPolicy_FullMethodName               = "/qrdb.v1.QRDBService/PutDelegationPolicy"
-	QRDBService_ListDelegationPolicies_FullMethodName            = "/qrdb.v1.QRDBService/ListDelegationPolicies"
-	QRDBService_DeleteDelegationPolicy_FullMethodName            = "/qrdb.v1.QRDBService/DeleteDelegationPolicy"
-	QRDBService_TrustAnchorAdd_FullMethodName                    = "/qrdb.v1.QRDBService/TrustAnchorAdd"
-	QRDBService_TrustAnchorList_FullMethodName                   = "/qrdb.v1.QRDBService/TrustAnchorList"
-	QRDBService_TrustAnchorRemove_FullMethodName                 = "/qrdb.v1.QRDBService/TrustAnchorRemove"
-	QRDBService_RevokeCert_FullMethodName                        = "/qrdb.v1.QRDBService/RevokeCert"
-	QRDBService_ListCerts_FullMethodName                         = "/qrdb.v1.QRDBService/ListCerts"
-	QRDBService_InviteUser_FullMethodName                        = "/qrdb.v1.QRDBService/InviteUser"
-	QRDBService_RedeemInvitation_FullMethodName                  = "/qrdb.v1.QRDBService/RedeemInvitation"
-	QRDBService_CreateCollection_FullMethodName                  = "/qrdb.v1.QRDBService/CreateCollection"
-	QRDBService_GetCollectionInfo_FullMethodName                 = "/qrdb.v1.QRDBService/GetCollectionInfo"
-	QRDBService_ListCollections_FullMethodName                   = "/qrdb.v1.QRDBService/ListCollections"
-	QRDBService_DropCollection_FullMethodName                    = "/qrdb.v1.QRDBService/DropCollection"
-	QRDBService_InsertDocument_FullMethodName                    = "/qrdb.v1.QRDBService/InsertDocument"
-	QRDBService_GetDocument_FullMethodName                       = "/qrdb.v1.QRDBService/GetDocument"
-	QRDBService_UpdateDocument_FullMethodName                    = "/qrdb.v1.QRDBService/UpdateDocument"
-	QRDBService_DeleteDocument_FullMethodName                    = "/qrdb.v1.QRDBService/DeleteDocument"
-	QRDBService_ListDocuments_FullMethodName                     = "/qrdb.v1.QRDBService/ListDocuments"
-	QRDBService_DatabaseCreate_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseCreate"
-	QRDBService_DatabaseGet_FullMethodName                       = "/qrdb.v1.QRDBService/DatabaseGet"
-	QRDBService_DatabaseList_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseList"
-	QRDBService_DatabaseDrop_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseDrop"
-	QRDBService_DatabaseUpdateProtocol_FullMethodName            = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
-	QRDBService_DatabaseUpdateEtcd_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
-	QRDBService_DatabaseUpdateRaft_FullMethodName                = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
-	QRDBService_DatabaseScale_FullMethodName                     = "/qrdb.v1.QRDBService/DatabaseScale"
-	QRDBService_DatabaseUpdateBarrier_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
-	QRDBService_DatabaseUpdateConnection_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
-	QRDBService_DatabaseUpdateSQL_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateSQL"
-	QRDBService_DatabaseUpdateCompaction_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
-	QRDBService_BarrierInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierInitialize"
-	QRDBService_BarrierUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierUnseal"
-	QRDBService_BarrierChangePassphrase_FullMethodName           = "/qrdb.v1.QRDBService/BarrierChangePassphrase"
-	QRDBService_BarrierSeal_FullMethodName                       = "/qrdb.v1.QRDBService/BarrierSeal"
-	QRDBService_BarrierStatus_FullMethodName                     = "/qrdb.v1.QRDBService/BarrierStatus"
-	QRDBService_BarrierClusterUnseal_FullMethodName              = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
-	QRDBService_BarrierShamirInitialize_FullMethodName           = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
-	QRDBService_BarrierEnableEncryption_FullMethodName           = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
-	QRDBService_BarrierOfficerRegister_FullMethodName            = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
-	QRDBService_BarrierOfficerList_FullMethodName                = "/qrdb.v1.QRDBService/BarrierOfficerList"
-	QRDBService_BarrierShareClaimBegin_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShareClaimBegin"
-	QRDBService_BarrierShareClaimComplete_FullMethodName         = "/qrdb.v1.QRDBService/BarrierShareClaimComplete"
-	QRDBService_BarrierRecoveryOfficerRegister_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"
-	QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName    = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimBegin"
-	QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimComplete"
-	QRDBService_BarrierRecoveryGenerate_FullMethodName           = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
-	QRDBService_BarrierRecoveryDelete_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
-	QRDBService_BarrierRecoveryStatus_FullMethodName             = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
-	QRDBService_BarrierQuorumBegin_FullMethodName                = "/qrdb.v1.QRDBService/BarrierQuorumBegin"
-	QRDBService_BarrierQuorumSubmit_FullMethodName               = "/qrdb.v1.QRDBService/BarrierQuorumSubmit"
-	QRDBService_BarrierRekeyStart_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierRekeyStart"
-	QRDBService_BarrierOfficerRevoke_FullMethodName              = "/qrdb.v1.QRDBService/BarrierOfficerRevoke"
-	QRDBService_CeremonyInitialize_FullMethodName                = "/qrdb.v1.QRDBService/CeremonyInitialize"
-	QRDBService_CeremonyStatus_FullMethodName                    = "/qrdb.v1.QRDBService/CeremonyStatus"
-	QRDBService_CeremonySignCSR_FullMethodName                   = "/qrdb.v1.QRDBService/CeremonySignCSR"
-	QRDBService_TenantCreate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantCreate"
-	QRDBService_TenantGet_FullMethodName                         = "/qrdb.v1.QRDBService/TenantGet"
-	QRDBService_TenantList_FullMethodName                        = "/qrdb.v1.QRDBService/TenantList"
-	QRDBService_TenantUpdate_FullMethodName                      = "/qrdb.v1.QRDBService/TenantUpdate"
-	QRDBService_TenantDelete_FullMethodName                      = "/qrdb.v1.QRDBService/TenantDelete"
-	QRDBService_TenantUpdateQuotas_FullMethodName                = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
-	QRDBService_TenantUpdateEntitlements_FullMethodName          = "/qrdb.v1.QRDBService/TenantUpdateEntitlements"
-	QRDBService_TenantListDeleted_FullMethodName                 = "/qrdb.v1.QRDBService/TenantListDeleted"
-	QRDBService_TenantReconcileDeleted_FullMethodName            = "/qrdb.v1.QRDBService/TenantReconcileDeleted"
-	QRDBService_VolumePoolList_FullMethodName                    = "/qrdb.v1.QRDBService/VolumePoolList"
-	QRDBService_VolumePoolGet_FullMethodName                     = "/qrdb.v1.QRDBService/VolumePoolGet"
-	QRDBService_VolumePoolCreate_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolCreate"
-	QRDBService_VolumePoolUpdate_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolUpdate"
-	QRDBService_VolumePoolDelete_FullMethodName                  = "/qrdb.v1.QRDBService/VolumePoolDelete"
-	QRDBService_VolumePoolListTenants_FullMethodName             = "/qrdb.v1.QRDBService/VolumePoolListTenants"
-	QRDBService_CredentialSubmit_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialSubmit"
-	QRDBService_CredentialStrategy_FullMethodName                = "/qrdb.v1.QRDBService/CredentialStrategy"
-	QRDBService_CredentialDelete_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialDelete"
-	QRDBService_CredentialList_FullMethodName                    = "/qrdb.v1.QRDBService/CredentialList"
-	QRDBService_CredentialRotate_FullMethodName                  = "/qrdb.v1.QRDBService/CredentialRotate"
-	QRDBService_CredentialRetrieveVersion_FullMethodName         = "/qrdb.v1.QRDBService/CredentialRetrieveVersion"
-	QRDBService_CredentialListVersions_FullMethodName            = "/qrdb.v1.QRDBService/CredentialListVersions"
-	QRDBService_CredentialGCExpired_FullMethodName               = "/qrdb.v1.QRDBService/CredentialGCExpired"
-	QRDBService_CredentialStore_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialStore"
-	QRDBService_CredentialRetrieve_FullMethodName                = "/qrdb.v1.QRDBService/CredentialRetrieve"
-	QRDBService_TenantDEKStatus_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKStatus"
-	QRDBService_TenantDEKRotate_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRotate"
-	QRDBService_TenantDEKRetire_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRetire"
-	QRDBService_TenantDEKEncrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKEncrypt"
-	QRDBService_TenantDEKDecrypt_FullMethodName                  = "/qrdb.v1.QRDBService/TenantDEKDecrypt"
-	QRDBService_TenantDEKRewrap_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKRewrap"
-	QRDBService_CreateABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/CreateABACPolicy"
-	QRDBService_GetABACPolicy_FullMethodName                     = "/qrdb.v1.QRDBService/GetABACPolicy"
-	QRDBService_ListABACPolicies_FullMethodName                  = "/qrdb.v1.QRDBService/ListABACPolicies"
-	QRDBService_UpdateABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/UpdateABACPolicy"
-	QRDBService_DeleteABACPolicy_FullMethodName                  = "/qrdb.v1.QRDBService/DeleteABACPolicy"
-	QRDBService_BackupCreate_FullMethodName                      = "/qrdb.v1.QRDBService/BackupCreate"
-	QRDBService_BackupList_FullMethodName                        = "/qrdb.v1.QRDBService/BackupList"
-	QRDBService_BackupGet_FullMethodName                         = "/qrdb.v1.QRDBService/BackupGet"
-	QRDBService_BackupDelete_FullMethodName                      = "/qrdb.v1.QRDBService/BackupDelete"
-	QRDBService_BackupRestore_FullMethodName                     = "/qrdb.v1.QRDBService/BackupRestore"
-	QRDBService_BackupVerify_FullMethodName                      = "/qrdb.v1.QRDBService/BackupVerify"
-	QRDBService_RebalanceGetShardStats_FullMethodName            = "/qrdb.v1.QRDBService/RebalanceGetShardStats"
-	QRDBService_RebalanceCreatePlan_FullMethodName               = "/qrdb.v1.QRDBService/RebalanceCreatePlan"
-	QRDBService_RebalanceExecute_FullMethodName                  = "/qrdb.v1.QRDBService/RebalanceExecute"
-	QRDBService_RebalanceGetImbalanceReport_FullMethodName       = "/qrdb.v1.QRDBService/RebalanceGetImbalanceReport"
-	QRDBService_Embed_FullMethodName                             = "/qrdb.v1.QRDBService/Embed"
-	QRDBService_BatchEmbed_FullMethodName                        = "/qrdb.v1.QRDBService/BatchEmbed"
-	QRDBService_ListEmbeddingModels_FullMethodName               = "/qrdb.v1.QRDBService/ListEmbeddingModels"
-	QRDBService_RAGIngestDocument_FullMethodName                 = "/qrdb.v1.QRDBService/RAGIngestDocument"
-	QRDBService_RAGQuery_FullMethodName                          = "/qrdb.v1.QRDBService/RAGQuery"
-	QRDBService_RAGDeleteDocument_FullMethodName                 = "/qrdb.v1.QRDBService/RAGDeleteDocument"
-	QRDBService_RAGListDocuments_FullMethodName                  = "/qrdb.v1.QRDBService/RAGListDocuments"
-	QRDBService_DatabaseSeal_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseSeal"
-	QRDBService_DatabaseUnseal_FullMethodName                    = "/qrdb.v1.QRDBService/DatabaseUnseal"
-	QRDBService_DatabaseBarrierStatus_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
-	QRDBService_DatabaseBarrierOfficerRegister_FullMethodName    = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRegister"
-	QRDBService_DatabaseBarrierOfficerList_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerList"
-	QRDBService_DatabaseBarrierShamirInitialize_FullMethodName   = "/qrdb.v1.QRDBService/DatabaseBarrierShamirInitialize"
-	QRDBService_DatabaseBarrierShareClaimBegin_FullMethodName    = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimBegin"
-	QRDBService_DatabaseBarrierShareClaimComplete_FullMethodName = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimComplete"
-	QRDBService_DatabaseBarrierQuorumBegin_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumBegin"
-	QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName       = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumSubmit"
-	QRDBService_DatabaseBarrierRekeyStart_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierRekeyStart"
-	QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName      = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRevoke"
-	QRDBService_DatabaseBarrierOfficerUnenrol_FullMethodName     = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerUnenrol"
-	QRDBService_SQLQuery_FullMethodName                          = "/qrdb.v1.QRDBService/SQLQuery"
+	QRDBService_Put_FullMethodName                                = "/qrdb.v1.QRDBService/Put"
+	QRDBService_Get_FullMethodName                                = "/qrdb.v1.QRDBService/Get"
+	QRDBService_Delete_FullMethodName                             = "/qrdb.v1.QRDBService/Delete"
+	QRDBService_PutIfAbsent_FullMethodName                        = "/qrdb.v1.QRDBService/PutIfAbsent"
+	QRDBService_CompareAndDelete_FullMethodName                   = "/qrdb.v1.QRDBService/CompareAndDelete"
+	QRDBService_CompareAndSwap_FullMethodName                     = "/qrdb.v1.QRDBService/CompareAndSwap"
+	QRDBService_List_FullMethodName                               = "/qrdb.v1.QRDBService/List"
+	QRDBService_Scan_FullMethodName                               = "/qrdb.v1.QRDBService/Scan"
+	QRDBService_PutWithLease_FullMethodName                       = "/qrdb.v1.QRDBService/PutWithLease"
+	QRDBService_GetRevision_FullMethodName                        = "/qrdb.v1.QRDBService/GetRevision"
+	QRDBService_GetAtRevision_FullMethodName                      = "/qrdb.v1.QRDBService/GetAtRevision"
+	QRDBService_Range_FullMethodName                              = "/qrdb.v1.QRDBService/Range"
+	QRDBService_Compact_FullMethodName                            = "/qrdb.v1.QRDBService/Compact"
+	QRDBService_CurrentRevision_FullMethodName                    = "/qrdb.v1.QRDBService/CurrentRevision"
+	QRDBService_RestoreToRevision_FullMethodName                  = "/qrdb.v1.QRDBService/RestoreToRevision"
+	QRDBService_Transaction_FullMethodName                        = "/qrdb.v1.QRDBService/Transaction"
+	QRDBService_Batch_FullMethodName                              = "/qrdb.v1.QRDBService/Batch"
+	QRDBService_ImportBegin_FullMethodName                        = "/qrdb.v1.QRDBService/ImportBegin"
+	QRDBService_ImportAppend_FullMethodName                       = "/qrdb.v1.QRDBService/ImportAppend"
+	QRDBService_ImportCommit_FullMethodName                       = "/qrdb.v1.QRDBService/ImportCommit"
+	QRDBService_ImportAbort_FullMethodName                        = "/qrdb.v1.QRDBService/ImportAbort"
+	QRDBService_Watch_FullMethodName                              = "/qrdb.v1.QRDBService/Watch"
+	QRDBService_LeaseGrant_FullMethodName                         = "/qrdb.v1.QRDBService/LeaseGrant"
+	QRDBService_LeaseRevoke_FullMethodName                        = "/qrdb.v1.QRDBService/LeaseRevoke"
+	QRDBService_LeaseKeepAlive_FullMethodName                     = "/qrdb.v1.QRDBService/LeaseKeepAlive"
+	QRDBService_LeaseTimeToLive_FullMethodName                    = "/qrdb.v1.QRDBService/LeaseTimeToLive"
+	QRDBService_LeaseList_FullMethodName                          = "/qrdb.v1.QRDBService/LeaseList"
+	QRDBService_LockAcquire_FullMethodName                        = "/qrdb.v1.QRDBService/LockAcquire"
+	QRDBService_LockTryLock_FullMethodName                        = "/qrdb.v1.QRDBService/LockTryLock"
+	QRDBService_LockRelease_FullMethodName                        = "/qrdb.v1.QRDBService/LockRelease"
+	QRDBService_LockExtend_FullMethodName                         = "/qrdb.v1.QRDBService/LockExtend"
+	QRDBService_LockStatus_FullMethodName                         = "/qrdb.v1.QRDBService/LockStatus"
+	QRDBService_LockList_FullMethodName                           = "/qrdb.v1.QRDBService/LockList"
+	QRDBService_IndexCreate_FullMethodName                        = "/qrdb.v1.QRDBService/IndexCreate"
+	QRDBService_IndexDrop_FullMethodName                          = "/qrdb.v1.QRDBService/IndexDrop"
+	QRDBService_IndexQuery_FullMethodName                         = "/qrdb.v1.QRDBService/IndexQuery"
+	QRDBService_IndexScan_FullMethodName                          = "/qrdb.v1.QRDBService/IndexScan"
+	QRDBService_IndexList_FullMethodName                          = "/qrdb.v1.QRDBService/IndexList"
+	QRDBService_TSWrite_FullMethodName                            = "/qrdb.v1.QRDBService/TSWrite"
+	QRDBService_TSWriteBatch_FullMethodName                       = "/qrdb.v1.QRDBService/TSWriteBatch"
+	QRDBService_TSQuery_FullMethodName                            = "/qrdb.v1.QRDBService/TSQuery"
+	QRDBService_TSAggregate_FullMethodName                        = "/qrdb.v1.QRDBService/TSAggregate"
+	QRDBService_TSWritePoint_FullMethodName                       = "/qrdb.v1.QRDBService/TSWritePoint"
+	QRDBService_TSRichQuery_FullMethodName                        = "/qrdb.v1.QRDBService/TSRichQuery"
+	QRDBService_TSDeleteSeries_FullMethodName                     = "/qrdb.v1.QRDBService/TSDeleteSeries"
+	QRDBService_TSGetRetention_FullMethodName                     = "/qrdb.v1.QRDBService/TSGetRetention"
+	QRDBService_TSSetRetention_FullMethodName                     = "/qrdb.v1.QRDBService/TSSetRetention"
+	QRDBService_TSListMetrics_FullMethodName                      = "/qrdb.v1.QRDBService/TSListMetrics"
+	QRDBService_VectorCreateNamespace_FullMethodName              = "/qrdb.v1.QRDBService/VectorCreateNamespace"
+	QRDBService_VectorUpdateNamespace_FullMethodName              = "/qrdb.v1.QRDBService/VectorUpdateNamespace"
+	QRDBService_VectorDeleteNamespace_FullMethodName              = "/qrdb.v1.QRDBService/VectorDeleteNamespace"
+	QRDBService_VectorListNamespaces_FullMethodName               = "/qrdb.v1.QRDBService/VectorListNamespaces"
+	QRDBService_VectorGetNamespaceInfo_FullMethodName             = "/qrdb.v1.QRDBService/VectorGetNamespaceInfo"
+	QRDBService_VectorUpsert_FullMethodName                       = "/qrdb.v1.QRDBService/VectorUpsert"
+	QRDBService_VectorGet_FullMethodName                          = "/qrdb.v1.QRDBService/VectorGet"
+	QRDBService_VectorDelete_FullMethodName                       = "/qrdb.v1.QRDBService/VectorDelete"
+	QRDBService_VectorBatchUpsert_FullMethodName                  = "/qrdb.v1.QRDBService/VectorBatchUpsert"
+	QRDBService_VectorBatchDelete_FullMethodName                  = "/qrdb.v1.QRDBService/VectorBatchDelete"
+	QRDBService_VectorList_FullMethodName                         = "/qrdb.v1.QRDBService/VectorList"
+	QRDBService_VectorUpdateMetadata_FullMethodName               = "/qrdb.v1.QRDBService/VectorUpdateMetadata"
+	QRDBService_VectorSearchSimilar_FullMethodName                = "/qrdb.v1.QRDBService/VectorSearchSimilar"
+	QRDBService_VectorSearchByMetadata_FullMethodName             = "/qrdb.v1.QRDBService/VectorSearchByMetadata"
+	QRDBService_VectorHybridSearch_FullMethodName                 = "/qrdb.v1.QRDBService/VectorHybridSearch"
+	QRDBService_VectorSearchByID_FullMethodName                   = "/qrdb.v1.QRDBService/VectorSearchByID"
+	QRDBService_VectorRebuildIndex_FullMethodName                 = "/qrdb.v1.QRDBService/VectorRebuildIndex"
+	QRDBService_VectorGetRebuildProgress_FullMethodName           = "/qrdb.v1.QRDBService/VectorGetRebuildProgress"
+	QRDBService_VectorGetIndexStats_FullMethodName                = "/qrdb.v1.QRDBService/VectorGetIndexStats"
+	QRDBService_VectorCompactNamespace_FullMethodName             = "/qrdb.v1.QRDBService/VectorCompactNamespace"
+	QRDBService_VectorGetCompactionProgress_FullMethodName        = "/qrdb.v1.QRDBService/VectorGetCompactionProgress"
+	QRDBService_VlogCreate_FullMethodName                         = "/qrdb.v1.QRDBService/VlogCreate"
+	QRDBService_VlogList_FullMethodName                           = "/qrdb.v1.QRDBService/VlogList"
+	QRDBService_VlogAppend_FullMethodName                         = "/qrdb.v1.QRDBService/VlogAppend"
+	QRDBService_VlogGet_FullMethodName                            = "/qrdb.v1.QRDBService/VlogGet"
+	QRDBService_VlogProveInclusion_FullMethodName                 = "/qrdb.v1.QRDBService/VlogProveInclusion"
+	QRDBService_VlogProveConsistency_FullMethodName               = "/qrdb.v1.QRDBService/VlogProveConsistency"
+	QRDBService_VlogHead_FullMethodName                           = "/qrdb.v1.QRDBService/VlogHead"
+	QRDBService_VlogSignHead_FullMethodName                       = "/qrdb.v1.QRDBService/VlogSignHead"
+	QRDBService_VlogExpireBodies_FullMethodName                   = "/qrdb.v1.QRDBService/VlogExpireBodies"
+	QRDBService_VlogRotateKey_FullMethodName                      = "/qrdb.v1.QRDBService/VlogRotateKey"
+	QRDBService_Health_FullMethodName                             = "/qrdb.v1.QRDBService/Health"
+	QRDBService_Status_FullMethodName                             = "/qrdb.v1.QRDBService/Status"
+	QRDBService_Peers_FullMethodName                              = "/qrdb.v1.QRDBService/Peers"
+	QRDBService_AddMember_FullMethodName                          = "/qrdb.v1.QRDBService/AddMember"
+	QRDBService_RemoveMember_FullMethodName                       = "/qrdb.v1.QRDBService/RemoveMember"
+	QRDBService_PromoteMember_FullMethodName                      = "/qrdb.v1.QRDBService/PromoteMember"
+	QRDBService_TransferLeadership_FullMethodName                 = "/qrdb.v1.QRDBService/TransferLeadership"
+	QRDBService_RequestSnapshot_FullMethodName                    = "/qrdb.v1.QRDBService/RequestSnapshot"
+	QRDBService_Drain_FullMethodName                              = "/qrdb.v1.QRDBService/Drain"
+	QRDBService_Capabilities_FullMethodName                       = "/qrdb.v1.QRDBService/Capabilities"
+	QRDBService_StartShard_FullMethodName                         = "/qrdb.v1.QRDBService/StartShard"
+	QRDBService_StopShard_FullMethodName                          = "/qrdb.v1.QRDBService/StopShard"
+	QRDBService_GetShardState_FullMethodName                      = "/qrdb.v1.QRDBService/GetShardState"
+	QRDBService_GetTopology_FullMethodName                        = "/qrdb.v1.QRDBService/GetTopology"
+	QRDBService_GetReplicaStates_FullMethodName                   = "/qrdb.v1.QRDBService/GetReplicaStates"
+	QRDBService_GetNodeCompaction_FullMethodName                  = "/qrdb.v1.QRDBService/GetNodeCompaction"
+	QRDBService_SetNodeCompaction_FullMethodName                  = "/qrdb.v1.QRDBService/SetNodeCompaction"
+	QRDBService_GetStateHashes_FullMethodName                     = "/qrdb.v1.QRDBService/GetStateHashes"
+	QRDBService_MintJoinToken_FullMethodName                      = "/qrdb.v1.QRDBService/MintJoinToken"
+	QRDBService_AddObserverMember_FullMethodName                  = "/qrdb.v1.QRDBService/AddObserverMember"
+	QRDBService_ListPendingJoinRequests_FullMethodName            = "/qrdb.v1.QRDBService/ListPendingJoinRequests"
+	QRDBService_ApproveJoinRequest_FullMethodName                 = "/qrdb.v1.QRDBService/ApproveJoinRequest"
+	QRDBService_RejectJoinRequest_FullMethodName                  = "/qrdb.v1.QRDBService/RejectJoinRequest"
+	QRDBService_RetireJoinIdentity_FullMethodName                 = "/qrdb.v1.QRDBService/RetireJoinIdentity"
+	QRDBService_CreateUser_FullMethodName                         = "/qrdb.v1.QRDBService/CreateUser"
+	QRDBService_GetUser_FullMethodName                            = "/qrdb.v1.QRDBService/GetUser"
+	QRDBService_GetUserByUsername_FullMethodName                  = "/qrdb.v1.QRDBService/GetUserByUsername"
+	QRDBService_GetUserByEmail_FullMethodName                     = "/qrdb.v1.QRDBService/GetUserByEmail"
+	QRDBService_GetUserByCertThumbprint_FullMethodName            = "/qrdb.v1.QRDBService/GetUserByCertThumbprint"
+	QRDBService_AddCertBinding_FullMethodName                     = "/qrdb.v1.QRDBService/AddCertBinding"
+	QRDBService_RemoveCertBinding_FullMethodName                  = "/qrdb.v1.QRDBService/RemoveCertBinding"
+	QRDBService_UpdateUser_FullMethodName                         = "/qrdb.v1.QRDBService/UpdateUser"
+	QRDBService_DeleteUser_FullMethodName                         = "/qrdb.v1.QRDBService/DeleteUser"
+	QRDBService_ListUsers_FullMethodName                          = "/qrdb.v1.QRDBService/ListUsers"
+	QRDBService_EnableUser_FullMethodName                         = "/qrdb.v1.QRDBService/EnableUser"
+	QRDBService_DisableUser_FullMethodName                        = "/qrdb.v1.QRDBService/DisableUser"
+	QRDBService_SuspendUser_FullMethodName                        = "/qrdb.v1.QRDBService/SuspendUser"
+	QRDBService_UnsuspendUser_FullMethodName                      = "/qrdb.v1.QRDBService/UnsuspendUser"
+	QRDBService_CreateRole_FullMethodName                         = "/qrdb.v1.QRDBService/CreateRole"
+	QRDBService_GetRole_FullMethodName                            = "/qrdb.v1.QRDBService/GetRole"
+	QRDBService_GetRoleByName_FullMethodName                      = "/qrdb.v1.QRDBService/GetRoleByName"
+	QRDBService_UpdateRole_FullMethodName                         = "/qrdb.v1.QRDBService/UpdateRole"
+	QRDBService_DeleteRole_FullMethodName                         = "/qrdb.v1.QRDBService/DeleteRole"
+	QRDBService_ListRoles_FullMethodName                          = "/qrdb.v1.QRDBService/ListRoles"
+	QRDBService_AssignRole_FullMethodName                         = "/qrdb.v1.QRDBService/AssignRole"
+	QRDBService_UnassignRole_FullMethodName                       = "/qrdb.v1.QRDBService/UnassignRole"
+	QRDBService_ListPermissions_FullMethodName                    = "/qrdb.v1.QRDBService/ListPermissions"
+	QRDBService_ResolveRolePermissions_FullMethodName             = "/qrdb.v1.QRDBService/ResolveRolePermissions"
+	QRDBService_ListOwnPermissions_FullMethodName                 = "/qrdb.v1.QRDBService/ListOwnPermissions"
+	QRDBService_Authorize_FullMethodName                          = "/qrdb.v1.QRDBService/Authorize"
+	QRDBService_ReconcileBuiltInRoles_FullMethodName              = "/qrdb.v1.QRDBService/ReconcileBuiltInRoles"
+	QRDBService_ReconcileBuiltInRolesAllTenants_FullMethodName    = "/qrdb.v1.QRDBService/ReconcileBuiltInRolesAllTenants"
+	QRDBService_IssueCert_FullMethodName                          = "/qrdb.v1.QRDBService/IssueCert"
+	QRDBService_EnrollCert_FullMethodName                         = "/qrdb.v1.QRDBService/EnrollCert"
+	QRDBService_IssueDelegation_FullMethodName                    = "/qrdb.v1.QRDBService/IssueDelegation"
+	QRDBService_PutDelegationPolicy_FullMethodName                = "/qrdb.v1.QRDBService/PutDelegationPolicy"
+	QRDBService_ListDelegationPolicies_FullMethodName             = "/qrdb.v1.QRDBService/ListDelegationPolicies"
+	QRDBService_DeleteDelegationPolicy_FullMethodName             = "/qrdb.v1.QRDBService/DeleteDelegationPolicy"
+	QRDBService_TrustAnchorAdd_FullMethodName                     = "/qrdb.v1.QRDBService/TrustAnchorAdd"
+	QRDBService_TrustAnchorList_FullMethodName                    = "/qrdb.v1.QRDBService/TrustAnchorList"
+	QRDBService_TrustAnchorRemove_FullMethodName                  = "/qrdb.v1.QRDBService/TrustAnchorRemove"
+	QRDBService_RevokeCert_FullMethodName                         = "/qrdb.v1.QRDBService/RevokeCert"
+	QRDBService_ListCerts_FullMethodName                          = "/qrdb.v1.QRDBService/ListCerts"
+	QRDBService_InviteUser_FullMethodName                         = "/qrdb.v1.QRDBService/InviteUser"
+	QRDBService_RedeemInvitation_FullMethodName                   = "/qrdb.v1.QRDBService/RedeemInvitation"
+	QRDBService_CreateCollection_FullMethodName                   = "/qrdb.v1.QRDBService/CreateCollection"
+	QRDBService_GetCollectionInfo_FullMethodName                  = "/qrdb.v1.QRDBService/GetCollectionInfo"
+	QRDBService_ListCollections_FullMethodName                    = "/qrdb.v1.QRDBService/ListCollections"
+	QRDBService_DropCollection_FullMethodName                     = "/qrdb.v1.QRDBService/DropCollection"
+	QRDBService_InsertDocument_FullMethodName                     = "/qrdb.v1.QRDBService/InsertDocument"
+	QRDBService_GetDocument_FullMethodName                        = "/qrdb.v1.QRDBService/GetDocument"
+	QRDBService_UpdateDocument_FullMethodName                     = "/qrdb.v1.QRDBService/UpdateDocument"
+	QRDBService_DeleteDocument_FullMethodName                     = "/qrdb.v1.QRDBService/DeleteDocument"
+	QRDBService_ListDocuments_FullMethodName                      = "/qrdb.v1.QRDBService/ListDocuments"
+	QRDBService_DatabaseCreate_FullMethodName                     = "/qrdb.v1.QRDBService/DatabaseCreate"
+	QRDBService_DatabaseGet_FullMethodName                        = "/qrdb.v1.QRDBService/DatabaseGet"
+	QRDBService_DatabaseList_FullMethodName                       = "/qrdb.v1.QRDBService/DatabaseList"
+	QRDBService_DatabaseDrop_FullMethodName                       = "/qrdb.v1.QRDBService/DatabaseDrop"
+	QRDBService_DatabaseUpdateProtocol_FullMethodName             = "/qrdb.v1.QRDBService/DatabaseUpdateProtocol"
+	QRDBService_DatabaseUpdateEtcd_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateEtcd"
+	QRDBService_DatabaseUpdateRaft_FullMethodName                 = "/qrdb.v1.QRDBService/DatabaseUpdateRaft"
+	QRDBService_DatabaseScale_FullMethodName                      = "/qrdb.v1.QRDBService/DatabaseScale"
+	QRDBService_DatabaseUpdateBarrier_FullMethodName              = "/qrdb.v1.QRDBService/DatabaseUpdateBarrier"
+	QRDBService_DatabaseUpdateConnection_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateConnection"
+	QRDBService_DatabaseUpdateSQL_FullMethodName                  = "/qrdb.v1.QRDBService/DatabaseUpdateSQL"
+	QRDBService_DatabaseUpdateCompaction_FullMethodName           = "/qrdb.v1.QRDBService/DatabaseUpdateCompaction"
+	QRDBService_BarrierInitialize_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierInitialize"
+	QRDBService_BarrierUnseal_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierUnseal"
+	QRDBService_BarrierChangePassphrase_FullMethodName            = "/qrdb.v1.QRDBService/BarrierChangePassphrase"
+	QRDBService_BarrierSeal_FullMethodName                        = "/qrdb.v1.QRDBService/BarrierSeal"
+	QRDBService_BarrierStatus_FullMethodName                      = "/qrdb.v1.QRDBService/BarrierStatus"
+	QRDBService_BarrierClusterUnseal_FullMethodName               = "/qrdb.v1.QRDBService/BarrierClusterUnseal"
+	QRDBService_BarrierShamirInitialize_FullMethodName            = "/qrdb.v1.QRDBService/BarrierShamirInitialize"
+	QRDBService_BarrierEnableEncryption_FullMethodName            = "/qrdb.v1.QRDBService/BarrierEnableEncryption"
+	QRDBService_BarrierOfficerRegister_FullMethodName             = "/qrdb.v1.QRDBService/BarrierOfficerRegister"
+	QRDBService_BarrierOfficerList_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierOfficerList"
+	QRDBService_BarrierShareClaimBegin_FullMethodName             = "/qrdb.v1.QRDBService/BarrierShareClaimBegin"
+	QRDBService_BarrierShareClaimComplete_FullMethodName          = "/qrdb.v1.QRDBService/BarrierShareClaimComplete"
+	QRDBService_BarrierRecoveryOfficerRegister_FullMethodName     = "/qrdb.v1.QRDBService/BarrierRecoveryOfficerRegister"
+	QRDBService_BarrierRecoveryShareClaimBegin_FullMethodName     = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimBegin"
+	QRDBService_BarrierRecoveryShareClaimComplete_FullMethodName  = "/qrdb.v1.QRDBService/BarrierRecoveryShareClaimComplete"
+	QRDBService_BarrierRecoveryGenerate_FullMethodName            = "/qrdb.v1.QRDBService/BarrierRecoveryGenerate"
+	QRDBService_BarrierRecoveryDelete_FullMethodName              = "/qrdb.v1.QRDBService/BarrierRecoveryDelete"
+	QRDBService_BarrierRecoveryStatus_FullMethodName              = "/qrdb.v1.QRDBService/BarrierRecoveryStatus"
+	QRDBService_BarrierQuorumBegin_FullMethodName                 = "/qrdb.v1.QRDBService/BarrierQuorumBegin"
+	QRDBService_BarrierQuorumSubmit_FullMethodName                = "/qrdb.v1.QRDBService/BarrierQuorumSubmit"
+	QRDBService_BarrierRekeyStart_FullMethodName                  = "/qrdb.v1.QRDBService/BarrierRekeyStart"
+	QRDBService_BarrierOfficerRevoke_FullMethodName               = "/qrdb.v1.QRDBService/BarrierOfficerRevoke"
+	QRDBService_CeremonyInitialize_FullMethodName                 = "/qrdb.v1.QRDBService/CeremonyInitialize"
+	QRDBService_CeremonyStatus_FullMethodName                     = "/qrdb.v1.QRDBService/CeremonyStatus"
+	QRDBService_CeremonySignCSR_FullMethodName                    = "/qrdb.v1.QRDBService/CeremonySignCSR"
+	QRDBService_TenantCreate_FullMethodName                       = "/qrdb.v1.QRDBService/TenantCreate"
+	QRDBService_TenantGet_FullMethodName                          = "/qrdb.v1.QRDBService/TenantGet"
+	QRDBService_TenantList_FullMethodName                         = "/qrdb.v1.QRDBService/TenantList"
+	QRDBService_TenantUpdate_FullMethodName                       = "/qrdb.v1.QRDBService/TenantUpdate"
+	QRDBService_TenantDelete_FullMethodName                       = "/qrdb.v1.QRDBService/TenantDelete"
+	QRDBService_TenantUpdateQuotas_FullMethodName                 = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
+	QRDBService_TenantUpdateEntitlements_FullMethodName           = "/qrdb.v1.QRDBService/TenantUpdateEntitlements"
+	QRDBService_TenantListDeleted_FullMethodName                  = "/qrdb.v1.QRDBService/TenantListDeleted"
+	QRDBService_TenantReconcileDeleted_FullMethodName             = "/qrdb.v1.QRDBService/TenantReconcileDeleted"
+	QRDBService_VolumePoolList_FullMethodName                     = "/qrdb.v1.QRDBService/VolumePoolList"
+	QRDBService_VolumePoolGet_FullMethodName                      = "/qrdb.v1.QRDBService/VolumePoolGet"
+	QRDBService_VolumePoolCreate_FullMethodName                   = "/qrdb.v1.QRDBService/VolumePoolCreate"
+	QRDBService_VolumePoolUpdate_FullMethodName                   = "/qrdb.v1.QRDBService/VolumePoolUpdate"
+	QRDBService_VolumePoolDelete_FullMethodName                   = "/qrdb.v1.QRDBService/VolumePoolDelete"
+	QRDBService_VolumePoolListTenants_FullMethodName              = "/qrdb.v1.QRDBService/VolumePoolListTenants"
+	QRDBService_CredentialSubmit_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialSubmit"
+	QRDBService_CredentialStrategy_FullMethodName                 = "/qrdb.v1.QRDBService/CredentialStrategy"
+	QRDBService_CredentialDelete_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialDelete"
+	QRDBService_CredentialList_FullMethodName                     = "/qrdb.v1.QRDBService/CredentialList"
+	QRDBService_CredentialRotate_FullMethodName                   = "/qrdb.v1.QRDBService/CredentialRotate"
+	QRDBService_CredentialSetRotationPolicy_FullMethodName        = "/qrdb.v1.QRDBService/CredentialSetRotationPolicy"
+	QRDBService_CredentialRotationPolicy_FullMethodName           = "/qrdb.v1.QRDBService/CredentialRotationPolicy"
+	QRDBService_CredentialMigrationConflicts_FullMethodName       = "/qrdb.v1.QRDBService/CredentialMigrationConflicts"
+	QRDBService_CredentialResolveMigrationConflict_FullMethodName = "/qrdb.v1.QRDBService/CredentialResolveMigrationConflict"
+	QRDBService_CredentialRetrieveVersion_FullMethodName          = "/qrdb.v1.QRDBService/CredentialRetrieveVersion"
+	QRDBService_CredentialListVersions_FullMethodName             = "/qrdb.v1.QRDBService/CredentialListVersions"
+	QRDBService_CredentialGCExpired_FullMethodName                = "/qrdb.v1.QRDBService/CredentialGCExpired"
+	QRDBService_CredentialStore_FullMethodName                    = "/qrdb.v1.QRDBService/CredentialStore"
+	QRDBService_CredentialRetrieve_FullMethodName                 = "/qrdb.v1.QRDBService/CredentialRetrieve"
+	QRDBService_TenantDEKStatus_FullMethodName                    = "/qrdb.v1.QRDBService/TenantDEKStatus"
+	QRDBService_TenantDEKRotate_FullMethodName                    = "/qrdb.v1.QRDBService/TenantDEKRotate"
+	QRDBService_TenantDEKRetire_FullMethodName                    = "/qrdb.v1.QRDBService/TenantDEKRetire"
+	QRDBService_TenantDEKEncrypt_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKEncrypt"
+	QRDBService_TenantDEKDecrypt_FullMethodName                   = "/qrdb.v1.QRDBService/TenantDEKDecrypt"
+	QRDBService_TenantDEKRewrap_FullMethodName                    = "/qrdb.v1.QRDBService/TenantDEKRewrap"
+	QRDBService_CreateABACPolicy_FullMethodName                   = "/qrdb.v1.QRDBService/CreateABACPolicy"
+	QRDBService_GetABACPolicy_FullMethodName                      = "/qrdb.v1.QRDBService/GetABACPolicy"
+	QRDBService_ListABACPolicies_FullMethodName                   = "/qrdb.v1.QRDBService/ListABACPolicies"
+	QRDBService_UpdateABACPolicy_FullMethodName                   = "/qrdb.v1.QRDBService/UpdateABACPolicy"
+	QRDBService_DeleteABACPolicy_FullMethodName                   = "/qrdb.v1.QRDBService/DeleteABACPolicy"
+	QRDBService_BackupCreate_FullMethodName                       = "/qrdb.v1.QRDBService/BackupCreate"
+	QRDBService_BackupList_FullMethodName                         = "/qrdb.v1.QRDBService/BackupList"
+	QRDBService_BackupGet_FullMethodName                          = "/qrdb.v1.QRDBService/BackupGet"
+	QRDBService_BackupDelete_FullMethodName                       = "/qrdb.v1.QRDBService/BackupDelete"
+	QRDBService_BackupRestore_FullMethodName                      = "/qrdb.v1.QRDBService/BackupRestore"
+	QRDBService_BackupVerify_FullMethodName                       = "/qrdb.v1.QRDBService/BackupVerify"
+	QRDBService_RebalanceGetShardStats_FullMethodName             = "/qrdb.v1.QRDBService/RebalanceGetShardStats"
+	QRDBService_RebalanceCreatePlan_FullMethodName                = "/qrdb.v1.QRDBService/RebalanceCreatePlan"
+	QRDBService_RebalanceExecute_FullMethodName                   = "/qrdb.v1.QRDBService/RebalanceExecute"
+	QRDBService_RebalanceGetImbalanceReport_FullMethodName        = "/qrdb.v1.QRDBService/RebalanceGetImbalanceReport"
+	QRDBService_Embed_FullMethodName                              = "/qrdb.v1.QRDBService/Embed"
+	QRDBService_BatchEmbed_FullMethodName                         = "/qrdb.v1.QRDBService/BatchEmbed"
+	QRDBService_ListEmbeddingModels_FullMethodName                = "/qrdb.v1.QRDBService/ListEmbeddingModels"
+	QRDBService_RAGIngestDocument_FullMethodName                  = "/qrdb.v1.QRDBService/RAGIngestDocument"
+	QRDBService_RAGQuery_FullMethodName                           = "/qrdb.v1.QRDBService/RAGQuery"
+	QRDBService_RAGDeleteDocument_FullMethodName                  = "/qrdb.v1.QRDBService/RAGDeleteDocument"
+	QRDBService_RAGListDocuments_FullMethodName                   = "/qrdb.v1.QRDBService/RAGListDocuments"
+	QRDBService_DatabaseSeal_FullMethodName                       = "/qrdb.v1.QRDBService/DatabaseSeal"
+	QRDBService_DatabaseUnseal_FullMethodName                     = "/qrdb.v1.QRDBService/DatabaseUnseal"
+	QRDBService_DatabaseBarrierStatus_FullMethodName              = "/qrdb.v1.QRDBService/DatabaseBarrierStatus"
+	QRDBService_DatabaseBarrierOfficerRegister_FullMethodName     = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRegister"
+	QRDBService_DatabaseBarrierOfficerList_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerList"
+	QRDBService_DatabaseBarrierShamirInitialize_FullMethodName    = "/qrdb.v1.QRDBService/DatabaseBarrierShamirInitialize"
+	QRDBService_DatabaseBarrierShareClaimBegin_FullMethodName     = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimBegin"
+	QRDBService_DatabaseBarrierShareClaimComplete_FullMethodName  = "/qrdb.v1.QRDBService/DatabaseBarrierShareClaimComplete"
+	QRDBService_DatabaseBarrierQuorumBegin_FullMethodName         = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumBegin"
+	QRDBService_DatabaseBarrierQuorumSubmit_FullMethodName        = "/qrdb.v1.QRDBService/DatabaseBarrierQuorumSubmit"
+	QRDBService_DatabaseBarrierRekeyStart_FullMethodName          = "/qrdb.v1.QRDBService/DatabaseBarrierRekeyStart"
+	QRDBService_DatabaseBarrierOfficerRevoke_FullMethodName       = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerRevoke"
+	QRDBService_DatabaseBarrierOfficerUnenrol_FullMethodName      = "/qrdb.v1.QRDBService/DatabaseBarrierOfficerUnenrol"
+	QRDBService_SQLQuery_FullMethodName                           = "/qrdb.v1.QRDBService/SQLQuery"
 )
 
 // QRDBServiceClient is the client API for QRDBService service.
@@ -489,7 +493,8 @@ type QRDBServiceClient interface {
 	// VlogRotateKey makes a new key the one that signs the log's heads; heads
 	// signed under an earlier key still verify against it.
 	VlogRotateKey(ctx context.Context, in *VlogRotateKeyRequest, opts ...grpc.CallOption) (*VlogRotateKeyResponse, error)
-	// Health returns the node health status.
+	// Health returns the node health status. It needs no login on any
+	// transport (pkg/api/publicverbs).
 	Health(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*HealthResponse, error)
 	// Status returns detailed node status information.
 	Status(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*StatusResponse, error)
@@ -864,6 +869,20 @@ type QRDBServiceClient interface {
 	// CredentialRotate atomically replaces the current value of a credential,
 	// optionally keeping the previous version retrievable for a grace period.
 	CredentialRotate(ctx context.Context, in *CredentialRotateRequest, opts ...grpc.CallOption) (*CredentialRotateResponse, error)
+	// CredentialSetRotationPolicy sets a credential's scheduled rotation
+	// policy. A refused policy is INVALID_ARGUMENT.
+	CredentialSetRotationPolicy(ctx context.Context, in *CredentialSetRotationPolicyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	// CredentialRotationPolicy returns a credential's scheduled rotation
+	// policy and the time of its next scheduled rotation.
+	CredentialRotationPolicy(ctx context.Context, in *CredentialRotationPolicyRequest, opts ...grpc.CallOption) (*CredentialRotationPolicyResponse, error)
+	// CredentialMigrationConflicts lists the credentials whose node-local
+	// copy in the old credentials/ layout differs from the replicated record
+	// another node migrated first. No value is returned.
+	CredentialMigrationConflicts(ctx context.Context, in *CredentialMigrationConflictsRequest, opts ...grpc.CallOption) (*CredentialMigrationConflictsResponse, error)
+	// CredentialResolveMigrationConflict settles one migration conflict by
+	// import or discard. A name with no conflict is NOT_FOUND; any other
+	// resolution is INVALID_ARGUMENT.
+	CredentialResolveMigrationConflict(ctx context.Context, in *CredentialResolveMigrationConflictRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// CredentialRetrieveVersion returns the stored credential value for a
 	// specific version. Version == 0 means "current version".
 	CredentialRetrieveVersion(ctx context.Context, in *CredentialRetrieveVersionRequest, opts ...grpc.CallOption) (*CredentialRetrieveVersionResponse, error)
@@ -3104,6 +3123,46 @@ func (c *qRDBServiceClient) CredentialRotate(ctx context.Context, in *Credential
 	return out, nil
 }
 
+func (c *qRDBServiceClient) CredentialSetRotationPolicy(ctx context.Context, in *CredentialSetRotationPolicyRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_CredentialSetRotationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CredentialRotationPolicy(ctx context.Context, in *CredentialRotationPolicyRequest, opts ...grpc.CallOption) (*CredentialRotationPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CredentialRotationPolicyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CredentialRotationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CredentialMigrationConflicts(ctx context.Context, in *CredentialMigrationConflictsRequest, opts ...grpc.CallOption) (*CredentialMigrationConflictsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CredentialMigrationConflictsResponse)
+	err := c.cc.Invoke(ctx, QRDBService_CredentialMigrationConflicts_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) CredentialResolveMigrationConflict(ctx context.Context, in *CredentialResolveMigrationConflictRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, QRDBService_CredentialResolveMigrationConflict_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) CredentialRetrieveVersion(ctx context.Context, in *CredentialRetrieveVersionRequest, opts ...grpc.CallOption) (*CredentialRetrieveVersionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CredentialRetrieveVersionResponse)
@@ -3770,7 +3829,8 @@ type QRDBServiceServer interface {
 	// VlogRotateKey makes a new key the one that signs the log's heads; heads
 	// signed under an earlier key still verify against it.
 	VlogRotateKey(context.Context, *VlogRotateKeyRequest) (*VlogRotateKeyResponse, error)
-	// Health returns the node health status.
+	// Health returns the node health status. It needs no login on any
+	// transport (pkg/api/publicverbs).
 	Health(context.Context, *emptypb.Empty) (*HealthResponse, error)
 	// Status returns detailed node status information.
 	Status(context.Context, *emptypb.Empty) (*StatusResponse, error)
@@ -4145,6 +4205,20 @@ type QRDBServiceServer interface {
 	// CredentialRotate atomically replaces the current value of a credential,
 	// optionally keeping the previous version retrievable for a grace period.
 	CredentialRotate(context.Context, *CredentialRotateRequest) (*CredentialRotateResponse, error)
+	// CredentialSetRotationPolicy sets a credential's scheduled rotation
+	// policy. A refused policy is INVALID_ARGUMENT.
+	CredentialSetRotationPolicy(context.Context, *CredentialSetRotationPolicyRequest) (*emptypb.Empty, error)
+	// CredentialRotationPolicy returns a credential's scheduled rotation
+	// policy and the time of its next scheduled rotation.
+	CredentialRotationPolicy(context.Context, *CredentialRotationPolicyRequest) (*CredentialRotationPolicyResponse, error)
+	// CredentialMigrationConflicts lists the credentials whose node-local
+	// copy in the old credentials/ layout differs from the replicated record
+	// another node migrated first. No value is returned.
+	CredentialMigrationConflicts(context.Context, *CredentialMigrationConflictsRequest) (*CredentialMigrationConflictsResponse, error)
+	// CredentialResolveMigrationConflict settles one migration conflict by
+	// import or discard. A name with no conflict is NOT_FOUND; any other
+	// resolution is INVALID_ARGUMENT.
+	CredentialResolveMigrationConflict(context.Context, *CredentialResolveMigrationConflictRequest) (*emptypb.Empty, error)
 	// CredentialRetrieveVersion returns the stored credential value for a
 	// specific version. Version == 0 means "current version".
 	CredentialRetrieveVersion(context.Context, *CredentialRetrieveVersionRequest) (*CredentialRetrieveVersionResponse, error)
@@ -4905,6 +4979,18 @@ func (UnimplementedQRDBServiceServer) CredentialList(context.Context, *Credentia
 }
 func (UnimplementedQRDBServiceServer) CredentialRotate(context.Context, *CredentialRotateRequest) (*CredentialRotateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialRotate not implemented")
+}
+func (UnimplementedQRDBServiceServer) CredentialSetRotationPolicy(context.Context, *CredentialSetRotationPolicyRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method CredentialSetRotationPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) CredentialRotationPolicy(context.Context, *CredentialRotationPolicyRequest) (*CredentialRotationPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CredentialRotationPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) CredentialMigrationConflicts(context.Context, *CredentialMigrationConflictsRequest) (*CredentialMigrationConflictsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CredentialMigrationConflicts not implemented")
+}
+func (UnimplementedQRDBServiceServer) CredentialResolveMigrationConflict(context.Context, *CredentialResolveMigrationConflictRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "method CredentialResolveMigrationConflict not implemented")
 }
 func (UnimplementedQRDBServiceServer) CredentialRetrieveVersion(context.Context, *CredentialRetrieveVersionRequest) (*CredentialRetrieveVersionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CredentialRetrieveVersion not implemented")
@@ -8841,6 +8927,78 @@ func _QRDBService_CredentialRotate_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_CredentialSetRotationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CredentialSetRotationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CredentialSetRotationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CredentialSetRotationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CredentialSetRotationPolicy(ctx, req.(*CredentialSetRotationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CredentialRotationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CredentialRotationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CredentialRotationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CredentialRotationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CredentialRotationPolicy(ctx, req.(*CredentialRotationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CredentialMigrationConflicts_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CredentialMigrationConflictsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CredentialMigrationConflicts(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CredentialMigrationConflicts_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CredentialMigrationConflicts(ctx, req.(*CredentialMigrationConflictsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_CredentialResolveMigrationConflict_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CredentialResolveMigrationConflictRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).CredentialResolveMigrationConflict(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_CredentialResolveMigrationConflict_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).CredentialResolveMigrationConflict(ctx, req.(*CredentialResolveMigrationConflictRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_CredentialRetrieveVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CredentialRetrieveVersionRequest)
 	if err := dec(in); err != nil {
@@ -10529,6 +10687,22 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CredentialRotate",
 			Handler:    _QRDBService_CredentialRotate_Handler,
+		},
+		{
+			MethodName: "CredentialSetRotationPolicy",
+			Handler:    _QRDBService_CredentialSetRotationPolicy_Handler,
+		},
+		{
+			MethodName: "CredentialRotationPolicy",
+			Handler:    _QRDBService_CredentialRotationPolicy_Handler,
+		},
+		{
+			MethodName: "CredentialMigrationConflicts",
+			Handler:    _QRDBService_CredentialMigrationConflicts_Handler,
+		},
+		{
+			MethodName: "CredentialResolveMigrationConflict",
+			Handler:    _QRDBService_CredentialResolveMigrationConflict_Handler,
 		},
 		{
 			MethodName: "CredentialRetrieveVersion",
