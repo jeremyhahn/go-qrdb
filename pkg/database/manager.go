@@ -1127,10 +1127,16 @@ func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
 	kept := *raft
 	kept.ShardID = issued
 	// The Raft state storage is recorded at create and opens the database
-	// from then on; an update carries none and keeps the recorded one.
+	// from then on: an update that omits it keeps the recorded one, and one
+	// naming another is refused.
+	var recorded BackendType
 	if prev := db.config.Load().Raft; prev != nil {
-		kept.StateStorage = prev.StateStorage
+		recorded = prev.StateStorage
 	}
+	if raft.StateStorage != "" && raft.StateStorage != recorded {
+		return &StateStorageUpdateError{Name: name, Recorded: recorded, Requested: raft.StateStorage}
+	}
+	kept.StateStorage = recorded
 	if err := keepStoredSecrets(&kept, db.Config().Raft); err != nil {
 		return err
 	}

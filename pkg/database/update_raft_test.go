@@ -92,9 +92,10 @@ func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Omitted or restating the recorded store: kept.
 	for _, update := range []*DatabaseRaftConfig{
 		{ClusterMode: RaftNone, RaftAddress: "db.example.com:63002"},
-		{ClusterMode: RaftNone, StateStorage: BackendMemory},
+		{ClusterMode: RaftNone, StateStorage: BackendFile},
 	} {
 		if err := m.UpdateRaft("storage", update); err != nil {
 			t.Fatalf("UpdateRaft(%+v): %v", update, err)
@@ -102,6 +103,16 @@ func TestUpdateRaft_StateStorageIsKept(t *testing.T) {
 		if got := storedRaft(t, m, "storage").StateStorage; got != BackendFile {
 			t.Fatalf("state storage after UpdateRaft(%+v) = %q, want %q", update, got, BackendFile)
 		}
+	}
+	// Naming another store: refused, and the record is untouched.
+	err := m.UpdateRaft("storage", &DatabaseRaftConfig{ClusterMode: RaftNone, StateStorage: BackendMemory})
+	var refused *StateStorageUpdateError
+	if !errors.As(err, &refused) || refused.Name != "storage" ||
+		refused.Recorded != BackendFile || refused.Requested != BackendMemory || refused.Error() == "" {
+		t.Fatalf("UpdateRaft changing the state storage = %v, want *StateStorageUpdateError", err)
+	}
+	if got := storedRaft(t, m, "storage").StateStorage; got != BackendFile {
+		t.Fatalf("state storage after a refused update = %q, want %q", got, BackendFile)
 	}
 }
 
