@@ -27,7 +27,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
-	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs/publicverbstest"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
@@ -36,13 +35,12 @@ import (
 
 // startPublicVerbsServer starts a TLS Unix listener that verifies a client
 // certificate when one is given, with authentication on and the admin
-// service answering Health with publicverbstest.WantHealth.
+// service answering Health with publicverbstest.WantHealth. The middleware's
+// public-method set is left to srv.Start, so the parity tests fail if Unix
+// startup stops registering Health as public.
 func startPublicVerbsServer(t *testing.T) (socketPath string, serverCfg *tls.Config) {
 	t.Helper()
 	mw := authmw.New(dispatchDenyAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
-	if err := mw.RegisterPublicGRPCMethods(publicverbs.GRPCFullMethods(pb.QRDBService_ServiceDesc.ServiceName)); err != nil {
-		t.Fatalf("RegisterPublicGRPCMethods: %v", err)
-	}
 	socketPath = tempSocketPath(t)
 	serverCfg = selfSignedTLSConfig(t)
 	serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
