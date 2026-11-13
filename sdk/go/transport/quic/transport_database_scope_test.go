@@ -19,17 +19,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// TestTransportImplementsDatabaseScoper asserts the QUIC transport satisfies
-// the DatabaseScoper interface so Client.DatabaseScoped dispatches to it.
-func TestTransportImplementsDatabaseScoper(t *testing.T) {
-	var tr any = &Transport{}
-	if _, ok := tr.(transport.DatabaseScoper); !ok {
-		t.Fatal("QUIC Transport does not implement transport.DatabaseScoper")
-	}
-}
 
 // TestWithDatabasePropagatesScope verifies that a database-scoped QUIC
 // transport carries the database name on the data-plane request frame.

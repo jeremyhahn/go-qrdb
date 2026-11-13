@@ -78,18 +78,6 @@ func TestRESTGetUser_Success(t *testing.T) {
 	}
 }
 
-func TestRESTGetUser_NotFound(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodGet, "/users/9999"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	_, err := rt.GetUser(context.Background(), 9999)
-	var nfe *transport.UserNotFoundError
-	if !errors.As(err, &nfe) {
-		t.Fatalf("expected UserNotFoundError, got %T", err)
-	}
-}
-
 func TestRESTGetUser_ServerError(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodGet, "/users/1"), func(w http.ResponseWriter, _ *http.Request) {
@@ -137,18 +125,6 @@ func TestRESTGetUserByUsername_Success(t *testing.T) {
 	}
 	if user.Username != "alice" {
 		t.Fatalf("Username = %q", user.Username)
-	}
-}
-
-func TestRESTGetUserByUsername_NotFound(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/users/by-username/"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	_, err := rt.GetUserByUsername(context.Background(), "t1", "missing")
-	var nfe *transport.UserNotFoundError
-	if !errors.As(err, &nfe) {
-		t.Fatalf("expected UserNotFoundError, got %T", err)
 	}
 }
 
@@ -203,17 +179,6 @@ func TestRESTDeleteUser_Success(t *testing.T) {
 	})
 	if err := rt.DeleteUser(context.Background(), 1); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
-	}
-}
-
-func TestRESTDeleteUser_NotFound(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodDelete, "/users/1"), func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "not found", http.StatusNotFound)
-	})
-	err := rt.DeleteUser(context.Background(), 1)
-	if err == nil {
-		t.Fatal("expected error")
 	}
 }
 

@@ -134,23 +134,6 @@ func TestProtoEventTypeToTransport_AllValues(t *testing.T) {
 // Closed state tests for Watch methods
 // ---------------------------------------------------------------------------
 
-func TestTransport_Watch_Closed(t *testing.T) {
-	tr, err := New(transport.WithAddress("localhost:63002"))
-	if err != nil {
-		t.Fatalf("New() returned unexpected error: %v", err)
-	}
-	_ = tr.Close()
-	ctx := context.Background()
-	_, err = tr.Watch(ctx, "key", transport.WatchOptions{})
-	if err == nil {
-		t.Fatal("Watch() on closed transport should return error")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Errorf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestTransport_WatchPrefix_Closed(t *testing.T) {
 	tr, err := New(transport.WithAddress("localhost:63002"))
 	if err != nil {

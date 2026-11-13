@@ -107,12 +107,19 @@ is checked on the route; what an authenticated caller may do there is the
 handler's decision. A certificate from a CA the node does not trust fails the
 TLS handshake before any route is reached.
 
-**MCP public tools.** A module's `PublicMCPTools()` names the tools an
-anonymous MCP caller may call — its first-contact surface, and optionally the
-built-in `qrdb_health`. While any are declared, an anonymous `initialize` and
-`tools/list` are answered too; the listing shows the public set only, and
-every other request still answers 401. A declared tool carrying any
-permission but `admin:health` is refused (`PublicMCPToolRefusedError`), as is
+**Public Health.** Health is a no-login verb on every transport — REST
+`GET /health`, gRPC and Unix `Health`, QUIC `admin.Health`, MCP `qrdb_health`
+— one row of `pkg/api/publicverbs.Table`. Each draws the `admin:health`
+rate-limit bucket by caller address before it is served. An SDK client with no
+credential therefore connects, and is refused with the typed `Unauthenticated`
+error at its first call that needs an identity.
+
+**MCP public tools.** The built-in `qrdb_health` is always public while the
+admin service is on. A module's `PublicMCPTools()` names further tools an
+anonymous MCP caller may call — its first-contact surface. While any public
+tool exists, an anonymous `initialize` and `tools/list` are answered too; the
+listing shows the public set only, and every other request still answers 401.
+A declared tool carrying any permission but `identity:public` is refused (`PublicMCPToolRefusedError`), as is
 a name no tool answers (`UnknownPublicToolError`); the MCP server does not
 start. An authenticated caller's `tools/list` shows the public set plus the
 tools its grants allow. See

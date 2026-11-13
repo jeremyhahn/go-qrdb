@@ -83,6 +83,7 @@ const raftKeys = {
     multicast: true,
     dns: true,
     token: true,
+    stateStorage: true,
 } satisfies Record<keyof DatabaseRaftInfo, true>;
 
 const staticKeys = { peers: true, sharedSecretSet: true } satisfies Record<keyof StaticDiscoveryInfo, true>;

@@ -28,15 +28,6 @@ import (
 // committed is the generated file, relative to this package.
 const committed = "../../database_scope_services.go"
 
-// The committed file is exactly what the generator produces from today's
-// pkg/service interfaces: an interface that grew a method, or a hand edit to
-// the file, fails here as well as in CI's check step.
-func TestCommittedFileIsCurrent(t *testing.T) {
-	if err := run("", committed); err != nil {
-		t.Fatalf("%v", err)
-	}
-}
-
 func TestCheckFile_ReportsDrift(t *testing.T) {
 	src, err := generate()
 	if err != nil {

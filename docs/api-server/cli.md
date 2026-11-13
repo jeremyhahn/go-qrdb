@@ -54,7 +54,7 @@ qrdb kv get hello                                     # default: local unix sock
 ## Observing it
 
 ```bash
-qrdb admin health           # public route — works without credentials
+qrdb admin health           # public on every transport — works without credentials
 qrdb admin status
 qrdb admin capabilities     # effective feature set: build tags x mode x config
 curl -k https://db.example.com/metrics    # Prometheus, authenticated

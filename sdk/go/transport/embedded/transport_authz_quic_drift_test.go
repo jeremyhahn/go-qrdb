@@ -299,7 +299,6 @@ var quicToEmbeddedMethod = map[string]string{
 // comment above for what each category means and which OTHER test verifies
 // that method's embedded-side authorization instead.
 var quicMethodExclusions = map[string]string{
-	"admin.Health":                       "public",
 	"barrier.EnableEncryption":           "target-resolved",
 	"barrier.Initialize":                 "public",
 	"barrier.OfficerRegister":            "public",
@@ -315,6 +314,9 @@ var quicMethodExclusions = map[string]string{
 	"ceremony.Initialize":                "public",
 	"ceremony.SignCSR":                   "public",
 	"cert.Delegate":                      "target-resolved",
+	"cert.DelegationPolicyDelete":        "target-resolved",
+	"cert.DelegationPolicyList":          "target-resolved",
+	"cert.DelegationPolicyPut":           "target-resolved",
 	"cert.Enroll":                        "target-resolved",
 	"cert.Issue":                         "target-resolved",
 	"cert.List":                          "target-resolved",

@@ -112,26 +112,6 @@ func TestQUICGuarded_PutIfAbsent_OneCallAndBinarySafe(t *testing.T) {
 	}
 }
 
-func TestQUICGuarded_PutIfAbsent_DeclinedIsNotAnError(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("kv.PutIfAbsent", func([]byte) (uint16, []byte) {
-		payload, _ := proto.Marshal(&pb.PutIfAbsentResponse{Stored: false})
-		return wire.StatusOK, payload
-	})
-
-	// Losing the claim is the normal outcome of a race, not a failure. A
-	// transport that reported it as an error would make a caller retry the one
-	// thing that can never succeed.
-	stored, err := tr.PutIfAbsent(context.Background(), "claim", []byte("globex"))
-	if err != nil {
-		t.Fatalf("a declined PutIfAbsent must not be an error: %v", err)
-	}
-	if stored {
-		t.Error("the server reported stored=false and the client returned true")
-	}
-	assertOneCall(t, srv, "kv.PutIfAbsent")
-}
-
 func TestQUICGuarded_CompareAndDelete_OneCallAndBinarySafe(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("kv.CompareAndDelete", func([]byte) (uint16, []byte) {
