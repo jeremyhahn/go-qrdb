@@ -111,6 +111,21 @@ func NewProvisioningAuthorizedDatabaseService(inner DatabaseServicer, authz Prov
 	return &provisioningAuthorizedDatabaseService{DatabaseServicer: inner, authz: authz, tenants: tenants, resolve: resolve}
 }
 
+// DatabaseDefaultsResolver is a database service that can resolve a create
+// request against the node's database_defaults, so a provisioning check sees
+// the configuration the create will actually build.
+type DatabaseDefaultsResolver interface {
+	ResolveDefaults(database.DatabaseConfig) database.DatabaseConfig
+}
+
+var _ DatabaseDefaultsResolver = (*DatabaseService)(nil)
+
+// ResolveDefaults resolves cfg against the database_defaults of the manager
+// that performs this service's creates.
+func (s *DatabaseService) ResolveDefaults(cfg database.DatabaseConfig) database.DatabaseConfig {
+	return s.manager.ResolveDefaults(cfg)
+}
+
 // authorize checks every provisioning permission cfg needs for the context's
 // tenant. A tenant whose isolation tier cannot be read is refused with the
 // lookup's error: the tier decides what the create provisions.

@@ -17,11 +17,14 @@ package service
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -176,6 +179,25 @@ func TestProvisioningAuthorizedDatabaseService_ChecksResolvedDefaults(t *testing
 	}
 	if !reflect.DeepEqual(inner.created, []string{"dflt"}) {
 		t.Fatalf("created %v", inner.created)
+	}
+}
+
+// TestDatabaseService_ResolveDefaults_AppliesTheManagersDefaults: the service
+// resolves a create request against the defaults of the manager it creates
+// through, so a provisioning check built on it sees the effective backend.
+func TestDatabaseService_ResolveDefaults_AppliesTheManagersDefaults(t *testing.T) {
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithDefaults(database.Defaults{Backend: database.BackendRaft}))
+	t.Cleanup(func() { _ = mgr.Close() })
+	svc, ok := NewDatabaseService(mgr).(DatabaseDefaultsResolver)
+	if !ok {
+		t.Fatal("DatabaseService does not implement DatabaseDefaultsResolver")
+	}
+	if got := svc.ResolveDefaults(database.DatabaseConfig{Name: "a"}).Backend; got != database.BackendRaft {
+		t.Fatalf("resolved backend = %q, want %q from the manager's defaults", got, database.BackendRaft)
+	}
+	if got := svc.ResolveDefaults(database.DatabaseConfig{Name: "a", Backend: database.BackendPebble}).Backend; got != database.BackendPebble {
+		t.Fatalf("explicit backend resolved to %q, want %q", got, database.BackendPebble)
 	}
 }
 
