@@ -17,11 +17,73 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 )
+
+// TestDedicatedStoreServiceCache_EvictsADroppedDatabase: a database the
+// manager has dropped is never served again, so the cache must not keep it,
+// and the backend and object store it carries, for the life of the process.
+// The drop is the manager's own, over an objstore database.
+func TestDedicatedStoreServiceCache_EvictsADroppedDatabase(t *testing.T) {
+	open := func(string, string, string) (storage.Storage, database.ObjstoreReclaim, error) {
+		e, err := objstore.New("memory", map[string]string{})
+		if err != nil {
+			return nil, nil, err
+		}
+		return e, e.Destroy, nil
+	}
+	mgr := databasetest.NewManager(slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir(),
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithObjstoreOpener(open))))
+	t.Cleanup(func() { _ = mgr.Close() })
+	dropped, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
+	if err != nil {
+		t.Fatalf("Create(blobs): %v", err)
+	}
+	kept, err := mgr.Create(database.DatabaseConfig{Name: "kept", Backend: database.BackendObjstore})
+	if err != nil {
+		t.Fatalf("Create(kept): %v", err)
+	}
+
+	c := newDedicatedStoreServiceCache()
+	evicted := make(chan dedicatedStoreKey, 1)
+	c.onEvict = func(key dedicatedStoreKey) { evicted <- key }
+	c.getOrBuild(dropped)
+	keptSvcs := c.getOrBuild(kept)
+	if err := mgr.Drop(context.Background(), "blobs"); err != nil {
+		t.Fatalf("Drop(blobs): %v", err)
+	}
+	select {
+	case key := <-evicted:
+		if key.name != "blobs" {
+			t.Fatalf("evicted %v, want the dropped database", key)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the drop did not evict the dropped database's entry")
+	}
+	if again := c.getOrBuild(kept); again != keptSvcs {
+		t.Fatal("the drop of another database evicted a live database's bundle")
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for key, e := range c.entries {
+		if e.db == dropped {
+			t.Fatalf("the dropped database %v is still cached", key)
+		}
+	}
+	if len(c.entries) != 1 {
+		t.Fatalf("cache holds %d entries, want 1 (the live database)", len(c.entries))
+	}
+}
 
 // newBarrierServicesTestDatabase builds a *database.Database backed by an
 // in-memory standalone Backend, standing in for a dedicated-store database's

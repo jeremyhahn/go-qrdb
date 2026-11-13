@@ -49,37 +49,38 @@ const journalTreeSuffix = ".journal"
 // symlinked root, and every spelling of the root -- a symlink, its target, a
 // path through a symlinked parent -- must list one tree and reach the one
 // journal recovery has to find. Every store opens through create, the creator
-// New resolved for provider.
-func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (data, journal objcommon.Storage, err error) {
+// New resolved for provider. dataDir is the physical directory the data store
+// is rooted at for a provider in walkedRoots, and empty for any other.
+func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (data, journal objcommon.Storage, dataDir string, err error) {
 	rootSetting, walked := walkedRoots[provider]
 	if !walked {
-		return store, store, nil
+		return store, store, "", nil
 	}
 	// The provider has created its root by now, so it resolves.
 	physical, err := filepath.EvalSymlinks(settings[rootSetting])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if physical != settings[rootSetting] {
 		dataSettings := maps.Clone(settings)
 		dataSettings[rootSetting] = physical
 		if store, err = create(dataSettings, creds); err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 	}
 	if err := refuseInTreeJournal(provider, store); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	root, err := journalRoot(physical)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	journalSettings := maps.Clone(settings)
 	journalSettings[rootSetting] = root
 	if journal, err = create(journalSettings, creds); err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return store, journal, nil
+	return store, journal, physical, nil
 }
 
 // journalRoot names the sibling tree that holds the journal of a store rooted
@@ -280,8 +281,13 @@ func (e *Engine) recoverJournal() error {
 // journaled (see journalPending), so the caller's write is decided against,
 // and lands after, the whole batch. While the provider still cannot apply it
 // the journal stays pending and the caller's write is refused. The caller
-// holds journalMu; the replay takes writeMu exclusive.
+// holds journalMu; the replay takes writeMu exclusive. Destroy closes the
+// engine under journalMu, so a caller that waited for it is refused here
+// rather than writing into the namespace it reclaimed.
 func (e *Engine) resolvePendingJournal() error {
+	if e.closed.Load() {
+		return &storage.ClosedError{}
+	}
 	if !e.journalPending.Load() {
 		return nil
 	}
@@ -311,8 +317,18 @@ func (e *Engine) settlePendingJournal() error {
 // write is done: no write lands where the next write's replay would apply a
 // failed batch over it. On success the caller releases writeMu with RUnlock.
 func (e *Engine) enterWrite() error {
+	if e.beforeEnterWrite != nil {
+		e.beforeEnterWrite()
+	}
 	for {
 		e.writeMu.RLock()
+		// The caller's closed check ran before the lock: a Destroy that
+		// finished between the two must not see a write land in the
+		// namespace it reclaimed.
+		if e.closed.Load() {
+			e.writeMu.RUnlock()
+			return &storage.ClosedError{}
+		}
 		if !e.journalPending.Load() {
 			return nil
 		}

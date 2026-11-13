@@ -16,9 +16,11 @@ package server
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // buildDedicatedStoreServices builds a *DatabaseServices bundle directly over
@@ -96,7 +98,19 @@ func buildDedicatedStoreServices(db *database.Database) *DatabaseServices {
 // not rebuild one on every request. It is safe for concurrent use.
 type dedicatedStoreServiceCache struct {
 	mu      sync.RWMutex
-	entries map[string]*dedicatedStoreServiceEntry
+	entries map[dedicatedStoreKey]*dedicatedStoreServiceEntry
+
+	// onEvict, when set, runs under mu once watchDrop has evicted a dropped
+	// database's entry. Tests use it to wait for the eviction; it is nil in
+	// production.
+	onEvict func(dedicatedStoreKey)
+}
+
+// dedicatedStoreKey names one database: a name is unique only within its
+// tenant, so two tenants' same-named databases are separate entries.
+type dedicatedStoreKey struct {
+	tenant string
+	name   string
 }
 
 // dedicatedStoreServiceEntry pairs a cached bundle with the *database.Database
@@ -106,32 +120,75 @@ type dedicatedStoreServiceCache struct {
 type dedicatedStoreServiceEntry struct {
 	db   *database.Database
 	svcs *DatabaseServices
+
+	// watched is set while a goroutine waits for db to stop serving, to
+	// evict the entry if a drop stopped it (watchDrop).
+	watched atomic.Bool
 }
 
 // newDedicatedStoreServiceCache creates an empty cache.
 func newDedicatedStoreServiceCache() *dedicatedStoreServiceCache {
-	return &dedicatedStoreServiceCache{entries: make(map[string]*dedicatedStoreServiceEntry)}
+	return &dedicatedStoreServiceCache{entries: make(map[dedicatedStoreKey]*dedicatedStoreServiceEntry)}
 }
 
 // getOrBuild returns the cached bundle for db, building and caching one with
 // buildDedicatedStoreServices when absent or when db is a different
-// *database.Database instance than the one currently cached under its name.
+// *database.Database instance than the one currently cached under its tenant
+// and name. A cached entry is evicted when a drop stops its database
+// (watchDrop), so the cache does not keep a dropped database, and the
+// backend and object store it carries, for the life of the process.
 func (c *dedicatedStoreServiceCache) getOrBuild(db *database.Database) *DatabaseServices {
-	name := db.Name()
+	key := dedicatedStoreKey{tenant: tenantid.Normalize(db.TenantID()), name: db.Name()}
 
 	c.mu.RLock()
-	if e, ok := c.entries[name]; ok && e.db == db {
+	if e, ok := c.entries[key]; ok && e.db == db {
 		c.mu.RUnlock()
+		c.watchDrop(key, e)
 		return e.svcs
 	}
 	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if e, ok := c.entries[name]; ok && e.db == db {
+	if e, ok := c.entries[key]; ok && e.db == db {
+		c.watchDrop(key, e)
 		return e.svcs
 	}
 	svcs := buildDedicatedStoreServices(db)
-	c.entries[name] = &dedicatedStoreServiceEntry{db: db, svcs: svcs}
+	if db.Dropping() {
+		// Manager.Drop has fenced it: it is never served again.
+		delete(c.entries, key)
+		return svcs
+	}
+	e := &dedicatedStoreServiceEntry{db: db, svcs: svcs}
+	c.entries[key] = e
+	c.watchDrop(key, e)
 	return svcs
+}
+
+// watchDrop starts, unless one is already waiting, a goroutine that waits
+// for e's database to stop serving and evicts e if a drop stopped it.
+// Manager.Drop fences the database (Dropping) before it closes it, so the
+// fence is visible once Unserved is closed. A database that stopped for
+// another reason (a seal) is left cached: the goroutine ends, and the next
+// request that resolves the database, once it serves again, waits anew.
+func (c *dedicatedStoreServiceCache) watchDrop(key dedicatedStoreKey, e *dedicatedStoreServiceEntry) {
+	if !e.watched.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		<-e.db.Unserved()
+		if !e.db.Dropping() {
+			e.watched.Store(false)
+			return
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.entries[key] == e {
+			delete(c.entries, key)
+		}
+		if c.onEvict != nil {
+			c.onEvict(key)
+		}
+	}()
 }

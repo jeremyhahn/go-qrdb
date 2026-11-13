@@ -207,6 +207,8 @@ func (u *createUndo) mkdirAll(path string) error {
 // still name the database's storage and barrier metadata, so the
 // directories are kept for the drop that removes the record, as
 // settleCatalog keeps them, and run returns *CatalogOrphanError wrapping
+// cause. Otherwise a backend whose data lives outside its directory (see
+// storeReclaimer) has that data reclaimed; a reclaim that fails is joined to
 // cause.
 func (u *createUndo) run(ctx context.Context, cause error) error {
 	for i := len(u.backends) - 1; i >= 0; i-- {
@@ -228,6 +230,17 @@ func (u *createUndo) run(ctx context.Context, cause error) error {
 	}
 	for i := len(u.dirs) - 1; i >= 0; i-- {
 		_ = os.RemoveAll(u.dirs[i])
+	}
+	// The record is gone, so no drop will ever reclaim a backend whose data
+	// lives outside the directories removed above: it is reclaimed here.
+	var reclaimErr error
+	for i := len(u.backends) - 1; i >= 0; i-- {
+		if r, ok := u.backends[i].(storeReclaimer); ok {
+			reclaimErr = errors.Join(reclaimErr, r.ReclaimStore())
+		}
+	}
+	if reclaimErr != nil {
+		return errors.Join(cause, reclaimErr)
 	}
 	return cause
 }

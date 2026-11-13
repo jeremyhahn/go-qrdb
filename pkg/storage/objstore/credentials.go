@@ -84,6 +84,7 @@ type Option func(*options)
 
 type options struct {
 	credentials CredentialFiles
+	prefix      string
 }
 
 // WithCredentialFiles has New authenticate the provider with the credential
@@ -95,6 +96,11 @@ type options struct {
 func WithCredentialFiles(files CredentialFiles) Option {
 	return func(o *options) { o.credentials = files }
 }
+
+// readFileHandle reads a credential file into a protected-memory handle. It
+// is a variable so a test can observe each handle openCredentials opens,
+// including one a later failure must destroy.
+var readFileHandle = secure.ReadFileHandle
 
 // openCredentials reads the referenced files into handles. The returned
 // release destroys them and is never nil, also on error; a file that cannot
@@ -109,14 +115,14 @@ func openCredentials(files CredentialFiles) (objcommon.Credentials, func(), erro
 		return objcommon.Credentials{}, release, err
 	}
 	if files.KeyFile != "" {
-		h, err := secure.ReadFileHandle(files.KeyFile)
+		h, err := readFileHandle(files.KeyFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialKey, File: files.KeyFile, Err: err}
 		}
 		creds.Key = h
 	}
 	if files.SecretFile != "" {
-		h, err := secure.ReadFileHandle(files.SecretFile)
+		h, err := readFileHandle(files.SecretFile)
 		if err != nil {
 			return objcommon.Credentials{}, release, &CredentialFileError{Credential: CredentialSecret, File: files.SecretFile, Err: err}
 		}

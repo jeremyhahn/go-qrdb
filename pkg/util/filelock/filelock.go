@@ -78,6 +78,17 @@ func (l *File) Lock() error {
 	return nil
 }
 
+// TryLock takes the exclusive lock if no other open file holds it, and reports
+// whether it did; it never waits. A caller that holds the lock for as long as
+// it owns a resource uses it to refuse a second owner rather than queue it.
+func (l *File) TryLock() (bool, error) {
+	locked, err := tryLockFile(l.f)
+	if err != nil {
+		return false, &Error{Op: "lock", Path: l.f.Name(), Err: err}
+	}
+	return locked, nil
+}
+
 // Unlock releases the lock. If the operating system refuses, the file is
 // closed so the kernel releases the lock regardless -- a lock that cannot be
 // released would otherwise stall every other process indefinitely -- and the
