@@ -60,10 +60,9 @@ func TestPublicHealth_CLI_NoCertificate_PerProtocol(t *testing.T) {
 				if strings.Contains(strings.ToLower(out), "unknown command") {
 					t.Fatalf("[%s] %v is not a command: %s", proto.name, cmd, out)
 				}
-				// REST reports Unauthenticated as its HTTP status; every
-				// other transport names the status code.
-				lower := strings.ToLower(out)
-				if !strings.Contains(lower, "unauthenticated") && !strings.Contains(lower, "status 401") {
+				// Every transport, REST's 401 included, names the refusal
+				// unauthenticated.
+				if !strings.Contains(strings.ToLower(out), "unauthenticated") {
 					t.Fatalf("[%s] %v with no certificate: want the typed unauthenticated refusal, got: %s", proto.name, cmd, out)
 				}
 			}

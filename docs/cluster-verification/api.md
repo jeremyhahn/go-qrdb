@@ -52,9 +52,11 @@ The soak runs as a client holding exactly these permissions:
 | Permission | Used by |
 |---|---|
 | `kv:put`, `kv:get`, `kv:delete` | the workload's `put`, `get` and `delete`; `cas` is `CompareAndSwap`, which `kv:put` gates |
-| `admin:health` | every dial's health check |
 | `admin:status`, `admin:peers` | E4's recovery check: every shard has a leader and every node lists the members |
 | `admin:replica_state` | E3's replica state read |
+
+Every dial's health check needs no permission: Health is public on every
+transport.
 
 `admin:replica_state` is cross-scoped, so the credential is a `system`-tenant
 identity, and no built-in role holds it but Owner: grant all of them through
