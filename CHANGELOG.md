@@ -14,6 +14,7 @@ are not reconstructed here — their history is in the git log.
 ### Changed
 
 - **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
+- **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
 
 ### Added
 

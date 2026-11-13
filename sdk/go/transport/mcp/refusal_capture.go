@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -44,30 +45,30 @@ var refusalCodeByStatus = map[int]wire.Code{
 	http.StatusTooManyRequests: wire.CodeResourceExhausted,
 }
 
-// initializeRefusalCapture keeps the auth chain's refusal of a request sent
-// while it is armed -- the initialize POST. mcp-go reports a 401 on
-// initialize as an authorization-required error and a 403 as a legacy SSE
+// refusalCapture keeps the auth chain's HTTP refusal of a request whose
+// context carries a refusalSlot. mcp-go reports a 401 as an
+// authorization-required error and a 403 on initialize as a legacy SSE
 // server, dropping the body that says why the caller was refused, so the
-// dial reads the refusal from here instead.
-type initializeRefusalCapture struct {
-	next    http.RoundTripper
-	armed   atomic.Bool
-	refusal atomic.Pointer[capturedRefusal]
+// caller reads the refusal from its slot instead. The refusal can come on
+// any request, not only initialize: a server that serves no-login tools
+// (pkg/api/publicverbs) answers initialize to a caller whose credential it
+// refused, and refuses that credential at the first tools/call that needs
+// an identity.
+type refusalCapture struct {
+	next http.RoundTripper
 }
 
-// newInitializeRefusalCapture returns a capture over next, armed.
-func newInitializeRefusalCapture(next http.RoundTripper) *initializeRefusalCapture {
-	c := &initializeRefusalCapture{next: next}
-	c.armed.Store(true)
-	return c
-}
-
-// RoundTrip sends r and, while armed, keeps the first 401 or 403 reply as
-// the typed refusal. The body is handed on unchanged.
-func (c *initializeRefusalCapture) RoundTrip(r *http.Request) (*http.Response, error) {
+// RoundTrip sends r and, when r's context carries a refusalSlot, keeps the
+// first 401 or 403 reply in it as the typed refusal. The body is handed on
+// unchanged.
+func (c *refusalCapture) RoundTrip(r *http.Request) (*http.Response, error) {
 	resp, err := c.next.RoundTrip(r)
-	if err != nil || !c.armed.Load() {
+	if err != nil {
 		return resp, err
+	}
+	slot, ok := r.Context().Value(refusalSlotKey{}).(*refusalSlot)
+	if !ok {
+		return resp, nil
 	}
 	code, ok := refusalCodeByStatus[resp.StatusCode]
 	if !ok {
@@ -79,30 +80,42 @@ func (c *initializeRefusalCapture) RoundTrip(r *http.Request) (*http.Response, e
 	if readErr != nil {
 		return resp, nil
 	}
-	c.refusal.CompareAndSwap(nil, initializeRefusal(code, resp, body))
+	slot.refusal.CompareAndSwap(nil, httpRefusal(slot.method, code, resp, body))
 	return resp, nil
 }
 
-// disarm stops the capture: requests after initialize are answered through
-// the MCP envelope, not the auth chain's HTTP refusal.
-func (c *initializeRefusalCapture) disarm() {
-	c.armed.Store(false)
+// refusalSlotKey is the context key of a call's refusalSlot.
+type refusalSlotKey struct{}
+
+// refusalSlot holds the typed refusal of one call: initialize or one
+// tools/call. Each call has its own, so concurrent calls never read each
+// other's refusal.
+type refusalSlot struct {
+	method  string
+	refusal atomic.Pointer[capturedRefusal]
 }
 
-// Refusal returns the typed refusal (a *transport.RequestError) kept while
-// armed, or nil when none came.
-func (c *initializeRefusalCapture) Refusal() error {
-	if r := c.refusal.Load(); r != nil {
+// withRefusalSlot returns ctx carrying a new slot for the call named method,
+// and the slot.
+func withRefusalSlot(ctx context.Context, method string) (context.Context, *refusalSlot) {
+	slot := &refusalSlot{method: method}
+	return context.WithValue(ctx, refusalSlotKey{}, slot), slot
+}
+
+// Refusal returns the typed refusal (a *transport.RequestError) the call
+// was answered with, or nil when none came.
+func (s *refusalSlot) Refusal() error {
+	if r := s.refusal.Load(); r != nil {
 		return r.err
 	}
 	return nil
 }
 
-// initializeRefusal builds the typed refusal of the initialize request from
-// the server's JSON error body (transport.ErrorResponse, the body REST's auth
+// httpRefusal builds the typed refusal of the call named method from the
+// server's JSON error body (transport.ErrorResponse, the body REST's auth
 // chain refuses with too) and its Retry-After header, through the mapping
 // every MCP tool refusal takes.
-func initializeRefusal(code wire.Code, resp *http.Response, body []byte) *capturedRefusal {
+func httpRefusal(method string, code wire.Code, resp *http.Response, body []byte) *capturedRefusal {
 	var errResp transport.ErrorResponse
 	msg := strings.TrimSpace(string(body))
 	if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
@@ -111,7 +124,7 @@ func initializeRefusal(code wire.Code, resp *http.Response, body []byte) *captur
 	if msg == "" {
 		msg = resp.Status
 	}
-	return &capturedRefusal{err: mapToolError("initialize", &wire.ErrorPayload{
+	return &capturedRefusal{err: mapToolError(method, &wire.ErrorPayload{
 		Code:              code,
 		Message:           msg,
 		RetryAfterSeconds: retryAfterSeconds(resp.Header.Get("Retry-After")),
@@ -120,7 +133,7 @@ func initializeRefusal(code wire.Code, resp *http.Response, body []byte) *captur
 	})}
 }
 
-// capturedRefusal holds the typed refusal a capture kept.
+// capturedRefusal holds the typed refusal a slot kept.
 type capturedRefusal struct {
 	err error
 }

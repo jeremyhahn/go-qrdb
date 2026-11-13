@@ -34,6 +34,17 @@ Because the binding is over the **public key**, renewing your certificate with
 the same key keeps you the same user. Rotate the key and you need a new
 binding.
 
+## What needs no identity
+
+Two verbs need no certificate, token or role at all, on every transport:
+`qrdb admin health` and invitation redemption (`qrdb enroll`). Health no
+longer needs the `admin:health` permission; a role that still lists it
+grants nothing more by it. A client with no credential connects, and is
+refused with an `unauthenticated` error at its first command that needs an
+identity — `qrdb kv get`, for example. `admin:health` survives only as the
+name of Health's per-address rate-limit bucket (see
+[../rate-limit/user.md](../rate-limit/user.md)).
+
 ## Enrolling somebody, end to end
 
 Run as an Admin of the tenant the user belongs to (here `acme`). Under the
