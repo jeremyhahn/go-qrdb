@@ -26,7 +26,7 @@ import (
 // whenever a binding is added or removed; the mismatch will be caught here
 // before a blank-screen runtime error reaches users.
 //
-// Current manifest (32 bindings):
+// Current manifest (33 bindings):
 //
 //	ConnectionBinding, ConnectionManagerBinding, EmbeddedServerBinding,
 //	KVBinding, AdminBinding, MVCCBinding, TransactionBinding,

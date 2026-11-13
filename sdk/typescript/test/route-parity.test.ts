@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import restSource from '../src/rest.ts?raw';
 import serverSource from '../../../pkg/api/rest/server.go?raw';
+import publicVerbsSource from '../../../pkg/api/publicverbs/publicverbs.go?raw';
 
 interface Route {
     readonly method: string;
@@ -26,6 +27,11 @@ function serverRoutes(): Route[] {
     const re = /http\.Method(\w+), "(\/[^"]*)"/g;
     for (const m of serverSource.matchAll(re)) {
         routes.push({ method: m[1].toUpperCase(), path: m[2] });
+    }
+    // Public verbs (health, invitation redeem, ...) are registered by
+    // publicVerb from the publicverbs table, not by a literal route call.
+    for (const m of publicVerbsSource.matchAll(/REST:\s+"(\w+) (\/[^"]*)"/g)) {
+        routes.push({ method: m[1], path: m[2] });
     }
     return routes;
 }
@@ -77,7 +83,10 @@ function sdkCalls(): Route[] {
     const literal = /\(\s*(?:'(\/[a-z][^']*)'|`(\/[a-z][^`]*)`)/g;
     for (const m of restSource.matchAll(literal)) {
         const open = m.index;
-        calls.push({ method: methodOf(callText(restSource, open)), path: normalisePath(m[1] ?? m[2]) });
+        // A local `post<T>(path, body)` helper (the vlog client) sends POST.
+        const viaPost = /\bpost<[^<>()]*>$/.test(restSource.slice(Math.max(0, open - 120), open));
+        const method = viaPost ? 'POST' : methodOf(callText(restSource, open));
+        calls.push({ method, path: normalisePath(m[1] ?? m[2]) });
     }
     const helpers: Record<string, string> = {
         tenantPath: '/v1/tenants/{}/barrier',
@@ -135,6 +144,10 @@ describe('REST route parity with pkg/api/rest/server.go', () => {
         ['PUT', '/kv/{}'],
         ['POST', '/v1/databases/{}/barrier/officers/unenrol'],
         ['POST', '/v1/tenants/{}/barrier/rekey/start'],
+        ['POST', '/vlog/append'],
+        ['GET', '/vlog/head'],
+        ['GET', '/health'],
+        ['POST', '/invitations/redeem'],
     ])('pins %s %s as called and served', (method, path) => {
         expect(calls).toContainEqual({ method, path });
         expect(served({ method, path }, routes)).toBe(true);
