@@ -87,6 +87,14 @@ type mockTenantService struct {
 	officerRevokeFn      func(ctx context.Context, tenantID, username string, threshold int) (*seal.QuorumRoundInfo, error)
 }
 
+func (m *mockTenantService) ClusterIsolationPolicy(context.Context) (tenant.ClusterIsolationPolicy, error) {
+	return tenant.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *mockTenantService) SetClusterIsolationPolicy(context.Context, tenant.ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (m *mockTenantService) CreateTenant(ctx context.Context, id, name string, isolationType tenant.IsolationType, _ ...tenant.CreateTenantOption) (*tenant.TenantInfo, error) {
 	if m.createFn != nil {
 		return m.createFn(ctx, id, name, isolationType)

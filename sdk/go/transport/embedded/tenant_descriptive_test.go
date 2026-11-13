@@ -82,6 +82,21 @@ func TestEmbedded_UpdateTenant_DescriptionAndMetadataRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEmbedded_MapTenantInfo_CarriesIsolationPolicy proves the embedded
+// transport reports the tenant's isolation policy, and leaves it empty for
+// a tenant that inherits the cluster floor. The set itself is gated on
+// strict-isolation; cmd/qrdb's TestTenantGetCmd_PrintsIsolationPolicy
+// drives UpdateTenant then GetTenant through this transport with the gate
+// open.
+func TestEmbedded_MapTenantInfo_CarriesIsolationPolicy(t *testing.T) {
+	if got := mapTenantInfo(&tenant.TenantInfo{ID: "acme", IsolationPolicy: tenant.TenantIsolationPolicyStrict}).IsolationPolicy; got != "strict" {
+		t.Fatalf("IsolationPolicy = %q; want strict", got)
+	}
+	if got := mapTenantInfo(&tenant.TenantInfo{ID: "acme"}).IsolationPolicy; got != "" {
+		t.Fatalf("IsolationPolicy = %q; want empty", got)
+	}
+}
+
 func TestEmbedded_UpdateTenant_OverLimitIsInvalidArgument(t *testing.T) {
 	tr := descriptiveEmbeddedTransport(t)
 	_, err := tr.UpdateTenant(context.Background(), &transport.UpdateTenantRequest{

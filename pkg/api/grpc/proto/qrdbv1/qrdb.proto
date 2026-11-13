@@ -1215,6 +1215,19 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:update";
     }
 
+    // GetClusterIsolationPolicy returns the cluster-wide isolation floor:
+    // "operator-access" or "strict". An unset floor reads as
+    // "operator-access".
+    rpc GetClusterIsolationPolicy(GetClusterIsolationPolicyRequest) returns (ClusterIsolationPolicyResponse) {
+        option (qrdb.v1.permission) = "tenants:read";
+    }
+
+    // SetClusterIsolationPolicy sets the cluster-wide isolation floor. It is
+    // tighten-only: a loosening is refused with FAILED_PRECONDITION.
+    rpc SetClusterIsolationPolicy(SetClusterIsolationPolicyRequest) returns (ClusterIsolationPolicyResponse) {
+        option (qrdb.v1.permission) = "tenants:update:cross";
+    }
+
     // TenantDelete removes a tenant and its metadata.
     rpc TenantDelete(TenantDeleteRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "tenants:delete";
@@ -4911,6 +4924,9 @@ message TenantResponse {
     // status is the tenant's operational status: "active", "suspended" or
     // "disabled". A principal of a tenant that is not active is refused.
     string status = 13;
+    // isolation_policy is the tenant's own isolation policy: "strict", or
+    // empty for inherit (the cluster floor applies).
+    string isolation_policy = 14;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -5189,6 +5205,23 @@ message TenantUpdateRequest {
     // "suspended" or "disabled"), along the allowed transitions; it needs
     // tenants:set_status. Absent leaves it unchanged.
     optional string status = 6;
+    // isolation_policy, when present, sets the tenant's own isolation
+    // policy: "strict", or "" for inherit. Tighten-only: strict to inherit
+    // is refused with FAILED_PRECONDITION. Absent leaves it unchanged.
+    optional string isolation_policy = 7;
+}
+
+message GetClusterIsolationPolicyRequest {}
+
+message SetClusterIsolationPolicyRequest {
+    // policy is "strict" or "operator-access".
+    string policy = 1;
+}
+
+message ClusterIsolationPolicyResponse {
+    // policy is the cluster-wide isolation floor: "operator-access" or
+    // "strict".
+    string policy = 1;
 }
 
 // TenantMetadata carries a tenant's caller-defined string map on an update.

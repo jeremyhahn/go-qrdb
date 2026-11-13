@@ -678,6 +678,9 @@ type Node struct {
 	// onboarding is TenantOnboarding's concrete service, which AttachSOPINs
 	// gives the SO PIN seam once the node's SO authenticator is built.
 	onboarding *service.TenantOnboardingService
+	// nodeLocalAudit is the node-local audit trail alone, before
+	// BuildServices joins it with ReplicatedAudit.
+	nodeLocalAudit audit.AuditLogger
 
 	// Invitations is the invitation self-enrolment service every transport's
 	// users:invite and (unauthenticated) redemption verbs delegate to. Nil
@@ -768,6 +771,11 @@ type Node struct {
 	// writer.
 	homeLeader atomic.Pointer[databaseLeadership]
 
+	// homeGroupRouters are the audit and log resolvers the node serves
+	// from; AttachTenantHomes attaches the tenant homes to each, so an
+	// isolated tenant's trail and logs apply in its home group.
+	homeGroupRouters []homeGroupRouter
+
 	// work is what the node runs on its own behalf; Stop cancels it and
 	// waits for it before any closer runs.
 	work nodeWork
@@ -830,6 +838,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// composition has one at all -- is already set, so the lookups pick it
 	// up automatically with no restart.
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, auditResolver)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
 		service.NewReplicatedLogger(auditResolver),
 		&nodeAuditEntitlementLookup{node: n},
@@ -843,6 +852,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// here either: introducing a sink where the caller asked for none would
 	// change its behavior, not merely extend it.
 	if infra.AuditLogger != nil {
+		n.nodeLocalAudit = infra.AuditLogger
 		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
 	}
 
@@ -1017,6 +1027,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// the database's. A build without the qrdb_vlog tag has no log service,
 	// which is not a boot failure.
 	logResolver := service.NewSystemShardLogResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
+	n.homeGroupRouters = append(n.homeGroupRouters, logResolver)
 	logSvc, err := buildLogService(logResolver, dbManager, infra.HeadSignerProvider)
 	if err != nil {
 		return nil, err
@@ -1295,6 +1306,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if w, ok := kvTenantSvc.(tenant.UndoWiring); ok {
 			w.SetTenantUndoGate(tenantUndoRequired(infra.Host))
 			w.SetUndoCleanupRoster(nodeIdentity(infra.Host), undoCleanupRoster(infra.Host))
+		}
+		if w, ok := kvTenantSvc.(tenant.StrictIsolationWiring); ok {
+			w.SetStrictIsolationGate(strictIsolationRequired(infra.Host))
 		}
 		n.Tenant = kvTenantSvc
 
@@ -1936,20 +1950,32 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	}
 	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors, enrollmentOpts...)
 	onboardingDeps := service.TenantOnboardingDeps{
-		Tenants:     n.Tenant,
-		Users:       n.User,
-		Roles:       n.Role,
-		Certs:       n.CertProv,
-		Anchors:     n.TrustAnchors,
-		Pending:     n.PendingAdmins,
-		PendingSOs:  n.PendingSOs,
-		TrustDomain: infra.ClusterTrustDomain,
-		Logger:      log,
-		Audit:       infra.AuditLogger,
-		AuditPolicy: infra.AuditFailurePolicy,
-		ClientTrust: service.ClientTrustRefresherFunc(n.refreshClientTrust),
+		Tenants:      n.Tenant,
+		Users:        n.User,
+		Roles:        n.Role,
+		Certs:        n.CertProv,
+		Anchors:      n.TrustAnchors,
+		Pending:      n.PendingAdmins,
+		PendingSOs:   n.PendingSOs,
+		PendingAudit: tenantadmin.NewAuditKVStore(certStore),
+		TrustDomain:  infra.ClusterTrustDomain,
+		Logger:       log,
+		Audit:        infra.AuditLogger,
+		AuditPolicy:  infra.AuditFailurePolicy,
+		ClientTrust:  service.ClientTrustRefresherFunc(n.refreshClientTrust),
 
 		SeparationOfDuties: infra.SeparationOfDuties,
+	}
+	// infra.AuditLogger is the node-local trail and the replicated logger
+	// together (BuildServices). The node-local trail takes the onboarding
+	// record at the first attempt, so a retry goes to the replicated logger
+	// alone. A composition with no audit logger has no retry sink either.
+	// The node-local trail goes in on its own as well, so the first attempt
+	// writes each trail separately and a node-local write failure does not
+	// keep a pending record the replicated logger has already taken.
+	if infra.AuditLogger != nil && n.ReplicatedAudit != nil {
+		onboardingDeps.TenantTrail = n.ReplicatedAudit
+		onboardingDeps.LocalTrail = n.nodeLocalAudit
 	}
 	// The anchor every node verifies a tenant barrier's epoch-1 init statement
 	// against is the first admin onboarding records.
@@ -2120,6 +2146,7 @@ func buildTenantServiceOpts(infra Infra) []tenant.TenantServiceOption {
 		tenant.WithNodeID(nodeIdentity(infra.Host)),
 		tenant.WithTenantUndoGate(tenantUndoRequired(infra.Host)),
 		tenant.WithUndoCleanupRoster(undoCleanupRoster(infra.Host)),
+		tenant.WithStrictIsolationGate(strictIsolationRequired(infra.Host)),
 	}
 	// Reserve the node's own data directory so an operator-supplied dedicated
 	// DataRoot (WithDataRoot) can never be placed equal to, above, or below the

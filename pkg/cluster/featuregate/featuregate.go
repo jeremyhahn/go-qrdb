@@ -252,6 +252,9 @@ const CommandCaps feature.Feature = "command-caps"
 // engineering.md).
 const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
+// strict-isolation (tenant.StrictIsolation, tenant.RequireStrictIsolation in
+// pkg/tenant) is deliberately NOT in supported.
+
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
 var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit}

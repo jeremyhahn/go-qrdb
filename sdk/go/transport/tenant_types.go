@@ -115,9 +115,12 @@ type TenantInfo struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 	// Status is the tenant's operational status. A principal of a tenant
 	// that is not TenantStatusActive is refused.
-	Status    TenantStatus `json:"status,omitempty"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
+	Status TenantStatus `json:"status,omitempty"`
+	// IsolationPolicy is the tenant's own isolation policy: "strict", or
+	// empty to inherit, where the cluster floor applies.
+	IsolationPolicy string    `json:"isolation_policy,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 	// Refusal is set when the answering node will not serve this tenant's
 	// data; nil otherwise. Another node may still serve it.
 	Refusal *TenantRefusal `json:"refusal,omitempty"`
@@ -196,6 +199,11 @@ type UpdateTenantRequest struct {
 	// allowed transitions; it needs tenants:set_status. Nil leaves it
 	// unchanged.
 	Status *TenantStatus `json:"status,omitempty"`
+	// IsolationPolicy, when non-nil, sets the tenant's own isolation
+	// policy: "strict", or "" for inherit (the cluster floor applies). It
+	// tightens only, and is refused with *feature.NotActiveError until the
+	// strict-isolation cluster feature is active. Nil leaves it unchanged.
+	IsolationPolicy *string `json:"isolation_policy,omitempty"`
 }
 
 // UpdateTenantResponse contains the updated tenant.

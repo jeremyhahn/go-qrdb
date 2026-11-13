@@ -221,9 +221,22 @@ func (s *Server) handleTenantUpdate(ctx context.Context, payload []byte) ([]byte
 			patch.Metadata = map[string]string{}
 		}
 	}
+	if req.IsolationPolicy != nil {
+		patch.IsolationPolicy = tenant.TenantIsolationPolicy(req.GetIsolationPolicy())
+	}
 
 	if err := s.authorizeTenantUpdate(ctx, req.GetId(), patch); err != nil {
 		return nil, err
+	}
+	if req.IsolationPolicy != nil {
+		if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+			return nil, err
+		}
+	}
+	if req.IsolationPolicy != nil && patch.IsolationPolicy == tenant.TenantIsolationPolicyInherit {
+		if err := refuseIsolationPolicyLoosening(ctx, s.tenantSvc, req.GetId()); err != nil {
+			return nil, err
+		}
 	}
 
 	info, err := s.tenantSvc.UpdateTenant(ctx, req.GetId(), patch)
@@ -236,6 +249,59 @@ func (s *Server) handleTenantUpdate(ctx context.Context, payload []byte) ([]byte
 		return nil, &MarshalError{Err: err}
 	}
 	return resp, nil
+}
+
+// refuseIsolationPolicyLoosening refuses an explicit request to move tenant
+// id back to inherit once it is strict. tenant.TenantPatch reads an empty
+// IsolationPolicy as "unchanged", so the inherit request is checked here.
+func refuseIsolationPolicyLoosening(ctx context.Context, svc tenant.TenantServicer, id string) error {
+	info, err := svc.GetTenant(ctx, id)
+	if err != nil {
+		return err
+	}
+	if info.IsolationPolicy == tenant.TenantIsolationPolicyStrict {
+		return &tenant.IsolationPolicyChangeError{From: string(tenant.TenantIsolationPolicyStrict), To: "inherit"}
+	}
+	return nil
+}
+
+// handleClusterIsolationPolicyGet returns the cluster-wide isolation floor;
+// an unset floor reads as operator-access.
+func (s *Server) handleClusterIsolationPolicyGet(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, err
+	}
+	policy, err := s.tenantSvc.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := proto.Marshal(&pb.ClusterIsolationPolicyResponse{Policy: string(policy)})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleClusterIsolationPolicySet sets the cluster-wide isolation floor. It
+// is tighten-only: a loosening is *tenant.IsolationPolicyChangeError.
+func (s *Server) handleClusterIsolationPolicySet(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.tenantSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "tenant"}
+	}
+	if err := tenant.RequireStrictIsolation(s.tenantSvc); err != nil {
+		return nil, err
+	}
+	var req pb.SetClusterIsolationPolicyRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+	if err := s.tenantSvc.SetClusterIsolationPolicy(ctx, tenant.ClusterIsolationPolicy(req.GetPolicy())); err != nil {
+		return nil, err
+	}
+	return s.handleClusterIsolationPolicyGet(ctx, nil)
 }
 
 // handleTenantDelete removes a tenant and its metadata.
@@ -368,15 +434,16 @@ func tenantInfoToProto(info *tenant.TenantInfo) *pb.TenantResponse {
 		return nil
 	}
 	resp := &pb.TenantResponse{
-		Id:            info.ID,
-		Name:          info.Name,
-		IsolationType: string(info.EffectiveIsolationType()),
-		CreatedAt:     info.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     info.UpdatedAt.Format(time.RFC3339),
-		VolumePool:    info.VolumePool,
-		Description:   info.Description,
-		Metadata:      info.Metadata,
-		Status:        string(info.Status),
+		Id:              info.ID,
+		Name:            info.Name,
+		IsolationType:   string(info.EffectiveIsolationType()),
+		CreatedAt:       info.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:       info.UpdatedAt.Format(time.RFC3339),
+		VolumePool:      info.VolumePool,
+		Description:     info.Description,
+		Metadata:        info.Metadata,
+		Status:          string(info.Status),
+		IsolationPolicy: string(info.IsolationPolicy),
 	}
 	if refusal := tenant.RefusalOf(info.Refusal); refusal != nil {
 		resp.Refusal = &pb.TenantRefusal{Code: refusal.Code, Message: refusal.Message}

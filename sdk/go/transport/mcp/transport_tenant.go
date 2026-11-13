@@ -43,6 +43,9 @@ type mcpTenantInfo struct {
 	Description   string                        `json:"description,omitempty"`
 	Metadata      map[string]string             `json:"metadata,omitempty"`
 	Status        transport.TenantStatus        `json:"status,omitempty"`
+	// IsolationPolicy is "strict", or empty when the tenant inherits the
+	// cluster floor.
+	IsolationPolicy string `json:"isolation_policy,omitempty"`
 	// Refusal is set when the answering node will not serve this
 	// tenant's data (docs/volume-pools/api.md's TenantRefusal); absent
 	// otherwise. Another node may still serve it.
@@ -333,6 +336,9 @@ func (t *Transport) UpdateTenant(ctx context.Context, req *transport.UpdateTenan
 	if req.Status != nil {
 		args["status"] = string(*req.Status)
 	}
+	if req.IsolationPolicy != nil {
+		args["isolation_policy"] = *req.IsolationPolicy
+	}
 
 	text, err := t.callTool(ctx, "qrdb_tenant_update", args)
 	if err != nil {
@@ -416,6 +422,41 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	}
 
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: mcpTenantInfoToTransport(&info)}, nil
+}
+
+// mcpClusterIsolationPolicy is the result of both cluster isolation-floor
+// tools.
+type mcpClusterIsolationPolicy struct {
+	Policy string `json:"policy"`
+}
+
+// GetClusterIsolationPolicy returns the cluster-wide isolation floor by
+// calling the qrdb_cluster_isolation_policy_get tool.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "GetClusterIsolationPolicy", "qrdb_cluster_isolation_policy_get", map[string]any{})
+}
+
+// SetClusterIsolationPolicy sets the cluster-wide isolation floor by calling
+// the qrdb_cluster_isolation_policy_set tool, and returns the stored floor.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "SetClusterIsolationPolicy", "qrdb_cluster_isolation_policy_set", map[string]any{"policy": policy})
+}
+
+// clusterIsolationPolicy calls one of the cluster isolation-floor tools and
+// decodes the floor it answers.
+func (t *Transport) clusterIsolationPolicy(ctx context.Context, method, tool string, args map[string]any) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+	text, err := t.callTool(ctx, tool, args)
+	if err != nil {
+		return "", &transport.RequestError{Method: method, Err: err}
+	}
+	var out mcpClusterIsolationPolicy
+	if jsonErr := json.Unmarshal([]byte(text), &out); jsonErr != nil {
+		return "", &transport.RequestError{Method: method, Err: &jsonDecodeError{Err: jsonErr}}
+	}
+	return out.Policy, nil
 }
 
 // TenantBarrierInit initializes a per-tenant barrier through the
@@ -714,16 +755,17 @@ func mcpTenantInfoToTransport(m *mcpTenantInfo) transport.TenantInfo {
 		return transport.TenantInfo{}
 	}
 	info := transport.TenantInfo{
-		ID:            m.ID,
-		Name:          m.Name,
-		IsolationType: m.IsolationType,
-		VolumePool:    m.VolumePool,
-		Quotas:        m.Quotas,
-		Entitlements:  m.Entitlements,
-		Description:   m.Description,
-		Metadata:      m.Metadata,
-		Status:        m.Status,
-		Refusal:       m.Refusal,
+		ID:              m.ID,
+		Name:            m.Name,
+		IsolationType:   m.IsolationType,
+		VolumePool:      m.VolumePool,
+		Quotas:          m.Quotas,
+		Entitlements:    m.Entitlements,
+		Description:     m.Description,
+		Metadata:        m.Metadata,
+		Status:          m.Status,
+		IsolationPolicy: m.IsolationPolicy,
+		Refusal:         m.Refusal,
 	}
 	if m.CreatedAt != "" {
 		if parsed, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {

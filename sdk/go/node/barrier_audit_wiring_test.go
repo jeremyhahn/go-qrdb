@@ -28,7 +28,8 @@ import (
 )
 
 // The SDK node's system barrier and every tenant barrier its registry builds
-// record their events on the caller's trail, keyed by their tenant.
+// record their events on the caller's trail. A tenant barrier's events are
+// platform events: the system tenant's, naming the tenant's barrier.
 func TestBuildNodeSealSubsystem_BarriersRecordOnTheCallersTrail(t *testing.T) {
 	ctx := context.Background()
 	cfg := qrdbconfig.DefaultConfig()
@@ -58,7 +59,7 @@ func TestBuildNodeSealSubsystem_BarriersRecordOnTheCallersTrail(t *testing.T) {
 			seen[ev.TenantID+"|"+name] = true
 		}
 	}
-	if !seen[tenantid.System+"|system"] || !seen["acme|tenant:acme"] {
-		t.Fatalf("barrier records = %v, want the system barrier's and acme's", seen)
+	if !seen[tenantid.System+"|system"] || !seen[tenantid.System+"|tenant:acme"] {
+		t.Fatalf("barrier records = %v, want the system barrier's and acme's, both on the platform trail", seen)
 	}
 }

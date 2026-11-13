@@ -156,6 +156,17 @@ answers success. A completion that gives up leaves the record for the hook's
 next trigger. The success or failure audit record is written before the
 response, on its own bound rather than the request's.
 
+A successful create files two records. The platform trail gets one that names
+the tenant but no tenant user. The record naming the first admin
+(`admin_username`) belongs on the tenant's own trail, which in cluster mode
+lives in the tenant's home group and refuses writes while the barrier is
+sealed. That record is therefore kept first, as a pending audit record
+(`__sys:pending-audit` in the tenant's identity namespace, next to the
+pending-admin record). It is appended at once if the trail accepts it.
+Otherwise the barrier-ready hook appends it on the home-group leader at the
+barrier's first init or unseal. The pending record is deleted only after the
+append succeeds, so the tenant's trail gets the record exactly once.
+
 ### The tenant ID is a trust domain
 
 A tenant's principals are `spiffe://<tenant>/<kind>/<name>`: the tenant ID is
@@ -788,11 +799,19 @@ committed meanwhile is kept rather than refused.
     whether the barrier encrypts or is still in plaintext mode, so the home
     group's log is always on a WAL under the tenant's key and never under the
     node key. On a node that has not enabled encryption, that tenant key is
-    itself plaintext until the tenant's barrier encrypts.
+    itself plaintext until the tenant's barrier encrypts. The home group also
+    holds the tenant's replicated audit trail, the verifiable log
+    `<tenant>/system/audit`, and its other verifiable logs. A `barrier` tenant
+    whose chain was already on the system shard when the home groups were
+    attached keeps it there: its audit route is recorded once on the system
+    shard (`__sys:audit/route/<tenant>`) and never changes, and no record is
+    moved. A tenant gets its first home-group record only once every replica
+    runs `featuregate.VerifiableLogAudit`.
   - **Standalone.** A store under the tenant's own barrier, in the tenant's
     data root (`tenant.LocalHomes`): the same records, the same keys, behind
     the same seam, including the atomic guarded batch the tenant CA is
-    written with.
+    written with. Its audit trail is not there yet: a standalone tenant's
+    chain is still in the system shard.
 
 The built home store differs from the design below in two ways:
 
@@ -1390,8 +1409,8 @@ form within its startup budget.
 
 | Setting | Where | Values | Who sets it |
 |---|---|---|---|
-| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. |
-| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. No transport or CLI verb sets it. |
+| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
+| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. On the transports, a tenant update's `isolation_policy` field and `qrdb tenant update --isolation-policy`, refused until the `strict-isolation` feature is active. |
 
 `tenant.EffectiveIsolationPolicy` is `strict` when either setting is `strict`.
 

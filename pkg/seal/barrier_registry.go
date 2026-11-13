@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -654,7 +655,7 @@ func (r *BarrierRegistry) RegisterTenant(
 
 	if config.AuditLogger == nil {
 		r.poolMu.RLock()
-		config.AuditLogger = NewComplianceAuditLogger(r.auditTrail, tenantID, TenantBarrierAuditName(tenantID))
+		config.AuditLogger = NewComplianceAuditLogger(r.auditTrail, tenantid.System, TenantBarrierAuditName(tenantID))
 		r.poolMu.RUnlock()
 	}
 	tb, err := NewTenantBarrier(tenantID, r.logger, base, config, strategies...)

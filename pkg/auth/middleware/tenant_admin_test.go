@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -118,6 +119,52 @@ func TestAuthorizeTenantUpdate_SystemAdminMayChangeIsolation(t *testing.T) {
 	// merits.
 	if err := m.AuthorizeTenantUpdate(ctx, "acme", tenant.TenantPatch{Name: "Acme", IsolationType: tenant.IsolationBarrier}); err != nil {
 		t.Fatalf("system admin renaming+reisolating acme = %v, want nil", err)
+	}
+}
+
+// An isolation-policy change is gated by tenants:update on the target, and
+// carrying a status alongside it does not lift that gate: a system principal
+// that holds tenants:update on its own tenant and tenants:set_status, but not
+// tenants:update:cross, may not tighten another tenant's policy by adding a
+// status to the patch.
+func TestAuthorizeTenantUpdate_MixedStatusAndIsolationPolicyNeedsTheTargetUpdateCheck(t *testing.T) {
+	roles := authtest.BuiltInRoles(t, "acme", "globex", tenantid.System)
+	r, err := roles.CreateRole(context.Background(), &role.CreateRoleRequest{
+		TenantID:    tenantid.System,
+		Name:        "status-operator",
+		Permissions: []permission.Permission{permission.TenantsUpdate, permission.TenantsSetStatus},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole: %v", err)
+	}
+	m := newTestMiddleware(rbac.New(roles))
+	ctx := as(&auth.Identity{Subject: "operator", TenantID: tenantid.System, Roles: []string{r.ID}})
+
+	active := tenant.StatusActive
+	policyOnly := tenant.TenantPatch{IsolationPolicy: tenant.TenantIsolationPolicyStrict}
+	mixed := tenant.TenantPatch{Status: &active, IsolationPolicy: tenant.TenantIsolationPolicyStrict}
+	statusOnly := tenant.TenantPatch{Status: &active}
+
+	var denied *rbac.PermissionDeniedError
+	if err := m.AuthorizeTenantUpdate(ctx, "acme", policyOnly); !errors.As(err, &denied) || denied.Resource+":"+denied.Action != permission.TenantsUpdate.String() {
+		t.Fatalf("policy-only change on acme = %v, want a tenants:update denial", err)
+	}
+	denied = nil
+	if err := m.AuthorizeTenantUpdate(ctx, "acme", mixed); !errors.As(err, &denied) || denied.Resource+":"+denied.Action != permission.TenantsUpdate.String() {
+		t.Fatalf("status+policy change on acme = %v, want a tenants:update denial", err)
+	}
+
+	// On its own tenant the mixed patch decides exactly as the policy-only
+	// patch does.
+	ownPolicy := m.AuthorizeTenantUpdate(ctx, tenantid.System, policyOnly)
+	ownMixed := m.AuthorizeTenantUpdate(ctx, tenantid.System, mixed)
+	if ownPolicy != nil || ownMixed != nil {
+		t.Fatalf("on its own tenant: policy-only = %v, status+policy = %v, want both nil", ownPolicy, ownMixed)
+	}
+
+	// A status-only change still needs tenants:set_status alone.
+	if err := m.AuthorizeTenantUpdate(ctx, "acme", statusOnly); err != nil {
+		t.Fatalf("status-only change on acme = %v, want nil", err)
 	}
 }
 

@@ -228,6 +228,8 @@ const (
 	QRDBService_TenantGet_FullMethodName                          = "/qrdb.v1.QRDBService/TenantGet"
 	QRDBService_TenantList_FullMethodName                         = "/qrdb.v1.QRDBService/TenantList"
 	QRDBService_TenantUpdate_FullMethodName                       = "/qrdb.v1.QRDBService/TenantUpdate"
+	QRDBService_GetClusterIsolationPolicy_FullMethodName          = "/qrdb.v1.QRDBService/GetClusterIsolationPolicy"
+	QRDBService_SetClusterIsolationPolicy_FullMethodName          = "/qrdb.v1.QRDBService/SetClusterIsolationPolicy"
 	QRDBService_TenantDelete_FullMethodName                       = "/qrdb.v1.QRDBService/TenantDelete"
 	QRDBService_TenantUpdateQuotas_FullMethodName                 = "/qrdb.v1.QRDBService/TenantUpdateQuotas"
 	QRDBService_TenantUpdateEntitlements_FullMethodName           = "/qrdb.v1.QRDBService/TenantUpdateEntitlements"
@@ -819,6 +821,13 @@ type QRDBServiceClient interface {
 	TenantList(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(ctx context.Context, in *TenantUpdateRequest, opts ...grpc.CallOption) (*TenantResponse, error)
+	// GetClusterIsolationPolicy returns the cluster-wide isolation floor:
+	// "operator-access" or "strict". An unset floor reads as
+	// "operator-access".
+	GetClusterIsolationPolicy(ctx context.Context, in *GetClusterIsolationPolicyRequest, opts ...grpc.CallOption) (*ClusterIsolationPolicyResponse, error)
+	// SetClusterIsolationPolicy sets the cluster-wide isolation floor. It is
+	// tighten-only: a loosening is refused with FAILED_PRECONDITION.
+	SetClusterIsolationPolicy(ctx context.Context, in *SetClusterIsolationPolicyRequest, opts ...grpc.CallOption) (*ClusterIsolationPolicyResponse, error)
 	// TenantDelete removes a tenant and its metadata.
 	TenantDelete(ctx context.Context, in *TenantDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// TenantUpdateQuotas sets the resource quotas for a tenant. Quotas are
@@ -2963,6 +2972,26 @@ func (c *qRDBServiceClient) TenantUpdate(ctx context.Context, in *TenantUpdateRe
 	return out, nil
 }
 
+func (c *qRDBServiceClient) GetClusterIsolationPolicy(ctx context.Context, in *GetClusterIsolationPolicyRequest, opts ...grpc.CallOption) (*ClusterIsolationPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterIsolationPolicyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_GetClusterIsolationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *qRDBServiceClient) SetClusterIsolationPolicy(ctx context.Context, in *SetClusterIsolationPolicyRequest, opts ...grpc.CallOption) (*ClusterIsolationPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClusterIsolationPolicyResponse)
+	err := c.cc.Invoke(ctx, QRDBService_SetClusterIsolationPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *qRDBServiceClient) TenantDelete(ctx context.Context, in *TenantDeleteRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(emptypb.Empty)
@@ -4155,6 +4184,13 @@ type QRDBServiceServer interface {
 	TenantList(context.Context, *emptypb.Empty) (*TenantListResponse, error)
 	// TenantUpdate applies a partial update to an existing tenant.
 	TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error)
+	// GetClusterIsolationPolicy returns the cluster-wide isolation floor:
+	// "operator-access" or "strict". An unset floor reads as
+	// "operator-access".
+	GetClusterIsolationPolicy(context.Context, *GetClusterIsolationPolicyRequest) (*ClusterIsolationPolicyResponse, error)
+	// SetClusterIsolationPolicy sets the cluster-wide isolation floor. It is
+	// tighten-only: a loosening is refused with FAILED_PRECONDITION.
+	SetClusterIsolationPolicy(context.Context, *SetClusterIsolationPolicyRequest) (*ClusterIsolationPolicyResponse, error)
 	// TenantDelete removes a tenant and its metadata.
 	TenantDelete(context.Context, *TenantDeleteRequest) (*emptypb.Empty, error)
 	// TenantUpdateQuotas sets the resource quotas for a tenant. Quotas are
@@ -4931,6 +4967,12 @@ func (UnimplementedQRDBServiceServer) TenantList(context.Context, *emptypb.Empty
 }
 func (UnimplementedQRDBServiceServer) TenantUpdate(context.Context, *TenantUpdateRequest) (*TenantResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantUpdate not implemented")
+}
+func (UnimplementedQRDBServiceServer) GetClusterIsolationPolicy(context.Context, *GetClusterIsolationPolicyRequest) (*ClusterIsolationPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetClusterIsolationPolicy not implemented")
+}
+func (UnimplementedQRDBServiceServer) SetClusterIsolationPolicy(context.Context, *SetClusterIsolationPolicyRequest) (*ClusterIsolationPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetClusterIsolationPolicy not implemented")
 }
 func (UnimplementedQRDBServiceServer) TenantDelete(context.Context, *TenantDeleteRequest) (*emptypb.Empty, error) {
 	return nil, status.Error(codes.Unimplemented, "method TenantDelete not implemented")
@@ -8639,6 +8681,42 @@ func _QRDBService_TenantUpdate_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _QRDBService_GetClusterIsolationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterIsolationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).GetClusterIsolationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_GetClusterIsolationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).GetClusterIsolationPolicy(ctx, req.(*GetClusterIsolationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _QRDBService_SetClusterIsolationPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetClusterIsolationPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(QRDBServiceServer).SetClusterIsolationPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: QRDBService_SetClusterIsolationPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(QRDBServiceServer).SetClusterIsolationPolicy(ctx, req.(*SetClusterIsolationPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _QRDBService_TenantDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(TenantDeleteRequest)
 	if err := dec(in); err != nil {
@@ -10623,6 +10701,14 @@ var QRDBService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TenantUpdate",
 			Handler:    _QRDBService_TenantUpdate_Handler,
+		},
+		{
+			MethodName: "GetClusterIsolationPolicy",
+			Handler:    _QRDBService_GetClusterIsolationPolicy_Handler,
+		},
+		{
+			MethodName: "SetClusterIsolationPolicy",
+			Handler:    _QRDBService_SetClusterIsolationPolicy_Handler,
 		},
 		{
 			MethodName: "TenantDelete",

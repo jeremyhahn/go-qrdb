@@ -331,6 +331,45 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: quicProtoToTenantInfo(&resp)}, nil
 }
 
+// GetClusterIsolationPolicy returns the cluster-wide isolation floor via the
+// QUIC cluster.IsolationPolicyGet handler.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "GetClusterIsolationPolicy", "cluster.IsolationPolicyGet", nil)
+}
+
+// SetClusterIsolationPolicy sets the cluster-wide isolation floor via the
+// QUIC cluster.IsolationPolicySet handler and returns the stored floor.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	return t.clusterIsolationPolicy(ctx, "SetClusterIsolationPolicy", "cluster.IsolationPolicySet", &pb.SetClusterIsolationPolicyRequest{Policy: policy})
+}
+
+// clusterIsolationPolicy sends req (nil for none) to one of the cluster
+// isolation-floor handlers and decodes the floor it answers.
+func (t *Transport) clusterIsolationPolicy(ctx context.Context, method, handler string, req proto.Message) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+
+	var payload []byte
+	if req != nil {
+		var err error
+		if payload, err = proto.Marshal(req); err != nil {
+			return "", &transport.RequestError{Method: method, Err: err}
+		}
+	}
+
+	respBytes, err := t.call(ctx, handler, payload)
+	if err != nil {
+		return "", &transport.RequestError{Method: method, Err: err}
+	}
+
+	var resp pb.ClusterIsolationPolicyResponse
+	if err := proto.Unmarshal(respBytes, &resp); err != nil {
+		return "", &transport.RequestError{Method: method, Err: err}
+	}
+	return resp.GetPolicy(), nil
+}
+
 // ---------------------------------------------------------------------------
 // Per-tenant barrier operations
 //
@@ -691,13 +730,14 @@ func quicProtoToTenantInfo(resp *pb.TenantResponse) transport.TenantInfo {
 	}
 
 	info := transport.TenantInfo{
-		ID:            resp.GetId(),
-		Name:          resp.GetName(),
-		IsolationType: transport.TenantIsolationType(resp.GetIsolationType()),
-		VolumePool:    resp.GetVolumePool(),
-		Description:   resp.GetDescription(),
-		Metadata:      resp.GetMetadata(),
-		Status:        transport.TenantStatus(resp.GetStatus()),
+		ID:              resp.GetId(),
+		Name:            resp.GetName(),
+		IsolationType:   transport.TenantIsolationType(resp.GetIsolationType()),
+		VolumePool:      resp.GetVolumePool(),
+		Description:     resp.GetDescription(),
+		Metadata:        resp.GetMetadata(),
+		Status:          transport.TenantStatus(resp.GetStatus()),
+		IsolationPolicy: resp.GetIsolationPolicy(),
 	}
 	if r := resp.GetRefusal(); r != nil {
 		info.Refusal = &transport.TenantRefusal{Code: r.GetCode(), Message: r.GetMessage()}

@@ -29,6 +29,14 @@ import (
 // has not registered tenant metadata.
 type prefixTenantServicer struct{ mockTenantServicer }
 
+func (m *prefixTenantServicer) ClusterIsolationPolicy(context.Context) (tenantpkg.ClusterIsolationPolicy, error) {
+	return tenantpkg.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *prefixTenantServicer) SetClusterIsolationPolicy(context.Context, tenantpkg.ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (p *prefixTenantServicer) GetTenant(context.Context, string) (*tenantpkg.TenantInfo, error) {
 	return nil, tenantpkg.ErrTenantNotFound
 }

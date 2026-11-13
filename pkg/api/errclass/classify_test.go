@@ -438,6 +438,18 @@ func TestClassify_IsolationPolicyChangeIsFailedPrecondition(t *testing.T) {
 	}
 }
 
+// TestClassify_InvalidIsolationPolicyIsInvalidArgument pins that a policy value
+// outside the enum is the caller's input error on every transport, never the
+// internal fault it was answered as before it had a row.
+func TestClassify_InvalidIsolationPolicyIsInvalidArgument(t *testing.T) {
+	err := &tenant.InvalidIsolationPolicyError{Value: "loose"}
+	for shape, e := range map[string]error{"bare": err, "wrapped": wrapped{err}} {
+		if got := Classify(e); got != InvalidArgument {
+			t.Errorf("%s: got %s, want %s", shape, got, InvalidArgument)
+		}
+	}
+}
+
 // A dead RoleBinding is a bad field in the write, whether it arrives bare or
 // wrapped by a service layer.
 func TestClassify_RoleBindingTenantIsInvalidArgument(t *testing.T) {

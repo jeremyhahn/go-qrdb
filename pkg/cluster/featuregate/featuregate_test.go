@@ -557,6 +557,16 @@ func TestSupported(t *testing.T) {
 	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit)}, SupportedNames())
 }
 
+// TestSupported_OmitsStrictIsolation pins that this binary does not advertise
+// strict-isolation: phase 5's dedicated WALs (G1) are not built, so a cluster
+// must not be able to activate a strict floor that does not isolate.
+// pkg/tenant imports this package, so the feature name is spelled out here.
+func TestSupported_OmitsStrictIsolation(t *testing.T) {
+	const strictIsolation feature.Feature = "strict-isolation"
+	assert.NotContains(t, Supported(), strictIsolation)
+	assert.NotContains(t, SupportedNames(), string(strictIsolation))
+}
+
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
 // implements tenant-undo: its activation record is adopted, not refused as
 // unsupported, and the gate reports the feature active.

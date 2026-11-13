@@ -302,6 +302,7 @@ var dataPlaneRules = []rule{
 	// audit-append on every replica of the tenant's shard yet: retry once it
 	// has, the same instruction NotLeaderError gives for a different cause.
 	as(&service.AuditFeatureNotActiveError{}, Unavailable),
+	as(&service.AuditHomeNotActiveError{}, Unavailable),
 	// A dedicated-isolation (volume/raft) tenant's audit trail is not yet
 	// routable: a healthy node declining a capability it does not implement
 	// for this tenant class, the same shape as CapabilityUnsupportedError.
@@ -1094,6 +1095,9 @@ var tenantRules = []rule{
 	// the compare-and-set to one that moved the policy first, leaves the
 	// store unchanged, and the caller re-reads before deciding anything.
 	as(&tenant.IsolationPolicyChangeError{}, FailedPrecondition),
+	// An isolation policy value outside the enum is the caller's input
+	// error: nothing was read or written.
+	as(&tenant.InvalidIsolationPolicyError{}, InvalidArgument),
 	// UpdateTenant lost its compare-and-swap on every attempt: other writers
 	// kept committing the record, and the caller may retry the update.
 	as(&tenant.ConcurrentUpdateError{}, Aborted),

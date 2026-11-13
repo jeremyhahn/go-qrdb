@@ -321,6 +321,8 @@ var quicMethodExclusions = map[string]string{
 	"cert.Issue":                         "target-resolved",
 	"cert.List":                          "target-resolved",
 	"cert.Revoke":                        "target-resolved",
+	"cluster.IsolationPolicyGet":         "target-resolved",
+	"cluster.IsolationPolicySet":         "target-resolved",
 	"credential.Retrieve":                "wire-only",
 	"credential.RetrieveVersion":         "wire-only",
 	"db.BarrierQuorumBegin":              "identity-gated",

@@ -727,6 +727,19 @@ func TestRestTenant_ToTenantInfo_CarriesStatus(t *testing.T) {
 	}
 }
 
+func TestRestTenant_ToTenantInfo_CarriesIsolationPolicy(t *testing.T) {
+	var r restTenant
+	if err := json.Unmarshal([]byte(`{"id":"acme","isolation_policy":"strict"}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.toTenantInfo().IsolationPolicy; got != "strict" {
+		t.Fatalf("IsolationPolicy = %q; want strict", got)
+	}
+	if got := (&restTenant{ID: "acme"}).toTenantInfo().IsolationPolicy; got != "" {
+		t.Fatalf("IsolationPolicy = %q; want empty", got)
+	}
+}
+
 // TestRestTenant_ToTenantInfo_NoRefusalStaysNil proves a served tenant
 // (no refusal on the wire) still decodes with a nil Refusal.
 func TestRestTenant_ToTenantInfo_NoRefusalStaysNil(t *testing.T) {

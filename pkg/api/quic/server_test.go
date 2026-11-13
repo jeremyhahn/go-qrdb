@@ -302,6 +302,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		// Tenant management
 		"tenant.Create": true, "tenant.Get": true, "tenant.List": true,
 		"tenant.Update": true, "tenant.Delete": true, "tenant.UpdateQuotas": true,
+		"cluster.IsolationPolicyGet": true, "cluster.IsolationPolicySet": true,
 		"tenant.UpdateEntitlements": true,
 		"tenant.ListDeleted":        true,
 		"tenant.ReconcileDeleted":   true,
