@@ -23,6 +23,7 @@ are not reconstructed here — their history is in the git log.
   A tenant's credential store of record is now its replicated home store; the
   tenant barrier is read once, as the migration source of the old layout
   (part 1 of #1201).
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,

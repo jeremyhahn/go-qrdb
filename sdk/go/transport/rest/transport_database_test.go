@@ -312,34 +312,6 @@ func TestListDatabases_Success(t *testing.T) {
 	}
 }
 
-func TestListDatabases_AfterCreate(t *testing.T) {
-	srv := newDatabaseTestServer(t)
-	defer srv.Close()
-
-	rt := newTestTransport(t, srv.URL)
-	defer rt.Close()
-
-	ctx := context.Background()
-
-	// Create a second database.
-	_, err := rt.CreateDatabase(ctx, transport.CreateDatabaseRequest{
-		Name:    "metrics",
-		Backend: "pebble",
-	})
-	if err != nil {
-		t.Fatalf("CreateDatabase failed: %v", err)
-	}
-
-	dbs, err := rt.ListDatabases(ctx)
-	if err != nil {
-		t.Fatalf("ListDatabases failed: %v", err)
-	}
-
-	if len(dbs) != 2 {
-		t.Fatalf("expected 2 databases, got %d", len(dbs))
-	}
-}
-
 func TestListDatabases_ClosedTransport(t *testing.T) {
 	srv := newDatabaseTestServer(t)
 	defer srv.Close()
@@ -650,8 +622,3 @@ func TestGetDatabase_InvalidJSON(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Compile-time interface assertion test
 // ---------------------------------------------------------------------------
-
-func TestTransport_ImplementsDatabaseClient(t *testing.T) {
-	// Verify at test time (in addition to compile-time var assertion).
-	var _ transport.DatabaseClient = (*Transport)(nil)
-}

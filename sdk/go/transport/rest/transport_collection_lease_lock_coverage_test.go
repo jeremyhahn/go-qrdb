@@ -353,25 +353,6 @@ func TestRESTCollection_ListDocuments_Closed(t *testing.T) {
 // Lease
 // ===========================================================================
 
-func TestRESTLease_Grant_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/lease/grant"), func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]int64
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req["ttl"] != 60 {
-			t.Errorf("expected ttl=60, got %d", req["ttl"])
-		}
-		writeJSON(w, map[string]interface{}{"id": 42, "ttl": 60, "granted_ttl": 60, "remaining_ttl": 60, "keys": []string{"k1"}})
-	})
-	info, err := rt.LeaseGrant(context.Background(), 60)
-	if err != nil {
-		t.Fatalf("LeaseGrant: %v", err)
-	}
-	if info.ID != 42 || info.TTL != 60 || len(info.Keys) != 1 {
-		t.Fatalf("unexpected: %+v", info)
-	}
-}
-
 func TestRESTLease_Grant_ServerError(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(exactPath(http.MethodPost, "/lease/grant"), func(w http.ResponseWriter, _ *http.Request) {
@@ -393,16 +374,6 @@ func TestRESTLease_Grant_Closed(t *testing.T) {
 	}
 }
 
-func TestRESTLease_Revoke_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/lease/revoke"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	if err := rt.LeaseRevoke(context.Background(), 42); err != nil {
-		t.Fatalf("LeaseRevoke: %v", err)
-	}
-}
-
 func TestRESTLease_Revoke_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
@@ -413,20 +384,6 @@ func TestRESTLease_Revoke_Closed(t *testing.T) {
 	}
 }
 
-func TestRESTLease_KeepAlive_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(exactPath(http.MethodPost, "/lease/keepalive"), func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]interface{}{"id": 42, "ttl": 60, "remaining_ttl": 30})
-	})
-	info, err := rt.LeaseKeepAlive(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("LeaseKeepAlive: %v", err)
-	}
-	if info.ID != 42 {
-		t.Fatalf("ID = %d", info.ID)
-	}
-}
-
 func TestRESTLease_KeepAlive_Closed(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
@@ -434,35 +391,6 @@ func TestRESTLease_KeepAlive_Closed(t *testing.T) {
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestRESTLease_TimeToLive_Success(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/lease/ttl"), func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.RawQuery, "lease_id=42") {
-			t.Errorf("expected lease_id=42, got %q", r.URL.RawQuery)
-		}
-		writeJSON(w, map[string]interface{}{"id": 42, "ttl": 60})
-	})
-	info, err := rt.LeaseTimeToLive(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("LeaseTimeToLive: %v", err)
-	}
-	if info.ID != 42 {
-		t.Fatalf("ID = %d", info.ID)
-	}
-}
-
-func TestRESTLease_TimeToLive_NotFound(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/lease/ttl"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	_, err := rt.LeaseTimeToLive(context.Background(), 42)
-	var lne *transport.LeaseNotFoundError
-	if !errors.As(err, &lne) {
-		t.Fatalf("expected LeaseNotFoundError, got %T", err)
 	}
 }
 

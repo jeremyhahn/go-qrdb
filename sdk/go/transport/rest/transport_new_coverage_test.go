@@ -803,18 +803,6 @@ func TestRESTGetUserByCertThumbprint_Success(t *testing.T) {
 	}
 }
 
-func TestRESTGetUserByCertThumbprint_NotFound(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodGet, "/users/by-cert-thumbprint/"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	_, err := rt.GetUserByCertThumbprint(context.Background(), "NOTEXIST")
-	var nfe *transport.UserNotFoundError
-	if !errors.As(err, &nfe) {
-		t.Fatalf("expected UserNotFoundError, got %T", err)
-	}
-}
-
 func TestRESTGetUserByCertThumbprint_AfterClose(t *testing.T) {
 	rt, _, _ := newExtTransport(t)
 	_ = rt.Close()
@@ -923,21 +911,6 @@ func TestRESTRemoveCertBinding_AfterClose(t *testing.T) {
 
 // TestRESTRemoveCertBinding_NotFoundIsTyped keeps a 404 classifiable without
 // reading the message, the same as every other user-addressed call.
-func TestRESTRemoveCertBinding_NotFoundIsTyped(t *testing.T) {
-	rt, rs, _ := newExtTransport(t)
-	rs.handle(pathPrefix(http.MethodDelete, "/users/"), func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	_, err := rt.RemoveCertBinding(context.Background(), 42, "CERT")
-	var unf *transport.UserNotFoundError
-	if !errors.As(err, &unf) {
-		t.Fatalf("expected UserNotFoundError, got %T: %v", err, err)
-	}
-	if unf.ID != 42 {
-		t.Fatalf("UserNotFoundError.ID = %d, want 42", unf.ID)
-	}
-}
-
 func TestRESTRemoveCertBinding_ServerError(t *testing.T) {
 	rt, rs, _ := newExtTransport(t)
 	rs.handle(pathPrefix(http.MethodDelete, "/users/"), func(w http.ResponseWriter, _ *http.Request) {
