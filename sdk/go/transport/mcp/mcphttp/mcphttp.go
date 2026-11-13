@@ -51,6 +51,10 @@ const closeTimeout = 2 * time.Second
 // errorBodyLimit bounds how much of a failed reply is quoted.
 const errorBodyLimit = 512
 
+// maxReplyBytes bounds how much of a reply body is read, so a peer cannot
+// make the client buffer without limit.
+const maxReplyBytes = 32 << 20
+
 // Transport implements mcp-go's transport.Interface over streamable HTTP.
 // It POSTs each JSON-RPC message, keeps the Mcp-Session-Id the server
 // assigns, and reads replies sent as application/json or as a
@@ -120,16 +124,23 @@ func (t *Transport) SendRequest(ctx context.Context, request mcptransport.JSONRP
 			t.mu.Unlock()
 		}
 	}
+	reply := io.LimitReader(resp.Body, maxReplyBytes)
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	switch mediaType {
 	case "application/json":
-		var out mcptransport.JSONRPCResponse
-		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		var msg message
+		if err := json.NewDecoder(reply).Decode(&msg); err != nil {
 			return nil, fmt.Errorf("mcphttp: decode the reply: %w", err)
 		}
-		return &out, nil
+		if !msg.isResponse() {
+			return nil, errors.New("mcphttp: the reply is not a JSON-RPC response")
+		}
+		if !msg.answers(request.ID) {
+			return nil, fmt.Errorf("mcphttp: the reply's id %s is not the request's id", msg.ID)
+		}
+		return msg.response()
 	case "text/event-stream":
-		return t.readEventStream(resp.Body, request.ID)
+		return t.readEventStream(reply, request.ID)
 	default:
 		return nil, fmt.Errorf("mcphttp: unexpected reply content type %q", mediaType)
 	}
@@ -204,8 +215,51 @@ func (t *Transport) setSessionHeaders(req *http.Request) {
 
 // message is any JSON-RPC message the server sends on a stream.
 type message struct {
-	ID     *mcp.RequestId `json:"id,omitempty"`
-	Method string         `json:"method,omitempty"`
+	ID     json.RawMessage          `json:"id,omitempty"`
+	Method string                   `json:"method,omitempty"`
+	Result json.RawMessage          `json:"result,omitempty"`
+	Error  *mcp.JSONRPCErrorDetails `json:"error,omitempty"`
+}
+
+// hasID reports whether the message carries an id that is not null.
+func (m *message) hasID() bool {
+	id := bytes.TrimSpace(m.ID)
+	return len(id) > 0 && !bytes.Equal(id, []byte("null"))
+}
+
+// isResponse reports whether the message is a JSON-RPC response: no
+// method, a non-null id, and a result or an error.
+func (m *message) isResponse() bool {
+	return m.Method == "" && m.hasID() && (m.Result != nil || m.Error != nil)
+}
+
+// answers reports whether the message's wire id is the request's id. Ids
+// compare as compact JSON, so the number 1 and the string "1" differ.
+func (m *message) answers(id mcp.RequestId) bool {
+	want, err := json.Marshal(id)
+	if err != nil {
+		return false
+	}
+	var got, wantCompact bytes.Buffer
+	if json.Compact(&got, m.ID) != nil || json.Compact(&wantCompact, want) != nil {
+		return false
+	}
+	return bytes.Equal(got.Bytes(), wantCompact.Bytes())
+}
+
+// response converts the message to mcp-go's response type, keeping the
+// wire id it arrived with. Callers check answers first.
+func (m *message) response() (*mcptransport.JSONRPCResponse, error) {
+	var id mcp.RequestId
+	if err := json.Unmarshal(m.ID, &id); err != nil {
+		return nil, fmt.Errorf("mcphttp: decode the reply's id: %w", err)
+	}
+	return &mcptransport.JSONRPCResponse{
+		JSONRPC: mcp.JSONRPC_VERSION,
+		ID:      id,
+		Result:  m.Result,
+		Error:   m.Error,
+	}, nil
 }
 
 // readEventStream reads server-sent events until the reply to id arrives,
@@ -250,13 +304,13 @@ func (t *Transport) dispatchEvent(data []byte, id mcp.RequestId) *mcptransport.J
 		return nil
 	}
 	switch {
-	case msg.Method == "" && msg.ID != nil && msg.ID.String() == id.String():
-		var resp mcptransport.JSONRPCResponse
-		if json.Unmarshal(data, &resp) != nil {
+	case msg.isResponse() && msg.answers(id):
+		resp, err := msg.response()
+		if err != nil {
 			return nil
 		}
-		return &resp
-	case msg.Method != "" && msg.ID == nil:
+		return resp
+	case msg.Method != "" && !msg.hasID():
 		var n mcp.JSONRPCNotification
 		if json.Unmarshal(data, &n) != nil {
 			return nil
