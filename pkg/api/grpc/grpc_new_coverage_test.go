@@ -133,16 +133,29 @@ func (c *coverageGRPCCredentialService) CredentialListVersions(_ context.Context
 func (c *coverageGRPCCredentialService) CredentialGCExpired(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }
-func (c *coverageGRPCCredentialService) CredentialSetRotationPolicy(_ context.Context, _ string, _ credentials.RotationPolicy) error {
+
+func (c *coverageGRPCCredentialService) CredentialSetRotationPolicy(_ context.Context, name string, _ credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
 	return nil
 }
-func (c *coverageGRPCCredentialService) CredentialRotationPolicy(_ context.Context, _ string) (*service.CredentialRotationPolicyStatus, error) {
-	return &service.CredentialRotationPolicyStatus{}, nil
+
+func (c *coverageGRPCCredentialService) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
 }
+
 func (c *coverageGRPCCredentialService) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
-	return nil, nil
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
 }
-func (c *coverageGRPCCredentialService) CredentialResolveMigrationConflict(_ context.Context, _ string, _ credentials.MigrationResolution) error {
+
+func (c *coverageGRPCCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
 	return nil
 }
 

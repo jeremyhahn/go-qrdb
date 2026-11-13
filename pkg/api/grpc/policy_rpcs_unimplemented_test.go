@@ -30,12 +30,11 @@ func (allowAllAuthorizer) Authorize(context.Context, *auth.Identity, string, str
 	return nil
 }
 
-// TestQRDBService_PolicyRPCsUnimplementedUntilHandlers proves the credential
-// rotation policy RPCs (#1201) and the tenant delegation policy RPCs (#1187)
-// pass authentication and authorization and are then answered UNIMPLEMENTED
-// by the embedded UnimplementedQRDBServiceServer, not refused as
-// PermissionDenied. The handlers land in #1201 part 2 and #1187 part 2,
-// whose handler tests replace this test.
+// TestQRDBService_PolicyRPCsUnimplementedUntilHandlers proves the tenant
+// delegation policy RPCs (#1187) pass authentication and authorization and are
+// then answered UNIMPLEMENTED by the embedded UnimplementedQRDBServiceServer,
+// not refused as PermissionDenied. The handlers land in #1187 part 2, whose
+// handler tests replace this test.
 func TestQRDBService_PolicyRPCsUnimplementedUntilHandlers(t *testing.T) {
 	mw := authmw.New(allowAllAuthorizer{},
 		authmw.WithRoleResolver(authtest.BuiltInRoles(t)),
@@ -48,22 +47,6 @@ func TestQRDBService_PolicyRPCsUnimplementedUntilHandlers(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"CredentialSetRotationPolicy", func() error {
-			_, err := client.CredentialSetRotationPolicy(ctx, &pb.CredentialSetRotationPolicyRequest{})
-			return err
-		}},
-		{"CredentialRotationPolicy", func() error {
-			_, err := client.CredentialRotationPolicy(ctx, &pb.CredentialRotationPolicyRequest{})
-			return err
-		}},
-		{"CredentialMigrationConflicts", func() error {
-			_, err := client.CredentialMigrationConflicts(ctx, &pb.CredentialMigrationConflictsRequest{})
-			return err
-		}},
-		{"CredentialResolveMigrationConflict", func() error {
-			_, err := client.CredentialResolveMigrationConflict(ctx, &pb.CredentialResolveMigrationConflictRequest{})
-			return err
-		}},
 		{"PutDelegationPolicy", func() error {
 			_, err := client.PutDelegationPolicy(ctx, &pb.PutDelegationPolicyRequest{})
 			return err

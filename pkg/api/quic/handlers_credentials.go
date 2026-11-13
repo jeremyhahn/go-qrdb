@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -149,6 +150,106 @@ func (s *Server) handleCredentialRotate(ctx context.Context, payload []byte) ([]
 		return nil, &MarshalError{Err: err}
 	}
 	return resp, nil
+}
+
+// handleCredentialSetRotationPolicy sets a credential's scheduled rotation
+// policy. A refused policy is an invalid argument.
+func (s *Server) handleCredentialSetRotationPolicy(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.credentialSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "credential"}
+	}
+
+	var req pb.CredentialSetRotationPolicyRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	policy, err := service.CredentialRotationPolicyFromWire(req.GetEnabled(), req.GetInterval(), int(req.GetRetainVersions()))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.credentialSvc.CredentialSetRotationPolicy(ctx, req.GetName(), policy); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+// handleCredentialRotationPolicy returns a credential's scheduled rotation
+// policy and the time of its next scheduled rotation.
+func (s *Server) handleCredentialRotationPolicy(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.credentialSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "credential"}
+	}
+
+	var req pb.CredentialRotationPolicyRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	status, err := s.credentialSvc.CredentialRotationPolicy(ctx, req.GetName())
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := proto.Marshal(&pb.CredentialRotationPolicyResponse{
+		Name:           req.GetName(),
+		Enabled:        status.Policy.Enabled,
+		Interval:       status.WireInterval(),
+		RetainVersions: int32(min(status.Policy.RetainVersions, math.MaxInt32)), //nolint:gosec // clamped to the int32 range
+		NextRotation:   status.WireNextRotation(),
+	})
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleCredentialMigrationConflicts lists the caller's store's migration
+// conflicts. No value is returned.
+func (s *Server) handleCredentialMigrationConflicts(ctx context.Context, _ []byte) ([]byte, error) {
+	if s.credentialSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "credential"}
+	}
+
+	conflicts, err := s.credentialSvc.CredentialMigrationConflicts(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &pb.CredentialMigrationConflictsResponse{
+		Conflicts: make([]*pb.CredentialMigrationConflict, 0, len(conflicts)),
+	}
+	for _, c := range conflicts {
+		out.Conflicts = append(out.Conflicts, &pb.CredentialMigrationConflict{
+			Name: c.Name, Value: c.Value, Versions: c.Versions, Policy: c.Policy,
+		})
+	}
+	resp, err := proto.Marshal(out)
+	if err != nil {
+		return nil, &MarshalError{Err: err}
+	}
+	return resp, nil
+}
+
+// handleCredentialResolveMigrationConflict settles one migration conflict
+// by import or discard.
+func (s *Server) handleCredentialResolveMigrationConflict(ctx context.Context, payload []byte) ([]byte, error) {
+	if s.credentialSvc == nil {
+		return nil, &ServiceNotConfiguredError{Service: "credential"}
+	}
+
+	var req pb.CredentialResolveMigrationConflictRequest
+	if err := proto.Unmarshal(payload, &req); err != nil {
+		return nil, &UnmarshalError{Err: err}
+	}
+
+	how := credentials.MigrationResolution(req.GetResolution())
+	if err := s.credentialSvc.CredentialResolveMigrationConflict(ctx, req.GetName(), how); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
 }
 
 // handleCredentialRetrieveVersion returns the stored bytes for a specific
