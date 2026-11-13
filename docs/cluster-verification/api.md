@@ -75,7 +75,7 @@ certificate's key enrolled, or every node refuses the dial as
 
 ```sh
 qrdb roles create --name clusterproof --tenant-id system \
-  --permissions "kv:put,kv:get,kv:delete,admin:health,admin:status,admin:peers,admin:replica_state"
+  --permissions "kv:put,kv:get,kv:delete,admin:status,admin:peers,admin:replica_state"
 qrdb users create --username proof --without-email-login-key --tenant-id system --roles "$ROLE_ID"
 ```
 
