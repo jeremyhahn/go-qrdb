@@ -36,6 +36,14 @@ transport does this for you; the other transports carry the name unchanged.
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.
 
+**Go SDK.** `transport.Client.Credentials()` (sdk/go/transport/client.go)
+carries every row of the matrix, the rotation-policy and migration-conflict
+methods included, and each SDK transport (embedded, gRPC, MCP, QUIC, REST,
+Unix) implements it against the column above. The embedded transport checks
+the same `scp` permission in process. A refused policy surfaces as the typed
+`InvalidRotationPolicyError` text, `credentials: invalid rotation policy:
+<reason>`, on every transport.
+
 **Every operation acts on the caller's own store**, chosen from the tenant of
 the authenticated principal: the platform's store for a system principal, the
 tenant's own store, over its dedicated barrier, for a tenant principal. No

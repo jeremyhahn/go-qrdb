@@ -34,6 +34,15 @@ are not reconstructed here — their history is in the git log.
   `credentials:rotate`. A REST name holding `/` or `%` travels as one escaped
   segment, produced by the Go SDK's REST transport; a segment that does not
   unescape is a 400 (part 2 of #1201).
+- **Rotation policies and migration conflicts from every SDK transport and the
+  `qrdb` CLI.** `transport.Client`'s credentials surface gains
+  `CredentialSetRotationPolicy`, `CredentialRotationPolicy`,
+  `CredentialMigrationConflicts` and `CredentialResolveMigrationConflict`,
+  implemented by the embedded, gRPC, MCP, QUIC, REST and Unix transports (the
+  embedded one under `credentials:rotate`, `credentials:list` for the
+  conflict list). The CLI adds `qrdb credential rotation-policy set|get` and
+  `qrdb credential migration-conflicts list|resolve`, driven end to end over
+  every transport (part 3 of #1201).
 - **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
