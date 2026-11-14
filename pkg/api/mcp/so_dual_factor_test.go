@@ -25,14 +25,13 @@
 package mcp
 
 import (
-	"context"
 	"crypto/tls"
 	"net/http"
 	"sync/atomic"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -86,6 +85,21 @@ func startBarrierMCP(t *testing.T, mw *authmw.AuthMiddleware, gate *authmw.SOGat
 // startMCP starts an MCP server over admin (which may be nil) with opts, and
 // returns an initialized client that presents the PIN pin holds, if any, in
 // the SO PIN header.
+// headerTransport sets the headers its func returns on every request it
+// sends, so the SO PIN header rides each MCP HTTP request.
+type headerTransport struct {
+	base    http.RoundTripper
+	headers func() map[string]string
+}
+
+func (h headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	for k, v := range h.headers() {
+		req.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(req)
+}
+
 func startMCP(t *testing.T, admin service.AdminServicer, pin *atomic.Pointer[string], opts ...ServerOption) *mcpclient.Client {
 	t.Helper()
 	tlsCfg := testTLSConfig(t)
@@ -98,17 +112,15 @@ func startMCP(t *testing.T, admin service.AdminServicer, pin *atomic.Pointer[str
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
-		transport.WithHTTPBasicClient(httpClient),
-		transport.WithHTTPHeaderFunc(func(context.Context) map[string]string {
+	client := mcpclient.NewClient(mcphttp.New("https://"+srv.Addr()+"/mcp", &http.Client{Transport: headerTransport{
+		base: httpClient.Transport,
+		headers: func() map[string]string {
 			if p := pin.Load(); p != nil && *p != "" {
 				return map[string]string{authmw.SOPINHeader: *p}
 			}
 			return nil
-		}))
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+		},
+	}}))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {
@@ -231,12 +243,10 @@ func TestSODualFactor_GateWithoutAuthFailsClosed(t *testing.T) {
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
-		transport.WithHTTPBasicClient(httpClient),
-		transport.WithHTTPHeaders(map[string]string{authmw.SOPINHeader: soTestPIN}))
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+srv.Addr()+"/mcp", &http.Client{Transport: headerTransport{
+		base:    httpClient.Transport,
+		headers: func() map[string]string { return map[string]string{authmw.SOPINHeader: soTestPIN} },
+	}}))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {

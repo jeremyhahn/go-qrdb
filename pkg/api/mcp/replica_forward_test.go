@@ -28,8 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -189,10 +189,7 @@ func (mt *mcpTarget) endpoint() string {
 
 func dialMCP(t *testing.T, addr string, hc *http.Client) *mcpclient.Client {
 	t.Helper()
-	client, err := mcpclient.NewStreamableHttpClient("https://"+addr+"/mcp", transport.WithHTTPBasicClient(hc))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+addr+"/mcp", hc))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {

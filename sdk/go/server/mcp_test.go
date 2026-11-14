@@ -30,8 +30,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -105,11 +105,8 @@ func TestNewMCPServer_ServesToolsOverListener(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
-		mcptransport.WithHTTPBasicClient(&http.Client{Transport: &http.Transport{TLSClientConfig: clientTLS}}))
-	if err != nil {
-		t.Fatalf("NewStreamableHttpClient: %v", err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+srv.Addr()+"/mcp",
+		&http.Client{Transport: &http.Transport{TLSClientConfig: clientTLS}}))
 	t.Cleanup(func() { _ = client.Close() })
 	if err := client.Start(ctx); err != nil {
 		t.Fatalf("client Start: %v", err)
