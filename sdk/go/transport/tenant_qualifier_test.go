@@ -19,6 +19,16 @@ type rtFunc func(*http.Request) (*http.Response, error)
 
 func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// roundTripClosed sends req through rt and closes the response body.
+func roundTripClosed(t *testing.T, rt http.RoundTripper, req *http.Request) {
+	t.Helper()
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+}
+
 func TestTenantRoundTripper_QualifiesIdentityRoutes(t *testing.T) {
 	var got *http.Request
 	var body string
@@ -33,34 +43,26 @@ func TestTenantRoundTripper_QualifiesIdentityRoutes(t *testing.T) {
 	ctx := WithTenantQualifier(context.Background(), "acme")
 
 	req := httptest.NewRequest(http.MethodGet, "http://x/users/7", nil).WithContext(ctx)
-	if _, err := rt.RoundTrip(req); err != nil {
-		t.Fatal(err)
-	}
+	roundTripClosed(t, rt, req)
 	if got.URL.Query().Get("tenantID") != "acme" {
 		t.Fatalf("get user query = %q, want tenantID=acme", got.URL.RawQuery)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "http://x/roles/assign", strings.NewReader(`{"user_id":"7","role_id":"r1"}`)).WithContext(ctx)
-	if _, err := rt.RoundTrip(req); err != nil {
-		t.Fatal(err)
-	}
+	roundTripClosed(t, rt, req)
 	var m map[string]string
 	if err := json.Unmarshal([]byte(body), &m); err != nil || m["tenant_id"] != "acme" || m["role_id"] != "r1" {
 		t.Fatalf("assign body = %s, want tenant_id acme beside the request", body)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "http://x/kv/a", nil).WithContext(ctx)
-	if _, err := rt.RoundTrip(req); err != nil {
-		t.Fatal(err)
-	}
+	roundTripClosed(t, rt, req)
 	if got.URL.RawQuery != "" {
 		t.Fatalf("a non-identity route got the qualifier: %q", got.URL.RawQuery)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "http://x/users/7", nil)
-	if _, err := rt.RoundTrip(req); err != nil {
-		t.Fatal(err)
-	}
+	roundTripClosed(t, rt, req)
 	if got.URL.RawQuery != "" {
 		t.Fatalf("no qualifier on ctx, yet the query is %q", got.URL.RawQuery)
 	}
