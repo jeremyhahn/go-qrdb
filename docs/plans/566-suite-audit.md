@@ -60,6 +60,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/lease | TestInvalidTTLErrorWithZero | weaker duplicate (contains "0") | TestInvalidTTLErrorMessage |
 | pkg/lease | TestInvalidTTLErrorImplementsError | tautology (compile-time assignment) | TestInvalidTTLErrorMessage |
 | pkg/lease | TestLessorClosedErrorImplementsError | tautology (compile-time assignment) | TestLessorClosedErrorMessage |
+| pkg/lock | TestSentinelErrors_NonNil | tautology (errors.New package vars) | TestSentinelErrors_DistinctMessages |
+| pkg/lock | TestLockHeldError_ImplementsError | tautology (compile-time assignment) | TestLockHeldError_ContainsKey |
+| pkg/lock | TestNotLockHolderError_ImplementsError | tautology (compile-time assignment) | TestNotLockHolderError_ContainsKey |
+| pkg/lock | TestLockNotFoundError_ImplementsError | tautology (compile-time assignment) | TestLockNotFoundError_ContainsKey |
+| pkg/lock | TestLockNotFoundError_EmptyKey | weaker duplicate (non-empty message) | TestLockNotFoundError_ContainsPrefix |
 
 ## Trimmed tests
 
