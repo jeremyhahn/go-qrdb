@@ -82,6 +82,9 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/backend | TestUnsupportedOperationError_ImplementsError | tautology (non-empty message) | TestUnsupportedOperationError_Message |
 | pkg/backend | TestBackendClosedError_ImplementsError | tautology (non-empty message) | TestBackendClosedError_Message |
 | pkg/backend | TestLookupTypeError_ImplementsError | tautology (non-empty message) | TestLookupTypeError_Message |
+| pkg/watch | TestHubClosedError_ImplementsErrorInterface | tautology (non-empty message) | TestHubClosedError_Error_ReturnsExpectedMessage |
+| pkg/watch | TestHubClosedError_NotNil | tautology (compile-time assignment) | TestHubClosedError_Error_ReturnsExpectedMessage |
+| pkg/watch | TestHubClosedError_ErrorsAs | tests errors.As on the concrete pointer (stdlib) | TestHubClosedError_Error_ReturnsExpectedMessage |
 
 ## Trimmed tests
 
