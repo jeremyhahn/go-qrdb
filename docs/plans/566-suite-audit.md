@@ -53,6 +53,10 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/seal | TestBarrier_Encryptor_Success (Put/Get tail only; the test stays) | duplicate Put/Get round trip | TestBarrier_UnsealThenDataRoundTrip |
 | pkg/server | TestWithCertEnrollment_NonNil | option-setter assignment, lower layer of the served call | TestMintDelegation_ServerHandsTheRequestToTheService |
 | pkg/server | TestWithDatabaseManager_NonNil | option-setter assignment, lower layer of the served call | TestSealedDatabase_RefusedOverSQLWire |
+| pkg/server | TestWithStrategyRegistry_Applied | duplicate (same field asserted; the extra lookup tests pkg/seal) | TestWithAllInjections_Compose |
+| pkg/server | TestWithFactorRegistry_Applied | duplicate (same field asserted; the extra List tests pkg/authfactors) | TestWithAllInjections_Compose |
+| pkg/server | TestWithTrustAnchors_Applied | lower layer of the exported crypto options | TestResolveCryptoOptions_SurfacesTrustAnchors |
+| pkg/server | TestWithTrustAnchors_UnsetIsNil | lower layer of the exported crypto options | TestResolveCryptoOptions_TrustAnchorsNilWhenAbsent |
 | pkg/lease | TestNotFoundErrorWithLargeID | duplicate with another ID | TestNotFoundErrorMessage |
 | pkg/lease | TestNotFoundErrorImplementsError | tautology (compile-time assignment) | TestNotFoundErrorMessage |
 | pkg/lease | TestExistsErrorWithDifferentID | duplicate with another ID | TestExistsErrorMessage |
