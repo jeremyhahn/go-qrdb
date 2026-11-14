@@ -45,6 +45,16 @@ type RevocationChecker interface {
 	IsCertRevoked(ctx context.Context, peer *x509.Certificate) (bool, error)
 }
 
+// UncachedRevocationChecker is a RevocationChecker that can also answer
+// without trusting a cached not-revoked answer. A delegation's revocation
+// refuses its next call, so authenticateDelegation asks this method when
+// the checker offers it (pkg/cert.RevocationCache does); ordinary
+// certificates keep the checker's cache window.
+type UncachedRevocationChecker interface {
+	RevocationChecker
+	IsCertRevokedUncached(ctx context.Context, peer *x509.Certificate) (bool, error)
+}
+
 // EnforceRevocation applies the revocation policy to a verified peer
 // certificate and returns the error the caller must fail with, or nil to
 // admit.
