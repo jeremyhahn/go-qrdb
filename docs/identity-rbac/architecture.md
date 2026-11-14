@@ -1000,7 +1000,10 @@ the policy is that grant written down.
   The in-process entry point refuses a delegated caller with
   `DelegationDeniedError`: a delegated caller renews only through
   `IssueDelegation`, which re-authenticates its certificate and checks
-  `certs:delegate`.
+  `certs:delegate`. `sdk/go` re-exports the request, the result and the
+  refusal (`sdk.MintDelegationRequest`, `sdk.IssuedDelegation`,
+  `sdk.DelegationPolicyNotFoundError`), so an embedder mints without
+  importing `pkg/*`.
 - **Renewal, by the delegation itself.** The one exception to "a delegated
   caller cannot issue another": a caller authenticated by a delegation may call
   `IssueDelegation` for its own principal in its own tenant while a policy
