@@ -311,6 +311,7 @@ func TestApplyConfigToFlags_EmptyTLSFieldsNotOverridden(t *testing.T) {
 // mockUserServicer satisfies user.UserServicer for bootstrap testing.
 type mockUserServicer struct {
 	getUserByUsernameFn func(ctx context.Context, tenantID, username string) (*user.User, error)
+	listUsersFn         func(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error)
 	getUserByEmailFn    func(ctx context.Context, tenantID, email string) (*user.User, error)
 	createUserFn        func(ctx context.Context, req *user.CreateUserRequest) (*user.User, error)
 	addCertBindingFn    func(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
@@ -350,7 +351,10 @@ func (m *mockUserServicer) DeleteUser(_ context.Context, _ uint64) error {
 	return nil
 }
 
-func (m *mockUserServicer) ListUsers(_ context.Context, _ *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+func (m *mockUserServicer) ListUsers(ctx context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+	if m.listUsersFn != nil {
+		return m.listUsersFn(ctx, req)
+	}
 	return nil, nil
 }
 
@@ -564,7 +568,7 @@ func TestRunFirstBoot_AdminAlreadyExists(t *testing.T) {
 	roleSvc := &mockRoleServicer{}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 }
 
@@ -592,7 +596,7 @@ func TestRunFirstBoot_AdminSystemButUnbound_FallsThroughToRepair(t *testing.T) {
 	roleSvc := &mockRoleServicer{}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	if !createCalled {
 		t.Fatal("expected runFirstBoot to fall through to the bootstrap path (CreateUser) for a System admin with no live certificate binding")
@@ -682,6 +686,9 @@ func TestRunFirstBoot_CrashRecovery_UnboundAdminPlusPendingRecord_Binds(t *testi
 	// wait needed.
 	pendingStore := &mockKVServicer{
 		getFn: func(_ context.Context, key string) ([]byte, error) {
+			if key != firstboot.PendingAdminCertKey {
+				return nil, &service.KeyNotFoundError{Key: key}
+			}
 			return certPEM, nil
 		},
 	}
@@ -689,8 +696,8 @@ func TestRunFirstBoot_CrashRecovery_UnboundAdminPlusPendingRecord_Binds(t *testi
 	err := runFirstBoot(
 		context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
 		false, nil, "", auth.MTLSBindingEnrolled,
-		pendingStore, nil, certPEM, // ceremonyCA nil; clientCACertPEM is the self-signed cert's own trust anchor
-	)
+		pendingStore, nil, certPEM, nil, soTrustSeams{})
+
 	require.NoError(t, err)
 	assert.Equal(t, uint64(9001), boundUserID, "the existing, still-unbound admin must be the one bound, not a freshly minted user")
 	assert.Equal(t, wantThumbprint, boundThumbprint, "the bound thumbprint must come from the pending record's certificate")
@@ -730,16 +737,16 @@ func TestRunFirstBoot_SecondBoot_Enrolled_NothingEverPending(t *testing.T) {
 	// Boot 1: creates the admin. "enrolled" never requires or attempts a
 	// binding, so the admin stays unbound -- the same shape auth-disabled
 	// reaches, but under the default policy instead.
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
-		false, nil, "", auth.MTLSBindingEnrolled, pendingStore, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, pendingStore, nil, nil, nil, soTrustSeams{})
+
 	require.NoError(t, err)
 	require.NoError(t, firstboot.ClearPendingAdminCert(context.Background(), pendingStore))
 
 	// Boot 2: the admin already exists, System, still unbound -- falls
 	// through to the repair path exactly as boot 1 did. Must not crash
 	// resolving a poisoned pending-admin-cert record.
-	err = runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
-		false, nil, "", auth.MTLSBindingEnrolled, pendingStore, nil, nil)
+	err = runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, pendingStore, nil, nil, nil, soTrustSeams{})
+
 	require.NoError(t, err)
 	require.NoError(t, firstboot.ClearPendingAdminCert(context.Background(), pendingStore))
 
@@ -786,8 +793,8 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 	require.NoError(t, firstboot.WritePendingAdminCert(context.Background(), pendingStore, certPEM))
 
 	// Boot 1: resolves and binds the real ceremony-issued credential.
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
-		false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
+
 	require.NoError(t, err)
 	require.NotEmpty(t, admin.CertBindings)
 	require.Equal(t, wantThumbprint, admin.CertBindings[0].Thumbprint)
@@ -795,9 +802,54 @@ func TestRunFirstBoot_SecondBoot_Required_BindsThenFastPathsCleanly(t *testing.T
 
 	// Boot 2: the admin is now bound -- the fast path returns immediately,
 	// never re-reading the (now consumed) pending record at all.
-	err = runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{},
-		false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM)
+	err = runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
+
 	require.NoError(t, err)
+}
+
+// A cluster first booted in standard mode, with no system SO, and
+// restarted after auth.separation_of_duties is enabled takes the
+// bound-admin fast path: the system SO is optional in both postures (SPEC
+// row 124), so strict mode does not send the boot back through Phase 3.
+func TestRunFirstBoot_StrictRestartWithoutAnSOFastPaths(t *testing.T) {
+	certPEM, _ := selfSignedAdminCertPEM(t)
+
+	var admin *user.User
+	lookups := 0
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			lookups++
+			if admin == nil {
+				return nil, &user.UserNotFoundError{}
+			}
+			return admin, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			admin = &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, System: true, Lifecycle: user.LifecycleActive}
+			return admin, nil
+		},
+		addCertBindingFn: func(_ context.Context, userID uint64, thumbprint string, _ int64) (*user.User, error) {
+			admin.CertBindings = append(admin.CertBindings, user.CertBinding{
+				Thumbprint: thumbprint, NotAfter: time.Now().Add(365 * 24 * time.Hour),
+			})
+			return admin, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{}
+	pendingStore := newMockKVStore(make(map[string][]byte))
+	ctx := context.Background()
+	require.NoError(t, firstboot.WritePendingAdminCert(ctx, pendingStore, certPEM))
+
+	// Boot 1, standard mode: the admin is created and bound; no SO.
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
+	require.NotEmpty(t, admin.CertBindings)
+	require.NoError(t, firstboot.ClearPendingAdminCert(ctx, pendingStore))
+
+	// Boot 2, strict, no SO: the fast path, one admin lookup and nothing else.
+	lookups = 0
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
+	require.Equal(t, 1, lookups)
 }
 
 // TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted
@@ -829,8 +881,7 @@ func TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused(t *testing.T) {
 	pendingStore := newMockKVStore(make(map[string][]byte))
 	require.NoError(t, firstboot.WritePendingAdminCert(context.Background(), pendingStore, certPEM))
 
-	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{},
-		false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM)
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, &mockRoleServicer{}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
 
 	var rejected *firstboot.AdminCertRejectedError
 	require.ErrorAs(t, err, &rejected)
@@ -878,16 +929,16 @@ func TestRunFirstBoot_Required_ExpiredAdminNoPendingCredential_BootsAwaiting(t *
 		require.NoError(t, firstboot.WritePendingAdminCert(context.Background(), store, certPEM))
 		require.NoError(t, firstboot.ClearPendingAdminCert(context.Background(), store))
 
-		err := runFirstBoot(context.Background(), node, testLeaderWait, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{},
-			false, nil, "", auth.MTLSBindingRequired, store, nil, nil)
+		err := runFirstBoot(context.Background(), node, testLeaderWait, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, store, nil, nil, nil, soTrustSeams{})
+
 		require.NoError(t, err, "an expired admin with a CONSUMED pending record must boot, not shut down")
 	})
 
 	t.Run("nothing ever pending", func(t *testing.T) {
 		store := newMockKVStore(make(map[string][]byte))
 
-		err := runFirstBoot(context.Background(), node, testLeaderWait, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{},
-			false, nil, "", auth.MTLSBindingRequired, store, nil, nil)
+		err := runFirstBoot(context.Background(), node, testLeaderWait, 1, newExpiredAdminUserSvc(), &mockRoleServicer{}, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, store, nil, nil, nil, soTrustSeams{})
+
 		require.NoError(t, err, "an expired admin with NO pending record at all must boot, not shut down")
 	})
 }
@@ -914,7 +965,7 @@ func TestRunFirstBoot_AdminExistsButNotSystem_FallsThroughToReconcile(t *testing
 	roleSvc := &mockRoleServicer{}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	if !createCalled {
 		t.Fatal("expected runFirstBoot to fall through to the bootstrap path (CreateUser) for a non-System existing admin")
@@ -944,7 +995,7 @@ func TestRunFirstBoot_FreshBootstrap(t *testing.T) {
 	}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	// All built-in roles should have been created.
 	assert.True(t, len(createdRoles) > 0, "expected at least one role to be created")
@@ -982,7 +1033,7 @@ func TestRunFirstBoot_RoleAlreadyExists(t *testing.T) {
 	}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 }
 
@@ -1013,7 +1064,7 @@ func TestRunFirstBoot_RoleExistsUnexplainedIDRefused(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "register role")
 }
@@ -1063,7 +1114,7 @@ func TestRunFirstBoot_RoleCreateError(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel)
 }
@@ -1090,7 +1141,7 @@ func TestRunFirstBoot_AdminCreateError(t *testing.T) {
 	defer cancel()
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.False(t, errors.As(err, &abe),
@@ -1133,7 +1184,7 @@ func TestRunFirstBoot_AdminUsernameExists(t *testing.T) {
 	roleSvc := &mockRoleServicer{}
 
 	node := &mockRaftNode{} // default: leader ready
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 }
 
@@ -1164,7 +1215,7 @@ func TestRunFirstBoot_LeaderElectionWait(t *testing.T) {
 	}
 	roleSvc := &mockRoleServicer{}
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	assert.Greater(t, attempts, 3)
 }
@@ -1194,7 +1245,7 @@ func TestRunFirstBoot_ContextCanceledDuringLeaderWait(t *testing.T) {
 	}
 	roleSvc := &mockRoleServicer{}
 
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1225,7 +1276,7 @@ func TestRunFirstBoot_UnexpectedStoreError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, sentinel,
 		"a storage fault must surface as itself, not as a replication timeout")
@@ -1266,7 +1317,7 @@ func TestRunFirstBoot_RoleExistsUsesCanonicalIDs(t *testing.T) {
 	}
 	node := &mockRaftNode{} // default: leader ready
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 
 	// Under the standard posture (strictSoD=false) that is the Admin@system
@@ -1296,7 +1347,7 @@ func TestRunFirstBoot_UnseededRolesUseDerivedIDs(t *testing.T) {
 		},
 	}
 
-	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), &mockRaftNode{}, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 
 	expectedAdminID := role.SystemRoleID(tenantid.System, role.RoleNameAdmin)
@@ -1332,7 +1383,7 @@ func TestRunFirstBoot_FollowerWaitsForReplication(t *testing.T) {
 	}
 	node := &mockRaftNode{}
 
-	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(context.Background(), node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	assert.Greater(t, calls, 2, "should have polled for admin replication")
 }
@@ -1360,7 +1411,7 @@ func TestRunFirstBoot_NoLeaderWaitsUntilTheContextEnds(t *testing.T) {
 	const leaderWait = 100 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	err := runFirstBoot(ctx, node, leaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil)
+	err := runFirstBoot(ctx, node, leaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingEnrolled, nil, nil, nil, nil, soTrustSeams{})
 	require.Error(t, err)
 	var abe *AuthBootstrapError
 	require.True(t, errors.As(err, &abe))
@@ -1416,7 +1467,7 @@ func TestBootstrapAuth_Success(t *testing.T) {
 	dataDir := t.TempDir()
 	node := &mockRaftNode{} // default: leader ready
 	tx := newMockTransactionServicer(store)
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 	require.NotNil(t, mgmt)
 	require.NotNil(t, mgmt.userSvc)
@@ -1486,7 +1537,7 @@ func TestBootstrapAuth_NoSideFile_DecisionAuditRidesChain(t *testing.T) {
 	node := &mockRaftNode{} // default: leader ready
 	tx := newMockTransactionServicer(store)
 
-	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil)
+	mgmt, err := bootstrapUserRoleStores(context.Background(), mock, mock, tx, node, testLeaderWait, 1, 1, &mockTenantServicer{}, false, nil, "", nil, auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{})
 	require.NoError(t, err)
 
 	result, err := bootstrapAuthEnforcement(context.Background(), mgmt, nonexistentDir, node, audit.NewNoopLogger(), false, "", qrdbconfig.AuthABACConfig{}, nil, nil, nil, nil, nil, "", "", "enrolled", firstboot.NewAwaitingAdminCredentialProbe(), nil)

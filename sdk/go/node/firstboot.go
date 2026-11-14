@@ -53,6 +53,9 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	if td := n.spiffeTrustDomain.Load(); td != nil {
 		deps.TrustDomain = *td
 	}
+	// The node's strict posture always wins: a caller can never relax it.
+	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
+	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), users)
 	if err != nil {
 		return nil, err
@@ -88,6 +91,8 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.PendingAdminCertStore, caBundlePEM []byte, timeout time.Duration, deps firstboot.Dependencies) (*firstboot.Result, error) {
 	policy := auth.MTLSBindingPolicy(n.bindingPolicy.Load())
 	users := n.UserService()
+	// The node's strict posture always wins: a caller can never relax it.
+	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
 
 	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, store, users, policy, timeout)
 	if err != nil {
@@ -111,7 +116,17 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	deps.AdminCertPEM = adminCertPEM
 	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
 	deps.Binder = firstboot.UserCertBinder{Users: users}
+	// The system SO the ceremony recorded, unless the caller names one.
+	if deps.SO == nil {
+		so, err := firstboot.PendingSystemSO(ctx, store)
+		if err != nil {
+			return nil, err
+		}
+		deps.SO = so
+	}
 
+	n.defaultSOPINs(&deps)
+	n.defaultSOTrust(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, policy, users)
 	if err != nil {
 		return nil, err
@@ -136,6 +151,9 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	// fatal, matching cmd/qrdbd/start.go's own treatment of the same step.
 	if err := firstboot.ClearPendingAdminCert(ctx, store); err != nil {
 		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
+	}
+	if err := firstboot.ClearPendingSystemSO(ctx, store); err != nil {
+		slog.Warn("node: failed to clear the pending system SO record", "error", err)
 	}
 	return result, nil
 }
@@ -246,6 +264,37 @@ func (n *Node) reconcileAwaitingAdminCredential(ctx context.Context, users first
 // policy -- the node's own configured auth.mtls_binding_policy -- always wins
 // over whatever deps.MTLSBindingPolicy already held, since that field's zero
 // value is indistinguishable from an explicit auth.MTLSBindingRequired.
+// defaultSOPINs points deps.SOPINs, when the embedder left it nil, at the SO
+// PIN store the node's SO gate verifies against (the one tenant create
+// commits a tenant SO's PIN to), so the system SO's PIN lands where the
+// gate reads it.
+func (n *Node) defaultSOPINs(deps *firstboot.Dependencies) {
+	if deps.SOPINs != nil {
+		return
+	}
+	if svcNode := n.svcNode.Load(); svcNode != nil {
+		if pins := svcNode.SOPINs(); pins != nil {
+			deps.SOPINs = pins
+		}
+	}
+}
+
+// defaultSOTrust fills the trust-anchor registry and runtime client-trust
+// refresh an adopted SO's external CA pool is installed through, from the
+// node's own services, unless the caller supplied them.
+func (n *Node) defaultSOTrust(deps *firstboot.Dependencies) {
+	svcNode := n.svcNode.Load()
+	if svcNode == nil || svcNode.TrustAnchors == nil {
+		return
+	}
+	if deps.TrustAnchors == nil {
+		deps.TrustAnchors = svcNode.TrustAnchors
+	}
+	if deps.ClientTrust == nil {
+		deps.ClientTrust = firstboot.ClientTrustRefreshFunc(svcNode.RefreshClientTrust)
+	}
+}
+
 func firstBootUnderPolicy(ctx context.Context, deps firstboot.Dependencies, policy auth.MTLSBindingPolicy, users firstboot.AdminLookup) (*firstboot.Result, error) {
 	deps.MTLSBindingPolicy = policy
 	result, err := firstboot.Initialize(ctx, deps)

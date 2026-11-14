@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
@@ -155,6 +156,20 @@ func (s *CeremonyServiceWithAdminRebind) CeremonyInitialize(ctx context.Context,
 	}
 	if status.State == string(ceremony.StateAwaitingInit) {
 		return s.CeremonyServicer.CeremonyInitialize(ctx, ca, opts)
+	}
+	// An M-of-N ceremony whose system SO record write failed stays in
+	// StateEnrolling with no SO record; the core's Initialize retries just
+	// that write (verifying the provisioned PINs). Route such a retry to the
+	// core rather than treating it as an admin reissue.
+	if status.State == string(ceremony.StateEnrolling) && opts != nil &&
+		opts.Threshold >= 2 && strings.TrimSpace(opts.SOUsername) != "" {
+		pending, err := s.core.PendingSystemSO(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if pending == nil {
+			return s.CeremonyServicer.CeremonyInitialize(ctx, ca, opts)
+		}
 	}
 	// StateRestoreFailed means the core service could not determine the
 	// ceremony's actual state at construction (ceremony.restoreState):

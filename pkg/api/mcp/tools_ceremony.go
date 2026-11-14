@@ -76,6 +76,18 @@ func toolCeremonyInitialize() mcp.Tool {
 		mcp.WithBoolean("admin_generate",
 			mcp.Description("Selects the generate path explicitly: the server mints the bootstrap admin's key pair and certificate. Mutually exclusive with admin_csr_pem and admin_cert_pem; requires a configured CeremonyCA. The generated private key is returned exactly once in the response and never retained."),
 		),
+		mcp.WithString("so_username",
+			mcp.Description("Username of the system tenant's Security Officer first boot enrols with only the so role; its PIN is so_pin. Needs exactly one of so_csr_pem and so_cert_pem. Required by a strict separation-of-duties deployment."),
+		),
+		mcp.WithString("so_csr_pem",
+			mcp.Description("PEM-encoded CSR for the system SO's certificate, signed under the system tenant. Mutually exclusive with so_cert_pem; requires a configured CeremonyCA. Its key must not be the admin's."),
+		),
+		mcp.WithString("so_cert_pem",
+			mcp.Description("PEM-encoded, caller-supplied system SO certificate naming the system tenant, verified against admin_cert_pool_pem (or the ceremony CA bundle). Mutually exclusive with so_csr_pem."),
+		),
+		mcp.WithString("so_chain_pem",
+			mcp.Description("PEM-encoded intermediates for so_cert_pem. Ignored unless so_cert_pem is set."),
+		),
 		withSecretArg("secret", "The passphrase the system barrier is initialized with (single-admin path only; ignored for Threshold >= 2, where the barrier unseals later from share holders' Shamir reconstruction)."),
 	)
 }

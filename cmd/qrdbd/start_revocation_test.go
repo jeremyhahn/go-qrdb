@@ -42,7 +42,7 @@ func TestBootstrapAuthEnforcement_InvalidRevocationTTLFailsBoot(t *testing.T) {
 	mgmt, err := bootstrapUserRoleStores(
 		context.Background(), mock, mock, tx, node, testLeaderWait,
 		1, 1, &mockTenantServicer{}, false, nil, "", nil,
-		auth.MTLSBindingEnrolled, nil, nil, nil,
+		auth.MTLSBindingEnrolled, nil, nil, nil, soTrustSeams{},
 	)
 	require.NoError(t, err)
 

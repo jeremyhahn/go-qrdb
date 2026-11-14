@@ -78,6 +78,15 @@ type CeremonyService struct {
 
 	// lastAdminSource records which path produced lastAdminCertPEM.
 	lastAdminSource AdminCredentialSource
+
+	// lastSystemSO is the system SO Initialize named, for the composer to
+	// hand to first boot as it does lastAdminCertPEM. Nil when none.
+	lastSystemSO *IssuedSystemSO
+
+	// strictSoD is the node's resolved strict separation-of-duties posture
+	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
+	// names no system SO, before any write.
+	strictSoD bool
 }
 
 // Compile-time checks.
@@ -314,6 +323,25 @@ func (s *CeremonyService) SetAuditFailurePolicy(p audit.FailurePolicy) {
 	s.deps.AuditPolicy = p
 }
 
+// SetSeparationOfDuties sets the node's strict separation-of-duties posture,
+// as wiring.ResolveStrictSeparation resolves it. Under it Initialize refuses,
+// with *SystemSORejectedError and before any write, a ceremony whose options
+// name no system SO: first boot could never enrol one, and the node would be
+// refused at every boot. The posture is the node's, never the caller's: no
+// InitializeOptions field can relax it.
+func (s *CeremonyService) SetSeparationOfDuties(strict bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.strictSoD = strict
+}
+
+// separationOfDuties reports the posture SetSeparationOfDuties set.
+func (s *CeremonyService) separationOfDuties() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.strictSoD
+}
+
 // SetPINBackend installs the PIN backend, decorated with the SO PIN lockout
 // (pin.NewLockoutBackend, idempotent: a backend the composer already
 // decorated keeps its one set of counters). Without one, every PIN-gated
@@ -453,6 +481,9 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := validateAdminCredentialInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle); err != nil {
 		return nil, err
 	}
+	if err := validateSystemSOInputs(ca, s.HolderDeps().TrustDomain, opts, caBundle, s.separationOfDuties()); err != nil {
+		return nil, err
+	}
 
 	// Every officer's CSR, key kind, encryption KEM/key and factor set is
 	// validated as a batch, PURELY, before any of them is enrolled
@@ -495,9 +526,29 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrRestoreFailed
 	}
+	if s.state == StateEnrolling && opts.Threshold >= 2 {
+		if result, handled, err := s.retrySystemSOPersistLocked(ctx, ca, opts, caBundle); handled {
+			s.mu.Unlock()
+			return result, err
+		}
+	}
 	if s.state != StateAwaitingInit {
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
+	}
+	// The system SO is issued before anything is committed: before the
+	// PINs are provisioned and before the system barrier is initialized and
+	// unsealed. The SO's only durable handoff is the record in that barrier,
+	// so an SO issuance that failed after it came up would leave an unsealed
+	// barrier with no SO, which a composer reads as an initialized node and
+	// boots into a first boot strict separation refuses, with no listener
+	// left to retry the ceremony on. Failing here leaves the barrier
+	// uninitialized and the ceremony awaiting a retry.
+	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
+	if err != nil {
+		s.mu.Unlock()
+		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
+		return nil, err
 	}
 	// Sampled BEFORE Provision, so rollbackOfficerInit can tell whether
 	// THIS call freshly set the SO PIN or merely verified one that already
@@ -633,6 +684,13 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 	s.lastAdminCertPEM = adminCertPEM
 	s.lastAdminSource = adminSource
+	// s.lastSystemSO is published only once the SO record is durable
+	// (below): PendingSystemSO answers from it, and a cached SO whose
+	// write failed would hide the missing record from a retry.
+	if systemSO != nil {
+		result.SOCertPEM = systemSO.CertPEM
+		s.logger.Info("ceremony: system SO credential issued", slog.String("username", systemSO.Username))
+	}
 	result.AdminCertPEM = adminCertPEM
 	result.AdminKeyPEM = adminKeyPEM
 	result.AdminCredentialSource = adminSource
@@ -650,6 +708,14 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	if !isMofN {
+		// The barrier is unsealed by now: record the issued system SO in it
+		// before reporting success, so a crash before the composer copies
+		// it into the replicated store cannot strand strict first boot.
+		if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+			s.mu.Unlock()
+			return nil, err
+		}
+		s.lastSystemSO = systemSO
 		s.becomeOperationalLocked(ctx)
 		s.mu.Unlock()
 		result.State = StateOperational
@@ -717,6 +783,23 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	s.mu.Lock()
+	// InitializeShamir left the barrier unsealed; record the issued system
+	// SO in it before reporting success, as the single-admin path does.
+	//
+	// A failure here cannot be undone like an InitializeShamir failure:
+	// the barrier and the holder envelopes are already committed and the
+	// barrier has no un-initialize, so option (a) of go-qrdb#1129's
+	// round-1 finding is not available. Option (b) instead: the ceremony
+	// moves to StateEnrolling, exactly what restoreState reports for this
+	// barrier after a restart, and a retried Initialize then persists the
+	// SO, and only the SO (retrySystemSOPersistLocked), so strict first
+	// boot is never left without its required SO record.
+	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+		s.state = StateEnrolling
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.lastSystemSO = systemSO
 	s.state = StateEnrolling
 	s.mu.Unlock()
 	result.ShareCount = params.ShareCount

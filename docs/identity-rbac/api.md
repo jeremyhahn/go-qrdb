@@ -96,8 +96,12 @@ reconciled independently, the system tenant first. A sealed tenant is skipped
 with reason `sealed`, a tenant that refuses the call with reason `refused`. A
 tenant that fails is reported in `failed` and the pass continues, so the call
 itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
-which only the system tenant's built-in Admin holds. A caller bound to any other
-tenant is refused with 403 / `PermissionDenied`. A node without a tenant service
+which only the system tenant's built-in Admin role holds, in both separation
+postures. A caller bound to any other tenant, and the system SO, is refused
+with 403 / `PermissionDenied`. Under strict separation of duties the
+single-tenant reconcile runs only as an SO, and the system Admin is refused it
+with 403 / `PermissionDenied`; the all-tenants reconcile stays the system
+Admin's. A node without a tenant service
 answers 501 / `Unimplemented`, and its MCP server does not list the tool. QUIC
 carries the request and response as protobuf
 (`ReconcileBuiltInRolesAllTenantsResponse`).
@@ -106,6 +110,17 @@ The bootstrap problem that `roles:create` avoids for the single-tenant verb
 applies here once: a system Admin role stored before `roles:reconcile_all`
 existed lacks it. The single-tenant reconcile of the system tenant, which needs
 only `roles:create`, grants it. Run that first.
+
+Under strict separation of duties (below), `CreateRole` and
+`ReconcileBuiltInRoles` additionally run only as a **separate Security
+Officer** of the tenant they act on: a caller holding that tenant's `so` role
+and not its `admin` role. The tenant Admin, which holds `roles:create`, is
+refused with `SORoleRequiredError`; an account left holding both `so` and
+`admin` from the standard posture is refused with `SORoleConflictError`; a
+caller of another tenant, the `system` tenant's included, is refused with
+`SORoleRequiredError`. The check runs on every transport after the route's own
+permission check. In the standard posture `roles:create` alone decides, as
+before.
 
 `Client.Permissions()` and `Client.RBAC()` return **nil** on a transport that
 does not implement the corresponding provider. Nil-check them; the nil is not
@@ -860,7 +875,12 @@ scoped to any other tenant counts for nothing. `roles:assign`/`roles:unassign`
 alone, as the tenant Admin holds them, is refused with `SORoleRequiredError`
 before anything is written, and so is the `system` tenant's Security Officer
 or another tenant's. A write that leaves the user's Security Officer standing
-as it was is not affected. Outside strict separation of duties the `so` role
+as it was is not affected. Under the same posture no account holds the `so`
+role together with the `admin` role of its tenant (the `system` Admin for a
+`system`-tenant account): any role write that leaves its target holding both
+is refused with `SORoleConflictError`, whoever the caller, and a Security
+Officer that itself holds both may not grant or revoke `so` either. Outside
+strict separation of duties the `so` role
 is granted and revoked like any other, by a caller holding
 `roles:assign`/`roles:unassign`, the tenant Admin included. A tenant's first
 Security Officer is enrolled by
@@ -939,6 +959,8 @@ of its own, and the listing never contains one.
 | Disabled user | 401 | `UNAUTHENTICATED` |
 | Missing permission | 403 | `PERMISSION_DENIED` |
 | Granting or revoking the tenant's `so` role by a caller that is not that tenant's own Security Officer (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
+| Under strict separation: a role write leaving a user holding both `so` and `admin` of its tenant, or a grant, revocation, `CreateRole` or `ReconcileBuiltInRoles` by a caller holding both (`SORoleConflictError`) | 403 | `PERMISSION_DENIED` |
+| Under strict separation: `CreateRole` or `ReconcileBuiltInRoles` by a caller that is not the target tenant's own Security Officer, the tenant Admin included (`SORoleRequiredError`) | 403 | `PERMISSION_DENIED` |
 | Granting or revoking the `so` role when the tenant's `so` role cannot be looked up (`SORoleUnresolvedError`) | 503 | `UNAVAILABLE` |
 | Role-assignment write names a role that does not exist, or belongs to another tenant | 400 | `INVALID_ARGUMENT` |
 | `roleBindings` entry naming a tenant other than the user's own, system-tenant users included (`user.RoleBindingTenantError`) | 400 | `INVALID_ARGUMENT` |

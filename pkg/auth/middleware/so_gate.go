@@ -298,6 +298,22 @@ type SORoleRequiredError struct{}
 // Error returns the refusal message.
 func (e *SORoleRequiredError) Error() string { return "SO role required" }
 
+// SORoleConflictError is the strict separation-of-duties refusal of an
+// account holding the Security Officer role together with its tenant's Admin
+// role: a role write that would leave an account holding both, or an
+// SO-exclusive act by a caller that holds both (go-qrdb#1128). The credential
+// is good and the combination is forbidden, so it classifies as
+// AuthFailureUnauthorized: 403 / PermissionDenied.
+type SORoleConflictError struct {
+	// TenantID is the tenant whose SO and Admin roles were combined.
+	TenantID string
+}
+
+// Error returns the refusal message.
+func (e *SORoleConflictError) Error() string {
+	return "separation of duties: the SO role cannot be held with the admin role of tenant " + e.TenantID
+}
+
 // SORoleUnresolvedError is the SO gate's refusal when the role store could
 // not say whether the caller holds the SO role. Neither the credential nor
 // the role failed, so it classifies as AuthFailureUnavailable: 503 /

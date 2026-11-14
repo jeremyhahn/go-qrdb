@@ -269,7 +269,7 @@ func TestWireTrustAnchors_WiresPoolAndSubscribesInvalidation(t *testing.T) {
 
 // TestNode_RefreshClientTrust_RebuildsTheWiredPool pins the seam
 // TenantOnboarding answers through: once WireTrustAnchors has run,
-// refreshClientTrust returns only after the pool's next handshake reads trust
+// RefreshClientTrust returns only after the pool's next handshake reads trust
 // that includes a CA added a moment ago -- with no Run loop to rebuild it.
 func TestNode_RefreshClientTrust_RebuildsTheWiredPool(t *testing.T) {
 	ctx := context.Background()
@@ -291,11 +291,11 @@ func TestNode_RefreshClientTrust_RebuildsTheWiredPool(t *testing.T) {
 	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err == nil {
 		t.Fatal("anchor trusted before any rebuild; the test cannot tell a refresh from none")
 	}
-	if err := n.refreshClientTrust(ctx); err != nil {
-		t.Fatalf("refreshClientTrust: %v", err)
+	if err := n.RefreshClientTrust(ctx); err != nil {
+		t.Fatalf("RefreshClientTrust: %v", err)
 	}
 	if _, err := pool.VerifyPeerChain(ctx, anchorCert, nil); err != nil {
-		t.Fatalf("anchor added before refreshClientTrust not trusted after it returned: %v", err)
+		t.Fatalf("anchor added before RefreshClientTrust not trusted after it returned: %v", err)
 	}
 }
 
@@ -304,13 +304,13 @@ func TestNode_RefreshClientTrust_RebuildsTheWiredPool(t *testing.T) {
 // has no client trust to rebuild, and says so with nil.
 func TestNode_RefreshClientTrust_NothingWiredIsNil(t *testing.T) {
 	ctx := context.Background()
-	if err := (&Node{}).refreshClientTrust(ctx); err != nil {
-		t.Fatalf("refreshClientTrust with no pool: %v, want nil", err)
+	if err := (&Node{}).RefreshClientTrust(ctx); err != nil {
+		t.Fatalf("RefreshClientTrust with no pool: %v, want nil", err)
 	}
 	n := &Node{} // TrustAnchors deliberately nil
 	n.WireTrustAnchors(clienttrust.New())
-	if err := n.refreshClientTrust(ctx); err != nil {
-		t.Fatalf("refreshClientTrust after a no-op wiring: %v, want nil", err)
+	if err := n.RefreshClientTrust(ctx); err != nil {
+		t.Fatalf("RefreshClientTrust after a no-op wiring: %v, want nil", err)
 	}
 }
 

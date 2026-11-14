@@ -32,6 +32,13 @@ them. The gate does not depend on authentication being configured. With the
 gate on and no authentication, there is no Security Officer to admit, so
 every SO-gated operation is refused on every transport. It is never skipped.
 
+An embedded node (`sdk/go/node`) also commits each tenant SO's PIN through
+the authenticator passed with `server.WithSOAuthenticator`. A tenant create
+that names an SO, which strict separation of duties (forced under FIPS
+140-3) requires, needs it: without the option the node refuses the create
+with an error that names `server.WithSOAuthenticator` and wraps
+`*bootstrap.MissingProvisioningSeamError`.
+
 If the flag is set without a verifier the gate is not installed,
 so a misconfigured deployment cannot lock out the SO surface behind an
 unverifiable check. When disabled (default) every transport's chain is

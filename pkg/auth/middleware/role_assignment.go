@@ -259,10 +259,18 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 // over the roles it holds in target, its Roles and its bindings scoped to
 // target (callerRoleIDs), as the account's own membership is counted.
 //
-// The refusal is *SORoleRequiredError (403 / PermissionDenied); a role
-// store that cannot say who holds the SO role is *SORoleUnresolvedError
-// (503), never an admission. A nil m authorizes nothing, as every
-// AuthMiddleware gate does when no RBAC is configured.
+// Under the same posture no account holds the SO role together with the
+// Admin role of its tenant -- the system Admin for a system-tenant account,
+// the tenant Admin otherwise (go-qrdb#1128, owner ruling 132). Any write that
+// changes the account's roles and leaves it holding both is refused with
+// *SORoleConflictError, whoever the caller, and a caller that holds both
+// itself is no separate SO (requireSeparateSO).
+//
+// The refusal is *SORoleRequiredError or *SORoleConflictError (403 /
+// PermissionDenied); a role store that cannot say who holds the SO or Admin
+// role is *SORoleUnresolvedError (503), never an admission. A nil m
+// authorizes nothing, as every AuthMiddleware gate does when no RBAC is
+// configured.
 func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target string, before, after []string) error {
 	if m == nil || !m.strictSeparation || slices.Equal(before, after) {
 		return nil
@@ -275,19 +283,68 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 	if err != nil {
 		return err
 	}
+	if holds {
+		admin, err := m.holdsAdmin(ctx, target, after)
+		if err != nil {
+			return err
+		}
+		if admin {
+			return &SORoleConflictError{TenantID: target}
+		}
+	}
 	if held == holds {
 		return nil
 	}
+	return m.requireSeparateSO(ctx, target)
+}
+
+// AuthorizeSOExclusive admits an SO-exclusive operation -- roles:create and
+// the built-in role reconcile, which share that permission -- under strict
+// separation of duties only for a separate SO of the tenant the operation
+// acts on (go-qrdb#1128, owner ruling 132). requestedTenantID is the tenant
+// the request names, empty for the caller's own, resolved as the role
+// service resolves it (tenant.EffectiveTenant); op names the operation in
+// that resolution's refusal. The route's own permission check still runs
+// first and decides alone under the standard posture, where the Admin
+// creates roles and runs the reconcile as before.
+//
+// The refusals are requireSeparateSO's. A nil m authorizes nothing.
+func (m *AuthMiddleware) AuthorizeSOExclusive(ctx context.Context, requestedTenantID, op string) error {
+	if m == nil || !m.strictSeparation {
+		return nil
+	}
+	target, err := tenant.EffectiveTenant(ctx, requestedTenantID, op)
+	if err != nil {
+		return err
+	}
+	return m.requireSeparateSO(ctx, tenantid.Normalize(target))
+}
+
+// requireSeparateSO admits the caller only when it is target's Security
+// Officer and does not also hold target's Admin role: an SO-exclusive act
+// runs as a separate SO principal. A caller of another tenant, the system
+// tenant's included, or one without the SO role is refused with
+// *SORoleRequiredError; an SO that is also Admin -- an account left holding
+// both from the standard posture -- with *SORoleConflictError.
+func (m *AuthMiddleware) requireSeparateSO(ctx context.Context, target string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil || tenantid.Normalize(identity.TenantID) != target {
 		return &SORoleRequiredError{}
 	}
-	isSO, err := m.holdsSO(ctx, target, callerRoleIDs(identity, target))
+	callerRoles := callerRoleIDs(identity, target)
+	isSO, err := m.holdsSO(ctx, target, callerRoles)
 	if err != nil {
 		return err
 	}
 	if !isSO {
 		return &SORoleRequiredError{}
+	}
+	admin, err := m.holdsAdmin(ctx, target, callerRoles)
+	if err != nil {
+		return err
+	}
+	if admin {
+		return &SORoleConflictError{TenantID: target}
 	}
 	return nil
 }
@@ -295,6 +352,17 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 // holdsSO reports whether roleIDs include tenantID's SO role.
 func (m *AuthMiddleware) holdsSO(ctx context.Context, tenantID string, roleIDs []string) (bool, error) {
 	ok, err := role.HoldsSystemRole(ctx, m.roles, tenantID, roleIDs, role.RoleNameSO)
+	if err != nil {
+		return false, &SORoleUnresolvedError{Err: err}
+	}
+	return ok, nil
+}
+
+// holdsAdmin reports whether roleIDs include tenantID's built-in Admin role.
+// A role store failure is *SORoleUnresolvedError, as for holdsSO: the
+// separation check it feeds cannot be answered without it.
+func (m *AuthMiddleware) holdsAdmin(ctx context.Context, tenantID string, roleIDs []string) (bool, error) {
+	ok, err := role.HoldsSystemRole(ctx, m.roles, tenantID, roleIDs, role.RoleNameAdmin)
 	if err != nil {
 		return false, &SORoleUnresolvedError{Err: err}
 	}

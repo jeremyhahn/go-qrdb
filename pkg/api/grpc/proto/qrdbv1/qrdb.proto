@@ -4776,6 +4776,15 @@ message CeremonyInitializeRequest {
     // passphrase, and a Go string is immutable and can never be wiped from
     // memory after use the way a []byte can (go-qrdb#560 review item 7).
     bytes secret = 13;
+    // so_username names the system tenant's Security Officer first boot
+    // enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
+    // the system tenant) and so_cert_pem (adopted; verified against
+    // admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. A
+    // strict separation-of-duties deployment requires it.
+    string so_username = 14;
+    string so_csr_pem = 15;
+    string so_cert_pem = 16;
+    string so_chain_pem = 17;
 }
 
 // CeremonyInitializeResponse returns the result of ceremony initialization.
@@ -4787,7 +4796,7 @@ message CeremonyInitializeResponse {
     string ca_cert_pem = 2;
     string tls_cert_pem = 3;
     reserved 4, 5;
-    reserved "so_cert_pem", "so_key_pem";
+    reserved "so_key_pem";
     string state = 6;
     int32 share_count = 7;
     repeated CeremonyHolderCert holders = 8;
@@ -4798,6 +4807,10 @@ message CeremonyInitializeResponse {
     // item 7).
     bytes admin_key_pem = 10;
     string admin_credential_source = 11;
+    // so_cert_pem is the system SO's issued or adopted certificate, set
+    // when the request named one. Field 4, an earlier SO certificate,
+    // stays reserved.
+    string so_cert_pem = 12;
 }
 
 // CeremonyStatusResponse describes the current ceremony state.

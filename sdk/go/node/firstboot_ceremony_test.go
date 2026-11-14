@@ -162,13 +162,13 @@ func TestNode_FirstBootWithCeremony_BoundAdminLogsInUnderRequired(t *testing.T) 
 	store := PendingAdminCertStore(n.Services().KV)
 	require.NoError(t, firstboot.WritePendingAdminCert(ctx, store, initResult.AdminCertPEM))
 
-	result, err := n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, firstboot.Dependencies{
+	result, err := n.FirstBootWithCeremony(ctx, store, caCertPEM, 2*time.Second, withSystemSO(t, firstboot.Dependencies{
 		Tenants:      n.Services().Tenant,
 		Users:        n.UserService(),
 		Roles:        n.Services().Role,
 		RoleResolver: n.Services().Role,
 		Logger:       ceremonyHandoffLogger(),
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, result.AdminCreated)
 
@@ -260,13 +260,13 @@ func TestNode_FirstBootWithCeremony_FreshUnboundNodeEntersAwaitingWithoutRestart
 	// node" case ResolveAdminCertForFirstBoot tolerates (NoPendingAdminCredentialError)
 	// by proceeding with no certificate to bind.
 	store := PendingAdminCertStore(n.Services().KV)
-	result, err := n.FirstBootWithCeremony(ctx, store, nil, 200*time.Millisecond, firstboot.Dependencies{
+	result, err := n.FirstBootWithCeremony(ctx, store, nil, 200*time.Millisecond, withSystemSO(t, firstboot.Dependencies{
 		Tenants:      n.Services().Tenant,
 		Users:        n.UserService(),
 		Roles:        n.Services().Role,
 		RoleResolver: n.Services().Role,
 		Logger:       ceremonyHandoffLogger(),
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, result.AdminCreated)
 

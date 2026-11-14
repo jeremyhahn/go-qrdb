@@ -240,8 +240,17 @@ refused for an Admin with permission denied (HTTP 403), and nothing is
 written. The `system` tenant's Security Officer is refused too: your tenant's
 `so` role is granted by your tenant's own. Your tenant's first Security
 Officer is named at `tenant create`
-([../multi-tenancy/user.md](../multi-tenancy/user.md)). Without strict
-separation an Admin assigns and unassigns `so` like any other role.
+([../multi-tenancy/user.md](../multi-tenancy/user.md)).
+
+Under strict separation the Security Officer is also a separate person: no
+account holds `so` together with your tenant's `admin` role, and a role change
+that would leave someone holding both is refused with permission denied.
+Creating a role (`roles create`) and reconciling the built-in roles
+(`roles reconcile`) are the Security Officer's alone: an Admin is refused
+them, and so is an account still holding both roles from before strict
+separation was turned on. Without strict separation an Admin assigns and
+unassigns `so` like any other role, may hold it, and creates roles and
+reconciles the built-in ones itself.
 
 Turning `auth.separation_of_duties` on or off is audited. When the daemon
 starts under a posture other than the recorded one, or on the first start, it
@@ -284,7 +293,8 @@ Your tenant's built-in roles are seeded when it is created and not changed by
 an upgrade, so a tenant older than an upgrade keeps verbs the software has
 retired and lacks the ones it added until you reconcile. Reconciling adds what is missing, removes what is retired, and leaves
 your own roles alone. Running it twice is harmless: the second run reports that
-everything is already current and changes nothing.
+everything is already current and changes nothing. Under strict separation of
+duties your tenant's Security Officer runs it, not an Admin.
 
 ## Two ways to hold a role
 

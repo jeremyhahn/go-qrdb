@@ -85,6 +85,10 @@ type initFlags struct {
 	adminCert       string
 	adminCertPool   string
 	adminGenerate   bool
+	soUsername      string
+	soCSR           string
+	soCert          string
+	soChain         string
 }
 
 // newInitCmd returns the canonical root-level "init" command.
@@ -124,6 +128,12 @@ Canonical environment variables (Viper-bound):
   QRDB_THRESHOLD           equivalent to --threshold
   QRDB_HOSTNAME            equivalent to --hostname
   QRDB_SANS                equivalent to --sans
+  QRDB_SO_USERNAME         equivalent to --so-username
+
+--so-username with --so-csr or --so-cert names the system tenant's Security
+Officer, enrolled at first boot with only the so role and --so-pin as its
+PIN. A server running separation of duties strict refuses to boot without
+one; the standard posture keeps it optional.
 
 M-of-N Shamir custody (--barrier-strategy shamir with --threshold >= 2)
 names the initial share holders up front: Security Officers via --officers
@@ -164,6 +174,8 @@ Examples:
             --officers-file officers.json
   qrdb init --barrier-strategy none --so-pin SOPIN --user-pin USERPIN \
             --admin-csr admin.csr
+  qrdb init --barrier-strategy none --so-pin SOPIN --user-pin USERPIN \
+            --admin-csr admin.csr --so-username secofficer --so-csr so.csr
   QRDB_SO_PIN=... QRDB_USER_PIN=... qrdb init --barrier-strategy none --admin-generate`,
 		Args: cobra.NoArgs,
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
@@ -211,9 +223,17 @@ func registerInitFlags(cmd *cobra.Command, f *initFlags) {
 	cmd.Flags().StringVar(&f.adminCert, "admin-cert", "",
 		"Path to a PEM-encoded certificate the admin already holds (bring-your-own-certificate path; nothing is issued). Mutually exclusive with --admin-csr. Requires --admin-cert-pool unless the certificate was issued by this deployment's own CA.")
 	cmd.Flags().StringVar(&f.adminCertPool, "admin-cert-pool", "",
-		"Path to a PEM-encoded trust anchor bundle --admin-cert must chain to. Only used with --admin-cert.")
+		"Path to a PEM-encoded trust anchor bundle --admin-cert and --so-cert must chain to. Only used with --admin-cert or --so-cert.")
 	cmd.Flags().BoolVar(&f.adminGenerate, "admin-generate", false,
 		"Generate the bootstrap admin's key pair and certificate in-process, returning the private key exactly once. Mutually exclusive with --admin-csr/--admin-cert. NOT suitable for production (dev/test/evaluation ONLY). Exactly one of --admin-csr, --admin-cert or --admin-generate is required.")
+	cmd.Flags().StringVar(&f.soUsername, "so-username", "",
+		"Username of the system tenant's Security Officer, enrolled at first boot with only the so role; its PIN is --so-pin. Needs exactly one of --so-csr and --so-cert. Required when the server runs separation of duties strict.")
+	cmd.Flags().StringVar(&f.soCSR, "so-csr", "",
+		"Path to a PEM-encoded CSR for the system SO's certificate, signed under the system tenant. Its key must not be the admin's. Mutually exclusive with --so-cert.")
+	cmd.Flags().StringVar(&f.soCert, "so-cert", "",
+		"Path to a PEM-encoded certificate the system SO already holds, naming the system tenant; verified against --admin-cert-pool or this deployment's own CA. Mutually exclusive with --so-csr.")
+	cmd.Flags().StringVar(&f.soChain, "so-chain", "",
+		"Path to PEM-encoded intermediates for --so-cert. Only used with --so-cert.")
 }
 
 // resolveAndValidateInitFlags resolves env-var fallbacks via viper and
@@ -233,6 +253,7 @@ func resolveAndValidateInitFlags(cmd *cobra.Command, f *initFlags, envPrefix str
 		"threshold":        "THRESHOLD",
 		"hostname":         "HOSTNAME",
 		"sans":             "SANS",
+		"so-username":      "SO_USERNAME",
 	}
 	for flagName, envKey := range bindings {
 		_ = v.BindEnv(flagName, envPrefix+"_"+envKey)
@@ -302,14 +323,39 @@ func resolveAndValidateInitFlags(cmd *cobra.Command, f *initFlags, envPrefix str
 			Reason: "required: there is no credential-less default admin credential path; pass --admin-generate for the dev/test/evaluation ONLY path",
 		}
 	}
-	if f.adminCertPool != "" && f.adminCert == "" {
-		return &InvalidArgError{Arg: "--admin-cert-pool", Reason: "only valid with --admin-cert"}
+	// The pool is what a presented certificate is verified against: the
+	// admin's (--admin-cert), the SO's (--so-cert), or both.
+	if f.adminCertPool != "" && f.adminCert == "" && f.soCert == "" {
+		return &InvalidArgError{Arg: "--admin-cert-pool", Reason: "only valid with --admin-cert or --so-cert"}
+	}
+	if err := validateSOFlags(f); err != nil {
+		return err
 	}
 	if f.officersFile != "" && (len(f.officers) > 0 || len(f.custodians) > 0) {
 		return &InvalidArgError{
 			Arg:    "--officers-file",
 			Reason: "mutually exclusive with --officers/--custodians: name every holder one way or the other, not both",
 		}
+	}
+	return nil
+}
+
+// validateSOFlags checks the system SO flags (go-qrdb#1128): none at all,
+// or --so-username with exactly one of --so-csr and --so-cert, and
+// --so-chain only beside --so-cert.
+func validateSOFlags(f *initFlags) error {
+	if f.soUsername == "" && f.soCSR == "" && f.soCert == "" && f.soChain == "" {
+		return nil
+	}
+	switch {
+	case f.soCSR != "" && f.soCert != "":
+		return &InvalidArgError{Arg: "--so-csr/--so-cert", Reason: "mutually exclusive: supply exactly one system SO credential"}
+	case f.soChain != "" && f.soCert == "":
+		return &InvalidArgError{Arg: "--so-chain", Reason: "only valid with --so-cert"}
+	case f.soUsername == "":
+		return &MissingArgError{Arg: "--so-username (required with --so-csr/--so-cert)"}
+	case f.soCSR == "" && f.soCert == "":
+		return &MissingArgError{Arg: "--so-csr or --so-cert (required with --so-username)"}
 	}
 	return nil
 }
@@ -423,13 +469,6 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 			return &FileReadError{Path: f.adminCert, Err: rerr}
 		}
 		req.AdminCertPEM = string(pem)
-		if f.adminCertPool != "" {
-			poolPEM, perr := os.ReadFile(f.adminCertPool)
-			if perr != nil {
-				return &FileReadError{Path: f.adminCertPool, Err: perr}
-			}
-			req.AdminCertPoolPEM = string(poolPEM)
-		}
 	case f.adminGenerate:
 		req.AdminGenerate = true
 		// This warning is operator-facing prose, not part of the command's
@@ -442,6 +481,18 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 			"the bootstrap admin's key pair and return the private key below, exactly once. This path is for "+
 			"dev/test/evaluation ONLY and does NOT meet FedRAMP, HIPAA or PCI DSS: use --admin-csr (a hardware- or "+
 			"software-generated key you keep) or --admin-cert (a certificate you already hold) for production.")
+	}
+	// Read whatever the admin is credentialed with: --so-cert is verified
+	// against the same pool, and may be the only certificate presented.
+	if f.adminCertPool != "" {
+		poolPEM, perr := os.ReadFile(f.adminCertPool)
+		if perr != nil {
+			return &FileReadError{Path: f.adminCertPool, Err: perr}
+		}
+		req.AdminCertPoolPEM = string(poolPEM)
+	}
+	if err := readSOFlags(f, req); err != nil {
+		return err
 	}
 
 	resp, err := client.Ceremony().CeremonyInitialize(cmd.Context(), req)
@@ -468,10 +519,32 @@ func runInit(cmd *cobra.Command, f *initFlags) error {
 		if resp.AdminCertPEM != "" {
 			_, _ = fmt.Fprintf(outputWriter, "AdminCertPEM (source=%s):\n%s\n", resp.AdminCredentialSource, resp.AdminCertPEM)
 		}
+		if resp.SOCertPEM != "" {
+			_, _ = fmt.Fprintf(outputWriter, "SOCertPEM (%s):\n%s\n", f.soUsername, resp.SOCertPEM)
+		}
 		if len(resp.AdminKeyPEM) != 0 {
 			_, _ = fmt.Fprintln(outputWriter, "AdminKeyPEM (returned exactly once -- save it now, it cannot be retrieved again):")
 			_, _ = fmt.Fprintln(outputWriter, string(resp.AdminKeyPEM))
 		}
 		return nil
 	}
+}
+
+// readSOFlags reads the system SO's credential files into req.
+func readSOFlags(f *initFlags, req *transport.CeremonyInitializeRequest) error {
+	req.SOUsername = f.soUsername
+	for _, in := range []struct {
+		path string
+		dst  *string
+	}{{f.soCSR, &req.SOCSRPEM}, {f.soCert, &req.SOCertPEM}, {f.soChain, &req.SOChainPEM}} {
+		if in.path == "" {
+			continue
+		}
+		pem, err := os.ReadFile(in.path)
+		if err != nil {
+			return &FileReadError{Path: in.path, Err: err}
+		}
+		*in.dst = string(pem)
+	}
+	return nil
 }

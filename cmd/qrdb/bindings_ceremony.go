@@ -57,6 +57,7 @@ type CeremonyInitializeResult struct {
 	AdminCertPEM          string                      `json:"adminCertPem,omitempty"`
 	AdminKeyPath          string                      `json:"adminKeyPath,omitempty"`
 	AdminCredentialSource string                      `json:"adminCredentialSource,omitempty"`
+	SOCertPEM             string                      `json:"soCertPem,omitempty"`
 }
 
 // CeremonyBinding exposes the initialization ceremony -- `qrdb init`'s
@@ -141,6 +142,7 @@ func (b *CeremonyBinding) Initialize(req *transport.CeremonyInitializeRequest) (
 		ShareCount:            resp.ShareCount,
 		AdminCertPEM:          resp.AdminCertPEM,
 		AdminCredentialSource: resp.AdminCredentialSource,
+		SOCertPEM:             resp.SOCertPEM,
 	}
 	for _, h := range resp.Holders {
 		result.Holders = append(result.Holders, CeremonyHolderCertificate{Username: h.Username, Role: h.Role, CertPEM: h.CertPEM})

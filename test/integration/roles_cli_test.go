@@ -693,8 +693,12 @@ func testRolesTenantAdminSOGrantRefusedOverProtocol(t *testing.T, node *multiPro
 	if err == nil {
 		t.Fatalf("[%s] tenant Admin granted itself the SO role %s: %s", proto.name, soID, out)
 	}
+	// Granting so to the Admin itself would leave it holding so and admin,
+	// which strict separation refuses as a conflict before it asks whether
+	// the caller is an SO (go-qrdb#1128).
 	lower := strings.ToLower(out)
-	if !strings.Contains(lower, "so role required") &&
+	if !strings.Contains(lower, "separation of duties") &&
+		!strings.Contains(lower, "so role required") &&
 		!strings.Contains(lower, "permission denied") &&
 		!strings.Contains(lower, "forbidden") {
 		t.Fatalf("[%s] SO grant by the tenant Admin must be refused as a permission denial, got: %s", proto.name, out)

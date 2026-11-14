@@ -57,10 +57,18 @@ func (s *memPendingAdminCertStore) Get(_ context.Context, key string) ([]byte, e
 	defer s.mu.Unlock()
 	v, ok := s.data[key]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, &keyNotFoundError{key: key}
 	}
 	return v, nil
 }
+
+// keyNotFoundError is the absence shape of service.KVService's Get
+// (*service.KeyNotFoundError): what the replicated store answers for a
+// missing key.
+type keyNotFoundError struct{ key string }
+
+func (e *keyNotFoundError) Error() string       { return "key not found: " + e.key }
+func (e *keyNotFoundError) KeyNotFound() string { return e.key }
 
 func (s *memPendingAdminCertStore) Put(_ context.Context, key string, value []byte) error {
 	s.mu.Lock()

@@ -1061,7 +1061,7 @@ func TestUserTools_Registration(t *testing.T) {
 
 func TestRoleCreateTool_Success(t *testing.T) {
 	svc := &mockRoleService{}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"name":        "editor",
@@ -1099,7 +1099,7 @@ func TestRoleCreateTool_WithTenantID(t *testing.T) {
 			}, nil
 		},
 	}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"name":        "viewer",
@@ -1119,7 +1119,7 @@ func TestRoleCreateTool_WithTenantID(t *testing.T) {
 
 func TestRoleCreateTool_MissingName(t *testing.T) {
 	svc := &mockRoleService{}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"permissions": "kv:put",
@@ -1134,7 +1134,7 @@ func TestRoleCreateTool_MissingName(t *testing.T) {
 
 func TestRoleCreateTool_MissingPermissions(t *testing.T) {
 	svc := &mockRoleService{}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"name": "editor",
@@ -1149,7 +1149,7 @@ func TestRoleCreateTool_MissingPermissions(t *testing.T) {
 
 func TestRoleCreateTool_InvalidPermissionFormat(t *testing.T) {
 	svc := &mockRoleService{}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	result, err := handler(context.Background(), makeReq(map[string]any{
 		"name":        "editor",
@@ -1169,7 +1169,7 @@ func TestRoleCreateTool_DuplicateName(t *testing.T) {
 			return nil, &duplicateRoleError{Name: "admin"}
 		},
 	}
-	handler := handleRoleCreate(svc)
+	handler := handleRoleCreate(svc, nil)
 
 	_, err := handler(context.Background(), makeReq(map[string]any{
 		"name":        "admin",

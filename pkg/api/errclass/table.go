@@ -1065,10 +1065,11 @@ var onboardingRules = []rule{
 	as(&bootstrap.InvalidTrustAnchorsError{}, InvalidArgument),
 	// A tenant SO named in part, with two credentials, or as the admin by
 	// name or by key is the request's fault.
-	as(&bootstrap.IncompleteTenantSOError{}, InvalidArgument),
-	as(&bootstrap.ConflictingSOCredentialError{}, InvalidArgument),
-	as(&bootstrap.SOMatchesAdminError{}, InvalidArgument),
+	as(&firstboot.IncompleteSOError{}, InvalidArgument),
+	as(&firstboot.ConflictingSOCredentialError{}, InvalidArgument),
+	as(&firstboot.SOMatchesAdminError{}, InvalidArgument),
 	as(&bootstrap.SOPartlyMatchesAdminError{}, InvalidArgument),
+	// A strict tenant named with no SO at all is the request's fault too.
 	as(&bootstrap.MissingProvisioningSeamError{}, Unimplemented),
 	// Invitation self-enrolment. A token that cannot be redeemed is a bad
 	// credential presented by an unauthenticated caller, whatever the reason.
@@ -1441,6 +1442,8 @@ var ceremonyRules = []rule{
 	// input, an expired window, or a chain that does not validate. The
 	// caller's request is what is wrong, not this node.
 	as(&ceremony.AdminCredentialRejectedError{Cause: errors.New("sample")}, InvalidArgument),
+	// The system SO's inputs are malformed, conflict, or name the admin.
+	as(&ceremony.SystemSORejectedError{Cause: errors.New("sample")}, InvalidArgument),
 	// The ceremony CA itself refused to sign (or the in-process generate
 	// path failed before reaching it): a server-side fault, not something
 	// the caller's request can fix by retrying unchanged.
