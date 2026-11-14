@@ -23,6 +23,8 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
 // A seal-enabled standalone node whose first database is pebble reports no
@@ -60,4 +62,62 @@ func TestStandaloneNode_SealedPebbleNodeRefusesAnObjstoreDatabase(t *testing.T) 
 		_, err = mgr.Get(dbCfg.Name)
 		require.Errorf(t, err, "the refused %s database is not served", dbCfg.Name)
 	}
+}
+
+// standaloneObjstoreManager builds an unsealed standalone node's database
+// manager with opts applied as the constructor applies them.
+func standaloneObjstoreManager(t *testing.T, sealed bool, opts ...NodeOption) *database.Manager {
+	t.Helper()
+	var o nodeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	cfg := &qrdbconfig.Config{
+		Mode:      "standalone",
+		Seal:      qrdbconfig.SealConfig{Enabled: sealed},
+		Databases: []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendPebble)}},
+	}
+	n := &Node{logger: slog.New(slog.DiscardHandler), objectStorage: o.objectStorage}
+	dataDir := t.TempDir()
+	mgr := n.newStandaloneDatabaseManager(dataDir, cfg)
+	mgr.SetCatalog(databasetest.Catalog(dataDir))
+	t.Cleanup(func() { _ = mgr.Close() })
+	return mgr
+}
+
+// fakeObjectStorage is a database.ObjectStorageOpener over an in-memory store
+// that records the databases it opened.
+type fakeObjectStorage struct{ opened []string }
+
+func (f *fakeObjectStorage) open(cfg database.DatabaseConfig) (storage.Storage, error) {
+	f.opened = append(f.opened, cfg.Name)
+	return memory.NewStorage(), nil
+}
+
+func TestStandaloneNode_WithObjectStorageOpensAnObjstoreDatabase(t *testing.T) {
+	fake := &fakeObjectStorage{}
+	mgr := standaloneObjstoreManager(t, false, WithObjectStorage(fake.open))
+	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
+	require.NoError(t, err)
+	require.Equal(t, []string{"blobs"}, fake.opened, "the node's opener opened the database")
+	_, err = mgr.Get("blobs")
+	require.NoError(t, err, "the objstore database is served")
+}
+
+func TestStandaloneNode_WithoutObjectStorageRefusesAnObjstoreDatabase(t *testing.T) {
+	mgr := standaloneObjstoreManager(t, false)
+	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
+	var notWired *database.ObjectStorageNotWiredError
+	require.ErrorAsf(t, err, &notWired, "Create(blobs) = %v, want *database.ObjectStorageNotWiredError", err)
+	_, err = mgr.Get("blobs")
+	require.Error(t, err, "the refused objstore database is not served")
+}
+
+func TestStandaloneNode_SealedNodeWithObjectStorageStillRefuses(t *testing.T) {
+	fake := &fakeObjectStorage{}
+	mgr := standaloneObjstoreManager(t, true, WithObjectStorage(fake.open))
+	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
+	var sealed *database.SealedNodeBackendError
+	require.ErrorAsf(t, err, &sealed, "Create(blobs) = %v, want *database.SealedNodeBackendError", err)
+	require.Empty(t, fake.opened, "a sealed node never reaches the opener")
 }
