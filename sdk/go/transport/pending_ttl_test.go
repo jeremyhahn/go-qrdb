@@ -16,6 +16,7 @@ package transport
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,13 @@ func TestCreateUserRequest_PendingTTLDuration(t *testing.T) {
 	}
 	if _, err := (&CreateUserRequest{PendingTTL: "soon"}).PendingTTLDuration(); err == nil {
 		t.Fatal("an invalid duration parsed")
+	}
+	for _, neg := range []string{"-500ms", "-1ns", "-1h"} {
+		d, err := (&CreateUserRequest{PendingTTL: neg}).PendingTTLDuration()
+		var nerr *NegativePendingTTLError
+		if !errors.As(err, &nerr) || d != 0 {
+			t.Fatalf("%s = %v, %v; want 0 and NegativePendingTTLError", neg, d, err)
+		}
 	}
 }
 

@@ -190,11 +190,31 @@ type CreateUserRequest struct {
 }
 
 // PendingTTLDuration parses PendingTTL. An empty string is zero (no expiry).
+// A negative duration is refused with *NegativePendingTTLError here, before
+// any transport converts it: the gRPC and unix wires carry whole seconds, and
+// a negative sub-second value ("-500ms") would otherwise truncate to 0 and
+// create an account that never expires.
 func (r *CreateUserRequest) PendingTTLDuration() (time.Duration, error) {
 	if r == nil || r.PendingTTL == "" {
 		return 0, nil
 	}
-	return time.ParseDuration(r.PendingTTL)
+	d, err := time.ParseDuration(r.PendingTTL)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, &NegativePendingTTLError{Value: r.PendingTTL}
+	}
+	return d, nil
+}
+
+// NegativePendingTTLError reports a CreateUserRequest.PendingTTL below zero.
+type NegativePendingTTLError struct {
+	Value string
+}
+
+func (e *NegativePendingTTLError) Error() string {
+	return "pending_ttl " + strconv.Quote(e.Value) + " is negative"
 }
 
 // UpdateUserRequest holds parameters for updating a user.
