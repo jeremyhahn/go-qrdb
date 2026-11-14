@@ -34,6 +34,23 @@ func lockFile(f *os.File) error {
 	}
 }
 
+// tryLockFile takes flock(2) LOCK_EX|LOCK_NB on f, reporting false rather
+// than waiting when another open file holds the lock.
+func tryLockFile(f *os.File) (bool, error) {
+	var err error = unix.EINTR
+	for err == unix.EINTR {
+		err = unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB) // #nosec G115 -- a descriptor number fits in int
+	}
+	switch err {
+	case nil:
+		return true, nil
+	case unix.EWOULDBLOCK:
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
 // unlockFile releases the flock(2) lock on f.
 func unlockFile(f *os.File) error {
 	for {

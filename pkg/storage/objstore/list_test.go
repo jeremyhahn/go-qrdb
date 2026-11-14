@@ -195,3 +195,66 @@ func TestNew_RefusesAJournalInTheDataTree(t *testing.T) {
 	assert.Equal(t, "local", inTree.Provider)
 	assert.Contains(t, err.Error(), journalName)
 }
+
+// TestNew_RefusesAJournalInThePrefixedNamespace checks the in-tree journal
+// refusal also runs inside an object prefix: a legacy journal under the
+// database's namespace refuses the prefixed open.
+func TestNew_RefusesAJournalInThePrefixedNamespace(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "ns"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "ns", journalName), encodeJournal(nil), 0o600))
+
+	e, err := New("local", map[string]string{"path": dir}, WithObjectPrefix("ns/"))
+	require.Nil(t, e)
+	var inTree *InTreeJournalError
+	require.ErrorAs(t, err, &inTree)
+	assert.Equal(t, "local", inTree.Provider)
+	assert.Contains(t, err.Error(), journalName)
+}
+
+// TestDestroy_ReclaimsEveryObjectInTheNamespace checks Destroy deletes the
+// records, format marker and journal beneath its prefix, so an engine
+// reopened on the prefix finds none of them, while a sibling namespace keeps
+// its objects.
+func TestDestroy_ReclaimsEveryObjectInTheNamespace(t *testing.T) {
+	dir := t.TempDir()
+	settings := map[string]string{"path": dir}
+	sibling, err := New("local", settings, WithObjectPrefix("other/"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sibling.Close() })
+	require.NoError(t, sibling.Set([]byte("k"), []byte("kept")))
+
+	e, err := New("local", settings, WithObjectPrefix("ns/"))
+	require.NoError(t, err)
+	require.NoError(t, e.Set([]byte("k"), []byte("v")))
+	require.NoError(t, e.writeJournal(encodeJournal(nil)))
+	require.NoError(t, e.Destroy())
+	listed, err := e.store.List("")
+	require.NoError(t, err)
+	assert.Empty(t, listed, "no record or format marker may survive")
+	journaled, err := e.journal.List("")
+	require.NoError(t, err)
+	assert.Empty(t, journaled, "no journal may survive")
+	_, err = e.Get([]byte("k"))
+	var closed *storage.ClosedError
+	assert.ErrorAs(t, err, &closed)
+
+	reopened, err := New("local", settings, WithObjectPrefix("ns/"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopened.Close() })
+	got, err := reopened.Get([]byte("k"))
+	require.NoError(t, err)
+	assert.Nil(t, got, "a destroyed key must not resurrect")
+	got, err = sibling.Get([]byte("k"))
+	require.NoError(t, err)
+	assert.Equal(t, "kept", string(got))
+}
+
+// TestDestroy_DeleteFaultFails checks a Destroy that cannot delete an object
+// reports it rather than succeeding.
+func TestDestroy_DeleteFaultFails(t *testing.T) {
+	e, fs := newFaultEngine(t)
+	require.NoError(t, e.Set([]byte("k"), []byte("v")))
+	fs.deleteFails = true
+	assert.ErrorIs(t, e.Destroy(), errProvider)
+}

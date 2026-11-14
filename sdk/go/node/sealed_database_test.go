@@ -17,10 +17,13 @@ package node
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -65,6 +68,65 @@ func TestStandaloneNode_NamedDatabasesResolve(t *testing.T) {
 	unknown, err := n.Client().DatabaseScoped("nosuchdb")
 	require.NoError(t, err, "scoping resolves per call; the refusal comes at the call")
 	require.Error(t, unknown.KV().Put(ctx, "k", []byte("v")), "an unknown database accepted a write")
+}
+
+// TestStandaloneNode_ObjstoreDatabaseServes checks a standalone node creates
+// and serves a backend: objstore database end to end: the database opens on
+// the node's storage.objstore provider, a scoped write reads back, its
+// objects are on that provider, and the node's default database does not see
+// the key.
+func TestStandaloneNode_ObjstoreDatabaseServes(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "bucket")
+	cfg := newTenantIsolationConfig(t)
+	cfg.Storage.Objstore = qrdbconfig.ObjstoreConfig{Provider: "local", Settings: map[string]string{"path": root}}
+	n, err := NewStandaloneNode(ctx, cfg, nil, WithTenantIsolation())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = n.Close() })
+	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
+
+	_, err = n.Client().Database().CreateDatabase(ctx, transport.CreateDatabaseRequest{
+		Name: "blobs", Backend: string(database.BackendObjstore),
+	})
+	require.NoError(t, err, "a standalone node refused a backend: objstore database")
+
+	// The create already writes the engine's format marker, so a file under
+	// root proves nothing about the write: the Put must add one.
+	objects := func() map[string]bool {
+		t.Helper()
+		found := map[string]bool{}
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.Type().IsRegular() {
+				found[path] = true
+			}
+			return nil
+		})
+		require.NoError(t, walkErr, "the node's object-storage path holds nothing")
+		return found
+	}
+	before := objects()
+	require.NotEmpty(t, before, "the create wrote nothing to the node's object-storage provider")
+
+	blobs, err := n.Client().DatabaseScoped("blobs")
+	require.NoError(t, err)
+	require.NoError(t, blobs.KV().Put(ctx, "k", []byte("v")))
+	got, err := blobs.KV().Get(ctx, "k")
+	require.NoError(t, err)
+	require.Equal(t, "v", string(got))
+
+	var added []string
+	for path := range objects() {
+		if !before[path] {
+			added = append(added, path)
+		}
+	}
+	require.NotEmpty(t, added, "the write did not reach the node's object-storage provider")
+
+	_, err = n.Client().KV().Get(ctx, "k")
+	require.Error(t, err, "a write to the objstore database landed in the node's default database")
 }
 
 // The embedded leg of the sealed-database refusal the network transports are

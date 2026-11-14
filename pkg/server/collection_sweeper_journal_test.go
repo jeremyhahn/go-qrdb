@@ -196,6 +196,8 @@ func TestServesFromNodeLocalStore(t *testing.T) {
 		"barrier disabled":              {database.DatabaseConfig{DataDir: "/d", Barrier: &database.DatabaseBarrierConfig{}}, false},
 		"shared store":                  {database.DatabaseConfig{Barrier: enabled}, false},
 		"raft backed":                   {database.DatabaseConfig{Backend: database.BackendRaft, Barrier: enabled}, false},
+		"objstore backed":               {database.DatabaseConfig{Backend: database.BackendObjstore}, true},
+		"objstore backed with barrier":  {database.DatabaseConfig{Backend: database.BackendObjstore, Barrier: enabled}, true},
 	}
 	for name, tc := range cases {
 		if got := servesFromNodeLocalStore(&tc.cfg); got != tc.want {

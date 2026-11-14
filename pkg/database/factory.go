@@ -16,6 +16,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -38,20 +39,114 @@ type BackendFactory interface {
 
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
-type EmbeddedBackendFactory struct{}
+type EmbeddedBackendFactory struct {
+	objstoreOpener ObjstoreOpener
+	raftMode       bool
+}
+
+// ObjstoreOpener opens the objstore engine of tenantID's database name, whose
+// own directory is dataDir. tenantID is empty for a database no tenant owns.
+// The node supplies the opener, because only the node holds the
+// object-storage provider configuration and its credential files.
+//
+// The database's objects outlive its directory, so the opener also returns
+// the ObjstoreReclaim that deletes them; an opener that returns none fails the
+// open, because such a database could never be dropped.
+type ObjstoreOpener func(tenantID, name, dataDir string) (storage.Storage, ObjstoreReclaim, error)
+
+// ObjstoreReclaim deletes every object an objstore database holds in its
+// namespace: records, format marker and commit journal. Drop calls it after
+// the database is closed and before it reports the drop, so a database
+// recreated in the namespace finds none of the old keys. It must succeed on
+// a namespace already partly or wholly reclaimed, because a failed drop is
+// retried.
+type ObjstoreReclaim func() error
+
+// storeReclaimer is a Backend whose data lives outside its database
+// directory. Drop calls ReclaimStore to delete that data, and fails when it
+// cannot.
+type storeReclaimer interface {
+	ReclaimStore() error
+}
+
+// objstoreBackend is the Backend of an objstore database: a StandaloneBackend
+// that carries the reclaim of its objects.
+type objstoreBackend struct {
+	*StandaloneBackend
+	reclaim ObjstoreReclaim
+}
+
+// ReclaimStore deletes the database's objects.
+func (b *objstoreBackend) ReclaimStore() error {
+	return b.reclaim()
+}
+
+// EmbeddedBackendOption configures an EmbeddedBackendFactory.
+type EmbeddedBackendOption func(*EmbeddedBackendFactory)
+
+// WithObjstoreOpener sets the opener a backend: objstore database is opened
+// through. Without one such a database is refused with
+// ObjstoreNotConfiguredError.
+func WithObjstoreOpener(open ObjstoreOpener) EmbeddedBackendOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objstoreOpener = open
+	}
+}
+
+// WithRaftMode marks the factory as the one of a Raft-mode node, whose
+// databases are Raft state machines. Such a factory refuses a backend:
+// objstore database with ObjstoreRaftModeError, because an object store
+// cannot be a state machine's hot apply path.
+func WithRaftMode() EmbeddedBackendOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.raftMode = true
+	}
+}
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
-func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
-	return &EmbeddedBackendFactory{}
+func NewEmbeddedBackendFactory(opts ...EmbeddedBackendOption) *EmbeddedBackendFactory {
+	f := &EmbeddedBackendFactory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
+	if f.raftMode && cfg.Backend == BackendObjstore {
+		return nil, &ObjstoreRaftModeError{Name: cfg.Name}
+	}
+	if cfg.Backend == BackendObjstore {
+		return f.openObjstore(cfg.TenantID, cfg.Name, dataDir)
+	}
 	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
 	if err != nil {
 		return nil, err
 	}
 	return NewStandaloneBackend(store), nil
+}
+
+// errObjstoreNoReclaim fails the open of an objstore database whose opener
+// returned no reclaim: Drop could not delete its objects.
+var errObjstoreNoReclaim = errors.New("database: the objstore opener returned no reclaim for the database's objects")
+
+// openObjstore opens a backend: objstore database through the node's opener.
+// The Backend carries the opener's reclaim, which Drop calls to delete the
+// database's objects.
+func (f *EmbeddedBackendFactory) openObjstore(tenantID, name, dataDir string) (Backend, error) {
+	if f.objstoreOpener == nil {
+		return nil, &ObjstoreNotConfiguredError{Name: name}
+	}
+	store, reclaim, err := f.objstoreOpener(tenantID, name, dataDir)
+	if err != nil {
+		return nil, &StorageCreateError{Name: name, Backend: string(BackendObjstore), Err: err}
+	}
+	if reclaim == nil {
+		_ = store.Close()
+		return nil, &StorageCreateError{Name: name, Backend: string(BackendObjstore), Err: errObjstoreNoReclaim}
+	}
+	return &objstoreBackend{StandaloneBackend: NewStandaloneBackend(store), reclaim: reclaim}, nil
 }
 
 // Close is a no-op for the embedded factory.

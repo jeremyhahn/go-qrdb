@@ -19,6 +19,7 @@ import (
 	"io"
 	"testing"
 
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +45,7 @@ func TestCompareAndSwap_ProviderFaults(t *testing.T) {
 		t.Run(label+"/read fails", func(t *testing.T) {
 			e, fs := newFaultEngine(t)
 			require.NoError(t, e.Set(key, []byte("a")))
-			name, _ := objectName(key)
+			name, _ := objectName(key, objcommon.MaxKeyLength)
 			fs.getFails[name] = true
 			swapped, err := e.CompareAndSwap(ctx, key, []byte("a"), []byte("b"))
 			assert.ErrorIs(t, err, errProvider)

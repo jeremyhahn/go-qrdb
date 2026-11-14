@@ -92,8 +92,10 @@ func newFaultEngine(t *testing.T) (*Engine, *faultStore) {
 		readFails: map[string]bool{},
 		listFails: map[string]bool{},
 	}
-	e := &Engine{store: fs, journal: fs, provider: "memory"}
-	require.NoError(t, e.ensureFormatMarker())
+	// Built as New builds a "memory" engine: its store is private to it, so
+	// Exclusive holds (privateProviders).
+	e := &Engine{store: fs, journal: fs, provider: "memory", nameLimit: objcommon.MaxKeyLength, exclusive: true}
+	require.NoError(t, e.ensureFormatMarker(objcommon.MaxKeyLength))
 	return e, fs
 }
 
@@ -101,18 +103,18 @@ func TestEnsureFormatMarker_ProviderFaults(t *testing.T) {
 	t.Run("marker read fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		fs.getFails[formatMarkerName] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 	t.Run("marker body unreadable", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		fs.readFails[formatMarkerName] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 	t.Run("emptiness check fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		require.NoError(t, fs.Storage.Delete(formatMarkerName))
 		fs.listFails[""] = true
-		assert.ErrorIs(t, e.ensureFormatMarker(), errProvider)
+		assert.ErrorIs(t, e.ensureFormatMarker(objcommon.MaxKeyLength), errProvider)
 	})
 }
 
@@ -123,7 +125,7 @@ func TestGet_ProviderFaults(t *testing.T) {
 		t.Run(label, func(t *testing.T) {
 			e, fs := newFaultEngine(t)
 			require.NoError(t, e.Set(key, []byte("v")))
-			name, _ := objectName(key)
+			name, _ := objectName(key, objcommon.MaxKeyLength)
 
 			fs.getFails[name] = true
 			_, err := e.Get(key)
@@ -153,7 +155,7 @@ func TestScan_ProviderFaults(t *testing.T) {
 	t.Run("direct value read fails", func(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		require.NoError(t, e.Set([]byte("k"), []byte("v")))
-		name, _ := objectName([]byte("k"))
+		name, _ := objectName([]byte("k"), objcommon.MaxKeyLength)
 		fs.getFails[name] = true
 		_, err := e.scan(nil, true)
 		assert.ErrorIs(t, err, errProvider)
@@ -162,7 +164,7 @@ func TestScan_ProviderFaults(t *testing.T) {
 		e, fs := newFaultEngine(t)
 		key := patterned(directThreshold()+1, 11)
 		require.NoError(t, e.Set(key, []byte("v")))
-		name, _ := objectName(key)
+		name, _ := objectName(key, objcommon.MaxKeyLength)
 		fs.readFails[name] = true
 		_, err := e.List(nil)
 		assert.ErrorIs(t, err, errProvider)
@@ -178,9 +180,9 @@ func TestScan_ProviderFaults(t *testing.T) {
 		// Names that list but no longer resolve: the race between a listing
 		// and the read that follows it.
 		gone := patterned(directThreshold()+1, 12)
-		goneName, _ := objectName(gone)
+		goneName, _ := objectName(gone, objcommon.MaxKeyLength)
 		require.NoError(t, fs.Storage.Put(goneName, strings.NewReader("x")))
-		goneDirect, _ := objectName([]byte("gone"))
+		goneDirect, _ := objectName([]byte("gone"), objcommon.MaxKeyLength)
 		require.NoError(t, fs.Storage.Put(goneDirect, strings.NewReader("x")))
 		e.store = &vanishingStore{faultStore: fs, vanished: map[string]bool{goneName: true, goneDirect: true}}
 
@@ -218,7 +220,7 @@ func TestExistsAndDelete_ProviderFaults(t *testing.T) {
 }
 
 func TestIsHashedName_RefusesUppercaseDigest(t *testing.T) {
-	name, _ := objectName(patterned(directThreshold()+1, 13))
+	name, _ := objectName(patterned(directThreshold()+1, 13), objcommon.MaxKeyLength)
 	upper := name[:10] + strings.ToUpper(name[10:])
 	require.NotEqual(t, name, upper)
 	assert.False(t, isHashedName(upper))

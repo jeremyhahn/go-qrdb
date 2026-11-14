@@ -22,8 +22,9 @@ import (
 	"encoding/hex"
 	"io"
 	"math"
-
-	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
+	"slices"
+	"strconv"
+	"strings"
 )
 
 // Object naming. A storage key is arbitrary bytes, but a provider object name
@@ -38,8 +39,9 @@ import (
 //     the provider. The terminator keeps a leaf from ever sharing a name with
 //     the directory a longer key's segments need.
 //   - hashed: hashedPrefix + the lowercase hex SHA-256 of the key, used when
-//     the direct name would exceed objcommon.MaxKeyLength (keys longer than
-//     about 500 bytes). The object body is a record carrying the key itself,
+//     the direct name would exceed the store's naming limit, which its format
+//     marker records: objcommon.MaxKeyLength less the length of the object
+//     prefix the store was created under (keys longer than about 500 bytes). The object body is a record carrying the key itself,
 //     uvarint(len(key)) || key || value, and a read verifies the stored key.
 //
 // A name under either prefix that is not the canonical name of some key is
@@ -59,9 +61,69 @@ const (
 	// formatVersion is this build's object layout. Bump it, and
 	// FormatVersionMismatchError refuses every store written by the previous
 	// one. Version 1 is the unmarked layout that named each object with its
-	// key verbatim.
-	formatVersion = "2"
+	// key verbatim; version 2 did not record the naming limit. The marker's
+	// body is formatMarker's.
+	formatVersion = "3"
+
+	// nameLimitField opens the marker's second line, which records the
+	// naming limit the store's names were written to.
+	nameLimitField = "name-limit="
 )
+
+// formatMarker returns the format marker's body for a store whose object
+// names are at most limit bytes: formatVersion on its own line, then
+// nameLimitField and the limit in decimal, each line ending in a newline.
+// For limit 1022 that is "3\nname-limit=1022\n".
+func formatMarker(limit int) string {
+	return formatVersion + "\n" + nameLimitField + strconv.Itoa(limit) + "\n"
+}
+
+// parseFormatMarker returns the naming limit a format marker records, and
+// false for any body that is not exactly formatMarker of a positive limit.
+func parseFormatMarker(body string) (int, bool) {
+	field, ok := strings.CutPrefix(body, formatVersion+"\n"+nameLimitField)
+	if !ok {
+		return 0, false
+	}
+	digits, ok := strings.CutSuffix(field, "\n")
+	if !ok {
+		return 0, false
+	}
+	limit, err := strconv.Atoi(digits)
+	if err != nil || limit <= 0 || formatMarker(limit) != body {
+		return 0, false
+	}
+	return limit, true
+}
+
+// isRecordName reports whether name is a record name this engine writes: the
+// canonical direct name of some key under limit, or a hashed name.
+func isRecordName(name string, limit int) bool {
+	if _, ok := decodeDirectName(name, limit); ok {
+		return true
+	}
+	return isHashedName(name)
+}
+
+// outsideNestedNamespaces returns the names that do not lie beneath an
+// engine namespace nested inside this one: a directory holding a format
+// marker. Every name an engine writes has a non-hex letter in its first
+// segment, so no name of a nested engine is ever a record name of this one.
+func outsideNestedNamespaces(names []string) []string {
+	var nested []string
+	for _, name := range names {
+		if dir, ok := strings.CutSuffix(name, "/"+formatMarkerName); ok {
+			nested = append(nested, dir+"/")
+		}
+	}
+	var outside []string
+	for _, name := range names {
+		if !slices.ContainsFunc(nested, func(dir string) bool { return strings.HasPrefix(name, dir) }) {
+			outside = append(outside, name)
+		}
+	}
+	return outside
+}
 
 // hashedNameLen is the length of every hashed object name.
 const hashedNameLen = len(hashedPrefix) + 2*sha256.Size
@@ -75,8 +137,10 @@ func directNameLen(n int) int {
 
 // objectName returns the provider object name key is stored under, and
 // whether that name is the hashed form whose body is a key-carrying record.
-func objectName(key []byte) (string, bool) {
-	if directNameLen(len(key)) > objcommon.MaxKeyLength {
+// limit is the longest name the engine may write: the naming limit the
+// store's format marker records (see formatMarker).
+func objectName(key []byte, limit int) (string, bool) {
+	if directNameLen(len(key)) > limit {
 		sum := sha256.Sum256(key)
 		return hashedPrefix + hex.EncodeToString(sum[:]), true
 	}
@@ -87,10 +151,10 @@ func objectName(key []byte) (string, bool) {
 // directListPrefix returns the provider prefix every direct name of a key
 // beginning with prefix starts with, and false when no direct name can: a
 // prefix whose own encoding already exceeds the provider's name limit only
-// prefixes keys that are stored hashed.
-func directListPrefix(prefix []byte) (string, bool) {
+// prefixes keys that are stored hashed. limit is objectName's.
+func directListPrefix(prefix []byte, limit int) (string, bool) {
 	p := appendSegmentedHex([]byte(directPrefix), prefix)
-	if len(p) > objcommon.MaxKeyLength {
+	if len(p) > limit {
 		return "", false
 	}
 	return string(p), true
@@ -111,7 +175,7 @@ func appendSegmentedHex(dst, b []byte) []byte {
 
 // decodeDirectName returns the key a direct object name encodes, and false
 // for any name that is not exactly the direct name objectName gives a key.
-func decodeDirectName(name string) ([]byte, bool) {
+func decodeDirectName(name string, limit int) ([]byte, bool) {
 	if len(name) <= len(directPrefix)+1 || name[:len(directPrefix)] != directPrefix ||
 		name[len(name)-1] != leafTerminator {
 		return nil, false
@@ -132,7 +196,7 @@ func decodeDirectName(name string) ([]byte, bool) {
 	}
 	// Re-encoding rejects every non-canonical spelling: uppercase hex,
 	// misplaced separators, or a key long enough to be stored hashed.
-	if canonical, hashed := objectName(key); hashed || canonical != name {
+	if canonical, hashed := objectName(key, limit); hashed || canonical != name {
 		return nil, false
 	}
 	return key, true
@@ -163,7 +227,7 @@ func hashedRecord(key, value []byte) io.Reader {
 // the key it carries and, when withValue is set, its value. The key buffer
 // grows only as bytes actually arrive, so a corrupt length cannot force a
 // large allocation, and the key must hash to name.
-func readHashedRecord(name string, r io.Reader, withValue bool) ([]byte, []byte, error) {
+func readHashedRecord(name string, r io.Reader, withValue bool, limit int) ([]byte, []byte, error) {
 	src := &sourceErrReader{r: r}
 	br := bufio.NewReader(src)
 	n, err := binary.ReadUvarint(br)
@@ -182,7 +246,7 @@ func readHashedRecord(name string, r io.Reader, withValue bool) ([]byte, []byte,
 	}
 	// The name is the stored key's hash, so a record that does not hash to
 	// the name it was read from is misplaced or corrupt, never a usable key.
-	if canonical, hashed := objectName(key); !hashed || canonical != name {
+	if canonical, hashed := objectName(key, limit); !hashed || canonical != name {
 		return nil, nil, &KeyMismatchError{Name: name}
 	}
 	if !withValue {
