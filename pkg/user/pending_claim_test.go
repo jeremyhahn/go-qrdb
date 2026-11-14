@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,15 +228,18 @@ func TestPendingReaper_ReapErrorPaths(t *testing.T) {
 }
 
 // listFailUsers fails ListUsers, so a sweep fails before reaping anything.
+// The switch is atomic: the reaper's goroutine reads it while the test flips it.
 type listFailUsers struct {
 	UserServicer
 	PendingExpirer
-	err error
+	fail atomic.Bool
 }
 
+var errListFailed = errors.New("list failed")
+
 func (l *listFailUsers) ListUsers(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
-	if l.err != nil {
-		return nil, l.err
+	if l.fail.Load() {
+		return nil, errListFailed
 	}
 	return l.UserServicer.ListUsers(ctx, req)
 }
@@ -246,9 +250,12 @@ func TestPendingReaper_RunSurvivesFailuresAndStopsOnClose(t *testing.T) {
 	svc := newTestStore(t)
 	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
 	u := createPending(t, svc, "runner", "acme", time.Minute)
-	users := &listFailUsers{UserServicer: svc, PendingExpirer: svc.(PendingExpirer), err: errors.New("list failed")}
-	leader := false
-	r, err := NewPendingReaper(PendingReaperConfig{Users: users, Now: clock.Now, IsLeader: func() bool { return leader }})
+	users := &listFailUsers{UserServicer: svc, PendingExpirer: svc.(PendingExpirer)}
+	users.fail.Store(true)
+	// The reaper's goroutine reads these while the test flips them.
+	var leader, failTenants atomic.Bool
+	failTenants.Store(true)
+	r, err := NewPendingReaper(PendingReaperConfig{Users: users, Now: clock.Now, IsLeader: func() bool { return leader.Load() }})
 	if err != nil {
 		t.Fatalf("NewPendingReaper: %v", err)
 	}
@@ -256,10 +263,9 @@ func TestPendingReaper_RunSurvivesFailuresAndStopsOnClose(t *testing.T) {
 	ticks := make(chan time.Time)
 	listed := make(chan struct{}, 8)
 	tenantsErr := errors.New("tenant listing failed")
-	failTenants := true
 	tenants := func(context.Context) ([]string, error) {
 		defer func() { listed <- struct{}{} }()
-		if failTenants {
+		if failTenants.Load() {
 			return nil, tenantsErr
 		}
 		return []string{"acme"}, nil
@@ -273,13 +279,13 @@ func TestPendingReaper_RunSurvivesFailuresAndStopsOnClose(t *testing.T) {
 	// Off the leader: the tick is consumed and nothing is listed. The next
 	// unbuffered send only completes once Run is back in its select.
 	ticks <- time.Time{}
-	leader = true
+	leader.Store(true)
 	ticks <- time.Time{} // tenants fail
 	<-listed
-	failTenants = false
+	failTenants.Store(false)
 	ticks <- time.Time{} // the sweep fails on ListUsers
 	<-listed
-	users.err = nil
+	users.fail.Store(false)
 	ticks <- time.Time{} // the sweep succeeds
 	<-listed
 	close(ticks)
