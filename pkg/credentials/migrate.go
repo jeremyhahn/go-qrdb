@@ -609,7 +609,7 @@ func replicatedKey(name, suffix string) string {
 		return metaKey(name)
 	}
 	if n, ok := strings.CutPrefix(suffix, versionPrefix); ok {
-		if version, err := strconv.ParseUint(n, 10, 64); err == nil {
+		if version, ok := canonicalVersion(n); ok {
 			return versionKey(name, version)
 		}
 	}
@@ -633,7 +633,9 @@ func splitRecordKey(rest string, held map[string]struct{}, values map[string][]b
 		if i < 0 {
 			return rest, ""
 		}
-		if _, err := strconv.ParseUint(rest[i+len(versionPrefix):], 10, 64); err != nil {
+		// Only the exact decimal form the store wrote names a version:
+		// db#v01 is a credential of its own beside db's version 1.
+		if _, ok := canonicalVersion(rest[i+len(versionPrefix):]); !ok {
 			return rest, ""
 		}
 		base = rest[:i]
@@ -654,11 +656,22 @@ func splitRecordKey(rest string, held map[string]struct{}, values map[string][]b
 		return base, suffix
 	}
 	meta, ok := legacyMeta(values[base+metaSuffix])
-	n, _ := strconv.ParseUint(suffix[len(versionPrefix):], 10, 64)
+	n, _ := canonicalVersion(suffix[len(versionPrefix):])
 	if !ok || !slices.ContainsFunc(meta.History, func(e credentialMetaEntry) bool { return e.Version == n }) {
 		return rest, ""
 	}
 	return base, suffix
+}
+
+// canonicalVersion parses s as a version number only when s is exactly the
+// form strconv.FormatUint writes for it: no sign, no leading zero, no other
+// spelling of the same number.
+func canonicalVersion(s string) (uint64, bool) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || strconv.FormatUint(v, 10) != s {
+		return 0, false
+	}
+	return v, true
 }
 
 // legacyMeta decodes raw as a credential's metadata record. It is one only

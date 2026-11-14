@@ -733,6 +733,33 @@ func TestMigrateLegacy_NamesEndingInRecordSuffixesAreCredentials(t *testing.T) {
 	})
 }
 
+// TestMigrateLegacy_NonCanonicalVersionSuffixIsACredential: db#v01 beside a
+// rotated db whose version 1 is db#v1 is a credential of its own; only the
+// exact decimal form names a version, so neither original is folded into
+// the other.
+func TestMigrateLegacy_NonCanonicalVersionSuffixIsACredential(t *testing.T) {
+	ctx := context.Background()
+	legacy, shared := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	writeLegacy(t, legacy, "db", "v2", "v1", nil)
+	for _, name := range []string{"db#v01", "db#v+1"} {
+		require.NoError(t, legacy.Put(ctx, legacyCredentialPrefix+name, []byte("own-"+name)))
+	}
+	svc := newMigratingService(t, legacy)
+	require.NoError(t, svc.BindStore(ctx, shared))
+
+	conflicts, err := svc.ListMigrationConflicts(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, conflicts)
+	names, err := svc.ListCredentials(ctx)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"db", "db#v01", "db#v+1"}, names)
+	assert.Equal(t, "own-db#v01", retrieveString(t, svc, "db#v01"))
+	assert.Equal(t, "own-db#v+1", retrieveString(t, svc, "db#v+1"))
+	assert.Equal(t, "v2", retrieveString(t, svc, "db"))
+	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
+	assert.Empty(t, legacyKeys(t, legacy))
+}
+
 // TestMigrateLegacy_MetaWithTrailingDataIsACredential proves a legacy
 // "<name>#meta" value that only begins with a metadata document is migrated
 // as a credential under its full name, never as <name>'s metadata.
