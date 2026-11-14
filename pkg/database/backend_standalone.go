@@ -312,3 +312,23 @@ func (b *StandaloneBackend) Batch(_ context.Context, ops []BatchOp) error {
 func (b *StandaloneBackend) Close() error {
 	return b.store.Close()
 }
+
+// backendReclaimer is a Backend whose store may hold data outside the node's
+// data directory; a drop reclaims it (Manager.drop, step 2).
+type backendReclaimer interface {
+	Reclaim() error
+}
+
+// Reclaim deletes the data the store holds outside the node's data directory
+// when it keeps any there (storage.Reclaimer: the object-storage engine). A
+// store held wholly inside that directory has nothing to reclaim: the drop
+// that removes the directory removes its data.
+func (b *StandaloneBackend) Reclaim() error {
+	r, ok := b.store.(storage.Reclaimer)
+	if !ok {
+		return nil
+	}
+	b.writeMu.Lock()
+	defer b.writeMu.Unlock()
+	return r.Reclaim()
+}

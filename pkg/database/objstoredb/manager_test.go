@@ -16,6 +16,7 @@ package objstoredb_test
 
 import (
 	"context"
+	"io/fs"
 	"path/filepath"
 	"testing"
 
@@ -70,5 +71,66 @@ func TestManager_ObjstoreDatabaseReopensAfterRestart(t *testing.T) {
 	got, err := reopened.Backend().Get(ctx, []byte("k"))
 	if err != nil || string(got) != "v" {
 		t.Fatalf("Get(k) after restart = %q, %v; want \"v\"", got, err)
+	}
+}
+
+// objects lists the files the "local" provider holds under root.
+func objects(t *testing.T, root string) []string {
+	t.Helper()
+	var found []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			found = append(found, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return found
+}
+
+// A drop deletes the database's objects from its provider before it reports
+// the database dropped: none is left behind, and a database created again on
+// the same provider starts empty.
+func TestManager_DropReclaimsProviderObjects(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "objects")
+	cfg := localObjstore("blobs", root)
+	mgr := newManager(t, t.TempDir())
+
+	db, err := mgr.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, k := range []string{"a", "b", string(make([]byte, 400))} {
+		if err := db.Backend().Put(ctx, []byte("key-"+k), []byte("v")); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	if len(objects(t, root)) == 0 {
+		t.Fatal("no objects written to the provider")
+	}
+
+	if err := mgr.Drop(ctx, "blobs"); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if left := objects(t, root); len(left) != 0 {
+		t.Fatalf("Drop left provider objects: %v", left)
+	}
+	if left := objects(t, root+".journal"); len(left) != 0 {
+		t.Fatalf("Drop left journal objects: %v", left)
+	}
+
+	again, err := mgr.Create(cfg)
+	if err != nil {
+		t.Fatalf("Create after drop: %v", err)
+	}
+	keys, err := again.Backend().List(ctx, "")
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("List after re-create = %q, %v; want no keys", keys, err)
 	}
 }

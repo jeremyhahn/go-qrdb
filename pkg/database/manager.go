@@ -958,7 +958,17 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    so a database that was already closed (a retry of a drop that got
 	//    this far before failing or crashing) is correctly left alone rather
 	//    than closed twice.
+	//    A store whose data lives outside the node's data directory -- an
+	//    object-storage database's objects, with its provider -- is reclaimed
+	//    first, while it is still open: removing the directory in step 4
+	//    would leave every object behind. A failed reclaim keeps the record
+	//    fenced, so a retry reclaims what is left.
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
+		if r, ok := db.Backend().(backendReclaimer); ok {
+			if err := r.Reclaim(); err != nil {
+				return &DropError{Name: name, Err: err}
+			}
+		}
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
 		}

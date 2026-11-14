@@ -607,3 +607,42 @@ func (e *Engine) Close() error {
 	e.providersClosed = true
 	return closeStores(e.store, e.journal)
 }
+
+// Reclaim implements storage.Reclaimer: it deletes every object the engine's
+// dedicated store and journal hold -- each key, a pending commit journal, and
+// the layout mark last -- so no object outlives the database that owned it.
+// The store is dedicated to the engine (see New), so everything in it is the
+// engine's. It runs with every write excluded; the engine stays open, empty,
+// and the caller closes it. A failure leaves the rest in place for a retry.
+func (e *Engine) Reclaim() error {
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
+	e.journalMu.Lock()
+	defer e.journalMu.Unlock()
+	e.writeMu.Lock()
+	defer e.writeMu.Unlock()
+
+	names, err := e.store.List("")
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		if name == formatMarkerName {
+			continue
+		}
+		if err := e.store.Delete(name); err != nil && !notFound(err) {
+			return err
+		}
+	}
+	if err := e.journal.Delete(journalName); err != nil && !notFound(err) {
+		return err
+	}
+	e.journalPending.Store(false)
+	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
+		return err
+	}
+	return nil
+}
