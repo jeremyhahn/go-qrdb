@@ -152,8 +152,14 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	if err := firstboot.ClearPendingAdminCert(ctx, store); err != nil {
 		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
 	}
-	if err := firstboot.ClearPendingSystemSO(ctx, store); err != nil {
+	// Only an enrolled SO's record is consumed, as cmd/qrdbd/start.go does:
+	// a record written after the read above (or one this run could not
+	// enrol) stays pending, so the next first boot enrols that SO.
+	soPINCheck, _ := deps.SOPINs.(firstboot.SOPINChecker)
+	if cleared, err := firstboot.ClearPendingSystemSOIfEnrolled(ctx, store, users, soPINCheck); err != nil {
 		slog.Warn("node: failed to clear the pending system SO record", "error", err)
+	} else if !cleared {
+		slog.Warn("node: the pending system SO is not enrolled yet; keeping its record for the next first boot")
 	}
 	return result, nil
 }
