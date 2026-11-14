@@ -894,6 +894,12 @@ caller does not hold `so`) and `sdk.SORoleConflictError` (the write or the
 caller combines `so` with `admin`), both 403 / PermissionDenied. The
 resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
 FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
+setting `auth.separation_of_duties` is system-wide (every tenant shares the
+node's posture), read at first boot and at every start, and defaults to off
+(the standard posture) unless FIPS 140-3 mode forces it on. go-quicbaas is
+the embedder this seam serves: it reads the posture through
+`node.Node.StrictSeparation()` and matches the refusals as
+`sdk.SORoleRequiredError` and `sdk.SORoleConflictError`. The
 posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
 (`strict` or `standard`). When a start or first boot resolves a posture that
 differs from the record, or no posture is recorded, the record is written
