@@ -15,264 +15,184 @@
 package objstore
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"io"
-	"os"
-	"path/filepath"
-	"sync"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
-	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
+	objmemory "github.com/jeremyhahn/go-objstore/pkg/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 )
 
-// closeRecordingStore is go-objstore's local provider, unchanged, that counts
-// the calls to its Close. Close is forwarded, so the provider releases its
-// os.Root and lifecycle goroutine exactly as it does in production.
-type closeRecordingStore struct {
+// closingStore is a provider that holds a resource: it counts its Close
+// calls and records any Get made after one, the use of a released provider.
+// When held is set, the next Get signals entered and waits for release
+// before it reads.
+type closingStore struct {
 	objcommon.Storage
-	closes atomic.Int32
+	closes        atomic.Int32
+	usedAfterFree atomic.Bool
+	held          atomic.Bool
+	entered       chan struct{}
+	release       chan struct{}
 }
 
-func (s *closeRecordingStore) Close() {
-	s.closes.Add(1)
-	s.Storage.(interface{ Close() }).Close()
-}
-
-// errUseAfterClose is what a closed closeRecordingStore returns for every
-// object operation: an engine that touches a provider it has released fails.
-var errUseAfterClose = errors.New("close-recording provider used after Close")
-
-func (s *closeRecordingStore) open() error {
-	if s.closes.Load() > 0 {
-		return errUseAfterClose
+func newClosingStore() *closingStore {
+	return &closingStore{
+		Storage: objmemory.New(),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
 	}
+}
+
+func (c *closingStore) Get(name string) (io.ReadCloser, error) {
+	if c.held.CompareAndSwap(true, false) {
+		close(c.entered)
+		<-c.release
+	}
+	if c.closes.Load() > 0 {
+		c.usedAfterFree.Store(true)
+	}
+	return c.Storage.Get(name)
+}
+
+func (c *closingStore) Close() error {
+	c.closes.Add(1)
 	return nil
 }
 
-func (s *closeRecordingStore) Put(key string, data io.Reader) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.Put(key, data)
-}
-
-func (s *closeRecordingStore) PutWithContext(ctx context.Context, key string, data io.Reader) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.PutWithContext(ctx, key, data)
-}
-
-func (s *closeRecordingStore) PutWithMetadata(ctx context.Context, key string, data io.Reader, metadata *objcommon.Metadata) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.PutWithMetadata(ctx, key, data, metadata)
-}
-
-func (s *closeRecordingStore) Get(key string) (io.ReadCloser, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.Get(key)
-}
-
-func (s *closeRecordingStore) GetWithContext(ctx context.Context, key string) (io.ReadCloser, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.GetWithContext(ctx, key)
-}
-
-func (s *closeRecordingStore) GetMetadata(ctx context.Context, key string) (*objcommon.Metadata, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.GetMetadata(ctx, key)
-}
-
-func (s *closeRecordingStore) UpdateMetadata(ctx context.Context, key string, metadata *objcommon.Metadata) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.UpdateMetadata(ctx, key, metadata)
-}
-
-func (s *closeRecordingStore) Delete(key string) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.Delete(key)
-}
-
-func (s *closeRecordingStore) DeleteWithContext(ctx context.Context, key string) error {
-	if err := s.open(); err != nil {
-		return err
-	}
-	return s.Storage.DeleteWithContext(ctx, key)
-}
-
-func (s *closeRecordingStore) Exists(ctx context.Context, key string) (bool, error) {
-	if err := s.open(); err != nil {
-		return false, err
-	}
-	return s.Storage.Exists(ctx, key)
-}
-
-func (s *closeRecordingStore) List(prefix string) ([]string, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.List(prefix)
-}
-
-func (s *closeRecordingStore) ListWithContext(ctx context.Context, prefix string) ([]string, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.ListWithContext(ctx, prefix)
-}
-
-func (s *closeRecordingStore) ListWithOptions(ctx context.Context, opts *objcommon.ListOptions) (*objcommon.ListResult, error) {
-	if err := s.open(); err != nil {
-		return nil, err
-	}
-	return s.Storage.ListWithOptions(ctx, opts)
-}
-
-// closeRecorder records every provider a registered provider name creates.
-type closeRecorder struct {
-	name    string
-	mu      sync.Mutex
-	created []*closeRecordingStore
-}
-
-var closeRecorders atomic.Int32
-
-// newCloseRecorder registers a provider that opens go-objstore's local
-// provider and walks its root as "local" does (walkedRoots), so New opens
-// a separate data and journal provider for it, as it does for "local".
-func newCloseRecorder(t *testing.T) *closeRecorder {
+// newClosingEngine builds an engine over one closingStore, as New builds a
+// "memory" engine, holding the key "k".
+func newClosingEngine(t *testing.T) (*Engine, *closingStore) {
 	t.Helper()
-	r := &closeRecorder{name: fmt.Sprintf("close-recording-%d", closeRecorders.Add(1))}
-	require.NoError(t, RegisterProvider(r.name, ProviderCredentials{}, func(settings map[string]string, creds objcommon.Credentials) (objcommon.Storage, error) {
-		inner, err := objfactory.NewStorage("local", settings, creds)
-		if err != nil {
+	cs := newClosingStore()
+	e := &Engine{store: cs, journal: cs, provider: "memory"}
+	require.NoError(t, e.ensureFormatMarker())
+	require.NoError(t, e.Set([]byte("k"), []byte("v")))
+	return e, cs
+}
+
+func TestClose_WaitsForAReadInFlightBeforeReleasingTheProvider(t *testing.T) {
+	e, cs := newClosingEngine(t)
+	cs.held.Store(true)
+
+	type result struct {
+		value []byte
+		err   error
+	}
+	read := make(chan result, 1)
+	go func() {
+		v, err := e.Get([]byte("k"))
+		read <- result{v, err}
+	}()
+	<-cs.entered // the read is inside the provider
+
+	closed := make(chan error, 1)
+	go func() { closed <- e.Close() }()
+	for !e.closed.Load() {
+		runtime.Gosched()
+	}
+
+	// Close has begun: a new call is refused, and the provider the read is
+	// using is not released under it.
+	_, err := e.Get([]byte("k"))
+	var closedErr *storage.ClosedError
+	require.ErrorAs(t, err, &closedErr)
+	assert.Zero(t, cs.closes.Load(), "Close released the provider under a read in flight")
+
+	close(cs.release)
+	r := <-read
+	require.NoError(t, r.err)
+	assert.Equal(t, []byte("v"), r.value)
+	require.NoError(t, <-closed)
+	assert.Equal(t, int32(1), cs.closes.Load(), "Close releases the provider once the read is done")
+	assert.False(t, cs.usedAfterFree.Load(), "no call used the released provider")
+
+	require.NoError(t, e.Close())
+	assert.Equal(t, int32(1), cs.closes.Load(), "a second Close releases nothing again")
+}
+
+func TestClose_RefusesACallThatPassedTheClosedCheckBeforeClose(t *testing.T) {
+	e, cs := newClosingEngine(t)
+	gap := make(chan struct{})
+	resume := make(chan struct{})
+	e.beforeEnter = func() {
+		close(gap)
+		<-resume
+	}
+
+	read := make(chan error, 1)
+	go func() {
+		_, err := e.Get([]byte("k"))
+		read <- err
+	}()
+	<-gap // the read passed the first closed check and has not entered
+
+	require.NoError(t, e.Close())
+	assert.Equal(t, int32(1), cs.closes.Load())
+
+	close(resume)
+	var closedErr *storage.ClosedError
+	require.ErrorAs(t, <-read, &closedErr, "the recheck refuses the read")
+	assert.False(t, cs.usedAfterFree.Load(), "the read never reached the released provider")
+}
+
+func TestClose_EveryCallWaitsAndIsRefusedAfter(t *testing.T) {
+	e, cs := newClosingEngine(t)
+	require.NoError(t, e.Close())
+	var closedErr *storage.ClosedError
+	_, err := e.Get([]byte("k"))
+	assert.ErrorAs(t, err, &closedErr)
+	_, err = e.Exists([]byte("k"))
+	assert.ErrorAs(t, err, &closedErr)
+	_, err = e.List(nil)
+	assert.ErrorAs(t, err, &closedErr)
+	_, err = e.Snapshot()
+	assert.ErrorAs(t, err, &closedErr)
+	assert.ErrorAs(t, e.Set([]byte("k"), []byte("w")), &closedErr)
+	assert.ErrorAs(t, e.Delete([]byte("k")), &closedErr)
+	assert.ErrorAs(t, e.commitBufferedOps([]storage.BufferedOp{{Key: []byte("k"), Value: []byte("w")}}), &closedErr)
+	assert.False(t, cs.usedAfterFree.Load(), "no call used the released provider")
+}
+
+func TestNew_ReleasesTheProviderOfAFailedOpenAndOnClose(t *testing.T) {
+	var stores []*closingStore
+	creator := func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
+		cs := newClosingStore()
+		stores = append(stores, cs)
+		return cs, nil
+	}
+	require.NoError(t, RegisterProvider("close-test-provider", ProviderCredentials{}, creator))
+
+	// An object that is not the format marker fails the open: the store is
+	// not one this engine wrote.
+	failing := func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
+		cs := newClosingStore()
+		if err := cs.Put("stray", strings.NewReader("x")); err != nil {
 			return nil, err
 		}
-		s := &closeRecordingStore{Storage: inner}
-		r.mu.Lock()
-		r.created = append(r.created, s)
-		r.mu.Unlock()
-		return s, nil
-	}))
-	walkedRoots[r.name] = walkedRoots["local"]
-	t.Cleanup(func() { delete(walkedRoots, r.name) })
-	return r
-}
-
-// closes returns the Close count of every provider created so far, in
-// creation order.
-func (r *closeRecorder) closes() []int32 {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]int32, len(r.created))
-	for i, s := range r.created {
-		out[i] = s.closes.Load()
+		stores = append(stores, cs)
+		return cs, nil
 	}
-	return out
-}
+	require.NoError(t, RegisterProvider("close-test-failed-open", ProviderCredentials{}, failing))
 
-func TestProviders_CloseReleasesEachProviderOnce(t *testing.T) {
-	r := newCloseRecorder(t)
-	e, err := New(r.name, map[string]string{"path": t.TempDir()}, WithObjectPrefix("db/"))
+	e, err := New("close-test-failed-open", map[string]string{})
+	require.Nil(t, e)
+	var missing *FormatMarkerMissingError
+	require.ErrorAs(t, err, &missing)
+	require.Len(t, stores, 1)
+	assert.Equal(t, int32(1), stores[0].closes.Load(), "a failed open releases the provider it created")
+
+	stores = nil
+	e, err = New("close-test-provider", map[string]string{})
 	require.NoError(t, err)
-	require.NoError(t, e.Set([]byte("k"), []byte("v")))
-	assert.Equal(t, []int32{0, 0}, r.closes(), "an open engine keeps its data and journal providers")
-
+	require.Len(t, stores, 1)
+	assert.Zero(t, stores[0].closes.Load(), "an open engine keeps its provider")
 	require.NoError(t, e.Close())
-	assert.Equal(t, []int32{1, 1}, r.closes())
-	r.mu.Lock()
-	created := append([]*closeRecordingStore(nil), r.created...)
-	r.mu.Unlock()
-	for _, s := range created {
-		_, err := s.Exists(context.Background(), "k")
-		assert.ErrorIs(t, err, errUseAfterClose, "a released provider refuses use")
-	}
-	require.NoError(t, e.Close(), "closing twice is safe")
-	assert.Equal(t, []int32{1, 1}, r.closes(), "a second Close releases nothing again")
-}
-
-func TestProviders_DestroyReleasesEachProviderOnce(t *testing.T) {
-	r := newCloseRecorder(t)
-	e, err := New(r.name, map[string]string{"path": t.TempDir()}, WithObjectPrefix("db/"))
-	require.NoError(t, err)
-	require.NoError(t, e.Set([]byte("k"), []byte("v")))
-
-	require.NoError(t, e.Destroy())
-	assert.Equal(t, []int32{1, 1}, r.closes())
-}
-
-// TestProviders_DestroyAfterCloseReleasesAgain is the drop path: the manager
-// closes the engine, then reclaims its objects through Destroy. The provider
-// reopens its root to serve the destroy, and Destroy releases it again.
-func TestProviders_DestroyAfterCloseReleasesAgain(t *testing.T) {
-	r := newCloseRecorder(t)
-	dir := t.TempDir()
-	e, err := New(r.name, map[string]string{"path": dir}, WithObjectPrefix("db/"))
-	require.NoError(t, err)
-	require.NoError(t, e.Set([]byte("k"), []byte("v")))
-
-	require.NoError(t, e.Close())
-	assert.Equal(t, []int32{1, 1}, r.closes())
-	// Destroy after Close (the drop path) never touches the released
-	// providers, which refuse use: it opens a data and a journal provider
-	// of its own and releases each of them once.
-	require.NoError(t, e.Destroy())
-	assert.Equal(t, []int32{1, 1, 1, 1}, r.closes(), "one release per provider, the reopened ones included")
-
-	reopened, err := New(r.name, map[string]string{"path": dir}, WithObjectPrefix("db/"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = reopened.Close() })
-	found, err := reopened.Exists([]byte("k"))
-	require.NoError(t, err)
-	assert.False(t, found, "the destroy removed the data")
-}
-
-func TestProviders_FailedOpenReleasesEachProviderOnce(t *testing.T) {
-	r := newCloseRecorder(t)
-	settings := map[string]string{"path": t.TempDir()}
-	first, err := New(r.name, settings, WithObjectPrefix("db/"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = first.Close() })
-
-	// The namespace is owned, so the second open fails after it has
-	// created its providers.
-	_, err = New(r.name, settings, WithObjectPrefix("db/"))
-	var owned *NamespaceOwnedError
-	require.ErrorAs(t, err, &owned)
-	assert.Equal(t, []int32{0, 0, 1, 1}, r.closes(), "the failed open releases its own providers, and only those")
-}
-
-// TestProviders_ReplacedProviderIsReleased: a root given through a symlink is
-// reopened at its physical path, and the provider opened on the symlink is
-// released at once rather than left behind.
-func TestProviders_ReplacedProviderIsReleased(t *testing.T) {
-	r := newCloseRecorder(t)
-	physical := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
-	require.NoError(t, os.Symlink(physical, link))
-
-	e, err := New(r.name, map[string]string{"path": link}, WithObjectPrefix("db/"))
-	require.NoError(t, err)
-	assert.Equal(t, []int32{1, 0, 0}, r.closes(), "the provider on the symlink is released by the open")
-
-	require.NoError(t, e.Close())
-	assert.Equal(t, []int32{1, 1, 1}, r.closes())
+	assert.Equal(t, int32(1), stores[0].closes.Load(), "Close releases the provider")
 }

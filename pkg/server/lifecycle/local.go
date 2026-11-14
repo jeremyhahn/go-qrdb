@@ -16,8 +16,6 @@ package lifecycle
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"log/slog"
 	"path/filepath"
 
@@ -35,7 +33,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/timeseries"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/pkg/watch"
@@ -125,43 +122,6 @@ func resolveObjstoreSettings(objCfg qrdbconfig.ObjstoreConfig, dataDir string) (
 		settings["path"] = filepath.Join(dataDir, "objstore")
 	}
 	return provider, settings
-}
-
-// DatabaseObjectPrefix is the object-name prefix of tenantID's database name:
-// "databases/<name>/" for a database of the system tenant or of no tenant,
-// and "tenants/<sha256(tenantID)>/databases/<name>/" for any other tenant's.
-// A tenant ID is never an object-name element, as it is never a path element.
-func DatabaseObjectPrefix(tenantID, name string) string {
-	if tenantid.IsSystem(tenantID) {
-		return "databases/" + name + "/"
-	}
-	sum := sha256.Sum256([]byte(tenantID))
-	return "tenants/" + hex.EncodeToString(sum[:]) + "/databases/" + name + "/"
-}
-
-// DatabaseObjstoreOpener returns the opener the node's database manager opens
-// a backend: objstore database through. It uses the provider, settings and
-// credential files of the node's storage.objstore configuration, as the
-// node-level engine does: the local provider without a path is rooted in the
-// database's own directory. Every object of a database lies under its own
-// prefix (DatabaseObjectPrefix), so databases sharing one bucket never see
-// each other's keys, and the reclaim the opener returns is the engine's
-// Destroy, which deletes the objects under that prefix and no others.
-func DatabaseObjstoreOpener(objCfg qrdbconfig.ObjstoreConfig) database.ObjstoreOpener {
-	return func(tenantID, name, dataDir string) (storage.Storage, database.ObjstoreReclaim, error) {
-		provider, settings := resolveObjstoreSettings(objCfg, dataDir)
-		e, err := objstore.New(provider, settings,
-			objstore.WithCredentialFiles(objstore.CredentialFiles{
-				KeyFile:    objCfg.Credentials.KeyFile,
-				SecretFile: objCfg.Credentials.SecretFile,
-			}),
-			objstore.WithObjectPrefix(DatabaseObjectPrefix(tenantID, name)),
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		return e, e.Destroy, nil
-	}
 }
 
 // NewLocalEngine creates the store engine for a raft-free composition. Every

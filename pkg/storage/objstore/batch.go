@@ -49,6 +49,11 @@ func (e *Engine) commitBufferedOps(ops []storage.BufferedOp) (err error) {
 		}
 	}
 
+	leave, err := e.enter()
+	if err != nil {
+		return err
+	}
+	defer leave()
 	e.journalMu.Lock()
 	defer e.journalMu.Unlock()
 

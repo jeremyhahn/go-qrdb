@@ -91,14 +91,14 @@ var edgeKeys = [][]byte{
 }
 
 func TestObjectName_DirectIsSegmentedLowercaseHex(t *testing.T) {
-	name, hashed := objectName([]byte("k1"), objcommon.MaxKeyLength)
+	name, hashed := objectName([]byte("k1"))
 	assert.False(t, hashed)
 	assert.Equal(t, "k/6b31_", name)
 
 	// 64 bytes is exactly one full segment; one more byte opens a second.
-	name, _ = objectName(bytes.Repeat([]byte{0xab}, 64), objcommon.MaxKeyLength)
+	name, _ = objectName(bytes.Repeat([]byte{0xab}, 64))
 	assert.Equal(t, "k/"+strings.Repeat("ab", 64)+"_", name)
-	name, _ = objectName(bytes.Repeat([]byte{0xab}, 65), objcommon.MaxKeyLength)
+	name, _ = objectName(bytes.Repeat([]byte{0xab}, 65))
 	assert.Equal(t, "k/"+strings.Repeat("ab", 64)+"/ab_", name)
 }
 
@@ -106,7 +106,7 @@ func TestObjectName_EveryDirectNameFitsTheProvider(t *testing.T) {
 	limit := directThreshold()
 	require.Greater(t, limit, 255, "the direct form must cover keys longer than a path component")
 	for n := 1; n <= limit; n++ {
-		name, hashed := objectName(patterned(n, 0), objcommon.MaxKeyLength)
+		name, hashed := objectName(patterned(n, 0))
 		require.False(t, hashed, "key of %d bytes", n)
 		require.Len(t, name, directNameLen(n))
 		require.LessOrEqual(t, len(name), objcommon.MaxKeyLength)
@@ -120,7 +120,7 @@ func TestObjectName_EveryDirectNameFitsTheProvider(t *testing.T) {
 func TestObjectName_HashedBeyondTheProviderLimit(t *testing.T) {
 	for _, n := range []int{directThreshold() + 1, 4096, protocol.MaxClientKeyLength} {
 		key := patterned(n, 1)
-		name, hashed := objectName(key, objcommon.MaxKeyLength)
+		name, hashed := objectName(key)
 		require.True(t, hashed, "key of %d bytes", n)
 		sum := sha256.Sum256(key)
 		assert.Equal(t, "h/"+hex.EncodeToString(sum[:]), name)
@@ -132,8 +132,8 @@ func TestObjectName_HashedBeyondTheProviderLimit(t *testing.T) {
 func TestDecodeDirectName_RoundTrips(t *testing.T) {
 	keys := append([][]byte{patterned(64, 2), patterned(65, 3), patterned(directThreshold(), 4)}, edgeKeys...)
 	for _, key := range keys {
-		name, _ := objectName(key, objcommon.MaxKeyLength)
-		got, ok := decodeDirectName(name, objcommon.MaxKeyLength)
+		name, _ := objectName(key)
+		got, ok := decodeDirectName(name)
 		require.True(t, ok, "name %q", name)
 		assert.Equal(t, key, got)
 	}
@@ -160,7 +160,7 @@ func TestDecodeDirectName_RefusesNonCanonicalNames(t *testing.T) {
 		"k/" + strings.Join(spelled, "/") + "_", // a key long enough to be stored hashed
 		"k/6b31_/6b31_",                         // a terminator inside the name
 	} {
-		_, ok := decodeDirectName(name, objcommon.MaxKeyLength)
+		_, ok := decodeDirectName(name)
 		assert.False(t, ok, "name %q", name)
 	}
 }
@@ -341,7 +341,7 @@ func TestList_SkipsNamesThatAreNotRecords(t *testing.T) {
 
 func TestHashedRecord_CorruptionIsRefused(t *testing.T) {
 	key := patterned(directThreshold()+1, 7)
-	name, hashed := objectName(key, objcommon.MaxKeyLength)
+	name, hashed := objectName(key)
 	require.True(t, hashed)
 
 	cases := map[string]struct {
@@ -387,7 +387,7 @@ func TestHashedRecord_CorruptionIsRefused(t *testing.T) {
 func TestGet_KeyMismatchForAnotherKeysRecord(t *testing.T) {
 	a := patterned(directThreshold()+1, 8)
 	b := patterned(directThreshold()+1, 9)
-	nameA, _ := objectName(a, objcommon.MaxKeyLength)
+	nameA, _ := objectName(a)
 	e := newMemEngine(t)
 	// b's record placed under a's name does not hash to it.
 	require.NoError(t, e.store.Put(nameA, hashedRecord(b, []byte("v"))))
@@ -407,8 +407,7 @@ func TestNew_MarksAnEmptyStoreAndReopensIt(t *testing.T) {
 
 	marker, err := os.ReadFile(filepath.Join(dir, formatMarkerName))
 	require.NoError(t, err)
-	assert.Equal(t, formatMarker(objcommon.MaxKeyLength), string(marker))
-	assert.Equal(t, "3\nname-limit=1024\n", string(marker), "the marker records the naming limit")
+	assert.Equal(t, formatVersion, string(marker))
 
 	reopened, err := New("local", map[string]string{"path": dir})
 	require.NoError(t, err)

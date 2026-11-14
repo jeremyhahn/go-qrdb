@@ -17,7 +17,6 @@ package database
 import (
 	"bytes"
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -139,23 +138,13 @@ func (b *StandaloneBackend) DeleteRange(_ context.Context, start, end []byte) er
 // storage.Exclusive, as the file engine does) it runs fn under the store's
 // cross-process write lock as well, so no writer in another process can land
 // between the read and the write. The store hands fn a ReadWriter that does not
-// take the lock a second time. For a store that is not shared, or one whose
-// Exclusive refuses with storage.ExclusiveUnsupportedError before running fn,
-// writeMu is the whole of the cross-writer exclusion: fn runs under the
-// store's storage.Guarded when it has one (an object store settles a
-// half-applied batch there first), and gets the store itself otherwise.
+// take the lock a second time; for a store that is not shared, fn gets the
+// store itself and writeMu is the whole of the exclusion.
 func (b *StandaloneBackend) guarded(fn func(storage.ReadWriter) error) error {
 	b.writeMu.Lock()
 	defer b.writeMu.Unlock()
 	if x, ok := b.store.(storage.Exclusive); ok {
-		err := x.Exclusive(fn)
-		var unsupported *storage.ExclusiveUnsupportedError
-		if !errors.As(err, &unsupported) {
-			return err
-		}
-	}
-	if g, ok := b.store.(storage.Guarded); ok {
-		return g.Guarded(fn)
+		return x.Exclusive(fn)
 	}
 	return fn(b.store)
 }

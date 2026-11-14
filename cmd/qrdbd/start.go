@@ -1302,21 +1302,6 @@ func recordSecureMemoryWipe(err *error) {
 // first (typically the RLIMIT-sized lazy default), which is exactly the
 // silent-budget-loss go-qrdb#114's review flagged (round 3) — so a mismatch
 // is fatal precisely because a MATCH is what makes the non-fatal case safe.
-// databaseManagerOptions returns the options runStart builds the node's
-// database manager with, for the node's mode and its storage.objstore
-// configuration. A standalone node opens a backend: objstore database on
-// that provider, each database under its own object prefix; any other mode
-// refuses one with database.ObjstoreRaftModeError.
-func databaseManagerOptions(mode string, objCfg qrdbconfig.ObjstoreConfig) []database.ManagerOption {
-	opt := database.WithRaftMode()
-	if mode == capabilities.ModeStandalone {
-		opt = database.WithObjstoreOpener(lifecycle.DatabaseObjstoreOpener(objCfg))
-	}
-	return []database.ManagerOption{
-		database.WithBackendFactory(database.NewEmbeddedBackendFactory(opt)),
-	}
-}
-
 func runStart(f *startFlags) (err error) {
 	// Discovery/peer flag validation runs FIRST, before anything with a
 	// side effect -- the secure memory budget, TLS/bootstrap servers, and
@@ -1531,17 +1516,13 @@ func runStart(f *startFlags) (err error) {
 	// Initialize the database manager. A raft database's shard ID is claimed
 	// from the replicated store, and its record is kept in the replicated
 	// catalog (lifecycle.BuildServices wires both and opens every recorded
-	// database), never in anything on this node's disk. A standalone node's
-	// manager opens a backend: objstore database through the node's
-	// storage.objstore provider, and a Raft-mode node's refuses one
-	// (databaseManagerOptions); both carry the node's database_defaults.
+	// database), never in anything on this node's disk.
 	dbDefaults := database.DefaultsFromConfig(f.databaseDefaults)
 	dbDefaults.RunMode = database.RunModeRaft
 	if f.mode == capabilities.ModeStandalone {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
-	dbManager := database.NewManager(slog.Default(), f.dataDir,
-		append(databaseManagerOptions(f.mode, f.storageConfig.Objstore), database.WithDefaults(dbDefaults))...)
+	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.

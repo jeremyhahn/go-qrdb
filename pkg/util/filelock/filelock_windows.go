@@ -34,21 +34,6 @@ func lockFile(f *os.File) error {
 	return windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, lockedRegionBytes, 0, ol)
 }
 
-// tryLockFile takes an exclusive LockFileEx lock on the first byte of f,
-// reporting false rather than waiting when another handle holds it.
-func tryLockFile(f *os.File) (bool, error) {
-	ol := new(windows.Overlapped)
-	err := windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, lockedRegionBytes, 0, ol)
-	switch err {
-	case nil:
-		return true, nil
-	case windows.ERROR_LOCK_VIOLATION:
-		return false, nil
-	default:
-		return false, err
-	}
-}
-
 // unlockFile releases the LockFileEx lock on the first byte of f.
 func unlockFile(f *os.File) error {
 	ol := new(windows.Overlapped)

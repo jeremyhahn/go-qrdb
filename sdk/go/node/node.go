@@ -1945,15 +1945,8 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // through the server's registry, is confined to its owning tenant, and is
 // refused while sealed. The manager carries the node's database_defaults
 // (standaloneDatabaseDefaults), as the daemon's does.
-//
-// The manager opens a backend: objstore database through the node's
-// storage.objstore provider (cfg.Storage.Objstore), each database under its
-// own object prefix.
 func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir,
-		database.WithDefaults(standaloneDatabaseDefaults(cfg)),
-		database.WithBackendFactory(database.NewEmbeddedBackendFactory(
-			database.WithObjstoreOpener(lifecycle.DatabaseObjstoreOpener(cfg.Storage.Objstore)))))
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
 	n.dbManager = dbManager
 	return dbManager
 }
@@ -2375,12 +2368,9 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// lifecycle.BuildServices (which skips creating its own when non-nil) and
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
-	// externally-supplied manager. A clustered node's databases are Raft
-	// state machines, so its manager refuses a backend: objstore database
-	// with database.ObjstoreRaftModeError.
+	// externally-supplied manager.
 	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
-		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)),
-		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithRaftMode())))
+		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)))
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
