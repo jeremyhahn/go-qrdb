@@ -112,6 +112,41 @@ func TestExistenceChecks_WipeTheValueTheyRead(t *testing.T) {
 	assert.Equal(t, "v1", retrieveString(t, svc, "db"), "the stored value is untouched")
 }
 
+// TestRotateBarrier_WipesTheGuardCopy: the rotation batch is guarded on
+// the previous value it read; that copy is wiped once the batch is
+// over, whether it committed, kept the value as a version, or failed.
+func TestRotateBarrier_WipesTheGuardCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		grace time.Duration
+		fail  bool
+	}{
+		{name: "committed"},
+		{name: "committed with grace", grace: time.Hour},
+		{name: "batch failed", fail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := &captureStore{Store: seal.NewMemoryBackend()}
+			svc := newMigratingService(t, seal.NewMemoryBackend())
+			require.NoError(t, svc.BindStore(ctx, store))
+			require.NoError(t, svc.StoreCredential(ctx, "db", []byte("v1")))
+			store.reset()
+			store.mu.Lock()
+			store.failWrites = tc.fail
+			store.mu.Unlock()
+
+			_, err := svc.RotateCredential(ctx, "db", RotateOptions{NewValue: []byte("v2"), GracePeriod: tc.grace})
+			if tc.fail {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			requireWiped(t, store.gets, credentialPrefix+"db")
+		})
+	}
+}
+
 // A migration leaves no plaintext in the buffers it read the node's own
 // copies into, and what it wrote to the replicated store is intact.
 func TestMigrateLegacy_WipesTheLegacyValuesItRead(t *testing.T) {
