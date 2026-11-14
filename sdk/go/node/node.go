@@ -4207,6 +4207,9 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// (auth disabled) leaves the built-in tokens.
 	n.authMethods.Bind(authMW)
 	n.authMiddleware.Store(authMW)
+	// An operator's access to a tenant's identity records is recorded in
+	// that tenant's own replicated trail, as on the daemon.
+	authMW.BindOperatorAccessTenantTrail(svcNode.TenantTrail)
 
 	// featureClient (built below) is node machinery, not a caller surface --
 	// its own field doc says as much, and it is already exempted from the

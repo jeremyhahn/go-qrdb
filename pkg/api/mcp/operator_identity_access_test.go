@@ -46,6 +46,16 @@ func (s *operatorAuditSink) Log(_ context.Context, e *audit.Entry) error {
 
 func (s *operatorAuditSink) Close() error { return nil }
 
+// Emit records the tenant trail's record of an operator access beside the
+// platform log's.
+func (s *operatorAuditSink) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	return s.Log(ctx, &audit.Entry{TenantID: ev.TenantID, Action: ev.Action})
+}
+
+func (s *operatorAuditSink) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return &audit.Page{}, nil
+}
+
 // operatorCall runs every identity tool's handler, as wrapped by
 // withOperatorTenant, for the platform operator naming acme.
 func operatorCall(t *testing.T, policy tenant.TenantIsolationPolicy) (ran map[string]string, errs map[string]error, sink *operatorAuditSink) {
@@ -53,7 +63,7 @@ func operatorCall(t *testing.T, policy tenant.TenantIsolationPolicy) (ran map[st
 	sink = &operatorAuditSink{trails: map[string]bool{}}
 	roles := authtest.BuiltInRoles(t, tenantid.System, "acme")
 	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles),
-		authmw.WithAuditLogger(sink), authmw.WithIsolationPolicyReader(&operatorPolicy{acme: policy}))
+		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink), authmw.WithIsolationPolicyReader(&operatorPolicy{acme: policy}))
 	ctx := auth.WithIdentity(tenant.WithTenantID(context.Background(), tenantid.System),
 		authtest.AdminIdentity(tenantid.System, "operator"))
 	ran, errs = map[string]string{}, map[string]error{}

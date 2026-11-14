@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strconv"
 	"time"
@@ -37,6 +38,34 @@ type IsolationPolicyReader interface {
 // (*OperatorAccessUnresolvedError).
 func WithIsolationPolicyReader(r IsolationPolicyReader) Option {
 	return func(m *AuthMiddleware) { m.isolationPolicy = r }
+}
+
+// tenantTrailRef holds the operator access tenant trail behind an atomic
+// pointer, so the daemon can bind it once the services that own it exist.
+type tenantTrailRef struct{ trail audit.AuditLogger }
+
+// WithOperatorAccessTenantTrail gives the middleware the trail each target
+// tenant's record of an operator identity access is written to: in
+// production the cluster's replicated, per-tenant audit chain, which an
+// isolated tenant keeps in its home group. Without one every operator
+// access to another tenant's identity records is refused
+// (*OperatorAccessUnauditedError, trail "tenant").
+func WithOperatorAccessTenantTrail(t audit.AuditLogger) Option {
+	return func(m *AuthMiddleware) { m.BindOperatorAccessTenantTrail(t) }
+}
+
+// BindOperatorAccessTenantTrail is WithOperatorAccessTenantTrail for a
+// middleware already built: the daemon builds the middleware before the
+// services owning the replicated trail.
+func (m *AuthMiddleware) BindOperatorAccessTenantTrail(t audit.AuditLogger) {
+	if m == nil {
+		return
+	}
+	if t == nil {
+		m.operatorTenantTrail.Store(nil)
+		return
+	}
+	m.operatorTenantTrail.Store(&tenantTrailRef{trail: t})
 }
 
 // OperatorAccessRefusedError is the refusal of an operator's access to the
@@ -196,42 +225,65 @@ func (m *AuthMiddleware) decideOperatorIdentityAccess(ctx context.Context, ident
 // operator's tenant) and to the target tenant's trail. Both writes are
 // attempted; the first failure refuses the access.
 func (m *AuthMiddleware) auditOperatorIdentityAccess(ctx context.Context, identity *auth.Identity, target string, perm permission.Permission, decision error) error {
-	if m.audit == nil {
-		return &audit.GateError{Component: authorizeComponent, Err: &OperatorAccessUnauditedError{TenantID: target, Trail: "platform"}}
-	}
 	result := audit.ResultSuccess
 	if decision != nil {
 		result = audit.ResultDenied
 	}
 	now := time.Now().UTC()
-	entry := func(trail string) *audit.Entry {
-		return &audit.Entry{
-			Timestamp: now,
-			Subject:   identity.Subject,
-			TenantID:  trail,
-			Action:    OperatorIdentityAccessAction,
-			Resource:  perm.String(),
-			Result:    result,
-			Metadata: map[string]string{
-				OperatorAccessTargetMetadataKey: target,
-				"operator_tenant":               tenantid.Normalize(identity.TenantID),
-			},
-		}
+	operatorTenant := tenantid.Normalize(identity.TenantID)
+	fail := func(trail string, err error) error {
+		auditWriteFailures().With(auditFailureOutcomes[audit.FailClosed]).Inc()
+		slog.Error("auth/middleware: operator identity access audit failed",
+			"error", err, "trail", trail, "subject", identity.Subject,
+			"target_tenant", target, "permission", perm.String())
+		return &audit.GateError{Component: authorizeComponent, Err: &OperatorAccessUnauditedError{TenantID: target, Trail: trail, Err: err}}
 	}
 	var first error
-	for _, w := range []struct{ name, tenantID string }{
-		{"platform", tenantid.Normalize(identity.TenantID)},
-		{"tenant", target},
-	} {
-		if err := m.audit.Log(ctx, entry(w.tenantID)); err != nil {
-			auditWriteFailures().With(auditFailureOutcomes[audit.FailClosed]).Inc()
-			slog.Error("auth/middleware: operator identity access audit failed",
-				"error", err, "trail", w.name, "subject", identity.Subject,
-				"target_tenant", target, "permission", perm.String())
-			if first == nil {
-				first = &audit.GateError{Component: authorizeComponent, Err: &OperatorAccessUnauditedError{TenantID: target, Trail: w.name, Err: err}}
-			}
+	// The platform trail: the operator's own decision log.
+	if m.audit == nil {
+		first = fail("platform", nil)
+	} else if err := m.audit.Log(ctx, &audit.Entry{
+		Timestamp: now,
+		Subject:   identity.Subject,
+		TenantID:  operatorTenant,
+		Action:    OperatorIdentityAccessAction,
+		Resource:  perm.String(),
+		Result:    result,
+		Metadata: map[string]string{
+			OperatorAccessTargetMetadataKey: target,
+			"operator_tenant":               operatorTenant,
+		},
+	}); err != nil {
+		first = fail("platform", err)
+	}
+	// The tenant trail: the target tenant's own replicated chain, which a
+	// sealed, unavailable or unsupported home refuses.
+	ref := m.operatorTenantTrail.Load()
+	var err error
+	if ref == nil {
+		err = errNoOperatorTenantTrail
+	} else {
+		err = ref.trail.Emit(ctx, audit.AuditEvent{
+			Timestamp: now,
+			Actor:     identity.Subject,
+			TenantID:  target,
+			Resource:  perm.String(),
+			Action:    OperatorIdentityAccessAction,
+			Outcome:   result,
+			Attributes: map[string]any{
+				OperatorAccessTargetMetadataKey: target,
+				"operator_tenant":               operatorTenant,
+			},
+		})
+	}
+	if err != nil {
+		if tErr := fail("tenant", err); first == nil {
+			first = tErr
 		}
 	}
 	return first
 }
+
+// errNoOperatorTenantTrail is the tenant-trail failure of a middleware
+// given no tenant trail to record operator access in.
+var errNoOperatorTenantTrail = errors.New("auth/middleware: no tenant trail is wired for operator access")

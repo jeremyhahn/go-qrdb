@@ -48,6 +48,16 @@ func (s *operatorAuditSink) Log(_ context.Context, e *audit.Entry) error {
 
 func (s *operatorAuditSink) Close() error { return nil }
 
+// Emit records the tenant trail's record of an operator access beside the
+// platform log's, so operatorTrails names both.
+func (s *operatorAuditSink) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	return s.Log(ctx, &audit.Entry{TenantID: ev.TenantID, Action: ev.Action, Subject: ev.Actor, Result: ev.Outcome})
+}
+
+func (s *operatorAuditSink) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return &audit.Page{}, nil
+}
+
 // operatorTrails is the set of trails holding an operator identity access
 // record.
 func (s *operatorAuditSink) operatorTrails() map[string]bool {
@@ -71,7 +81,7 @@ func newOperatorServer(t *testing.T, policy tenant.TenantIsolationPolicy, opts .
 	mw := authmw.New(rbac.New(roles),
 		authmw.WithRoleResolver(roles),
 		authmw.WithAuthenticator(authtest.NewFixedAuthenticator(authtest.AdminIdentity(tenantid.System, "operator"))),
-		authmw.WithAuditLogger(sink),
+		authmw.WithAuditLogger(sink), authmw.WithOperatorAccessTenantTrail(sink),
 		authmw.WithIsolationPolicyReader(&operatorPolicy{acme: policy}))
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0", append([]ServerOption{WithAuthMiddleware(mw)}, opts...)...)
 	return srv, sink

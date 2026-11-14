@@ -622,6 +622,13 @@ type Node struct {
 	// answer for (it is one node's disk, not Raft-replicated).
 	ReplicatedAudit *service.OptInAuditLogger
 
+	// TenantTrail is the same replicated chain without the opt-in gate:
+	// each tenant's own trail, which an isolated tenant keeps in its home
+	// group. Records a tenant is owed whatever its entitlement -- an
+	// operator's access to its identity records -- go here, and a trail
+	// that is sealed, unavailable or unsupported refuses them.
+	TenantTrail audit.AuditLogger
+
 	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
 	// cakey.SoftwareProvider over the replicated store, or
 	// Infra.ClusterCAKeyProvider when one was injected. Nil when neither
@@ -839,8 +846,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// up automatically with no restart.
 	auditResolver := service.NewSystemShardAuditResolver(infra.Host, shard.ShardKV, &nodeAuditIsolationLookup{node: n})
 	n.homeGroupRouters = append(n.homeGroupRouters, auditResolver)
+	n.TenantTrail = service.NewReplicatedLogger(auditResolver)
 	n.ReplicatedAudit = service.NewOptInAuditLogger(
-		service.NewReplicatedLogger(auditResolver),
+		n.TenantTrail,
 		&nodeAuditEntitlementLookup{node: n},
 		infra.ReplicatedAuditPlatformEnabled,
 	)

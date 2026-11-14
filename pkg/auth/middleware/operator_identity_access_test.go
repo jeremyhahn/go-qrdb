@@ -39,6 +39,84 @@ func policyFixture(floor tenant.ClusterIsolationPolicy, acmePolicy tenant.Tenant
 	}
 }
 
+// sinkTenantTrail is a tenant trail recording into a mockAuditLogger, so a
+// test reads both trails' records in one place; it fails as the sink does.
+type sinkTenantTrail struct{ sink *mockAuditLogger }
+
+func (s sinkTenantTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	md := map[string]string{}
+	for k, v := range ev.Attributes {
+		md[k], _ = v.(string)
+	}
+	return s.sink.Log(ctx, &audit.Entry{
+		Timestamp: ev.Timestamp, Subject: ev.Actor, TenantID: ev.TenantID,
+		Action: ev.Action, Resource: ev.Resource, Result: ev.Outcome, Metadata: md,
+	})
+}
+
+func (sinkTenantTrail) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return &audit.Page{}, nil
+}
+
+func (sinkTenantTrail) Close() error { return nil }
+
+// withOperatorTrails wires sink as the platform trail and, through
+// sinkTenantTrail, as the tenant trail.
+func withOperatorTrails(sink *mockAuditLogger) Option {
+	return func(m *AuthMiddleware) {
+		WithAuditLogger(sink)(m)
+		WithOperatorAccessTenantTrail(sinkTenantTrail{sink: sink})(m)
+	}
+}
+
+// failingTenantTrail is a tenant trail that refuses every write, as a
+// sealed or unavailable home group does.
+type failingTenantTrail struct{ emits int }
+
+func (f *failingTenantTrail) Emit(context.Context, audit.AuditEvent) error {
+	f.emits++
+	return errors.New("tenant home group sealed")
+}
+
+func (*failingTenantTrail) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return nil, errors.New("tenant home group sealed")
+}
+
+func (*failingTenantTrail) Close() error { return nil }
+
+// The platform trail writing is not enough: an operator access the target
+// tenant's own trail refuses is refused, and nothing of it is written into
+// the platform decision log under the tenant's name.
+func TestOperatorIdentityAccess_TenantTrailFailureRefuses(t *testing.T) {
+	platform := &mockAuditLogger{}
+	trail := &failingTenantTrail{}
+	m := builtInMiddleware(t, WithAuditLogger(platform), WithOperatorAccessTenantTrail(trail),
+		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
+	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
+	var unaudited *OperatorAccessUnauditedError
+	if !errors.As(err, &unaudited) || unaudited.Trail != "tenant" {
+		t.Fatalf("access whose tenant trail refuses = %v, want *OperatorAccessUnauditedError for the tenant trail", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("tenant trail took %d writes, want 1", trail.emits)
+	}
+	if len(platform.entries) != 1 || platform.entries[0].TenantID != tenantid.Normalize(tenantid.System) {
+		t.Fatalf("platform log = %+v, want the one platform record", platform.entries)
+	}
+}
+
+// A middleware given no tenant trail refuses operator access rather than
+// recording it in the platform log alone.
+func TestOperatorIdentityAccess_NoTenantTrailRefuses(t *testing.T) {
+	m := builtInMiddleware(t, WithAuditLogger(&mockAuditLogger{}),
+		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
+	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
+	var unaudited *OperatorAccessUnauditedError
+	if !errors.As(err, &unaudited) || unaudited.Trail != "tenant" {
+		t.Fatalf("access with no tenant trail = %v, want *OperatorAccessUnauditedError for the tenant trail", err)
+	}
+}
+
 func operatorCtx() context.Context {
 	return as(authtest.AdminIdentity(tenantid.System, "operator"))
 }
@@ -70,7 +148,7 @@ func TestOperatorIdentityAccess_OperatorAccessAllowsAndAuditsBothTrails(t *testi
 		permission.RolesReadTenant, permission.RolesWriteTenant,
 	} {
 		sink := &mockAuditLogger{}
-		m := builtInMiddleware(t, WithAuditLogger(sink),
+		m := builtInMiddleware(t, withOperatorTrails(sink),
 			WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
 		ctx, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", perm)
 		if err != nil {
@@ -85,7 +163,7 @@ func TestOperatorIdentityAccess_OperatorAccessAllowsAndAuditsBothTrails(t *testi
 
 func TestOperatorIdentityAccess_StrictTenantRefusedAndAudited(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink),
+	m := builtInMiddleware(t, withOperatorTrails(sink),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyStrict)))
 	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
 	var refused *OperatorAccessRefusedError
@@ -100,7 +178,7 @@ func TestOperatorIdentityAccess_StrictTenantRefusedAndAudited(t *testing.T) {
 
 func TestOperatorIdentityAccess_StrictFloorRefusesInheritingTenant(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink),
+	m := builtInMiddleware(t, withOperatorTrails(sink),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyStrict, tenant.TenantIsolationPolicyInherit)))
 	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersWriteTenant)
 	var refused *OperatorAccessRefusedError
@@ -111,7 +189,7 @@ func TestOperatorIdentityAccess_StrictFloorRefusesInheritingTenant(t *testing.T)
 
 func TestOperatorIdentityAccess_SharedTenantNeverRefused(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink),
+	m := builtInMiddleware(t, withOperatorTrails(sink),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyStrict, tenant.TenantIsolationPolicyStrict)))
 	if _, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "globex", permission.UsersReadTenant); err != nil {
 		t.Fatalf("read of a shared tenant under a strict floor = %v, want admitted", err)
@@ -121,7 +199,7 @@ func TestOperatorIdentityAccess_SharedTenantNeverRefused(t *testing.T) {
 
 func TestOperatorIdentityAccess_TenantAdminRefused(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink),
+	m := builtInMiddleware(t, withOperatorTrails(sink),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
 	ctx := as(authtest.AdminIdentity("globex", "globex-admin"))
 	if _, err := m.AuthorizeOperatorIdentityAccess(ctx, "acme", permission.UsersReadTenant); err == nil {
@@ -134,7 +212,7 @@ func TestOperatorIdentityAccess_TenantAdminRefused(t *testing.T) {
 
 func TestOperatorIdentityAccess_OwnTenantIsNotOperatorAccess(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink))
+	m := builtInMiddleware(t, withOperatorTrails(sink))
 	in := as(authtest.AdminIdentity("acme", "acme-admin"))
 	for _, target := range []string{"", "acme"} {
 		ctx, err := m.AuthorizeOperatorIdentityAccess(in, target, permission.UsersReadTenant)
@@ -149,7 +227,7 @@ func TestOperatorIdentityAccess_OwnTenantIsNotOperatorAccess(t *testing.T) {
 
 func TestOperatorIdentityAccess_UnrecordedAccessRefused(t *testing.T) {
 	sink := &mockAuditLogger{err: errors.New("tenant trail unavailable")}
-	m := builtInMiddleware(t, WithAuditLogger(sink), WithAuditFailurePolicy(audit.FailOpen),
+	m := builtInMiddleware(t, withOperatorTrails(sink), WithAuditFailurePolicy(audit.FailOpen),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
 	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
 	var unaudited *OperatorAccessUnauditedError
@@ -160,7 +238,7 @@ func TestOperatorIdentityAccess_UnrecordedAccessRefused(t *testing.T) {
 
 func TestOperatorIdentityAccess_NoPolicyReaderRefuses(t *testing.T) {
 	sink := &mockAuditLogger{}
-	m := builtInMiddleware(t, WithAuditLogger(sink))
+	m := builtInMiddleware(t, withOperatorTrails(sink))
 	_, err := m.AuthorizeOperatorIdentityAccess(operatorCtx(), "acme", permission.UsersReadTenant)
 	var unresolved *OperatorAccessUnresolvedError
 	if !errors.As(err, &unresolved) {

@@ -31,7 +31,7 @@ import (
 // refused because roles:assign/unassign are ScopeSelf.
 func TestOperatorRoleAssignment_AdmittedOperatorAssignsAndUnassigns(t *testing.T) {
 	f := newSORoleFixture(t)
-	m := builtInMiddleware(t, WithAuditLogger(&mockAuditLogger{}),
+	m := builtInMiddleware(t, withOperatorTrails(&mockAuditLogger{}),
 		WithRoleResolver(f.roles), WithStrictSeparation(true),
 		WithIsolationPolicyReader(policyFixture(tenant.ClusterIsolationPolicyOperatorAccess, tenant.TenantIsolationPolicyInherit)))
 
