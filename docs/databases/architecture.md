@@ -78,11 +78,8 @@ Supporting facts:
   so: the data plane for a dedicated-raft database is the tenant's Raft shard,
   reached through the request resolver, not through the store the manager
   opened.
-- `backend: objstore` is opened by a **standalone node** on its
-  `storage.objstore` provider, under the database's own object prefix
-  (`lifecycle.DatabaseObjstoreOpener`), and is served from that engine. A
-  **Raft-mode node refuses it** with `database.ObjstoreRaftModeError`, and a
-  manager built with no opener with `database.ObjstoreNotConfiguredError`.
+- `backend: objstore` is accepted by validation and **refused by
+  `openStorage`** with `database.InvalidBackendError`.
 - `backend: raft` on a **prefix or barrier** tenant is metered as a Raft group
   and gets a replicated placement record, yet `resolve` routes on the tenant's
   isolation mode, so the database's data is served from the shared system shard.
