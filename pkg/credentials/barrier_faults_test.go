@@ -53,6 +53,10 @@ type faultBackend struct {
 	// onGet, when set before the operation under test, runs after each
 	// Get that is not failed, with its context and key.
 	onGet func(ctx context.Context, key string)
+	// onBatch, when set before the operation under test, runs first in
+	// each PutAllIfAllUnchanged, before the batch is decided, with its
+	// writes.
+	onBatch func(writes []kvstore.KV)
 }
 
 var _ seal.StorageBackend = (*faultBackend)(nil)
@@ -132,18 +136,28 @@ func (f *faultBackend) PutIfAbsent(ctx context.Context, key string, data []byte)
 
 // PutAllIfAllUnchanged is one conditional write of several keys, all or
 // nothing. It fails with errInjectedFault, having written nothing, when a
-// written key ends with the armed Put or CompareAndSwap suffix, and reports
-// a refused batch, without writing, when one ends with the loseCAS suffix
-// and a loss is still owed. onCAS runs first, before the batch is decided,
-// once for each written key, and onPut after it applied.
+// written key ends with the armed Put or CompareAndSwap suffix, or a deleted
+// key with the armed Delete or CompareAndSwap suffix, and reports a refused
+// batch, without writing, when one ends with the loseCAS suffix and a loss
+// is still owed. onBatch and then onCAS, once for each written key, run
+// first, before the batch is decided; onPut for each key and onDelete for
+// each deleted key run after it applied.
 func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if f.onBatch != nil {
+		f.onBatch(writes)
+	}
 	if f.onCAS != nil {
 		for _, w := range writes {
 			f.onCAS(ctx, w.Key)
 		}
 	}
 	for _, w := range writes {
-		for _, p := range []*atomic.Pointer[string]{&f.failPut, &f.failCAS} {
+		// A delete in the batch fails like a lone delete of its key.
+		armed := []*atomic.Pointer[string]{&f.failPut, &f.failCAS}
+		if w.Delete {
+			armed = []*atomic.Pointer[string]{&f.failDelete, &f.failCAS}
+		}
+		for _, p := range armed {
 			if s := p.Load(); s != nil && strings.HasSuffix(w.Key, *s) {
 				return false, errInjectedFault
 			}
@@ -161,6 +175,13 @@ func (f *faultBackend) PutAllIfAllUnchanged(ctx context.Context, guards []kvstor
 	if f.onPut != nil {
 		for _, w := range writes {
 			f.onPut(w.Key)
+		}
+	}
+	if f.onDelete != nil {
+		for _, w := range writes {
+			if w.Delete {
+				f.onDelete(w.Key)
+			}
 		}
 	}
 	return true, nil
@@ -233,8 +254,9 @@ func TestBarrierFault_RotateWriteFailures(t *testing.T) {
 }
 
 // TestBarrierFault_GCDeleteFailure: a GC that cannot delete an expired
-// version key fails with that version's operation and leaves the meta
-// sidecar indexing it, so a later GC retries the reap.
+// version key fails its one batch, the deletes with the meta write, and
+// leaves the meta sidecar indexing the version, so a later GC retries the
+// reap.
 func TestBarrierFault_GCDeleteFailure(t *testing.T) {
 	ctx := context.Background()
 	svc, backend := newFaultBarrierService(t)
@@ -243,7 +265,7 @@ func TestBarrierFault_GCDeleteFailure(t *testing.T) {
 	arm(&backend.failDelete, versionKey("k", 1))
 
 	reaped, err := svc.GCExpiredVersions(ctx, "k")
-	requireOperationError(t, err, "delete v1")
+	requireOperationError(t, err, "write meta")
 	assert.ErrorIs(t, err, errInjectedFault)
 	assert.Zero(t, reaped)
 

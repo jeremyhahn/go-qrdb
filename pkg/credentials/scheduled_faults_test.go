@@ -126,12 +126,14 @@ func TestRotateBarrier_ScheduledCommitAfterStoreAbandons(t *testing.T) {
 				}
 				stored = true
 				ctx := context.Background()
+				meta, err := svc.loadBarrierMeta(ctx, "k")
+				require.NoError(t, err)
+				require.NoError(t, svc.storeBarrier(ctx, "k", []byte("manual")))
+				// The rotation's own delete of the staged value, after
+				// the store's batch deleted it, fails.
 				if failDelete {
-					meta, err := svc.loadBarrierMeta(ctx, "k")
-					require.NoError(t, err)
 					arm(&backend.failDelete, stagedKey("k", meta.Staged))
 				}
-				require.NoError(t, svc.storeBarrier(ctx, "k", []byte("manual")))
 			}
 
 			_, err := svc.RotateCredential(t.Context(), "k", opts)

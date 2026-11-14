@@ -888,9 +888,9 @@ func (s *CredentialService) listVersionsBarrier(ctx context.Context, name string
 
 // deleteBarrierVersionKeys deletes every historical version key named in
 // entries from the barrier store. It returns the number of keys removed
-// before any error, so a caller can report partial progress. Shared by
-// gcBarrier (which reaps only expired entries) and deleteBarrierAll (which
-// tears down the full history on an explicit delete).
+// before any error, so a caller can report partial progress. Used by
+// deleteBarrierAll, which tears down the full history on an explicit
+// delete.
 func (s *CredentialService) deleteBarrierVersionKeys(ctx context.Context, name string, entries []credentialMetaEntry) (int, error) {
 	removed := 0
 	for _, h := range entries {
@@ -903,47 +903,62 @@ func (s *CredentialService) deleteBarrierVersionKeys(ctx context.Context, name s
 }
 
 func (s *CredentialService) gcBarrier(ctx context.Context, name string) (int, error) {
-	meta, err := s.loadBarrierMeta(ctx, name)
-	if err != nil {
-		return 0, err
-	}
 	now := time.Now().UTC()
-	expired := make([]credentialMetaEntry, 0, len(meta.History))
-	for _, h := range meta.History {
-		if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
-			expired = append(expired, h)
+	return s.reapBarrierVersions(ctx, name, func(meta *credentialMeta) ([]credentialMetaEntry, bool) {
+		expired := make([]credentialMetaEntry, 0, len(meta.History))
+		for _, h := range meta.History {
+			if !h.GraceUntil.IsZero() && now.After(h.GraceUntil) {
+				expired = append(expired, h)
+			}
 		}
-	}
-	return s.reapBarrierVersions(ctx, name, expired)
+		return expired, true
+	})
 }
 
-// reapBarrierVersions deletes the given versions' keys, then removes those
-// versions from the metadata record as it stands at the write, so a version
-// whose key survives a failed delete stays indexed and a concurrent policy
-// change or rotation is never overwritten. The record is written even when
-// nothing is reaped, so a sealed barrier fails the call closed.
-func (s *CredentialService) reapBarrierVersions(ctx context.Context, name string, versions []credentialMetaEntry) (int, error) {
-	reaped, err := s.deleteBarrierVersionKeys(ctx, name, versions)
-	if err != nil {
-		return reaped, err
-	}
-	gone := make(map[uint64]struct{}, len(versions))
-	for _, h := range versions {
-		gone[h.Version] = struct{}{}
-	}
-	if err := s.updateBarrierMeta(ctx, name, "write meta", func(m *credentialMeta) bool {
-		kept := make([]credentialMetaEntry, 0, len(m.History))
-		for _, h := range m.History {
+// reapBarrierVersions deletes the versions pick selects from the metadata
+// record and removes them from its history, in one batch guarded on the
+// record pick read: a rotation, policy change, or delete and recreate
+// between the read and the write refuses the batch, nothing is deleted, and
+// the record is read and picked from again. pick returning false writes
+// nothing. Otherwise the record is written even when nothing is reaped, so a
+// sealed barrier fails the call closed.
+func (s *CredentialService) reapBarrierVersions(ctx context.Context, name string, pick func(*credentialMeta) ([]credentialMetaEntry, bool)) (int, error) {
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return 0, err
+		}
+		versions, ok := pick(meta)
+		if !ok {
+			return 0, nil
+		}
+		gone := make(map[uint64]struct{}, len(versions))
+		writes := make([]kvstore.KV, 0, len(versions)+1)
+		for _, h := range versions {
+			gone[h.Version] = struct{}{}
+			writes = append(writes, kvstore.KV{Key: versionKey(name, h.Version), Delete: true})
+		}
+		kept := make([]credentialMetaEntry, 0, len(meta.History))
+		for _, h := range meta.History {
 			if _, ok := gone[h.Version]; !ok {
 				kept = append(kept, h)
 			}
 		}
-		m.History = kept
-		return true
-	}); err != nil {
-		return reaped, err
+		meta.History = kept
+		nextMeta, err := json.Marshal(meta)
+		if err != nil {
+			return 0, &OperationError{Op: "encode meta", Cause: err}
+		}
+		writes = append(writes, kvstore.KV{Key: metaKey(name), Value: nextMeta})
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
+		if err != nil {
+			return 0, &OperationError{Op: "write meta", Cause: err}
+		}
+		if applied {
+			return len(versions), nil
+		}
 	}
-	return reaped, nil
+	return 0, &OperationError{Op: "write meta", Cause: ErrRotationMetaContended}
 }
 
 // deleteBarrierAll removes a barrier-strategy credential's current value,

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
@@ -1422,16 +1423,23 @@ func TestRotateDue_PruneFailureReported(t *testing.T) {
 func TestRotateDue_PruneMetaWriteFailureReported(t *testing.T) {
 	svc, backend := newFaultRotationService(t)
 	setFaultPolicy(t, svc, "k", 1)
-	// Fail the meta write only once the excess version key is gone, which
-	// is after the rotation's own meta write.
-	backend.onDelete = func(key string) {
-		if strings.HasSuffix(key, versionKey("k", 1)) {
-			arm(&backend.failCAS, metaKey("k"))
+	// Fail the meta write of the trim's batch, the one that deletes the
+	// excess version key, which comes after the rotation's own meta write.
+	backend.onBatch = func(writes []kvstore.KV) {
+		for _, w := range writes {
+			if w.Delete && strings.HasSuffix(w.Key, versionKey("k", 1)) {
+				arm(&backend.failCAS, metaKey("k"))
+			}
 		}
 	}
 
 	_, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
 	requireRotationOpError(t, err, "k", "write meta")
+	// The trim is one batch: its failed meta write deleted nothing.
+	disarmAll(backend)
+	if _, err := backend.MemoryBackend.Get(t.Context(), versionKey("k", 1)); err != nil {
+		t.Fatalf("excess version key after the failed batch: %v; want it kept", err)
+	}
 }
 
 // TestSetRotationPolicy_MetaUpdate covers the compare-and-swap update of an

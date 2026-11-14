@@ -558,30 +558,31 @@ func (s *CredentialService) releaseRotation(ctx context.Context, name string, cl
 // was claimed under: an operator may have changed it while the value source
 // ran, and a policy disabled or removed since trims nothing.
 func (s *CredentialService) pruneBarrierHistory(ctx context.Context, name, id string) error {
-	meta, err := s.loadBarrierMeta(ctx, name)
+	reaped, err := s.reapBarrierVersions(ctx, name, func(meta *credentialMeta) ([]credentialMetaEntry, bool) {
+		// The trim is re-bound to the scheduled rotation on the record
+		// it reads, and the batch is guarded on that record: a
+		// credential deleted and recreated since the cleanup began
+		// numbers its versions afresh, and its history is not this
+		// rotation's to trim.
+		if meta.PendingCleanup != id {
+			return nil, false
+		}
+		p := meta.Policy
+		if p == nil || !p.Enabled {
+			return nil, false
+		}
+		excess := len(meta.History) - (p.RetainVersions - 1)
+		if excess <= 0 {
+			return nil, false
+		}
+		return append([]credentialMetaEntry(nil), meta.History[:excess]...), true
+	})
 	if err != nil {
 		return err
 	}
-	// The trim is re-bound to the scheduled rotation on the record it
-	// reads: a credential deleted and recreated since the cleanup began
-	// numbers its versions afresh, and its history is not this
-	// rotation's to trim.
-	if meta.PendingCleanup != id {
-		return nil
+	if reaped > 0 {
+		s.emitAudit(ctx, "gc", name, map[string]any{"reaped": reaped})
 	}
-	p := meta.Policy
-	if p == nil || !p.Enabled {
-		return nil
-	}
-	excess := len(meta.History) - (p.RetainVersions - 1)
-	if excess <= 0 {
-		return nil
-	}
-	reaped, err := s.reapBarrierVersions(ctx, name, meta.History[:excess])
-	if err != nil {
-		return err
-	}
-	s.emitAudit(ctx, "gc", name, map[string]any{"reaped": reaped})
 	return nil
 }
 
