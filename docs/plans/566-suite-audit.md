@@ -101,6 +101,14 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/messaging | TestDeltaMaxDepthExceededError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaMaxDepthExceededError_Error_IncludesPath |
 | pkg/messaging | TestDeltaDeserializationError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaDeserializationError_Error_IncludesCause |
 | pkg/messaging | TestDeltaDiffError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaDiffError_Error_IncludesCause |
+| pkg/service | TestInvalidEntityOpTypeError_ImplementsError | tautology (compile-time assignment) | TestInvalidEntityOpTypeError_Message |
+| pkg/service | TestBatchEntityEmptyOpsError_ImplementsError | tautology (compile-time assignment) | TestBatchEntityEmptyOpsError_Message |
+| pkg/service | TestVectorNotFoundErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestVectorNotFoundError |
+| pkg/service | TestNamespaceNotFoundErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestNamespaceNotFoundError |
+| pkg/service | TestNamespaceExistsErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestNamespaceExistsError |
+| pkg/service | TestDimensionMismatchErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestDimensionMismatchError |
+| pkg/service | TestInvalidVectorErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestInvalidVectorError |
+| pkg/service | TestInvalidNamespaceNameErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestInvalidNamespaceNameError |
 
 ## Trimmed tests
 
