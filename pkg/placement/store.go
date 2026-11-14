@@ -583,11 +583,13 @@ func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placemen
 		return nil, err
 	}
 	var live, dropping *Placement
+	fenced := 0
 	for _, p := range placements {
 		if p.Database != name {
 			continue
 		}
 		if p.Dropping {
+			fenced++
 			if dropping == nil {
 				dropping = p
 			}
@@ -600,6 +602,12 @@ func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placemen
 	}
 	if live != nil {
 		return live, nil
+	}
+	// With no live entry, two fenced entries under the name leave no way to
+	// tell which database's shard a caller would retire: refuse rather than
+	// act on whichever the listing returned first.
+	if fenced > 1 {
+		return nil, &StoreError{TenantID: tenantID, DatabaseID: name, Op: "get", Err: ErrAmbiguousPlacement}
 	}
 	if dropping != nil {
 		return dropping, nil

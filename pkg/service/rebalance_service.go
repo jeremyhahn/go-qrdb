@@ -115,13 +115,15 @@ type RebalancePlanResult struct {
 // RebalanceSkippedMove is a move CreateRebalancePlan considered and did not
 // propose. Err is the typed refusal (*placement.ServingSetError, or
 // *HomeGroupMoveError for a tenant home group shard, which carries no
-// ToNode); Reason is its text.
+// ToNode); Reason is its text. Err stays in-process: a transport that
+// encodes the plan as JSON (MCP marshals it whole) carries Reason, never the
+// error value, whose encoding is not a wire form.
 type RebalanceSkippedMove struct {
 	ShardID  uint64
 	FromNode string
 	ToNode   string
 	Reason   string
-	Err      error
+	Err      error `json:"-"`
 }
 
 // RebalanceExecutionResult contains the outcome of an executed rebalance.

@@ -192,8 +192,11 @@ func TestStore_GetBoundKeysByTheCatalogDatabaseID(t *testing.T) {
 	const successor = "ffffffffffffffffffffffffffffff01"
 	putNamed(t, s, predecessor, 1000, true)
 	putNamed(t, s, successor, 1001, true)
-	if got, err := s.GetByName(ctx, "acme", "orders"); err != nil || got.DatabaseID != predecessor {
-		t.Fatalf("GetByName = %+v, %v; want the predecessor's entry, which it lists first", got, err)
+	// By name the two fenced entries are ambiguous: GetByName refuses rather
+	// than hand back whichever it lists first, so nothing retires the wrong
+	// shard; GetBound names exactly one.
+	if got, err := s.GetByName(ctx, "acme", "orders"); !errors.Is(err, ErrAmbiguousPlacement) {
+		t.Fatalf("GetByName = %+v, %v; want ErrAmbiguousPlacement", got, err)
 	}
 	got, err := s.GetBound(ctx, "acme", successor, "orders")
 	if err != nil || got.DatabaseID != successor || got.ShardID != 1001 {
