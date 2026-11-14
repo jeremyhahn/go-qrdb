@@ -149,10 +149,6 @@ func TestAggregateLogger_Close_ContinuesAfterError(t *testing.T) {
 	}
 }
 
-func TestAggregateLogger_ImplementsAuditLogger(t *testing.T) {
-	var _ = NewAggregateLogger()
-}
-
 // ---------------------------------------------------------------------------
 // NoopLogger tests
 // ---------------------------------------------------------------------------
