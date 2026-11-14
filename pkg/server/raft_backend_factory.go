@@ -276,6 +276,21 @@ type RaftBackendFactory struct {
 	// observed when the start held mu throughout.
 	starting map[raftShardKey]*startingShard
 
+	// purging holds the teardowns removing a stopped shard's data
+	// directory: each channel closes once its purge ends. A database's
+	// directory is named by the database, not by its placement, so a
+	// successor recreated under the name would share the directory the
+	// predecessor's purge removes; no shard of a listed name starts until
+	// its purge ends. Guarded by mu.
+	purging map[raftShardKey]chan struct{}
+
+	// purgeHook, when non-nil, runs in a purge between the shard's stop
+	// and the removal of its directory. It is a TEST-ONLY seam, used to
+	// hold a purge there; purgeWaitHook runs when a resolve waits on a
+	// purge of its name. Production leaves both nil.
+	purgeHook     func()
+	purgeWaitHook func()
+
 	// generation counts the shards removed from shards (forgetLocked,
 	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
 	// A start planned with mu released re-checks it before starting: a
@@ -897,10 +912,19 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 		f.mu.Lock()
 		rs, cached := f.shards[key]
 		inFlight := f.starting[key]
+		purge := f.purging[key]
 		generation := f.generation
 		f.mu.Unlock()
 
 		switch {
+		case purge != nil:
+			// A predecessor under this name is still removing the
+			// directory a start here would open: wait for it to end.
+			if f.purgeWaitHook != nil {
+				f.purgeWaitHook()
+			}
+			<-purge
+			continue
 		case cached:
 			services, again, err := f.cachedServices(key, rs, honorFence, databaseID)
 			if !again {
@@ -1188,7 +1212,7 @@ type startingShard struct {
 // cannot answer, and a failed start leaves nothing behind.
 func (f *RaftBackendFactory) startPlanned(ctx context.Context, key raftShardKey, plan *shardStartPlan, generation uint64) (rs *raftShard, again bool, err error) {
 	f.mu.Lock()
-	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.generation != generation {
+	if _, cached := f.shards[key]; cached || f.starting[key] != nil || f.purging[key] != nil || f.generation != generation {
 		f.mu.Unlock()
 		return nil, true, nil
 	}
@@ -1630,10 +1654,13 @@ func (f *RaftBackendFactory) CloseAndPurge(tenantID, db string) error {
 	// again, which no longer names the database; the delete event that
 	// called this is consumed, so nothing would stop a shard it started.
 	f.forgetLocked(key)
-	f.mu.Unlock()
 	if !ok {
+		f.mu.Unlock()
 		return nil
 	}
+	done := f.beginPurgeLocked(key)
+	f.mu.Unlock()
+	defer f.endPurge(key, done)
 	return f.stopAndPurge(tenantID, db, rs)
 }
 
@@ -1656,14 +1683,43 @@ func (f *RaftBackendFactory) CloseShardIfOwned(tenantID, db string, shardID uint
 		return rs.shardID, nil
 	}
 	f.forgetLocked(key)
-	f.mu.Unlock()
 	if !ok {
+		f.mu.Unlock()
 		return 0, nil
 	}
 	if !purge {
+		f.mu.Unlock()
 		return 0, f.stopShard(rs)
 	}
+	// The eviction and the purge's registration are one critical section,
+	// so no start under the name runs between the stop and the removal of
+	// the directory a successor would share.
+	done := f.beginPurgeLocked(key)
+	f.mu.Unlock()
+	defer f.endPurge(key, done)
 	return 0, f.stopAndPurge(tenantID, db, rs)
+}
+
+// beginPurgeLocked lists key as purging and returns the channel endPurge
+// closes. The caller MUST hold f.mu.
+func (f *RaftBackendFactory) beginPurgeLocked(key raftShardKey) chan struct{} {
+	if f.purging == nil {
+		f.purging = make(map[raftShardKey]chan struct{})
+	}
+	done := make(chan struct{})
+	f.purging[key] = done
+	return done
+}
+
+// endPurge ends the purge beginPurgeLocked listed, releasing the starts
+// waiting on it.
+func (f *RaftBackendFactory) endPurge(key raftShardKey, done chan struct{}) {
+	f.mu.Lock()
+	if f.purging[key] == done {
+		delete(f.purging, key)
+	}
+	close(done)
+	f.mu.Unlock()
 }
 
 // stopAndPurge stops rs, already evicted from the cache, and removes its
@@ -1671,6 +1727,9 @@ func (f *RaftBackendFactory) CloseShardIfOwned(tenantID, db string, shardID uint
 func (f *RaftBackendFactory) stopAndPurge(tenantID, db string, rs *raftShard) error {
 	if err := f.stopShard(rs); err != nil {
 		return err
+	}
+	if f.purgeHook != nil {
+		f.purgeHook()
 	}
 	// Delete only inside this node's own volume pool: a shard directory is
 	// resolved locally, so anything else is a path this node does not own,

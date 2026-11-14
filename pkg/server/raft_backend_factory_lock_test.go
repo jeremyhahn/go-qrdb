@@ -743,3 +743,64 @@ func TestRaftBackendFactory_CloseShardIfOwnedReplansTheSuccessor(t *testing.T) {
 		t.Fatalf("ListOnHost = %v, want the successor running", got)
 	}
 }
+
+// A predecessor's teardown that has stopped its shard and not yet removed
+// the directory the name maps to holds the name: the successor recreated
+// under it waits for the purge to end, and its directory survives, where
+// starting at once would have the purge delete the successor's state.
+func TestRaftBackendFactory_PurgeHoldsTheNameUntilTheDirectoryIsGone(t *testing.T) {
+	f, reg, src := newRaftFactory(t)
+	dataRoot, _ := registerVolumeTenant(t, reg, "rt")
+	src.add("rt", "a", shardOfa, dataRoot)
+	ctx := context.Background()
+	if _, err := f.Services(ctx, "rt", "a"); err != nil {
+		t.Fatalf("Services(a) = %v, want the predecessor started", err)
+	}
+
+	stopped := make(chan struct{})
+	release := make(chan struct{})
+	f.purgeHook = func() {
+		close(stopped)
+		<-release
+	}
+	waiting := make(chan struct{}, 1)
+	f.purgeWaitHook = func() {
+		select {
+		case waiting <- struct{}{}:
+		default:
+		}
+	}
+	teardown := make(chan error, 1)
+	go func() {
+		_, err := f.CloseShardIfOwned("rt", "a", shardOfa, true)
+		teardown <- err
+	}()
+	<-stopped
+
+	delete(src.entries, raftShardKey{tenantID: "rt", database: "a"})
+	src.add("rt", "a", shardOfb, dataRoot)
+	succ := resolveAsync(ctx, f, "rt", "a")
+	select {
+	case <-waiting:
+	case r := <-succ:
+		close(release)
+		t.Fatalf("Services(successor) = %v before the predecessor's purge ended, want it to wait for the purge", r.err)
+	}
+	close(release)
+	if err := <-teardown; err != nil {
+		t.Fatalf("CloseShardIfOwned(predecessor) = %v, want nil", err)
+	}
+	r := <-succ
+	if r.err != nil {
+		t.Fatalf("Services(successor) = %v, want it started after the purge", r.err)
+	}
+	f.mu.Lock()
+	dataDir := f.shards[raftShardKey{tenantID: "rt", database: "a"}].dataDir
+	f.mu.Unlock()
+	if _, err := os.Stat(dataDir); err != nil {
+		t.Fatalf("successor data dir: %v, want it kept by the predecessor's purge", err)
+	}
+	if got := f.ListOnHost(); !slices.Equal(got, []StartedShard{{TenantID: "rt", Database: "a", ShardID: shardOfb}}) {
+		t.Fatalf("ListOnHost = %v, want the successor running", got)
+	}
+}
