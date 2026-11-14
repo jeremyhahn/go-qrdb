@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"hash"
 	"io"
 	"log/slog"
 	"slices"
@@ -95,46 +96,60 @@ func (r credentialRecord) claim() migrationClaim {
 
 	all, versions := sha256.New(), sha256.New()
 	for _, k := range suffixes {
-		writeField(all, k)
-		writeField(all, string(r[k]))
+		// The record values are hashed in place, from the buffers r owns
+		// and its wipe zeroes: no string or other copy of a plaintext
+		// value is made.
+		writeField(all, []byte(k))
+		writeField(all, r[k])
 		if strings.HasPrefix(k, versionPrefix) {
-			writeField(versions, k)
-			writeField(versions, string(r[k]))
+			writeField(versions, []byte(k))
+			writeField(versions, r[k])
 		}
 	}
 	value := sha256.New()
 	if v, ok := r[""]; ok {
-		writeField(value, string(v))
+		writeField(value, v)
 	}
 	policy := sha256.New()
 	if raw, ok := r[metaSuffix]; ok {
 		var m credentialMeta
 		if err := json.Unmarshal(raw, &m); err != nil {
-			writeField(policy, string(raw))
+			writeField(policy, raw)
 		} else {
 			hist, _ := json.Marshal(struct {
 				Current uint64                `json:"c"`
 				History []credentialMetaEntry `json:"h"`
 			}{m.CurrentVersion, m.History})
-			writeField(versions, string(hist))
+			writeField(versions, hist)
 			pol, _ := json.Marshal(m.Policy)
-			writeField(policy, string(pol))
+			writeField(policy, pol)
 		}
 	}
 	return migrationClaim{
-		Digest:   hex.EncodeToString(all.Sum(nil)),
-		Value:    hex.EncodeToString(value.Sum(nil)),
-		Versions: hex.EncodeToString(versions.Sum(nil)),
-		Policy:   hex.EncodeToString(policy.Sum(nil)),
+		Digest:   sumAndClear(all),
+		Value:    sumAndClear(value),
+		Versions: sumAndClear(versions),
+		Policy:   sumAndClear(policy),
 	}
 }
 
+// sumAndClear returns h's digest in hex, then overwrites the input h still
+// buffers: a hash keeps the tail of its input, short of a block, until more
+// arrives, and that tail may be a plaintext value. One block of zeros
+// completes and processes the pending block and leaves a pending tail of
+// zeros in its place.
+func sumAndClear(h hash.Hash) string {
+	sum := hex.EncodeToString(h.Sum(nil))
+	_, _ = h.Write(make([]byte, h.BlockSize()))
+	return sum
+}
+
 // writeField writes s length-prefixed, so field boundaries are unambiguous.
-func writeField(w interface{ Write([]byte) (int, error) }, s string) {
+func writeField(w interface{ Write([]byte) (int, error) }, b []byte) {
 	var n [8]byte
-	binary.BigEndian.PutUint64(n[:], uint64(len(s)))
+	binary.BigEndian.PutUint64(n[:], uint64(len(b)))
 	_, _ = w.Write(n[:])
-	_, _ = w.Write([]byte(s))
+	_, _ = w.Write(b)
 }
 
 // legacyCopy is one credential as this node's legacy store holds it.
