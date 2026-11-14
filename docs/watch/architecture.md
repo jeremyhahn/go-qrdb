@@ -1,6 +1,6 @@
 # Watch — Architecture
 
-> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-10-26
+> **Status: NORMATIVE** · Scope: go-qrdb · Last verified: 2026-11-14
 > Conflicts with this document are defects. Fix them here first.
 
 ## Problem
@@ -114,6 +114,124 @@ than dropping changes between polls.
 
 Events are delivered in Raft commit order. Ordering across two separate watches
 is not defined beyond each stream's own revision sequence.
+
+## WatchPrefix: behaviour on main
+
+What a prefix watch does today, claim by claim, each with the function it
+comes from. A change to any of this is a SPEC row, not a doc edit.
+
+### Matching
+
+- **Byte prefix, half-open range.** The prefix becomes the range
+  `[prefix, prefixEnd(prefix))`: `prefixEnd` copies the prefix, increments its
+  last byte below `0xff` and truncates after it
+  (`pkg/watch/hub.go:prefixEnd`). A key matches when `key >= prefix` and, if
+  the end is non-empty, `key < end`, compared bytewise with no Unicode or path
+  semantics (`pkg/watch/hub.go:matchesRange`, `pkg/watch/hub.go:watcher.matches`).
+  `"a/"` therefore matches `"a/"` itself and `"a/b"`, but not `"a"` or `"a0"`.
+- **Empty prefix watches everything in scope.** An empty prefix, and a prefix
+  of only `0xff` bytes, yield an empty end, which `matchesRange` treats as
+  unbounded (`pkg/watch/hub.go:prefixEnd`, `pkg/watch/hub.go:matchesRange`).
+  Under a tenant scope "everything" is the scope's namespace (see Scoping).
+- **Every write is checked against every prefix watcher.** Prefix watchers are registered in
+  the shard of the prefix itself (`pkg/watch/hub.go:Hub.WatchPrefix`), and each
+  write scans the prefix watchers of all shards for a range match, after the
+  exact-key watchers of the key's own shard (`pkg/watch/hub.go:Hub.notify`).
+- **Put/delete filters** (`WatchFilterNoPut`, `WatchFilterNoDelete`) drop the
+  matching event type on both the live path (`pkg/watch/hub.go:Hub.sendEvent`)
+  and the replay path (`pkg/watch/hub.go:Hub.startReplay`). The previous value
+  is attached only when `prev_kv` was asked for (same two functions).
+
+### Start revision, catch-up and replay
+
+- **`StartRevision <= 0` is a live-only watch**: no replay, no history needed
+  (`pkg/watch/hub.go:Hub.prepareReplay`).
+- **Validated before anything is registered.** A positive start revision on a
+  hub with no history replayer fails with `ErrStartRevisionUnsupported`; one at
+  or below the range's compaction floor fails with `CompactedError` carrying
+  that floor. Both return from `WatchPrefix` with no watcher created
+  (`pkg/watch/hub.go:Hub.prepareReplay`, called first in
+  `pkg/watch/hub.go:Hub.WatchPrefix`).
+- **Replay boundary.** The watcher is registered and the replay boundary
+  revision captured under the same shard lock, so every commit after the
+  boundary reaches the watcher live (`pkg/watch/hub.go:Hub.WatchPrefix`,
+  `pkg/watch/hub.go:Hub.captureReplayBoundary`).
+- **Replay order.** A replaying watcher first receives a `Created` response
+  whose `Revision` is the boundary, then one response per historical event from
+  the start revision through the boundary, then the live events that arrived
+  meanwhile (`pkg/watch/hub.go:Hub.startReplay`). Live events are held in
+  staging while replay runs (`pkg/watch/watcher.go:watcher.send`) and flushed by
+  `finishReplay`; a live event for a revision replay already delivered is
+  dropped (`pkg/watch/watcher.go:watcher.dedupDrop`), so the hand-off has no gap
+  and no duplicate. A live-only watch gets no `Created` response from the hub.
+- **Start revision beyond the boundary** runs no historical scan; the watcher
+  withholds live events below the start revision through its deliver floor
+  (`pkg/watch/hub.go:Hub.startReplay`, `pkg/watch/watcher.go:watcher.advanceDeliverFloor`).
+- **Progress after replay.** With `ProgressNotify`, one `Progress` response
+  carrying the boundary follows the flushed replay, a cursor safe to resume
+  from (`pkg/watch/hub.go:Hub.startReplay`).
+
+### Compaction during replay
+
+If a replay that actually scanned history returns an error, or the range's
+compaction floor has reached the start revision by the time it ends, the
+watcher's error becomes `CompactedError{CompactRevision: floor}` and the
+watcher is cancelled; staged live events are flushed first
+(`pkg/watch/hub.go:Hub.startReplay`). A live-only watch is never ended by
+compaction: it reads no history.
+
+### Ordering and delivery
+
+- Each watcher receives events in the order the engine publishes them into
+  the hub (`pkg/watch/hub.go:Hub.notify`), one event per response, with the
+  response `Revision` set to the event's `ModRevision`
+  (`pkg/watch/hub.go:Hub.sendEvent`).
+- **A slow consumer is cut off, never waited for.** Each watcher has a bounded
+  event buffer, 4096 responses unless `WithEventBufferSize` says otherwise
+  (`pkg/watch/watcher.go:defaultEventBufferSize`). Delivery never blocks the
+  writer: when the buffer is full the watcher's error becomes
+  `ErrWatcherOverflow` and the watcher is cancelled
+  (`pkg/watch/watcher.go:watcher.deliver`). The consumer must re-read state
+  and open a new watch.
+- A node-wide watcher cap, when configured, is taken before registration; a
+  refused slot fails `WatchPrefix` (`pkg/watch/hub.go:Hub.WatchPrefix`, via
+  `limit.acquireFor`). A closed hub fails it with `HubClosedError`.
+
+### Cancellation
+
+Cancelling the caller's context ends the watch: a cleanup goroutine started at
+registration deregisters the watcher and releases its cap slot
+(`pkg/watch/hub.go:Hub.WatchPrefix`, `pkg/watch/hub.go:Hub.cleanupOnCancel`).
+Overflow and compaction end it the same way, with the reason in the watcher's
+`Err()` (`pkg/watch/watcher.go:watcher.deliver`, `pkg/watch/hub.go:Hub.startReplay`);
+`pkg/watch` itself sends no terminal response; turning `Err()` into the
+in-band terminal response of "Shape chosen" is each transport's job.
+
+### Scoping
+
+The service layer passes the prefix through unchanged
+(`pkg/service/watch_service.go:WatchService.WatchPrefix`). The namespacing
+wrapper prepends the (tenant, database) namespace to the caller's prefix
+before it reaches the hub and strips it from every event key on the way out
+(`pkg/server/namespaced_watch.go:namespacedWatchService.WatchPrefix`,
+`pkg/server/namespaced_watch.go:namespacedWatcher.pump`). An empty prefix
+under a namespace therefore watches that whole namespace and nothing outside
+it.
+
+### Per transport
+
+| Transport | Selects a prefix watch when | Function |
+|---|---|---|
+| REST | query `prefix=true`; `key` is the prefix | `pkg/api/rest/handlers_watch.go:handleWatch` |
+| gRPC / Unix | `range_end` is non-empty; `key` is the prefix | `pkg/api/grpc/service.go:Watch` |
+| etcd v3 API | a create request's `range_end` is non-empty | `pkg/api/etcd/watch.go:watchServer.Watch` |
+| QUIC | the `watch.WatchPrefix` method, or a non-empty `range_end` | `pkg/api/quic/handlers_watch.go:handleWatchStream` |
+| MCP | tool argument `prefix: true` | `pkg/api/mcp/tools_watch.go:watchTools` |
+
+On gRPC, Unix, etcd and QUIC the **value** of `range_end` is not read: any
+non-empty `range_end` makes `key` a prefix and the range is always
+`[key, prefixEnd(key))` (`Hub.WatchPrefix` takes no end). A request for an
+arbitrary range `[key, range_end)` gets the prefix range of `key` instead.
 
 ## Trust boundaries
 
