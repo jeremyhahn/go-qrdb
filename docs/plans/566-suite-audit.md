@@ -78,6 +78,10 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/quota | TestInvalidResourceErrorImplementsError | tautology (compile-time assignment) | TestInvalidResourceErrorMessageContainsResourceID |
 | pkg/quota | TestUnregisteredCounterErrorImplementsError | tautology (compile-time assignment) | TestUnregisteredCounterErrorMessageContainsResource |
 | pkg/quota | TestErrNilCheckerIsNotNil | tautology (errors.New package var) | TestErrNilCheckerMessageContainsQuota |
+| pkg/backend | TestClusterOperationError_ImplementsError | tautology (non-empty message) | TestClusterOperationError_Message |
+| pkg/backend | TestUnsupportedOperationError_ImplementsError | tautology (non-empty message) | TestUnsupportedOperationError_Message |
+| pkg/backend | TestBackendClosedError_ImplementsError | tautology (non-empty message) | TestBackendClosedError_Message |
+| pkg/backend | TestLookupTypeError_ImplementsError | tautology (non-empty message) | TestLookupTypeError_Message |
 
 ## Trimmed tests
 
