@@ -14,14 +14,22 @@ What is observable over the wire is a database's configured backend, through
 (`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A database's
 `backend: objstore` opens the objstore engine from the database's own
 `objstore` settings (`provider`, `settings`, `key_file`, `secret_file`):
-`openStorage` calls `objstore.New` with `objstore.WithCredentialFiles`, so
-the engine opens the credential handle and never holds a plaintext copy; an
-open that fails returns `database.StorageCreateError` wrapping the objstore
-error (`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
-A node running under the seal refuses such a database at create
-(`database.SealedNodeBackendError`): the barrier never reaches a
-provider's objects. `objstore` also serves as the standalone node's
-`storage.backend`.
+`openStorage` calls the backend factory's object-storage opener,
+`objstoredb.Open` (`pkg/database/objstoredb`), which calls `objstore.New`
+with `objstore.WithCredentialFiles`, so the engine opens the credential
+handle and never holds a plaintext copy; an open that fails returns
+`database.StorageCreateError` wrapping the objstore error
+(`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
+`pkg/database` does not link the engine: the opener is wired with
+`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open))`
+(`objstoredb.NewBackendFactory`), which `qrdbd` and the server lifecycle do.
+A lean embedder — `pkg/database` or the Go SDK node without an opener —
+refuses such a database with `database.ObjectStorageNotWiredError`; a Go SDK
+standalone node opens it when built with
+`node.WithObjectStorage(objstoredb.Open)`. A node running under the seal
+refuses such a database at create (`database.SealedNodeBackendError`),
+opener or not: the barrier never reaches a provider's objects. `objstore`
+also serves as the standalone node's `storage.backend`.
 
 ### Optional `GuardedStorage`
 

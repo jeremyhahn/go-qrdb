@@ -80,8 +80,10 @@ Supporting facts:
   opened.
 - `backend: objstore` opens the **objstore engine** from the database's
   `objstore` settings (provider, settings, key and secret files) through
-  the credential handle (`objstore.WithCredentialFiles`); its data root is
-  not used. A failed open is `database.StorageCreateError`; a sealed
+  the credential handle (`objstore.WithCredentialFiles`), via the factory's
+  `database.WithObjectStorage` opener (`objstoredb.Open`); its data root is
+  not used. A failed open is `database.StorageCreateError`; a factory with
+  no opener refuses it (`database.ObjectStorageNotWiredError`); a sealed
   node's manager refuses it at create (`database.SealedNodeBackendError`).
 - `backend: raft` on a **prefix or barrier** tenant is metered as a Raft group
   and gets a replicated placement record, yet `resolve` routes on the tenant's

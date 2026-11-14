@@ -568,7 +568,7 @@ key, never shared between instances.
   directory, or the bucket. The engine formats the empty bucket at open, so
   the signed PUT of its format marker is the proof; the test then stops the
   node. A database's own `backend: objstore` opens through the same handle
-  (`openStorage`, `objstore.WithCredentialFiles`).
+  (`openStorage` → `objstoredb.Open`, `objstore.WithCredentialFiles`).
 - **The provider is released once, after the last call.** Every engine call
   holds the engine's lifetime lock shared from its closed check to its
   return, and checks closed again once it holds it. `Close` marks the engine

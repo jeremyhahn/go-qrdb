@@ -451,7 +451,7 @@ the model itself:
   barrier's encrypting file system does not reach a provider's objects.
 - **It is refused as a Raft hot apply path.** A database's
   `backend: objstore` opens the engine from its own provider, settings and
-  credential files (`openStorage`), but `objstore` is refused as a Raft
+  credential files (`openStorage` through the `objstoredb.Open` opener), but `objstore` is refused as a Raft
   state machine.
 
 ### Direction this design proposes
@@ -796,7 +796,8 @@ encoded-name layout is refused at open (OS-5).
 **Phase 2 — wire a database's `backend: objstore` as a non-replicated binding.**
 The `database.InvalidBackendError` refusal at `openStorage` is gone (owner
 ruling 633(b)): `openStorage` opens the objstore engine directly with the
-credential handle. Phase 2 would instead route it through `pebble.WithRemote` like any other
+credential handle, through the factory's `database.WithObjectStorage` opener
+(`objstoredb.Open`), so a lean embedder links no go-objstore. Phase 2 would instead route it through `pebble.WithRemote` like any other
 non-replicated binding. The surrounding binding resolution is the databases
 feature's ([../databases/architecture.md](../databases/architecture.md));
 this phase owns only the storage side.
