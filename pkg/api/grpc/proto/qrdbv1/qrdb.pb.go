@@ -17887,8 +17887,11 @@ type DatabaseRaftInfo struct {
 	Multicast      *DatabaseMulticastDiscoveryInfo `protobuf:"bytes,9,opt,name=multicast,proto3" json:"multicast,omitempty"`
 	Dns            *DatabaseDNSDiscovery           `protobuf:"bytes,10,opt,name=dns,proto3" json:"dns,omitempty"`
 	Token          *DatabaseTokenDiscoveryInfo     `protobuf:"bytes,11,opt,name=token,proto3" json:"token,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// state_storage is the storage of the Raft group state (pebble, file or
+	// memory) the database recorded at create.
+	StateStorage  string `protobuf:"bytes,12,opt,name=state_storage,json=stateStorage,proto3" json:"state_storage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DatabaseRaftInfo) Reset() {
@@ -17989,6 +17992,13 @@ func (x *DatabaseRaftInfo) GetToken() *DatabaseTokenDiscoveryInfo {
 		return x.Token
 	}
 	return nil
+}
+
+func (x *DatabaseRaftInfo) GetStateStorage() string {
+	if x != nil {
+		return x.StateStorage
+	}
+	return ""
 }
 
 // DatabaseStaticDiscoveryInfo reports static peer discovery.
@@ -18812,8 +18822,12 @@ type DatabaseRaftConfig struct {
 	Multicast      *DatabaseMulticastDiscovery `protobuf:"bytes,9,opt,name=multicast,proto3" json:"multicast,omitempty"`
 	Dns            *DatabaseDNSDiscovery       `protobuf:"bytes,10,opt,name=dns,proto3" json:"dns,omitempty"`
 	Token          *DatabaseTokenDiscovery     `protobuf:"bytes,11,opt,name=token,proto3" json:"token,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// state_storage is the storage of the Raft group state: pebble, file or
+	// memory. Empty takes the node's database_defaults; create records the
+	// resolved value.
+	StateStorage  string `protobuf:"bytes,12,opt,name=state_storage,json=stateStorage,proto3" json:"state_storage,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DatabaseRaftConfig) Reset() {
@@ -18914,6 +18928,13 @@ func (x *DatabaseRaftConfig) GetToken() *DatabaseTokenDiscovery {
 		return x.Token
 	}
 	return nil
+}
+
+func (x *DatabaseRaftConfig) GetStateStorage() string {
+	if x != nil {
+		return x.StateStorage
+	}
+	return ""
 }
 
 // DatabaseStaticDiscovery holds static peer discovery configuration.
@@ -36695,7 +36716,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"compaction\x18\x11 \x01(\v2!.qrdb.v1.DatabaseCompactionConfigR\n" +
 	"compaction\x125\n" +
-	"\x16compaction_unavailable\x18\x12 \x01(\bR\x15compactionUnavailableJ\x04\b\x02\x10\x03R\x06engine\"\xd6\x03\n" +
+	"\x16compaction_unavailable\x18\x12 \x01(\bR\x15compactionUnavailableJ\x04\b\x02\x10\x03R\x06engine\"\xfb\x03\n" +
 	"\x10DatabaseRaftInfo\x12!\n" +
 	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +
@@ -36708,7 +36729,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tmulticast\x18\t \x01(\v2'.qrdb.v1.DatabaseMulticastDiscoveryInfoR\tmulticast\x12/\n" +
 	"\x03dns\x18\n" +
 	" \x01(\v2\x1d.qrdb.v1.DatabaseDNSDiscoveryR\x03dns\x129\n" +
-	"\x05token\x18\v \x01(\v2#.qrdb.v1.DatabaseTokenDiscoveryInfoR\x05tokenJ\x04\b\x02\x10\x03R\bshard_id\"t\n" +
+	"\x05token\x18\v \x01(\v2#.qrdb.v1.DatabaseTokenDiscoveryInfoR\x05token\x12#\n" +
+	"\rstate_storage\x18\f \x01(\tR\fstateStorageJ\x04\b\x02\x10\x03R\bshard_id\"t\n" +
 	"\x1bDatabaseStaticDiscoveryInfo\x12\x14\n" +
 	"\x05peers\x18\x01 \x03(\tR\x05peers\x12*\n" +
 	"\x11shared_secret_set\x18\x03 \x01(\bR\x0fsharedSecretSetJ\x04\b\x02\x10\x03R\rshared_secret\"\x99\x02\n" +
@@ -36767,7 +36789,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1f\n" +
 	"\vlisten_addr\x18\x02 \x01(\tR\n" +
 	"listenAddr\x122\n" +
-	"\x15advertise_client_urls\x18\x03 \x03(\tR\x13advertiseClientUrls\"\xcc\x03\n" +
+	"\x15advertise_client_urls\x18\x03 \x03(\tR\x13advertiseClientUrls\"\xf1\x03\n" +
 	"\x12DatabaseRaftConfig\x12!\n" +
 	"\fcluster_mode\x18\x01 \x01(\tR\vclusterMode\x12\x1d\n" +
 	"\n" +
@@ -36780,7 +36802,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\tmulticast\x18\t \x01(\v2#.qrdb.v1.DatabaseMulticastDiscoveryR\tmulticast\x12/\n" +
 	"\x03dns\x18\n" +
 	" \x01(\v2\x1d.qrdb.v1.DatabaseDNSDiscoveryR\x03dns\x125\n" +
-	"\x05token\x18\v \x01(\v2\x1f.qrdb.v1.DatabaseTokenDiscoveryR\x05tokenJ\x04\b\x02\x10\x03R\bshard_id\"T\n" +
+	"\x05token\x18\v \x01(\v2\x1f.qrdb.v1.DatabaseTokenDiscoveryR\x05token\x12#\n" +
+	"\rstate_storage\x18\f \x01(\tR\fstateStorageJ\x04\b\x02\x10\x03R\bshard_id\"T\n" +
 	"\x17DatabaseStaticDiscovery\x12\x14\n" +
 	"\x05peers\x18\x01 \x03(\tR\x05peers\x12#\n" +
 	"\rshared_secret\x18\x02 \x01(\tR\fsharedSecret\"\xf9\x01\n" +

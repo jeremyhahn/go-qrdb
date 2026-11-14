@@ -8,8 +8,8 @@ require (
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/google/uuid v1.6.0
-	// go-enclave: v0.10.0-alpha, in lockstep with the root module and with
-	// go-quicraft v0.24.2-alpha, which builds on it (#944).
+	// go-enclave: v0.11.1-alpha, in lockstep with the root module and with
+	// go-quicraft v0.24.3-alpha, which builds on it (#944).
 	github.com/jeremyhahn/go-enclave v0.11.1-alpha
 	github.com/jeremyhahn/go-objstore v0.9.1-alpha
 	github.com/jeremyhahn/go-qrdb v0.58.0-alpha

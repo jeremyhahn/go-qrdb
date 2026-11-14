@@ -16,8 +16,9 @@ func (s *Server) restCORS() (rest.CORSConfig, bool) {
 		return rest.CORSConfig{}, false
 	}
 	return rest.CORSConfig{
-		AllowedOrigins: slices.Clone(c.AllowedOrigins),
-		AllowedHeaders: slices.Clone(c.AllowedHeaders),
-		MaxAge:         c.MaxAge,
+		AllowedOrigins:   slices.Clone(c.AllowedOrigins),
+		AllowedHeaders:   slices.Clone(c.AllowedHeaders),
+		MaxAge:           c.MaxAge,
+		AllowCredentials: c.AllowCredentials,
 	}, true
 }
