@@ -95,6 +95,16 @@ type CeremonyInitializeOptions struct {
 	// there is no credential-less default.
 	AdminGenerate bool
 
+	// SOUsername names the system tenant's Security Officer the ceremony
+	// enrols at first boot (go-qrdb#1128), with exactly one of SOCSRPEM
+	// (signed under the system tenant) and SOCertPEM (adopted, verified
+	// against AdminCertPoolPEM through SOChainPEM). The SO's PIN is SOPin.
+	// A strict separation-of-duties deployment requires it.
+	SOUsername string
+	SOCSRPEM   string
+	SOCertPEM  string
+	SOChainPEM string
+
 	// Secret is the passphrase (or other strategy-specific credential) the
 	// system barrier is initialized with (go-qrdb#548): qrdb init is the
 	// only system bootstrap, bringing the barrier up itself as part of
@@ -178,6 +188,10 @@ type CeremonyInitResult struct {
 	// AdminCredentialSource records which path produced AdminCertPEM: "csr",
 	// "byoc", or "generated".
 	AdminCredentialSource string
+
+	// SOCertPEM is the system SO's issued or adopted certificate, present
+	// when the ceremony named one (go-qrdb#1128).
+	SOCertPEM []byte
 }
 
 // WipeAdminKeyPEM zeroes r's generated admin key material in place and clears
@@ -272,6 +286,10 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		AdminCertPEM:           []byte(opts.AdminCertPEM),
 		AdminCertPoolPEM:       []byte(opts.AdminCertPoolPEM),
 		AdminGenerate:          opts.AdminGenerate,
+		SOUsername:             opts.SOUsername,
+		SOCSRPEM:               []byte(opts.SOCSRPEM),
+		SOCertPEM:              []byte(opts.SOCertPEM),
+		SOChainPEM:             []byte(opts.SOChainPEM),
 		Secret:                 opts.Secret,
 	}
 	if id := auth.IdentityFromContext(ctx); id != nil {
@@ -304,6 +322,7 @@ func ceremonyInitResultFromCore(result *ceremony.InitResult) *CeremonyInitResult
 		AdminCertPEM:          result.AdminCertPEM,
 		AdminKeyPEM:           result.AdminKeyPEM,
 		AdminCredentialSource: string(result.AdminCredentialSource),
+		SOCertPEM:             result.SOCertPEM,
 	}
 }
 

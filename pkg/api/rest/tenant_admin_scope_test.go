@@ -336,7 +336,9 @@ func soRoleServer(t *testing.T, callerIsSO, aliceIsSO bool, opts ...authmw.Optio
 		}
 	}
 	if callerIsSO {
-		seed(authtest.BindingTenantAdminID, role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin), so)
+		// Under strict separation the SO is a separate principal: it
+		// holds the so role and not the admin role.
+		seed(authtest.BindingTenantAdminID, so)
 	}
 	if aliceIsSO {
 		seed(authtest.UserInBindingTenant, so)
@@ -355,4 +357,66 @@ func holdsSO(u *user.User, so string) bool {
 		}
 	}
 	return false
+}
+
+// Under strict separation, role create and built-in reconcile are
+// SO-exclusive acts: the tenant admin is refused, and so is an SO that also
+// holds the admin role; only a separate SO passes (go-qrdb#1128).
+func TestSOExclusive_RoleCreateAndReconcile(t *testing.T) {
+	admin := role.SystemRoleID(authtest.BindingTenant, role.RoleNameAdmin)
+	so := role.SystemRoleID(authtest.BindingTenant, role.RoleNameSO)
+	ops := []struct {
+		name, path, body string
+		ok               int
+	}{
+		{name: "create role", path: "/roles", ok: http.StatusCreated,
+			body: `{"name":"reviewer","tenant_id":"` + authtest.BindingTenant + `","permissions":["kv:get"]}`},
+		{name: "reconcile built-in roles", path: "/roles/reconcile", ok: http.StatusOK,
+			body: `{"tenant_id":"` + authtest.BindingTenant + `"}`},
+	}
+	callers := []struct {
+		name    string
+		roleIDs []string
+		refused bool
+	}{
+		{name: "tenant admin", roleIDs: []string{admin}, refused: true},
+		{name: "SO holding admin", roleIDs: []string{admin, so}, refused: true},
+		{name: "separate SO", roleIDs: []string{so}},
+	}
+	for _, op := range ops {
+		for _, c := range callers {
+			t.Run(op.name+"/"+c.name, func(t *testing.T) {
+				srv, users := bindingServer(t, authtest.BindingTenantAdmin(), authmw.WithStrictSeparation(true))
+				ctx := tenant.WithTenantID(context.Background(), tenantid.System)
+				if _, err := users.UpdateUser(ctx, &user.UpdateUserRequest{ID: authtest.BindingTenantAdminID, RoleIDs: c.roleIDs}); err != nil {
+					t.Fatalf("seed caller: %v", err)
+				}
+				rec := serve(srv, http.MethodPost, op.path, op.body)
+				want := op.ok
+				if c.refused {
+					want = http.StatusForbidden
+				}
+				if rec.Code != want {
+					t.Fatalf("status = %d, want %d: %s", rec.Code, want, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+// TestStrictTenantWithoutSO_RefusesSOExclusiveOps covers SPEC row 124: a
+// tenant may be created, or a node first booted, under strict separation
+// with no SO, and then only the operations that need an SO are refused.
+// The tenant's sole principal is its admin, no SO is enrolled, and the
+// SO-exclusive role create and built-in reconcile answer 403.
+func TestStrictTenantWithoutSO_RefusesSOExclusiveOps(t *testing.T) {
+	srv, _ := bindingServer(t, authtest.BindingTenantAdmin(), authmw.WithStrictSeparation(true))
+	for _, op := range []struct{ path, body string }{
+		{"/roles", `{"name":"reviewer","tenant_id":"` + authtest.BindingTenant + `","permissions":["kv:get"]}`},
+		{"/roles/reconcile", `{"tenant_id":"` + authtest.BindingTenant + `"}`},
+	} {
+		if rec := serve(srv, http.MethodPost, op.path, op.body); rec.Code != http.StatusForbidden {
+			t.Fatalf("POST %s with no SO enrolled = %d, want 403: %s", op.path, rec.Code, rec.Body.String())
+		}
+	}
 }

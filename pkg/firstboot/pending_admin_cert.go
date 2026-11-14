@@ -155,11 +155,24 @@ func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyServi
 	if recorded, err := store.Get(ctx, PendingAdminCertKey); err == nil && len(recorded) > 0 {
 		return nil
 	}
-	deadline := time.Now().Add(pendingAdminCertSettleBudget)
-	for {
+	return writeSettled(ctx, transient, func() error {
 		err := WritePendingAdminCert(ctx, store, certPEM)
 		var alreadyPending *AdminCredentialAlreadyPendingError
-		if err == nil || errors.As(err, &alreadyPending) {
+		if errors.As(err, &alreadyPending) {
+			return nil
+		}
+		return err
+	})
+}
+
+// writeSettled runs write until it succeeds, its error is not transient,
+// or pendingAdminCertSettleBudget runs out, waiting
+// pendingAdminCertSettleInterval between attempts.
+func writeSettled(ctx context.Context, transient func(error) bool, write func() error) error {
+	deadline := time.Now().Add(pendingAdminCertSettleBudget)
+	for {
+		err := write()
+		if err == nil {
 			return nil
 		}
 		if transient == nil || !transient(err) || ctx.Err() != nil {

@@ -70,6 +70,16 @@ type CeremonyInitializeRequest struct {
 	// suitable for production; see docs/firstboot/user.md.
 	AdminGenerate bool `json:"admin_generate,omitempty"`
 
+	// SOUsername names the system tenant's Security Officer first boot
+	// enrols (go-qrdb#1128), with exactly one of SOCSRPEM (signed under the
+	// system tenant) and SOCertPEM (adopted; verified against
+	// AdminCertPoolPEM through SOChainPEM). Its PIN is SOPin. A strict
+	// separation-of-duties deployment requires it.
+	SOUsername string `json:"so_username,omitempty"`
+	SOCSRPEM   string `json:"so_csr_pem,omitempty"`
+	SOCertPEM  string `json:"so_cert_pem,omitempty"`
+	SOChainPEM string `json:"so_chain_pem,omitempty"`
+
 	// Secret is the passphrase the system barrier is initialized with
 	// (go-qrdb#548): qrdb init is the only system bootstrap, bringing the
 	// barrier up itself in this same call. Required when the barrier's
@@ -114,6 +124,9 @@ type CeremonyInitializeResponse struct {
 	AdminCertPEM          string               `json:"admin_cert_pem,omitempty"`
 	AdminKeyPEM           []byte               `json:"admin_key_pem,omitempty"`
 	AdminCredentialSource string               `json:"admin_credential_source,omitempty"`
+	// SOCertPEM is the system SO's certificate, set when the request
+	// named one.
+	SOCertPEM string `json:"so_cert_pem,omitempty"`
 }
 
 // CeremonyStatusResponse describes the current state of the ceremony.

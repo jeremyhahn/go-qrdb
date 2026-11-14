@@ -65,6 +65,7 @@ const (
 	// kdfTags:
 	//   'A' = Argon2id
 	//   'P' = PBKDF2-SHA256
+	pinHashRecordLen = 1 + 1 + 64 + 1 + 64
 )
 
 var (
@@ -259,7 +260,87 @@ func (a *SOAuthenticator) SetSOPIN(ctx context.Context, tenantID string, newPIN 
 		})
 		return err
 	}
+	return a.putPINRecord(ctx, tenantID, key, record)
+}
 
+// HashSOPIN hashes pin into the record SetSOPIN stores, for a caller that
+// must carry an SO's PIN to the node that commits it without carrying the
+// PIN itself: the first-boot hand-off of the system SO, which replicates
+// this record and commits it with CommitSOPINRecord. pin is not modified.
+func HashSOPIN(pin []byte) (string, error) {
+	if len(pin) == 0 {
+		return "", ErrSOPINEmptyPIN
+	}
+	return hashPIN(pin)
+}
+
+// CommitSOPINRecord commits record, made by HashSOPIN, as tenantID's SO PIN.
+// It is SetSOPIN for a PIN hashed elsewhere: the same once-only commit
+// (ErrSOPINAlreadySet when a PIN is set), the same audit. A record that is
+// not a HashSOPIN record is ErrSOPINInvalid.
+func (a *SOAuthenticator) CommitSOPINRecord(ctx context.Context, tenantID, record string) error {
+	if tenantID == "" {
+		return ErrSOPINEmptyTenant
+	}
+	if !validPINRecord(record) {
+		return ErrSOPINInvalid
+	}
+	key := soPINCommitPrefix + tenantID
+	existing, err := a.store.Get(ctx, key)
+	if err != nil {
+		return &OperationError{Op: "store get", Cause: err}
+	}
+	if existing != nil {
+		return ErrSOPINAlreadySet
+	}
+	return a.putPINRecord(ctx, tenantID, key, record)
+}
+
+// SOPINCommitted reports whether tenantID's SO PIN is committed. It reads
+// the record and changes nothing: first boot uses it to consume the pending
+// system SO record only once the SO it names is enrolled.
+func (a *SOAuthenticator) SOPINCommitted(ctx context.Context, tenantID string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	return existing != nil, nil
+}
+
+// SOPINRecordMatches reports whether tenantID's committed SO PIN record is
+// record, comparing them in constant time. It changes nothing: first boot
+// uses it to prove a PIN an earlier enrolment committed is this one's.
+func (a *SOAuthenticator) SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error) {
+	if tenantID == "" {
+		return false, ErrSOPINEmptyTenant
+	}
+	existing, err := a.store.Get(ctx, soPINCommitPrefix+tenantID)
+	if err != nil {
+		return false, &OperationError{Op: "store get", Cause: err}
+	}
+	if existing == nil {
+		return false, nil
+	}
+	return subtle.ConstantTimeCompare(existing, []byte(record)) == 1, nil
+}
+
+// validPINRecord reports whether record has the shape hashPINImpl writes:
+// a known KDF tag, then a hex salt and a hex hash of 32 bytes each.
+func validPINRecord(record string) bool {
+	if len(record) != pinHashRecordLen || (record[0] != 'A' && record[0] != 'P') ||
+		record[1] != ':' || record[66] != ':' {
+		return false
+	}
+	_, saltErr := hex.DecodeString(record[2:66])
+	_, hashErr := hex.DecodeString(record[67:])
+	return saltErr == nil && hashErr == nil
+}
+
+// putPINRecord stores tenantID's SO PIN record under key and audits it.
+func (a *SOAuthenticator) putPINRecord(ctx context.Context, tenantID, key, record string) error {
 	if err := a.store.Put(ctx, key, []byte(record)); err != nil {
 		audit.EmitBestEffort(ctx, a.audit, "so-auth", audit.AuditEvent{
 			TenantID: tenantID,

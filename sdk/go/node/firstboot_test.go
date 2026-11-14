@@ -233,7 +233,7 @@ func TestNodeFirstBoot_StartedNodeReconciles(t *testing.T) {
 	n := newBareStandaloneNode(t)
 	n.bindingPolicy.Store(int32(auth.MTLSBindingEnrolled))
 	users, roles := realStores(t)
-	result, err := n.FirstBoot(context.Background(), fbDeps(users, roles))
+	result, err := n.FirstBoot(context.Background(), withSystemSO(t, fbDeps(users, roles)))
 	if err != nil {
 		t.Fatalf("FirstBoot: %v", err)
 	}
@@ -277,10 +277,10 @@ func TestReconcileAwaitingAdminCredential_WatchStartsOnce(t *testing.T) {
 	n.bindingPolicy.Store(int32(auth.MTLSBindingRequired))
 	ctx := context.Background()
 	svcs := n.Services()
-	_, err := n.FirstBoot(ctx, firstboot.Dependencies{
+	_, err := n.FirstBoot(ctx, withSystemSO(t, firstboot.Dependencies{
 		Tenants: svcs.Tenant, Users: n.UserService(), Roles: svcs.Role, RoleResolver: svcs.Role,
 		Logger: slog.New(slog.DiscardHandler),
-	})
+	}))
 	require.NoError(t, err)
 	require.True(t, n.awaitingAdminCredentialProbe.AwaitingAdminCredential() && n.adminWatchStarted.Load(),
 		"an unbound admin under \"required\" must leave the node awaiting, with the watch armed")
@@ -353,7 +353,10 @@ func (s *lateRecordStore) PutIfAbsent(context.Context, string, []byte) (bool, er
 	return false, errors.New("store is read-only")
 }
 
-func (s *lateRecordStore) Get(context.Context, string) ([]byte, error) {
+func (s *lateRecordStore) Get(_ context.Context, key string) ([]byte, error) {
+	if key != firstboot.PendingAdminCertKey {
+		return nil, nil // only the admin's record arrives late
+	}
 	if s.reads.Add(1) == 1 {
 		return nil, nil
 	}

@@ -26,6 +26,7 @@ import (
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/wiring"
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -471,6 +472,9 @@ func awaitUnseal(sigCtx context.Context, f *startFlags, bundle *TLSBundle, sub *
 		DefaultTenantQuotas:       f.tenantConfig.DefaultQuotas.ToQuotas(),
 		DefaultTenantEntitlements: f.tenantConfig.DefaultEntitlements.ToEntitlements(),
 		SignedInitTTL:             f.tenantConfig.SignedInitTTLDuration(),
+		// The initial ceremony runs in this window: a strict node must
+		// refuse one that names no system SO here, before any write.
+		SeparationOfDuties: wiring.ResolveStrictSeparation(f.separationOfDuties),
 	})
 	if err != nil {
 		return nil, &SealedListenerStartupError{Err: err}

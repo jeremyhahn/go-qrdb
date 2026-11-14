@@ -324,6 +324,10 @@ func (s *qrdbServiceServer) CreateRole(ctx context.Context, req *pb.CreateRoleRe
 		perms[i] = permission.Permission(p)
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.GetTenantId(), "create role"); err != nil {
+		return nil, mapServiceError(err)
+	}
+
 	r, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.GetId(),
 		Name:        req.GetName(),
@@ -603,6 +607,10 @@ func (s *qrdbServiceServer) Authorize(ctx context.Context, req *pb.AuthorizeRequ
 func (s *qrdbServiceServer) ReconcileBuiltInRoles(ctx context.Context, req *pb.ReconcileBuiltInRolesRequest) (*pb.ReconcileBuiltInRolesResponse, error) {
 	if s.roleSvc == nil {
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
+	}
+
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.GetTenantId(), "reconcile built-in roles"); err != nil {
+		return nil, mapServiceError(err)
 	}
 
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.GetTenantId())

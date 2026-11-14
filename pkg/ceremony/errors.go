@@ -586,6 +586,69 @@ func (e *AdminCredentialRejectedError) Error() string {
 // Unwrap exposes the underlying cause for errors.Is / errors.As.
 func (e *AdminCredentialRejectedError) Unwrap() error { return e.Cause }
 
+// SystemSORejectedError wraps the reason the system SO named by
+// InitializeOptions could not be issued: a username with no certificate
+// input (or the reverse), both SOCSRPEM and SOCertPEM, the admin's
+// username or key, no SOPin, a CSR that does not parse, or a presented
+// certificate that does not verify under the system tenant, or one whose
+// subject CN is not SOUsername.
+type SystemSORejectedError struct {
+	Cause error
+}
+
+// Error implements error.
+func (e *SystemSORejectedError) Error() string {
+	return "ceremony: system SO rejected: " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *SystemSORejectedError) Unwrap() error { return e.Cause }
+
+// SystemSOHolderCertError is the cause of a *SystemSORejectedError for a
+// presented SO certificate that carries a share-holder profile OU. A holder
+// certificate is a custody identity: it is never resolved to an account
+// and RBAC grants it nothing, so it cannot be the SO's login. Profile names
+// the OU found.
+type SystemSOHolderCertError struct {
+	Profile string
+}
+
+// Error implements the error interface.
+func (e *SystemSOHolderCertError) Error() string {
+	return "the certificate carries the " + e.Profile + " holder profile and is a custody identity, not a login certificate"
+}
+
+// ClientAuthProfileError reports a login certificate a TLS client login
+// cannot use: its KeyUsage lacks digital signature, or its ExtKeyUsage names
+// neither client authentication nor any usage. It is the cause of a
+// *AdminCredentialRejectedError for the bootstrap admin and of a
+// *SystemSORejectedError for a presented SO certificate. Reason names the
+// missing usage.
+type ClientAuthProfileError struct {
+	Reason string
+}
+
+// Error implements the error interface.
+func (e *ClientAuthProfileError) Error() string {
+	return e.Reason
+}
+
+// SystemSOPersistError wraps a failure recording, reading or removing the
+// system SO Initialize issued in the system barrier (go-qrdb#1128). Op names
+// the step: "encode", "write", "read", "decode" or "remove".
+type SystemSOPersistError struct {
+	Op    string
+	Cause error
+}
+
+// Error implements error.
+func (e *SystemSOPersistError) Error() string {
+	return "ceremony: system SO record " + e.Op + ": " + e.Cause.Error()
+}
+
+// Unwrap exposes the underlying cause for errors.Is / errors.As.
+func (e *SystemSOPersistError) Unwrap() error { return e.Cause }
+
 // AdminCredentialIssuanceError wraps a failure signing the bootstrap admin's
 // certificate, whether the CSR came from the operator (Path B) or was
 // generated in-process (Path A).

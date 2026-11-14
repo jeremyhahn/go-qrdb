@@ -164,6 +164,9 @@ func (s *Server) handleCreateRole(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "create role"); err != nil {
+		return nil, err
+	}
 	perms := stringsToPermissions(req.Permissions)
 
 	rl, err := s.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
@@ -358,6 +361,9 @@ func (s *Server) handleReconcileRoles(ctx context.Context, payload []byte) ([]by
 		}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, req.TenantID, "reconcile built-in roles"); err != nil {
+		return nil, err
+	}
 	report, err := s.roleSvc.ReconcileBuiltInRoles(ctx, req.TenantID)
 	if err != nil {
 		return nil, err

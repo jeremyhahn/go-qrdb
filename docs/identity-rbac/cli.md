@@ -270,6 +270,12 @@ account in its tenant the built-in `admin` and `operator` roles, and that
 account runs `roles create`. See
 [architecture.md](architecture.md#the-grant-rule).
 
+Requires `roles:create`. Under strict separation of duties
+(`auth.separation_of_duties`, always on in FIPS 140-3 mode) it additionally
+runs only as a separate Security Officer of the tenant: the tenant Admin is
+refused with 403 `SO role required`, and an account holding both `so` and
+`admin` with 403 `separation of duties: ...`. Over every transport.
+
 ### `qrdb roles get <id>` / `get-by-name <name>` / `delete <id>`
 
 ```bash
@@ -321,6 +327,11 @@ its crypto-use duty, to the accounts that do the signing. No caller may assign
 itself a role, built-in or custom, that carries a permission it does not hold:
 `roles assign --user <your own id> --role <user>` from a tenant Admin is
 refused.
+
+Under strict separation of duties only the tenant's own Security Officer
+grants or revokes the `so` role, and no account may hold `so` together with
+its tenant's `admin` role: an `assign` that would leave a user holding both is
+refused with 403 `separation of duties: ...`.
 
 ### Granting device onboarding alone
 
@@ -404,8 +415,12 @@ that build keeps the old set and its administrators get a 403 on the new verb
 with nothing explaining it.
 
 Requires `roles:create` — the same grant as seeding, because reconciliation is
-seeding applied to an existing tenant. A tenant's built-in Admin holds it, so
-the tenant's own Admin reconciles the tenant without taking another role.
+seeding applied to an existing tenant. In the standard posture a tenant's
+built-in Admin holds it, so the tenant's own Admin reconciles the tenant
+without taking another role. Under strict separation of duties the reconcile,
+like `roles create`, runs only as a separate Security Officer of the tenant:
+the tenant Admin is refused with 403 `SO role required`, and the tenant's SO,
+which holds `roles:create` and not `admin`, reconciles it.
 
 `qrdb roles get` prints a `Retired:` line when a role carries permissions this
 build no longer defines. That is the drift this command repairs; seeing it is
@@ -438,12 +453,17 @@ then exits non-zero naming every failed tenant. `--output json` and
 lists.
 
 Requires `roles:reconcile_all`, a cross-tenant permission held only by the
-system tenant's built-in Admin. A tenant's own Admin, or any other tenant
-principal, is refused even if it holds `roles:create`.
+system tenant's built-in Admin role, in both separation postures. A tenant's
+own Admin, the system SO, or any other tenant principal, is refused even if it
+holds `roles:create`. Under strict separation of duties
+(`auth.separation_of_duties`) the single-tenant reconcile is an SO's alone and
+the system Admin is refused it; `--all-tenants` stays the system Admin's. First
+boot can enrol the system SO (`qrdb init --so-username` with `--so-csr` or
+`--so-cert`).
 
 A node upgraded from a build that predates `roles:reconcile_all` has a stored
 system Admin role without it. Run `qrdb roles reconcile` as the system Admin
-first; that converges the system tenant and grants the permission. Then run
+(the system SO under strict separation) first; that converges the system tenant and grants the permission. Then run
 `--all-tenants`.
 
 ## ABAC policies

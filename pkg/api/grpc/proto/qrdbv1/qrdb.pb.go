@@ -22460,7 +22460,16 @@ type CeremonyInitializeRequest struct {
 	// secret is bytes, not string: it is the plaintext system-barrier
 	// passphrase, and a Go string is immutable and can never be wiped from
 	// memory after use the way a []byte can (go-qrdb#560 review item 7).
-	Secret        []byte `protobuf:"bytes,13,opt,name=secret,proto3" json:"secret,omitempty"`
+	Secret []byte `protobuf:"bytes,13,opt,name=secret,proto3" json:"secret,omitempty"`
+	// so_username names the system tenant's Security Officer first boot
+	// enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
+	// the system tenant) and so_cert_pem (adopted; verified against
+	// admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. A
+	// strict separation-of-duties deployment requires it.
+	SoUsername    string `protobuf:"bytes,14,opt,name=so_username,json=soUsername,proto3" json:"so_username,omitempty"`
+	SoCsrPem      string `protobuf:"bytes,15,opt,name=so_csr_pem,json=soCsrPem,proto3" json:"so_csr_pem,omitempty"`
+	SoCertPem     string `protobuf:"bytes,16,opt,name=so_cert_pem,json=soCertPem,proto3" json:"so_cert_pem,omitempty"`
+	SoChainPem    string `protobuf:"bytes,17,opt,name=so_chain_pem,json=soChainPem,proto3" json:"so_chain_pem,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -22586,6 +22595,34 @@ func (x *CeremonyInitializeRequest) GetSecret() []byte {
 	return nil
 }
 
+func (x *CeremonyInitializeRequest) GetSoUsername() string {
+	if x != nil {
+		return x.SoUsername
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetSoCsrPem() string {
+	if x != nil {
+		return x.SoCsrPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetSoCertPem() string {
+	if x != nil {
+		return x.SoCertPem
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeRequest) GetSoChainPem() string {
+	if x != nil {
+		return x.SoChainPem
+	}
+	return ""
+}
+
 // CeremonyInitializeResponse returns the result of ceremony initialization.
 //
 // admin_key_pem is present ONLY when admin_credential_source is
@@ -22605,8 +22642,12 @@ type CeremonyInitializeResponse struct {
 	// item 7).
 	AdminKeyPem           []byte `protobuf:"bytes,10,opt,name=admin_key_pem,json=adminKeyPem,proto3" json:"admin_key_pem,omitempty"`
 	AdminCredentialSource string `protobuf:"bytes,11,opt,name=admin_credential_source,json=adminCredentialSource,proto3" json:"admin_credential_source,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// so_cert_pem is the system SO's issued or adopted certificate, set
+	// when the request named one. Field 4, an earlier SO certificate,
+	// stays reserved.
+	SoCertPem     string `protobuf:"bytes,12,opt,name=so_cert_pem,json=soCertPem,proto3" json:"so_cert_pem,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CeremonyInitializeResponse) Reset() {
@@ -22698,6 +22739,13 @@ func (x *CeremonyInitializeResponse) GetAdminKeyPem() []byte {
 func (x *CeremonyInitializeResponse) GetAdminCredentialSource() string {
 	if x != nil {
 		return x.AdminCredentialSource
+	}
+	return ""
+}
+
+func (x *CeremonyInitializeResponse) GetSoCertPem() string {
+	if x != nil {
+		return x.SoCertPem
 	}
 	return ""
 }
@@ -37088,7 +37136,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x12CeremonyHolderCert\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role\x12\x19\n" +
-	"\bcert_pem\x18\x03 \x01(\fR\acertPem\"\xdb\x03\n" +
+	"\bcert_pem\x18\x03 \x01(\fR\acertPem\"\xdc\x04\n" +
 	"\x19CeremonyInitializeRequest\x12\x15\n" +
 	"\x06so_pin\x18\x01 \x01(\tR\x05soPin\x12\x19\n" +
 	"\buser_pin\x18\x02 \x01(\tR\auserPin\x12\x1c\n" +
@@ -37103,7 +37151,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	" \x01(\tR\fadminCertPem\x12-\n" +
 	"\x13admin_cert_pool_pem\x18\v \x01(\tR\x10adminCertPoolPem\x12%\n" +
 	"\x0eadmin_generate\x18\f \x01(\bR\radminGenerate\x12\x16\n" +
-	"\x06secret\x18\r \x01(\fR\x06secret\"\x8e\x03\n" +
+	"\x06secret\x18\r \x01(\fR\x06secret\x12\x1f\n" +
+	"\vso_username\x18\x0e \x01(\tR\n" +
+	"soUsername\x12\x1c\n" +
+	"\n" +
+	"so_csr_pem\x18\x0f \x01(\tR\bsoCsrPem\x12\x1e\n" +
+	"\vso_cert_pem\x18\x10 \x01(\tR\tsoCertPem\x12 \n" +
+	"\fso_chain_pem\x18\x11 \x01(\tR\n" +
+	"soChainPem\"\xa1\x03\n" +
 	"\x1aCeremonyInitializeResponse\x12\x19\n" +
 	"\bspki_pin\x18\x01 \x01(\tR\aspkiPin\x12\x1e\n" +
 	"\vca_cert_pem\x18\x02 \x01(\tR\tcaCertPem\x12 \n" +
@@ -37116,7 +37171,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x0eadmin_cert_pem\x18\t \x01(\tR\fadminCertPem\x12\"\n" +
 	"\radmin_key_pem\x18\n" +
 	" \x01(\fR\vadminKeyPem\x126\n" +
-	"\x17admin_credential_source\x18\v \x01(\tR\x15adminCredentialSourceJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\vso_cert_pemR\n" +
+	"\x17admin_credential_source\x18\v \x01(\tR\x15adminCredentialSource\x12\x1e\n" +
+	"\vso_cert_pem\x18\f \x01(\tR\tsoCertPemJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\n" +
 	"so_key_pem\"I\n" +
 	"\x16CeremonyStatusResponse\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12\x19\n" +

@@ -267,6 +267,90 @@ The full permission matrix and the FIPS 140-3 AS10.03 separation-of-duties
 constraints are in [../identity-rbac/](../identity-rbac/) and
 [auth/roles.md](../auth/roles.md).
 
+## The system Security Officer
+
+`firstboot.Dependencies.SO` (a `*firstboot.SOConfig`: the username, a CSR
+or a certificate with its chain, and the SO PIN, either as a
+`secure.Secret` or as its `auth.HashSOPIN` record) names a system-tenant
+Security Officer. First boot enrols it after the admin. It creates the
+account with only the `so` role, signs or adopts and binds its certificate,
+and commits the PIN through `Dependencies.SOPINs`. `Initialize` opens a
+`secure.Secret` PIN only to commit it; the caller destroys it. Enrolment is idempotent: an existing account under that
+username that holds the system `so` role, and under strict separation not
+the `admin` role, is the SO. Any other holder of the username is
+`*firstboot.SystemSOConflictError`. A failed step is
+`*firstboot.SystemSOEnrollmentError`. An SO given in part is
+`*firstboot.IncompleteSOError`, one with both a CSR and a certificate is
+`*firstboot.ConflictingSOCredentialError`, and an SO that shares the admin's
+username or key is `*firstboot.SOMatchesAdminError`. An SO with no PIN seam
+wired is `*firstboot.MissingSOSeamError`. These helpers moved here from
+`pkg/bootstrap`'s tenant SO; tenant create uses the same ones.
+
+**The SO is optional in both postures (SPEC row 124).** With or without
+`SeparationOfDuties`, `Initialize` boots a node given no `SO`; every check on
+an SO that is given still applies. A strict node with no SO refuses only the
+SO-exclusive operations (role create and the built-in reconciles run only as
+a separate SO, and the assignment gate keeps the system admin from becoming
+one), so it boots and serves but cannot manage its roles until an SO is
+enrolled. The node's strict posture always wins: the ceremony
+(`CeremonyService.SetSeparationOfDuties`) refuses an SO username no SPIFFE ID
+can carry with `*ceremony.SystemSORejectedError` before any write, and every
+sealed-window composition (`qrdbd` and the embedded node) carries the
+posture. The embedded node ORs `Node.StrictSeparation()` into the caller's
+`Dependencies`, tenant create takes an optional SO in both postures, and the
+pending SO record is consumed only once
+`firstboot.ClearPendingSystemSOIfEnrolled` finds the SO's account and
+committed PIN.
+
+**The ceremony issues the SO; first boot enrols it.**
+`ceremony.InitializeOptions` carries `SOUsername` with exactly one of
+`SOCSRPEM` (signed under the system tenant) and `SOCertPEM` (with
+`SOChainPEM`, verified like a BYOC admin certificate). The SO PIN is
+`SOPin`. Bad inputs are `*ceremony.SystemSORejectedError`: among them a
+presented certificate whose subject CN is not `SOUsername`, and an SO key that
+is the admin's, compared from the supplied CSRs or certificates before
+anything is provisioned. The ceremony holds the PIN only as its hash, never
+the PIN. Before `Initialize` reports success it records the issued SO in the
+system barrier (`ceremony.CeremonyService.PendingSystemSO`), so a node that
+crashes before the next step recovers it on restart. Its composers (`qrdbd`,
+`sdk/go/node`) record the issued SO in the replicated system store under
+`firstboot.PendingSystemSOKey` with `firstboot.WriteIssuedSystemSOIfAny`,
+which drops the barrier's copy once the replicated record is consumed. Only
+not-found reads as no record: any other store fault fails the boot and
+refuses consumption.
+They write it before the pending admin certificate. Both records are on one
+Raft shard, so first boot's bounded wait for the admin's record covers the
+SO's too. First boot reads the record (`firstboot.PendingSystemSO`), and the
+composer then marks it consumed (`firstboot.ClearPendingSystemSO`). The embedded
+`node.FirstBoot` takes `SO` from its caller's `firstboot.Dependencies`
+verbatim.
+
+An adopted SO certificate keeps the trust pool that validated it: the
+ceremony records the anchors it verified `SOCertPEM` against
+(`AdminCertPoolPEM`, or the ceremony CA's bundle when that is empty) as the
+record's `PoolPEM`, and first boot verifies the certificate against those
+anchors alone, not its own admin pool, so an SO certificate from an external
+issuer survives the handoff and no other issuer gains trust. A signed SO
+certificate carries no pool. `qrdbd`'s restart fast path for a bound admin
+is taken in either posture unless a pending SO is still to enrol, which
+sends the boot back through the full first boot. An enrolment retry that finds the SO's
+PIN already committed succeeds only when that PIN proves to be its own:
+the live PIN verifies (`SOPINVerifier`, `auth.SOAuthenticator.VerifySOPIN`)
+or the committed record is its record (`SOPINRecordMatcher`,
+`auth.SOAuthenticator.SOPINRecordMatches`, a constant-time compare).
+Anything else, including an SOPINs that can prove neither
+(`*firstboot.MissingSOSeamError`), fails the enrolment, so the pending record
+is not consumed.
+
+A node that only waited for the leader consumes the record through
+`firstboot.ClearPendingSystemSOIfEnrolled`, and only once the enrolment it
+names is verified: the SO account has the so role and a live binding to the
+record's certificate, and the committed SO PIN is the record's
+(`SOPINRecordMatches`). A PIN committed by someone else, or an account bound
+only to other certificates, keeps the record and returns
+`*firstboot.SystemSOUnverifiedError`; an account not yet bound keeps it
+quietly, as enrolment binds after it commits the PIN.
+
 ## Startup sequence
 
 1. Configuration loading

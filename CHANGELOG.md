@@ -121,6 +121,43 @@ are not reconstructed here — their history is in the git log.
   a change, the record is written first; the node whose conditional write
   wins then emits one `posture-change` audit event (`previous`, `posture`,
   `fips_forced`). A record that cannot be read or written refuses the start.
+- **First boot enrols a system Security Officer** (#1128). `qrdb init
+  --so-username` with exactly one of `--so-csr` / `--so-cert` (with
+  `--so-chain`), and `CeremonyInitializeRequest`'s `so_username`,
+  `so_csr_pem`, `so_cert_pem` and `so_chain_pem` on REST, gRPC, QUIC, MCP, Unix
+  and embedded, name the system tenant's SO. Its PIN is `so_pin`. The ceremony
+  signs or adopts its certificate, returns it as `so_cert_pem`, and keeps the
+  PIN only as its `auth.HashSOPIN` hash. `qrdbd` and `sdk/go/node` record the
+  SO in the replicated store (`firstboot.PendingSystemSOKey`), and first boot
+  enrols it with the system `so` role alone, idempotently, through
+  `firstboot.Dependencies.SO` / `SOPINs`. The SO is optional in both
+  postures; under strict separation of duties the system SO alone runs role
+  create and the built-in role reconciles.
+  A malformed SO, a presented certificate whose subject CN is not the SO
+  username, or an SO that is the admin by username or key (compared from the
+  supplied CSRs or certificates before anything is provisioned), is
+  `*ceremony.SystemSORejectedError`, classified `INVALID_ARGUMENT` / 400 on
+  every transport. Initialize records the issued SO in the system barrier
+  before it reports success, so a node that crashes before the replicated
+  record is written recovers it on restart (`*ceremony.SystemSOPersistError`
+  on failure). A store fault reading the pending record fails the boot and
+  refuses consumption; only not-found means no SO. An adopted SO certificate
+  keeps the trust pool that validated it through the handoff, a strict restart
+  of a bound admin with no enrolled SO is refused, and an enrolment retry
+  that finds a different committed SO PIN still fails. The SO is signed or
+  adopted before the PIN is provisioned or the barrier initialised, so a
+  signing fault leaves the node awaiting init and a retry completes. A
+  presented SO certificate carrying a holder profile OU (`security-officer`
+  or `custodian`) is a custody identity, not a login certificate, and is
+  refused with `*ceremony.SystemSOHolderCertError`. `--admin-cert-pool` is
+  accepted with `--so-cert` alone, so a CSR or generated admin can present
+  an SO certificate chained to it. An adopted SO certificate without the
+  client-auth profile (digital signature key usage, client authentication
+  EKU) is refused with `*ceremony.ClientAuthProfileError` before anything is
+  bound. First boot stores the adopted SO's pool as system tenant trust
+  anchors and refreshes runtime client trust before it binds the SO, so the
+  SO can authenticate over mTLS. An embedded upgrade recognises an SO that
+  is already enrolled, as the daemon does, instead of refusing strict boot.
 - **Tenant create takes an optional Security Officer** (#1042): `so_username`,
   `so_pin` and exactly one of `so_csr_pem` / `so_cert_pem` (with
   `so_chain_pem`), on REST, gRPC, QUIC, MCP, Unix and embedded, and as
@@ -253,6 +290,28 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **The SO is optional in both postures (SPEC row 124).** First boot, the `qrdb init` ceremony and tenant create no longer refuse a strict request that names no SO; a strict node or tenant without one refuses only the SO-exclusive operations, and every check on an SO that is given still applies. `firstboot.SystemSORequiredError`, `bootstrap.TenantSORequiredError`, `firstboot.Dependencies.SOEnrolled`, `bootstrap.SystemConfig.SOEnrolled` and `firstboot.RecognizeEnrolledSystemSO` are removed (go-qrdb#1129).
+- **The SO input errors moved from `pkg/bootstrap` to `pkg/firstboot`**
+  (#1128), shared by tenant create and the system SO:
+  `bootstrap.IncompleteTenantSOError` is now `firstboot.IncompleteSOError`,
+  and `bootstrap.ConflictingSOCredentialError` / `bootstrap.SOMatchesAdminError`
+  are now `firstboot.ConflictingSOCredentialError` /
+  `firstboot.SOMatchesAdminError`. Their errclass rows moved with them and
+  still classify `INVALID_ARGUMENT`.
+- **Compliance mode runs the SO-exclusive role operations only as a separate
+  Security Officer** (#1128). Under strict separation of duties
+  (`auth.separation_of_duties`, forced on by FIPS 140-3 mode) no account holds
+  the `so` role together with its tenant's `admin` role: a role write leaving
+  an account holding both is refused with `SORoleConflictError` (403 /
+  `PermissionDenied`). `roles create` and `roles reconcile` run only as the
+  target tenant's own SO that does not hold `admin`, on REST, gRPC, QUIC, MCP
+  and the embedded transport; the tenant Admin is refused with
+  `SORoleRequiredError`, and an account left holding both from the standard
+  posture with `SORoleConflictError`. In the standard posture an Admin may
+  hold `so` and runs both operations as before. Under strict separation no
+  ceremony, tenant create or first boot (embedded included, whatever the
+  caller's `Dependencies` say) finishes without an SO, and the pending system
+  SO record is kept until its account and PIN are committed.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot
@@ -363,6 +422,12 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- `qrdb roles reconcile --all-tenants` follows the SPEC again: it needs `roles:reconcile_all`, which only the system Admin holds, in both postures. The system SO no longer holds the permission and no transport requires a separate system SO first (go-qrdb#1129).
+- An M-of-N `qrdb init` whose system SO record write failed after the Shamir barrier was initialized is left enrolling, and a retried init (after an unseal, with the provisioned SO PIN) persists only the SO, so strict first boot is never stranded without it (go-qrdb#1129). The retry now reaches the ceremony core through the admin-rebind service wrapper that `qrdbd` and clustered SDK nodes serve, instead of being answered as an admin reissue.
+- The system SO and the bootstrap admin must be distinct accounts and keys only under strict separation of duties; in standard posture first boot and the `qrdb init` ceremony accept the admin as the SO, and first boot grants that account the SO role. One key still binds to one account (go-qrdb#1129).
+- Direct first boot refuses a holder-profile (custody) certificate as the system SO certificate before writing anything, as the ceremony already did (go-qrdb#1129).
+- System SO enrolment fails closed: first boot proves the SO PIN before binding a key or installing trust anchors, the ceremony matches the bootstrap admin's username exactly before letting the SO share its key, and an SO-persist retry on the same running node writes the SO record instead of being taken for an admin reissue (go-qrdb#1368).
+- Granting a permission to a role now checks the grantor's effective permissions, so an SO that also holds User can no longer grant `keys:sign` or another cryptographic permission it is denied (SPEC row 132). `auth.GrantAuthorizer` and its `AuthorizeGrant` methods are removed (go-qrdb#1129).
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The

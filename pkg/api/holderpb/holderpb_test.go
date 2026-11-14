@@ -141,6 +141,22 @@ func TestCeremonyInit(t *testing.T) {
 	}
 }
 
+// The system SO's fields cross both ways (go-qrdb#1128).
+func TestCeremonyInit_SystemSO(t *testing.T) {
+	opts, err := CeremonyInitFromPB(&pb.CeremonyInitializeRequest{
+		SoUsername: "secofficer", SoCsrPem: "csr", SoCertPem: "cert", SoChainPem: "chain",
+	})
+	if err != nil {
+		t.Fatalf("CeremonyInitFromPB: %v", err)
+	}
+	if opts.SOUsername != "secofficer" || opts.SOCSRPEM != "csr" || opts.SOCertPEM != "cert" || opts.SOChainPEM != "chain" {
+		t.Errorf("CeremonyInitFromPB SO = %+v", opts)
+	}
+	if resp := CeremonyInitToPB(&service.CeremonyInitResult{SOCertPEM: []byte("so-cert")}); resp.GetSoCertPem() != "so-cert" {
+		t.Errorf("CeremonyInitToPB so_cert_pem = %q", resp.GetSoCertPem())
+	}
+}
+
 // TestTenantBarrierRoster pins the inline Shamir officer roster
 // conversions, both directions, including the empty-input nil shortcuts
 // and the malformed-factor-params error path.
