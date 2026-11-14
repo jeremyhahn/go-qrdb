@@ -63,6 +63,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keywrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -1523,7 +1524,7 @@ func runStart(f *startFlags) (err error) {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
 	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults),
-		database.WithSealedNode(f.sealConfig.Enabled))
+		database.WithSealedNode(f.sealConfig.Enabled), database.WithBackendFactory(objstoredb.NewBackendFactory()))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.

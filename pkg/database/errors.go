@@ -70,6 +70,19 @@ func (e *SealedNodeBackendError) Error() string {
 		" stores data outside the seal barrier and is refused on a sealed node"
 }
 
+// ObjectStorageNotWiredError reports a `backend: objstore` database opened by
+// an EmbeddedBackendFactory built without WithObjectStorage: object storage is
+// not wired into this build (a lean embedder of pkg/database without the node
+// composer, which supplies pkg/database/objstoredb.Open).
+type ObjectStorageNotWiredError struct {
+	Name string
+}
+
+func (e *ObjectStorageNotWiredError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend \"objstore\" is not wired into this build" +
+		" (the backend factory has no WithObjectStorage opener)"
+}
+
 // AlreadyExistsError is returned when attempting to create a database with
 // a name that is already in use.
 type AlreadyExistsError struct {

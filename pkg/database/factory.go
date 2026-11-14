@@ -21,7 +21,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 )
@@ -39,16 +38,40 @@ type BackendFactory interface {
 
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
-type EmbeddedBackendFactory struct{}
+type EmbeddedBackendFactory struct {
+	objectStorage ObjectStorageOpener
+}
+
+// ObjectStorageOpener opens the storage of a `backend: objstore` database
+// from its DatabaseConfig. pkg/database does not link an object-storage
+// engine itself, so a lean embedder stays free of go-objstore; the node
+// composer supplies the opener (pkg/database/objstoredb.Open).
+type ObjectStorageOpener func(cfg DatabaseConfig) (storage.Storage, error)
+
+// EmbeddedBackendFactoryOption configures an EmbeddedBackendFactory.
+type EmbeddedBackendFactoryOption func(*EmbeddedBackendFactory)
+
+// WithObjectStorage supplies the opener for `backend: objstore` databases.
+// Without it the factory refuses such a database with
+// *ObjectStorageNotWiredError.
+func WithObjectStorage(open ObjectStorageOpener) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorage = open
+	}
+}
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.
-func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
-	return &EmbeddedBackendFactory{}
+func NewEmbeddedBackendFactory(opts ...EmbeddedBackendFactoryOption) *EmbeddedBackendFactory {
+	f := &EmbeddedBackendFactory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
-	store, err := openStorage(cfg, dataDir)
+	store, err := openStorage(cfg, dataDir, f.objectStorage)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +148,7 @@ func (b *RemoteBackend) Close() error {
 }
 
 // openStorage creates a storage.Storage for the given backend type.
-func openStorage(cfg DatabaseConfig, dataDir string) (storage.Storage, error) {
+func openStorage(cfg DatabaseConfig, dataDir string, objectStorage ObjectStorageOpener) (storage.Storage, error) {
 	name, backend := cfg.Name, cfg.Backend
 	switch backend {
 	case BackendMemory:
@@ -145,16 +168,12 @@ func openStorage(cfg DatabaseConfig, dataDir string) (storage.Storage, error) {
 		return store, nil
 	case BackendObjstore:
 		// The objstore engine keeps its data in the provider, not under the
-		// database's data root. The credential handle opens the key and
-		// secret files for the open only; no plaintext copy is held.
-		var oc DatabaseObjstoreConfig
-		if cfg.Objstore != nil {
-			oc = *cfg.Objstore
+		// database's data root. The opener comes from the node composer, so
+		// a lean embedder without one refuses the database.
+		if objectStorage == nil {
+			return nil, &ObjectStorageNotWiredError{Name: name}
 		}
-		store, err := objstore.New(oc.Provider, oc.Settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
-			KeyFile:    oc.KeyFile,
-			SecretFile: oc.SecretFile,
-		}))
+		store, err := objectStorage(cfg)
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}

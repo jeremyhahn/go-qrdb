@@ -17,12 +17,10 @@ package database
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore/objstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
 // ---------------------------------------------------------------------------
@@ -581,7 +579,7 @@ func TestRemoteBackend_Close_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenStorage_Memory(t *testing.T) {
-	store, err := openStorage(DatabaseConfig{Name: "mem-db", Backend: BackendMemory}, "")
+	store, err := openStorage(DatabaseConfig{Name: "mem-db", Backend: BackendMemory}, "", nil)
 	if err != nil {
 		t.Fatalf("openStorage memory: unexpected error: %v", err)
 	}
@@ -595,7 +593,7 @@ func TestOpenStorage_Memory(t *testing.T) {
 
 func TestOpenStorage_File(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage(DatabaseConfig{Name: "file-db", Backend: BackendFile}, dataDir)
+	store, err := openStorage(DatabaseConfig{Name: "file-db", Backend: BackendFile}, dataDir, nil)
 	if err != nil {
 		t.Fatalf("openStorage file: unexpected error: %v", err)
 	}
@@ -609,7 +607,7 @@ func TestOpenStorage_File(t *testing.T) {
 
 func TestOpenStorage_Pebble(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage(DatabaseConfig{Name: "pebble-db", Backend: BackendPebble}, dataDir)
+	store, err := openStorage(DatabaseConfig{Name: "pebble-db", Backend: BackendPebble}, dataDir, nil)
 	if err != nil {
 		t.Fatalf("openStorage pebble: unexpected error: %v", err)
 	}
@@ -623,88 +621,75 @@ func TestOpenStorage_Pebble(t *testing.T) {
 
 // writeObjstoreCredential writes one credential file the way an operator
 // provisions it: owner-only, with a trailing newline.
-func writeObjstoreCredential(t *testing.T, name, value string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
-		t.Fatalf("write %s: %v", name, err)
-	}
-	return path
+// openerStore is a fake ObjectStorageOpener that records the config it got.
+type openerStore struct {
+	got   []DatabaseConfig
+	store storage.Storage
+	err   error
 }
 
-func TestOpenStorage_Objstore(t *testing.T) {
-	p := objstoretest.NewProvider(t)
-	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{
-		Provider:   p.Name(),
-		KeyFile:    writeObjstoreCredential(t, "key", "access-key-id"),
-		SecretFile: writeObjstoreCredential(t, "secret", "secret-access-key"),
-	}}
-	store, err := openStorage(cfg, "")
+func (o *openerStore) open(cfg DatabaseConfig) (storage.Storage, error) {
+	o.got = append(o.got, cfg)
+	if o.err != nil {
+		return nil, o.err
+	}
+	return o.store, nil
+}
+
+func TestOpenStorage_ObjstoreUsesTheOpener(t *testing.T) {
+	opener := &openerStore{store: memory.NewStorage()}
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
+	store, err := openStorage(cfg, "", opener.open)
 	if err != nil {
 		t.Fatalf("openStorage objstore: unexpected error: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
-	if _, ok := store.(*objstore.Engine); !ok {
-		t.Fatalf("openStorage objstore: got %T, want *objstore.Engine", store)
+	if store != opener.store {
+		t.Fatalf("openStorage objstore: got %T, want the opener's store", store)
 	}
-	if err := store.Set([]byte("k"), []byte("v")); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	got, err := store.Get([]byte("k"))
-	if err != nil || string(got) != "v" {
-		t.Fatalf("Get = %q, %v; want \"v\"", got, err)
-	}
-	deliveries := p.Deliveries()
-	if len(deliveries) == 0 || deliveries[0].Key != "access-key-id" {
-		t.Fatalf("provider deliveries = %+v, want the key file's handle", deliveries)
+	if len(opener.got) != 1 || opener.got[0].Name != "blobs" || opener.got[0].Objstore.Provider != "s3" {
+		t.Fatalf("opener got %+v, want the database's config", opener.got)
 	}
 }
 
-func TestOpenStorage_ObjstoreMissingCredentialFile(t *testing.T) {
-	p := objstoretest.NewProvider(t)
-	missing := filepath.Join(t.TempDir(), "absent")
-	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{
-		Provider:   p.Name(),
-		KeyFile:    writeObjstoreCredential(t, "key", "access-key-id"),
-		SecretFile: missing,
-	}}
-	store, err := openStorage(cfg, "")
+func TestOpenStorage_ObjstoreOpenerErrorWrapped(t *testing.T) {
+	cause := errors.New("provider refused")
+	opener := &openerStore{err: cause}
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore}
+	store, err := openStorage(cfg, "", opener.open)
 	if store != nil {
-		t.Fatalf("openStorage objstore: got a store with a missing credential file")
+		t.Fatal("openStorage objstore: got a store from a failed opener")
 	}
 	var createErr *StorageCreateError
-	if !errors.As(err, &createErr) || createErr.Backend != string(BackendObjstore) {
+	if !errors.As(err, &createErr) || createErr.Name != "blobs" || createErr.Backend != string(BackendObjstore) {
 		t.Fatalf("openStorage objstore = %v, want *StorageCreateError", err)
 	}
-	var fileErr *objstore.CredentialFileError
-	if !errors.As(err, &fileErr) || fileErr.File != missing {
-		t.Fatalf("openStorage objstore = %v, want *objstore.CredentialFileError naming %s", err, missing)
-	}
-	if len(p.Deliveries()) != 0 {
-		t.Fatal("a failed credential read reached the provider")
+	if !errors.Is(err, cause) {
+		t.Fatalf("openStorage objstore = %v, want it to wrap the opener's error", err)
 	}
 }
 
-func TestOpenStorage_ObjstoreUnknownProvider(t *testing.T) {
-	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "no-such-provider"}}
-	_, err := openStorage(cfg, "")
-	var createErr *StorageCreateError
-	if !errors.As(err, &createErr) {
-		t.Fatalf("openStorage objstore = %v, want *StorageCreateError", err)
+// A factory built without WithObjectStorage (a lean embedder) refuses an
+// objstore database with *ObjectStorageNotWiredError.
+func TestEmbeddedBackendFactory_ObjstoreNotWired(t *testing.T) {
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
+	backend, err := NewEmbeddedBackendFactory().Create(cfg, "")
+	if backend != nil {
+		t.Fatal("Create objstore without an opener returned a backend")
 	}
-	var unsupported *objstore.UnsupportedProviderError
-	if !errors.As(err, &unsupported) || unsupported.Provider != "no-such-provider" {
-		t.Fatalf("openStorage objstore = %v, want *objstore.UnsupportedProviderError", err)
+	var notWired *ObjectStorageNotWiredError
+	if !errors.As(err, &notWired) || notWired.Name != "blobs" {
+		t.Fatalf("Create objstore = %v, want *ObjectStorageNotWiredError", err)
 	}
 }
 
 // A sealed node's manager refuses an objstore database before anything is
 // created, while an unsealed node's manager opens it.
 func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {
-	p := objstoretest.NewProvider(t)
-	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: p.Name()}}
+	opener := &openerStore{store: memory.NewStorage()}
+	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open)))
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
 
-	sealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(true))
+	sealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(true), factory)
 	t.Cleanup(func() { _ = sealed.Close() })
 	_, err := sealed.Create(cfg)
 	var refused *SealedNodeBackendError
@@ -714,14 +699,14 @@ func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {
 	if _, err := sealed.Get("blobs"); err == nil {
 		t.Fatal("the refused objstore database is served")
 	}
-	if len(p.Deliveries()) != 0 {
-		t.Fatal("the refused objstore database reached the provider")
+	if len(opener.got) != 0 {
+		t.Fatal("the refused objstore database reached the opener")
 	}
 	if _, err := sealed.Create(DatabaseConfig{Name: "kv", Backend: BackendMemory}); err != nil {
 		t.Fatalf("sealed Create(memory): %v", err)
 	}
 
-	unsealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(false))
+	unsealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(false), factory)
 	t.Cleanup(func() { _ = unsealed.Close() })
 	if _, err := unsealed.Create(cfg); err != nil {
 		t.Fatalf("unsealed Create(objstore): %v", err)
@@ -734,7 +719,7 @@ func TestOpenStorage_Raft(t *testing.T) {
 	// shared system Host (IsolationRaft), wired at the server layer. The
 	// placeholder lets the Manager track the catalog record and shard ID
 	// uniformly.
-	store, err := openStorage(DatabaseConfig{Name: "raft-db", Backend: BackendRaft}, "")
+	store, err := openStorage(DatabaseConfig{Name: "raft-db", Backend: BackendRaft}, "", nil)
 	if err != nil {
 		t.Fatalf("openStorage raft: unexpected error: %v", err)
 	}
@@ -744,7 +729,7 @@ func TestOpenStorage_Raft(t *testing.T) {
 }
 
 func TestOpenStorage_InvalidBackend(t *testing.T) {
-	_, err := openStorage(DatabaseConfig{Name: "bad-db", Backend: BackendType("unknown")}, "")
+	_, err := openStorage(DatabaseConfig{Name: "bad-db", Backend: BackendType("unknown")}, "", nil)
 	if err == nil {
 		t.Fatal("openStorage invalid: expected error, got nil")
 	}

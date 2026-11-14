@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -73,7 +74,7 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 // An objstore database opens the objstore engine from its own settings: one
 // that names no provider fails the open, before any store is created.
 func TestDatabaseManager_ObjstoreDatabaseWithoutProviderRefused(t *testing.T) {
-	mgr := databasetest.NewManager(nil, t.TempDir())
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(objstoredb.NewBackendFactory()))
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
 	var create *database.StorageCreateError
