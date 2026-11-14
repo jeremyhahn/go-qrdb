@@ -20,6 +20,8 @@ import (
 	"errors"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // PlacementPrefix is the key prefix under which placement records live in the
@@ -222,6 +224,13 @@ func (s *Store) resolveNames(ctx context.Context, ps ...*Placement) {
 	var byTenant map[string]map[string]string
 	for _, p := range ps {
 		if p == nil || p.DatabaseID == "" {
+			continue
+		}
+		if p.DatabaseID == tenant.HomeName {
+			// The home group's id is its name. Resolving it through the
+			// catalog would recurse: an isolated tenant's catalog lives in
+			// its home store, which is located through this table.
+			p.Database = tenant.HomeName
 			continue
 		}
 		key := nameCacheKey(p.TenantID, p.DatabaseID)

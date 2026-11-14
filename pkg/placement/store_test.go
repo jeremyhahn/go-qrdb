@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // fakeKV is an in-memory KV harness modeled on the membership-store test fake:
@@ -1445,6 +1447,50 @@ func TestStore_NameNeverInSystemKV(t *testing.T) {
 	reader.SetNameResolver(nil)
 	if got, err := reader.Get(ctx, "acme", "db-1"); err != nil || got.Database != secret {
 		t.Fatalf("cached Get = %+v, %v; want %q", got, err, secret)
+	}
+}
+
+// homeLocatingNames is an isolated tenant's catalog: it lives in the
+// tenant's home store, so listing it first reads the home group's placement
+// through the same store.
+type homeLocatingNames struct {
+	store *Store
+	calls int
+}
+
+func (n *homeLocatingNames) DatabaseNames(ctx context.Context, tenantID string) map[string]string {
+	n.calls++
+	if n.calls > 1 {
+		return nil // a recursing read; the test fails on calls
+	}
+	if _, err := n.store.Get(ctx, tenantID, tenant.HomeName); err != nil {
+		return nil
+	}
+	return map[string]string{"db-1": "orders"}
+}
+
+// The home group is named without the catalog, so an isolated tenant's
+// catalog, which locates its home through this table, resolves its other
+// databases without recursing into itself.
+func TestStore_HomeNameResolvesWithoutTheCatalog(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	for _, p := range []*Placement{samplePlacement("acme", tenant.HomeName, 1000), samplePlacement("acme", "db-1", 1001)} {
+		if err := writer.Put(ctx, p); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	reader, _ := NewStore(kv)
+	names := &homeLocatingNames{store: reader}
+	reader.SetNameResolver(names)
+	home, err := reader.Get(ctx, "acme", tenant.HomeName)
+	if err != nil || home.Database != tenant.HomeName || names.calls != 0 {
+		t.Fatalf("home Get = %+v, %v, resolver calls %d; want %q with no resolver call", home, err, names.calls, tenant.HomeName)
+	}
+	db, err := reader.Get(ctx, "acme", "db-1")
+	if err != nil || db.Database != "orders" || names.calls != 1 {
+		t.Fatalf("db-1 Get = %+v, %v, resolver calls %d; want orders in one call", db, err, names.calls)
 	}
 }
 
