@@ -321,6 +321,10 @@ var ErrStoreNotAtomic = errors.New("user: store cannot claim unique handles atom
 // account with its first certificate binding (CertActivator).
 var ErrActivationUnsupported = errors.New("user: store cannot activate an account with a certificate binding")
 
+// ErrPendingExpiryUnsupported reports a user store that cannot delete an
+// expired pending account conditionally on its state (PendingExpirer).
+var ErrPendingExpiryUnsupported = errors.New("user: store cannot delete an expired pending account conditionally")
+
 // HandleReclaimedError reports that a compensation could not put a released
 // username or email key back, because another caller has legitimately claimed
 // it in the meantime.

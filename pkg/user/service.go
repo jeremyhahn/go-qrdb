@@ -14,7 +14,10 @@
 
 package user
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UserServicer defines user management operations. All implementations
 // must be safe for concurrent use.
@@ -85,4 +88,15 @@ type CertActivator interface {
 	// *AccountNotPendingError and nothing is written. A notAfterUnix > 0 sets
 	// the binding's expiry.
 	ActivateWithCertBinding(ctx context.Context, userID uint64, thumbprint string, notAfterUnix int64) (*User, error)
+}
+
+// PendingExpirer is implemented by stores that can delete a pending account
+// whose TTL has run out, conditionally on that state. It is what
+// PendingReaper deletes through.
+type PendingExpirer interface {
+	// DeleteExpiredPending deletes the account, its role assignments with it,
+	// only when it is pending and PendingExpired at now, and returns the
+	// removed record. Any other account is refused with
+	// *AccountNotPendingError and nothing is written.
+	DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error)
 }

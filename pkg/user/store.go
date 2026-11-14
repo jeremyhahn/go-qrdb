@@ -402,11 +402,12 @@ func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (c
 		// claims", and resolving it by structure alone would have dropped this
 		// field silently — an invited-but-not-yet-enrolled account would come
 		// back ENABLED. It now folds into Lifecycle via initialLifecycle.
-		Lifecycle:   initial,
-		System:      req.System,
-		AuthMethods: authMethods,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		Lifecycle:        initial,
+		PendingExpiresAt: pendingExpiry(req, initial, now),
+		System:           req.System,
+		AuthMethods:      authMethods,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if user.RoleIDs == nil {
 		user.RoleIDs = []string{}
@@ -481,17 +482,18 @@ func (s *kvUserStore) createUserAtomic(ctx context.Context, req *CreateUserReque
 
 	now := time.Now().UTC()
 	u := &User{
-		ID:          userID,
-		Username:    req.Username,
-		Email:       email,
-		Name:        req.Name,
-		TenantID:    tenantID,
-		RoleIDs:     req.RoleIDs,
-		Lifecycle:   initial,
-		System:      req.System,
-		AuthMethods: authMethods,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:               userID,
+		Username:         req.Username,
+		Email:            email,
+		Name:             req.Name,
+		TenantID:         tenantID,
+		RoleIDs:          req.RoleIDs,
+		Lifecycle:        initial,
+		PendingExpiresAt: pendingExpiry(req, initial, now),
+		System:           req.System,
+		AuthMethods:      authMethods,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if u.RoleIDs == nil {
 		u.RoleIDs = []string{}
@@ -1713,9 +1715,37 @@ func (s *kvUserStore) updateUserAt(ctx context.Context, req *UpdateUserRequest, 
 }
 
 // DeleteUser removes a user by ID. System users cannot be deleted.
-func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) {
+func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
+	_, err := s.deleteUser(ctx, id, nil)
+	return err
+}
+
+// DeleteExpiredPending deletes the account only when it is pending and its
+// TTL has run out at now (PendingExpired), and returns the record it
+// removed. Any other account is refused with *AccountNotPendingError and
+// nothing is written.
+//
+// The condition is checked on the version the delete then claims by marking
+// it deleting, so an activation that commits first makes the claim fail
+// instead of the reaper removing an account that has just become active.
+func (s *kvUserStore) DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
+	return s.deleteUser(ctx, id, func(u *User) error {
+		if !PendingExpired(u, now) {
+			return &AccountNotPendingError{ID: u.ID, Lifecycle: u.Lifecycle}
+		}
+		return nil
+	})
+}
+
+// AuditActionPendingExpired is the audit action of a pending account the
+// reaper deleted because its TTL ran out.
+const AuditActionPendingExpired = "pending_expired"
+
+// deleteUser is DeleteUser with an optional guard evaluated on the record it
+// read, before anything is written; a guard error refuses the delete.
+func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*User) error) (_ *User, retErr error) {
 	if id == 0 {
-		return &ValidationError{Field: "id", Reason: "must not be zero"}
+		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
 	}
 
 	// Read the RAW bytes: this delete commits against the version it read, so a
@@ -1726,23 +1756,30 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	// address until someone repairs it by hand (Codex, PR #191).
 	base, err := s.store.Get(ctx, primaryKey(id))
 	if err != nil {
-		return &StoreError{Op: "delete", Detail: "primary lookup", Err: err}
+		return nil, &StoreError{Op: "delete", Detail: "primary lookup", Err: err}
 	}
 	if base == nil {
-		return &UserNotFoundError{ID: id}
+		return nil, &UserNotFoundError{ID: id}
 	}
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
-		return &StoreError{Op: "delete", Detail: "unmarshal", Err: uerr}
+		return nil, &StoreError{Op: "delete", Detail: "unmarshal", Err: uerr}
 	}
 	if existing.System {
-		return &SystemUserImmutableError{ID: id}
+		return nil, &SystemUserImmutableError{ID: id}
 	}
+	if guard != nil {
+		if gerr := guard(existing); gerr != nil {
+			return nil, gerr
+		}
+	}
+	// Kept for the audit: marking the record deleting below clears it.
+	pendingExpiresAt := existing.PendingExpiresAt
 	// Under "required" a node without its bootstrap admin refuses to boot,
 	// so the admin is not deleted. Checked before markDeleting, which commits
 	// against the version read here: a concurrent change cannot slip past it.
 	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
-		return err
+		return nil, err
 	}
 
 	// CLAIM the record by marking it deleting, conditionally on the version just
@@ -1767,7 +1804,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	// restored to service by a half-finished delete would be the worse outcome.
 	marked, merr := s.markDeleting(ctx, id, base, existing)
 	if merr != nil {
-		return merr
+		return nil, merr
 	}
 	// Everything below commits against the MARKED version, which is now the
 	// record on disk.
@@ -1848,7 +1885,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	// invisible to ListUsers and every tenant-prefix scan.
 	tenantKey := tenantIndexKey(existing.TenantID, id)
 	if err := s.store.Delete(ctx, tenantKey); err != nil {
-		return &StoreError{Op: "delete", Detail: "tenant index", Err: err}
+		return nil, &StoreError{Op: "delete", Detail: "tenant index", Err: err}
 	}
 	releasedKeys = append(releasedKeys, tenantKey)
 
@@ -1856,7 +1893,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	usernameKey := usernameIndexKey(existing.TenantID, existing.Username)
 	removedName, err := s.releaseHandle(ctx, usernameKey, idBytes)
 	if err != nil {
-		return &StoreError{Op: "delete", Detail: "username index", Err: err}
+		return nil, &StoreError{Op: "delete", Detail: "username index", Err: err}
 	}
 	if removedName {
 		releasedKeys = append(releasedKeys, usernameKey)
@@ -1869,7 +1906,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		emailKey := emailIndexKey(existing.TenantID, existing.Email)
 		removedEmail, err := s.releaseHandle(ctx, emailKey, idBytes)
 		if err != nil {
-			return &StoreError{Op: "delete", Detail: "email index", Err: err}
+			return nil, &StoreError{Op: "delete", Detail: "email index", Err: err}
 		}
 		if removedEmail {
 			releasedKeys = append(releasedKeys, emailKey)
@@ -1881,7 +1918,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		scoped := certThumbprintIndexKey(existing.TenantID, b.Thumbprint)
 		removedScoped, err := s.releaseHandle(ctx, scoped, idBytes)
 		if err != nil {
-			return &StoreError{Op: "delete", Detail: "cert index", Err: err}
+			return nil, &StoreError{Op: "delete", Detail: "cert index", Err: err}
 		}
 		if removedScoped {
 			releasedKeys = append(releasedKeys, scoped)
@@ -1890,7 +1927,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		legacy := legacyCertThumbprintIndexKey(b.Thumbprint)
 		removedLegacy, err := s.releaseHandle(ctx, legacy, idBytes)
 		if err != nil {
-			return &StoreError{Op: "delete", Detail: "legacy cert index", Err: err}
+			return nil, &StoreError{Op: "delete", Detail: "legacy cert index", Err: err}
 		}
 		if removedLegacy {
 			releasedKeys = append(releasedKeys, legacy)
@@ -1906,7 +1943,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	// released, so they are put back before reporting the conflict.
 	atomicStore, ok := s.store.(kvstore.AtomicKVStore)
 	if !ok {
-		return &StoreError{Op: "delete", Detail: "conditional delete", Err: ErrStoreNotAtomic}
+		return nil, &StoreError{Op: "delete", Detail: "conditional delete", Err: ErrStoreNotAtomic}
 	}
 	deleted, derr := atomicStore.CompareAndDelete(ctx, primaryKey(id), base)
 	if derr != nil {
@@ -1920,7 +1957,7 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		rcancel()
 		switch {
 		case rerr != nil:
-			return &CommitOutcomeUnknownError{ID: id, Err: derr}
+			return nil, &CommitOutcomeUnknownError{ID: id, Err: derr}
 		case actual == nil:
 			// It landed: the record is gone and the indexes should be too, so
 			// the deferred restore must stand down.
@@ -1929,14 +1966,14 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 		case bytes.Equal(actual, base):
 			// It did not land and nothing else moved: the defer puts the
 			// indexes back.
-			return &StoreError{Op: "delete", Detail: "primary", Err: derr}
+			return nil, &StoreError{Op: "delete", Detail: "primary", Err: derr}
 		default:
 			// The record survives in a form somebody else committed.
-			return &ConcurrentUpdateError{ID: id}
+			return nil, &ConcurrentUpdateError{ID: id}
 		}
 	}
 	if !deleted {
-		return &ConcurrentUpdateError{ID: id}
+		return nil, &ConcurrentUpdateError{ID: id}
 	}
 	committed = true
 
@@ -1945,19 +1982,29 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) (retErr error) 
 	// would correct it. If this fails the retry path completes it
 	// (routingUserService.DeleteUser).
 	if err := s.forgetIdentity(ctx, id, existing.TenantID); err != nil {
-		return &StoreError{Op: "delete", Detail: "identity index", Err: err}
+		return nil, &StoreError{Op: "delete", Detail: "identity index", Err: err}
 	}
 
-	s.emitAudit(ctx, "delete", id, map[string]any{
+	attrs := map[string]any{
 		"username": existing.Username,
 		"tenantID": existing.TenantID,
-	})
+	}
+	action := "delete"
+	if guard != nil {
+		// Only the reaper deletes through a guard: its removals are audited
+		// as their own action, with the expiry that justified them.
+		action = AuditActionPendingExpired
+		if pendingExpiresAt != nil {
+			attrs["pendingExpiresAt"] = pendingExpiresAt.Format(time.RFC3339Nano)
+		}
+	}
+	s.emitAudit(ctx, action, id, attrs)
 	// Deleting the admin (possible only under "enrolled") leaves no deadline.
 	if IsBootstrapAdmin(existing) {
 		s.observeBootstrapAdmin(nil)
 	}
 
-	return nil
+	return existing, nil
 }
 
 // ListUsers returns a paginated list of users for the given tenant by

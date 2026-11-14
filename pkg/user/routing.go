@@ -20,6 +20,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -407,6 +408,24 @@ func (r *routingUserService) ActivateWithCertBinding(ctx context.Context, userID
 		return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "store", Err: ErrActivationUnsupported}
 	}
 	return activator.ActivateWithCertBinding(ctx, userID, thumbprint, notAfterUnix)
+}
+
+// DeleteExpiredPending routes to the store of the tenant that holds userID,
+// under that tenant's isolation, like every other per-user operation.
+func (r *routingUserService) DeleteExpiredPending(ctx context.Context, userID uint64, now time.Time) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "delete expired pending user")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "delete_expired_pending", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.DeleteExpiredPending(ctx, userID, now)
 }
 
 // RemoveCertBinding routes on the tenant that holds the user id, exactly as

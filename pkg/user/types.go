@@ -73,6 +73,14 @@ type User struct {
 	// cannot authenticate.
 	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
 
+	// PendingExpiresAt is when a PENDING account that was never activated
+	// expires (UTC). Past it, the leader's PendingReaper deletes the account
+	// with its role assignments and enrolled factors. It is set only by a
+	// create that asked for a TTL (CreateUserRequest.PendingTTL) and cleared
+	// by every transition out of pending, so an active account never carries
+	// one. Nil means the pending account does not expire.
+	PendingExpiresAt *time.Time `json:"pendingExpiresAt,omitempty"`
+
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
 
@@ -193,6 +201,14 @@ type CreateUserRequest struct {
 	// letting one silently win: a caller that sets Pending and then asks for
 	// active is describing two different accounts and should be told so.
 	Lifecycle Lifecycle
+
+	// PendingTTL is how long a pending account may wait for activation
+	// before the leader's PendingReaper deletes it. The store stamps
+	// User.PendingExpiresAt as creation time plus this. Zero means the
+	// pending account never expires. It is refused when negative, and when
+	// the account is not being created pending: a TTL on an active account
+	// would describe a deletion nobody asked for.
+	PendingTTL time.Duration
 
 	// AuthMethods are the initial permitted authentication methods. Empty
 	// states no restriction.
