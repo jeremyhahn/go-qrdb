@@ -1990,7 +1990,11 @@ func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*Use
 		"tenantID": existing.TenantID,
 	}
 	action := "delete"
+	auditTenant := ""
 	if guard != nil {
+		// Named explicitly: the reaper runs with no caller identity, so
+		// the tenant cannot come from one.
+		auditTenant = existing.TenantID
 		// Only the reaper deletes through a guard: its removals are audited
 		// as their own action, with the expiry that justified them.
 		action = AuditActionPendingExpired
@@ -1998,7 +2002,7 @@ func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*Use
 			attrs["pendingExpiresAt"] = pendingExpiresAt.Format(time.RFC3339Nano)
 		}
 	}
-	s.emitAudit(ctx, action, id, attrs)
+	s.emitAuditForTenant(ctx, auditTenant, action, id, attrs)
 	// Deleting the admin (possible only under "enrolled") leaves no deadline.
 	if IsBootstrapAdmin(existing) {
 		s.observeBootstrapAdmin(nil)
