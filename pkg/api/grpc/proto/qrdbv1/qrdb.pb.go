@@ -12376,8 +12376,13 @@ func (x *CreateUserRequest) GetPending() bool {
 
 // GetUserRequest retrieves a user by ID.
 type GetUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12417,6 +12422,13 @@ func (x *GetUserRequest) GetId() uint64 {
 		return x.Id
 	}
 	return 0
+}
+
+func (x *GetUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
 }
 
 // GetUserByUsernameRequest retrieves a user by tenant-scoped username.
@@ -12530,8 +12542,12 @@ func (x *GetUserByEmailRequest) GetEmail() string {
 // GetUserByCertThumbprintRequest resolves a user by an mTLS certificate's
 // SPKI thumbprint via the secondary index.
 type GetUserByCertThumbprintRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Thumbprint    string                 `protobuf:"bytes,1,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Thumbprint string                 `protobuf:"bytes,1,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	// tenant_id names the tenant to resolve the thumbprint in; empty is the
+	// caller's own. Another tenant is an operator access, gated on that
+	// tenant's isolation policy and recorded in both trails.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12573,13 +12589,25 @@ func (x *GetUserByCertThumbprintRequest) GetThumbprint() string {
 	return ""
 }
 
+func (x *GetUserByCertThumbprintRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.
 // A not_after_unix > 0 sets the binding's expiry; otherwise it never expires.
 type AddCertBindingRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Thumbprint    string                 `protobuf:"bytes,2,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
-	NotAfterUnix  int64                  `protobuf:"varint,3,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	UserId       uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Thumbprint   string                 `protobuf:"bytes,2,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	NotAfterUnix int64                  `protobuf:"varint,3,opt,name=not_after_unix,json=notAfterUnix,proto3" json:"not_after_unix,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,4,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12635,6 +12663,13 @@ func (x *AddCertBindingRequest) GetNotAfterUnix() int64 {
 	return 0
 }
 
+func (x *AddCertBindingRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // UpdateUserProtoRequest applies partial updates to an existing user.
 // Named with "Proto" suffix to avoid collision with the Go domain type.
 type UpdateUserProtoRequest struct {
@@ -12671,6 +12706,11 @@ type UpdateUserProtoRequest struct {
 	// to represent "absent".
 	Attributes    map[string]string `protobuf:"bytes,14,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	HasAttributes bool              `protobuf:"varint,15,opt,name=has_attributes,json=hasAttributes,proto3" json:"has_attributes,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,16,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12796,10 +12836,22 @@ func (x *UpdateUserProtoRequest) GetHasAttributes() bool {
 	return false
 }
 
+func (x *UpdateUserProtoRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // DeleteUserRequest removes a user by ID.
 type DeleteUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -12839,6 +12891,13 @@ func (x *DeleteUserRequest) GetId() uint64 {
 		return x.Id
 	}
 	return 0
+}
+
+func (x *DeleteUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
 }
 
 // ListUsersRequest returns a paginated list of users.
@@ -12965,8 +13024,13 @@ func (x *ListUsersResponse) GetHasMore() bool {
 
 // EnableUserRequest activates a user account.
 type EnableUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13008,10 +13072,22 @@ func (x *EnableUserRequest) GetId() uint64 {
 	return 0
 }
 
+func (x *EnableUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // DisableUserRequest deactivates a user account.
 type DisableUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13053,10 +13129,22 @@ func (x *DisableUserRequest) GetId() uint64 {
 	return 0
 }
 
+func (x *DisableUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // SuspendUserRequest moves an active user account to suspended.
 type SuspendUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13098,10 +13186,22 @@ func (x *SuspendUserRequest) GetId() uint64 {
 	return 0
 }
 
+func (x *SuspendUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // UnsuspendUserRequest returns a suspended user account to active.
 type UnsuspendUserRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13141,6 +13241,13 @@ func (x *UnsuspendUserRequest) GetId() uint64 {
 		return x.Id
 	}
 	return 0
+}
+
+func (x *UnsuspendUserRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
 }
 
 // UserResponse is the response payload for user operations.
@@ -13607,8 +13714,13 @@ func (x *CreateRoleRequest) GetId() string {
 
 // GetRoleRequest retrieves a role by ID.
 type GetRoleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -13646,6 +13758,13 @@ func (*GetRoleRequest) Descriptor() ([]byte, []int) {
 func (x *GetRoleRequest) GetId() string {
 	if x != nil {
 		return x.Id
+	}
+	return ""
+}
+
+func (x *GetRoleRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -14154,10 +14273,15 @@ func (x *ReconcileBuiltInRolesAllTenantsResponse) GetFailed() []*RoleReconcileFa
 // UpdateRoleProtoRequest applies partial updates to an existing role.
 // Named with "Proto" suffix to avoid collision with the Go domain type.
 type UpdateRoleProtoRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Permissions   []string               `protobuf:"bytes,3,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Permissions []string               `protobuf:"bytes,3,rep,name=permissions,proto3" json:"permissions,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,4,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14213,10 +14337,22 @@ func (x *UpdateRoleProtoRequest) GetPermissions() []string {
 	return nil
 }
 
+func (x *UpdateRoleProtoRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // DeleteRoleRequest removes a role by ID.
 type DeleteRoleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,2,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14254,6 +14390,13 @@ func (*DeleteRoleRequest) Descriptor() ([]byte, []int) {
 func (x *DeleteRoleRequest) GetId() string {
 	if x != nil {
 		return x.Id
+	}
+	return ""
+}
+
+func (x *DeleteRoleRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -14382,9 +14525,14 @@ func (x *ListRolesResponse) GetHasMore() bool {
 
 // AssignRoleRequest assigns a role to a user.
 type AssignRoleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RoleId        string                 `protobuf:"bytes,2,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	RoleId string                 `protobuf:"bytes,2,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14433,11 +14581,23 @@ func (x *AssignRoleRequest) GetRoleId() string {
 	return ""
 }
 
+func (x *AssignRoleRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
+	}
+	return ""
+}
+
 // UnassignRoleRequest removes a role assignment from a user.
 type UnassignRoleRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RoleId        string                 `protobuf:"bytes,2,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	RoleId string                 `protobuf:"bytes,2,opt,name=role_id,json=roleId,proto3" json:"role_id,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -14482,6 +14642,13 @@ func (x *UnassignRoleRequest) GetUserId() uint64 {
 func (x *UnassignRoleRequest) GetRoleId() string {
 	if x != nil {
 		return x.RoleId
+	}
+	return ""
+}
+
+func (x *UnassignRoleRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -35649,9 +35816,14 @@ func (x *UserAuthFactorLoginResponse) GetFactor() *UserAuthFactorRecord {
 // a user. It carries no expiry: withdrawal is unconditional, and it is the
 // counterpart of AddCertBinding rather than a variant of it.
 type RemoveCertBindingRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Thumbprint    string                 `protobuf:"bytes,2,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	UserId     uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Thumbprint string                 `protobuf:"bytes,2,opt,name=thumbprint,proto3" json:"thumbprint,omitempty"`
+	// tenant_id names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records (admitted under
+	// that tenant's isolation policy, audited in both trails). Empty is the
+	// caller's own tenant.
+	TenantId      string `protobuf:"bytes,3,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -35696,6 +35868,13 @@ func (x *RemoveCertBindingRequest) GetUserId() uint64 {
 func (x *RemoveCertBindingRequest) GetThumbprint() string {
 	if x != nil {
 		return x.Thumbprint
+	}
+	return ""
+}
+
+func (x *RemoveCertBindingRequest) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -36553,25 +36732,28 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\fauth_methods\x18\b \x03(\tR\vauthMethods\x12\x1c\n" +
 	"\tlifecycle\x18\t \x01(\tR\tlifecycle\x12\x18\n" +
 	"\apending\x18\n" +
-	" \x01(\bR\apendingJ\x04\b\a\x10\bR\tgroup_ids\" \n" +
+	" \x01(\bR\apendingJ\x04\b\a\x10\bR\tgroup_ids\"=\n" +
 	"\x0eGetUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"S\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"S\n" +
 	"\x18GetUserByUsernameRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\"J\n" +
 	"\x15GetUserByEmailRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x14\n" +
-	"\x05email\x18\x02 \x01(\tR\x05email\"@\n" +
+	"\x05email\x18\x02 \x01(\tR\x05email\"]\n" +
 	"\x1eGetUserByCertThumbprintRequest\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x01 \x01(\tR\n" +
-	"thumbprint\"v\n" +
+	"thumbprint\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"\x93\x01\n" +
 	"\x15AddCertBindingRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x02 \x01(\tR\n" +
 	"thumbprint\x12$\n" +
-	"\x0enot_after_unix\x18\x03 \x01(\x03R\fnotAfterUnix\"\xde\x04\n" +
+	"\x0enot_after_unix\x18\x03 \x01(\x03R\fnotAfterUnix\x12\x1b\n" +
+	"\ttenant_id\x18\x04 \x01(\tR\btenantId\"\xfb\x04\n" +
 	"\x16UpdateUserProtoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x19\n" +
@@ -36588,12 +36770,14 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\n" +
 	"attributes\x18\x0e \x03(\v2/.qrdb.v1.UpdateUserProtoRequest.AttributesEntryR\n" +
 	"attributes\x12%\n" +
-	"\x0ehas_attributes\x18\x0f \x01(\bR\rhasAttributes\x1a=\n" +
+	"\x0ehas_attributes\x18\x0f \x01(\bR\rhasAttributes\x12\x1b\n" +
+	"\ttenant_id\x18\x10 \x01(\tR\btenantId\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\tgroup_idsR\rhas_group_ids\"#\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\tgroup_idsR\rhas_group_ids\"@\n" +
 	"\x11DeleteUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"`\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"`\n" +
 	"\x10ListUsersRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04page\x18\x02 \x01(\x05R\x04page\x12\x1b\n" +
@@ -36601,15 +36785,19 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x11ListUsersResponse\x12+\n" +
 	"\x05users\x18\x01 \x03(\v2\x15.qrdb.v1.UserResponseR\x05users\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12\x19\n" +
-	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"#\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"@\n" +
 	"\x11EnableUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"$\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"A\n" +
 	"\x12DisableUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"$\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"A\n" +
 	"\x12SuspendUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"&\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"C\n" +
 	"\x14UnsuspendUserRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\x04R\x02id\"\x92\x06\n" +
+	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"\x92\x06\n" +
 	"\fUserResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1a\n" +
@@ -36659,9 +36847,10 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vpermissions\x18\x03 \x03(\tR\vpermissions\x12\x0e\n" +
-	"\x02id\x18\x04 \x01(\tR\x02id\" \n" +
+	"\x02id\x18\x04 \x01(\tR\x02id\"=\n" +
 	"\x0eGetRoleRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"G\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"G\n" +
 	"\x14GetRoleByNameRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\":\n" +
@@ -36690,13 +36879,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"'ReconcileBuiltInRolesAllTenantsResponse\x12@\n" +
 	"\atenants\x18\x01 \x03(\v2&.qrdb.v1.ReconcileBuiltInRolesResponseR\atenants\x12=\n" +
 	"\askipped\x18\x02 \x03(\v2#.qrdb.v1.RoleReconcileSkippedTenantR\askipped\x12:\n" +
-	"\x06failed\x18\x03 \x03(\v2\".qrdb.v1.RoleReconcileFailedTenantR\x06failed\"^\n" +
+	"\x06failed\x18\x03 \x03(\v2\".qrdb.v1.RoleReconcileFailedTenantR\x06failed\"{\n" +
 	"\x16UpdateRoleProtoRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
-	"\vpermissions\x18\x03 \x03(\tR\vpermissions\"#\n" +
+	"\vpermissions\x18\x03 \x03(\tR\vpermissions\x12\x1b\n" +
+	"\ttenant_id\x18\x04 \x01(\tR\btenantId\"@\n" +
 	"\x11DeleteRoleRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\"`\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"`\n" +
 	"\x10ListRolesRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x12\n" +
 	"\x04page\x18\x02 \x01(\x05R\x04page\x12\x1b\n" +
@@ -36704,13 +36895,15 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x11ListRolesResponse\x12+\n" +
 	"\x05roles\x18\x01 \x03(\v2\x15.qrdb.v1.RoleResponseR\x05roles\x12\x14\n" +
 	"\x05total\x18\x02 \x01(\x05R\x05total\x12\x19\n" +
-	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"E\n" +
+	"\bhas_more\x18\x03 \x01(\bR\ahasMore\"b\n" +
 	"\x11AssignRoleRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x17\n" +
-	"\arole_id\x18\x02 \x01(\tR\x06roleId\"G\n" +
+	"\arole_id\x18\x02 \x01(\tR\x06roleId\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\"d\n" +
 	"\x13UnassignRoleRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x17\n" +
-	"\arole_id\x18\x02 \x01(\tR\x06roleId\"\xf8\x01\n" +
+	"\arole_id\x18\x02 \x01(\tR\x06roleId\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId\"\xf8\x01\n" +
 	"\fRoleResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x12\n" +
@@ -38452,12 +38645,13 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\ttenant_id\x18\x04 \x01(\tR\btenantId\x12\x14\n" +
 	"\x05roles\x18\x05 \x03(\tR\x05roles\x12\x16\n" +
 	"\x06active\x18\x06 \x01(\bR\x06active\x125\n" +
-	"\x06factor\x18\a \x01(\v2\x1d.qrdb.v1.UserAuthFactorRecordR\x06factor\"S\n" +
+	"\x06factor\x18\a \x01(\v2\x1d.qrdb.v1.UserAuthFactorRecordR\x06factor\"p\n" +
 	"\x18RemoveCertBindingRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1e\n" +
 	"\n" +
 	"thumbprint\x18\x02 \x01(\tR\n" +
-	"thumbprint*=\n" +
+	"thumbprint\x12\x1b\n" +
+	"\ttenant_id\x18\x03 \x01(\tR\btenantId*=\n" +
 	"\tSortOrder\x12\r\n" +
 	"\tSORT_NONE\x10\x00\x12\x0f\n" +
 	"\vSORT_ASCEND\x10\x01\x12\x10\n" +

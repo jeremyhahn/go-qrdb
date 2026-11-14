@@ -610,6 +610,33 @@ func (s *Server) authorizeTenantRequest(w http.ResponseWriter, id string, decide
 	return true
 }
 
+// operatorTenantContext is the tenant qualifier of an identity-record route
+// (users, roles, credentials): when tenantID names another tenant than the
+// caller's, the caller is the platform operator acting on that tenant's
+// records, admitted by authmw.AuthorizeOperatorIdentityAccess under perm and
+// the tenant's isolation policy, and audited in both trails. It returns the
+// context the request runs under, or writes the refusal and reports false.
+func (s *Server) operatorTenantContext(ctx context.Context, w http.ResponseWriter, tenantID string, perm permission.Permission) (context.Context, bool) {
+	if tenantID == "" {
+		return ctx, true
+	}
+	if err := tenant.ValidateTenantIDShape(tenantID); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return nil, false
+	}
+	if s.authMW == nil {
+		// No auth chain: no operator identity to admit; the identity
+		// service's own tenant check decides.
+		return ctx, true
+	}
+	out, err := s.authMW.AuthorizeOperatorIdentityAccess(ctx, tenantID, perm)
+	if err != nil {
+		writeAuthzErrorJSON(w, err)
+		return nil, false
+	}
+	return out, true
+}
+
 // handleGetTenant handles GET /v1/tenants/{id} -- retrieves a tenant by ID.
 func (s *Server) handleGetTenant(w http.ResponseWriter, r *http.Request, id string) {
 	ctx := r.Context()

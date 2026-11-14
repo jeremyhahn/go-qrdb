@@ -100,6 +100,7 @@ func (t *Transport) dialOptions() ([]grpc.DialOption, error) {
 	// refused with *transport.SOPINRequiresTLSError and never sent.
 	opts = append(opts,
 		grpc.WithChainUnaryInterceptor(transport.SOPINUnaryClientInterceptor("unix", t.config.TLSEnabled)),
+		grpc.WithChainUnaryInterceptor(transport.TenantUnaryClientInterceptor()),
 		grpc.WithChainStreamInterceptor(transport.SOPINStreamClientInterceptor("unix", t.config.TLSEnabled)),
 	)
 

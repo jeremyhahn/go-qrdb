@@ -3293,6 +3293,11 @@ message CreateUserRequest {
 // GetUserRequest retrieves a user by ID.
 message GetUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // GetUserByUsernameRequest retrieves a user by tenant-scoped username.
@@ -3313,6 +3318,10 @@ message GetUserByEmailRequest {
 // SPKI thumbprint via the secondary index.
 message GetUserByCertThumbprintRequest {
     string thumbprint = 1;
+    // tenant_id names the tenant to resolve the thumbprint in; empty is the
+    // caller's own. Another tenant is an operator access, gated on that
+    // tenant's isolation policy and recorded in both trails.
+    string tenant_id = 2;
 }
 
 // AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.
@@ -3321,6 +3330,11 @@ message AddCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
     int64 not_after_unix = 3;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 4;
 }
 
 // UpdateUserProtoRequest applies partial updates to an existing user.
@@ -3363,11 +3377,21 @@ message UpdateUserProtoRequest {
     // to represent "absent".
     map<string, string> attributes = 14;
     bool has_attributes = 15;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 16;
 }
 
 // DeleteUserRequest removes a user by ID.
 message DeleteUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // ListUsersRequest returns a paginated list of users.
@@ -3387,21 +3411,41 @@ message ListUsersResponse {
 // EnableUserRequest activates a user account.
 message EnableUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // DisableUserRequest deactivates a user account.
 message DisableUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // SuspendUserRequest moves an active user account to suspended.
 message SuspendUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // UnsuspendUserRequest returns a suspended user account to active.
 message UnsuspendUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // UserResponse is the response payload for user operations.
@@ -3497,6 +3541,11 @@ message CreateRoleRequest {
 // GetRoleRequest retrieves a role by ID.
 message GetRoleRequest {
     string id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 message GetRoleByNameRequest {
     string tenant_id = 1;
@@ -3566,11 +3615,21 @@ message UpdateRoleProtoRequest {
     string id = 1;
     string name = 2;
     repeated string permissions = 3;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 4;
 }
 
 // DeleteRoleRequest removes a role by ID.
 message DeleteRoleRequest {
     string id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // ListRolesRequest returns a paginated list of roles.
@@ -3591,12 +3650,22 @@ message ListRolesResponse {
 message AssignRoleRequest {
     uint64 user_id = 1;
     string role_id = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }
 
 // UnassignRoleRequest removes a role assignment from a user.
 message UnassignRoleRequest {
     uint64 user_id = 1;
     string role_id = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }
 
 // RoleResponse is the response payload for role operations.
@@ -6902,4 +6971,9 @@ message UserAuthFactorLoginResponse {
 message RemoveCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }

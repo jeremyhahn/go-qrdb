@@ -113,6 +113,11 @@ type AuthMiddleware struct {
 	// tenant status.
 	tenants TenantStatusReader
 
+	// isolationPolicy is the tenant records and cluster floor an operator's
+	// access to another tenant's identity records is decided against
+	// (AuthorizeOperatorIdentityAccess). Nil refuses every such access.
+	isolationPolicy IsolationPolicyReader
+
 	// initChallenges holds the tenant barrier init nonces this node issued
 	// and has not yet seen completed (BeginTenantBarrierInit). New supplies
 	// one on the real clock when WithInitChallengeBook did not.

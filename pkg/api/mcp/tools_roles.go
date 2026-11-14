@@ -32,7 +32,7 @@ import (
 // permission operations. Role assignment and unassignment require both
 // the role and user services.
 func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *authmw.AuthMiddleware) []serverTool {
-	return []serverTool{
+	return withOperatorTenant(authMW, []serverTool{
 		{
 			Tool:    toolRoleCreate(),
 			Perm:    permission.RolesCreate,
@@ -108,7 +108,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			Perm:    permission.RolesCreate,
 			Handler: handleRoleReconcile(roleSvc),
 		},
-	}
+	})
 }
 
 // toolRoleReconcile defines the qrdb_role_reconcile_builtin tool schema.

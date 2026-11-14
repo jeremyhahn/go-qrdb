@@ -615,16 +615,21 @@ func testCrossTenantIAMOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] tenant A admin listing roles with no --tenant-id must succeed (scoped to A): %v\noutput: %s", proto.name, err, out)
 	}
 
-	// Direction 3 (system is no longer cross-tenant authoritative): the
-	// SAME command tenant A's admin was refused is now ALSO refused for the
-	// system admin -- the ScopeSelf system-tenant lift was removed
-	// unconditionally (owner ruling, 2026-10-01: "strict tenant
-	// isolation"), so the system tenant is confined to its own tenant like
-	// any other, with no built-in cross-tenant IAM reach left. Nothing
-	// replaces it yet (tenant_identity:read/write is not wired to any
-	// transport), so this is a hard refusal, not a narrower one.
-	assertCrossTenantIAMForbidden(t, node, proto, node.cliArgsFor(proto), victimRole,
-		"roles", "list", "--tenant-id", tenantB)
+	// Direction 3 (operator access replaces the system lift): the ScopeSelf
+	// system-tenant lift was removed unconditionally (owner ruling,
+	// 2026-10-01: "strict tenant isolation"); what replaces it is the
+	// tenant-qualified operator permission roles:read:tenant, admitted under
+	// the operator-access isolation policy and audited in both trails. Tenant
+	// B is a shared (prefix) tenant, which the policy never refuses, so the
+	// SAME command tenant A's admin was refused succeeds for the system
+	// operator and shows tenant B's seeded role.
+	out, err := runQRDB(t, node.cli, node.cliArgsFor(proto), "roles", "list", "--tenant-id", tenantB)
+	if err != nil {
+		t.Fatalf("[%s] system operator listing a shared tenant's roles under roles:read:tenant must succeed: %v\noutput: %s", proto.name, err, out)
+	}
+	if !strings.Contains(out, victimRole) {
+		t.Fatalf("[%s] system operator roles list --tenant-id %s does not show the tenant's role %q\noutput: %s", proto.name, tenantB, victimRole, out)
+	}
 }
 
 // assertCrossTenantIAMForbidden runs an IAM CLI command as a non-system tenant

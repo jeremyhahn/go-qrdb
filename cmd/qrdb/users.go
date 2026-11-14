@@ -236,7 +236,8 @@ func printInvitation(inv *transport.Invitation) error {
 
 // newUsersGetCmd creates the "users get" subcommand.
 func newUsersGetCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "get <id>",
 		Short: "Retrieve a user by ID",
 		Args:  cobra.ExactArgs(1),
@@ -246,7 +247,7 @@ func newUsersGetCmd() *cobra.Command {
 				return err
 			}
 
-			user, err := client.Users().GetUser(cmd.Context(), id)
+			user, err := client.Users().GetUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id)
 			if err != nil {
 				return err
 			}
@@ -254,10 +255,12 @@ func newUsersGetCmd() *cobra.Command {
 			return printUser(user)
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newUsersUpdateCmd creates the "users update" subcommand.
 func newUsersUpdateCmd() *cobra.Command {
+	var opTenant string
 	var (
 		username          string
 		roles             string
@@ -311,7 +314,7 @@ func newUsersUpdateCmd() *cobra.Command {
 				req.Attributes = map[string]string{}
 			}
 
-			user, updateErr := client.Users().UpdateUser(cmd.Context(), req)
+			user, updateErr := client.Users().UpdateUser(transport.WithTenantQualifier(cmd.Context(), opTenant), req)
 			if updateErr != nil {
 				return updateErr
 			}
@@ -331,6 +334,7 @@ func newUsersUpdateCmd() *cobra.Command {
 		"ABAC attribute to set, as key=value. Repeatable. Replaces the current set. Left unchanged when absent")
 	cmd.Flags().BoolVar(&clearAttributes, "clear-attributes", false, "Remove every ABAC attribute")
 
+	addOperatorTenantFlag(cmd, &opTenant)
 	return cmd
 }
 
@@ -364,7 +368,8 @@ func parseAttributes(values []string) (map[string]string, error) {
 
 // newUsersDeleteCmd creates the "users delete" subcommand.
 func newUsersDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete a user by ID",
 		Args:  cobra.ExactArgs(1),
@@ -374,7 +379,7 @@ func newUsersDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			if err := client.Users().DeleteUser(cmd.Context(), id); err != nil {
+			if err := client.Users().DeleteUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -382,11 +387,13 @@ func newUsersDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newUsersEnableCmd creates the "users enable" subcommand.
 func newUsersEnableCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "enable <id>",
 		Short: "Enable a user account",
 		Args:  cobra.ExactArgs(1),
@@ -396,7 +403,7 @@ func newUsersEnableCmd() *cobra.Command {
 				return err
 			}
 
-			if err := client.Users().EnableUser(cmd.Context(), id); err != nil {
+			if err := client.Users().EnableUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -404,11 +411,13 @@ func newUsersEnableCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newUsersDisableCmd creates the "users disable" subcommand.
 func newUsersDisableCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "disable <id>",
 		Short: "Disable a user account",
 		Args:  cobra.ExactArgs(1),
@@ -418,7 +427,7 @@ func newUsersDisableCmd() *cobra.Command {
 				return err
 			}
 
-			if err := client.Users().DisableUser(cmd.Context(), id); err != nil {
+			if err := client.Users().DisableUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -426,11 +435,13 @@ func newUsersDisableCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newUsersSuspendCmd creates the "users suspend" subcommand.
 func newUsersSuspendCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "suspend <id>",
 		Short: "Suspend an active user account",
 		Long: "Suspend an active user account. Its requests are refused, including those " +
@@ -442,7 +453,7 @@ func newUsersSuspendCmd() *cobra.Command {
 				return err
 			}
 
-			if err := client.Users().SuspendUser(cmd.Context(), id); err != nil {
+			if err := client.Users().SuspendUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -450,11 +461,13 @@ func newUsersSuspendCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// newUsersUnsuspendCmd creates the "users unsuspend" subcommand.
 func newUsersUnsuspendCmd() *cobra.Command {
-	return &cobra.Command{
+	var opTenant string
+	cmd := &cobra.Command{
 		Use:   "unsuspend <id>",
 		Short: "Return a suspended user account to active",
 		Args:  cobra.ExactArgs(1),
@@ -464,7 +477,7 @@ func newUsersUnsuspendCmd() *cobra.Command {
 				return err
 			}
 
-			if err := client.Users().UnsuspendUser(cmd.Context(), id); err != nil {
+			if err := client.Users().UnsuspendUser(transport.WithTenantQualifier(cmd.Context(), opTenant), id); err != nil {
 				return err
 			}
 
@@ -472,9 +485,10 @@ func newUsersUnsuspendCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addOperatorTenantFlag(cmd, &opTenant)
+	return cmd
 }
 
-// printUser prints a single User in the current output format.
 func printUser(u *transport.User) error {
 	switch outputFormat {
 	case "json":
@@ -552,4 +566,12 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+// addOperatorTenantFlag gives a by-id user or role verb --tenant-id: the
+// tenant whose identity records the verb acts on. Another tenant than the
+// caller's own is an operator access, allowed only under that tenant's
+// operator-access isolation policy and recorded in both audit trails.
+func addOperatorTenantFlag(cmd *cobra.Command, tenantID *string) {
+	cmd.Flags().StringVar(tenantID, "tenant-id", "", "Tenant whose identity records to act on (default: your own); another tenant is an audited operator access")
 }
