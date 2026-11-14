@@ -1329,6 +1329,9 @@ func TestStore_WatchUnsupported(t *testing.T) {
 func TestStore_Watch(t *testing.T) {
 	kv := newWatchKV()
 	s, _ := NewStore(kv)
+	// The writer is another store: the watcher learns the name from the
+	// tenant's catalog, never from the value.
+	s.SetNameResolver(staticNames{"acme": {"orders": "orders"}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1354,6 +1357,94 @@ func TestStore_Watch(t *testing.T) {
 	ev = <-events
 	if ev.Type != EventDelete || ev.TenantID != "acme" || ev.Database != "orders" {
 		t.Fatalf("delete event = %+v, want EventDelete acme/orders", ev)
+	}
+}
+
+// staticNames is a NameResolver over a fixed tenant -> id -> name table.
+type staticNames map[string]map[string]string
+
+func (n staticNames) DatabaseNames(_ context.Context, tenantID string) map[string]string {
+	return n[tenantID]
+}
+
+// countingNames counts the resolver's catalog reads.
+type countingNames struct {
+	staticNames
+	calls int
+}
+
+func (n *countingNames) DatabaseNames(ctx context.Context, tenantID string) map[string]string {
+	n.calls++
+	return n.staticNames.DatabaseNames(ctx, tenantID)
+}
+
+// The system KV value of a placement never carries the database name
+// (decision S5), whichever write put it there; a store that did not write it
+// resolves the name from the tenant's catalog, and leaves it empty when the
+// catalog does not know the id.
+func TestStore_NameNeverInSystemKV(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	const secret = "payroll-secret-db"
+	p := samplePlacement("acme", "db-1", 1000)
+	p.Database = secret
+	if err := writer.Put(ctx, p); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	claim := samplePlacement("acme", "db-2", 1001)
+	claim.Database = secret + "-2"
+	if ok, _, err := writer.ClaimPlacement(ctx, claim); err != nil || !ok {
+		t.Fatalf("ClaimPlacement = %v, %v", ok, err)
+	}
+	next := *p
+	next.Dropping = true
+	if ok, err := writer.CompareAndSwapPlacement(ctx, p, &next); err != nil || !ok {
+		t.Fatalf("CompareAndSwapPlacement = %v, %v", ok, err)
+	}
+	for _, id := range []string{"db-1", "db-2"} {
+		raw, err := kv.Get(ctx, placementKey("acme", id))
+		if err != nil || raw == nil {
+			t.Fatalf("raw Get %s = %q, %v", id, raw, err)
+		}
+		if bytes.Contains(raw, []byte(secret)) || bytes.Contains(raw, []byte(`"database"`)) {
+			t.Fatalf("system KV value of %s carries the database name: %s", id, raw)
+		}
+	}
+
+	// The writer knows the names it wrote.
+	got, err := writer.Get(ctx, "acme", "db-1")
+	if err != nil || got.Database != secret || !got.Dropping {
+		t.Fatalf("writer Get = %+v, %v; want %q, dropping", got, err, secret)
+	}
+
+	// Another node's store resolves through the tenant's catalog, once per
+	// tenant per read, and caches what it resolved.
+	reader, _ := NewStore(kv)
+	if got, err := reader.Get(ctx, "acme", "db-1"); err != nil || got.Database != "" {
+		t.Fatalf("reader Get with no resolver = %+v, %v; want no name", got, err)
+	}
+	names := &countingNames{staticNames: staticNames{"acme": {"db-1": secret}}}
+	reader.SetNameResolver(names)
+	list, err := reader.ListForTenant(ctx, "acme")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListForTenant = %d, %v", len(list), err)
+	}
+	for _, e := range list {
+		want := map[string]string{"db-1": secret, "db-2": ""}[e.DatabaseID]
+		if e.Database != want {
+			t.Fatalf("entry %s name = %q, want %q", e.DatabaseID, e.Database, want)
+		}
+	}
+	if names.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1 per tenant per read", names.calls)
+	}
+	if got, err := reader.GetByName(ctx, "acme", secret); err != nil || got.DatabaseID != "db-1" {
+		t.Fatalf("GetByName = %+v, %v", got, err)
+	}
+	reader.SetNameResolver(nil)
+	if got, err := reader.Get(ctx, "acme", "db-1"); err != nil || got.Database != secret {
+		t.Fatalf("cached Get = %+v, %v; want %q", got, err, secret)
 	}
 }
 

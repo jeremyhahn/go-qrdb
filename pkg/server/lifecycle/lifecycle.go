@@ -1427,6 +1427,9 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	if err := openDatabaseCatalog(ctx, infra.Host, dbManager, catalog); err != nil {
 		return nil, err
 	}
+	// The placement table records no database name (decision S5): both of
+	// its readers resolve names from the tenant's own catalog.
+	setPlacementNames(n, catalog)
 
 	// ABAC policy documents ride the same StoreResolver.
 	if n.StoreResolver != nil {

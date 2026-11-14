@@ -351,6 +351,12 @@ func (r *TenantShardReconciler) ReconcileOnce(ctx context.Context) {
 		if _, ok := p.ReplicaForNode(r.selfNodeID); !ok {
 			continue
 		}
+		if p.Database == "" {
+			// The name resolves from the tenant's catalog (the placement
+			// table holds only the id); one not readable yet -- the tenant
+			// sealed, its home not yet open -- resolves on a later pass.
+			continue
+		}
 		running := r.ensureStarted(ctx, p)
 		r.maybeRestartPromotedLocal(ctx, p)
 		if running {
@@ -757,7 +763,9 @@ func (r *TenantShardReconciler) runWatch(ctx context.Context, events <-chan plac
 func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Event) {
 	switch ev.Type {
 	case placement.EventPut:
-		if ev.Placement == nil {
+		if ev.Placement == nil || ev.Database == "" {
+			// An entry whose name the tenant's catalog does not resolve yet
+			// is started by a later poll pass.
 			break
 		}
 		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database, ev.Placement.ShardID)

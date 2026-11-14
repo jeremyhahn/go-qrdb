@@ -245,7 +245,7 @@ func TestTranslateEvent_UndecodableEvents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := translateEvent(tc.ev); ok {
+			if _, ok := (&Store{}).translateEvent(context.Background(), tc.ev); ok {
 				t.Fatalf("translateEvent(%+v) ok = true, want false", tc.ev)
 			}
 		})
@@ -256,7 +256,7 @@ func TestTranslateEvent_UndecodableEvents(t *testing.T) {
 // value is supplied.
 func TestTranslateEvent_DeleteFromKey(t *testing.T) {
 	const id = "9f1c2e7a4b5d6c8e0a1b2c3d4e5f6a7b"
-	ev, ok := translateEvent(WatchEvent{Deleted: true, Key: placementKey("acme", id)})
+	ev, ok := (&Store{}).translateEvent(context.Background(), WatchEvent{Deleted: true, Key: placementKey("acme", id)})
 	if !ok || ev.Type != EventDelete || ev.TenantID != "acme" || ev.DatabaseID != id || ev.Database != "" {
 		t.Fatalf("translateEvent = (%+v,%v), want EventDelete acme/%s with no name", ev, ok, id)
 	}

@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 )
 
 // PlacementPrefix is the key prefix under which placement records live in the
@@ -155,6 +157,99 @@ type Event struct {
 // safe for concurrent use.
 type Store struct {
 	kv KV
+
+	// names caches id -> name for the entries this node has written or
+	// resolved. A database id is never reused, so a cached name never goes
+	// stale. The cache is node memory: no name is written to kv.
+	names sync.Map
+
+	// resolver resolves the names the cache misses, from the tenant's own
+	// catalog (SetNameResolver).
+	resolver atomic.Pointer[nameResolverRef]
+}
+
+// NameResolver resolves a tenant's database ids to their names inside the
+// tenant's boundary: from the tenant's catalog, which a strict tenant keeps
+// in its home store. The placement table never records a database name
+// (docs/multi-tenancy/architecture.md decision S5), so the Store asks it for
+// the name of every entry it reads.
+type NameResolver interface {
+	// DatabaseNames returns the names of tenantID's databases by id. A
+	// tenant whose catalog cannot be read (sealed, or its home not yet open)
+	// returns what it can; an id it does not return reads with an empty
+	// Database and is resolved again on the next read.
+	DatabaseNames(ctx context.Context, tenantID string) map[string]string
+}
+
+type nameResolverRef struct{ r NameResolver }
+
+// SetNameResolver sets the resolver the Store reads database names from.
+// Until it is set (and for an id it does not know), only the names this
+// Store wrote or resolved before are known.
+func (s *Store) SetNameResolver(r NameResolver) {
+	if r == nil {
+		s.resolver.Store(nil)
+		return
+	}
+	s.resolver.Store(&nameResolverRef{r: r})
+}
+
+// encodePlacement is the system KV value of p: p without its database name,
+// which stays inside the tenant's boundary. The name p carries is cached.
+func (s *Store) encodePlacement(p *Placement) ([]byte, error) {
+	if p.Database != "" {
+		s.names.Store(nameCacheKey(p.TenantID, p.DatabaseID), p.Database)
+	}
+	stored := *p
+	stored.Database = ""
+	return json.Marshal(&stored)
+}
+
+// decodePlacement decodes a system KV value. Its Database is resolved by
+// resolveNames.
+func decodePlacement(value []byte) (*Placement, error) {
+	var p Placement
+	if err := json.Unmarshal(value, &p); err != nil {
+		return nil, err
+	}
+	p.Database = ""
+	return &p, nil
+}
+
+// resolveNames fills the Database of every entry of ps: from the cache, else
+// from the resolver, asked once per tenant.
+func (s *Store) resolveNames(ctx context.Context, ps ...*Placement) {
+	var byTenant map[string]map[string]string
+	for _, p := range ps {
+		if p == nil || p.DatabaseID == "" {
+			continue
+		}
+		key := nameCacheKey(p.TenantID, p.DatabaseID)
+		if name, ok := s.names.Load(key); ok {
+			p.Database = name.(string) //nolint:errcheck // the cache only ever holds strings
+			continue
+		}
+		ref := s.resolver.Load()
+		if ref == nil {
+			continue
+		}
+		if byTenant == nil {
+			byTenant = make(map[string]map[string]string)
+		}
+		names, ok := byTenant[p.TenantID]
+		if !ok {
+			names = ref.r.DatabaseNames(ctx, p.TenantID)
+			byTenant[p.TenantID] = names
+		}
+		if name := names[p.DatabaseID]; name != "" {
+			p.Database = name
+			s.names.Store(key, name)
+		}
+	}
+}
+
+func nameCacheKey(tenantID, databaseID string) string {
+	return tenantID + "/" + databaseID
 }
 
 // NewStore constructs a Store over the given KV backend, which must be non-nil.
@@ -182,7 +277,7 @@ func (s *Store) Put(ctx context.Context, p *Placement) error {
 	if p.DatabaseID == "" {
 		return &StoreError{TenantID: p.TenantID, Op: "put", Err: ErrEmptyDatabaseID}
 	}
-	data, err := json.Marshal(p)
+	data, err := s.encodePlacement(p)
 	if err != nil {
 		return &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "put", Err: err}
 	}
@@ -208,11 +303,12 @@ func (s *Store) Get(ctx context.Context, tenantID, databaseID string) (*Placemen
 	if raw == nil {
 		return nil, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "get", Err: ErrPlacementNotFound}
 	}
-	var p Placement
-	if err := json.Unmarshal(raw, &p); err != nil {
+	p, err := decodePlacement(raw)
+	if err != nil {
 		return nil, &StoreError{TenantID: tenantID, DatabaseID: databaseID, Op: "get", Err: err}
 	}
-	return &p, nil
+	s.resolveNames(ctx, p)
+	return p, nil
 }
 
 // Delete removes the placement for (tenantID, databaseID). Deleting a missing
@@ -264,13 +360,13 @@ func (s *Store) CompareAndSwapPlacement(ctx context.Context, expected, next *Pla
 	}
 	var expectedBytes []byte
 	if expected != nil {
-		b, err := json.Marshal(expected)
+		b, err := s.encodePlacement(expected)
 		if err != nil {
 			return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
 		}
 		expectedBytes = b
 	}
-	nextBytes, err := json.Marshal(next)
+	nextBytes, err := s.encodePlacement(next)
 	if err != nil {
 		return false, &StoreError{TenantID: next.TenantID, DatabaseID: next.DatabaseID, Op: "compare-and-swap", Err: err}
 	}
@@ -318,7 +414,7 @@ func (s *Store) ClaimPlacement(ctx context.Context, p *Placement) (claimed bool,
 	if !ok {
 		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: &AtomicWriteUnsupportedError{}}
 	}
-	data, err := json.Marshal(p)
+	data, err := s.encodePlacement(p)
 	if err != nil {
 		return false, nil, &StoreError{TenantID: p.TenantID, DatabaseID: p.DatabaseID, Op: "claim", Err: err}
 	}
@@ -528,16 +624,17 @@ func (s *Store) RemoveReplica(ctx context.Context, target *Placement, replicaID 
 func (s *Store) List(ctx context.Context) ([]*Placement, error) {
 	var out []*Placement
 	err := s.kv.Scan(ctx, PlacementPrefix, func(_ string, value []byte) error {
-		var p Placement
-		if err := json.Unmarshal(value, &p); err != nil {
+		p, err := decodePlacement(value)
+		if err != nil {
 			return err
 		}
-		out = append(out, &p)
+		out = append(out, p)
 		return nil
 	})
 	if err != nil {
 		return nil, &StoreError{Op: "list", Err: err}
 	}
+	s.resolveNames(ctx, out...)
 	return out, nil
 }
 
@@ -548,16 +645,17 @@ func (s *Store) ListForTenant(ctx context.Context, tenantID string) ([]*Placemen
 	}
 	var out []*Placement
 	err := s.kv.Scan(ctx, PlacementPrefix+tenantID+"/", func(_ string, value []byte) error {
-		var p Placement
-		if err := json.Unmarshal(value, &p); err != nil {
+		p, err := decodePlacement(value)
+		if err != nil {
 			return err
 		}
-		out = append(out, &p)
+		out = append(out, p)
 		return nil
 	})
 	if err != nil {
 		return nil, &StoreError{TenantID: tenantID, Op: "list", Err: err}
 	}
+	s.resolveNames(ctx, out...)
 	return out, nil
 }
 
@@ -659,7 +757,7 @@ func (s *Store) Watch(ctx context.Context) (<-chan Event, error) {
 				if !more {
 					return
 				}
-				event, ok := translateEvent(ev)
+				event, ok := s.translateEvent(ctx, ev)
 				if !ok {
 					continue
 				}
@@ -676,11 +774,13 @@ func (s *Store) Watch(ctx context.Context) (<-chan Event, error) {
 
 // translateEvent converts a backend WatchEvent into a placement Event. It
 // reports false when the event carries no decodable placement identity.
-func translateEvent(ev WatchEvent) (Event, bool) {
+func (s *Store) translateEvent(ctx context.Context, ev WatchEvent) (Event, bool) {
 	if ev.Deleted {
-		var p Placement
-		if len(ev.PrevValue) > 0 && json.Unmarshal(ev.PrevValue, &p) == nil {
-			return Event{Type: EventDelete, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database}, true
+		if len(ev.PrevValue) > 0 {
+			if p, err := decodePlacement(ev.PrevValue); err == nil {
+				s.resolveNames(ctx, p)
+				return Event{Type: EventDelete, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database}, true
+			}
 		}
 		tenantID, databaseID, ok := splitPlacementKey(ev.Key)
 		if !ok {
@@ -688,11 +788,15 @@ func translateEvent(ev WatchEvent) (Event, bool) {
 		}
 		return Event{Type: EventDelete, TenantID: tenantID, DatabaseID: databaseID}, true
 	}
-	var p Placement
-	if len(ev.Value) == 0 || json.Unmarshal(ev.Value, &p) != nil {
+	if len(ev.Value) == 0 {
 		return Event{}, false
 	}
-	return Event{Type: EventPut, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, Placement: &p}, true
+	p, err := decodePlacement(ev.Value)
+	if err != nil {
+		return Event{}, false
+	}
+	s.resolveNames(ctx, p)
+	return Event{Type: EventPut, TenantID: p.TenantID, DatabaseID: p.DatabaseID, Database: p.Database, Placement: p}, true
 }
 
 // splitPlacementKey parses a placement key back into its (tenant, databaseID)

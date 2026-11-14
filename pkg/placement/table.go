@@ -147,8 +147,10 @@ type Placement struct {
 	// placement key.
 	DatabaseID string `json:"database_id"`
 
-	// Database is the database name, unique within the tenant.
-	Database string `json:"database"`
+	// Database is the database name, unique within the tenant. It is never
+	// written to the system KV (decision S5): Store strips it from the value
+	// it writes and resolves it, from the tenant's own catalog, on read.
+	Database string `json:"database,omitempty"`
 
 	// ShardID is the Raft shard ID allocated for the database's dedicated
 	// group, shared by every replica.

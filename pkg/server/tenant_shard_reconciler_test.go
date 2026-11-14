@@ -874,6 +874,9 @@ func TestTenantShardReconciler_WatchPath_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
+	// The entry was written by another node: its name resolves from the
+	// tenant's catalog, never from the value.
+	store.SetNameResolver(staticPlacementNames{"acme": {"orders": "orders"}})
 	r := NewTenantShardReconciler(store, factory, "local:1", nil,
 		WithReconcilerPollInterval(10*time.Millisecond))
 
@@ -906,6 +909,42 @@ func TestTenantShardReconciler_WatchPath_Delete(t *testing.T) {
 
 	if !closed {
 		t.Error("watch EventDelete should have caused shard close")
+	}
+}
+
+// staticPlacementNames is a placement.NameResolver over a fixed
+// tenant -> id -> name table: the tenant catalog of a test.
+type staticPlacementNames map[string]map[string]string
+
+func (n staticPlacementNames) DatabaseNames(_ context.Context, tenantID string) map[string]string {
+	return n[tenantID]
+}
+
+// An entry whose name the tenant's catalog does not resolve (the tenant
+// sealed, say) is not started under an empty name, by the poll or the watch;
+// once the catalog names it, the next pass starts it.
+func TestTenantShardReconciler_UnresolvedNameWaitsForTheCatalog(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	kv := newWatchablePlacementKV()
+	p := placement1("acme", "orders", 1001)
+	if err := kv.Put(context.Background(), "__sys:placement/acme/orders", mustMarshal(t, p)); err != nil {
+		t.Fatalf("kv.Put: %v", err)
+	}
+	store, err := placement.NewStore(kv)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	ctx := context.Background()
+	r.ReconcileOnce(ctx)
+	r.handleEvent(ctx, placement.Event{Type: placement.EventPut, TenantID: "acme", DatabaseID: "orders", Placement: p})
+	if factory.isStarted("acme", "") || factory.isStarted("acme", "orders") {
+		t.Fatal("an entry with no resolved name was started")
+	}
+	store.SetNameResolver(staticPlacementNames{"acme": {"orders": "orders"}})
+	r.ReconcileOnce(ctx)
+	if !factory.isStarted("acme", "orders") {
+		t.Fatal("the entry was not started once the catalog named it")
 	}
 }
 
