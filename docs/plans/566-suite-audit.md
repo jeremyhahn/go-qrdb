@@ -18,3 +18,38 @@ No behaviour loses its only test; the coverage gate stays met.
 
 | Package | Removed test | Reason | Test that keeps the path |
 |---|---|---|---|
+| pkg/tenant | TestKVTenantBarrierSeal_NotEnabled2 | duplicate | TestKVTenantBarrierSeal_NotEnabled |
+| pkg/tenant | TestKVTenantBarrierStatus_NotEnabled2 | duplicate | TestKVTenantBarrierStatus_NotEnabled |
+| pkg/tenant | TestNestedContextsInnerTenantWins | tests context.WithValue shadowing (stdlib) | TestWithTenantIDAndFromContextRoundTrip |
+| pkg/tenant | TestWithTenantIDPreservesParentValues | tests context.WithValue chaining (stdlib) | TestWithTenantIDAndFromContextRoundTrip |
+| pkg/tenant | TestFromContextWithCancelledContext | tests that cancellation keeps values (stdlib) | TestWithTenantIDAndFromContextRoundTrip |
+| pkg/tenant | TestIncrementQuotaUsage_Success | duplicate | TestTenantService_IncrementQuotaUsage_Success |
+| pkg/tenant | TestIncrementQuotaUsage_ExceedsLimit | duplicate | TestTenantService_IncrementQuotaUsage_AtLimit, _QuotaExceeded |
+| pkg/tenant | TestIncrementQuotaUsage_UnlimitedLimit | duplicate | TestTenantService_IncrementQuotaUsage_UnlimitedLimit |
+| pkg/tenant | TestIncrementQuotaUsage_ZeroDelta | duplicate | TestTenantService_IncrementQuotaUsage_ZeroDelta |
+| pkg/tenant | TestIncrementQuotaUsage_EmptyTenantID | duplicate | TestTenantService_IncrementQuotaUsage_EmptyID |
+| pkg/tenant | TestDecrementQuotaUsage_Success | duplicate | TestTenantService_DecrementQuotaUsage_Success |
+| pkg/tenant | TestDecrementQuotaUsage_ClampToZero | duplicate | TestTenantService_DecrementQuotaUsage_ClampToZero |
+| pkg/tenant | TestDecrementQuotaUsage_ZeroDelta | duplicate (weaker assertion) | TestTenantService_DecrementQuotaUsage_ZeroDelta |
+| pkg/tenant | TestDecrementQuotaUsage_EmptyTenantID | duplicate | TestTenantService_DecrementQuotaUsage_EmptyID |
+| pkg/tenant | TestGetQuotaUsage_Success | duplicate | TestTenantService_GetQuotaUsage_Success |
+| pkg/tenant | TestGetQuotaUsage_NoQuotasSetReturnsZero | duplicate | TestTenantService_GetQuotaUsage_NilQuotas |
+| pkg/tenant | TestGetQuotaUsage_EmptyTenantID | duplicate | TestTenantService_GetQuotaUsage_EmptyID |
+| pkg/tenant | TestGetQuotaUsage_TenantNotFound | duplicate | TestTenantService_GetQuotaUsage_NotFound |
+| pkg/tenant | TestQuotaExceededError_ImplementsError | tautology (compile-time assignment) | TestQuotaExceededError_Error |
+| pkg/tenant | TestInvalidTenantIDErrorMessage | duplicate (substring of the exact format) | TestInvalidTenantIDErrorFormat |
+| pkg/tenant | TestInvalidTenantIDErrorEmptyTenantID | duplicate of the format path | TestInvalidTenantIDErrorFormat |
+| pkg/tenant | TestInvalidTenantIDErrorImplementsErrorInterface | tautology | TestInvalidTenantIDErrorFormat |
+| pkg/tenant | TestInvalidTenantIDCharError_NonEmpty | weaker duplicate | TestInvalidTenantIDCharError_ContainsHex |
+| pkg/tenant | TestInvalidTenantIDCharError_ImplementsError | tautology | TestInvalidTenantIDCharError_ContainsHex |
+| pkg/tenant | TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError | duplicate | TestNewStoreError_NonDecryptCauseIsTransient |
+| pkg/tenant | TestIsTransientCause_NonDecryptCause | lower layer of newStoreError (its only caller) | TestNewStoreError_NonDecryptCauseIsTransient |
+| pkg/tenant | TestIsTransientCause_DecryptCause | lower layer of newStoreError (its only caller) | TestNewStoreError_DecryptCauseIsNotTransient |
+| pkg/tenant | TestValidateReservedTenantID_System | lower layer of CreateTenant | TestTenantService_CreateRejectsSystemID |
+| pkg/tenant | TestValidateReservedTenantID_LegacyDefault | lower layer of CreateTenant | TestTenantService_CreateRejectsLegacyDefaultID |
+
+## Trimmed tests
+
+| Package | Test | Change | Test that pins the path |
+|---|---|---|---|
+| pkg/tenant | TestCreateTenant_ConcurrentCreateAndDeleteNeverResurrect | 50 to 10 iterations; stays for the race detector | TestCreateTenant_RefusedWhenADeleteRetiresTheIdMidCreate (deterministic interleave) |
