@@ -109,3 +109,54 @@ func TestInitialize_ShamirSystemSOPersistFaultIsRetriableAcrossRestart(t *testin
 	_, err = svc2.Initialize(ctx, e.ca, opts())
 	assert.ErrorIs(t, err, ErrAlreadyInitialized, "once the SO is recorded the ceremony refuses a replay")
 }
+
+// An M-of-N Initialize whose SO record write failed returned none of what
+// it committed. Its retry on the same service must hand all of it back
+// with the SO it records: the holders, the share count, the TLS
+// certificate and SPKI pin, and the generated bootstrap admin credential,
+// whose private key exists nowhere else.
+func TestInitialize_ShamirSystemSOPersistRetryCarriesTheFailedCallsCredentials(t *testing.T) {
+	ctx := context.Background()
+	backend := &systemSOWriteFailBackend{StorageBackend: seal.NewMemoryBackend(), armed: true}
+	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pintest.NewBackend(t), factors: testFactors(t)}
+	e.barrier = shamirBarrier(t, e.backend, 2, 3)
+	e.svc = e.newService(e.barrier)
+
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	carol := newHolder(t, "carol", seal.RoleSecurityOfficer)
+	soCSR, _ := generateCSRPEM(t, "ignored-cn")
+	opts := func() *InitializeOptions {
+		o := initOpts(2, alice, bob, carol)
+		o.SOUsername = "secofficer"
+		o.SOCSRPEM = soCSR
+		return o
+	}
+
+	_, err := e.svc.Initialize(ctx, e.ca, opts())
+	require.ErrorIs(t, err, errSystemSOWrite)
+	require.False(t, backend.armed, "the fault hit the SO record write")
+	adminPEM, _ := e.svc.LastIssuedAdminCertPEM()
+	require.NotEmpty(t, adminPEM, "the failed call issued the admin credential")
+
+	result, err := e.svc.Initialize(ctx, e.ca, opts())
+	require.NoError(t, err, "the retry records the SO")
+	assert.Equal(t, StateEnrolling, result.State)
+	assert.NotEmpty(t, result.SOCertPEM)
+	assert.Len(t, result.Holders, 3, "the failed call's holders")
+	assert.Equal(t, 3, result.ShareCount)
+	assert.NotEmpty(t, result.TLSCertPEM)
+	assert.NotEmpty(t, result.SPKIPin)
+	assert.NotEmpty(t, result.CACertPEM)
+	assert.Equal(t, adminPEM, result.AdminCertPEM, "the admin certificate the failed call issued")
+	assert.NotEmpty(t, result.AdminKeyPEM, "the generated admin key the failed call could not return")
+	assert.Equal(t, AdminCredentialGenerated, result.AdminCredentialSource)
+
+	pending, err := e.newService(e.barrier).PendingSystemSO(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pending)
+	assert.Equal(t, result.SOCertPEM, pending.CertPEM, "the result names the SO the record holds")
+
+	_, err = e.svc.Initialize(ctx, e.ca, opts())
+	assert.ErrorIs(t, err, ErrAlreadyInitialized, "the carried result is handed back once")
+}

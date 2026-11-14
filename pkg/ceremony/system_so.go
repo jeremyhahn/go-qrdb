@@ -328,7 +328,20 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 	}
 	s.lastSystemSO = systemSO
 	s.logger.Info("ceremony: system SO credential issued on retry", slog.String("username", systemSO.Username))
-	return &InitResult{State: StateEnrolling, CACertPEM: caBundle, SOCertPEM: systemSO.CertPEM}, true, nil
+	// The failed call committed the holders, the TLS certificate and the
+	// bootstrap admin credential but returned none of them: hand them back
+	// now, with the SO this retry recorded, so the caller holds the
+	// complete result -- a generated admin private key included, which
+	// exists nowhere else.
+	result := &InitResult{State: StateEnrolling, CACertPEM: caBundle}
+	if carried := s.unrecordedMofNResult; carried != nil {
+		copied := *carried
+		result = &copied
+		result.State = StateEnrolling
+		s.unrecordedMofNResult = nil
+	}
+	result.SOCertPEM = systemSO.CertPEM
+	return result, true, nil
 }
 
 // PendingSystemSO returns the system SO this node's Initialize issued: the

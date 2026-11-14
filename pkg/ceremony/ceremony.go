@@ -83,6 +83,19 @@ type CeremonyService struct {
 	// hand to first boot as it does lastAdminCertPEM. Nil when none.
 	lastSystemSO *IssuedSystemSO
 
+	// unrecordedMofNResult is the result of an M-of-N Initialize whose last
+	// step, the system SO record write, failed after everything else
+	// committed: the holders, the TLS certificate and SPKI pin, the share
+	// count and the bootstrap admin credential (a generated private key
+	// included) that the failed call could not return.
+	// retrySystemSOPersistLocked hands it back with the SO the retry
+	// records, so the retry's result is the complete one. Memory only, like
+	// the admin key itself: a restart loses it, and the retry then returns
+	// the CA bundle and the SO alone; the holders are read back with
+	// ListOfficers and the admin credential re-issued through
+	// ReissueAdminCredential.
+	unrecordedMofNResult *InitResult
+
 	// strictSoD is the node's resolved strict separation-of-duties posture
 	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
 	// names no system SO, before any write.
@@ -795,16 +808,17 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// barrier after a restart, and a retried Initialize then persists the
 	// SO, and only the SO (retrySystemSOPersistLocked), so strict first
 	// boot is never left without its required SO record.
+	result.ShareCount = params.ShareCount
+	result.State = StateEnrolling
 	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
 		s.state = StateEnrolling
+		s.unrecordedMofNResult = result
 		s.mu.Unlock()
 		return nil, err
 	}
 	s.lastSystemSO = systemSO
 	s.state = StateEnrolling
 	s.mu.Unlock()
-	result.ShareCount = params.ShareCount
-	result.State = StateEnrolling
 	s.logger.Info("ceremony initialized; share holders must claim their envelopes",
 		slog.Int("threshold", params.Threshold), slog.Int("holders", params.TotalShares))
 	return result, nil
