@@ -16,6 +16,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -570,6 +572,11 @@ func (s *TenantOnboardingService) fileTenantOnboardEvent(ctx context.Context, te
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
+	// The record's identity is its request id and time: a retry that finds
+	// an event with both already in the trail appends nothing.
+	if ev.RequestID == "" {
+		ev.RequestID = onboardEventID()
+	}
 	record, err := json.Marshal(ev)
 	if err == nil {
 		err = s.pendingAudit.Create(ctx, tenantID, record)
@@ -634,9 +641,59 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	if err := json.Unmarshal(record, &ev); err != nil {
 		return &tenantadmin.StoreError{Op: "decode", Err: err}
 	}
-	if err := sink.Emit(ctx, ev); err != nil {
+	// An earlier attempt may have appended the record and then failed to
+	// delete it, or stopped between the two: the trail already holding the
+	// event is the append, so only the pending record is removed.
+	appended, err := trailHolds(ctx, sink, ev)
+	if err != nil {
 		return err
+	}
+	if !appended {
+		if err := sink.Emit(ctx, ev); err != nil {
+			return err
+		}
 	}
 	_, err = s.pendingAudit.Delete(ctx, tenantID, record)
 	return err
+}
+
+// onboardEventID is a random identity for an onboarding audit record.
+func onboardEventID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:]) // crypto/rand.Read never fails (Go 1.24+)
+	return "tenant-onboard-" + hex.EncodeToString(b[:])
+}
+
+// trailHolds reports whether sink already holds ev: an event of ev's tenant
+// and action with ev's request id and time. A record with no request id (one
+// kept before records carried one) is never found, so it is appended.
+func trailHolds(ctx context.Context, sink audit.AuditLogger, ev audit.AuditEvent) (bool, error) {
+	if ev.RequestID == "" {
+		return false, nil
+	}
+	filter := audit.Filter{
+		TenantID: ev.TenantID,
+		Action:   ev.Action,
+		From:     ev.Timestamp,
+		To:       ev.Timestamp.Add(time.Nanosecond),
+		Limit:    1000,
+	}
+	for {
+		page, err := sink.Query(ctx, filter)
+		if err != nil {
+			return false, err
+		}
+		if page == nil {
+			return false, nil
+		}
+		for _, got := range page.Events {
+			if got.RequestID == ev.RequestID && got.Timestamp.Equal(ev.Timestamp) {
+				return true, nil
+			}
+		}
+		if page.Next == "" {
+			return false, nil
+		}
+		filter.Cursor = page.Next
+	}
 }

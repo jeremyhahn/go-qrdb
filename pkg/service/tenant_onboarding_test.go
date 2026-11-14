@@ -735,6 +735,114 @@ func TestEmitPendingOnboardAudit_ConcurrentCallbacksAppendOnce(t *testing.T) {
 	}
 }
 
+// queryFailingTrail is a trail that cannot be read.
+type queryFailingTrail struct{ *audit.RingBuffer }
+
+func (queryFailingTrail) Query(context.Context, audit.Filter) (*audit.Page, error) {
+	return nil, errors.New("trail unreadable")
+}
+
+// A retry after an attempt that appended the record but did not delete it
+// (a failed delete, or a stop between the two) appends nothing more: the
+// trail already holding the record's request id and time is the append. A
+// record kept with no request id is appended, and a trail that cannot be
+// read keeps the record pending.
+func TestEmitPendingOnboardAudit_RetryAfterAppendAppendsNothing(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 11, 14, 12, 0, 0, 123456789, time.UTC)
+	ev := audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", Timestamp: ts, RequestID: "tenant-onboard-1"}
+
+	newSvc := func(t *testing.T, trail audit.AuditLogger, ev audit.AuditEvent) (*TenantOnboardingService, *tenantadmin.AuditKVStore) {
+		t.Helper()
+		deps := newOnboardingDeps(t)
+		pending := tenantadmin.NewAuditKVStore(kvstore.NewMemoryKVStore())
+		deps.PendingAudit = pending
+		deps.TenantTrail = trail
+		record, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pending.Create(ctx, "acme", record); err != nil {
+			t.Fatal(err)
+		}
+		return NewTenantOnboardingService(deps), pending
+	}
+	trailEvents := func(t *testing.T, trail audit.AuditLogger) []audit.AuditEvent {
+		t.Helper()
+		page, err := trail.Query(ctx, audit.Filter{TenantID: "acme"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return page.Events
+	}
+
+	t.Run("already appended", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		if err := trail.Emit(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		svc, pending := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 1 {
+			t.Fatalf("trail holds %d onboarding records; want 1", len(got))
+		}
+		if rec, _ := pending.Get(ctx, "acme"); rec != nil {
+			t.Fatal("pending record not deleted")
+		}
+	})
+
+	t.Run("another onboarding at the same time is not this one", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		other := ev
+		other.RequestID = "tenant-onboard-2"
+		if err := trail.Emit(ctx, other); err != nil {
+			t.Fatal(err)
+		}
+		svc, _ := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 2 {
+			t.Fatalf("trail holds %d onboarding records; want 2", len(got))
+		}
+	})
+
+	t.Run("no request id", func(t *testing.T) {
+		trail := audit.NewRingBuffer(8)
+		bare := ev
+		bare.RequestID = ""
+		svc, _ := newSvc(t, trail, bare)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+			t.Fatal(err)
+		}
+		if got := trailEvents(t, trail); len(got) != 1 {
+			t.Fatalf("trail holds %d onboarding records; want 1", len(got))
+		}
+	})
+
+	t.Run("trail unreadable", func(t *testing.T) {
+		trail := queryFailingTrail{audit.NewRingBuffer(8)}
+		svc, pending := newSvc(t, trail, ev)
+		if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+			t.Fatal("an unreadable trail did not fail the retry")
+		}
+		if rec, _ := pending.Get(ctx, "acme"); rec == nil {
+			t.Fatal("the pending record was dropped")
+		}
+	})
+}
+
+// A filed onboarding record carries a request id, the identity a retry
+// finds it by.
+func TestOnboardEventID_Distinct(t *testing.T) {
+	a, b := onboardEventID(), onboardEventID()
+	if a == b || !strings.HasPrefix(a, "tenant-onboard-") {
+		t.Fatalf("ids %q, %q", a, b)
+	}
+}
+
 // TestOnboardTenant_AuditGateFailClosedRefusesBeforeProvisioning proves the
 // default audit failure policy (FailClosed) refuses the whole operation
 // before bootstrap.ProvisionTenant ever runs: the gating record is part of
