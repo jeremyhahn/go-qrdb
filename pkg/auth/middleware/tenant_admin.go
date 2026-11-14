@@ -45,15 +45,17 @@ import (
 // behind the transport's tenants:update entry check (AuthorizeTenantTarget)
 // and charge no further rate-limit token.
 func (m *AuthMiddleware) AuthorizeTenantUpdate(ctx context.Context, tenantID string, patch tenant.TenantPatch) error {
-	// tenants:update gates the display name (and a no-op/empty patch, as a
-	// baseline). A pure isolation-type change needs tenants:set_isolation
+	// tenants:update gates the display name, the description, the metadata
+	// and the isolation policy (and a no-op/empty patch, as a baseline). A
+	// policy change takes this check whatever else the patch carries: a
+	// status or isolation type alongside it must not lift the gate. A pure isolation-type change needs tenants:set_isolation
 	// ONLY, and a pure status change tenants:set_status ONLY: the
 	// system-tenant lift tenants:update relied on for these cases was removed
 	// (owner ruling, 2026-10-01), and both are platform-operator, ScopeCross
 	// permissions that decide on their own without needing the self-scope
 	// permission alongside them. A tenant admin holds tenants:update on its
 	// own tenant, so neither may ride the baseline.
-	if patch.Name != "" || patch.Description != nil || patch.Metadata != nil || (patch.IsolationType == "" && patch.Status == nil) {
+	if patch.Name != "" || patch.Description != nil || patch.Metadata != nil || patch.IsolationPolicy != "" || (patch.IsolationType == "" && patch.Status == nil) {
 		if err := m.AuthorizeTenantTarget(ctx, tenantID, permission.TenantsUpdate); err != nil {
 			return err
 		}

@@ -63,6 +63,8 @@ var tenantClientAuthorizationSurface = map[string]string{
 	"CreateTenant":                    "ambient self: " + string(permission.TenantsCreate),
 	"GetTenant":                       "target: " + string(permission.TenantsRead),
 	"ListTenants":                     "ambient self: " + string(permission.TenantsList) + " + FilterTenantList narrowing",
+	"GetClusterIsolationPolicy":       "ambient self: " + string(permission.TenantsRead),
+	"SetClusterIsolationPolicy":       "ambient self: " + string(permission.TenantsUpdateCross),
 	"ListDeletedTenants":              "ambient self: " + string(permission.TenantsListDeleted),
 	"ReconcileDeletedTenants":         "ambient self: " + string(permission.TenantsReconcileDeleted),
 	"DeleteTenant":                    "target: " + string(permission.TenantsDelete),

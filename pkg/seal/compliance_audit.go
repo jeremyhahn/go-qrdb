@@ -38,8 +38,10 @@ func DatabaseBarrierAuditName(tenantID, database string) string {
 }
 
 // WithAuditTrail records the events of every tenant barrier the registry
-// builds on sink, the node's compliance trail, keyed by the tenant
-// (NewComplianceAuditLogger). A registration that supplies its own
+// builds on sink, the node's compliance trail. A tenant barrier's seal and
+// unseal are platform events: they are keyed by the system tenant and name
+// the tenant's barrier ("tenant:<id>"), so a tenant whose home group is
+// sealed is never held by its own trail (NewComplianceAuditLogger). A registration that supplies its own
 // BarrierConfig.AuditLogger keeps it. A nil sink is a no-op.
 func WithAuditTrail(sink audit.AuditLogger) Option {
 	return func(r *BarrierRegistry) {
@@ -80,16 +82,27 @@ type complianceAuditLogger struct {
 	sink     audit.AuditLogger
 	tenantID string
 	barrier  string
+	// anonymous is set for a tenant's barrier recording on the platform
+	// trail, which holds no tenant identity: holderIdentityAttributes are
+	// dropped from its records.
+	anonymous bool
 }
+
+// holderIdentityAttributes name a barrier's share holder: its username and
+// certificate thumbprint. A tenant barrier's holders are tenant principals,
+// so these never reach the platform trail.
+var holderIdentityAttributes = map[string]bool{"username": true, "cached_cert": true}
 
 var _ AuditLogger = (*complianceAuditLogger)(nil)
 
 // NewComplianceAuditLogger returns the AuditLogger that records the events of
 // one barrier -- initialize, unseal, seal, quorum-complete, distribute and
 // the rest -- on sink, the node's one compliance trail, keyed by tenantID,
-// the tenant that owns the barrier, and naming the barrier (attribute
-// "barrier": "system", "tenant:<id>", "database:<tenant>/<name>"). Only the
-// details on an allow-list reach the trail; none carries key material. The
+// the tenant whose trail records the barrier, and naming the barrier
+// (attribute "barrier": "system", "tenant:<id>", "database:<tenant>/<name>").
+// Only the details on an allow-list reach the trail; none carries key
+// material. A tenant barrier keyed to the system tenant (the platform trail)
+// also drops its holders' usernames and certificate thumbprints. The
 // records are post-hoc -- the operation has happened, or been refused -- so
 // a sink that refuses one is counted and logged (audit.EmitBestEffort),
 // never returned to the barrier. Close does not close sink: the composer
@@ -98,7 +111,11 @@ func NewComplianceAuditLogger(sink audit.AuditLogger, tenantID, barrier string) 
 	if sink == nil {
 		return nil
 	}
-	return &complianceAuditLogger{sink: sink, tenantID: tenantid.Normalize(tenantID), barrier: barrier}
+	trail := tenantid.Normalize(tenantID)
+	return &complianceAuditLogger{
+		sink: sink, tenantID: trail, barrier: barrier,
+		anonymous: trail == tenantid.System && barrier != SystemBarrierAuditName,
+	}
 }
 
 // Log records ev on the compliance trail.
@@ -108,7 +125,7 @@ func (l *complianceAuditLogger) Log(ctx context.Context, ev *AuditEvent) error {
 	}
 	attrs := map[string]any{"barrier": l.barrier}
 	for k, v := range ev.Details {
-		if barrierAuditAttributes[k] {
+		if barrierAuditAttributes[k] && (!l.anonymous || !holderIdentityAttributes[k]) {
 			attrs[k] = v
 		}
 	}

@@ -74,6 +74,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
 )
@@ -614,16 +615,21 @@ func testCrossTenantIAMOverProtocol(t *testing.T, node *multiProtoNode, proto mu
 		t.Fatalf("[%s] tenant A admin listing roles with no --tenant-id must succeed (scoped to A): %v\noutput: %s", proto.name, err, out)
 	}
 
-	// Direction 3 (system is no longer cross-tenant authoritative): the
-	// SAME command tenant A's admin was refused is now ALSO refused for the
-	// system admin -- the ScopeSelf system-tenant lift was removed
-	// unconditionally (owner ruling, 2026-10-01: "strict tenant
-	// isolation"), so the system tenant is confined to its own tenant like
-	// any other, with no built-in cross-tenant IAM reach left. Nothing
-	// replaces it yet (tenant_identity:read/write is not wired to any
-	// transport), so this is a hard refusal, not a narrower one.
-	assertCrossTenantIAMForbidden(t, node, proto, node.cliArgsFor(proto), victimRole,
-		"roles", "list", "--tenant-id", tenantB)
+	// Direction 3 (operator access replaces the system lift): the ScopeSelf
+	// system-tenant lift was removed unconditionally (owner ruling,
+	// 2026-10-01: "strict tenant isolation"); what replaces it is the
+	// tenant-qualified operator permission roles:read:tenant, admitted under
+	// the operator-access isolation policy and audited in both trails. Tenant
+	// B is a shared (prefix) tenant, which the policy never refuses, so the
+	// SAME command tenant A's admin was refused succeeds for the system
+	// operator and shows tenant B's seeded role.
+	out, err := runQRDB(t, node.cli, node.cliArgsFor(proto), "roles", "list", "--tenant-id", tenantB)
+	if err != nil {
+		t.Fatalf("[%s] system operator listing a shared tenant's roles under roles:read:tenant must succeed: %v\noutput: %s", proto.name, err, out)
+	}
+	if !strings.Contains(out, victimRole) {
+		t.Fatalf("[%s] system operator roles list --tenant-id %s does not show the tenant's role %q\noutput: %s", proto.name, tenantB, victimRole, out)
+	}
 }
 
 // assertCrossTenantIAMForbidden runs an IAM CLI command as a non-system tenant
@@ -1137,4 +1143,68 @@ func compactionRevision(t *testing.T, node *multiProtoNode, proto multiProtocol,
 		t.Fatalf("[%s] kv revision on %s: decode %q: %v", proto.name, db, out, err)
 	}
 	return resp.Revision
+}
+
+// TestTenantIsolation_IsolationPolicyVerbs_StandaloneActive_PerProtocol
+// proves every isolation-policy verb serves on a standalone node, where
+// strict-isolation is active from the start, on every protocol. The
+// not-active refusal on a cluster that has not activated the feature is
+// pinned by the lifecycle gate's and the transports' unit tests.
+func TestTenantIsolation_IsolationPolicyVerbs_StandaloneActive_PerProtocol(t *testing.T) {
+	t.Parallel()
+	node := startMultiProtocolNode(t)
+
+	for _, proto := range multiProtocols {
+		proto := proto
+		t.Run(proto.name, func(t *testing.T) {
+			testIsolationPolicyVerbsOverProtocol(t, node, proto)
+		})
+	}
+}
+
+// testIsolationPolicyVerbsOverProtocol drives the isolation-policy verbs on
+// a standalone node, where strict-isolation (featuregate.StrictIsolation) is
+// active from the start: the floor tightens to strict and reads back, a
+// loosening and an unknown value are refused and leave it strict, and a
+// tenant update carrying --isolation-policy stores the tenant's policy. The
+// subtests share the node, so each sets the floor to strict again (setting
+// the current value is a no-op).
+func testIsolationPolicyVerbsOverProtocol(t *testing.T, node *multiProtoNode, proto multiProtocol) {
+	t.Helper()
+
+	tenantID := fmt.Sprintf("isopol-%s-%d", proto.name, time.Now().UnixNano())
+	createTenant(t, node, proto, tenantID, "Isolation Policy Tenant", "prefix", false)
+	sys := node.cliArgsFor(proto)
+	const strictFloor = "Cluster isolation policy: strict"
+
+	for _, args := range [][]string{
+		{"cluster-isolation-policy", "set", "strict"},
+		{"cluster-isolation-policy", "get"},
+	} {
+		out, err := runQRDB(t, node.cli, sys, args...)
+		if err != nil || !strings.Contains(out, strictFloor) {
+			t.Fatalf("[%s] qrdb %s = %v, want %q with %s active\noutput: %s",
+				proto.name, strings.Join(args, " "), err, strictFloor, featuregate.StrictIsolation, out)
+		}
+	}
+
+	for _, value := range []string{"operator-access", "loose"} {
+		if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "set", value); err == nil {
+			t.Fatalf("[%s] cluster-isolation-policy set %s succeeded under a strict floor\noutput: %s", proto.name, value, out)
+		}
+	}
+	if out, err := runQRDB(t, node.cli, sys, "cluster-isolation-policy", "get"); err != nil || !strings.Contains(out, strictFloor) {
+		t.Fatalf("[%s] floor after the refused sets = %v, want %q\noutput: %s", proto.name, err, strictFloor, out)
+	}
+
+	if out, err := runQRDB(t, node.cli, sys, "tenant", "update", tenantID, "--isolation-policy", "strict"); err != nil {
+		t.Fatalf("[%s] tenant update --isolation-policy strict: %v\noutput: %s", proto.name, err, out)
+	}
+	got, err := runQRDB(t, node.cli, sys, "tenant", "get", tenantID)
+	if err != nil {
+		t.Fatalf("[%s] tenant get: %v\noutput: %s", proto.name, err, got)
+	}
+	if !strings.Contains(got, "Isolation policy: strict") {
+		t.Fatalf("[%s] tenant get after the policy update: want \"Isolation policy: strict\"\noutput: %s", proto.name, got)
+	}
 }

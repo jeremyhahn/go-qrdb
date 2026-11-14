@@ -575,7 +575,7 @@ func TestTenantDelete_RaftPlacementRecordsAreReclaimed(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	if err := ps.Put(ctx, &placement.Placement{
-		TenantID: "acme", Database: "ledger", ShardID: 1000, RF: 1,
+		TenantID: "acme", DatabaseID: "ledger", Database: "ledger", ShardID: 1000, RF: 1,
 		Replicas: []placement.Replica{{NodeID: "n1", ReplicaID: 1}},
 	}); err != nil {
 		t.Fatalf("placement Put: %v", err)

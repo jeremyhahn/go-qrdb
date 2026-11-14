@@ -184,8 +184,10 @@ func (m *mockVectorStorage) UpsertVector(ctx context.Context, namespace string, 
 		return vector.ErrNamespaceNotFound
 	}
 
+	if _, stored := m.vectors[namespace][vec.ID]; !stored {
+		m.namespaces[namespace].vectorCount++
+	}
 	m.vectors[namespace][vec.ID] = vec
-	m.namespaces[namespace].vectorCount++
 	m.namespaces[namespace].totalInserts++
 
 	return nil
@@ -246,8 +248,10 @@ func (m *mockVectorStorage) BatchUpsertVectors(ctx context.Context, namespace st
 	}
 
 	for _, vec := range vecs {
+		if _, stored := m.vectors[namespace][vec.ID]; !stored {
+			m.namespaces[namespace].vectorCount++
+		}
 		m.vectors[namespace][vec.ID] = vec
-		m.namespaces[namespace].vectorCount++
 		m.namespaces[namespace].totalInserts++
 	}
 

@@ -21,11 +21,14 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -182,6 +185,60 @@ func TestRefusal_adminCredentialRequiresCA(t *testing.T) {
 	}
 	if got := Classify(want); got != FailedPrecondition {
 		t.Fatalf("Classify(no CA) = %v, want FailedPrecondition", got)
+	}
+}
+
+func TestRefusal_featureNotActive(t *testing.T) {
+	want := &feature.NotActiveError{Feature: featuregate.StrictIsolation, ShardID: 7}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != transport.ReasonFeatureNotActive {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonFeatureNotActive)
+	}
+	if got := transport.FeatureNotActiveFromMetadata(md); *got != *want {
+		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+	if got := transport.FeatureNotActiveFromMetadata(map[string]string{}); got.ShardID != 0 {
+		t.Fatalf("a missing shard id decodes to %d, want 0", got.ShardID)
+	}
+}
+
+func TestRefusal_invalidIsolationPolicy(t *testing.T) {
+	want := &tenant.InvalidIsolationPolicyError{Value: "loose"}
+	reason, md, ok := Refusal(&wrappedError{want})
+	if !ok || reason != transport.ReasonInvalidIsolationPolicy {
+		t.Fatalf("Refusal() = %q, %v; want %q, true", reason, ok, transport.ReasonInvalidIsolationPolicy)
+	}
+	if got := transport.InvalidIsolationPolicyFromMetadata(md); *got != *want {
+		t.Fatalf("metadata decodes to %+v, want %+v", got, want)
+	}
+}
+
+// TestRefusal_sameClassOtherErrorsCarryNone pins that the feature-not-active
+// and invalid-isolation-policy encoders key on the error's type, not only its
+// class: another Unavailable or InvalidArgument error carries no refusal.
+func TestRefusal_sameClassOtherErrorsCarryNone(t *testing.T) {
+	for want, err := range map[Class]error{
+		Unavailable:     &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}},
+		InvalidArgument: &tenant.InitStatementRequiredError{TenantID: "t"},
+	} {
+		if got := Classify(err); got != want {
+			t.Fatalf("Classify(%v) = %s, want %s", err, got, want)
+		}
+		if reason, md, ok := Refusal(err); ok || reason != "" || md != nil {
+			t.Fatalf("Refusal(%v) = %q, %v, %v; want none", err, reason, md, ok)
+		}
+	}
+}
+
+// A feature refusal wrapped by an error that reclassifies it keeps the
+// wrapper's own wire shape.
+func TestRefusal_reclassifiedFeatureRefusalsCarryNone(t *testing.T) {
+	for _, err := range []error{
+		&service.VectorMetricNotActiveError{IndexType: "FLAT", Feature: featuregate.VectorManhattan},
+	} {
+		if reason, _, ok := Refusal(err); ok && reason == transport.ReasonFeatureNotActive {
+			t.Fatalf("Refusal(%T) = %q, want no feature refusal", err, reason)
+		}
 	}
 }
 

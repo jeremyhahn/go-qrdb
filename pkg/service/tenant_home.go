@@ -59,20 +59,17 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	if s.placementStore == nil || s.placementScheduler == nil {
 		return nil, &TenantHomeUnplaceableError{TenantID: tenantID}
 	}
-	existing, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeName)
+	existing, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeID)
 	if err == nil {
 		return existing, nil
 	}
 	if !errors.Is(err, placement.ErrPlacementNotFound) {
 		return nil, err
 	}
-	var autoUnseal bool
 	if s.tenantInfo != nil {
-		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
-		if err != nil {
+		if _, err := s.tenantInfo.GetTenant(ctx, tenantID); err != nil {
 			return nil, err
 		}
-		autoUnseal = info.BarrierAutoUnseal
 	}
 	shardID, err := s.manager.ClaimShardID(ctx)
 	if err != nil {
@@ -80,10 +77,11 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	}
 	rf := max(s.placementScheduler.ClusterSize(), 1)
 	plan, err := s.placementScheduler.Place(ctx, placement.PlaceRequest{
-		TenantID: tenantID,
-		Database: database.TenantHomeName,
-		ShardID:  shardID,
-		RF:       rf,
+		TenantID:   tenantID,
+		DatabaseID: database.TenantHomeID,
+		Database:   database.TenantHomeName,
+		ShardID:    shardID,
+		RF:         rf,
 	})
 	if err != nil {
 		return nil, err
@@ -106,7 +104,7 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 		slog.String("tenant", tenantID),
 		slog.Uint64("shard_id", plan.ShardID),
 		slog.Int("rf", plan.RF))
-	s.inviteReplicas(ctx, tenantID, database.TenantHomeName, plan, autoUnseal)
+	s.inviteReplicas(ctx, tenantID, database.TenantHomeName, plan)
 	return plan, nil
 }
 
@@ -119,5 +117,5 @@ func (s *DatabaseService) RetireTenantHome(ctx context.Context, tenantID string)
 	if s.placementStore == nil {
 		return nil
 	}
-	return s.placementStore.Delete(ctx, tenantID, database.TenantHomeName)
+	return s.placementStore.Delete(ctx, tenantID, database.TenantHomeID)
 }

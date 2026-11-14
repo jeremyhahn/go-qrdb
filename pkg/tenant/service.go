@@ -293,6 +293,14 @@ type TenantServicer interface {
 	// delete tenant data first.
 	UpdateTenant(ctx context.Context, tenantID string, patch TenantPatch) (*TenantInfo, error)
 
+	// ClusterIsolationPolicyReader resolves the cluster-wide isolation
+	// floor; an unset floor reads as ClusterIsolationPolicyOperatorAccess.
+	ClusterIsolationPolicyReader
+
+	// SetClusterIsolationPolicy sets the cluster-wide isolation floor.
+	// Tighten-only: a loosening is refused with *IsolationPolicyChangeError.
+	SetClusterIsolationPolicy(ctx context.Context, next ClusterIsolationPolicy) error
+
 	// UpdateQuotas updates the resource quotas for a tenant and
 	// persists the change to the metadata store.
 	UpdateQuotas(ctx context.Context, tenantID string, quotas *quota.Quotas) (*TenantInfo, error)
@@ -460,6 +468,12 @@ type TenantBarrierStatus struct {
 	// the API endpoints a client fans a barrier init out to. Empty where the
 	// node cannot list them, or serves the barrier alone.
 	Nodes []BarrierNode `json:"nodes,omitempty"`
+
+	// NodesUnreadable is true when the node has a serving-node source but
+	// could not read it, so an empty Nodes does not mean a standalone
+	// barrier: the serving set is unknown and a client must not fall back
+	// to one node.
+	NodesUnreadable bool `json:"nodes_unreadable,omitempty"`
 }
 
 // TenantBarrierInitResult reports the outcome of a per-tenant barrier
@@ -570,6 +584,9 @@ type TenantService struct {
 	// perNodeBarrierKeysGate refuses an isolated tenant until every node
 	// initialises its own barrier key; see WithPerNodeBarrierKeysGate.
 	perNodeBarrierKeysGate
+	// strictIsolationGate refuses the isolation-policy verbs until
+	// strict-isolation is active; see WithStrictIsolationGate.
+	strictIsolationGate
 	// tenantUndoGate decides whether an undone create may release its id;
 	// see WithTenantUndoGate.
 	tenantUndoGate

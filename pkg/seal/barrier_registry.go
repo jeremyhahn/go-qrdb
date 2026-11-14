@@ -23,6 +23,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
 )
 
@@ -654,7 +655,7 @@ func (r *BarrierRegistry) RegisterTenant(
 
 	if config.AuditLogger == nil {
 		r.poolMu.RLock()
-		config.AuditLogger = NewComplianceAuditLogger(r.auditTrail, tenantID, TenantBarrierAuditName(tenantID))
+		config.AuditLogger = NewComplianceAuditLogger(r.auditTrail, tenantid.System, TenantBarrierAuditName(tenantID))
 		r.poolMu.RUnlock()
 	}
 	tb, err := NewTenantBarrier(tenantID, r.logger, base, config, strategies...)
@@ -1639,56 +1640,6 @@ func (r *BarrierRegistry) TenantStatus(tenantID string) (*BarrierStatus, error) 
 		return nil, err
 	}
 	return tb.Status(), nil
-}
-
-// ImportTenant registers a volume-backed, owner-sealed tenant barrier and
-// initializes it from the portable sealed root-key blob a peer replica holds,
-// rather than generating a new root key. It bootstraps a follower replica of
-// a self-managed tenant in a multi-node tenant Raft group; a platform-custody
-// tenant's replicas initialize their own keys instead, and import nothing.
-//
-// A barrier the node already registered for the tenant -- the uninitialized,
-// sealed shell placement registers when it assigns the node to the tenant's
-// group -- is the one initialized; one already initialized refuses the blob
-// with ErrAlreadyInitialized. Otherwise the tenant is registered via
-// RegisterVolumeTenant, resolved through the catalog's Assignment exactly as the leader that created the tenant
-// resolved it: there is no "allocate a fresh path" branch here, because
-// every follower sees the SAME Assignment and is opening its own
-// per-tenant Pebble under it for the first time. The blob is then stored
-// verbatim (ImportSealedBlob) and the barrier remains sealed: the tenant
-// unseals it later with their own credential.
-//
-// Returns the registered TenantBarrier on success. An import that fails
-// unregisters a barrier this call registered, so the tenant is left
-// unregistered rather than registered and sealed: the cluster key plane acks a
-// redelivery that finds the tenant registered (ErrTenantAlreadyExists) as a key
-// already installed, and a sealed barrier left behind would keep the tenant
-// sealed on this node with nothing left to unseal it. The rollback leaves the
-// per-tenant store open in the per-tenant registry -- a tenant barrier reaches
-// it through a NamespacedBackend, whose Close does not close it -- so the
-// redelivery's registration opens that same live store. A redelivery that
-// finds the sealed blob already persisted -- an earlier import stored it and
-// then failed -- keeps its registration, sealed for the tenant to unseal.
-func (r *BarrierRegistry) ImportTenant(ctx context.Context, tenantID string, sealedBlob []byte) (*TenantBarrier, error) {
-	registered := false
-	tb, err := r.GetTenant(tenantID)
-	if err != nil {
-		if _, tb, err = r.RegisterVolumeTenant(ctx, tenantID, false); err != nil {
-			return nil, err
-		}
-		registered = true
-	}
-	err = tb.Barrier().ImportSealedBlob(ctx, sealedBlob)
-	if registered && errors.Is(err, ErrAlreadyInitialized) {
-		return tb, nil
-	}
-	if err != nil {
-		if registered {
-			_ = r.RemoveTenant(tenantID)
-		}
-		return nil, err
-	}
-	return tb, nil
 }
 
 // ListTenants returns the IDs of all registered tenant barriers. The order

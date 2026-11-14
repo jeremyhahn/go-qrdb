@@ -251,6 +251,34 @@ func (t *Transport) UpdateTenantEntitlements(ctx context.Context, req *transport
 	return &transport.UpdateTenantEntitlementsResponse{Tenant: tenantconv.ToTenantInfo(resp)}, nil
 }
 
+// GetClusterIsolationPolicy returns the cluster-wide isolation floor via the
+// gRPC GetClusterIsolationPolicy RPC.
+func (t *Transport) GetClusterIsolationPolicy(ctx context.Context) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+
+	resp, err := t.client.GetClusterIsolationPolicy(ctx, &pb.GetClusterIsolationPolicyRequest{})
+	if err != nil {
+		return "", mapGRPCError("GetClusterIsolationPolicy", err)
+	}
+	return resp.GetPolicy(), nil
+}
+
+// SetClusterIsolationPolicy sets the cluster-wide isolation floor via the
+// gRPC SetClusterIsolationPolicy RPC and returns the stored floor.
+func (t *Transport) SetClusterIsolationPolicy(ctx context.Context, policy string) (string, error) {
+	if t.closed.Load() {
+		return "", &transport.ClosedError{}
+	}
+
+	resp, err := t.client.SetClusterIsolationPolicy(ctx, &pb.SetClusterIsolationPolicyRequest{Policy: policy})
+	if err != nil {
+		return "", mapGRPCError("SetClusterIsolationPolicy", err)
+	}
+	return resp.GetPolicy(), nil
+}
+
 // ---------------------------------------------------------------------------
 // Per-tenant barrier RPCs (native protobuf: qrdb.v1.TenantBarrierService).
 // ---------------------------------------------------------------------------
@@ -417,6 +445,7 @@ func (t *Transport) TenantBarrierStatus(ctx context.Context, req *transport.Tena
 		ClusterSeal:     sealconv.FromProto(resp.GetClusterSeal()),
 		KeyFingerprint:  resp.GetKeyFingerprint(),
 		Nodes:           holderconv.TenantBarrierNodesFromPB(resp.GetNodes()),
+		NodesUnreadable: resp.GetNodesUnreadable(),
 	}, nil
 }
 

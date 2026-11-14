@@ -1215,6 +1215,19 @@ service QRDBService {
         option (qrdb.v1.permission) = "tenants:update";
     }
 
+    // GetClusterIsolationPolicy returns the cluster-wide isolation floor:
+    // "operator-access" or "strict". An unset floor reads as
+    // "operator-access".
+    rpc GetClusterIsolationPolicy(GetClusterIsolationPolicyRequest) returns (ClusterIsolationPolicyResponse) {
+        option (qrdb.v1.permission) = "tenants:read";
+    }
+
+    // SetClusterIsolationPolicy sets the cluster-wide isolation floor. It is
+    // tighten-only: a loosening is refused with FAILED_PRECONDITION.
+    rpc SetClusterIsolationPolicy(SetClusterIsolationPolicyRequest) returns (ClusterIsolationPolicyResponse) {
+        option (qrdb.v1.permission) = "tenants:update:cross";
+    }
+
     // TenantDelete removes a tenant and its metadata.
     rpc TenantDelete(TenantDeleteRequest) returns (google.protobuf.Empty) {
         option (qrdb.v1.permission) = "tenants:delete";
@@ -3280,6 +3293,11 @@ message CreateUserRequest {
 // GetUserRequest retrieves a user by ID.
 message GetUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // GetUserByUsernameRequest retrieves a user by tenant-scoped username.
@@ -3300,6 +3318,10 @@ message GetUserByEmailRequest {
 // SPKI thumbprint via the secondary index.
 message GetUserByCertThumbprintRequest {
     string thumbprint = 1;
+    // tenant_id names the tenant to resolve the thumbprint in; empty is the
+    // caller's own. Another tenant is an operator access, gated on that
+    // tenant's isolation policy and recorded in both trails.
+    string tenant_id = 2;
 }
 
 // AddCertBindingRequest binds an mTLS certificate's SPKI thumbprint to a user.
@@ -3308,6 +3330,11 @@ message AddCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
     int64 not_after_unix = 3;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 4;
 }
 
 // UpdateUserProtoRequest applies partial updates to an existing user.
@@ -3350,11 +3377,21 @@ message UpdateUserProtoRequest {
     // to represent "absent".
     map<string, string> attributes = 14;
     bool has_attributes = 15;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 16;
 }
 
 // DeleteUserRequest removes a user by ID.
 message DeleteUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // ListUsersRequest returns a paginated list of users.
@@ -3374,21 +3411,41 @@ message ListUsersResponse {
 // EnableUserRequest activates a user account.
 message EnableUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // DisableUserRequest deactivates a user account.
 message DisableUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // SuspendUserRequest moves an active user account to suspended.
 message SuspendUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // UnsuspendUserRequest returns a suspended user account to active.
 message UnsuspendUserRequest {
     uint64 id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // UserResponse is the response payload for user operations.
@@ -3484,6 +3541,11 @@ message CreateRoleRequest {
 // GetRoleRequest retrieves a role by ID.
 message GetRoleRequest {
     string id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 message GetRoleByNameRequest {
     string tenant_id = 1;
@@ -3553,11 +3615,21 @@ message UpdateRoleProtoRequest {
     string id = 1;
     string name = 2;
     repeated string permissions = 3;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 4;
 }
 
 // DeleteRoleRequest removes a role by ID.
 message DeleteRoleRequest {
     string id = 1;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 2;
 }
 
 // ListRolesRequest returns a paginated list of roles.
@@ -3578,12 +3650,22 @@ message ListRolesResponse {
 message AssignRoleRequest {
     uint64 user_id = 1;
     string role_id = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }
 
 // UnassignRoleRequest removes a role assignment from a user.
 message UnassignRoleRequest {
     uint64 user_id = 1;
     string role_id = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }
 
 // RoleResponse is the response payload for role operations.
@@ -3999,6 +4081,10 @@ message DatabaseCreateRequest {
     DatabaseBarrierConfig barrier = 8;
     // sql holds the database's SQL settings; unset means the defaults.
     DatabaseSQLConfig sql = 9;
+    // dedicated_wal requests a dedicated WAL, keyed by the tenant's own key,
+    // for a dedicated-raft database (raft backend only). Required for every
+    // database of a strict-isolation tenant.
+    bool dedicated_wal = 10;
 }
 
 // DatabaseGetRequest retrieves information about a specific database.
@@ -4911,6 +4997,9 @@ message TenantResponse {
     // status is the tenant's operational status: "active", "suspended" or
     // "disabled". A principal of a tenant that is not active is refused.
     string status = 13;
+    // isolation_policy is the tenant's own isolation policy: "strict", or
+    // empty for inherit (the cluster floor applies).
+    string isolation_policy = 14;
 }
 
 // TenantCreateRequest creates a new tenant.
@@ -5189,6 +5278,23 @@ message TenantUpdateRequest {
     // "suspended" or "disabled"), along the allowed transitions; it needs
     // tenants:set_status. Absent leaves it unchanged.
     optional string status = 6;
+    // isolation_policy, when present, sets the tenant's own isolation
+    // policy: "strict", or "" for inherit. Tighten-only: strict to inherit
+    // is refused with FAILED_PRECONDITION. Absent leaves it unchanged.
+    optional string isolation_policy = 7;
+}
+
+message GetClusterIsolationPolicyRequest {}
+
+message SetClusterIsolationPolicyRequest {
+    // policy is "strict" or "operator-access".
+    string policy = 1;
+}
+
+message ClusterIsolationPolicyResponse {
+    // policy is the cluster-wide isolation floor: "operator-access" or
+    // "strict".
+    string policy = 1;
 }
 
 // TenantMetadata carries a tenant's caller-defined string map on an update.
@@ -5698,6 +5804,19 @@ message RebalancePlan {
     repeated RebalanceMove moves                 = 1;
     int64                  estimated_duration_ns = 2;
     double                 current_imbalance     = 3;
+    // skipped names the moves the planner considered and refused, each
+    // with its reason (an isolated tenant's serving set or home group).
+    repeated RebalanceSkippedMove skipped        = 4;
+}
+
+// RebalanceSkippedMove is a move the planner considered and refused.
+message RebalanceSkippedMove {
+    uint64 shard_id  = 1;
+    string from_node = 2;
+    string to_node   = 3;
+    string reason    = 4;
+    // error is the refusal's detail; empty when reason says it all.
+    string error     = 5;
 }
 
 // RebalanceExecutionResponse reports the outcome of an executed plan.
@@ -6279,6 +6398,10 @@ message TenantBarrierStatusResponse {
     // nodes are the nodes serving the barrier, each with its own key, for a
     // client fanning a barrier init out to every one.
     repeated TenantBarrierNode nodes = 10;
+    // nodes_unreadable is true when the server could not read the nodes
+    // serving the barrier: an empty nodes then means the serving set is
+    // unknown, not a standalone barrier.
+    bool nodes_unreadable = 11;
 }
 
 // TenantBarrierNode is one node serving a tenant barrier: its Raft address
@@ -6848,4 +6971,9 @@ message UserAuthFactorLoginResponse {
 message RemoveCertBindingRequest {
     uint64 user_id = 1;
     string thumbprint = 2;
+    // tenant_id names the tenant whose record this is, for the platform
+    // operator's access to another tenant's identity records (admitted under
+    // that tenant's isolation policy, audited in both trails). Empty is the
+    // caller's own tenant.
+    string tenant_id = 3;
 }

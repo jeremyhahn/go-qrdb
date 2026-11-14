@@ -424,6 +424,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	// dropping. The record is created only where none exists, so of two
 	// nodes creating one name, one is refused here.
 	meta := metaFromConfig(cfg, false, incarnation)
+	if meta.ID, err = NewDatabaseID(); err != nil {
+		return nil, err
+	}
 	meta.OwnerNode = m.ownerFor(cfg, shared)
 	if err := cat.Create(ctx, meta); err != nil {
 		// A write that may have committed is settled first: rolling back
@@ -485,6 +488,7 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		}
 	}
 	db.incarnation = incarnation
+	db.id = meta.ID
 	db.ownerNode = meta.OwnerNode
 
 	// Mark the new incarnation live in the store holding the database's
@@ -693,6 +697,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		db.SetDropping(true)
 	}
 	db.incarnation = meta.Incarnation
+	db.id = meta.ID
 	db.ownerNode = meta.OwnerNode
 
 	if actual, loaded := m.databases.LoadOrStore(key, db); loaded {

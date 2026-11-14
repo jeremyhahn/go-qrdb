@@ -405,6 +405,10 @@ func TestClassify_TenantLocationRefusals(t *testing.T) {
 		{"removal outside this node's pool", &seal.DataRootOutsideLocalRootsError{DataRoot: "/d"}, Internal},
 		{"node is not a replica of the database", &placement.NotAReplicaError{TenantID: "t", Database: "d", NodeID: "n"}, Unavailable},
 		{"placement replica names a path", &placement.ReplicaDataRootError{TenantID: "t", Database: "d", NodeID: "n", DataRoot: "/d"}, FailedPrecondition},
+		{"placement entry names another database", &placement.IdentityMismatchError{TenantID: "t", Database: "d", DatabaseID: "i", GotDatabaseID: "i", GotDatabase: "e"}, FailedPrecondition},
+		{"group outside the tenant's serving set", &placement.ServingSetError{TenantID: "t", Database: "d", Node: "n"}, FailedPrecondition},
+		{"serving set too small for the group", &placement.ServingSetError{TenantID: "t", Database: "d", Have: 2, Need: 3}, FailedPrecondition},
+		{"rebalance never moves a tenant home group", &service.RebalanceMoveError{ShardID: 7, TenantID: "t", Step: "home-group", Err: &service.HomeGroupMoveError{TenantID: "t", ShardID: 7}}, FailedPrecondition},
 		{"undone tenant id not yet released", &tenant.TenantUndoPendingError{TenantID: "t", Pending: []string{"n"}}, Unavailable},
 		{"deleted tenant id is retired", &tenant.TenantDeletedError{TenantID: "t"}, AlreadyExists},
 	} {
@@ -435,6 +439,18 @@ func TestClassify_IsolationPolicyChangeIsFailedPrecondition(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestClassify_InvalidIsolationPolicyIsInvalidArgument pins that a policy value
+// outside the enum is the caller's input error on every transport, never the
+// internal fault it was answered as before it had a row.
+func TestClassify_InvalidIsolationPolicyIsInvalidArgument(t *testing.T) {
+	err := &tenant.InvalidIsolationPolicyError{Value: "loose"}
+	for shape, e := range map[string]error{"bare": err, "wrapped": wrapped{err}} {
+		if got := Classify(e); got != InvalidArgument {
+			t.Errorf("%s: got %s, want %s", shape, got, InvalidArgument)
+		}
 	}
 }
 

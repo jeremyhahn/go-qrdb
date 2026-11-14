@@ -20,6 +20,7 @@ import (
 	"time"
 
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -47,6 +48,10 @@ type createUserWireRequest struct {
 // getUserWireRequest is the JSON wire payload for user.Get.
 type getUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // getUserByUsernameWireRequest is the JSON wire payload for
@@ -67,6 +72,7 @@ type getUserByEmailWireRequest struct {
 // user.GetByCertThumbprint.
 type getUserByCertThumbprintWireRequest struct {
 	Thumbprint string `json:"thumbprint"`
+	TenantID   string `json:"tenantID,omitempty"`
 }
 
 // addCertBindingWireRequest is the JSON wire payload for user.AddCertBinding.
@@ -74,6 +80,10 @@ type addCertBindingWireRequest struct {
 	UserID       uint64 `json:"userID"`
 	Thumbprint   string `json:"thumbprint"`
 	NotAfterUnix int64  `json:"notAfterUnix"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // removeCertBindingWireRequest is the JSON wire payload for
@@ -81,6 +91,10 @@ type addCertBindingWireRequest struct {
 type removeCertBindingWireRequest struct {
 	UserID     uint64 `json:"userID"`
 	Thumbprint string `json:"thumbprint"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // updateUserWireRequest is the JSON wire payload for user.Update.
@@ -106,11 +120,19 @@ type updateUserWireRequest struct {
 	// Attributes replaces the ABAC attributes when PRESENT in the payload.
 	// Absent leaves it alone; `{}` clears it.
 	Attributes map[string]string `json:"attributes,omitempty"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // deleteUserWireRequest is the JSON wire payload for user.Delete.
 type deleteUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // listUsersWireRequest is the JSON wire payload for user.List.
@@ -123,21 +145,37 @@ type listUsersWireRequest struct {
 // enableUserWireRequest is the JSON wire payload for user.Enable.
 type enableUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // disableUserWireRequest is the JSON wire payload for user.Disable.
 type disableUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // suspendUserWireRequest is the JSON wire payload for user.Suspend.
 type suspendUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // unsuspendUserWireRequest is the JSON wire payload for user.Unsuspend.
 type unsuspendUserWireRequest struct {
 	ID uint64 `json:"id"`
+	// TenantID names the tenant whose record this is, for the platform
+	// operator's access to another tenant's identity records. Empty is the
+	// caller's own tenant.
+	TenantID string `json:"tenantID,omitempty"`
 }
 
 // userWireResponse is the JSON wire representation of a user entity.
@@ -229,6 +267,11 @@ func (s *Server) handleCreateUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if len(req.RoleIDs) > 0 {
 		if err := s.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, s.roleSvc, req.TenantID, req.RoleIDs); err != nil {
 			return nil, err
@@ -265,6 +308,11 @@ func (s *Server) handleGetUser(ctx context.Context, payload []byte) ([]byte, err
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.GetUser(ctx, req.ID)
 	if err != nil {
 		return nil, err
@@ -284,6 +332,11 @@ func (s *Server) handleGetUserByUsername(ctx context.Context, payload []byte) ([
 	var req getUserByUsernameWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	u, err := s.userSvc.GetUserByUsername(ctx, req.TenantID, req.Username)
@@ -306,6 +359,11 @@ func (s *Server) handleGetUserByEmail(ctx context.Context, payload []byte) ([]by
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.GetUserByEmail(ctx, req.TenantID, req.Email)
 	if err != nil {
 		return nil, err
@@ -325,6 +383,10 @@ func (s *Server) handleGetUserByCertThumbprint(ctx context.Context, payload []by
 	var req getUserByCertThumbprintWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+	ctx, err := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if err != nil {
+		return nil, err
 	}
 
 	u, err := s.userSvc.UserByCertThumbprint(ctx, req.Thumbprint)
@@ -346,6 +408,11 @@ func (s *Server) handleAddCertBinding(ctx context.Context, payload []byte) ([]by
 	var req addCertBindingWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	// Binding a thumbprint binds a key: the certificate target rule applies.
@@ -374,6 +441,11 @@ func (s *Server) handleRemoveCertBinding(ctx context.Context, payload []byte) ([
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	u, err := s.userSvc.RemoveCertBinding(ctx, req.UserID, req.Thumbprint)
 	if err != nil {
 		return nil, err
@@ -392,6 +464,11 @@ func (s *Server) handleUpdateUser(ctx context.Context, payload []byte) ([]byte, 
 	var req updateUserWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	updateReq := &user.UpdateUserRequest{
@@ -441,6 +518,11 @@ func (s *Server) handleDeleteUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.DeleteUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -464,6 +546,10 @@ func (s *Server) handleListUsers(ctx context.Context, payload []byte) ([]byte, e
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, err := s.operatorTenantContext(ctx, req.TenantID, permission.UsersReadTenant)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := s.userSvc.ListUsers(ctx, &user.ListUsersRequest{
 		TenantID: req.TenantID,
 		Page:     req.Page,
@@ -504,6 +590,11 @@ func (s *Server) handleEnableUser(ctx context.Context, payload []byte) ([]byte, 
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.EnableUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -528,6 +619,11 @@ func (s *Server) handleDisableUser(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.DisableUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -549,6 +645,11 @@ func (s *Server) handleSuspendUser(ctx context.Context, payload []byte) ([]byte,
 		return nil, &UnmarshalError{Err: err}
 	}
 
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
+	}
+
 	if err := s.userSvc.SuspendUser(ctx, req.ID); err != nil {
 		return nil, err
 	}
@@ -568,6 +669,11 @@ func (s *Server) handleUnsuspendUser(ctx context.Context, payload []byte) ([]byt
 	var req unsuspendUserWireRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, &UnmarshalError{Err: err}
+	}
+
+	ctx, oerr := s.operatorTenantContext(ctx, req.TenantID, permission.UsersWriteTenant)
+	if oerr != nil {
+		return nil, oerr
 	}
 
 	if err := s.userSvc.UnsuspendUser(ctx, req.ID); err != nil {

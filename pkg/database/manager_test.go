@@ -803,7 +803,7 @@ func TestManager_Drop_CloseError(t *testing.T) {
 	mgr.databases.Store(keyFor("", "fail-drop-db"), db)
 	// The catalog record and directory a real database has, so the drop
 	// gets past persisting its local fence to the close under test.
-	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), metaFromConfig(cfg, false, "")); err != nil {
+	if err := testCatalogFor(mgr.dataDir).Create(context.Background(), withTestID(metaFromConfig(cfg, false, ""))); err != nil {
 		t.Fatalf("catalog Create: %v", err)
 	}
 	if err := os.MkdirAll(mgr.dbDir("", "fail-drop-db"), 0o750); err != nil {

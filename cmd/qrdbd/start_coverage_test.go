@@ -428,6 +428,14 @@ type mockTenantServicer struct {
 	createTenantFn func(ctx context.Context, id, name string, isolationType tenantpkg.IsolationType) (*tenantpkg.TenantInfo, error)
 }
 
+func (m *mockTenantServicer) ClusterIsolationPolicy(context.Context) (tenantpkg.ClusterIsolationPolicy, error) {
+	return tenantpkg.ClusterIsolationPolicyOperatorAccess, nil
+}
+
+func (m *mockTenantServicer) SetClusterIsolationPolicy(context.Context, tenantpkg.ClusterIsolationPolicy) error {
+	return nil
+}
+
 func (m *mockTenantServicer) CreateTenant(ctx context.Context, id, name string, isolationType tenantpkg.IsolationType, _ ...tenantpkg.CreateTenantOption) (*tenantpkg.TenantInfo, error) {
 	if m.createTenantFn != nil {
 		return m.createTenantFn(ctx, id, name, isolationType)

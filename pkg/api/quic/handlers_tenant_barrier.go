@@ -204,6 +204,8 @@ type quicTenantBarrierStatusResponse struct {
 	KeyFingerprint string `json:"key_fingerprint,omitempty"`
 
 	Nodes []tenant.BarrierNode `json:"nodes,omitempty"`
+
+	NodesUnreadable bool `json:"nodes_unreadable,omitempty"`
 }
 
 // missingTenantIDError is returned when a tenant-barrier frame omits the
@@ -391,6 +393,7 @@ func (s *Server) handleTenantBarrierStatus(ctx context.Context, payload []byte) 
 		ClusterSeal:     st.ClusterSeal,
 		KeyFingerprint:  st.KeyFingerprint,
 		Nodes:           st.Nodes,
+		NodesUnreadable: st.NodesUnreadable,
 	}
 	if resp.ClusterSeal == nil {
 		resp.ClusterSeal = &clusterseal.Report{}

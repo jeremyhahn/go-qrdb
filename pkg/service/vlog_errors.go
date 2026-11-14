@@ -20,17 +20,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
 
-// LogFeatureNotActiveError is returned by a LogService write while a cluster
-// feature the write's command needs (featuregate.VerifiableLog, and for a
-// create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
-// every replica of the tenant's group: a replica that cannot apply a command
-// must never be sent it.
 // BarrierTenantLogNotSupportedError is returned by every LogService call for
-// a tenant whose isolation is barrier. The log registry is applied on the
-// system shard under the system barrier, so the log's entries and its sealed
-// head-signing key would stay readable while the tenant's own barrier is
-// sealed. The tenant is refused until its logs route through storage its
-// barrier protects.
+// a tenant whose isolation is barrier, on a node without a home group. There
+// the log registry is applied on the system shard under the system barrier,
+// so the log's entries and its sealed head-signing key would stay readable
+// while the tenant's own barrier is sealed. On a node with a home group the
+// tenant's logs apply in it, under its barrier, and are not refused.
 type BarrierTenantLogNotSupportedError struct {
 	TenantID string
 }
@@ -55,6 +50,11 @@ func (e *BarrierDatabaseLogNotSupportedError) Error() string {
 		" of tenant " + strconv.Quote(e.TenantID) + ": the log registry is not protected by the database's barrier"
 }
 
+// LogFeatureNotActiveError is returned by a LogService write while a cluster
+// feature the write's command needs (featuregate.VerifiableLog, and for a
+// create or a key rotation featuregate.VerifiableLogKeys) is not yet active on
+// every replica of the tenant's group: a replica that cannot apply a command
+// must never be sent it.
 type LogFeatureNotActiveError struct {
 	TenantID string
 	ShardID  uint64

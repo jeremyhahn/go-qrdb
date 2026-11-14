@@ -156,6 +156,17 @@ answers success. A completion that gives up leaves the record for the hook's
 next trigger. The success or failure audit record is written before the
 response, on its own bound rather than the request's.
 
+A successful create files two records. The platform trail gets one that names
+the tenant but no tenant user. The record naming the first admin
+(`admin_username`) belongs on the tenant's own trail, which in cluster mode
+lives in the tenant's home group and refuses writes while the barrier is
+sealed. That record is therefore kept first, as a pending audit record
+(`__sys:pending-audit` in the tenant's identity namespace, next to the
+pending-admin record). It is appended at once if the trail accepts it.
+Otherwise the barrier-ready hook appends it on the home-group leader at the
+barrier's first init or unseal. The pending record is deleted only after the
+append succeeds, so the tenant's trail gets the record exactly once.
+
 ### The tenant ID is a trust domain
 
 A tenant's principals are `spiffe://<tenant>/<kind>/<name>`: the tenant ID is
@@ -685,14 +696,11 @@ on every node that serves it: each node initialises its own key through its
 own `BarrierKeyProvider`, and no key is transported
 ([../barrier-seal/architecture.md](../barrier-seal/architecture.md#per-node-barrier-keys)).
 
-For any other strategy, `clusterkeys.Sender.DistributeTenantKey` ships the
-owner-sealed root-key blob verbatim to every follower replica, over the
-authenticated mTLS control plane inside an HPKE envelope bound to the
-receiving node (`pkg/clusterkeys`). The replica imports it sealed
-(`StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) and the tenant
-unseals it there. No plaintext root key crosses nodes, but those replicas
-share one tenant root key, so a key recovered from one replica decrypts that
-tenant's data on every other replica.
+Every other strategy does the same: each serving node initialises its own key
+from the barrier owner's signed init statement, and a node placed later by
+scale-out or a rebalance move keys itself on the init watcher's next poll
+(`pkg/barrierinit`). The tenant-key transport is deleted: nothing ships a
+root key or a sealed blob between nodes.
 
 A tenant seal is a cluster seal record once the cluster has activated
 `cluster-seal`: every node holding the tenant's barrier seals it, ends the
@@ -788,11 +796,19 @@ committed meanwhile is kept rather than refused.
     whether the barrier encrypts or is still in plaintext mode, so the home
     group's log is always on a WAL under the tenant's key and never under the
     node key. On a node that has not enabled encryption, that tenant key is
-    itself plaintext until the tenant's barrier encrypts.
+    itself plaintext until the tenant's barrier encrypts. The home group also
+    holds the tenant's replicated audit trail, the verifiable log
+    `<tenant>/system/audit`, and its other verifiable logs. A `barrier` tenant
+    whose chain was already on the system shard when the home groups were
+    attached keeps it there: its audit route is recorded once on the system
+    shard (`__sys:audit/route/<tenant>`) and never changes, and no record is
+    moved. A tenant gets its first home-group record only once every replica
+    runs `featuregate.VerifiableLogAudit`.
   - **Standalone.** A store under the tenant's own barrier, in the tenant's
     data root (`tenant.LocalHomes`): the same records, the same keys, behind
     the same seam, including the atomic guarded batch the tenant CA is
-    written with.
+    written with. Its audit trail is not there yet: a standalone tenant's
+    chain is still in the system shard.
 
 The built home store differs from the design below in two ways:
 
@@ -899,7 +915,14 @@ tenant keeps only what it cannot do without.
    may raise it for itself.**
    - Under `strict`, the operator has no access to tenant records.
    - Under `operator-access`, named, audited, platform-only permissions reach
-     tenant identity records.
+     tenant identity records: `users:read:tenant`, `users:write:tenant`,
+     `roles:read:tenant` and `roles:write:tenant`. The operator names the
+     tenant on the request (`tenant_id`), and every user and role operation,
+     role assignment and certificate binding passes one gate,
+     `AuthMiddleware.AuthorizeOperatorIdentityAccess`. The gate reads the
+     tenant's effective policy, admits or refuses the access, and records it
+     in the platform trail and in the tenant's trail. An access that cannot
+     be recorded in both is refused.
    - **Tenant databases and data are never accessible across tenants, in
      either mode, by anyone.**
 
@@ -944,7 +967,7 @@ is in
 | Tenant-scope encryption-migration records | `__sys:encmig/{t}/{db}` | home store |
 | Audit events about the tenant's identities and data | one node-local file shared by every tenant | a per-tenant, hash-chained trail replicated in the tenant's home group, under the tenant's key (S9). Platform events about the tenant go to the platform trail. |
 | Identity-object usage counters (`CurrentUsers`, `CurrentRoles`, `CurrentCertificates`, `CurrentCollections`, `CurrentKeys`, `CurrentTSMetrics`) | on the tenant registry entry | home store; the home group enforces them against the plan's limits |
-| Vector namespace names in metric labels | `qrdb_vector_*{tenant, namespace}` | the namespace label is removed; a tenant's data names are not metric labels |
+| Vector namespace names in metric labels | `qrdb_vector_*{tenant}` | the namespace label is removed (built); the gauges sum per tenant ID, and a tenant's data names are not metric labels |
 
 ### What stays in the system tenant, and why
 
@@ -1067,9 +1090,6 @@ type, an admin setting.
 >
 > **Not built:**
 >
-> - An owner-custody tenant still has its owner-sealed blob delivered to the
->   other serving nodes (`clusterkeys.Sender.DistributeTenantKey`,
->   `StorageBarrier.ImportSealedBlob`) until per-node init fan-out.
 > - Placement does not check the tenant's signed serving set before a node
 >   registers a shell.
 > - A node composed without a cluster identity (a single-node cluster run
@@ -1098,8 +1118,8 @@ What this buys:
 - **The tenant's credential is the only common secret.** It travels from the
   credential holder's client to each node, and never from node to node.
 - **`pkg/clusterkeys` stops carrying tenant keys.**
-  `StorageBarrier.ImportSealedBlob` and the tenant-key delivery are removed,
-  not kept for compatibility. `clusterkeys` keeps its node-identity
+  The sealed-blob import and the tenant-key delivery are deleted, not kept
+  for compatibility. `clusterkeys` keeps its node-identity
   checks, and delivers a **credential verifier** to a new replica (below),
   which is not a key.
 - **A system-managed tenant is strictly weaker, as today.** Its replica keys
@@ -1390,8 +1410,8 @@ form within its startup budget.
 
 | Setting | Where | Values | Who sets it |
 |---|---|---|---|
-| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. |
-| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. No transport or CLI verb sets it. |
+| Cluster floor | `__sys:cluster/isolation_policy` | unset (read as `operator-access`), `operator-access`, `strict` | The config key `tenant.isolation_policy`, which each node applies at start through `TenantService.SetClusterIsolationPolicy`. A value the stored floor already holds is a no-op. A node in FIPS 140 mode tightens it to `strict` at start. The floor verbs (`qrdb cluster-isolation-policy get|set` and their REST, gRPC, QUIC and MCP forms) read and set it, refused until the `strict-isolation` feature is active. |
+| Tenant policy | the tenant's registry entry (`isolation_policy`) | `inherit` (empty, the default) or `strict` | The Go API: `tenant.WithIsolationPolicy` at create, or a `TenantPatch.IsolationPolicy` on update. On the transports, a tenant update's `isolation_policy` field and `qrdb tenant update --isolation-policy`, refused until the `strict-isolation` feature is active. |
 
 `tenant.EffectiveIsolationPolicy` is `strict` when either setting is `strict`.
 
@@ -1496,6 +1516,26 @@ the init statement is written through the existing guarded write.
   `guarded-writes` activates by the same rule, and every binary that knows
   `per-node-barrier-keys` knows it, so the refusal is seen only transiently
   during a rolling upgrade; nothing activates it by hand.
+
+**`strict-isolation` (`featuregate.StrictIsolation`)** is an activation-based
+feature judged cluster-wide. It adds no Raft command.
+
+- **Why it exists.** From phase 5 a strict tenant's every database is a raft
+  group on a dedicated WAL, and from phase 6 an isolated tenant's database
+  groups are placed only on its serving set (its home group's nodes). A node
+  whose binary predates this neither refuses a shared-WAL database nor
+  confines placement, so a mixed-version cluster would serve the tenant
+  unconfined.
+- **Not yet active:** a strict tenant's database create is refused with
+  `*feature.NotActiveError{Feature: strict-isolation}` (503, retryable after
+  rollout) and writes nothing; the scheduler's serving-set lookup refuses an
+  isolated tenant's placement the same way, failing closed rather than placing
+  it unconfined. A shared tenant and the home group are unaffected.
+- **Active:** once every member advertises the feature, as above; a
+  standalone node gates nothing.
+- **Not gated:** keying placements and key-delivery envelopes by the opaque
+  database id is a format change. Nothing is migrated: pre-release tenants are
+  re-created.
 
 **`tenant-undo` (`featuregate.TenantUndo`)** is a third activation-based
 feature. It adds no Raft command: the undone tombstone and the
@@ -1624,8 +1664,8 @@ Open question: SNI as the passthrough routing input.
 | Tenant records, isolation modes, provisioning | `pkg/tenant` | go-qrdb |
 | Quotas, entitlements, usage counters, reconciler | `pkg/quota` | go-qrdb |
 | Per-tenant barriers, `BarrierRegistry`, `TenantBarrier` | `pkg/seal` — see [../barrier-seal/](../barrier-seal/) | go-qrdb |
-| Tenant root-key transport (HPKE over mTLS) | `pkg/keydelivery`, `pkg/clusterkeys` | go-qrdb |
-| The multi-node composition of `raft` isolation: the key plane, the key distributor, the rebalance dependencies, the replica host, the peer admin registry | `pkg/server/lifecycle` (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), composed identically by `qrdbd` and a clustered `sdk/go/node` node | go-qrdb |
+| Node-to-node HPKE envelope over mTLS (no tenant key is carried; verifier delivery to be built) | `pkg/keydelivery`, `pkg/clusterkeys` | go-qrdb |
+| The multi-node composition of `raft` isolation: the key plane, the rebalance dependencies, the replica host, the peer admin registry | `pkg/server/lifecycle` (`ComposeRaftTenantCluster`, `NewPeerAdminRegistry`), composed identically by `qrdbd` and a clustered `sdk/go/node` node | go-qrdb |
 | Replica placement and reconciliation | `pkg/placement` | go-qrdb |
 | Volume allocation | `pkg/volume` — see [../volume-pools/](../volume-pools/) | go-qrdb (the seam and the `dir` provider); **go-xkms** registers its own providers |
 | Raft groups | — | **go-quicraft** |

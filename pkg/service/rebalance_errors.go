@@ -109,6 +109,27 @@ func (e *RebalanceMoveError) Error() string {
 // Unwrap returns the underlying error for use with errors.Is and errors.As.
 func (e *RebalanceMoveError) Unwrap() error { return e.Err }
 
+// HomeGroupMoveError is the rebalancer's refusal to move a replica of a
+// tenant's home group. The home group spans the cluster -- a joining node
+// receives the home placement from the reconciler -- so a rebalance never
+// needs to move it, and moving its source replica without the tenant's
+// database replicas would strand them outside the serving set.
+// CreateRebalancePlan lists it as a skipped move; moveTenantGroupShard
+// refuses a hand-built plan with it before any mutation.
+type HomeGroupMoveError struct {
+	// TenantID owns the home group.
+	TenantID string
+
+	// ShardID is the home group's Raft shard.
+	ShardID uint64
+}
+
+// Error implements error.
+func (e *HomeGroupMoveError) Error() string {
+	return "rebalance: tenant " + e.TenantID + " home group shard " +
+		strconv.FormatUint(e.ShardID, 10) + " is not moved; it spans the cluster"
+}
+
 // sourceReplicaNotFoundError is returned when the FromNode address in a
 // RebalanceMovePlan cannot be matched to any Replica in the Placement entry
 // for a dedicated-tenant shard. This is a programming-time configuration

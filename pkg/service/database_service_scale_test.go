@@ -26,7 +26,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -124,7 +123,7 @@ func TestScaleForTenant_FloorRejection(t *testing.T) {
 		t.Errorf("floorErr.Requested = %d, want 0", floorErr.Requested)
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -275,7 +274,7 @@ func TestScaleForTenant_QuotaRejection_PerGroupCap(t *testing.T) {
 		t.Errorf("exceeded resource = %v, want ResourceReplicasPerGroup", ee.Resource)
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -309,7 +308,7 @@ func TestScaleForTenant_QuotaRejection_TotalBudget(t *testing.T) {
 		t.Errorf("exceeded resource = %v, want ResourceTotalReplicas", ee.Resource)
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -352,7 +351,7 @@ func TestScaleForTenant_QuotaReservationRollback_OnSchedulerFailure(t *testing.T
 		t.Errorf("current total-replica usage after rollback = %d, want 2 (unchanged from create)", cur)
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -366,9 +365,8 @@ func TestScaleForTenant_QuotaReservationRollback_OnSchedulerFailure(t *testing.T
 // ---------------------------------------------------------------------------
 
 // stepLog is a mutex-protected append-only log of named steps, shared across
-// the key-distributor, placement-store, and RaftHost fakes so a test can
-// assert the mandated per-replica ordering: key-delivery -> placement-put ->
-// add-node.
+// the placement-store and RaftHost fakes so a test can assert the mandated
+// per-replica ordering: placement-put -> add-node.
 type stepLog struct {
 	mu    sync.Mutex
 	steps []string
@@ -386,23 +384,6 @@ func (l *stepLog) snapshot() []string {
 	out := make([]string, len(l.steps))
 	copy(out, l.steps)
 	return out
-}
-
-// orderedKeyDistributor wraps captureDistributor to additionally record a
-// "key-delivery" step in the shared log for every call.
-type orderedKeyDistributor struct {
-	captureDistributor
-	log *stepLog
-}
-
-func (d *orderedKeyDistributor) DistributeTenantKey(
-	ctx context.Context,
-	p *placement.Placement,
-	lb *seal.StorageBarrier,
-	nodeID string,
-) error {
-	d.log.record("key-delivery")
-	return d.captureDistributor.DistributeTenantKey(ctx, p, lb, nodeID)
 }
 
 // orderingPlacementKV wraps memPlacementKV to additionally record a
@@ -427,19 +408,13 @@ func (k *orderingPlacementKV) CompareAndSwap(ctx context.Context, key string, ex
 	return k.memPlacementKV.CompareAndSwap(ctx, key, expected, next)
 }
 
-// TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering
-// verifies the per-new-replica step ordering: the placement update is
-// persisted BEFORE the tenant barrier key is delivered, which in turn
-// happens before the Raft membership AddObserver call (scale-up admits a
-// new replica as a non-voting observer, never directly as a voter -- see
-// database_service.go's scaleUp). Placement must come first because the
-// receiver's placement gate
-// (pkg/clusterkeys/receiver.go) only authorizes a delivery once its own copy
-// of the replicated placement table lists it as the assigned replica --
-// delivering the key before the entry is ever persisted anywhere means the
-// receiver rejects every attempt unconditionally (this ordering was
-// previously reversed, a real bug: see database_service.go's scaleUp).
-func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *testing.T) {
+// TestScaleForTenant_ScaleUp_PlacementThenAddNodeOrdering verifies the
+// per-new-replica step ordering: the placement update is persisted BEFORE
+// the Raft membership AddObserver call (scale-up admits a new replica as a
+// non-voting observer, never directly as a voter -- see database_service.go's
+// scaleUp). No key is shipped: the new replica keys itself from the owner's
+// signed init statement through the barrierinit watcher.
+func TestScaleForTenant_ScaleUp_PlacementThenAddNodeOrdering(t *testing.T) {
 	t.Parallel()
 
 	log := &stepLog{}
@@ -461,9 +436,6 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 	}
 
 	host := &fakeRaftHost{leaderOK: true, onObserver: func() { log.record("add-node") }}
-	dist := &orderedKeyDistributor{log: log}
-	tb := newTestTenantBarrier(t, scaleTenantID)
-	lookup := &fakeTenantBarrierLookup{tb: tb}
 
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}}
 	svc := NewDatabaseService(mgr,
@@ -474,8 +446,6 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 		WithPlacementStore(store),
 		WithPlacementScheduler(scheduler),
 		WithDatabaseLogger(logger),
-		WithKeyDistributor(dist),
-		WithBarrierLookup(lookup),
 		WithLocalNodeID(leaderNodeID),
 		WithRaftHost(host),
 	).(*DatabaseService)
@@ -496,11 +466,11 @@ func TestScaleForTenant_ScaleUp_PlacementThenKeyDeliveryThenAddNodeOrdering(t *t
 	}
 
 	got := log.snapshot()
-	if len(got) != 3 {
-		t.Fatalf("step log = %v, want exactly 3 steps", got)
+	if len(got) != 2 {
+		t.Fatalf("step log = %v, want exactly 2 steps", got)
 	}
-	if got[0] != "placement-put" || got[1] != "key-delivery" || got[2] != "add-node" {
-		t.Errorf("step order = %v, want [placement-put key-delivery add-node]", got)
+	if got[0] != "placement-put" || got[1] != "add-node" {
+		t.Errorf("step order = %v, want [placement-put add-node]", got)
 	}
 }
 
@@ -544,7 +514,7 @@ func TestScaleForTenant_ScaleUp_AddObserverCalledForNewReplicas(t *testing.T) {
 		}
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -590,7 +560,7 @@ func TestScaleForTenant_ScaleUp_AddObserverErrorFailsCall(t *testing.T) {
 		t.Errorf("expected 1 AddObserver attempt, got %d", len(host.observerCalls))
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -616,9 +586,9 @@ func TestScaleForTenant_RejectsDroppingPlacement(t *testing.T) {
 
 	f := &fakeReplicaQuota{q: &quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}}
 	svc, store, _ := newScaleDatabaseService(t, healthyNodes("n1", "n2", "n3"), f.q, nil)
-	createScaleDB(t, svc, "db1", 2)
+	created := createScaleDB(t, svc, "db1", 2)
 
-	if err := store.SetDropping(scaleCtx(), scaleTenantID, "db1", true); err != nil {
+	if err := store.SetDropping(scaleCtx(), scaleTenantID, created.ID, true); err != nil {
 		t.Fatalf("SetDropping: %v", err)
 	}
 	incTotalBefore := f.incTotal
@@ -631,7 +601,7 @@ func TestScaleForTenant_RejectsDroppingPlacement(t *testing.T) {
 	if f.incTotal != incTotalBefore {
 		t.Errorf("quota reservation attempted (incTotal %d -> %d), want untouched", incTotalBefore, f.incTotal)
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -656,7 +626,7 @@ func TestScaleForTenant_ScaleUp_SkippedWhenRaftHostNil(t *testing.T) {
 	if out.Replicas != 3 {
 		t.Errorf("out.Replicas = %d, want 3", out.Replicas)
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -697,7 +667,7 @@ func TestScaleForTenant_ScaleDown_RemovesReplicasAndDecrementsQuota(t *testing.T
 		}
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -818,7 +788,7 @@ func TestScaleForTenant_ScaleDown_SkippedWhenRaftHostNil(t *testing.T) {
 	if out.Replicas != 1 {
 		t.Errorf("out.Replicas = %d, want 1", out.Replicas)
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -923,101 +893,6 @@ func idsOf(rs []placement.Replica) []uint64 {
 }
 
 // ---------------------------------------------------------------------------
-// deliverTenantKeyToReplicaWithRetry
-// ---------------------------------------------------------------------------
-
-// errFlakyKeyDistributor is returned by flakyKeyDistributor's configured
-// failures, mirroring clusterkeys.Sender.Deliver's single collapsed
-// ErrDelivery sentinel (deliverTenantKeyToReplicaWithRetry cannot and does
-// not attempt to distinguish a transient placement-gate race from a
-// permanent failure -- see its doc comment).
-var errFlakyKeyDistributor = errors.New("flakyKeyDistributor: delivery failed")
-
-// flakyKeyDistributor fails the first failCount calls to DistributeTenantKey,
-// then succeeds. If cancel is non-nil it is invoked after recording the
-// FIRST call, letting tests assert that a cancelled context aborts the
-// retry loop early instead of exhausting every attempt.
-type flakyKeyDistributor struct {
-	failCount int
-	calls     int
-	cancel    context.CancelFunc
-}
-
-func (f *flakyKeyDistributor) DistributeTenantKey(_ context.Context, _ *placement.Placement, _ *seal.StorageBarrier, _ string) error {
-	f.calls++
-	if f.cancel != nil && f.calls == 1 {
-		f.cancel()
-	}
-	if f.calls <= f.failCount {
-		return errFlakyKeyDistributor
-	}
-	return nil
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_SucceedsAfterTransientFailures
-// verifies the retry loop converges once the underlying KeyDistributor
-// starts succeeding, within the bound scaleUpKeyDeliveryMaxAttempts allows.
-func TestDeliverTenantKeyToReplicaWithRetry_SucceedsAfterTransientFailures(t *testing.T) {
-	t.Parallel()
-
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts - 1}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(scaleCtx(), dist, lookup, p, dst, "node1")
-	if err != nil {
-		t.Fatalf("deliverTenantKeyToReplicaWithRetry error = %v, want nil after eventual success", err)
-	}
-	if dist.calls != scaleUpKeyDeliveryMaxAttempts {
-		t.Errorf("dist.calls = %d, want %d (fails on every attempt but the last)", dist.calls, scaleUpKeyDeliveryMaxAttempts)
-	}
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_GivesUpAfterMaxAttempts verifies
-// that a KeyDistributor which never succeeds is retried exactly
-// scaleUpKeyDeliveryMaxAttempts times and the final error is returned (so
-// scaleUp's existing non-fatal Warn-log behavior is unchanged).
-func TestDeliverTenantKeyToReplicaWithRetry_GivesUpAfterMaxAttempts(t *testing.T) {
-	t.Parallel()
-
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts + 5}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(scaleCtx(), dist, lookup, p, dst, "node1")
-	if !errors.Is(err, errFlakyKeyDistributor) {
-		t.Fatalf("deliverTenantKeyToReplicaWithRetry error = %v, want errFlakyKeyDistributor", err)
-	}
-	if dist.calls != scaleUpKeyDeliveryMaxAttempts {
-		t.Errorf("dist.calls = %d, want exactly %d (bounded retry)", dist.calls, scaleUpKeyDeliveryMaxAttempts)
-	}
-}
-
-// TestDeliverTenantKeyToReplicaWithRetry_ContextCancellationAbortsEarly
-// verifies that a context cancelled mid-retry stops the loop immediately
-// (returning the last delivery error) rather than sleeping out the full
-// retry budget.
-func TestDeliverTenantKeyToReplicaWithRetry_ContextCancellationAbortsEarly(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(scaleCtx())
-	dist := &flakyKeyDistributor{failCount: scaleUpKeyDeliveryMaxAttempts + 5, cancel: cancel}
-	lookup := &fakeTenantBarrierLookup{tb: newTestTenantBarrier(t, scaleTenantID)}
-	p := &placement.Placement{TenantID: scaleTenantID, Database: "db1", ShardID: 1000}
-	dst := placement.Replica{ReplicaID: 2, NodeID: "node2", RaftAddr: "node2:1"}
-
-	err := deliverTenantKeyToReplicaWithRetry(ctx, dist, lookup, p, dst, "node1")
-	if err == nil {
-		t.Fatal("deliverTenantKeyToReplicaWithRetry error = nil, want non-nil after cancellation")
-	}
-	if dist.calls != 1 {
-		t.Errorf("dist.calls = %d, want exactly 1 (retry loop must abort on the first post-failure cancellation check)", dist.calls)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Leader routing (resolveScaleLeader / cross-node forwarding)
 // ---------------------------------------------------------------------------
 
@@ -1099,7 +974,7 @@ func TestScaleForTenant_NotLeader_LocalNodeNotMember(t *testing.T) {
 		t.Errorf("raftHost must not be called when not the leader: %d add, %d observer, %d remove",
 			len(host.calls), len(host.observerCalls), len(host.removeCalls))
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1124,7 +999,7 @@ func TestScaleForTenant_NotLeader_LocalIsMemberButNotLeader(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}, nil, "node2")
 	createScaleDB(t, svc, "db1", 2)
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1170,7 +1045,7 @@ func TestScaleForTenant_ExecutesLocally_WhenLocalIsLiveLeader(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 5, MaxTotalReplicas: 100}, nil, "node1")
 	createScaleDB(t, svc, "db1", 2)
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1217,10 +1092,11 @@ func TestScaleForTenant_ManagerMissesDB_PlacementIsAuthoritative(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, nil)
 
 	plan, err := svc.placementScheduler.Place(scaleCtx(), placement.PlaceRequest{
-		TenantID: scaleTenantID,
-		Database: "db1",
-		ShardID:  4242,
-		RF:       2,
+		TenantID:   scaleTenantID,
+		DatabaseID: "db1",
+		Database:   "db1",
+		ShardID:    4242,
+		RF:         2,
 	})
 	if err != nil {
 		t.Fatalf("Place: %v", err)
@@ -1247,7 +1123,7 @@ func TestScaleForTenant_ManagerMissesDB_PlacementIsAuthoritative(t *testing.T) {
 		t.Errorf("out.ShardID = %d, want 4242", out.ShardID)
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1265,10 +1141,11 @@ func TestScaleForTenant_ManagerMissesDB_ScaleDownAlsoWorks(t *testing.T) {
 		&quota.Quotas{MaxReplicasPerGroup: 10, MaxTotalReplicas: 100}, nil)
 
 	plan, err := svc.placementScheduler.Place(scaleCtx(), placement.PlaceRequest{
-		TenantID: scaleTenantID,
-		Database: "db1",
-		ShardID:  4243,
-		RF:       3,
+		TenantID:   scaleTenantID,
+		DatabaseID: "db1",
+		Database:   "db1",
+		ShardID:    4243,
+		RF:         3,
 	})
 	if err != nil {
 		t.Fatalf("Place: %v", err)
@@ -1376,7 +1253,7 @@ func TestScaleForTenant_ScaleUp_WaitsForLeaderBeforeAddObserver(t *testing.T) {
 		t.Errorf("AddObserver calls = %d, want 1 (only after the leader became known)", len(host.observerCalls))
 	}
 
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1412,7 +1289,7 @@ func TestScaleForTenant_ScaleUp_LeaderNeverKnownTimesOut(t *testing.T) {
 		t.Errorf("no quota reservation expected on leader-wait timeout, incTotal before=%d after=%d",
 			incTotalBefore, f.incTotal)
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1441,7 +1318,7 @@ func TestScaleForTenant_ScaleDown_LeaderNeverKnownTimesOut(t *testing.T) {
 	if len(host.removeCalls) != 0 {
 		t.Errorf("RemoveFollowerNode must not be called when the leader never becomes known, got %d calls", len(host.removeCalls))
 	}
-	p, gerr := store.Get(scaleCtx(), scaleTenantID, "db1")
+	p, gerr := store.GetByName(scaleCtx(), scaleTenantID, "db1")
 	if gerr != nil {
 		t.Fatalf("placement Get: %v", gerr)
 	}
@@ -1463,7 +1340,7 @@ func TestScaleForTenant_ScaleDown_LeaderNeverKnownTimesOut(t *testing.T) {
 // manager meta.
 func bumpPlacementRF(t *testing.T, store *placement.Store, name string, rf int) {
 	t.Helper()
-	p, err := store.Get(scaleCtx(), scaleTenantID, name)
+	p, err := store.GetByName(scaleCtx(), scaleTenantID, name)
 	if err != nil {
 		t.Fatalf("placement Get: %v", err)
 	}
@@ -1578,10 +1455,11 @@ func TestGetForTenant_NonRaftDatabase_ReplicasUntouchedByPlacementLookup(t *test
 // 2 Active) for shard 500, used by transferLeadershipAwayFromRemoved tests.
 func transferPlacement() *placement.Placement {
 	return &placement.Placement{
-		TenantID: "acme",
-		Database: "db1",
-		ShardID:  500,
-		RF:       2,
+		TenantID:   "acme",
+		DatabaseID: "db1",
+		Database:   "db1",
+		ShardID:    500,
+		RF:         2,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100", State: placement.ReplicaStateActive},
 			{ReplicaID: 2, NodeID: "node-b:9100", RaftAddr: "node-b:9100", State: placement.ReplicaStateActive},
@@ -1625,10 +1503,11 @@ func TestTransferLeadershipAwayFromRemoved_NoopWhenNoOtherVoter(t *testing.T) {
 	t.Parallel()
 
 	solo := &placement.Placement{
-		TenantID: "acme",
-		Database: "db1",
-		ShardID:  500,
-		RF:       1,
+		TenantID:   "acme",
+		DatabaseID: "db1",
+		Database:   "db1",
+		ShardID:    500,
+		RF:         1,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100", State: placement.ReplicaStateActive},
 		},
@@ -1649,10 +1528,11 @@ func TestTransferLeadershipAwayFromRemoved_SkipsNonVotingCandidates(t *testing.T
 	t.Parallel()
 
 	p := &placement.Placement{
-		TenantID: "acme",
-		Database: "db1",
-		ShardID:  500,
-		RF:       2,
+		TenantID:   "acme",
+		DatabaseID: "db1",
+		Database:   "db1",
+		ShardID:    500,
+		RF:         2,
 		Replicas: []placement.Replica{
 			{ReplicaID: 1, NodeID: "node-a:9100", RaftAddr: "node-a:9100", State: placement.ReplicaStateActive},
 			{ReplicaID: 2, NodeID: "node-b:9100", RaftAddr: "node-b:9100", State: placement.ReplicaStateObserver},
@@ -1807,10 +1687,7 @@ func TestAddObserverReplica_RejectsStaleCurrentSnapshot(t *testing.T) {
 	}
 
 	r := placement.Replica{ReplicaID: 3, NodeID: "node3", RaftAddr: "node3:1", State: placement.ReplicaStateObserver}
-	updated, kerr, placementFailed, err := addObserverReplica(context.Background(), host, store, nil, nil, current, r, "local")
-	if kerr != nil {
-		t.Fatalf("unexpected key-delivery error: %v", kerr)
-	}
+	updated, placementFailed, err := addObserverReplica(context.Background(), host, store, current, r)
 	if !placementFailed {
 		t.Error("placementFailed = false, want true (the write must be attributed to the placement step)")
 	}
@@ -1824,7 +1701,7 @@ func TestAddObserverReplica_RejectsStaleCurrentSnapshot(t *testing.T) {
 		t.Errorf("AddObserver called %d times, want 0 (a rejected placement write must never reach Raft)", len(host.observerCalls))
 	}
 
-	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	got, err := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1874,7 +1751,7 @@ func TestRemoveReplicaFromGroup_RejectsStaleCurrentSnapshot(t *testing.T) {
 		t.Errorf("RemoveFollowerNode called %d times, want 0 (a rejected placement write must never reach Raft)", len(host.removeCalls))
 	}
 
-	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	got, err := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1907,7 +1784,7 @@ func TestRemoveReplicaFromGroup_EvictsBeforeDroppingPlacement(t *testing.T) {
 	listedAtEviction := false
 	host := &fakeRaftHost{leaderID: 1, leaderOK: true}
 	host.onRemove = func() {
-		got, gerr := store.Get(context.Background(), current.TenantID, current.Database)
+		got, gerr := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 		if gerr != nil {
 			t.Errorf("Get during eviction: %v", gerr)
 			return
@@ -1925,7 +1802,7 @@ func TestRemoveReplicaFromGroup_EvictsBeforeDroppingPlacement(t *testing.T) {
 	if updated.RF != 1 || len(updated.Replicas) != 1 || updated.Replicas[0].ReplicaID != 1 {
 		t.Errorf("updated = RF %d replicas %+v, want RF 1 with only replica 1", updated.RF, updated.Replicas)
 	}
-	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	got, err := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -1974,7 +1851,7 @@ func TestRemoveReplicaFromGroup_KeepsChangeCommittedDuringEviction(t *testing.T)
 	if _, ok := updated.ReplicaForNode("node-a:9100"); ok {
 		t.Error("replica 1 must be dropped from the returned placement")
 	}
-	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	got, err := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -2017,7 +1894,7 @@ func TestRemoveReplicaFromGroup_EvictionFailureKeepsPlacement(t *testing.T) {
 	if updated != current {
 		t.Error("updated must be the caller's snapshot when the eviction fails")
 	}
-	got, err := store.Get(context.Background(), current.TenantID, current.Database)
+	got, err := store.Get(context.Background(), current.TenantID, current.DatabaseID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}

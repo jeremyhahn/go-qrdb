@@ -826,15 +826,15 @@ func (entitledTenantSvc) CheckFeature(context.Context, string, string) error   {
 // failing.
 func TestBuildDatabaseQuotaOpts_OptionalInterfacesAreNotAllOptionalInPractice(t *testing.T) {
 	// A QuotaProvider that is otherwise a bare TenantServicer: the checker,
-	// plus the two its method set earns for free.
-	if got := len(buildDatabaseQuotaOpts(quotaTenantSvc{}, slog.Default())); got != 3 {
-		t.Errorf("a bare QuotaProvider earned %d options, want 3 "+
-			"(checker + TenantInfoLookup + QuotaUsageRecorder)", got)
+	// plus the three its method set earns for free.
+	if got := len(buildDatabaseQuotaOpts(quotaTenantSvc{}, slog.Default())); got != 4 {
+		t.Errorf("a bare QuotaProvider earned %d options, want 4 "+
+			"(checker + TenantInfoLookup + ClusterIsolationPolicyReader + QuotaUsageRecorder)", got)
 	}
 
-	// Adding the one interface that genuinely discriminates earns the fourth.
-	if got := len(buildDatabaseQuotaOpts(entitledTenantSvc{}, slog.Default())); got != 4 {
-		t.Errorf("an EntitlementChecker earned %d options, want 4", got)
+	// Adding the one interface that genuinely discriminates earns the fifth.
+	if got := len(buildDatabaseQuotaOpts(entitledTenantSvc{}, slog.Default())); got != 5 {
+		t.Errorf("an EntitlementChecker earned %d options, want 5", got)
 	}
 }
 

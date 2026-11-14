@@ -23,7 +23,6 @@
 // envelope.
 //
 // Receiver handles POST /v1/cluster/keydelivery and GET /v1/cluster/nodekey.
-// Sender delivers keys to follower replicas.
 package clusterkeys
 
 import (
@@ -47,7 +46,7 @@ import (
 // PlacementGetter retrieves a Placement for a (tenant, database) pair.
 // placement.Store satisfies this interface directly.
 type PlacementGetter interface {
-	Get(ctx context.Context, tenantID, database string) (*placement.Placement, error)
+	Get(ctx context.Context, tenantID, databaseID string) (*placement.Placement, error)
 }
 
 // Receiver handles incoming cluster key-delivery requests for this node.
@@ -62,7 +61,6 @@ const maxEnvelopeBytes = 64 << 10
 
 type Receiver struct {
 	kd                *keydelivery.Receiver
-	registry          *seal.BarrierRegistry
 	placements        PlacementGetter
 	pinnedTrustDomain string
 	selfNodeID        string
@@ -95,19 +93,16 @@ var malformedOpenErrs = []error{
 	keydelivery.ErrInvalidMode,
 }
 
-// modeImporter is the function type dispatched per delivery Mode. There is
-// no DataRoot parameter: the tenant's location comes entirely from the
-// catalog's Assignment now (volume.Allocator.Resolve, through
-// BarrierRegistry.ImportTenant), which every node -- leader or follower --
-// resolves identically, so a follower never needs the leader's placement
-// record to tell it where to put the tenant's barrier.
+// modeImporter is the function type dispatched per delivery Mode.
 type modeImporter func(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error
 
 // modeHandlers is the map-based dispatch for delivery modes. Map-based
-// dispatch is preferred over switch per project conventions.
-var modeHandlers = map[keydelivery.Mode]modeImporter{
-	keydelivery.ModeSelfManaged: importSelfManaged,
-}
+// dispatch is preferred over switch per project conventions. It is empty:
+// tenant root keys are never shipped (every serving node keys itself from
+// the barrier owner's signed init statement), so every envelope is refused
+// as an unknown mode after the transport gates until verifier delivery
+// registers its mode here.
+var modeHandlers = map[keydelivery.Mode]modeImporter{}
 
 // NewReceiver constructs a Receiver bound to this follower node. caPool may be
 // nil when the cluster runs without mutual TLS (dev mode); in that case the
@@ -129,7 +124,6 @@ var modeHandlers = map[keydelivery.Mode]modeImporter{
 // the node.
 func NewReceiver(
 	kd *keydelivery.Receiver,
-	registry *seal.BarrierRegistry,
 	placements PlacementGetter,
 	pinnedTrustDomain string,
 	selfNodeID string,
@@ -140,9 +134,6 @@ func NewReceiver(
 ) (*Receiver, error) {
 	if kd == nil {
 		return nil, ErrNilReceiver
-	}
-	if registry == nil {
-		return nil, ErrNilRegistry
 	}
 	if placements == nil {
 		return nil, ErrNilPlacements
@@ -158,7 +149,6 @@ func NewReceiver(
 	}
 	return &Receiver{
 		kd:                kd,
-		registry:          registry,
 		placements:        placements,
 		pinnedTrustDomain: pinnedTrustDomain,
 		selfNodeID:        selfNodeID,
@@ -180,7 +170,7 @@ func NewReceiver(
 //	c. Placement-table gate: this node must appear as the replica assigned for
 //	   the envelope's (tenant, database, shard, replica) (403 on mismatch).
 //	d. keydelivery.Receiver.Open: HPKE decryption + freshness + replay guard.
-//	e. Mode dispatch (map-based) to importSelfManaged.
+//	e. Mode dispatch (map-based) through modeHandlers.
 func (r *Receiver) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodPost {
@@ -239,12 +229,12 @@ func (r *Receiver) Handler() http.HandlerFunc {
 		}
 
 		// --- c: placement gate -------------------------------------------
-		p, err := r.placements.Get(ctx, env.TenantID, env.Database)
+		p, err := r.placements.Get(ctx, env.TenantID, env.DatabaseID)
 		if err != nil {
 			writeJSONError(w, http.StatusForbidden, "placement gate rejected")
 			r.logger.Warn("clusterkeys: placement lookup failed",
 				slog.String("tenant", env.TenantID),
-				slog.String("database", env.Database),
+				slog.String("database_id", env.DatabaseID),
 				slog.String("error", err.Error()))
 			return
 		}
@@ -253,7 +243,7 @@ func (r *Receiver) Handler() http.HandlerFunc {
 			writeJSONError(w, http.StatusForbidden, "placement gate rejected")
 			r.logger.Warn("clusterkeys: placement gate denied: shard/replica mismatch",
 				slog.String("tenant", env.TenantID),
-				slog.String("database", env.Database),
+				slog.String("database_id", env.DatabaseID),
 				slog.Uint64("envelope_replica", env.ReplicaID),
 				slog.Uint64("envelope_shard", env.ShardID))
 			return
@@ -383,14 +373,6 @@ func httpCodeForOpenErr(err error) int {
 		}
 	}
 	return http.StatusForbidden
-}
-
-// importSelfManaged handles ModeSelfManaged: treat the plaintext as the
-// already-sealed blob and call BarrierRegistry.ImportTenant. The barrier
-// remains sealed; the tenant unseals later.
-func importSelfManaged(ctx context.Context, r *Receiver, meta keydelivery.Meta, plaintext []byte) error {
-	_, err := r.registry.ImportTenant(ctx, meta.TenantID, plaintext)
-	return err
 }
 
 // writeJSON writes a JSON-encoded value with the given status code.

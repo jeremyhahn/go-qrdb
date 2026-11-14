@@ -54,15 +54,9 @@ func applyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want st
 	if want == "" {
 		return
 	}
-	setter, ok := svc.(isolationFloorSetter)
-	if !ok {
-		slog.Warn("tenant.isolation_policy ignored: the tenant service cannot set the cluster floor",
-			slog.String("isolation_policy", want))
-		return
-	}
 	waitCtx, cancel := context.WithTimeout(ctx, isolationFloorWait)
 	defer cancel()
-	if setIsolationFloor(waitCtx, setter, tenant.ClusterIsolationPolicy(want)) {
+	if setIsolationFloor(waitCtx, svc, tenant.ClusterIsolationPolicy(want)) {
 		return
 	}
 	if ctx.Err() != nil {
@@ -70,7 +64,7 @@ func applyIsolationFloor(ctx context.Context, svc tenant.TenantServicer, want st
 	}
 	slog.Warn("tenant.isolation_policy not applied yet; still trying in the background",
 		slog.String("isolation_policy", want))
-	go setIsolationFloor(ctx, setter, tenant.ClusterIsolationPolicy(want))
+	go setIsolationFloor(ctx, svc, tenant.ClusterIsolationPolicy(want))
 }
 
 // setIsolationFloor tries to set want until it is set or refused, reporting

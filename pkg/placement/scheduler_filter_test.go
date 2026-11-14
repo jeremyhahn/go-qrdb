@@ -59,7 +59,7 @@ func TestScheduler_ReplicaFilterExcludesRefusedNodes(t *testing.T) {
 		t.Fatalf("Place(RF=3) = %v, want *InsufficientNodesError with the refused node excluded", err)
 	}
 
-	one := &Placement{TenantID: "acme", Database: "orders", ShardID: 1000, RF: 1,
+	one := &Placement{TenantID: "acme", DatabaseID: "orders", Database: "orders", ShardID: 1000, RF: 1,
 		Replicas: []Replica{{ReplicaID: 1, NodeID: "n2", RaftAddr: "n2:1"}}}
 	more, err := s.PlaceAdditional(context.Background(), one, 1)
 	if err != nil {

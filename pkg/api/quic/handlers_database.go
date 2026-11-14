@@ -48,14 +48,15 @@ func (s *Server) handleDatabaseCreate(ctx context.Context, payload []byte) ([]by
 	}
 
 	cfg := database.DatabaseConfig{
-		TenantID: req.TenantID,
-		Name:     req.Name,
-		Backend:  database.BackendType(req.Backend),
-		DataDir:  req.DataDir,
-		Mode:     database.DatabaseMode(req.Mode),
-		Replicas: req.Replicas,
-		Protocol: req.Protocol.toDomain(),
-		Raft:     req.Raft.toDomain(),
+		TenantID:     req.TenantID,
+		Name:         req.Name,
+		Backend:      database.BackendType(req.Backend),
+		DataDir:      req.DataDir,
+		Mode:         database.DatabaseMode(req.Mode),
+		Replicas:     req.Replicas,
+		DedicatedWAL: req.DedicatedWAL,
+		Protocol:     req.Protocol.toDomain(),
+		Raft:         req.Raft.toDomain(),
 	}
 	if req.Connection != nil {
 		cfg.Connection = req.Connection
@@ -400,17 +401,20 @@ func (s *Server) handleDatabaseUpdateCompaction(ctx context.Context, payload []b
 // databaseCreateRequest is the JSON wire format for creating a database.
 // It uses camelCase JSON tags to match the SDK transport types.
 type databaseCreateRequest struct {
-	TenantID   string                             `json:"tenantId,omitempty"`
-	Name       string                             `json:"name"`
-	Backend    string                             `json:"backend"`
-	DataDir    string                             `json:"dataDir,omitempty"`
-	Mode       string                             `json:"mode,omitempty"`
-	Replicas   int                                `json:"replicas,omitempty"`
-	Protocol   databaseCreateProtocolConfig       `json:"protocol,omitempty"`
-	Raft       *databaseRaftRequest               `json:"raft,omitempty"`
-	Barrier    *databaseCreateBarrierConfig       `json:"barrier,omitempty"`
-	Connection *database.DatabaseConnectionConfig `json:"connection,omitempty"`
-	SQL        *database.SQLConfig                `json:"sql,omitempty"`
+	TenantID string `json:"tenantId,omitempty"`
+	Name     string `json:"name"`
+	Backend  string `json:"backend"`
+	DataDir  string `json:"dataDir,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	Replicas int    `json:"replicas,omitempty"`
+	// DedicatedWAL requests a dedicated WAL for a dedicated-raft database;
+	// required for every database of a strict-isolation tenant.
+	DedicatedWAL bool                               `json:"dedicatedWal,omitempty"`
+	Protocol     databaseCreateProtocolConfig       `json:"protocol,omitempty"`
+	Raft         *databaseRaftRequest               `json:"raft,omitempty"`
+	Barrier      *databaseCreateBarrierConfig       `json:"barrier,omitempty"`
+	Connection   *database.DatabaseConnectionConfig `json:"connection,omitempty"`
+	SQL          *database.SQLConfig                `json:"sql,omitempty"`
 }
 
 // databaseCreateBarrierConfig is the JSON wire format for the barrier

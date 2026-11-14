@@ -153,7 +153,9 @@ holder:
   (`*ceremony.HolderRecordConflictError`). The cached record is evicted, the
   persisted holder kept, and the conflict recorded on the barrier's audit log
   (`holder-record-conflict`, `deny`, with the scope, username and the cached
-  certificate thumbprint) and the service log. The reconciliation then carries
+  certificate thumbprint; a tenant barrier's record is on the platform trail,
+  which holds no tenant identity, so it carries the scope only) and the
+  service log. The reconciliation then carries
   on with the other cached holders. It does not fail: a failed reconciliation
   is retried by every later holder operation, so one conflicting registration
   would otherwise wedge every holder operation of the scope.

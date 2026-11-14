@@ -62,7 +62,7 @@ func sealInfo(meta Meta, nonce []byte, issuedAt time.Time) []byte {
 	var b []byte
 	b = appendLP(b, []byte(infoDomain))
 	b = appendLP(b, []byte(meta.TenantID))
-	b = appendLP(b, []byte(meta.Database))
+	b = appendLP(b, []byte(meta.DatabaseID))
 	b = appendU64(b, meta.ShardID)
 	b = appendU64(b, meta.ReplicaID)
 	b = appendLP(b, []byte(meta.TargetNodeID))

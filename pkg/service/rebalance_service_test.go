@@ -25,6 +25,8 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
+	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -297,6 +299,146 @@ func TestRebalanceService_CreateRebalancePlan_SkipsAShardWhoseStaleReadIsNotAMap
 	}
 	if plan == nil {
 		t.Fatal("expected non-nil plan even with read errors")
+	}
+}
+
+// TestRebalanceService_CreateRebalancePlan_HonoursServingSet: n1 is
+// overloaded and n3 the only underloaded node. Shard 101 belongs to the
+// isolated tenant "iso" whose serving set is {n1, n2}, so the plan must not
+// propose moving it to n3 and names the skipped move with its reason; the
+// shared tenant's shard 102 still moves to n3.
+func TestRebalanceService_CreateRebalancePlan_HonoursServingSet(t *testing.T) {
+	store, _ := servingSetStore(t)
+	ctx := context.Background()
+	shared := &placement.Placement{TenantID: "shared", DatabaseID: "shared-orders-id", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
+		Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}}
+	if err := store.Put(ctx, shared); err != nil {
+		t.Fatalf("Put shared: %v", err)
+	}
+	host := &mockHost{
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				ShardInfoList: []quicraft.ShardInfo{
+					{ShardID: 101, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 102, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 103, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 104, IsLeader: true, Nodes: map[uint64]string{3: "n3"}},
+				},
+			}
+		},
+		staleReadFn: func(_ context.Context, shardID uint64, _ interface{}) (interface{}, error) {
+			if shardID == 104 {
+				return map[string][]byte{"k": []byte("v")}, nil
+			}
+			return map[string][]byte{"key1": []byte("value-data-that-is-large-enough-to-move")}, nil
+		},
+	}
+	svc := NewRebalanceService(host).(*RebalanceService)
+	svc.placementStore = store
+
+	plan, err := svc.CreateRebalancePlan(ctx, &RebalancePlanOptions{})
+	if err != nil {
+		t.Fatalf("CreateRebalancePlan: %v", err)
+	}
+	sharedMoved := false
+	for _, m := range plan.Moves {
+		if m.ShardID == 101 {
+			t.Fatalf("plan moves isolated shard 101 to %s, outside its serving set", m.ToNode)
+		}
+		if m.ShardID == 102 && m.ToNode == "n3" {
+			sharedMoved = true
+		}
+	}
+	if !sharedMoved {
+		t.Fatalf("plan moves = %+v, want shared shard 102 moved to n3", plan.Moves)
+	}
+	if len(plan.Skipped) != 1 {
+		t.Fatalf("plan skipped = %+v, want one skipped move", plan.Skipped)
+	}
+	sk := plan.Skipped[0]
+	var sse *placement.ServingSetError
+	if sk.ShardID != 101 || sk.FromNode != "n1" || sk.ToNode != "n3" || !errors.As(sk.Err, &sse) || sk.Reason == "" {
+		t.Fatalf("skipped = %+v, want shard 101 n1->n3 refused with *placement.ServingSetError", sk)
+	}
+	if sse.TenantID != "iso" || sse.Database != "orders" || sse.Node != "n3" {
+		t.Fatalf("ServingSetError = %+v", sse)
+	}
+}
+
+// TestRebalanceService_CreateRebalancePlan_NeverMovesAHomeGroup is #1517
+// Codex finding 3: a tenant's home group spans the cluster, so a plan over
+// an overloaded node holding a home-group replica proposes no move of it
+// and lists the skip with *HomeGroupMoveError, while an ordinary shard on
+// the same node still moves.
+func TestRebalanceService_CreateRebalancePlan_NeverMovesAHomeGroup(t *testing.T) {
+	store, _ := servingSetStore(t)
+	ctx := context.Background()
+	for _, p := range []*placement.Placement{
+		{TenantID: "shared", DatabaseID: "shared-home-id", Database: database.TenantHomeName, ShardID: 105, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}},
+		{TenantID: "shared", DatabaseID: "shared-orders-id", Database: "orders", ShardID: 102, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{{ReplicaID: 1, NodeID: "n1", RaftAddr: "n1"}}},
+	} {
+		if err := store.Put(ctx, p); err != nil {
+			t.Fatalf("Put %s: %v", p.Database, err)
+		}
+	}
+	host := &mockHost{
+		getNodeHostInfoFn: func(_ quicraft.NodeHostInfoOption) *quicraft.NodeHostInfo {
+			return &quicraft.NodeHostInfo{
+				ShardInfoList: []quicraft.ShardInfo{
+					{ShardID: 105, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 102, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 103, IsLeader: true, Nodes: map[uint64]string{1: "n1"}},
+					{ShardID: 104, IsLeader: true, Nodes: map[uint64]string{3: "n3"}},
+				},
+			}
+		},
+		staleReadFn: func(_ context.Context, shardID uint64, _ interface{}) (interface{}, error) {
+			if shardID == 104 {
+				return map[string][]byte{"k": []byte("v")}, nil
+			}
+			return map[string][]byte{"key1": []byte("value-data-that-is-large-enough-to-move")}, nil
+		},
+	}
+	svc := NewRebalanceService(host).(*RebalanceService)
+	svc.placementStore = store
+
+	plan, err := svc.CreateRebalancePlan(ctx, &RebalancePlanOptions{})
+	if err != nil {
+		t.Fatalf("CreateRebalancePlan: %v", err)
+	}
+	sharedMoved := false
+	for _, m := range plan.Moves {
+		if m.ShardID == 105 {
+			t.Fatalf("plan moves home group shard 105 to %s", m.ToNode)
+		}
+		if m.ShardID == 102 {
+			sharedMoved = true
+		}
+	}
+	if !sharedMoved {
+		t.Fatalf("plan moves = %+v, want shard 102 moved", plan.Moves)
+	}
+	var found bool
+	for _, sk := range plan.Skipped {
+		var herr *HomeGroupMoveError
+		if sk.ShardID != 105 {
+			continue
+		}
+		found = true
+		if sk.FromNode != "n1" || !errors.As(sk.Err, &herr) || sk.Reason == "" {
+			t.Fatalf("skipped = %+v, want shard 105 from n1 refused with *HomeGroupMoveError", sk)
+		}
+		if herr.TenantID != "shared" || herr.ShardID != 105 {
+			t.Fatalf("HomeGroupMoveError = %+v", herr)
+		}
+		if want := "rebalance: tenant shared home group shard 105 is not moved; it spans the cluster"; herr.Error() != want {
+			t.Fatalf("Error() = %q, want %q", herr.Error(), want)
+		}
+	}
+	if !found {
+		t.Fatalf("plan skipped = %+v, want the home group shard 105 listed", plan.Skipped)
 	}
 }
 

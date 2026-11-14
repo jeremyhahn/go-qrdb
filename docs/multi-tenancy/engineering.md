@@ -507,12 +507,11 @@ type TenantFieldError struct{ Field, Reason string } // errclass.InvalidArgument
   One boundary does it: `sdk/go/transport/embedded`'s RBAC surface REFUSES an
   identity with an empty `TenantID` (`transport.InvalidIdentityError`) rather
   than folding it.
-- **No plaintext root key leaves a node**: a `none`, `passphrase` or `shamir`
-  tenant barrier is initialized by every serving node with its own key, and
-  nothing is shipped (`clusterkeys.ownKeyOnEveryNode`). For any other
-  self-managed strategy the leader ships the owner-sealed barrier blob verbatim,
-  HPKE-sealed to the receiving node's verified delivery key over mTLS
-  (`Sender.DistributeTenantKey`). A platform-custody barrier is not shipped.
+- **No tenant root key leaves a node**: every serving node initializes a
+  tenant barrier with its own key from the barrier owner's signed init
+  statement, including a node placed later by scale-out or a rebalance move
+  (`pkg/barrierinit` re-polls the init records). Nothing ships a root key or
+  a sealed blob.
 - **A tenant seal reaches every replica**, and only the tenant's own
   administrators may issue it — see
   [../barrier-seal/architecture.md](../barrier-seal/architecture.md#sealing-in-a-cluster).
@@ -1079,6 +1078,17 @@ is refused with the entitlement or quota error, never downgraded to the shared
 WAL. On any other backend the flag is ignored. A strict tenant's database
 requires one (§ "Strict isolation").
 
+Only a `raft` tenant's database is served through its own Raft group, so only
+there does a dedicated WAL carry the database's data. Every database of a
+`volume` tenant is served from the tenant's own store, and a `barrier`
+tenant's raft-backed database is served from the shared system store (a
+per-database barrier route serves non-raft dedicated stores only). Under
+either isolation a `raft` + `dedicatedWal` request would persist and meter a
+group no KV write reaches, so it is refused with `DedicatedWALOffDataPathError`
+(422) naming the store that serves the database, before anything is persisted
+or metered. The refusal precedes the strict-tenant check, so a strict `volume`
+or `barrier` tenant's request gets it too.
+
 ## Deployment requirement
 
 **The tenant service must be configured in production.**
@@ -1297,7 +1307,8 @@ There are no tenant-specific metrics.
 > records, DEK keyring, CA and certificate records. It does not have the
 > serving set, the SNI relay, per-node credential verifiers, the tenant
 > bootstrap record, operator access to tenant identity, or a dedicated WAL per
-> strict tenant database, so no `strict-isolation` feature gate is registered.
+> strict tenant database, so the `strict-isolation` feature gate is registered
+> but not supported.
 > An invariant or error below that names no symbol is a requirement not yet
 > built.
 
@@ -1317,7 +1328,7 @@ Store key:
 |---|---|---|---|---|---|
 | Tenant record: isolation, plan, usage, volume pool, auto-unseal | `__sys:tenants/{id}` (`metadataPrefix`, `pkg/tenant/service.go`) | SYS | `TenantService.CreateTenant`, `UpdateQuotas`, `UpdateEntitlements`, usage counters | `pkg/server/rest_registry.go` (every request), `pkg/tenant/store_resolver.go`, `pkg/server/tenant_infra.go` (boot), `quota.Reconciler` | **Yes**, minus the identity-object counters |
 | Tombstone | `__sys:tenants-deleted/{id}` (`tombstonePrefix`, `pkg/tenant/tombstone.go`) | SYS | `TenantService.fence` | `TenantService.CreateTenant`, `pkg/tenant/store_resolver.go`, `pkg/tenant/deleted_tenants.go` | **Yes** |
-| Placement | `__sys:placement/{t}/{db}` (`PlacementPrefix`, `pkg/placement/store.go`) | SYS | `pkg/service/database_service.go` | `pkg/server/tenant_shard_reconciler.go`, `pkg/clusterkeys/receiver.go`, `pkg/server/raft_backend_factory.go` | **Yes**, with opaque database ids (S5) |
+| Placement | `__sys:placement/{t}/{dbid}` (`PlacementPrefix`, `pkg/placement/store.go`); `dbid` is the opaque id in the database's catalog record, the home group's is `database.TenantHomeID` | SYS | `pkg/service/database_service.go` | `pkg/server/tenant_shard_reconciler.go`, `pkg/clusterkeys/receiver.go`, `pkg/server/raft_backend_factory.go` | **Yes**, with opaque database ids (S5) |
 | Volume-pool assignment | `__sys:volumepool/assign/{id}` (`AssignmentKeyPrefix`, `pkg/volume/catalog.go`) | SYS | `pkg/volume` catalog | `pkg/volume` catalog, `seal.BarrierRegistry` | **Yes** |
 | Tenant barrier posture (auto-unseal) | `__registry:tenant_posture/{id}` (`tenantBarrierPostureStorePrefix`, `pkg/seal/barrier_registry.go`) | SEAL | `BarrierRegistry.persistTenantBarrierPosture` | `loadTenantBarrierPosture`, `RestoreVolumeTenants` | Node-level; stays |
 | Sealed tenant root key and its sibling records | `tenant/{id}/root-key*` (`tenantBarrierConfig`, `pkg/seal/barrier_registry.go`; `pkg/seal/unsealkey.go`, `pkg/seal/migrate.go`, `pkg/seal/recovery.go`) | TB | `StorageBarrier` | `StorageBarrier` | Node-level; becomes the per-replica blob |
@@ -1345,8 +1356,8 @@ Store key:
 | Encryption-migration records | `__sys:encmig/{t}/{db}[/nodes/{n}]` (`clustermig.Prefix`, `pkg/clustermig/store.go`) | SYS | `clustermig.Store` | the same | Tenant scope: **moves**. System scope: stays. |
 | Audit events | `{dataDir}/audit-events.ndjson` (`audit.DefaultTrailFile`) | node-local, every tenant in one file; the replicated chain for a tenant whose audit entitlement is on | `audit.ChainFileLogger`, `service.ReplicatedLogger` | `ChainFileLogger.Query`, `ReplicatedLogger.Query` | Tenant events: the tenant's replicated trail in its home group. Platform events: the replicated platform trail in the system shard. The node-local file is the destination of neither. |
 | Rate-limit buckets | key `tenant\0subject\0perm` (`pkg/auth/middleware/ratelimit.go`) | node memory | limiter | limiter | Node memory; stays |
-| Metrics | `qrdb_vector_*{tenant,namespace}` (`pkg/service/vector.go`) | scrape | — | `/metrics` (authentication only, `pkg/api/rest/server.go`) | Namespace label removed |
-| Tenant key delivery | HPKE envelope with root key or sealed blob (`pkg/clusterkeys/sender.go`; import `StorageBarrier.ImportSealedBlob`, `pkg/seal/import_key.go`) | in transit; re-wrapped into TB | `clusterkeys.Sender.DistributeTenantKey` | `pkg/clusterkeys/receiver.go` | **Removed.** Verifier delivery replaces it. |
+| Metrics | `qrdb_vector_*{tenant}` (`pkg/service/vector.go`, `tenantMetricLabels`) | scrape | — | `/metrics` (authentication only, `pkg/api/rest/server.go`) | Namespace label removed (phase 10, built); the gauges sum over the tenant's namespaces |
+| Tenant key delivery | none: the transport is deleted | — | — | `pkg/clusterkeys/receiver.go` refuses every envelope at its mode dispatch | **Removed.** Verifier delivery replaces it. |
 
 ### Rules that hold under every policy
 
@@ -1378,9 +1389,10 @@ Store key:
 - **No tenant key crosses a node boundary.**
   - Nothing exports a tenant root key, a replica key, or a sealed blob meant
     for import on another node.
-  - Today `clusterkeys.Sender.DistributeTenantKey` delivers a tenant root key
-    or sealed blob, and `StorageBarrier.ImportSealedBlob` imports it. This
-    invariant removes both.
+  - The tenant-key transport (the `clusterkeys` sender, the receiver's
+    `self-managed` mode and import, and the sealed-blob import into a
+    barrier) is deleted; the `clusterkeys` receiver refuses every envelope at its mode
+    dispatch until verifier delivery registers a mode.
 - **A replica key is born on its node, under a credential presented to that
   node.** A node that has never met a valid credential for the tenant holds no
   key for it, and it reports `sealed`.
@@ -1516,11 +1528,22 @@ Strict isolation requires these additions:
 - **The home store's keyspace** is the system store's identity layout
   without the tenancy encodings: no `{tenant}/` wrapping, and no tenant
   segment in `__sys:users/tenant/{tenant}/…`. The store is the tenant.
-- **Placement keyed by database id.** Placement is keyed
-  `__sys:placement/{tenant}/{database}` (`placement.PlacementPrefix`). The
-  requirement is `__sys:placement/{tenant}/{dbid}`, where `dbid` is an opaque,
-  never-reused id allocated by the home group, and the name ↔ id mapping lives
-  in the tenant's catalog.
+- **Placement keyed by database id (built).** Placement is keyed
+  `__sys:placement/{tenant}/{dbid}` (`placement.PlacementPrefix`). `dbid` is
+  an opaque, never-reused id (128 random bits, hex; `database.NewDatabaseID`)
+  allocated when the database is created and stored in its catalog record
+  (`DatabaseMeta.ID`), so the name ↔ id mapping lives in the tenant's
+  catalog. The home group, which has no catalog record, is placed under the
+  reserved `database.TenantHomeID`. A node that holds the catalog record
+  addresses the entry by id (`placement.Store.Get`); one that does not (a
+  follower, the leader serving a forwarded scale) finds it by the name the
+  entry's value still carries (`placement.Store.GetByName`). A drop's fence
+  never resolves by name: it reads the entry under the catalog record's id
+  (`placement.Store.GetBound`), which refuses an entry naming another
+  database, since a dropped predecessor's entry can share the name. The key-delivery
+  envelope names the database by id (`keydelivery.Meta.DatabaseID`).
+  Remaining: the name in the placement value, which these readers need until
+  the catalog resolves on every serving node.
 
 ### Error semantics
 
@@ -1530,7 +1553,7 @@ These conditions have a typed error today:
 |---|---|---|---|---|
 | An isolated tenant's home store cannot be reached on this node | `*tenant.TenantHomeUnavailableError{TenantID, Err}`; matches `tenant.ErrTenantSealed` | 503 | `UNAVAILABLE` | yes |
 | An identity acts in another tenant on a non-cross permission | `*rbac.PermissionDeniedError` at the RBAC check; `*tenant.CrossTenantDeniedError` at the routing layer | 403 | `PERMISSION_DENIED` | no |
-| Loosening the floor or a tenant's policy, or losing a concurrent change | `*tenant.IsolationPolicyChangeError{From, To}`; not yet classified in `pkg/api/errclass` | 409 | `FAILED_PRECONDITION` | no |
+| Loosening the floor or a tenant's policy, or losing a concurrent change | `*tenant.IsolationPolicyChangeError{From, To}` | 409 | `FAILED_PRECONDITION` | no |
 | A CSR that does not parse | `*cert.InvalidCSRError` | 400 | `INVALID_ARGUMENT` | no |
 | Init proof of possession absent, stale, from another connection or by the wrong key | `*tenant.FirstAdminProofError{TenantID, Reason, Err}` | 401 | `UNAUTHENTICATED` | with a fresh nonce |
 | An isolated tenant's barrier is initialized before `per-node-barrier-keys` is activated | `*feature.NotActiveError{Feature: featuregate.PerNodeBarrierKeys}` | 503 | `UNAVAILABLE` | yes, after activation |
@@ -1632,41 +1655,52 @@ phase 5 on.
 > read from its home group, so every node reads them under its own key.
 > Pinned by `TestIsolationRaft_EndToEnd` (assertions b2 and g),
 > `TestRegisterTenantShell_*`,
-> `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`
-> and `TestBarrierRegistry_ImportTenant_InitializesRegisteredShell`.
-> Not yet built: the serving-set check before a shell is registered, and a
-> node without a cluster identity, which refuses a platform-custody raft
-> tenant and claims nothing for a barrier or volume one (a standalone node
-> composes no signer and needs none).
+> and `TestTenantShardReconciler_RegistersShellForAPlacementWithoutABarrier`.
+> A node without a cluster identity (no CA pool, node certificate or signing
+> key) refuses a platform-custody raft tenant and claims nothing for a barrier
+> or volume one: `wirePlatformInit` wires no platform signer, a raft create
+> then fails with `*tenant.InitStatementRequiredError` and is undone, and a
+> barrier or volume create succeeds unclaimed (a standalone node composes no
+> signer and needs none). Pinned by
+> `TestWirePlatformInit_WiresNothingWithoutItsParts`,
+> `TestCreateTenant_ARefusedPlatformClaimUndoesTheCreate` (`no platform
+> signer`) and `TestCreateTenant_NoPlatformClaim` (`no platform
+> signer/barrier`, `no platform signer/volume`).
+> Not yet built: the serving-set check before a shell is registered (needs
+> `pkg/placement/serving_set.go`, draft PR #1494).
 >
 > **PN-4, owner custody under `none` and `passphrase`.** Every node serving
-> the barrier initialises its own key, and neither key is shipped:
-> `clusterkeys.Sender.DistributeTenantKey` returns without contacting a
-> follower for either strategy, which covers each delivery site that routes
-> through it (database invites, observer adds and rebalance moves), and
-> ships nothing for a barrier not yet initialised. A Shamir key is not
-> shipped either: every serving node is armed from the claimed init
-> statement's roster and check value and keys itself at its holders' first
-> quorum, and `StorageBarrier.ImportSealedBlob` refuses a Shamir blob
-> (`seal.ErrImportSealedBlobShamir`), which carries none of the node's
-> wrapped-key and roster records and would leave the replica unable either
-> to key itself or to unwrap the import. The sender reads the strategy from
-> the persisted blob, so a leader still sealed after a restart ships nothing
-> too.
+> the barrier initialises its own key, and no key is shipped: the
+> tenant-key transport is deleted, so database invites, observer adds and
+> rebalance moves only place the replica, which keys itself from the
+> signed init statement on the watcher's next poll. A Shamir replica is
+> armed from the claimed init statement's roster and check value and keys
+> itself at its holders' first quorum.
 >
 > - **Serving-node discovery.** `TenantBarrierStatus` lists the nodes holding
 >   a replica of the tenant's groups, each with the API endpoints its member
 >   record publishes (`tenant.BarrierNode`, sourced by
 >   `pkg/server/lifecycle` from the placement table and member records). It
 >   reaches clients on every transport and the CLI status table. A
->   standalone node lists none; a list the node cannot read is logged and
->   left out.
+>   standalone node lists none; a list the node cannot read is logged, left
+>   out, and reported as `NodesUnreadable` (`nodes_unreadable`) so a client
+>   can tell an unknown serving set from a standalone barrier.
 > - **Fan-out.** `qrdb tenant barrier-init` under `passphrase` sends the init
 >   to every listed node at once, over `--server`'s transport (rest, grpc,
 >   quic or mcp), and prints one result per node; each call proves the init
 >   on its own connection, and the claim book accepts the re-signed
 >   statement as the same init. A `none`, Shamir or hardware init goes to
 >   `--server`'s node alone, the other nodes initialising from its claim.
+>   `qrdb tenant barrier-unseal` fans out the same way: it reads the listed
+>   nodes from `--server`'s barrier status and sends the credential unseal
+>   to each of them at once, since each node's own key is sealed under that
+>   credential, printing one result per node; a `BarrierFanOutError` names
+>   the nodes that refused while the others unseal. A barrier served by one
+>   node is unsealed on `--server`'s node. When the status reports
+>   `NodesUnreadable`, both `barrier-init` (passphrase) and `barrier-unseal`
+>   fail with `TenantServingNodesUnknownError` naming the tenant and send
+>   nothing, rather than act on `--server`'s node alone and leave the other
+>   replicas sealed.
 > - **First-admin window.** Once the pending first admin's record is
 >   consumed, a node initialising later admits the certificate whose
 >   thumbprint was pinned for the barrier at onboarding
@@ -1675,10 +1709,9 @@ phase 5 on.
 > Pinned by `TestClusterEnableEncryption_TenantScope_RF3` (through the CLI,
 > no key delivered and no unseal on the followers),
 > `TestSendToServingNodes_*`, `TestTenantBarrierInit_FansOutToServingNodes`,
-> `TestBarrierNodes_*`, `TestDistributeTenantKey_OwnKeyOnEveryNode_ShipsNothing`,
-> `TestDistributeTenantKey_Uninitialized_ShipsNothing`,
-> `TestDistributeTenantKey_Shamir_ShipsNothing`,
-> `TestBarrierRegistry_ImportTenant_ShamirBlobLeavesTheReplicaToArmShamir` and
+> `TestTenantBarrierUnseal_*`,
+> `TestBarrierNodes_*`, `TestWatcher_KeysAReplicaPlacedAfterTheInit`,
+> `TestRoundTrip_NoChecker_ReachesModeDispatch` and
 > `TestCheckFirstInitCertificate_*`.
 >
 > - **First-admin completion.** The barrier-ready hook
@@ -1760,12 +1793,12 @@ to 12, in the table after it, are the plan.
 
 | Phase | Delivers | Red test (fails before, passes after) | Depends on |
 |---|---|---|---|
-| **5. Isolation policy and RBAC (S4: G1 for databases)** | **Built:** the floor and the tenant policy, tighten-only (`tenant.ClusterIsolationPolicy`, `tenant.TenantIsolationPolicy`; a loosening is refused with `IsolationPolicyChangeError`), the floor set from `tenant.isolation_policy`. `ScopeSelf` has no system lift, `EffectiveTenant` has no system branch, and `tenants:read:cross` and `tenants:delete:cross` exist. **To build:** register a strict-isolation feature; get and set of the floor and the tenant policy on six transports and the CLI; tenant-qualified operator permissions to read and write a tenant's identity records, audited in both trails. The policy governs isolated tenants only; a shared tenant is never refused. **G1:** every database of a strict tenant is created with a dedicated WAL, and a request to create one without it is refused. A strict tenant never has a log under a node key. Before activation, behaviour is unchanged and the new verbs return `feature.NotActiveError`. | Under `operator-access`, the operator's read of a tenant's identity records succeeds and appears in both trails, and a `prefix` create under a strict floor succeeds. **G1:** a strict tenant's raft database is created today with its log on the shared WAL; it must be created on a dedicated WAL, and the system-shard LogDB must hold no entry of its shard. | 3, 4 |
-| **6. Tenant home group and replicated catalog (S4: G1 for the home group)** | **Built:** the home group of every isolated tenant, its log on a dedicated WAL from its first entry (see [Remaining work](#remaining-work)). **To build:** the database catalog, node-local today (a `meta.json` per database), moves into the home store. Placement is keyed by opaque database id (S5). Database groups are confined to the serving set. | A database created through node A is unknown to node B's catalog today; it must resolve on every serving node. A scan of the system shard finds the database name in placement keys today; it must find only the opaque id. | 2, 5 |
-| **7. Per-replica keys (S4: G10)** | The work packages above. **Built:** every serving node initializes its own key from the barrier owner's signed init statement (`featuregate.PerNodeBarrierKeys`), and the CLI sends a tenant barrier init to every serving node. **To build:** delete tenant-key transport (`StorageBarrier.ImportSealedBlob`, `clusterkeys.Sender.DistributeTenantKey`). Client fan-out for unseal and rekey. Verifier delivery through `clusterkeys`. Per-node tenant bootstrap records. Each node's dedicated WALs are keyed by **its own** replica key. Unseal is per node, against the cluster seal record. | Two replicas of one tenant must have distinct key fingerprints. One replica's key must fail to open another replica's store and WAL. A Raft snapshot catch-up across distinct keys must succeed. | 6, cluster-wide sealing record |
+| **5. Isolation policy and RBAC (S4: G1 for databases)** | **Built:** the floor and the tenant policy, tighten-only (`tenant.ClusterIsolationPolicy`, `tenant.TenantIsolationPolicy`; a loosening is refused with `IsolationPolicyChangeError`), the floor set from `tenant.isolation_policy`. The floor tightens from `operator-access` to `strict` in one compare-and-swap, so a lost race is refused and the floor is never unset in between. `ScopeSelf` has no system lift, `EffectiveTenant` has no system branch, and `tenants:read:cross` and `tenants:delete:cross` exist. **Built:** the `strict-isolation` feature (`featuregate.StrictIsolation`), in `featuregate.Supported()`: a standalone node is active from the start, and a cluster once it has activated the feature cluster-wide; a mixed-version cluster never activates it. Until then the isolation-policy verbs, a strict tenant's database create and an isolated tenant's placement are refused with `feature.NotActiveError` (HTTP 503, `Unavailable`) and change nothing. Get and set of the floor, and a tenant update carrying `isolation_policy`, exist on REST, gRPC, QUIC and MCP, in the Go SDK on every transport, and in the CLI (`qrdb cluster-isolation-policy get|set`, `qrdb tenant update --isolation-policy`); an unknown policy value is `InvalidArgument` (HTTP 400). The `tenant.isolation_policy` key predates the verbs and is not behind the gate. **G1 (Built):** every database of a strict tenant (its own policy or the floor strict) is created with a dedicated WAL. A create without one is refused before any quota is reserved with `database.StrictTenantDedicatedWALRequiredError`, `FailedPrecondition` on every transport, naming `--dedicated-wal`. A strict tenant's non-raft database is refused with the same error, naming the backend, since only a raft database can carry a dedicated WAL. The `FeatureDedicatedWAL` entitlement and the `MaxDedicatedWALGroups` quota still apply. `dedicated_wal` is carried by REST, gRPC, QUIC, MCP, the Unix socket, the Go SDK and `qrdb database create --dedicated-wal`. A strict tenant never has a log under a node key. **Built:** Operator access to a tenant's identity records: the ScopeCross permissions `users:read:tenant`, `users:write:tenant`, `roles:read:tenant` and `roles:write:tenant` (`pkg/permission/tenant_identity.go`, held by the built-in system Admin), and the gate `AuthMiddleware.AuthorizeOperatorIdentityAccess`. Every user and role operation, role assignment, certificate binding and the lookup by certificate thumbprint on REST, gRPC, QUIC, Unix and MCP passes that gate when the request names another tenant (`tenant_id`; the `tenantID` query parameter on REST by-id routes). The Go SDK sends the qualifier set by `transport.WithTenantQualifier` on every transport, and the CLI's user and role verbs take `--tenant-id`. The gate admits the access under `operator-access`, refuses it under `strict` (`OperatorAccessRefusedError`), and records the decision as `auth.operator_identity_access` in the platform trail and in the tenant's trail. An access that cannot be recorded in both is refused (`OperatorAccessUnauditedError`), whatever `audit_failure_policy` says. On a standalone node, the tenant trail of a `volume` or `raft` tenant still refuses the write (phase 10), so operator access to such a tenant is refused there. The built-in system Admin does not hold `roles:delete`, `users:remove_cert_binding` or `users:get_by_cert_thumbprint` (separation of duties), so those routes refuse it before the gate. `test/integration/operator_identity_access_cli_test.go` runs the operator's list, create, by-id get and disable through the CLI on REST, gRPC, QUIC and Unix. The policy governs isolated tenants only; a shared tenant is never refused. | Under `operator-access`, the operator's read of a tenant's identity records succeeds and appears in both trails, and a `prefix` create under a strict floor succeeds. **Feature gate (Built):** `TestStrictIsolationRequired_FollowsTheHost` (`pkg/server/lifecycle`: active on a standalone host and on an activated cluster, `NotActiveError` otherwise); `TestTenantIsolation_IsolationPolicyVerbs_StandaloneActive_PerProtocol` (`test/integration`: on a standalone node the floor tightens to strict and reads back, a loosening and an unknown value are refused, and a tenant update stores its policy, on rest, grpc, quic, mcp and unix). **G1 (Built):** `TestCreateForTenant_StrictTenant_*`, `TestCreateForTenant_StrictFloor_SharedWALRefused` and `TestCreateForTenant_NonStrictTenant_SharedWALAllowed` (`pkg/service`); `TestClassify_StrictTenantDedicatedWALRequired` (`pkg/api/errclass`); `TestRaftBackendFactory_StrictTenantDatabase_SharedWALHoldsNoEntry` (`pkg/server`: the shared WAL holds no entry of the dedicated database's shard); `TestStrictTenant_DatabaseNeedsDedicatedWAL_PerProtocol` (`test/integration`: under a strict floor, refused without `--dedicated-wal` and created with it on rest, grpc, quic, mcp and unix). | 3, 4 |
+| **6. Tenant home group and replicated catalog (S4: G1 for the home group)** | **Built:** the home group of every isolated tenant, its log on a dedicated WAL from its first entry (see [Remaining work](#remaining-work)). The database catalog is replicated, not node-local: nothing reads `meta.json`, and an isolated tenant's catalog is `__sys:dbcatalog/{t}/{name}` in its home store (see the record table above). Database groups are confined to the serving set, the nodes that host the tenant's home group: `placement.WithServingSet` narrows create and scale-out placement to it (`service.PlacementServingSet`), the replica admission shared by scale-out and a rebalance move refuses a node outside it, and either refusal is `placement.ServingSetError` (FailedPrecondition); a rebalance plan (`CreateRebalancePlan`) proposes no move outside it and names each skipped move with that error as its reason; a shared tenant is not confined. A rebalance never moves a tenant's home group: it spans the cluster, so the plan lists each home-group shard as skipped and a move of one is refused before any mutation, both with `service.HomeGroupMoveError` (FailedPrecondition). **Built:** placement is keyed by the opaque database id from the catalog record, `__sys:placement/{t}/{dbid}` (S5). | The catalog is replicated: `TestDatabaseOwner_OtherNodesForwardToTheOwner` creates a database through one node and `database list` on another names it. Serving-set confinement: `TestTenantServingSet_ThreeNode_CLI_PerProtocol` (create and scale-out on a three-node cluster, a scale-out past the serving set refused, every transport) and `TestRebalanceService_CreateRebalancePlan_HonoursServingSet`; the home group stays put (`TestRebalanceService_CreateRebalancePlan_NeverMovesAHomeGroup`, `TestMoveTenantGroupShard_RejectsHomeGroup`). A scan of the placement keys finds only opaque ids, never a database name (`TestStore_PlacementKeysCarryOnlyTheDatabaseID`). | 2, 5 |
+| **7. Per-replica keys (S4: G10)** | The work packages above. **Built:** every serving node initializes its own key from the barrier owner's signed init statement (`featuregate.PerNodeBarrierKeys`), and the CLI sends a tenant barrier init to every serving node. The tenant-key transport is deleted: scale-out and rebalance place a replica that keys itself from the signed init. Its unused remains are deleted too: the `clusterkeys` sender, the lifecycle key sender and the `self-managed` delivery mode. The `clusterkeys` receiver therefore accepts no delivery mode until verifier delivery registers one. **To build:** client fan-out for unseal and rekey. Verifier delivery through `clusterkeys`. Per-node tenant bootstrap records. Each node's dedicated WALs are keyed by **its own** replica key. Unseal is per node, against the cluster seal record. | Two replicas of one tenant must have distinct key fingerprints. One replica's key must fail to open another replica's store and WAL. A Raft snapshot catch-up across distinct keys must succeed. | 6, cluster-wide sealing record |
 | **8. Move the records; delete the shared store paths** | The records [Remaining work](#remaining-work) lists as still in the system shard move into the home store; the SO PIN commitment and the unseal roster go to the bootstrap record. The CA chain is pinned per tenant, and the binding policy is `required` for strict tenants. `tenant.IdentityIndex`, `tenant.OwningTenant` and the resolver's shared-store branch are deleted. | **The residue test** (below) must pass. A cluster-CA certificate naming a strict tenant authenticates today; it must be refused. | 7 |
 | **9. Layer-4 passthrough (S6)** | SNI routing and the relay tunnel for REST, gRPC, and the etcd and SQL listeners over TCP; QUIC by Initial-packet SNI and connection id. A typed not-served-here error for Unix and embedded. The SDK and CLI set SNI. On-behalf forwarding is refused for strict tenants. The routing input (SNI) is not yet decided. | A strict tenant's client that connects to a non-serving node is refused as sealed today; it must be served through the relay. On every transport, the serving node must observe the client's own certificate, the relaying node's TLS-termination counter for the connection must be zero, and an SNI/certificate mismatch must be refused. | 8, the routing input decided |
-| **10. Tenant audit trail and metrics (S9)** | Every isolated tenant's audit trail is a replicated, hash-chained trail in its home group under the tenant barrier. The chain exists (`OpAuditAppend`, `service.ReplicatedLogger`) but is routed to the system shard by `service.SystemShardAuditResolver`, which refuses a `volume` or `raft` tenant with `DedicatedTenantAuditNotSupportedError`. Platform events stay in the platform trail in the system shard. The `namespace` label is removed from the `qrdb_vector_*` metrics. | A tenant event lands in the system shard today; it must land only in the tenant's trail. The platform trail must hold no tenant username, and a `/metrics` scrape must show no tenant data name. | 8 |
+| **10. Tenant audit trail and metrics (S9)** | Every isolated tenant's audit trail is a replicated, hash-chained trail in its home group under the tenant barrier. Platform events stay in the platform trail in the system shard. **Built (cluster mode):** once `AttachTenantHomes` attaches the node's home groups, `service.SystemShardAuditResolver` routes an isolated tenant's chain and logs to its home group; a `barrier` tenant follows its recorded audit route, so a chain already on the system shard stays there. **Built (metrics):** the `namespace` label is removed from the `qrdb_vector_*` metrics. `qrdb_vector_vector_count` and `qrdb_vector_index_size_bytes` carry only `tenant`, the owner tenant ID from the scope prefix (`tenantMetricLabels`), and sum over the tenant's namespaces. Both gauges are maintained: every change of a namespace's vectors or index (startup load, namespace create, insert, delete, batch upsert, batch delete) applies that namespace's delta to its tenant series, `qrdb_vector_vector_count` counting only ids whose stored state the write changes (a re-upsert of a stored id, a duplicate id in a batch and a delete of a missing id move it by nothing; `TestVectorCountMetric_CountsStoredVectorsExactly`), a restart seeding it from the stored count `GetNamespaceInfo` reports, not the record as created (`TestVectorCountMetric_RestartSeedsTheStoredCount`), `qrdb_vector_index_size_bytes` taking the HNSW estimate `GetIndexStats` reports (`estimateIndexSizeBytes`), and a namespace delete subtracts exactly the share the gauges tracked for it. `pkg/service/vector_metrics_test.go` scrapes the registry after writes in named namespaces and finds no namespace name, checks the index-size series equals the sum of the namespaces' estimates, and checks a namespace delete lowers both by that namespace's share. The vector state machine's persisted namespace `VectorCount` and its `MaxVectors` quota count only stored vectors: Apply reads storage before the write, so every replica decides alike that an upsert adds a vector only for an id not stored before, a batch upsert adds its distinct new ids, and a delete subtracts only ids that existed; a tenant at its vector quota can still re-upsert its stored vectors (`pkg/statemachine/vector_count_test.go`: `TestVectorCount_ReUpsertOfStoredIDAddsNoVector`, `TestVectorCount_BatchUpsertCountsDistinctNewIDs`, `TestVectorCount_DeleteOfMissingIDLeavesCount`, `TestVectorCount_TenantAtQuotaCanReUpsertStoredID`). **To build (standalone):** a standalone node attaches no home group, so its tenants' chains are still in the system shard and a `volume` or `raft` tenant is refused with `DedicatedTenantAuditNotSupportedError`. | A tenant event lands in the system shard today; it must land only in the tenant's trail. The platform trail must hold no tenant username, and a `/metrics` scrape must show no tenant data name. | 8 |
 | **11. Tenant-only backups (S10, fallback A)** | A tenant-scoped (`ScopeTenantOnly`) backup permission for a strict tenant's groups. Platform shard backup is limited to the system shard. | A platform `backup:create` of a strict tenant's group succeeds today; it must be refused. The tenant's own backup must succeed and restore. | 6 |
 | **12. Tenant WAL key rotation (S4: G7)** | Rotation of a dedicated WAL's key epochs, with per-barrier purge floors so that rotating or shredding one tenant never affects another. The floor must also cover what the tenant barrier stores outside the WAL. Until it can, the barrier pins every epoch it has written under, so the purge retires none of them; see [../barrier-seal/engineering.md](../barrier-seal/engineering.md#invariants). | A rotation on tenant A must leave tenant B's WAL readable, and A's pre-rotation epochs must be purged once no live entry needs them. | 7 |
 
@@ -1983,12 +2016,30 @@ Measured against the contract above:
   for every isolated tenant whatever its type or policy.
 - **Not yet moved into the home store** (still in the system shard): the
   SO PIN commitment and the unseal roster,
-  encryption migration state and journals, the pending first-admin record, and the tenant audit
-  trail. A tenant whose audit entitlement is on has its events appended to
-  the replicated chain (`OpAuditAppend`, `service.ReplicatedLogger`) in the
-  system shard; `service.SystemShardAuditResolver` refuses a `volume` or
-  `raft` tenant's chain with `DedicatedTenantAuditNotSupportedError`. Moving
-  the chain into the home group is phase 10.
+  encryption migration state and journals, and the pending first-admin
+  record.
+- **Tenant audit trail (phase 10, cluster mode).** On a node with a Raft
+  host, `AttachTenantHomes` gives `service.SystemShardAuditResolver` the
+  node's home groups, and an entitled `volume` or `raft` tenant's chain and
+  logs apply in its home group. A `barrier` tenant's chain follows its audit
+  route: a recorded fact under `__sys:audit/route/<tenant>` on the system
+  shard, written once (first writer wins) by the proposer of the tenant's
+  first event after the attach. The route is `system` when the tenant's chain
+  already has records on the system shard, or when
+  `featuregate.VerifiableLogAudit` is not yet active on every replica, and
+  `home` otherwise. A recorded route never changes and no record is moved, so
+  a chain begun on the system shard stays there for writes, Query and Verify.
+  A mixed-capability cluster never splits a chain: a home write while the
+  gate is off is refused with `AuditHomeNotActiveError` (unavailable). The
+  route is picked before proposing; apply is unchanged. Platform events about
+  the tenant stay on the system tenant's trail and carry no tenant identity:
+  onboarding names no admin username there (the tenant's own trail records
+  it), a status change names its caller only if it is a platform principal,
+  and a tenant barrier's holder conflict drops the holder's username and
+  certificate thumbprint. A standalone node attaches no
+  home group: there every tenant's chain is still in the system shard, and a
+  `volume` or `raft` tenant's chain is refused with
+  `DedicatedTenantAuditNotSupportedError`.
 - **Home-group WAL (G1).** `ProvisionTenantHome` places the home
   group `DedicatedWAL`, so its log is written from the first entry to a WAL
   under the tenant's key and its snapshots use the tenant barrier. It is a
@@ -2000,7 +2051,12 @@ Measured against the contract above:
   served from a log under the node key.
 - **Per-replica keys (phase 7)** are unblocked for the resolver-routed
   records of every isolated tenant. Every record still listed above keeps them
-  blocked.
+  blocked. The tenant-key transport is deleted (a replica placed by scale-out
+  or a rebalance move keys itself from the signed init), and so are the
+  `clusterkeys` sender, the lifecycle key sender and the `self-managed`
+  delivery mode it left unused. Remaining: the verifier delivery mode (the
+  `clusterkeys` receiver has no mode registered), client fan-out for unseal
+  and rekey, per-node tenant bootstrap records and per-replica WAL keys.
 - **Late-joining nodes.** A node that joins after an isolated tenant was
   created receives the home placement through the reconciler. Until its
   replica has caught up (the shard's join window has closed) the node refuses

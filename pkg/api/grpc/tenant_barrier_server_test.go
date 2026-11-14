@@ -410,6 +410,26 @@ func TestTenantBarrier_Status_ServingNodes(t *testing.T) {
 	}
 }
 
+// TestTenantBarrier_Status_NodesUnreadable pins that a status whose serving-node
+// source failed reaches the wire as nodes_unreadable with no nodes: a client
+// that lost the flag would read a standalone barrier and act on one node.
+func TestTenantBarrier_Status_NodesUnreadable(t *testing.T) {
+	svc := newMockTenantService()
+	svc.barrierStatusFn = func(_ context.Context, id string) (*tenantpkg.TenantBarrierStatus, error) {
+		return &tenantpkg.TenantBarrierStatus{TenantID: id, Sealed: true, NodesUnreadable: true}, nil
+	}
+	conn, cleanup := startTenantBarrierTestServer(t, svc)
+	defer cleanup()
+
+	resp, err := pb.NewTenantBarrierServiceClient(conn).Status(context.Background(), &pb.TenantBarrierStatusRequest{TenantId: "acme"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !resp.GetNodesUnreadable() || len(resp.GetNodes()) != 0 {
+		t.Fatalf("nodes_unreadable = %v, nodes = %v; want true and none", resp.GetNodesUnreadable(), resp.GetNodes())
+	}
+}
+
 func TestTenantBarrier_Status_DefaultUninitialized(t *testing.T) {
 	svc := newMockTenantService()
 	conn, cleanup := startTenantBarrierTestServer(t, svc)

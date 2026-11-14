@@ -36,20 +36,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-const (
-	// scaleUpKeyDeliveryMaxAttempts bounds
-	// deliverTenantKeyToReplicaWithRetry's retry loop.
-	scaleUpKeyDeliveryMaxAttempts = 8
-
-	// scaleUpKeyDeliveryRetryDelay is the fixed backoff between key-delivery
-	// retry attempts. 8 attempts * 300ms gives ~2.1s of retry budget,
-	// comfortably covering the sub-2s system-shard replication + apply
-	// latency observed in practice for a freshly scaled-up replica's own
-	// placement view to catch up to the leader's just-committed write (see
-	// deliverTenantKeyToReplicaWithRetry).
-	scaleUpKeyDeliveryRetryDelay = 300 * time.Millisecond
-)
-
 // DatabaseServicer defines CRUD operations for database management.
 type DatabaseServicer interface {
 	// Create creates a new database with the given configuration.
@@ -204,6 +190,33 @@ func WithTenantInfoLookup(lookup TenantInfoLookup) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.tenantInfo = lookup }
 }
 
+// WithDatabaseIsolationPolicyReader wires the cluster isolation floor the
+// create path reads to decide whether an isolated tenant is strict
+// (tenant.EffectiveIsolationPolicy). Unwired, only the tenant's own policy
+// counts.
+func WithDatabaseIsolationPolicyReader(r tenant.ClusterIsolationPolicyReader) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.isolationFloor = r }
+}
+
+// strictIsolation reports whether info's tenant is governed by the strict
+// isolation policy: an isolated (volume or raft) tenant whose own policy, or
+// the cluster floor, is strict. The policy governs isolated tenants only, so
+// a shared (prefix) tenant is never strict.
+func (s *DatabaseService) strictIsolation(ctx context.Context, info *tenant.TenantInfo) (bool, error) {
+	if info == nil || info.EffectiveIsolationType() == tenant.IsolationPrefix {
+		return false, nil
+	}
+	floor := tenant.ClusterIsolationPolicyUnset
+	if s.isolationFloor != nil {
+		p, err := s.isolationFloor.ClusterIsolationPolicy(ctx)
+		if err != nil {
+			return false, err
+		}
+		floor = p
+	}
+	return tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) == tenant.ClusterIsolationPolicyStrict, nil
+}
+
 // WithPlacementStore sets the replicated placement table into which a
 // dedicated-raft (IsolationRaft) database's computed Placement is persisted on
 // create and removed on drop. When nil, no placement is persisted (the
@@ -211,6 +224,15 @@ func WithTenantInfoLookup(lookup TenantInfoLookup) DatabaseServiceOption {
 // WithPlacementScheduler must also be set for placement to be computed.
 func WithPlacementStore(store *placement.Store) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.placementStore = store }
+}
+
+// WithStrictIsolationGate sets the strict-isolation activation check
+// (featuregate.StrictIsolation): it returns nil once the feature is active
+// cluster-wide, else the refusal (*feature.NotActiveError). CreateDatabase
+// refuses a strict tenant's database with it until activation. A nil gate
+// (a standalone node, which gates nothing) leaves create ungated.
+func WithStrictIsolationGate(gate func() error) DatabaseServiceOption {
+	return func(s *DatabaseService) { s.strictIsolationGate = gate }
 }
 
 // WithPlacementScheduler sets the load-aware scheduler used to compute a
@@ -241,25 +263,8 @@ func WithQuotaUsageRecorder(rec QuotaUsageRecorder) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.quotaUsage = rec }
 }
 
-// WithKeyDistributor sets the distributor that ships the tenant barrier key to
-// follower replicas immediately after a dedicated-raft database placement is
-// persisted. When nil, key distribution is skipped — followers reconcile and
-// pull the key during their shard start sequence (Phase 4c-1d).
-func WithKeyDistributor(d KeyDistributor) DatabaseServiceOption {
-	return func(s *DatabaseService) { s.keyDistributor = d }
-}
-
-// WithBarrierLookup sets the lookup used to resolve a tenant's dedicated
-// storage barrier when distributing keys to follower replicas. It is satisfied
-// by *seal.BarrierRegistry. When nil, key distribution is skipped even if a
-// KeyDistributor is set.
-func WithBarrierLookup(lookup TenantBarrierLookup) DatabaseServiceOption {
-	return func(s *DatabaseService) { s.barrierLookup = lookup }
-}
-
-// WithLocalNodeID sets the local Raft node ID passed to KeyDistributor as
-// selfNodeID so the distributor skips the local replica (which already holds
-// the key). It should be set to the node's Raft address (the same value that
+// WithLocalNodeID sets the local Raft node ID, the identity this node has in
+// placements: it decides whether this node leads a dedicated group. It should be set to the node's Raft address (the same value that
 // appears as Replica.NodeID in the placement table).
 func WithLocalNodeID(nodeID string) DatabaseServiceOption {
 	return func(s *DatabaseService) { s.localNodeID = nodeID }
@@ -389,22 +394,6 @@ type QuotaUsageRecorder interface {
 	DecrementQuotaUsage(ctx context.Context, tenantID string, resource quota.Resource, delta int64) (*tenant.TenantInfo, error)
 }
 
-// KeyDistributor ships an owner-sealed tenant barrier blob to follower
-// replicas after a dedicated-raft (IsolationRaft) database is placed. A
-// platform-custody tenant's barrier is never distributed: each node
-// initializes its own key from the platform's init statement. It is satisfied by
-// *clusterkeys.Sender (duck-typed; defined here so service does not import
-// clusterkeys — the dependency flows one way: daemon → service, daemon → clusterkeys).
-type KeyDistributor interface {
-	DistributeTenantKey(ctx context.Context, p *placement.Placement, leaderBarrier *seal.StorageBarrier, selfNodeID string) error
-}
-
-// TenantBarrierLookup resolves the dedicated storage barrier for a given
-// tenant. It is satisfied by *seal.BarrierRegistry.
-type TenantBarrierLookup interface {
-	GetTenant(tenantID string) (*seal.TenantBarrier, error)
-}
-
 // TenantDataRootResolver resolves an IsolationVolume / IsolationRaft
 // tenant's local DataRoot through its catalog Assignment -- the pool it is
 // placed on, joined with its tenant-relative path onto this node's own
@@ -423,96 +412,14 @@ func WithTenantDataRootResolver(resolver TenantDataRootResolver) DatabaseService
 	return func(s *DatabaseService) { s.dataRootResolver = resolver }
 }
 
-// deliverTenantKeyToReplica ships the tenant barrier key to dst via
-// deliverer, resolving the tenant's StorageBarrier through lookup. It
-// constructs a single-replica Placement containing only dst so that
-// DistributeTenantKey delivers to exactly that one recipient, skipping the
-// local node identified by selfNodeID (which already holds the key as the
-// current leader). Reached, via deliverTenantKeyToReplicaWithRetry, by both
-// DatabaseService.scaleUp and RebalanceService.moveTenantGroupShard (through
-// the shared addObserverReplica helper) so the single-replica key-delivery
-// step is defined exactly once; KeyDistributor/TenantBarrierLookup and
-// RebalanceKeyDeliverer/RebalanceBarrierLookup are structurally identical
-// interfaces, so both callers' fields satisfy this signature without
-// adaptation. A platform-custody barrier delivers nothing: dst initializes
-// its own key from the platform's init statement.
-func deliverTenantKeyToReplica(ctx context.Context, deliverer KeyDistributor, lookup TenantBarrierLookup, p *placement.Placement, dst placement.Replica, selfNodeID string) error {
-	tb, err := lookup.GetTenant(p.TenantID)
-	if err != nil {
-		return err
-	}
-	if tb.Barrier().ActiveStrategy() == seal.StrategySystemBarrier {
-		return nil
-	}
-
-	singleReplica := &placement.Placement{
-		TenantID: p.TenantID,
-		Database: p.Database,
-		ShardID:  p.ShardID,
-		RF:       1,
-		Replicas: []placement.Replica{dst},
-	}
-	return deliverer.DistributeTenantKey(ctx, singleReplica, tb.Barrier(), selfNodeID)
-}
-
-// deliverTenantKeyToReplicaWithRetry wraps deliverTenantKeyToReplica with a
-// bounded, fixed-delay retry to ride out a replication race that is unique
-// to a newly-admitted-as-observer replica (as opposed to CreateForTenant's
-// initial key delivery to a founding member, which does not retry): the
-// replica's OWN local placement view is replicated asynchronously via the
-// system Raft group, so clusterkeys' receiver-side placement gate (which
-// checks the follower's own just-applied placement snapshot) can reject a
-// key-delivery envelope sent immediately after the leader's placement.Put
-// -- even though that write already committed on the leader -- simply
-// because the follower has not yet applied it locally. This applies equally
-// to DatabaseService.scaleUp's new replicas and a RebalanceService MOVE's
-// destination replica (both reach this function via the shared
-// addObserverReplica helper). clusterkeys.Sender.Deliver collapses every
-// non-200 response (including this transient rejection) into a single
-// sentinel error, so this retries unconditionally rather than branching on
-// error type; that is safe because the call is already documented as
-// best-effort, and re-delivery of the same key is idempotent on the
-// receiver.
-//
-// Without this retry, a replica whose only delivery attempt loses this race
-// never receives its tenant key, so TenantShardReconciler's BarrierReadiness
-// gate defers starting its shard indefinitely. The leader admits that
-// replica as a non-voting OBSERVER (AddObserver happens after this call
-// within the same addObserverReplica invocation, see below) precisely so a
-// replica stuck waiting for its key can never strand the group's existing
-// voting quorum -- but it also never catches up or gets promoted to a voter
-// until the key arrives, so this retry still matters for scale-up (and a
-// MOVE's destination) to actually converge.
-func deliverTenantKeyToReplicaWithRetry(ctx context.Context, deliverer KeyDistributor, lookup TenantBarrierLookup, p *placement.Placement, dst placement.Replica, selfNodeID string) error {
-	var err error
-	for attempt := 1; attempt <= scaleUpKeyDeliveryMaxAttempts; attempt++ {
-		if err = deliverTenantKeyToReplica(ctx, deliverer, lookup, p, dst, selfNodeID); err == nil {
-			return nil
-		}
-		if attempt == scaleUpKeyDeliveryMaxAttempts {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return err
-		case <-time.After(scaleUpKeyDeliveryRetryDelay):
-		}
-	}
-	return err
-}
-
 // addObserverReplica is the observer-first "add one replica" step shared by
 // DatabaseService.scaleUp (adding a batch of replicas toward a scale-up
 // target, one at a time) and RebalanceService.moveTenantGroupShard (adding
 // exactly one destination replica for a MOVE): persist an updated placement
-// with r appended, best-effort deliver the tenant barrier key to r, then
-// admit r into the dedicated Raft group as a NON-VOTING observer.
-//
-// Placement MUST be persisted before key delivery is attempted: the
-// receiver's placement gate (pkg/clusterkeys/receiver.go) authorizes a
-// delivery only once its own replicated copy of the placement table lists
-// it as the assigned replica -- see deliverTenantKeyToReplicaWithRetry's doc
-// comment. r must already carry State == placement.ReplicaStateObserver (set
+// with r appended, then admit r into the dedicated Raft group as a
+// NON-VOTING observer. No key is shipped to r: once the placement names it,
+// r's barrier init watcher keys it from the barrier owner's signed init
+// statement on its next poll (pkg/barrierinit). r must already carry State == placement.ReplicaStateObserver (set
 // by the scheduler for scale-up, or explicitly by the caller for a MOVE) so
 // the reconciler's Observer -> ObserverReady -> Active promotion state
 // machine (TenantShardReconciler.maybePromoteToObserverReady /
@@ -528,60 +435,103 @@ func deliverTenantKeyToReplicaWithRetry(ctx context.Context, deliverer KeyDistri
 //     the placement-put itself failed; otherwise reflects the just-persisted
 //     state even when AddObserver subsequently failed (placement already
 //     committed by that point, so a retry has something to converge from).
-//   - keyDeliveryErr: a non-fatal key-delivery failure for the caller to log
-//     (the destination's own reconciler pulls the key independently on its
-//     next pass); nil when delivery succeeded or was skipped (kd/bl nil).
 //   - placementFailed: true when err originated from the placement-put
 //     rather than AddObserver, letting a caller that reports a step name
 //     (RebalanceService.moveTenantGroupShard) distinguish the two failure
 //     points.
 //   - err: a fatal error from the placement-put or AddObserver. Non-nil err
-//     means the caller must fail the whole operation; unlike keyDeliveryErr,
-//     nothing else in the system retries a config change AddObserver itself
-//     reported as failed.
+//     means the caller must fail the whole operation: nothing else in
+//     the system retries a config change AddObserver itself reported as
+//     failed.
+//
+// PlacementServingSet returns the scheduler's serving-set lookup over the
+// replicated placement table (placement.WithServingSet). An isolated
+// tenant's serving set is the set of nodes hosting its home group
+// (database.TenantHomeName); a tenant with no home group (a shared tenant)
+// and the home group itself are unconfined. A table read failure fails the
+// placement closed.
+//
+// active, when non-nil, is the strict-isolation activation check
+// (featuregate.StrictIsolation): until it returns nil an isolated tenant's
+// lookup fails with its refusal, so the scheduler places nothing for the
+// tenant rather than placing it unconfined.
+func PlacementServingSet(ps *placement.Store, active func() error) placement.ServingSetFunc {
+	return func(ctx context.Context, tenantID, name string) ([]string, bool, error) {
+		if ps == nil || database.IsTenantHome(name) {
+			return nil, false, nil
+		}
+		home, err := ps.Get(ctx, tenantID, database.TenantHomeID)
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		if active != nil {
+			if aerr := active(); aerr != nil {
+				return nil, false, aerr
+			}
+		}
+		nodes := make([]string, 0, len(home.Replicas))
+		for _, r := range home.Replicas {
+			nodes = append(nodes, r.RaftAddr)
+		}
+		return nodes, true, nil
+	}
+}
+
+// checkReplicaInServingSet refuses a replica of current on raftAddr with
+// *placement.ServingSetError when current belongs to an isolated tenant
+// whose serving set does not contain raftAddr.
+func checkReplicaInServingSet(ctx context.Context, ps *placement.Store, current *placement.Placement, raftAddr string) error {
+	// Ungated: this check only ever refuses a replica, and the group it
+	// guards was placed through the gated scheduler lookup.
+	nodes, confined, err := PlacementServingSet(ps, nil)(ctx, current.TenantID, current.Database)
+	if err != nil || !confined {
+		return err
+	}
+	return placement.CheckServingSet(nodes, current.TenantID, current.Database, raftAddr)
+}
+
 func addObserverReplica(
 	ctx context.Context,
 	raftHost RaftHost,
 	ps *placement.Store,
-	kd KeyDistributor,
-	bl TenantBarrierLookup,
 	current *placement.Placement,
 	r placement.Replica,
-	selfNodeID string,
-) (updated *placement.Placement, keyDeliveryErr error, placementFailed bool, err error) {
+) (updated *placement.Placement, placementFailed bool, err error) {
 	// Refuse a replica on a node that cannot apply what the group uses
 	// before anything is persisted: a refused add leaves the placement as
 	// it was, so no reconciler starts a shard there.
 	if aerr := admitReplica(raftHost, current.ShardID, r.RaftAddr); aerr != nil {
-		return current, nil, false, aerr
+		return current, false, aerr
+	}
+	// An isolated tenant's group never gains a replica outside its serving
+	// set, whichever path chose the node (scale-out, rebalance MOVE).
+	if serr := checkReplicaInServingSet(ctx, ps, current, r.RaftAddr); serr != nil {
+		return current, false, serr
 	}
 	updated = clonePlacementWithReplica(current, r)
 	swapped, perr := ps.CompareAndSwapPlacement(ctx, current, updated)
 	if perr != nil {
-		return current, nil, true, perr
+		return current, true, perr
 	}
 	if !swapped {
-		return current, nil, true, &placement.StoreError{
-			TenantID: current.TenantID,
-			Database: current.Database,
-			Op:       "put",
-			Err:      &placement.ConflictError{},
-		}
-	}
-
-	if kd != nil && bl != nil {
-		if kerr := deliverTenantKeyToReplicaWithRetry(ctx, kd, bl, updated, r, selfNodeID); kerr != nil {
-			keyDeliveryErr = kerr
+		return current, true, &placement.StoreError{
+			TenantID:   current.TenantID,
+			DatabaseID: current.DatabaseID,
+			Op:         "put",
+			Err:        &placement.ConflictError{},
 		}
 	}
 
 	if raftHost != nil {
 		if aerr := raftHost.AddObserver(ctx, updated.ShardID, r.ReplicaID, r.RaftAddr); aerr != nil {
-			return updated, keyDeliveryErr, false, aerr
+			return updated, false, aerr
 		}
 	}
 
-	return updated, keyDeliveryErr, false, nil
+	return updated, false, nil
 }
 
 // removeReplicaFromGroup is the "remove one replica" step shared by
@@ -650,10 +600,10 @@ func removeReplicaFromGroup(
 	}
 	if !swapped {
 		return current, true, &placement.StoreError{
-			TenantID: current.TenantID,
-			Database: current.Database,
-			Op:       "put",
-			Err:      &placement.ConflictError{},
+			TenantID:   current.TenantID,
+			DatabaseID: current.DatabaseID,
+			Op:         "put",
+			Err:        &placement.ConflictError{},
 		}
 	}
 	if raftHost != nil {
@@ -849,15 +799,18 @@ type DatabaseService struct {
 	quotaChecker       quota.Checker
 	entitlementChecker quota.EntitlementChecker
 	tenantInfo         TenantInfoLookup
+	isolationFloor     tenant.ClusterIsolationPolicyReader
 	quotaUsage         QuotaUsageRecorder
 	placementStore     *placement.Store
-	placementScheduler *placement.Scheduler
-	keyDistributor     KeyDistributor
-	barrierLookup      TenantBarrierLookup
-	dataRootResolver   TenantDataRootResolver
-	localNodeID        string
-	raftHost           RaftHost
-	logger             *slog.Logger
+	// strictIsolationGate, when set, refuses a strict tenant's database
+	// create until the strict-isolation feature is active
+	// (WithStrictIsolationGate).
+	strictIsolationGate func() error
+	placementScheduler  *placement.Scheduler
+	dataRootResolver    TenantDataRootResolver
+	localNodeID         string
+	raftHost            RaftHost
+	logger              *slog.Logger
 
 	// scaleLeaderWaitTimeout/scaleLeaderWaitInterval bound
 	// waitForShardLeaderKnown, called by scaleUp/scaleDown before issuing a
@@ -911,15 +864,10 @@ func NewDatabaseService(manager *database.Manager, opts ...DatabaseServiceOption
 	return s
 }
 
-// SetDistributor injects the key distributor, tenant barrier lookup, and local
-// node ID after construction. The daemon calls this after the
-// clusterkeys.Sender and LeaderAdminResolver are available (which is later in
-// the startup sequence than when the DatabaseService is built by
-// lifecycle.BuildServices). Thread-safety: this must be called before any
-// tenant database creation requests are served.
-func (s *DatabaseService) SetDistributor(d KeyDistributor, lookup TenantBarrierLookup, nodeID string) {
-	s.keyDistributor = d
-	s.barrierLookup = lookup
+// SetLocalNodeID sets the local Raft node ID after construction (see
+// WithLocalNodeID). Thread-safety: this must be called before any tenant
+// database creation requests are served.
+func (s *DatabaseService) SetLocalNodeID(nodeID string) {
 	s.localNodeID = nodeID
 }
 
@@ -1050,9 +998,9 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 	if err := database.CheckDroppable(name); err != nil {
 		return err
 	}
-	tenantID := ""
+	tenantID, knownID := "", ""
 	if db, err := s.manager.Get(name); err == nil {
-		tenantID = db.TenantID()
+		tenantID, knownID = db.TenantID(), db.ID()
 	} else {
 		var dropping *database.DroppingError
 		if errors.As(err, &dropping) {
@@ -1061,9 +1009,13 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 	}
 
 	var hadPlacement, owned bool
+	var databaseID string
 	if tenantID != "" {
 		var err error
-		hadPlacement, owned, err = s.dropRaftPlacement(ctx, tenantID, name)
+		if databaseID, err = s.placementID(ctx, tenantID, name, knownID); err != nil {
+			return err
+		}
+		hadPlacement, owned, err = s.dropRaftPlacement(ctx, tenantID, databaseID)
 		if err != nil {
 			return err
 		}
@@ -1071,18 +1023,38 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 
 	if err := s.manager.Drop(ctx, name); err != nil {
 		if hadPlacement && owned && isReclamationFailure(err) {
-			s.clearRaftPlacementFence(ctx, tenantID, name)
+			s.clearRaftPlacementFence(ctx, tenantID, databaseID)
 		}
 		return err
 	}
 
 	if hadPlacement {
-		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 	}
 	return nil
+}
+
+// placementID resolves the placement id of the tenant's database named name.
+// The placement table is keyed by the opaque id the catalog record carries;
+// knownID is that id when the caller holds the database's record. A caller
+// without one (a drop resumed after the local record went away) finds the
+// entry that names the database. An empty id with a nil error means the
+// database has no placement entry.
+func (s *DatabaseService) placementID(ctx context.Context, tenantID, name, knownID string) (string, error) {
+	if knownID != "" || s.placementStore == nil {
+		return knownID, nil
+	}
+	p, err := s.placementStore.GetByName(ctx, tenantID, name)
+	if err != nil {
+		if errors.Is(err, placement.ErrPlacementNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return p.DatabaseID, nil
 }
 
 // isReclamationFailure reports whether err is a failed manager-level drop
@@ -1122,17 +1094,17 @@ func isReclamationFailure(err error) bool {
 // an earlier one still live after a restart -- already owns the fence, and
 // this call's caller must never be the one to clear it (go-qrdb#482 round 3,
 // finding 4).
-func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, name string) (hadPlacement, owned bool, err error) {
-	if s.placementStore == nil {
+func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, databaseID string) (hadPlacement, owned bool, err error) {
+	if s.placementStore == nil || databaseID == "" {
 		return false, false, nil
 	}
-	if _, err := s.placementStore.Get(ctx, tenantID, name); err != nil {
+	if _, err := s.placementStore.Get(ctx, tenantID, databaseID); err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return false, false, nil
 		}
 		return false, false, err
 	}
-	owned, err = s.placementStore.TryMarkDropping(ctx, tenantID, name)
+	owned, err = s.placementStore.TryMarkDropping(ctx, tenantID, databaseID)
 	if err != nil {
 		return true, false, err
 	}
@@ -1151,14 +1123,14 @@ func (s *DatabaseService) dropRaftPlacement(ctx context.Context, tenantID, name 
 // leaves the database in the SAME fail-closed state the failed drop already
 // left it in, not a new one -- an operator retrying the drop calls
 // dropRaftPlacement again regardless.
-func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID, name string) {
+func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID, databaseID string) {
 	// Under a context the failed request's cancellation cannot reach: see
 	// database.DropRollbackContext.
 	rollbackCtx, cancel := database.DropRollbackContext(ctx)
 	defer cancel()
-	if err := s.placementStore.SetDropping(rollbackCtx, tenantID, name, false); err != nil {
+	if err := s.placementStore.SetDropping(rollbackCtx, tenantID, databaseID, false); err != nil {
 		s.logger.Warn("failed to clear the replicated drop fence after a failed drop",
-			slog.String("tenant", tenantID), slog.String("database", name), slog.Any("error", err))
+			slog.String("tenant", tenantID), slog.String("database_id", databaseID), slog.Any("error", err))
 	}
 }
 
@@ -1180,8 +1152,8 @@ func (s *DatabaseService) clearRaftPlacementFence(ctx context.Context, tenantID,
 // local drop this entry is fenced for has, in fact, already happened.
 // Reporting failure here instead forces a retry, which re-attempts this
 // idempotent marker (and then the deletion) until both converge.
-func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, tenantID, name string) error {
-	return s.placementStore.MarkDropCommitted(ctx, tenantID, name)
+func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, tenantID, databaseID string) error {
+	return s.placementStore.MarkDropCommitted(ctx, tenantID, databaseID)
 }
 
 // raftPlacementDropAlreadyCommitted reports whether (tenantID, name)'s
@@ -1192,8 +1164,12 @@ func (s *DatabaseService) markRaftPlacementDropCommitted(ctx context.Context, te
 // DropForTenant tell a legitimate retry-after-teardown apart from a request
 // that reached a node which never had the local catalog record at all
 // (go-qrdb#482 round 3, finding 5).
-func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context, tenantID, name string) (bool, error) {
-	p, err := s.placementStore.Get(ctx, tenantID, name)
+func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context, tenantID, databaseID string) (bool, error) {
+	if databaseID == "" {
+		// No entry names the database: it was already removed.
+		return true, nil
+	}
+	p, err := s.placementStore.Get(ctx, tenantID, databaseID)
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return true, nil
@@ -1218,8 +1194,8 @@ func (s *DatabaseService) raftPlacementDropAlreadyCommitted(ctx context.Context,
 // caller retrying the drop -- through DropForTenant, which recognizes an
 // already-gone local catalog entry as "finish the placement teardown", not
 // as a failure -- is what completes it.
-func (s *DatabaseService) finishRaftPlacementTeardown(ctx context.Context, tenantID, name string) error {
-	return s.placementStore.Delete(ctx, tenantID, name)
+func (s *DatabaseService) finishRaftPlacementTeardown(ctx context.Context, tenantID, databaseID string) error {
+	return s.placementStore.Delete(ctx, tenantID, databaseID)
 }
 
 // UpdateProtocol updates the wire protocol configuration for the named
@@ -1515,6 +1491,22 @@ var isolationBarrierDataPath = map[tenant.IsolationType]string{
 	tenant.IsolationRaft:   database.ServedByRaftTenantGroup,
 }
 
+// isolationDedicatedWALDataPath maps each tenant isolation mode whose
+// raft-backed databases restServiceRegistry.resolve does NOT serve through
+// the database's own raft group to the store it serves them from instead. A
+// volume tenant's databases share the tenant's store; a barrier tenant's
+// raft-backed database never has a per-database barrier route (that route
+// serves non-raft dedicated stores only), so it reaches the shared system
+// store. A dedicated group and WAL there would be persisted and metered but
+// never carry the database's data, so CreateForTenantWithCredentials
+// refuses backend raft + DedicatedWAL with
+// database.DedicatedWALOffDataPathError. Only IsolationRaft serves a
+// database from its own group.
+var isolationDedicatedWALDataPath = map[tenant.IsolationType]string{
+	tenant.IsolationVolume:  database.ServedByVolumeTenantStore,
+	tenant.IsolationBarrier: database.ServedBySharedStore,
+}
+
 // resolveTenantDataRoot resolves an IsolationVolume / IsolationRaft
 // tenant's local DataRoot via the configured TenantDataRootResolver.
 // Returns ("", nil) when no resolver is configured or volumePool is empty
@@ -1593,18 +1585,17 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// cases re-verify the entitlements (defense-in-depth alongside the
 	// tenant-create gate) and route the catalog DataDir under the tenant's
 	// DataRoot so the on-disk location is physically isolated.
-	//
-	// tenantBarrierAutoUnseal is captured here so the key distribution below
-	// can skip a platform-custody tenant, whose every node self-initializes
-	// under its own key, without a second GetTenant call.
-	var tenantBarrierAutoUnseal bool
 	// dedicatedRaft records that an IsolationRaft tenant forced the raft
 	// backend, so an unnamed cluster mode falls back to local after the
 	// node's database_defaults are resolved.
 	var dedicatedRaft bool
+	strictTenant := false
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
+			return nil, err
+		}
+		if strictTenant, err = s.strictIsolation(ctx, info); err != nil {
 			return nil, err
 		}
 		// A volume- or raft-isolated tenant serves every database from the
@@ -1613,6 +1604,14 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		// Refused before any quota reservation or store I/O.
 		if servedBy, offPath := isolationBarrierDataPath[info.EffectiveIsolationType()]; offPath && cfg.Barrier != nil && cfg.Barrier.Enabled {
 			return nil, &database.BarrierOffDataPathError{Name: cfg.Name, ServedBy: servedBy}
+		}
+		// A dedicated group and WAL under an isolation that does not serve
+		// the database from its own group would be persisted and metered
+		// but never carry the database's data. Refused, not downgraded,
+		// before the strict-tenant check (a strict volume or barrier
+		// tenant gets this refusal) and before any quota or store I/O.
+		if servedBy, offPath := isolationDedicatedWALDataPath[info.EffectiveIsolationType()]; offPath && cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
+			return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: servedBy}
 		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:
@@ -1653,9 +1652,6 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			} else if root != "" {
 				cfg.DataDir = filepath.Join(root, "databases", cfg.Name)
 			}
-			// Capture the barrier custody: a platform-custody tenant skips
-			// the Phase 4c-1c key delivery below.
-			tenantBarrierAutoUnseal = info.BarrierAutoUnseal
 		}
 	}
 
@@ -1732,6 +1728,29 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// closed rather than silently downgrading, so the caller learns the opt-in
 	// was rejected (a downgrade-to-shared would weaken the requested isolation
 	// without notice).
+	//
+	// Phase 5 G1: a strict tenant never has a log under a node key, so every
+	// one of its databases is a raft group on a dedicated WAL. A request
+	// without one, or on a backend that cannot carry one, is refused rather
+	// than upgraded silently; the entitlement and quota checks below still
+	// apply to the dedicated WAL it does request.
+	if strictTenant {
+		// Strict isolation phases 5 and 6 are judged by the cluster's
+		// strict-isolation activation: until every member runs a binary
+		// that confines and keys a strict tenant's groups, its create is
+		// refused (*feature.NotActiveError) before anything is persisted.
+		if s.strictIsolationGate != nil {
+			if gerr := s.strictIsolationGate(); gerr != nil {
+				return nil, gerr
+			}
+		}
+		if cfg.Backend != database.BackendRaft {
+			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID, Backend: string(cfg.Backend)}
+		}
+		if !cfg.DedicatedWAL {
+			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID}
+		}
+	}
 	if cfg.DedicatedWAL {
 		if cfg.Backend != database.BackendRaft {
 			cfg.DedicatedWAL = false
@@ -1856,39 +1875,18 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			return nil, placeErr
 		}
 
-		s.inviteReplicas(ctx, tenantID, info.Name, plan, tenantBarrierAutoUnseal)
+		s.inviteReplicas(ctx, tenantID, info.Name, plan)
 	}
 
 	return &info, nil
 }
 
 // inviteReplicas does the best-effort steps that follow persisting a
-// dedicated-raft placement: shipping the tenant barrier key to the follower
-// replicas and, on the leader, adding them to the group. Neither failure fails
+// dedicated-raft placement: on the leader, adding the follower replicas to
+// the group. No key is shipped: each replica keys itself from the barrier
+// owner's signed init statement (pkg/barrierinit). A failure never fails
 // the caller; followers reconcile and the reconciler retries.
-func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name string, plan *placement.Placement, autoUnseal bool) {
-	// Phase 4c-1c: ship an owner-sealed tenant barrier blob to every
-	// follower replica. A platform-custody tenant ships nothing: each node
-	// initializes its own key from the platform's init statement.
-	// A delivery error must NOT fail the create — followers reconcile and
-	// pull the key during their own shard start sequence (Phase 4c-1d).
-	// All three of keyDistributor, barrierLookup, and localNodeID must be
-	// present; single-node or non-clustered deployments leave them unset.
-	if plan != nil && !autoUnseal && s.keyDistributor != nil && s.barrierLookup != nil && s.localNodeID != "" {
-		tb, lookupErr := s.barrierLookup.GetTenant(tenantID)
-		if lookupErr != nil {
-			s.logger.Warn("clusterkeys: tenant barrier lookup failed, skipping key distribution",
-				slog.String("tenant", tenantID),
-				slog.String("database", name),
-				slog.Any("error", lookupErr))
-		} else if deliverErr := s.keyDistributor.DistributeTenantKey(ctx, plan, tb.Barrier(), s.localNodeID); deliverErr != nil {
-			s.logger.Warn("clusterkeys: key distribution failed, followers will reconcile in Phase 4c-1d",
-				slog.String("tenant", tenantID),
-				slog.String("database", name),
-				slog.Any("error", deliverErr))
-		}
-	}
-
+func (s *DatabaseService) inviteReplicas(ctx context.Context, tenantID, name string, plan *placement.Placement) {
 	// Phase 4c-1d (leader-side membership invite): after placement is
 	// persisted the local leader calls AddFollowerNode for every follower
 	// replica so the Raft group's initial config change is committed before
@@ -1985,10 +1983,11 @@ func (s *DatabaseService) persistPlacement(ctx context.Context, tenantID string,
 	// included, resolves its own replica's directory from the tenant's volume
 	// pool and slot (placementRaftInfoSource's LocalRootResolver).
 	plan, err := s.placementScheduler.Place(ctx, placement.PlaceRequest{
-		TenantID: tenantID,
-		Database: info.Name,
-		ShardID:  info.ShardID,
-		RF:       rf,
+		TenantID:   tenantID,
+		DatabaseID: info.ID,
+		Database:   info.Name,
+		ShardID:    info.ShardID,
+		RF:         rf,
 	})
 	if err != nil {
 		return nil, err
@@ -2052,12 +2051,12 @@ func (s *DatabaseService) ListForTenant(ctx context.Context) ([]database.Databas
 // the database has no placement entry (predates placement, or was created
 // with raft cluster mode "local").
 func (s *DatabaseService) refreshReplicasFromPlacement(ctx context.Context, info *database.DatabaseInfo) {
-	if s.placementStore == nil || info.Backend != database.BackendRaft {
+	if s.placementStore == nil || info.Backend != database.BackendRaft || info.ID == "" {
 		return
 	}
 	readCtx, cancel := s.boundedInfoRead(ctx)
 	defer cancel()
-	p, err := s.placementStore.Get(readCtx, info.TenantID, info.Name)
+	p, err := s.placementStore.Get(readCtx, info.TenantID, info.ID)
 	if err != nil {
 		return
 	}
@@ -2140,6 +2139,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	wasRaft := false
 	replicaCount := 0
 	wasDedicatedWAL := false
+	knownID := ""
 	db, dbErr := s.manager.GetForTenantIgnoringFence(ctx, name)
 	switch {
 	case dbErr != nil && database.IsTenantHome(name):
@@ -2151,18 +2151,24 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		wasRaft = info.Backend == database.BackendRaft
 		replicaCount = info.Replicas
 		wasDedicatedWAL = info.DedicatedWAL
+		knownID = info.ID
 	case s.placementStore != nil:
 		// No local record on this node for name at all. See this method's
 		// doc comment: refuse now, before the replicated fence is ever
 		// touched, unless the replicated entry already proves an earlier
 		// attempt finished the local half elsewhere.
-		committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+		id, ierr := s.placementID(ctx, tenantID, name, "")
+		if ierr != nil {
+			return ierr
+		}
+		committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, id)
 		if cerr != nil {
 			return cerr
 		}
 		if !committed {
 			return dbErr
 		}
+		knownID = id
 	default:
 		// No placement wired in at all (a single-node deployment with no
 		// scheduler): there is no replicated signal to consult, so a
@@ -2170,7 +2176,11 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		return dbErr
 	}
 
-	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, name)
+	databaseID, err := s.placementID(ctx, tenantID, name, knownID)
+	if err != nil {
+		return err
+	}
+	hadPlacement, owned, err := s.dropRaftPlacement(ctx, tenantID, databaseID)
 	if err != nil {
 		return err
 	}
@@ -2178,12 +2188,12 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	if err := s.manager.DropForTenant(ctx, name); err != nil {
 		var notFound *database.NotFoundError
 		if hadPlacement && errors.As(err, &notFound) {
-			committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, name)
+			committed, cerr := s.raftPlacementDropAlreadyCommitted(ctx, tenantID, databaseID)
 			if cerr != nil {
 				return cerr
 			}
 			if committed {
-				return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+				return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 			}
 			// Defense in depth: the upfront GetForTenantIgnoringFence check
 			// above already refuses a request with no local record and no
@@ -2193,7 +2203,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 			// regardless (go-qrdb#482 round 3, findings 5 and 6).
 		}
 		if hadPlacement && owned && isReclamationFailure(err) {
-			s.clearRaftPlacementFence(ctx, tenantID, name)
+			s.clearRaftPlacementFence(ctx, tenantID, databaseID)
 		}
 		return err
 	}
@@ -2216,10 +2226,10 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	// drop apart from one that never actually happened -- see
 	// raftPlacementDropAlreadyCommitted above.
 	if hadPlacement {
-		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, name); err != nil {
+		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, name)
+		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
 	}
 	return nil
 }
@@ -2486,10 +2496,11 @@ func (s *DatabaseService) ScaleForTenant(ctx context.Context, name string, targe
 	// -- that node's per-node singleton *database.Manager is the only place
 	// the database is registered, so requiring a manager lookup here (as a
 	// prior version of this method did) 404s on every node except the
-	// creator. placementStore.Get is itself tenant-scoped (keyed by
-	// tenantID+database), so a successful load already proves tenant
-	// ownership -- no separate manager-based ownership check is needed.
-	p, err := s.placementStore.Get(ctx, tenantID, name)
+	// creator, which alone holds the catalog record and so the database id.
+	// placementStore.GetByName finds the entry among the tenant's own
+	// (keyed by tenantID+database id), so a successful load already proves
+	// tenant ownership -- no separate manager-based ownership check is needed.
+	p, err := s.placementStore.GetByName(ctx, tenantID, name)
 	if err != nil {
 		if errors.Is(err, placement.ErrPlacementNotFound) {
 			return nil, &NotDedicatedRaftDatabaseError{Database: name}
@@ -2656,18 +2667,8 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 	var added int
 	var loopErr error
 	for _, r := range newReplicas {
-		// Placement must be persisted BEFORE key delivery is attempted, not
-		// after -- see addObserverReplica's doc comment for the receiver
-		// placement-gate rationale this ordering satisfies.
-		updated, kerr, _, err := addObserverReplica(ctx, s.raftHost, s.placementStore, s.keyDistributor, s.barrierLookup, current, r, s.localNodeID)
+		updated, _, err := addObserverReplica(ctx, s.raftHost, s.placementStore, current, r)
 		current = updated
-		if kerr != nil {
-			s.logger.Warn("clusterkeys: key distribution failed for scale-up replica, follower will reconcile",
-				slog.String("tenant", tenantID),
-				slog.String("database", name),
-				slog.String("replica_node", r.NodeID),
-				slog.Any("error", kerr))
-		}
 		if err != nil {
 			loopErr = err
 			break

@@ -49,6 +49,26 @@ are not reconstructed here — their history is in the git log.
   transaction is refused), so no KV writer can forge one. Deleting a tenant
   deletes its policies, and a mint for a tenant that is deleted or retired is
   refused with `TenantNotFoundError`.
+- **Isolation-policy verbs, gated on strict-isolation**
+  (#1423). REST (`GET`/`PUT /v1/cluster/isolation-policy`), gRPC
+  (`Get`/`SetClusterIsolationPolicy`), QUIC (`cluster.IsolationPolicyGet`/
+  `Set`) and MCP (`qrdb_cluster_isolation_policy_get`/`_set`) read and set the
+  cluster floor, and a tenant update carries `isolation_policy`. The Go SDK
+  has `GetClusterIsolationPolicy`/`SetClusterIsolationPolicy` and
+  `UpdateTenantRequest.IsolationPolicy` on every transport, and the CLI has
+  `qrdb cluster-isolation-policy get|set` and
+  `qrdb tenant update --isolation-policy`. Each verb
+  answers `feature.NotActiveError` (HTTP 503, `Unavailable`) and changes
+  nothing until the `strict-isolation` feature (`featuregate.StrictIsolation`)
+  is active: from the start on a standalone node, and on a cluster once it has
+  activated the feature. An unknown policy value is
+  `InvalidArgument` (HTTP 400). The floor now tightens from `operator-access`
+  to `strict` in one compare-and-swap, so a racing writer is refused and the
+  floor is never unset in between. The Go SDK's `TenantInfo` reports the
+  tenant's isolation policy (`IsolationPolicy`) on every transport. A tenant
+  update that changes `isolation_policy` always needs `tenants:update` on the
+  target tenant (and `tenants:update:cross` for another tenant), even when it
+  also carries `status` or `isolation_type`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -253,6 +273,18 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- **An isolated tenant's audit trail applies in its home group in cluster
+  mode.** Once tenant home groups are wired, a dedicated-isolation tenant's
+  replicated audit events go to its home group's `<tenant>/system/audit`
+  instead of being refused, and a barrier tenant's go wherever its audit route
+  says: a recorded fact, written once and first writer wins, that stays on the
+  system shard when the tenant already has a chain there or
+  `verifiable-log-audit` is off, and is the home group otherwise. The route
+  never changes and no record moves, so an existing chain is never split. A
+  home-group write while `verifiable-log-audit` is not active on every replica
+  is refused as unavailable (`AuditHomeNotActiveError`). Standalone nodes are
+  unchanged. This ships in the same release as the replicated-audit
+  verifiable log (#1409); a release must not carry one without the other.
 - **The devcontainer build proxy has no `direct` entry** (ci-template
   v1.34.1). `GO_BUILD_PROXY` in `build/docker/devcontainer/Dockerfile`
   defaults to `https://proxy.golang.org` alone, so a module the proxy cannot

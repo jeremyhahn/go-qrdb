@@ -116,7 +116,7 @@ func TestRaftBackendFactory_TransportHostFoundsDedicatedShard(t *testing.T) {
 func TestRaftBackendFactory_FoundsThreeReplicaDedicatedShard(t *testing.T) {
 	trio := raftharness.NewCluster(t, 3)
 	const shardID = uint64(1000)
-	p := &placement.Placement{TenantID: "rt", Database: "app", ShardID: shardID}
+	p := &placement.Placement{TenantID: "rt", DatabaseID: "app", Database: "app", ShardID: shardID}
 	for i, addr := range trio.Addrs {
 		p.Replicas = append(p.Replicas, placement.Replica{ReplicaID: uint64(i + 1), NodeID: addr, RaftAddr: addr})
 	}
@@ -191,7 +191,7 @@ func TestRaftBackendFactory_FoundsThreeReplicaDedicatedShard(t *testing.T) {
 func TestRaftBackendFactory_FounderWithUnknownPeerRefused(t *testing.T) {
 	trio := raftharness.NewCluster(t, 3)
 	const shardID = uint64(1001)
-	p := &placement.Placement{TenantID: "rt", Database: "app", ShardID: shardID, Replicas: []placement.Replica{
+	p := &placement.Placement{TenantID: "rt", DatabaseID: "app", Database: "app", ShardID: shardID, Replicas: []placement.Replica{
 		{ReplicaID: 1, NodeID: trio.Addrs[0], RaftAddr: trio.Addrs[0]},
 		{ReplicaID: 2, NodeID: "127.0.0.1:9", RaftAddr: "127.0.0.1:9"},
 	}}

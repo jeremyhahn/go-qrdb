@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -459,6 +460,19 @@ func TestMcpTenantInfoToTransport_CarriesStatus(t *testing.T) {
 	}
 	if got := mcpTenantInfoToTransport(&mcpTenantInfo{ID: "acme"}).Status; got != "" {
 		t.Fatalf("Status = %q; want empty", got)
+	}
+}
+
+func TestMcpTenantInfoToTransport_CarriesIsolationPolicy(t *testing.T) {
+	var m mcpTenantInfo
+	if err := json.Unmarshal([]byte(`{"id":"acme","isolation_policy":"strict"}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := mcpTenantInfoToTransport(&m).IsolationPolicy; got != "strict" {
+		t.Fatalf("IsolationPolicy = %q; want strict", got)
+	}
+	if got := mcpTenantInfoToTransport(&mcpTenantInfo{ID: "acme"}).IsolationPolicy; got != "" {
+		t.Fatalf("IsolationPolicy = %q; want empty", got)
 	}
 }
 

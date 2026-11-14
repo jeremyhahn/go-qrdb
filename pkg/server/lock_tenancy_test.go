@@ -215,8 +215,8 @@ func (staticRaftInfo) placementInfo(string, string) (*placement.Placement, bool,
 	return nil, false, nil
 }
 func (staticRaftInfo) dedicatedWAL(string, string) bool { return false }
-func (staticRaftInfo) recordedIncarnation(context.Context, string, string) (string, bool, error) {
-	return "", false, nil
+func (staticRaftInfo) recordedIdentity(context.Context, string, string) (string, string, bool, error) {
+	return "", "", false, nil
 }
 
 // raftLockScene gives each (tenant, database) its own dedicated shard, which

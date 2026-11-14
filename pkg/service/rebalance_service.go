@@ -101,11 +101,29 @@ type RebalancePlanResult struct {
 	// Moves is the ordered list of shard move operations.
 	Moves []RebalanceMovePlan
 
+	// Skipped names the moves the planner considered and refused, each with
+	// its reason (an isolated tenant's serving set excludes the target).
+	Skipped []RebalanceSkippedMove
+
 	// EstimatedDuration is the estimated time to complete all moves.
 	EstimatedDuration time.Duration
 
 	// CurrentImbalance is the current imbalance score before rebalancing.
 	CurrentImbalance float64
+}
+
+// RebalanceSkippedMove is a move CreateRebalancePlan considered and did not
+// propose. Err is the typed refusal (*placement.ServingSetError, or
+// *HomeGroupMoveError for a tenant home group shard, which carries no
+// ToNode); Reason is its text. Err stays in-process: a transport that
+// encodes the plan as JSON (MCP marshals it whole) carries Reason, never the
+// error value, whose encoding is not a wire form.
+type RebalanceSkippedMove struct {
+	ShardID  uint64
+	FromNode string
+	ToNode   string
+	Reason   string
+	Err      error `json:"-"`
 }
 
 // RebalanceExecutionResult contains the outcome of an executed rebalance.
@@ -205,7 +223,7 @@ const bytesPerSecondEstimate = 100 * 1024 * 1024 // 100 MB/s
 const hotspotThreshold = 1.5
 
 // RebalanceService implements RebalanceServicer backed by a QuicRaft host.
-// The optional placementStore, keyDeliverer, barrierLookup, and selfNodeID
+// The optional placementStore and selfNodeID
 // fields enable Phase 4c-2 dedicated-tenant Raft group MOVE operations. The
 // optional raftHost field enables the observer-first membership change and
 // live-leader routing moveTenantGroupShard performs for that MOVE -- see
@@ -215,8 +233,6 @@ const hotspotThreshold = 1.5
 type RebalanceService struct {
 	host           AdminHost
 	placementStore *placement.Store
-	keyDeliverer   RebalanceKeyDeliverer
-	barrierLookup  RebalanceBarrierLookup
 	selfNodeID     string
 	raftHost       RaftHost
 	logger         *slog.Logger
@@ -233,23 +249,18 @@ func NewRebalanceService(host AdminHost, opts ...RebalanceServiceOption) Rebalan
 	return s
 }
 
-// SetRebalanceDeps injects the placement store, key deliverer, barrier lookup,
-// and local node ID after construction. This mirrors the SetDistributor pattern
-// used by DatabaseService: lifecycle.BuildServices constructs RebalanceService
-// before the clusterkeys.Sender (which needs the LeaderAdminResolver built in
-// start.go) is available, so post-construction injection is required.
+// SetRebalanceDeps injects the placement store and local node ID after
+// construction: lifecycle composes the multi-node half of tenant isolation
+// after lifecycle.BuildServices constructs RebalanceService, so
+// post-construction injection is required.
 //
 // Passing nil for any argument disables the corresponding capability without
 // affecting generic-shard rebalancing.
 func (s *RebalanceService) SetRebalanceDeps(
 	ps *placement.Store,
-	d RebalanceKeyDeliverer,
-	lookup RebalanceBarrierLookup,
 	selfNodeID string,
 ) {
 	s.placementStore = ps
-	s.keyDeliverer = d
-	s.barrierLookup = lookup
 	s.selfNodeID = selfNodeID
 }
 
@@ -361,7 +372,14 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 	// Generate moves by shifting load from overloaded to underloaded nodes.
 	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
+	// An isolated tenant's database moves only within its serving set.
+	shardIdx, err := s.buildShardPlacementIndex(ctx)
+	if err != nil {
+		return nil, &RebalancePlanError{Err: err}
+	}
+
 	moves := make([]RebalanceMovePlan, 0)
+	var skipped []RebalanceSkippedMove
 	moveCount := 0
 
 	for i := 0; i < len(balances); i++ {
@@ -386,10 +404,40 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 				continue
 			}
 
+			// A tenant's home group spans the cluster and is never moved:
+			// list the skip and leave the shard where it is.
+			if current := shardIdx[si.ShardID]; current != nil && database.IsTenantHome(current.Database) {
+				herr := &HomeGroupMoveError{TenantID: current.TenantID, ShardID: si.ShardID}
+				skipped = append(skipped, RebalanceSkippedMove{
+					ShardID:  si.ShardID,
+					FromNode: balances[i].node.Address,
+					Reason:   herr.Error(),
+					Err:      herr,
+				})
+				continue
+			}
+
 			// Find the most underloaded node (last in sorted order).
 			for j := len(balances) - 1; j > i; j-- {
 				if balances[j].delta >= 0 {
 					continue
+				}
+				if current := shardIdx[si.ShardID]; current != nil {
+					serr := checkReplicaInServingSet(ctx, s.placementStore, current, balances[j].node.Address)
+					var sse *placement.ServingSetError
+					if errors.As(serr, &sse) {
+						skipped = append(skipped, RebalanceSkippedMove{
+							ShardID:  si.ShardID,
+							FromNode: balances[i].node.Address,
+							ToNode:   balances[j].node.Address,
+							Reason:   serr.Error(),
+							Err:      serr,
+						})
+						continue
+					}
+					if serr != nil {
+						return nil, &RebalancePlanError{Err: serr}
+					}
 				}
 
 				// Estimate the bytes for this shard as a fraction of node total.
@@ -434,6 +482,7 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 
 	return &RebalancePlanResult{
 		Moves:             moves,
+		Skipped:           skipped,
 		EstimatedDuration: estimatedDuration,
 		CurrentImbalance:  report.ImbalanceScore,
 	}, nil
@@ -692,6 +741,19 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 		}
 	}
 
+	// A tenant's home group spans the cluster and is never moved: moving
+	// its source replica would strand the tenant's database replicas
+	// outside the serving set. CreateRebalancePlan never proposes it; a
+	// hand-built plan is refused here before any mutation.
+	if database.IsTenantHome(p.Database) {
+		return &RebalanceMoveError{
+			ShardID:  move.ShardID,
+			TenantID: p.TenantID,
+			Step:     "home-group",
+			Err:      &HomeGroupMoveError{TenantID: p.TenantID, ShardID: move.ShardID},
+		}
+	}
+
 	// Step 0: route to the dedicated group's current Raft leader. When the
 	// source is ALSO the local node, resolveMoveLeader additionally
 	// transfers leadership away before reporting itself as not-the-leader
@@ -753,16 +815,7 @@ func (s *RebalanceService) moveTenantGroupShard(ctx context.Context, move Rebala
 	}
 
 	// Step 4: admit the destination, observer-first.
-	updated, kerr, placementFailed, err := addObserverReplica(
-		ctx, s.raftHost, s.placementStore, s.keyDeliverer, s.barrierLookup, p, dstReplica, s.selfNodeID)
-	if kerr != nil {
-		s.logger.Warn("clusterkeys: key distribution failed for rebalance MOVE destination, follower will reconcile",
-			slog.String("tenant", p.TenantID),
-			slog.String("database", p.Database),
-			slog.Uint64("shard_id", move.ShardID),
-			slog.String("dst_node", move.ToNode),
-			slog.Any("error", kerr))
-	}
+	updated, placementFailed, err := addObserverReplica(ctx, s.raftHost, s.placementStore, p, dstReplica)
 	if err != nil {
 		step := "add-observer"
 		if placementFailed {

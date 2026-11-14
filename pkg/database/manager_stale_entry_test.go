@@ -61,7 +61,7 @@ func newStaleEntry(t *testing.T) (*Manager, *laterGetFaultCatalog, *Database) {
 	require.NoError(t, err)
 	ctx := context.Background()
 	require.NoError(t, inner.Delete(ctx, "", "orders", old.Incarnation(), ""))
-	require.NoError(t, inner.Create(ctx, DatabaseMeta{Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
+	require.NoError(t, inner.Create(ctx, DatabaseMeta{ID: "test-id", Name: "orders", Backend: BackendMemory, Incarnation: "successor"}))
 	return mgr, cat, old
 }
 

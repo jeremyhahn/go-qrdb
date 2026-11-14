@@ -16,12 +16,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
-	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/bootstrap"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
@@ -29,6 +29,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantadmin"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/trustanchor"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -168,7 +169,14 @@ type TenantOnboardingService struct {
 	pendingSign firstboot.CertSigner
 	clientTrust ClientTrustRefresher
 	pendingSOs  tenantadmin.Store
-	soPINs      atomic.Pointer[bootstrap.SOPINSetter]
+	// pendingAudit is TenantOnboardingDeps.PendingAudit.
+	pendingAudit tenantadmin.AuditStore
+	// tenantTrail is the sink a retry of the pending onboarding record
+	// goes to; nil retries through audit.
+	tenantTrail audit.AuditLogger
+	// localTrail is TenantOnboardingDeps.LocalTrail.
+	localTrail audit.AuditLogger
+	soPINs     atomic.Pointer[bootstrap.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
 }
@@ -255,6 +263,26 @@ type TenantOnboardingDeps struct {
 	// barrier (bootstrap.Dependencies.PendingSOs), beside Pending.
 	PendingSOs tenantadmin.Store
 
+	// PendingAudit holds the onboarding record bound for the tenant's own
+	// audit trail until that trail takes it (EmitPendingOnboardAudit): a
+	// self-managed tenant's trail is behind its sealed barrier when the
+	// onboarding answers. Nil emits the record once, best effort.
+	PendingAudit tenantadmin.AuditStore
+
+	// TenantTrail is the tenant's own trail alone, the sink a retry of the
+	// pending onboarding record goes to (EmitPendingOnboardAudit). The
+	// first attempt goes to Audit, which on a node is the node-local trail
+	// and the tenant's trail together: a retry through Audit would write
+	// the record to the node-local trail again each time the tenant's trail
+	// refuses it. Nil retries through Audit.
+	TenantTrail audit.AuditLogger
+
+	// LocalTrail is the node-local trail alone, the half of Audit that is
+	// not TenantTrail; with both set the first attempt writes the record to
+	// LocalTrail once, best effort, and files the pending record on
+	// TenantTrail alone; nil sends the first attempt through Audit.
+	LocalTrail audit.AuditLogger
+
 	// SOPINs commits a tenant SO's PIN (bootstrap.Dependencies.SOPINs). A
 	// node whose SO authenticator is built after this service attaches it
 	// with AttachSOPINs. Nil refuses a request that names an SO.
@@ -291,6 +319,10 @@ func NewTenantOnboardingService(deps TenantOnboardingDeps) *TenantOnboardingServ
 		clientTrust: deps.ClientTrust,
 		pendingSOs:  deps.PendingSOs,
 		strictSoD:   deps.SeparationOfDuties,
+
+		pendingAudit: deps.PendingAudit,
+		tenantTrail:  deps.TenantTrail,
+		localTrail:   deps.LocalTrail,
 	}
 	if deps.SOPINs != nil {
 		s.AttachSOPINs(deps.SOPINs)
@@ -312,18 +344,33 @@ func (s *TenantOnboardingService) sopins() bootstrap.SOPINSetter {
 	return nil
 }
 
-// onboardEvent renders a tenant-onboarding event keyed by req.ID -- the
-// AFFECTED tenant being created.
+// onboardEvent renders a tenant-onboarding event naming req.ID -- the
+// AFFECTED tenant being created -- as its resource. Onboarding is a platform
+// event: it goes to the system tenant's trail, see statusChangeEvent. The
+// platform trail holds no tenant username, so the admin's username is not on
+// it: onboardTenantEvent records it on the tenant's own trail.
 func onboardEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEvent {
-	var actor string
-	if id := auth.IdentityFromContext(ctx); id != nil {
-		actor = id.Subject
-	}
 	return audit.AuditEvent{
-		Actor:    actor,
-		TenantID: req.ID,
-		Resource: "tenant",
+		Actor:    platformActor(ctx),
+		TenantID: tenantid.System,
+		Resource: tenantResource(req.ID),
 		Action:   ActionTenantOnboard,
+		Attributes: map[string]any{
+			"isolation_type": string(req.IsolationType),
+		},
+	}
+}
+
+// onboardTenantEvent renders the tenant's own record of its onboarding,
+// naming its admin account, filed on the new tenant's trail once the tenant
+// exists.
+func onboardTenantEvent(ctx context.Context, req *OnboardTenantRequest) audit.AuditEvent {
+	return audit.AuditEvent{
+		Actor:    platformActor(ctx),
+		TenantID: tenantid.Normalize(req.ID),
+		Resource: tenantResource(req.ID),
+		Action:   ActionTenantOnboard,
+		Outcome:  audit.OutcomeSuccess,
 		Attributes: map[string]any{
 			"admin_username": req.AdminUsername,
 			"isolation_type": string(req.IsolationType),
@@ -380,6 +427,9 @@ func (s *TenantOnboardingService) OnboardTenant(ctx context.Context, req *Onboar
 		actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tenantOnboardingSettleTimeout)
 		defer cancel()
 		audit.EmitBestEffort(actx, s.audit, tenantOnboardingAuditComponent, ev)
+		if err == nil {
+			s.fileTenantOnboardEvent(actx, req.ID, onboardTenantEvent(ctx, req))
+		}
 	}
 
 	keyB := &bootstrap.KeyBSigner{Certs: s.certs}
@@ -499,4 +549,80 @@ func (s *TenantOnboardingService) completeAdmin(ctx context.Context, tenantID st
 		s.logger.Error("tenant admin completion stopped; the tenant's next barrier unseal or status read completes it",
 			slog.String("tenant", tenantID), slog.Any("error", err))
 	}
+}
+
+// fileTenantOnboardEvent files the onboarding record bound for the tenant's
+// own audit trail. With a pending store the record is kept there first,
+// stamped with the onboarding's time, then appended at once if the trail
+// takes it; the trail of a tenant whose barrier is still sealed takes it when
+// the barrier is up (EmitPendingOnboardAudit). Without a pending store, or
+// when the record cannot be kept, it is emitted once, best effort.
+func (s *TenantOnboardingService) fileTenantOnboardEvent(ctx context.Context, tenantID string, ev audit.AuditEvent) {
+	if s.pendingAudit == nil {
+		audit.EmitBestEffort(ctx, s.audit, tenantOnboardingAuditComponent, ev)
+		return
+	}
+	if ev.Timestamp.IsZero() {
+		ev.Timestamp = time.Now().UTC()
+	}
+	record, err := json.Marshal(ev)
+	if err == nil {
+		err = s.pendingAudit.Create(ctx, tenantID, record)
+	}
+	if err != nil {
+		s.logger.Error("tenant onboarding audit record not kept for the tenant's trail; emitting it once",
+			slog.String("tenant", tenantID), slog.Any("error", err))
+		audit.EmitBestEffort(ctx, s.audit, tenantOnboardingAuditComponent, ev)
+		return
+	}
+	sink := s.audit
+	if s.localTrail != nil && s.tenantTrail != nil {
+		audit.EmitBestEffort(ctx, s.localTrail, tenantOnboardingAuditComponent, ev)
+		sink = s.tenantTrail
+	}
+	if err := s.emitPendingOnboardAudit(ctx, tenantID, sink); err != nil {
+		s.logger.Debug("tenant onboarding audit record waits for the tenant's trail",
+			slog.String("tenant", tenantID), slog.Any("error", err))
+	}
+}
+
+// EmitPendingOnboardAudit appends tenantID's pending onboarding record
+// (TenantOnboardingDeps.PendingAudit) to the tenant's own audit trail, then
+// deletes it. The record is deleted only after the append succeeded, so a
+// refused append -- the trail of a tenant whose barrier is still sealed --
+// keeps it for the next call: the tenant's barrier init, unseal or status
+// read. A tenant with no pending record is a no-op, so a later unseal appends
+// nothing. Callers run it on one node per tenant, the leader of the tenant's
+// home group, so the record is appended once.
+func (s *TenantOnboardingService) EmitPendingOnboardAudit(ctx context.Context, tenantID string) error {
+	sink := s.tenantTrail
+	if sink == nil {
+		sink = s.audit
+	}
+	return s.emitPendingOnboardAudit(ctx, tenantID, sink)
+}
+
+// emitPendingOnboardAudit emits tenantID's pending onboarding record on sink
+// and deletes it once sink has taken it. The first attempt's sink is the
+// tenant's trail alone when the node-local trail is given separately
+// (TenantOnboardingDeps.LocalTrail), else the node's whole audit sink; a
+// retry's is the tenant's trail alone, because the node-local trail was
+// offered the record at the first attempt.
+func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, tenantID string, sink audit.AuditLogger) error {
+	if s.pendingAudit == nil || sink == nil {
+		return nil
+	}
+	record, err := s.pendingAudit.Get(ctx, tenantID)
+	if err != nil || record == nil {
+		return err
+	}
+	var ev audit.AuditEvent
+	if err := json.Unmarshal(record, &ev); err != nil {
+		return &tenantadmin.StoreError{Op: "decode", Err: err}
+	}
+	if err := sink.Emit(ctx, ev); err != nil {
+		return err
+	}
+	_, err = s.pendingAudit.Delete(ctx, tenantID, record)
+	return err
 }

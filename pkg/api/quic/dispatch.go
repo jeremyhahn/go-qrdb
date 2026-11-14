@@ -417,6 +417,8 @@ func (s *Server) buildHandlers() {
 	s.handle("tenant.Get", permission.TenantsRead, s.handleTenantGet)
 	s.handle("tenant.List", permission.TenantsList, s.handleTenantList)
 	s.handle("tenant.Update", permission.TenantsUpdate, s.handleTenantUpdate)
+	s.handle("cluster.IsolationPolicyGet", permission.TenantsRead, s.handleClusterIsolationPolicyGet)
+	s.handle("cluster.IsolationPolicySet", permission.TenantsUpdateCross, s.handleClusterIsolationPolicySet)
 	s.handle("tenant.Delete", permission.TenantsDelete, s.handleTenantDelete)
 	s.handle("tenant.UpdateQuotas", permission.TenantsSetQuotas, s.handleTenantUpdateQuotas)
 	s.handle("tenant.UpdateEntitlements", permission.TenantsSetEntitlements, s.handleTenantUpdateEntitlements)
