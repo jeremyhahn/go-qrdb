@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -425,7 +427,7 @@ func (s *userAuthFactorService) add(ctx context.Context, userID uint64, factor *
 		// reserved is released, guarded on the bytes written above so a
 		// record anything else has since written is left alone. Any other
 		// error leaves the outcome unknown and the record in place.
-		if store != nil && (errors.Is(err, auth.ErrFactorConditionFailed) || errors.Is(err, ErrFactorSetContended) || errors.Is(err, auth.ErrFactorAlreadyExists)) {
+		if store != nil && (errors.Is(err, auth.ErrFactorConditionFailed) || errors.Is(err, ErrFactorSetContended) || errors.Is(err, auth.ErrFactorAlreadyExists) || errors.Is(err, ErrFactorSetSealed)) {
 			_, _ = store.CompareAndDelete(ctx, primaryKey(factor.ID), data)
 		}
 		return 0, err
@@ -689,6 +691,101 @@ func (s *userAuthFactorService) Delete(ctx context.Context, factorID string, for
 	return nil
 }
 
+// Purge hard-deletes every factor of userID -- active AND revoked -- with its
+// index entries, and returns how many it removed. It is the account-deletion
+// counterpart of Delete, which keeps refusing a revoked factor for ordinary
+// callers: a revoked factor still reserves its credential, so an account
+// deleted without purging it would leave that credential reserved forever.
+//
+// It first SEALS the user's factor set with a guarded write. From then on no
+// enrollment or rotation can commit for the user (*FactorSetSealedError), and
+// one decided against the set before the seal is refused by the set's guard,
+// so the factors listed after the seal are all the factors there will be.
+// Purge does not touch the user record: the caller is deleting it.
+//
+// Purge is idempotent. A purge that fails part way leaves the set sealed and
+// some factors in place, and a retry removes the rest.
+func (s *userAuthFactorService) Purge(ctx context.Context, userID uint64) (int, error) {
+	if userID == 0 {
+		return 0, &auth.InvalidFactorError{Reason: "userID must be non-zero"}
+	}
+	store := s.batchStore()
+	if store == nil {
+		return 0, ErrUserAuthFactorBatchStoreRequired
+	}
+	setStore := s.atomicStore()
+	if setStore == nil {
+		return 0, ErrUserAuthFactorAtomicStoreRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	set, _, err := s.readFactorSet(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if !set.Sealed {
+		if _, err := s.commitFactorSet(ctx, setStore, userID, func(set *factorSet) error {
+			set.Sealed = true
+			return nil
+		}); err != nil && !errors.Is(err, ErrFactorSetSealed) {
+			return 0, err
+		}
+		if set, _, err = s.readFactorSet(ctx, userID); err != nil {
+			return 0, err
+		}
+	}
+
+	prefix := userIndexPrefix(userID)
+	keys, err := s.kv.List(ctx, prefix)
+	if err != nil {
+		return 0, err
+	}
+	ids := make(map[string]struct{}, len(keys)+len(set.Active))
+	for id := range set.Active {
+		ids[id] = struct{}{}
+	}
+	for _, k := range keys {
+		ids[strings.TrimPrefix(k, prefix)] = struct{}{}
+	}
+
+	purged := 0
+	var errs []error
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		plan, err := s.commitRemoval(ctx, store, func() (*factorRemovalPlan, error) {
+			return s.planDeleteOf(ctx, id, true, userID)
+		})
+		var gone *auth.FactorNotFoundError
+		switch {
+		case errors.As(err, &gone):
+			// The record is gone (or is not this user's): only a stale user
+			// index entry can be left, and it is dropped if it still names id.
+			if err := s.dropUserIndexEntry(ctx, store, userID, id); err != nil {
+				errs = append(errs, err)
+			}
+		case err != nil:
+			errs = append(errs, err)
+		default:
+			purged++
+			s.emitDeleted(ctx, plan.factor, true)
+		}
+	}
+	return purged, errors.Join(errs...)
+}
+
+// dropUserIndexEntry deletes userID's index entry for factorID while it still
+// names factorID.
+func (s *userAuthFactorService) dropUserIndexEntry(ctx context.Context, store factorBatchStore, userID uint64, factorID string) error {
+	key := userIndexKey(userID, factorID)
+	value, err := s.getRecord(ctx, key)
+	if err != nil || len(value) == 0 || string(value) != factorID {
+		return err
+	}
+	_, err = store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: key, Value: value}}, []kvstore.KV{{Key: key, Delete: true}})
+	return err
+}
+
 // factorRemovalPlan is one attempt of Remove or Delete: the batch to propose
 // and what the caller does once it applies.
 type factorRemovalPlan struct {
@@ -735,6 +832,14 @@ func (s *userAuthFactorService) commitRemoval(ctx context.Context, store factorB
 // that is absent, revoked, or the user's last active one when force is false.
 // The caller adds the write that retires the factor's own record.
 func (s *userAuthFactorService) planRemoval(ctx context.Context, factorID string, force bool) (*factorRemovalPlan, error) {
+	return s.planRemovalOf(ctx, factorID, force, 0)
+}
+
+// planRemovalOf is planRemoval. A non-zero purgeUser is Purge's variant: the
+// factor must belong to purgeUser, and a revoked factor or the last active
+// one is removed rather than refused. A purge never reports last, so the
+// user's state is left to the account deletion it is part of.
+func (s *userAuthFactorService) planRemovalOf(ctx context.Context, factorID string, force bool, purgeUser uint64) (*factorRemovalPlan, error) {
 	key := primaryKey(factorID)
 	raw, err := s.getRecord(ctx, key)
 	if err != nil {
@@ -747,7 +852,10 @@ func (s *userAuthFactorService) planRemoval(ctx context.Context, factorID string
 	if err := json.Unmarshal(raw, &factor); err != nil {
 		return nil, &auth.InvalidFactorError{Reason: "unmarshal: " + err.Error()}
 	}
-	if factor.RevokedAt != nil {
+	switch {
+	case purgeUser != 0 && factor.UserID != purgeUser:
+		return nil, &auth.FactorNotFoundError{FactorID: factorID}
+	case purgeUser == 0 && factor.RevokedAt != nil:
 		return nil, &auth.FactorRevokedError{FactorID: factorID}
 	}
 
@@ -759,7 +867,7 @@ func (s *userAuthFactorService) planRemoval(ctx context.Context, factorID string
 		return nil, err
 	}
 	_, counted := set.Active[factorID]
-	last := counted && len(set.Active) <= 1
+	last := purgeUser == 0 && counted && len(set.Active) <= 1
 	if last && !force {
 		return nil, &auth.LastFactorError{UserID: factor.UserID, FactorID: factorID}
 	}
@@ -802,7 +910,12 @@ func (s *userAuthFactorService) planRevoke(ctx context.Context, factorID string,
 // the record and every index entry that still names it, each guarded on the
 // value read.
 func (s *userAuthFactorService) planDelete(ctx context.Context, factorID string, force bool) (*factorRemovalPlan, error) {
-	plan, err := s.planRemoval(ctx, factorID, force)
+	return s.planDeleteOf(ctx, factorID, force, 0)
+}
+
+// planDeleteOf is planDelete over planRemovalOf.
+func (s *userAuthFactorService) planDeleteOf(ctx context.Context, factorID string, force bool, purgeUser uint64) (*factorRemovalPlan, error) {
+	plan, err := s.planRemovalOf(ctx, factorID, force, purgeUser)
 	if err != nil {
 		return nil, err
 	}
@@ -1029,6 +1142,9 @@ func (s *userAuthFactorService) commitRotation(ctx context.Context, store factor
 		set, setRaw, err := s.readFactorSet(ctx, newFactor.UserID)
 		if err != nil {
 			return err
+		}
+		if set.Sealed {
+			return &FactorSetSealedError{UserID: newFactor.UserID}
 		}
 		if err := s.liveFactorSet(ctx, newFactor.UserID, set); err != nil {
 			return err
