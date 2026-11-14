@@ -221,3 +221,35 @@ func TestOperatorIdentityAccess_RoleOperationsRefusedUnderStrict(t *testing.T) {
 		}
 	}
 }
+
+// The operator admitted to an operator-access tenant's role writes may
+// assign and unassign its roles, and create a user holding one: real RBAC
+// checks roles:assign/unassign against the operator's admitted write, not
+// its system-tenant identity.
+func TestOperatorIdentityAccess_RoleAssignmentUnderOperatorAccess(t *testing.T) {
+	for _, op := range []struct{ name, method, path, body string }{
+		{"assign", http.MethodPost, "/roles/assign", `{"user_id":"7","role_id":"r1","tenant_id":"acme"}`},
+		{"unassign", http.MethodPost, "/roles/unassign", `{"user_id":"7","role_id":"r1","tenant_id":"acme"}`},
+		{"create user with a role", http.MethodPost, "/users", `{"tenant_id":"acme","username":"u","without_email_login_key":true,"role_ids":["r1"]}`},
+		{"update a user's roles", http.MethodPut, "/users/7?tenantID=acme", `{"role_ids":["r1"]}`},
+	} {
+		var seen, userSeen []string
+		srv, sink := newOperatorServer(t, tenant.TenantIsolationPolicyInherit,
+			WithRoleService(boundRoleService(&seen)), WithUserService(boundUserService(&userSeen)))
+		rec := serveOperator(srv, op.method, op.path, op.body)
+		if rec.Code >= 300 {
+			t.Fatalf("%s: operator under operator-access = %d %s, want served", op.name, rec.Code, rec.Body.String())
+		}
+		for _, tid := range append(seen, userSeen...) {
+			if tid != "acme" {
+				t.Fatalf("%s: identity services ran under %v %v, want acme only", op.name, seen, userSeen)
+			}
+		}
+		if len(userSeen) == 0 {
+			t.Fatalf("%s: the user service never ran", op.name)
+		}
+		if trails := sink.operatorTrails(); !trails["acme"] || !trails[tenantid.Normalize(tenantid.System)] {
+			t.Fatalf("%s: operator access recorded in trails %v, want the platform trail and acme's", op.name, trails)
+		}
+	}
+}
