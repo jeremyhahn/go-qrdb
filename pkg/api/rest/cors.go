@@ -31,6 +31,13 @@ type CORSConfig struct {
 
 	// MaxAge is the maximum age (in seconds) for preflight cache.
 	MaxAge int
+
+	// AllowCredentials lets a cross-origin browser call carry credentials
+	// (cookies, a TLS client certificate, an Authorization header the
+	// browser manages): an allowed origin is answered with
+	// Access-Control-Allow-Credentials: true. It cannot be combined with
+	// the "*" origin; config.Config.Validate refuses the pair.
+	AllowCredentials bool
 }
 
 // corsMiddleware wraps an HTTP handler with CORS support. It handles
@@ -53,6 +60,10 @@ type corsPolicy struct {
 	allowHeaders string
 	maxAge       string
 	allowMethods string
+
+	// credentials sends Access-Control-Allow-Credentials for an allowed
+	// explicit origin; never with the "*" answer.
+	credentials bool
 }
 
 func newCORSPolicy(cfg CORSConfig) *corsPolicy {
@@ -63,6 +74,7 @@ func newCORSPolicy(cfg CORSConfig) *corsPolicy {
 		maxAge:       strconv.Itoa(cfg.MaxAge),
 		allowMethods: "GET, POST, PUT, DELETE, OPTIONS",
 	}
+	p.credentials = cfg.AllowCredentials && !p.allowAll
 	// Build origin lookup set for O(1) matching when not allowing all.
 	p.origins = make(map[string]struct{}, len(cfg.AllowedOrigins))
 	if !p.allowAll {
@@ -98,6 +110,9 @@ func (p *corsPolicy) headers(next http.Handler) http.Handler {
 			} else {
 				h.Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
 				h.Add("Vary", "Origin")
+				if p.credentials {
+					h.Set("Access-Control-Allow-Credentials", "true")
+				}
 			}
 		}
 		next.ServeHTTP(w, r)

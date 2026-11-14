@@ -500,6 +500,7 @@ type databaseRaftRequest struct {
 	Multicast      *database.MulticastDiscoveryConfig `json:"multicast,omitempty"`
 	DNS            *database.DNSDiscoveryConfig       `json:"dns,omitempty"`
 	Token          *database.TokenDiscoveryConfig     `json:"token,omitempty"`
+	StateStorage   string                             `json:"stateStorage,omitempty"`
 }
 
 // toDomain converts the wire request to the domain configuration; nil stays
@@ -510,6 +511,7 @@ func (r *databaseRaftRequest) toDomain() *database.DatabaseRaftConfig {
 	}
 	return &database.DatabaseRaftConfig{
 		ClusterMode:    database.RaftClusterMode(r.ClusterMode),
+		StateStorage:   database.BackendType(r.StateStorage),
 		ReplicaID:      r.ReplicaID,
 		RaftAddress:    r.RaftAddress,
 		Peers:          r.Peers,

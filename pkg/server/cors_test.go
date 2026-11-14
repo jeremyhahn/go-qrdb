@@ -13,9 +13,10 @@ import (
 func TestRestCORS_ConfiguredOriginYieldsPolicy(t *testing.T) {
 	cfg := testConfig(t, true, false)
 	cfg.CORS = config.CORSConfig{
-		AllowedOrigins: []string{"https://app.example.com"},
-		AllowedHeaders: []string{"Authorization"},
-		MaxAge:         600,
+		AllowedOrigins:   []string{"https://app.example.com"},
+		AllowedHeaders:   []string{"Authorization"},
+		MaxAge:           600,
+		AllowCredentials: true,
 	}
 	srv := New(cfg, newMockKVService(), &mockAdminService{})
 	got, ok := srv.restCORS()
@@ -23,7 +24,8 @@ func TestRestCORS_ConfiguredOriginYieldsPolicy(t *testing.T) {
 		t.Fatal("restCORS: want a policy for a configured origin")
 	}
 	if !slices.Equal(got.AllowedOrigins, cfg.CORS.AllowedOrigins) ||
-		!slices.Equal(got.AllowedHeaders, cfg.CORS.AllowedHeaders) || got.MaxAge != 600 {
+		!slices.Equal(got.AllowedHeaders, cfg.CORS.AllowedHeaders) || got.MaxAge != 600 ||
+		!got.AllowCredentials {
 		t.Fatalf("restCORS = %+v, want the config's fields", got)
 	}
 	// The policy owns its slices: a later edit of the config does not reach it.

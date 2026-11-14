@@ -241,6 +241,12 @@ func (t *Transport) ensureClient() error {
 // Connect establishes the gRPC connection over the Unix domain socket.
 // It uses insecure credentials since Unix sockets provide kernel-level
 // process isolation.
+//
+// Connect confirms the connection with a health check, and Health is a
+// no-login verb on every transport (pkg/api/publicverbs), so Connect
+// succeeds for a caller holding no credential (ruling 264(b)). Such a
+// caller is refused with Unauthenticated at its first call that needs an
+// identity, not here.
 func (t *Transport) Connect(ctx context.Context) error {
 	if t.closed.Load() {
 		return &transport.ClosedError{}
@@ -306,10 +312,12 @@ func (t *Transport) probeHealth(ctx context.Context) error {
 // indicating the server was reached, authenticated the caller's TLS client
 // certificate, and answered the Health RPC, but rejected it purely on
 // AUTHORIZATION grounds (PermissionDenied) rather than a connectivity
-// failure. codes.Unauthenticated is deliberately EXCLUDED -- see
-// TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated in pkg/server,
-// which pins Connect() failing closed for a caller with no/invalid client
-// certificate. See the identical helper in
+// failure. codes.Unauthenticated is deliberately EXCLUDED: Health is a
+// no-login verb (pkg/api/publicverbs), so a caller with no credential is
+// answered, and an Unauthenticated answer is a typed refusal Connect
+// returns as such. TestStart_UnixOnly_AuthMiddlewareRejectsUnauthenticated
+// in pkg/server pins Connect succeeding with no client certificate and the
+// first authenticated call refused. See the identical helper in
 // sdk/go/transport/grpc/transport.go for the full rationale.
 func reachableButUnauthorized(err error) bool {
 	st, ok := status.FromError(err)

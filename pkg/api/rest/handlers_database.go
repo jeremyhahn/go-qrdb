@@ -125,6 +125,9 @@ type raftConfigRequest struct {
 	Multicast      *multicastDiscoveryConfigRequest `json:"multicast,omitempty"`
 	DNS            *dnsDiscoveryConfigRequest       `json:"dns,omitempty"`
 	Token          *tokenDiscoveryConfigRequest     `json:"token,omitempty"`
+	// StateStorage is the storage of the Raft group state: pebble, file or
+	// memory. Empty takes the node's database_defaults.
+	StateStorage string `json:"stateStorage,omitempty"`
 }
 
 // staticDiscoveryConfigRequest is the JSON representation of static peer
@@ -651,6 +654,7 @@ func raftConfigFromRequest(req *raftConfigRequest) *database.DatabaseRaftConfig 
 		Peers:          req.Peers,
 		LocalNodeCount: req.LocalNodeCount,
 		Discovery:      database.DiscoveryMethod(req.Discovery),
+		StateStorage:   database.BackendType(req.StateStorage),
 	}
 	if req.Static != nil {
 		raft.Static = &database.StaticDiscoveryConfig{

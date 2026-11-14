@@ -490,8 +490,10 @@ func TestDatabaseCreate_DefaultFlags(t *testing.T) {
 		t.Fatalf("database create error: %v", err)
 	}
 
-	if string(gotCfg.Backend) != "pebble" {
-		t.Errorf("default backend = %q, want %q", gotCfg.Backend, "pebble")
+	// No --backend sends no backend: the node resolves its
+	// database_defaults backend, else the run mode's.
+	if gotCfg.Backend != "" {
+		t.Errorf("default backend = %q, want empty (node default)", gotCfg.Backend)
 	}
 }
 

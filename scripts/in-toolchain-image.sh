@@ -315,7 +315,12 @@ if [ "$network" = bridge ]; then
   args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org" --env "GOMODCACHE=$modcache")
   if [ "$modcache" = /home/dev/gomodcache ]; then cmd="cp -a /gomodcache/. $modcache/ && $cmd"; fi
   # CUSTOMIZE (go-qrdb) end.
-  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+  # ci-template v1.36: the Trivy database repositories the runner sets (the
+  # dev-cache ghcr mirror on the LAN first, the public ones after) travel
+  # with the stage, so `make security` and `trivy image` fetch the vulnerability
+  # and Java databases from the LAN instead of the internet.
+  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+    TRIVY_DB_REPOSITORY TRIVY_JAVA_DB_REPOSITORY TRIVY_INSECURE; do
     if [ -n "${!v:-}" ]; then args+=(--env "$v"); fi
   done
 else

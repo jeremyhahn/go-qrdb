@@ -659,7 +659,8 @@ type QRDBServiceClient interface {
 	// IssueDelegation has the caller's own tenant's CA issue a short-lived
 	// delegation certificate from a CSR: the named service principal may act
 	// inside the tenant with at most the delegated scope. The system tenant
-	// and a delegated caller are refused.
+	// is refused; a delegated caller renews its own delegation, within the
+	// standing policy its tenant wrote for it, and nothing more.
 	IssueDelegation(ctx context.Context, in *IssueDelegationRequest, opts ...grpc.CallOption) (*IssuedDelegationResponse, error)
 	// PutDelegationPolicy writes the caller's own tenant's standing
 	// delegation policy for a service principal. A delegated caller is
@@ -3994,7 +3995,8 @@ type QRDBServiceServer interface {
 	// IssueDelegation has the caller's own tenant's CA issue a short-lived
 	// delegation certificate from a CSR: the named service principal may act
 	// inside the tenant with at most the delegated scope. The system tenant
-	// and a delegated caller are refused.
+	// is refused; a delegated caller renews its own delegation, within the
+	// standing policy its tenant wrote for it, and nothing more.
 	IssueDelegation(context.Context, *IssueDelegationRequest) (*IssuedDelegationResponse, error)
 	// PutDelegationPolicy writes the caller's own tenant's standing
 	// delegation policy for a service principal. A delegated caller is

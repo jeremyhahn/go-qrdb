@@ -395,7 +395,14 @@ func TestHandleDatabaseCreate_MissingName(t *testing.T) {
 }
 
 func TestHandleDatabaseCreate_MissingBackend(t *testing.T) {
+	// An omitted backend is not refused: the service receives an empty
+	// backend and the node resolves its database_defaults backend.
 	dbSvc := newMockDatabaseService()
+	var got *database.DatabaseConfig
+	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+		got = &cfg
+		return &database.DatabaseInfo{Name: cfg.Name, Status: database.StatusOpen}, nil
+	}
 	handler := handleDatabaseCreate(dbSvc)
 
 	req := buildCallToolRequest(t, "qrdb_database_create", map[string]any{
@@ -406,9 +413,14 @@ func TestHandleDatabaseCreate_MissingBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if !result.IsError {
-		t.Error("expected error result for missing backend")
+	if result.IsError {
+		t.Fatalf("create without backend refused: %s", resultText(t, result))
+	}
+	if got == nil {
+		t.Fatal("create without backend never reached the service")
+	}
+	if got.Backend != "" {
+		t.Errorf("backend sent = %q, want empty (node default)", got.Backend)
 	}
 }
 

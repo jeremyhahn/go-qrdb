@@ -838,7 +838,8 @@ service QRDBService {
     // IssueDelegation has the caller's own tenant's CA issue a short-lived
     // delegation certificate from a CSR: the named service principal may act
     // inside the tenant with at most the delegated scope. The system tenant
-    // and a delegated caller are refused.
+    // is refused; a delegated caller renews its own delegation, within the
+    // standing policy its tenant wrote for it, and nothing more.
     rpc IssueDelegation(IssueDelegationRequest) returns (IssuedDelegationResponse) {
         option (qrdb.v1.permission) = "certs:delegate";
     }
@@ -4069,6 +4070,9 @@ message DatabaseRaftInfo {
     DatabaseMulticastDiscoveryInfo multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscoveryInfo token = 11;
+    // state_storage is the storage of the Raft group state (pebble, file or
+    // memory) the database recorded at create.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscoveryInfo reports static peer discovery.
@@ -4209,6 +4213,10 @@ message DatabaseRaftConfig {
     DatabaseMulticastDiscovery multicast = 9;
     DatabaseDNSDiscovery dns = 10;
     DatabaseTokenDiscovery token = 11;
+    // state_storage is the storage of the Raft group state: pebble, file or
+    // memory. Empty takes the node's database_defaults; create records the
+    // resolved value.
+    string state_storage = 12;
 }
 
 // DatabaseStaticDiscovery holds static peer discovery configuration.

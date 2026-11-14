@@ -123,6 +123,11 @@ type Infra struct {
 	// migrations before service construction) should pass it here.
 	DatabaseManager *database.Manager
 
+	// DatabaseDefaults are the node's database_defaults, filled into a
+	// database record at creation by the manager BuildServices creates
+	// when DatabaseManager is nil.
+	DatabaseDefaults database.Defaults
+
 	// KVOptions are optional configuration options applied when constructing
 	// the KVService. Used for codec injection in daemon mode.
 	KVOptions []service.KVServiceOption
@@ -969,7 +974,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices). Otherwise create a fresh manager.
 	dbManager := infra.DatabaseManager
 	if dbManager == nil {
-		dbManager = database.NewManager(log, infra.DataDir)
+		dbDefaults := infra.DatabaseDefaults
+		if dbDefaults.RunMode == "" {
+			dbDefaults.RunMode = database.RunModeForBackend(infra.Backend)
+		}
+		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults))
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 

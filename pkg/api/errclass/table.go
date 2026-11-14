@@ -553,6 +553,7 @@ var databaseRules = []rule{
 	as(&database.InvalidModeError{Mode: "x"}, InvalidArgument),
 	as(&database.ConnectionRequiredError{}, InvalidArgument),
 	as(&database.InvalidRaftClusterModeError{Mode: "x"}, InvalidArgument),
+	as(&database.InvalidRaftStateStorageError{StateStorage: "x"}, InvalidArgument),
 	as(&database.InvalidDiscoveryMethodError{Method: "x"}, InvalidArgument),
 	as(&database.DiscoveryConfigRequiredError{Method: "multicast"}, InvalidArgument),
 	as(&database.DiscoverySharedSecretRequiredError{Method: "multicast"}, InvalidArgument),
@@ -602,6 +603,9 @@ var databaseRules = []rule{
 	// A raft-backed database's Raft configuration carries its shard ID; an
 	// update may change it but not remove it.
 	as(&database.RaftConfigRequiredError{Name: "db"}, InvalidArgument),
+	// The Raft state storage is recorded at create and fixed: an update
+	// naming another one is refused.
+	as(&database.StateStorageUpdateError{Name: "db", Recorded: database.BackendPebble, Requested: database.BackendMemory}, InvalidArgument),
 	// An admin start in the user range the cluster issues to databases.
 	as(&service.UserRangeShardError{ShardID: 1000}, InvalidArgument),
 	// A raft create on a node with no shard ID issuer: a composition fault.

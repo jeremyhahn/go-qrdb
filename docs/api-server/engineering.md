@@ -377,10 +377,20 @@ transport (rulings 158 and 264(b)).
 | gRPC / Unix `/grpc.health.v1.Health/*` | **public**: liveness only |
 | gRPC / Unix server reflection (`/grpc.reflection.*`) | **not public**. qrdb registers none. One a composer registers is authenticated and default-denied like any other unmapped method, unless the composer declares it public through `GRPCPublicMethodLister` |
 | MCP `GET /.well-known/oauth-protected-resource` | **public**, only when `mcp.WithProtectedResourceMetadata` is configured |
-| MCP `/mcp`, every JSON-RPC method (`initialize`, `ping` and `tools/list` included) | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
-| MCP `/mcp` tools a module declares through `MCPPublicToolLister` | **public**, only those tools; while any exist, an anonymous `initialize`, `notifications/initialized` and `tools/list` are answered too (the listing shows the public set). See [MCP public tools](#mcp-public-tools) |
+| MCP `/mcp` public tools: the built-in `qrdb_health` (from `publicverbs.Table`, when admin is on) and any tool a module declares through `MCPPublicToolLister` | **public**, only those tools; while any exist, an anonymous `initialize`, `notifications/initialized` and `tools/list` are answered too (the listing shows the public set). See [MCP public tools](#mcp-public-tools) |
+| MCP `/mcp`, every other JSON-RPC method (`ping` included) and every other tool | **authenticated at the HTTP layer** before the MCP layer reads the request; each tool call then carries a permission |
 
 Everything else carries a permission.
+
+**The SDK connects without a credential.** Every Go SDK network transport's
+`Connect` confirms the connection with a Health call. Health is public, so a
+client with no certificate and no token connects, and the server's refusal
+comes at its first call that needs an identity, as the typed
+`Unauthenticated` error (ruling 264(b)). A certificate the node cannot verify
+still fails the TLS handshake, so `Connect` fails. The MCP SDK reads the auth
+chain's `401`/`403` on `initialize` and on every `tools/call` through one
+refusal capture (`sdk/go/transport/mcp/refusal_capture.go`), so a refused tool
+call surfaces as the same typed error as on every other transport.
 
 **Public means RBAC-exempt, not ungated.** The two cluster key routes run their
 own authorization sequence in `pkg/clusterkeys` — CA chain, node SPIFFE SAN,
@@ -395,14 +405,16 @@ liveness and readiness probes — declares it from a service module:
 ```go
 func (m *Module) PublicMCPTools() []string {
     return []string{"example_login_begin", "example_login_finish",
-        "example_liveness", "example_readiness", "qrdb_health"}
+        "example_liveness", "example_readiness"}
 }
 ```
 
 `apimodule.MCPPublicToolLister` (re-exported from the SDK as
 `ModuleMCPPublicToolLister`) is the declaration seam, the MCP twin of
-`GRPCPublicMethodLister`. A name may be one of the module's own tools or the
-built-in `qrdb_health`.
+`GRPCPublicMethodLister`. A name may be one of the module's own tools or a
+built-in no-login tool. The built-in `qrdb_health` needs no declaration: it is
+a `publicverbs.Table` verb, public on every transport, so the MCP server
+registers it public itself whenever the admin service is on.
 
 **Registration.** After every built-in and module tool permission is
 registered, the MCP server records each declared name with
@@ -411,12 +423,12 @@ registered, the MCP server records each declared name with
 | Declared name | Outcome |
 |---|---|
 | a module tool with no permission | public |
-| a tool carrying `admin:health` (`qrdb_health`) | public — already public as REST `GET /health` and gRPC health |
+| a tool carrying `identity:public` (`qrdb_health`) | public — already public on every transport through `publicverbs.Table` |
 | a tool carrying any other permission | refused: `*middleware.PublicMCPToolRefusedError` |
 | a name no registered tool answers | refused: `*mcp.UnknownPublicToolError` |
 
 A refusal is returned by `Server.Start`, so the server never serves a surface
-it refused. Every permission other than `admin:health` names a verb that
+it refused. Every permission other than `identity:public` names a verb that
 reaches data or changes the node — KV, SQL, documents, vectors, admin, IAM,
 seal — so the eligible set is closed rather than a deny list a new family
 could slip past. A module's own public tool declares no permission, which
