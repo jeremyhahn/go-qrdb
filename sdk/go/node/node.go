@@ -4324,6 +4324,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		allOpts = append(allOpts, fwdOpt)
 	}
 	allOpts = append(allOpts, server.WithDefaultRetention(cfg.TimeSeries.DefaultRetentionDuration()))
+	allOpts = append(allOpts, n.pendingUserReaperOption(cfg, standalone))
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
