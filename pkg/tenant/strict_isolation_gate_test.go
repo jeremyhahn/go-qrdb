@@ -44,3 +44,11 @@ func TestRequireStrictIsolation_FailsClosed(t *testing.T) {
 	assert.ErrorIs(t, RequireStrictIsolation(strictIsolationService{check: func() error { return refused }}), refused)
 	assert.NoError(t, RequireStrictIsolation(strictIsolationService{check: func() error { return nil }}))
 }
+
+// TestStrictIsolationFeature_MatchesFeatureGate pins the plain value
+// pkg/tenant refuses with to the cluster feature gate's name.
+func TestStrictIsolationFeature_MatchesFeatureGate(t *testing.T) {
+	if strictIsolationFeature != featuregate.StrictIsolation {
+		t.Fatalf("strictIsolationFeature = %q, want %q", strictIsolationFeature, featuregate.StrictIsolation)
+	}
+}

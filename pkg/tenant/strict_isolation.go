@@ -15,9 +15,13 @@
 package tenant
 
 import (
-	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
 )
+
+// strictIsolationFeature is the name of featuregate.StrictIsolation, held
+// here as a plain value so the lean standalone import graph keeps
+// pkg/tenant off pkg/cluster/featuregate; a unit test pins the two equal.
+const strictIsolationFeature feature.Feature = "strict-isolation"
 
 // The cluster isolation floor's strict mode and the per-tenant
 // isolation_policy that opts into it are gated on featuregate.StrictIsolation:
@@ -37,7 +41,7 @@ func RequireStrictIsolation(svc any) error {
 			return check()
 		}
 	}
-	return &feature.NotActiveError{Feature: featuregate.StrictIsolation}
+	return &feature.NotActiveError{Feature: strictIsolationFeature}
 }
 
 // StrictIsolationGate is implemented by a tenant service that carries the
