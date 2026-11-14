@@ -110,6 +110,7 @@ func raftInfo(r *database.DatabaseRaftConfig) *transport.DatabaseRaftInfo {
 	}
 	out := &transport.DatabaseRaftInfo{
 		ClusterMode:    string(r.ClusterMode),
+		StateStorage:   string(r.StateStorage),
 		ReplicaID:      r.ReplicaID,
 		RaftAddress:    r.RaftAddress,
 		Peers:          r.Peers,
@@ -215,6 +216,7 @@ func raftInfoProto(r *database.DatabaseRaftConfig) *pb.DatabaseRaftInfo {
 	}
 	out := &pb.DatabaseRaftInfo{
 		ClusterMode:    string(r.ClusterMode),
+		StateStorage:   string(r.StateStorage),
 		ReplicaId:      r.ReplicaID,
 		RaftAddress:    r.RaftAddress,
 		Peers:          r.Peers,

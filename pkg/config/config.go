@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -153,25 +154,28 @@ type Config struct {
 	// node holds no replica of to a node that does.
 	ReplicaForwarding ReplicaForwardingConfig `yaml:"replica_forwarding"`
 
-	MVCC          MVCCConfig          `yaml:"mvcc"`
-	Watch         WatchConfig         `yaml:"watch"`
-	Lease         LeaseConfig         `yaml:"lease"`
-	Index         IndexConfig         `yaml:"index"`
-	TimeSeries    TimeSeriesConfig    `yaml:"timeseries"`
-	WriteMode     WriteModeConfig     `yaml:"write_mode"`
-	Auth          AuthConfig          `yaml:"auth"`
-	CORS          CORSConfig          `yaml:"cors"`
-	SQL           SQLConfig           `yaml:"sql"`
-	Codec         CodecConfig         `yaml:"codec"`
-	Seal          SealConfig          `yaml:"seal"`
-	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
-	ClusterJoin   ClusterJoinConfig   `yaml:"cluster_join"`
-	Databases     []DatabaseConfig    `yaml:"databases,omitempty" json:"databases,omitempty"`
-	Embedding     EmbeddingConfig     `yaml:"embedding"`
-	RAG           RAGConfig           `yaml:"rag"`
-	Tenant        TenantConfig        `yaml:"tenant"`
-	Transport     TransportConfig     `yaml:"transport"`
-	ImportSession ImportSessionConfig `yaml:"import_session"`
+	MVCC        MVCCConfig        `yaml:"mvcc"`
+	Watch       WatchConfig       `yaml:"watch"`
+	Lease       LeaseConfig       `yaml:"lease"`
+	Index       IndexConfig       `yaml:"index"`
+	TimeSeries  TimeSeriesConfig  `yaml:"timeseries"`
+	WriteMode   WriteModeConfig   `yaml:"write_mode"`
+	Auth        AuthConfig        `yaml:"auth"`
+	CORS        CORSConfig        `yaml:"cors"`
+	SQL         SQLConfig         `yaml:"sql"`
+	Codec       CodecConfig       `yaml:"codec"`
+	Seal        SealConfig        `yaml:"seal"`
+	Bootstrap   BootstrapConfig   `yaml:"bootstrap"`
+	ClusterJoin ClusterJoinConfig `yaml:"cluster_join"`
+	Databases   []DatabaseConfig  `yaml:"databases,omitempty" json:"databases,omitempty"`
+	// DatabaseDefaults are filled into a database record at creation when
+	// the caller left the field empty (docs/databases/architecture.md).
+	DatabaseDefaults DatabaseDefaults    `yaml:"database_defaults,omitempty" json:"database_defaults,omitempty"`
+	Embedding        EmbeddingConfig     `yaml:"embedding"`
+	RAG              RAGConfig           `yaml:"rag"`
+	Tenant           TenantConfig        `yaml:"tenant"`
+	Transport        TransportConfig     `yaml:"transport"`
+	ImportSession    ImportSessionConfig `yaml:"import_session"`
 }
 
 // TransportConfig bounds resources every API transport (REST, gRPC, the
@@ -1543,6 +1547,13 @@ type CORSConfig struct {
 	// MaxAge is the maximum age (in seconds) for preflight cache.
 	// Default: 3600.
 	MaxAge int `yaml:"max_age"`
+
+	// AllowCredentials lets a cross-origin browser call carry credentials
+	// (cookies, a TLS client certificate, an Authorization header the
+	// browser manages): the REST server answers an allowed origin with
+	// Access-Control-Allow-Credentials: true. It cannot be combined with
+	// the "*" origin. Default: false.
+	AllowCredentials bool `yaml:"allow_credentials"`
 }
 
 // GRPCWebConfig is the server.grpc_web block: gRPC-Web on the REST server.
@@ -2417,6 +2428,9 @@ func (c *Config) Validate() error {
 	if err := validateVolumePools(c.Storage.VolumePools, c.Raft.DataDir); err != nil {
 		return err
 	}
+	if err := c.DatabaseDefaults.Validate(); err != nil {
+		return err
+	}
 
 	// TLS validation: cert/key files are not required because the daemon
 	// auto-generates them via resolveTLS when omitted. Only validate
@@ -2583,6 +2597,10 @@ func (c *Config) Validate() error {
 	// CORS validation.
 	if c.CORS.MaxAge < 0 {
 		return &ValidationError{Field: "cors.max_age", Reason: "must not be negative"}
+	}
+	if c.CORS.AllowCredentials && slices.Contains(c.CORS.AllowedOrigins, "*") {
+		// The Fetch standard forbids credentials with the "*" origin.
+		return &ValidationError{Field: "cors.allow_credentials", Reason: `cannot be combined with the "*" origin`}
 	}
 
 	// SQL validation.

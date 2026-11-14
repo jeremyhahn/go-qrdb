@@ -354,5 +354,15 @@ func (t *Transport) dispatchEvent(data []byte, id mcp.RequestId) *mcptransport.J
 
 func statusError(resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, errorBodyLimit))
-	return fmt.Errorf("mcphttp: the server answered %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	msg := strings.TrimSpace(string(b))
+	// The server's auth middleware answers a refusal as the JSON object
+	// {"error": "<message>"}; report the message itself, not its JSON
+	// encoding, so the caller sees the refusal text unescaped.
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(b, &body); err == nil && body.Error != "" {
+		msg = body.Error
+	}
+	return fmt.Errorf("mcphttp: the server answered %s: %s", resp.Status, msg)
 }

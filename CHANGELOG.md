@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, MINOR is where breaking changes live; PATCH is reserved for changes
-that do not move the API. Releases before `0.2.0-alpha` predate this file and
+that do not move the API. What holds from the first release candidate on is
+proposed in [docs/release/compatibility.md](docs/release/compatibility.md).
+Releases before `0.2.0-alpha` predate this file and
 are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
@@ -14,11 +16,14 @@ are not reconstructed here — their history is in the git log.
 ### Changed
 
 - **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
+- **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
 
 ### Added
 
+- **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
+- **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
-- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
@@ -27,7 +32,12 @@ are not reconstructed here — their history is in the git log.
 - **A tenant can hold standing delegation policies** (#1187). A policy is the
   tenant's grant written down once (one per principal: `scope` and `ttl`), so an
   embedder's server-owned work can mint and renew its delegation with no tenant
-  admin at hand. Writing, listing and deleting policies needs `certs:delegate`
+  admin at hand. REST `POST|GET /certs/delegate/policies` and
+  `DELETE /certs/delegate/policies/{principal}`, gRPC and Unix
+  `PutDelegationPolicy` / `ListDelegationPolicies` / `DeleteDelegationPolicy`,
+  QUIC `cert.DelegationPolicyPut|List|Delete`, the MCP tools
+  `qrdb_cert_delegation_policy_put|list|delete`, and the Go SDK methods of the
+  same names write, list and delete them. Each needs `certs:delegate`
   in the caller's own tenant and refuses the system tenant and a delegated
   caller; put and delete are audited as `cert.delegation_policy.put` /
   `cert.delegation_policy.delete`, and a missing policy is

@@ -1017,6 +1017,17 @@ the policy is that grant written down.
   `cert.delegation_policy.delete` and `cert.delegation.mint` are recorded under
   the tenant, and every use of a minted certificate is audited as any
   delegation is.
+- **What an embedder runs under it.** The four server-owned operations an
+  embedder needs inside tenant X run under a policy-minted delegation, through
+  the node's authorization middleware, with no system grant: role and
+  effective-permission reads for one account before it authenticates
+  (`roles:read`, `users:read`, `permissions:resolve`), role-binding writes for
+  federated login (`roles:assign`, `roles:unassign`), and
+  `tenant_barrier:officer_list` and `tenant_barrier:seal` for X. Each is
+  allowed in X and audited there (`auth.authorize` under X), refused in every
+  other tenant and in the system tenant, and refused on the next call once the
+  policy is deleted and the serial revoked; every transport applies the same
+  requirement (ruling 158).
 
 ## Component boundaries
 

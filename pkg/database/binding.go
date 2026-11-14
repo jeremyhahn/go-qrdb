@@ -135,6 +135,10 @@ type Defaults struct {
 	// RaftStateStorage is the default state storage of a raft database's
 	// group. Empty selects DefaultRaftStateStorage.
 	RaftStateStorage BackendType
+	// RunMode is the node's run mode. A create whose backend neither the
+	// request nor Backend names records the run mode's default backend
+	// (raft in raft mode, pebble in standalone mode). Empty records none.
+	RunMode RunMode
 }
 
 // BindingNode is the node-level input to ResolveBinding.
@@ -311,6 +315,8 @@ func raftOptionSet(cfg *DatabaseConfig) string {
 		return "raft.peers"
 	case r.LocalNodeCount != 0:
 		return "raft.localNodeCount"
+	case r.StateStorage != "":
+		return "raft.stateStorage"
 	case r.Discovery != "" || r.Static != nil || r.Multicast != nil || r.DNS != nil || r.Token != nil:
 		return "raft.discovery"
 	}
@@ -379,6 +385,10 @@ func resolveRaftBinding(cfg *DatabaseConfig, isolation tenant.IsolationType, pla
 		DedicatedWAL: cfg.DedicatedWAL && isolation == tenant.IsolationRaft,
 		Replicas:     cfg.Replicas,
 		StateStorage: d.RaftStateStorage,
+	}
+	// The record's state storage, resolved at create, wins over the node's.
+	if cfg.Raft != nil && cfg.Raft.StateStorage != "" {
+		rb.StateStorage = cfg.Raft.StateStorage
 	}
 	if rb.Replicas == 0 {
 		rb.Replicas = d.Replicas
