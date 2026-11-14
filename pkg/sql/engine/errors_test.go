@@ -27,9 +27,3 @@ func TestUnsupportedSyntaxError_Error(t *testing.T) {
 	expected := "sql/engine: unsupported PostgreSQL syntax: LATERAL JOIN"
 	assert.Equal(t, expected, err.Error())
 }
-
-func TestUnsupportedSyntaxError_ImplementsError(t *testing.T) {
-	var err error = &UnsupportedSyntaxError{Feature: "ARRAY constructor"}
-	assert.NotNil(t, err)
-	assert.Contains(t, err.Error(), "unsupported PostgreSQL syntax")
-}

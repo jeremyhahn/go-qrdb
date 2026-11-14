@@ -110,6 +110,7 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/service | TestInvalidVectorErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestInvalidVectorError |
 | pkg/service | TestInvalidNamespaceNameErrorImplementsError | tests errors.As on the concrete pointer (stdlib) | TestInvalidNamespaceNameError |
 | pkg/audit | TestAggregateLogger_ImplementsAuditLogger | tautology (no assertion: `var _ = NewAggregateLogger()`) | TestAggregateLogger_ImplementsVerifier |
+| pkg/sql/engine | TestUnsupportedSyntaxError_ImplementsError | weaker duplicate of the message check | TestUnsupportedSyntaxError_Error |
 
 ## Trimmed tests
 
