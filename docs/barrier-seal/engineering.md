@@ -1941,9 +1941,10 @@ opens for a `file` database holds no data unless the database carries a
 per-database barrier, and then the barrier encrypts its values (not its keys)
 separately. A configured database after the first, or one created at runtime,
 therefore adds no gap of its own; on a standalone node the first configured
-database's backend *is* the node's store. `objstore` is a node-store backend
-only: the database manager refuses to open a database with it
-(`database.InvalidBackendError`).
+database's backend *is* the node's store. A seal-enabled node's database
+manager refuses an `objstore` database (`database.WithSealedNode`,
+`database.SealedNodeBackendError`), so no runtime-created database stores
+data outside the barrier.
 
 ### `seal.enabled: false` barrier service
 

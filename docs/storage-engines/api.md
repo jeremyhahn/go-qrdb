@@ -11,10 +11,17 @@ an engine; none of them expose the engine itself.
 
 What is observable over the wire is a database's configured backend, through
 [../databases/api.md](../databases/api.md): `DatabaseInfo.Backend`
-(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A per-database
-`objstore` backend passes config validation but is refused when the database
-opens (`database.InvalidBackendError`); `objstore` serves only as the
-standalone node's `storage.backend`.
+(`pebble | memory | file | raft`) and `DatabaseInfo.DataDir`. A database's
+`backend: objstore` opens the objstore engine from the database's own
+`objstore` settings (`provider`, `settings`, `key_file`, `secret_file`):
+`openStorage` calls `objstore.New` with `objstore.WithCredentialFiles`, so
+the engine opens the credential handle and never holds a plaintext copy; an
+open that fails returns `database.StorageCreateError` wrapping the objstore
+error (`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
+A node running under the seal refuses such a database at create
+(`database.SealedNodeBackendError`): the barrier never reaches a
+provider's objects. `objstore` also serves as the standalone node's
+`storage.backend`.
 
 ### Optional `GuardedStorage`
 
@@ -170,13 +177,12 @@ for the full design, future work under the SPEC row `object-storage-lsm`.
 - There is still no wire API for storage engines (this feature has none
   today, per "Storage engines" above), and this design does not add one.
 
-Three things a caller observes today would change:
+Two things a caller observes today would change (a database's
+`backend: objstore` already opens, on the objstore engine directly):
 
 - **The capability report's `unencryptedAtRest` list** stops naming a
   standalone `objstore` store under the seal, because the design encrypts
   every remote object through the barrier (OS-4).
-- **A database's `backend: objstore`** stops being refused when the database
-  opens (`database.InvalidBackendError`), in phase 2 of the design.
 - **`raft.sm_storage`/`state_storage: objstore`** stays refused (see
   [engineering.md](engineering.md)'s error table). Lifting the Raft
   hot-apply-path refusal is OS-7, deferred to a gated phase 3, and is called
