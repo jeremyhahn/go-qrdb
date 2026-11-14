@@ -978,7 +978,8 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 		if dbDefaults.RunMode == "" {
 			dbDefaults.RunMode = database.RunModeForBackend(infra.Backend)
 		}
-		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults))
+		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults),
+			database.WithSealedNode(infra.SealBarrier != nil))
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 

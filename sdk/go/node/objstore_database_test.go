@@ -51,8 +51,8 @@ func TestStandaloneNode_SealedPebbleNodeRefusesAnObjstoreDatabase(t *testing.T) 
 		_, err := mgr.Create(dbCfg)
 		require.Errorf(t, err, "Create(%s) is refused", dbCfg.Name)
 		if dbCfg.Barrier == nil {
-			var invalid *database.InvalidBackendError
-			require.ErrorAsf(t, err, &invalid, "Create(%s) = %v, want *database.InvalidBackendError", dbCfg.Name, err)
+			var sealed *database.SealedNodeBackendError
+			require.ErrorAsf(t, err, &sealed, "Create(%s) = %v, want *database.SealedNodeBackendError", dbCfg.Name, err)
 		} else {
 			var shared *database.SharedStoreBarrierUnsupportedError
 			require.ErrorAsf(t, err, &shared, "Create(%s) = %v, want *database.SharedStoreBarrierUnsupportedError", dbCfg.Name, err)

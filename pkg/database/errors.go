@@ -55,6 +55,21 @@ func (e *InvalidBackendError) Error() string {
 	return "database: invalid backend type: " + strconv.Quote(e.Backend)
 }
 
+// SealedNodeBackendError is returned when a node running under the seal
+// barrier is asked to create a database whose store lies outside the
+// barrier (backend objstore): the barrier's encrypting file system never
+// reaches a provider's objects, so the database would store its data
+// unencrypted at rest. See WithSealedNode.
+type SealedNodeBackendError struct {
+	Name    string
+	Backend BackendType
+}
+
+func (e *SealedNodeBackendError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend " + strconv.Quote(string(e.Backend)) +
+		" stores data outside the seal barrier and is refused on a sealed node"
+}
+
 // AlreadyExistsError is returned when attempting to create a database with
 // a name that is already in use.
 type AlreadyExistsError struct {

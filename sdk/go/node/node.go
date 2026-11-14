@@ -1946,7 +1946,8 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // refused while sealed. The manager carries the node's database_defaults
 // (standaloneDatabaseDefaults), as the daemon's does.
 func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)),
+		database.WithSealedNode(cfg.Seal.Enabled))
 	n.dbManager = dbManager
 	return dbManager
 }

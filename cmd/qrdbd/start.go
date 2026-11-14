@@ -1522,7 +1522,8 @@ func runStart(f *startFlags) (err error) {
 	if f.mode == capabilities.ModeStandalone {
 		dbDefaults.RunMode = database.RunModeStandalone
 	}
-	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults))
+	dbManager := database.NewManager(slog.Default(), f.dataDir, database.WithDefaults(dbDefaults),
+		database.WithSealedNode(f.sealConfig.Enabled))
 	defer func() { _ = dbManager.Close() }()
 
 	// Use default database configs when no YAML config was provided.

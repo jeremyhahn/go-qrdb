@@ -95,6 +95,9 @@ type Manager struct {
 	// defaults are the node's database_defaults, filled into a new
 	// database's record at create (WithDefaults).
 	defaults Defaults
+	// sealedNode is set by WithSealedNode: create refuses a database whose
+	// store lies outside the seal barrier (objstore).
+	sealedNode bool
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
@@ -151,6 +154,17 @@ func NewManager(logger *slog.Logger, dataDir string, opts ...ManagerOption) *Man
 
 // ManagerOption configures optional Manager behavior.
 type ManagerOption func(*Manager)
+
+// WithSealedNode marks the node as running under the seal barrier. Such a
+// node's manager refuses to create a database whose store lies outside the
+// barrier -- an objstore database, whose objects the barrier's encrypting
+// file system never reaches -- with *SealedNodeBackendError, so no
+// runtime-created database adds an unencrypted-at-rest gap.
+func WithSealedNode(sealed bool) ManagerOption {
+	return func(m *Manager) {
+		m.sealedNode = sealed
+	}
+}
 
 // WithBackendFactory sets a custom BackendFactory for the Manager.
 func WithBackendFactory(f BackendFactory) ManagerOption {
@@ -322,6 +336,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 		if err := barrierDataPathError(cfg); err != nil {
 			return nil, err
 		}
+	}
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: cfg.Name, Backend: cfg.Backend}
 	}
 	// Shard IDs are issued by the cluster. A caller naming one could put a
 	// database on another database's Raft group, or on a reserved shard such

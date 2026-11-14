@@ -698,6 +698,36 @@ func TestOpenStorage_ObjstoreUnknownProvider(t *testing.T) {
 	}
 }
 
+// A sealed node's manager refuses an objstore database before anything is
+// created, while an unsealed node's manager opens it.
+func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {
+	p := objstoretest.NewProvider(t)
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: p.Name()}}
+
+	sealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(true))
+	t.Cleanup(func() { _ = sealed.Close() })
+	_, err := sealed.Create(cfg)
+	var refused *SealedNodeBackendError
+	if !errors.As(err, &refused) || refused.Name != "blobs" || refused.Backend != BackendObjstore {
+		t.Fatalf("sealed Create(objstore) = %v, want *SealedNodeBackendError", err)
+	}
+	if _, err := sealed.Get("blobs"); err == nil {
+		t.Fatal("the refused objstore database is served")
+	}
+	if len(p.Deliveries()) != 0 {
+		t.Fatal("the refused objstore database reached the provider")
+	}
+	if _, err := sealed.Create(DatabaseConfig{Name: "kv", Backend: BackendMemory}); err != nil {
+		t.Fatalf("sealed Create(memory): %v", err)
+	}
+
+	unsealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(false))
+	t.Cleanup(func() { _ = unsealed.Close() })
+	if _, err := unsealed.Create(cfg); err != nil {
+		t.Fatalf("unsealed Create(objstore): %v", err)
+	}
+}
+
 func TestOpenStorage_Raft(t *testing.T) {
 	// openStorage returns a lightweight in-memory placeholder for the raft
 	// backend: the authoritative data plane is the per-database shard on the
