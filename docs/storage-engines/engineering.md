@@ -565,10 +565,11 @@ key, never shared between instances.
   in-test S3 endpoint that admits a request only when its SigV4 signature
   recomputes with the key and secret generated for the run, and neither
   value then appears in the node's output, its data or configuration
-  directory, or the bucket. The s3 provider currently answers a missing
-  object with the SDK's `NoSuchKey` error rather than go-objstore's
-  `ErrKeyNotFound`, so the engine cannot yet open an empty S3 bucket; the
-  test stops the node once a signed request has verified.
+  directory, or the bucket. The engine formats the empty bucket at open, so
+  the signed PUT of its format marker is the proof; the test then stops the
+  node, because serving a database on `objstore` is the
+  `object-storage-provider` row's (the database manager still refuses it,
+  `database.InvalidBackendError`).
 - **The provider is released once, after the last call.** Every engine call
   holds the engine's lifetime lock shared from its closed check to its
   return, and checks closed again once it holds it. `Close` marks the engine

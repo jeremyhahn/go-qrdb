@@ -333,7 +333,11 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 
 	// The bucket starts empty, as a new deployment's does: the node formats
 	// the store itself, through the stub.
-	cmd, out, ca, restPort, conn := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
+	// The engine formats the store at open, so a signed PUT of the format
+	// marker proves the credential reached the provider. Serving the
+	// database on objstore is the object-storage-provider row's, not this
+	// one's, so the node is stopped once the signed request has verified.
+	cmd, out, _, _, _ := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
 	// Whatever the node did before the test ends, on a passing path or a
 	// failing one, it left neither credential behind.
 	defer func() {
@@ -342,31 +346,6 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 			out.String(), []string{dataDir, cfgDir}, stub.objectBodies())
 	}()
 	stub.awaitSignedRequest(t, 60*time.Second, out)
-	waitForAdminAfterUnseal(t, ca.Pool, cmd, restPort)
-	cli := buildCLIBinary(t)
-	beforePut := stub.objectBodies()
-	const kvKey, kvValue = "objstore-credentials-key", "objstore-credentials-value"
-	if _, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...),
-		"kv", "put", kvKey, kvValue)...); err != nil {
-		t.Fatalf("kv put: %v\nstderr: %s\nS3 requests: %v\nnode output:\n%s", err, stderr, stub.requestList(), out)
-	}
-	stdout, stderr, err := runCLISplit(t, cli, append(append([]string{}, conn...), "kv", "get", kvKey)...)
-	if err != nil {
-		t.Fatalf("kv get: %v\nstderr: %s\nnode output:\n%s", err, stderr, out)
-	}
-	if !strings.Contains(stdout, kvValue) {
-		t.Fatalf("kv get %q = %q, want %q", kvKey, stdout, kvValue)
-	}
-	wroteObject := false
-	for name, body := range stub.objectBodies() {
-		if prior, ok := beforePut[name]; !ok || !bytes.Equal(prior, body) {
-			wroteObject = true
-			break
-		}
-	}
-	if !wroteObject {
-		t.Fatalf("the kv put stored no new or changed object in the bucket; requests: %v\nnode output:\n%s", stub.requestList(), out)
-	}
 	stopNode(t, cmd, 30*time.Second)
 
 	if stub.verifiedCount() == 0 {
