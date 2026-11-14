@@ -404,28 +404,28 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	//   Path A (generate-and-distribute): else CA generates the key+cert bundle,
 	//     which must be securely distributed to the admin.
 	// There is no invite/activation token — enrollment is cert-based.
+	//
+	// The certificate is issued here but bound only after step 5: the SO
+	// enrollment can fail (account, PIN, signing, binding), and a binding
+	// committed before it would make a retry see a bound admin and skip
+	// generation, losing a generated admin private key with the failed
+	// run's result. Bound last, a failure leaves the admin unbound and the
+	// retry issues a fresh, usable credential.
+	var bindThumbprint string
 	if needsBinding {
 		certPEM, keyPEM, issueErr := issueAdminCert(ctx, deps, tenantID)
 		if issueErr != nil {
 			return nil, issueErr
 		}
 		if len(certPEM) > 0 {
-			result.AdminCertPEM = certPEM
-			result.AdminKeyPEM = keyPEM
 			thumbprint, tpErr := spkiThumbprintFromCertPEM(certPEM)
 			if tpErr != nil {
 				return nil, &AdminCertGenerationError{Cause: tpErr}
 			}
+			result.AdminCertPEM = certPEM
+			result.AdminKeyPEM = keyPEM
 			result.AdminCertThumbprint = thumbprint
-			if deps.Binder != nil && adminUser != nil {
-				if bindErr := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, thumbprint); bindErr != nil {
-					return nil, &AdminCertBindError{Cause: bindErr}
-				}
-				logger.Info("first-boot: admin cert bound",
-					slog.String("tenant", tenantID),
-					slog.Uint64("user_id", adminUser.ID),
-				)
-			}
+			bindThumbprint = thumbprint
 			logger.Info("first-boot: admin cert issued",
 				slog.String("tenant", tenantID),
 				slog.String("subject", adminUsername),
@@ -439,6 +439,18 @@ func Initialize(ctx context.Context, deps Dependencies) (*Result, error) {
 	// roles and run the built-in reconcile.
 	if err := enrollSystemSO(ctx, deps, tenantID, result); err != nil {
 		return nil, err
+	}
+
+	// Step 6: commit the admin binding issued in step 4, the last fallible
+	// write of the run.
+	if bindThumbprint != "" && deps.Binder != nil && adminUser != nil {
+		if bindErr := deps.Binder.BindAdminCert(ctx, tenantID, adminUser.ID, bindThumbprint); bindErr != nil {
+			return nil, &AdminCertBindError{Cause: bindErr}
+		}
+		logger.Info("first-boot: admin cert bound",
+			slog.String("tenant", tenantID),
+			slog.Uint64("user_id", adminUser.ID),
+		)
 	}
 
 	// Under "required", verify the OUTCOME, not only the inputs the
