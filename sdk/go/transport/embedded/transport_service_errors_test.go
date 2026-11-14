@@ -373,6 +373,7 @@ func TestEmbedded_VectorDispatch_ErrorPaths(t *testing.T) {
 		req  any
 	}{
 		{"CreateNamespace", &transport.CreateNamespaceRequest{}},
+		{"UpdateNamespace", &transport.UpdateNamespaceRequest{}},
 		{"DeleteNamespace", &transport.DeleteNamespaceRequest{}},
 		{"ListNamespaces", &transport.ListNamespacesRequest{}},
 		{"GetNamespaceInfo", &transport.GetNamespaceInfoRequest{}},

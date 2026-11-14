@@ -147,6 +147,17 @@ func TestEmbeddedVector_Dispatch(t *testing.T) {
 			t.Errorf("CreateNamespace = %+v, want ns/4/success", resp)
 		}
 	})
+	t.Run("UpdateNamespace", func(t *testing.T) {
+		var resp *transport.UpdateNamespaceResponse
+		request(t, "UpdateNamespace", &transport.UpdateNamespaceRequest{Namespace: "ns", IndexConfig: map[string]string{"m": "16"}}, &resp)
+		if resp.Namespace != "ns" || !resp.RequiresRebuild || !resp.Success {
+			t.Errorf("UpdateNamespace = %+v, want ns/rebuild/success", resp)
+		}
+		var invalid *InvalidRequestError
+		if err := tr.Request(ctx, "UpdateNamespace", &transport.CreateNamespaceRequest{}, &resp); !errors.As(err, &invalid) {
+			t.Errorf("UpdateNamespace with a create request: err = %v, want *InvalidRequestError", err)
+		}
+	})
 	t.Run("DeleteNamespace", func(t *testing.T) {
 		var resp *transport.DeleteNamespaceResponse
 		request(t, "DeleteNamespace", &transport.DeleteNamespaceRequest{}, &resp)
