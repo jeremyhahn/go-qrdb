@@ -1290,7 +1290,36 @@ func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
 func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.enrollmentOpenLocked(ctx)
+	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx)
+}
+
+// singleAdminSOWriteRetryOpenLocked reports the one sealed state, besides a
+// fresh node, in which the sealed gate must still admit a pre-operational
+// call: a single-admin Initialize whose system SO record write failed. That
+// call provisioned the PINs and initialized the system barrier, then sealed
+// it again (abandonSingleAdminInitLocked), and only its retry -- which
+// proves the same SO PIN and unseals with the same secret -- completes the
+// node. The state is told apart from every other initialized barrier by
+// the SO PIN the failed call provisioned: a barrier initialized without a
+// ceremony holds none, and an M-of-N ceremony restores to StateEnrolling.
+//
+// It opens the gate only: enrollmentOpenLocked still answers closed, so
+// officer, recovery-officer and CSR enrollment are refused in this state
+// and the ceremony Initialize retry is the only call it admits.
+func (s *CeremonyService) singleAdminSOWriteRetryOpenLocked(ctx context.Context) bool {
+	if s.state != StateAwaitingInit || s.pins == nil || !s.pins.SOPINSet() || !s.barrier.IsSealed() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	if ctx.Err() != nil {
+		return false
+	}
+	if marked, err := s.barrier.CeremonyOperational(ctx); err != nil || marked {
+		return false
+	}
+	initialized, err := s.barrier.Initialized(ctx)
+	return err == nil && initialized
 }
 
 // enrollmentProbeTimeout bounds every boot-time read of the barrier's
