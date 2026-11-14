@@ -105,7 +105,7 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `test/buildgates/fips_legs_test.go` | the `fips` job's parallel legs are exactly `make test` and `make test-sdk` (#1230): every package `go list` finds under `make -s print-test-pkgs` and in `sdk/go` is printed by `make -s print-unit-leg-packages` for exactly one leg of `make -s print-fips-legs` (`UNIT_LEGS`), no leg is empty or runs a package outside both suites, and ci.yml's `fips` matrix is one literal `include:` list naming every leg once, each with its own `minutes` limit over 5 and at most 350 (a hosted job's ceiling, DS-7377), with `timeout-minutes: ${{ matrix.minutes }}`, `fail-fast: false` and one step running `make test-fips-leg FIPS_LEG='$FIPS_LEG'` from `${{ matrix.leg }}` with `GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m` from `${{ matrix.minutes }}`; a package may be in two legs only when both select tests by name; discovery floors on the leg and package counts, and a fixture mutation for each rule |
 | `test/buildgates/fips_split_test.go` | a package the `fips` job splits by test name (#1234) runs each of its top-level tests in exactly one of its legs: every `Test`, `Fuzz` and `Example` function `go list` and `go/parser` find in the package's test files under `make -s print-build-tags` is selected by the `-run` and `-skip` patterns `make -s print-fips-leg-filter` prints for exactly one leg, each split leg names one package, and every pattern compiles and holds no `/`, quote, comma or space; discovery floors on the split-package and test counts, and a case for each rule |
 | `test/buildgates/coverage_legs_test.go` | the sharded unit suites (DS-7377): `COVER_LEGS` and `FIPS_LEGS` are `UNIT_LEGS` and `TEST_SDK_LEGS` names only unit legs; ci.yml's and release.yml's `coverage` matrices are exactly `make -s print-coverage-legs`, and ci.yml's `test-sdk` matrix exactly `make -s print-test-sdk-legs`, each leg named once, no other axis, `fail-fast: false`, a literal `timeout-minutes` of at most 350 with go test's `GOTEST_TIMEOUT` that limit less 5 minutes, one step running the matrix's leg, and for a coverage leg the profile copied out of the stage (`IN_IMAGE_COPY_OUT`) and uploaded as `coverage-leg-<leg>`; each workflow's `coverage-merge` needs `coverage`, downloads every `coverage-leg-*` profile into `coverage/` and runs `make coverage-merge`. Discovery floors on the leg counts, and a fixture mutation for each rule |
-| `test/buildgates/ci_runners_test.go` | where the workflows run (DS-7377): every `runs-on` is the literal `ubuntu-latest` but `code-review.yml`'s; no `if:` splits on `github.server_url` but in `nightly.yml`'s `signal`, which speaks the Gitea API, and in `batch.yml`; no workflow names the removed self-hosted machinery and no removed script is back in `scripts/`; every job has a `timeout-minutes` of at most 350; every `actions/cache` save is `actions/cache/save` under `env.CI_PUBLISH == 'true'`, never the combined action; no workflow writes a `GOMAXPROCS` or `go -p` count. Discovery floors on the workflow and job counts, and a fixture mutation for each rule |
+| `test/buildgates/ci_runners_test.go` | where the workflows run (DS-7377, CA ruling 617): every ci.yml job's `runs-on` is exactly one of two expressions, the self-hosted `bigdisk-docker` pool for a job that needs Docker (a `container:`, `services:`, a docker command or action, a compose-stack make target, the image wrappers) or the Docker-free `bigdisk` pool for one that needs none, on a push to `main` and a same-repository pull request, and `ubuntu-latest` for anything else (a fork's pull request included); ci.yml has no `pull_request_target` trigger, no step that wipes a hosted runner's disk (`sudo rm`, `docker prune`) without `runner.environment == 'github-hosted'`, and a floor of jobs on each pool; every other workflow's `runs-on` is the literal `ubuntu-latest` but `code-review.yml`'s; `test-typescript` leaves no credential in its checkout and installs no apt package on the pool; no `if:` splits on `github.server_url` but in `nightly.yml`'s `signal`, which speaks the Gitea API, and in `batch.yml`; no workflow names the removed self-hosted machinery and no removed script is back in `scripts/`; every job has a `timeout-minutes` of at most 350; every `actions/cache` save is `actions/cache/save` under `env.CI_PUBLISH == 'true'`, never the combined action; no workflow writes a `GOMAXPROCS` or `go -p` count. Discovery floors on the workflow and job counts, and a fixture mutation for each rule |
 
 ## Test tooling this feature folder also owns
 
@@ -188,18 +188,30 @@ golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
 (`-oneline`) name a finding without quoting the line it is in, so a log never
 repeats the value a scanner exists to keep out of the tree.
 
-**Every job runs on a GitHub-hosted `ubuntu-latest` runner** (DS-7377): an
+**ci.yml's jobs run on the self-hosted pools for this repository's own
+pushes and pull requests, and on GitHub-hosted `ubuntu-latest` otherwise**
+(CA ruling 617). A push to `main` and a pull request whose head is this
+repository run a job that needs Docker (a `container:`, `services:`, a docker
+command or action, `scripts/in-toolchain-image.sh`) on the `bigdisk-docker`
+pool and a Docker-free job on the `bigdisk` pool, which has no Docker daemon;
+a fork's pull request, a schedule and a dispatch run on `ubuntu-latest`, an
 ephemeral VM with 4 vCPUs, 16 GB of memory, about 14 GB of free disk and a
-6-hour job limit, exclusive to one job. Every `runs-on` is that literal label;
-the review jobs in `code-review.yml` alone keep their self-hosted hosts. No
+6-hour job limit, exclusive to one job. Each job's `runs-on` is one of two
+expressions, character for character, with `ubuntu-latest` as its fallback,
+and the "Free the runner's disk" step runs on the hosted runner alone
+(`runner.environment == 'github-hosted'`), never on a shared pool host. Every
+other workflow's `runs-on` is the literal `ubuntu-latest`; the review jobs in
+`code-review.yml` alone keep their self-hosted hosts. No
 `if:` splits on `github.server_url` but in the one job that speaks the Gitea
 API, `nightly.yml`'s `signal`, which keeps its guard so that it never runs on
 github.com. Every job has a
 `timeout-minutes` of at most 350, under the runner's 360, so a runaway job is
 named rather than cancelled unnamed. `test/buildgates/ci_runners_test.go`
-fails on any other `runs-on`, a `server_url` split outside those jobs, a job
-with no limit or one over 350, a name of the removed self-hosted machinery
-(the `bigdisk`, `batch` and `ci-gate` labels, the forge registry and its
+fails on any other `runs-on`, a Docker job on the `bigdisk` pool or a
+Docker-free one on `bigdisk-docker`, a disk wipe a pool host could run, a
+`pull_request_target` trigger in ci.yml, a `server_url` split outside those
+jobs, a job with no limit or one over 350, a name of the removed self-hosted
+machinery (the `batch` and `ci-gate` labels, `bigdisk` outside ci.yml, the forge registry and its
 `RELEASE_REGISTRY` credential, the named cache volumes and their trim, the
 stale-stack reaper, the schedule guard), a removed script back in `scripts/`,
 an `actions/cache` save on any event but a push to `main`, and a written
@@ -562,10 +574,11 @@ those jobs' checks; `ci-gate` still fails the run on any red check. The label go
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 
-Each shard runs on its own `ubuntu-latest` runner, as the image job and the
-standalone and soak jobs do. Load on a runner breaks a 3-node cluster's
-elections and a CLI call's 10-second deadline first; a hosted runner VM runs
-one job, so the load is the shard's own. The selection runs
+Each shard runs on its own runner, a `bigdisk-docker` pool host or, for a
+fork, `ubuntu-latest`, as the image job and the standalone and soak jobs do.
+Load on a runner breaks a 3-node cluster's elections and a CLI call's
+10-second deadline first; a hosted runner VM runs one job, so the load there
+is the shard's own. The selection runs
 `go test -timeout=30m` per package, under the job's limit, so a hung test
 still dumps its goroutines.
 
@@ -669,8 +682,9 @@ docker for the lowering, the pass-through and every refusal.
 ### Batch workflow
 
 `.github/workflows/batch.yml` is long-running CPU work that never gates a
-merge: it is `workflow_dispatch` only and, like every other job but
-code review's, runs on GitHub-hosted `ubuntu-latest` (DS-7377).
+merge: it is `workflow_dispatch` only and, like every workflow but ci.yml
+(whose jobs take the self-hosted pools, ruling 617) and code review, runs
+on GitHub-hosted `ubuntu-latest` (DS-7377).
 Dispatch it on `main` after a merge:
 
 ```
