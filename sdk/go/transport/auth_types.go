@@ -51,6 +51,9 @@ type User struct {
 	// LastAuth is the last successful authentication, RFC 3339. Empty when the
 	// account has never authenticated.
 	LastAuth string `json:"last_auth,omitempty"`
+	// PendingExpiresAt is when an unactivated pending account is deleted,
+	// RFC 3339. Empty when the account has no expiry.
+	PendingExpiresAt string `json:"pending_expires_at,omitempty"`
 	// CertBindings are the mTLS keys enrolled on the account, in the order
 	// they were enrolled. The set is what decides the account's mTLS
 	// admission: once it is non-empty, only a certificate matching one of
@@ -180,6 +183,18 @@ type CreateUserRequest struct {
 	// Pending is the shorthand for lifecycle "pending". Setting both is
 	// refused unless they agree.
 	Pending bool `json:"pending,omitempty"`
+	// PendingTTL is how long a pending account may wait for activation
+	// before the leader's reaper deletes it, a Go duration ("15m", "24h").
+	// Only valid with a pending create; empty or zero means no expiry.
+	PendingTTL string `json:"pending_ttl,omitempty"`
+}
+
+// PendingTTLDuration parses PendingTTL. An empty string is zero (no expiry).
+func (r *CreateUserRequest) PendingTTLDuration() (time.Duration, error) {
+	if r == nil || r.PendingTTL == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(r.PendingTTL)
 }
 
 // UpdateUserRequest holds parameters for updating a user.

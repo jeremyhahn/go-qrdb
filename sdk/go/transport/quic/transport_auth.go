@@ -43,6 +43,7 @@ type createUserWireRequest struct {
 	AuthMethods          []string `json:"authMethods,omitempty"`
 	Lifecycle            string   `json:"lifecycle,omitempty"`
 	Pending              bool     `json:"pending,omitempty"`
+	PendingTTL           string   `json:"pendingTTL,omitempty"`
 }
 
 // getUserWireRequest is the JSON wire payload for user.Get.
@@ -157,6 +158,8 @@ type userWireResponse struct {
 	Lifecycle   string   `json:"lifecycle,omitempty"`
 	AuthMethods []string `json:"authMethods,omitempty"`
 	LastAuth    string   `json:"lastAuth,omitempty"`
+	// PendingExpiresAt is when an unactivated pending account is deleted.
+	PendingExpiresAt string `json:"pendingExpiresAt,omitempty"`
 	// CertBindings are the account's enrolled mTLS keys, expired ones
 	// included; the server renders {thumbprint, kind, notAfter}.
 	CertBindings []certBindingWire `json:"certBindings,omitempty"`
@@ -334,6 +337,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
+		PendingTTL:           req.PendingTTL,
 	})
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &MarshalError{Err: err}}
@@ -1070,25 +1074,26 @@ func wireToUser(w *userWireResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:            w.ID,
-		Username:      w.Username,
-		Email:         w.Email,
-		Name:          w.Name,
-		TenantID:      w.TenantID,
-		RoleIDs:       w.RoleIDs,
-		System:        w.System,
-		Lifecycle:     w.Lifecycle,
-		AuthMethods:   w.AuthMethods,
-		LastAuth:      w.LastAuth,
-		CertBindings:  wireToCertBindings(w.CertBindings),
-		RoleBindings:  wireToRoleBindings(w.RoleBindings),
-		Attributes:    w.Attributes,
-		Factors:       wireToFactorMetadata(w.Factors),
-		MFAEnabled:    w.MFAEnabled,
-		MFAMethods:    w.MFAMethods,
-		MFAEnrolledAt: w.MFAEnrolledAt,
-		CreatedAt:     w.CreatedAt,
-		UpdatedAt:     w.UpdatedAt,
+		ID:               w.ID,
+		Username:         w.Username,
+		Email:            w.Email,
+		Name:             w.Name,
+		TenantID:         w.TenantID,
+		RoleIDs:          w.RoleIDs,
+		System:           w.System,
+		Lifecycle:        w.Lifecycle,
+		AuthMethods:      w.AuthMethods,
+		LastAuth:         w.LastAuth,
+		PendingExpiresAt: w.PendingExpiresAt,
+		CertBindings:     wireToCertBindings(w.CertBindings),
+		RoleBindings:     wireToRoleBindings(w.RoleBindings),
+		Attributes:       w.Attributes,
+		Factors:          wireToFactorMetadata(w.Factors),
+		MFAEnabled:       w.MFAEnabled,
+		MFAMethods:       w.MFAMethods,
+		MFAEnrolledAt:    w.MFAEnrolledAt,
+		CreatedAt:        w.CreatedAt,
+		UpdatedAt:        w.UpdatedAt,
 	}
 }
 

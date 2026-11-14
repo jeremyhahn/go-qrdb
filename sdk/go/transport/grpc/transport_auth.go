@@ -76,6 +76,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	ttl, err := req.PendingTTLDuration()
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+	}
 
 	resp, err := t.client.CreateUser(ctx, &pb.CreateUserRequest{
 		TenantId:             req.TenantID,
@@ -87,6 +91,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
+		PendingTtlSeconds:    int64(ttl / time.Second),
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateUser", err)
@@ -591,25 +596,26 @@ func protoToUser(resp *pb.UserResponse) *transport.User {
 		return nil
 	}
 	return &transport.User{
-		ID:            resp.GetId(),
-		TenantID:      resp.GetTenantId(),
-		Username:      resp.GetUsername(),
-		Email:         resp.GetEmail(),
-		Name:          resp.GetName(),
-		RoleIDs:       resp.GetRoleIds(),
-		System:        resp.GetSystem(),
-		Lifecycle:     resp.GetLifecycle(),
-		AuthMethods:   resp.GetAuthMethods(),
-		LastAuth:      unixToRFC3339(resp.GetLastAuthUnix()),
-		CertBindings:  protoToCertBindings(resp.GetCertBindings()),
-		RoleBindings:  protoToRoleBindings(resp.GetRoleBindings()),
-		Attributes:    resp.GetAttributes(),
-		Factors:       protoToFactorMetadata(resp.GetFactors()),
-		MFAEnabled:    resp.GetMfaEnabled(),
-		MFAMethods:    resp.GetMfaMethods(),
-		MFAEnrolledAt: resp.GetMfaEnrolledAt(),
-		CreatedAt:     resp.GetCreatedAt(),
-		UpdatedAt:     resp.GetUpdatedAt(),
+		ID:               resp.GetId(),
+		TenantID:         resp.GetTenantId(),
+		Username:         resp.GetUsername(),
+		Email:            resp.GetEmail(),
+		Name:             resp.GetName(),
+		RoleIDs:          resp.GetRoleIds(),
+		System:           resp.GetSystem(),
+		Lifecycle:        resp.GetLifecycle(),
+		AuthMethods:      resp.GetAuthMethods(),
+		LastAuth:         unixToRFC3339(resp.GetLastAuthUnix()),
+		PendingExpiresAt: unixToRFC3339(resp.GetPendingExpiresAtUnix()),
+		CertBindings:     protoToCertBindings(resp.GetCertBindings()),
+		RoleBindings:     protoToRoleBindings(resp.GetRoleBindings()),
+		Attributes:       resp.GetAttributes(),
+		Factors:          protoToFactorMetadata(resp.GetFactors()),
+		MFAEnabled:       resp.GetMfaEnabled(),
+		MFAMethods:       resp.GetMfaMethods(),
+		MFAEnrolledAt:    resp.GetMfaEnrolledAt(),
+		CreatedAt:        resp.GetCreatedAt(),
+		UpdatedAt:        resp.GetUpdatedAt(),
 	}
 }
 
