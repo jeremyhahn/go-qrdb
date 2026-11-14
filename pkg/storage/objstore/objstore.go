@@ -283,6 +283,14 @@ func (e *Engine) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	defer leave()
+	return e.get(key)
+}
+
+// get is Get for a caller already admitted by enter. A call that holds
+// lifeMu shared must never enter again: once Close is waiting on lifeMu
+// exclusive, a second RLock blocks behind it while Close waits for the
+// first, and neither returns.
+func (e *Engine) get(key []byte) ([]byte, error) {
 	if len(key) == 0 {
 		return nil, storage.ErrEmptyKey
 	}
@@ -360,7 +368,7 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
 
-	current, err := e.Get(key)
+	current, err := e.get(key)
 	if err != nil {
 		return false, err
 	}
@@ -423,7 +431,7 @@ func (e *Engine) DeleteRange(start, end []byte) error {
 // hold it: a committing batch applies its range deletes under the exclusive
 // lock, where the locking DeleteRange would deadlock.
 func (e *Engine) deleteRange(start, end []byte) error {
-	keys, err := e.List(nil)
+	keys, err := e.list(nil)
 	if err != nil {
 		return err
 	}
@@ -452,6 +460,11 @@ func (e *Engine) List(prefix []byte) ([][]byte, error) {
 		return nil, err
 	}
 	defer leave()
+	return e.list(prefix)
+}
+
+// list is List for a caller already admitted by enter (see get).
+func (e *Engine) list(prefix []byte) ([][]byte, error) {
 	entries, err := e.scan(prefix, false)
 	if err != nil {
 		return nil, err
@@ -483,7 +496,7 @@ func (e *Engine) scan(prefix []byte, withValues bool) ([]kvEntry, error) {
 			}
 			entry := kvEntry{key: key}
 			if withValues {
-				value, err := e.Get(key)
+				value, err := e.get(key)
 				if err != nil {
 					return nil, err
 				}
