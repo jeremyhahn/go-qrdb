@@ -136,7 +136,31 @@ func (m *AuthMiddleware) AuthorizeOperatorIdentityAccess(ctx context.Context, te
 	if auditErr != nil {
 		return nil, auditErr
 	}
+	ctx = context.WithValue(ctx, operatorAdmittedKey{}, operatorAdmission{tenant: target, perm: perm})
 	return tenant.WithTenantID(ctx, target), nil
+}
+
+// operatorAdmittedKey carries the operator access AuthorizeOperatorIdentityAccess
+// admitted (and recorded) for the request, so the secondary checks of the
+// same write (roles:assign in the target tenant) honour the admitted
+// tenant-qualified permission instead of comparing the operator's own
+// tenant against the target.
+type operatorAdmittedKey struct{}
+
+type operatorAdmission struct {
+	tenant string
+	perm   permission.Permission
+}
+
+// operatorAdmittedWrite reports whether ctx carries an admitted operator
+// access to target for a tenant-qualified identity write (roles or users),
+// the permission that stands in for roles:assign there.
+func operatorAdmittedWrite(ctx context.Context, target string) bool {
+	a, ok := ctx.Value(operatorAdmittedKey{}).(operatorAdmission)
+	if !ok || a.tenant != tenantid.Normalize(target) {
+		return false
+	}
+	return a.perm == permission.RolesWriteTenant || a.perm == permission.UsersWriteTenant
 }
 
 func (m *AuthMiddleware) decideOperatorIdentityAccess(ctx context.Context, identity *auth.Identity, target string, perm permission.Permission) error {
