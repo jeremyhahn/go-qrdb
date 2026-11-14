@@ -88,9 +88,18 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 			ForceAttemptHTTP2:   true,
 			DialContext:         (&net.Dialer{Timeout: connect}).DialContext,
 			TLSHandshakeTimeout: connect,
+			IdleConnTimeout:     forwardIdleConnTimeout,
 		},
 	}
 }
+
+// forwardIdleConnTimeout is how long a forward keeps an idle connection to
+// a replica's MCP listener for reuse. It stays below the listener's own
+// idle timeout (serverIdleTimeout), so the forwarder retires an idle
+// connection before the replica closes it: a forwarded tool call is a POST,
+// which net/http never resends after it raced the server's close. Zero, the
+// http.Transport default, would keep idle connections forever.
+const forwardIdleConnTimeout = 90 * time.Second
 
 // close releases the idle connections to targets.
 func (f *replicaForwarder) close() { f.base.CloseIdleConnections() }
