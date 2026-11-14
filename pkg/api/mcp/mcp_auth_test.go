@@ -2825,6 +2825,44 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 	}
 }
 
+// TestUserCreateTool_PendingTTL carries pending_ttl into the domain request,
+// projects pendingExpiresAt on reads, and refuses a TTL that is not a duration.
+func TestUserCreateTool_PendingTTL(t *testing.T) {
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{ID: 1001}, nil
+		},
+	}
+	handler := handleUserCreate(svc, nil, nil, nil)
+	if _, err := handler(context.Background(), makeReq(map[string]any{
+		"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": "15m",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.PendingTTL != 15*time.Minute || !got.Pending {
+		t.Fatalf("request = %+v", got)
+	}
+
+	got = nil
+	res, err := handler(context.Background(), makeReq(map[string]any{
+		"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": "soon",
+	}))
+	if err != nil || res == nil || !res.IsError || got != nil {
+		t.Fatalf("bad TTL: res %+v err %v, service called %v", res, err, got != nil)
+	}
+
+	expires := time.Date(2026, 11, 14, 12, 15, 0, 0, time.UTC)
+	rec, err := userToRecord(context.Background(), nil, &user.User{ID: 1, PendingExpiresAt: &expires})
+	if err != nil {
+		t.Fatalf("userToRecord: %v", err)
+	}
+	if rec.PendingExpiresAt != "2026-11-14T12:15:00Z" {
+		t.Fatalf("pendingExpiresAt = %q", rec.PendingExpiresAt)
+	}
+}
+
 // A flat tool argument cannot carry nil-vs-empty the way JSON null-vs-[] does,
 // so clearing is its own flag. Without it, lifting a method restriction would be
 // unexpressible over MCP: an empty string reads as "leave alone" and the clear

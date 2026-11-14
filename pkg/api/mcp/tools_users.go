@@ -54,13 +54,16 @@ type userRecord struct {
 	RoleIDs  []string `json:"roleIDs"`
 	System   bool     `json:"system"`
 	// Lifecycle is the canonical and only account state.
-	Lifecycle    string              `json:"lifecycle,omitempty"`
-	AuthMethods  []string            `json:"authMethods,omitempty"`
-	LastAuth     string              `json:"lastAuth,omitempty"`
-	CertBindings []mcpCertBinding    `json:"certBindings,omitempty"`
-	RoleBindings []mcpRoleBinding    `json:"roleBindings,omitempty"`
-	Attributes   map[string]string   `json:"attributes,omitempty"`
-	Factors      []mcpFactorMetadata `json:"factors,omitempty"`
+	Lifecycle   string   `json:"lifecycle,omitempty"`
+	AuthMethods []string `json:"authMethods,omitempty"`
+	LastAuth    string   `json:"lastAuth,omitempty"`
+	// PendingExpiresAt is when an unactivated pending account is reaped,
+	// RFC 3339; omitted when the account has no expiry.
+	PendingExpiresAt string              `json:"pendingExpiresAt,omitempty"`
+	CertBindings     []mcpCertBinding    `json:"certBindings,omitempty"`
+	RoleBindings     []mcpRoleBinding    `json:"roleBindings,omitempty"`
+	Attributes       map[string]string   `json:"attributes,omitempty"`
+	Factors          []mcpFactorMetadata `json:"factors,omitempty"`
 	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
 	// stored.
 	MFAEnabled    bool     `json:"mfaEnabled"`
@@ -165,26 +168,31 @@ func userToRecord(ctx context.Context, lister user.FactorLister, u *user.User) (
 	if u.LastAuth != nil {
 		lastAuth = u.LastAuth.UTC().Format(time.RFC3339)
 	}
+	var pendingExpiresAt string
+	if u.PendingExpiresAt != nil {
+		pendingExpiresAt = u.PendingExpiresAt.UTC().Format(time.RFC3339)
+	}
 	return &userRecord{
-		ID:            u.ID,
-		Username:      u.Username,
-		Email:         u.Email,
-		Name:          u.Name,
-		TenantID:      u.TenantID,
-		RoleIDs:       roleIDs,
-		System:        u.System,
-		Lifecycle:     string(u.Lifecycle),
-		AuthMethods:   u.AuthMethods,
-		LastAuth:      lastAuth,
-		CertBindings:  certBindingsToRecord(u.CertBindings),
-		RoleBindings:  roleBindingsToRecord(u.RoleBindings),
-		Attributes:    u.Attributes,
-		Factors:       factorsToRecord(factors.Factors),
-		MFAEnabled:    factors.MFAEnabled,
-		MFAMethods:    factors.MFAMethods,
-		MFAEnrolledAt: factors.MFAEnrolledAt,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+		ID:               u.ID,
+		Username:         u.Username,
+		Email:            u.Email,
+		Name:             u.Name,
+		TenantID:         u.TenantID,
+		RoleIDs:          roleIDs,
+		System:           u.System,
+		Lifecycle:        string(u.Lifecycle),
+		AuthMethods:      u.AuthMethods,
+		LastAuth:         lastAuth,
+		PendingExpiresAt: pendingExpiresAt,
+		CertBindings:     certBindingsToRecord(u.CertBindings),
+		RoleBindings:     roleBindingsToRecord(u.RoleBindings),
+		Attributes:       u.Attributes,
+		Factors:          factorsToRecord(factors.Factors),
+		MFAEnabled:       factors.MFAEnabled,
+		MFAMethods:       factors.MFAMethods,
+		MFAEnrolledAt:    factors.MFAEnrolledAt,
+		CreatedAt:        u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        u.UpdatedAt.Format(time.RFC3339),
 	}, nil
 }
 
@@ -314,6 +322,9 @@ func toolUserCreate() mcp.Tool {
 		mcp.WithBoolean("pending",
 			mcp.Description("Shorthand for lifecycle 'pending'. Setting both is refused unless they agree."),
 		),
+		mcp.WithString("pending_ttl",
+			mcp.Description("How long a pending account may wait for activation before it is deleted, a Go duration such as '15m' or '24h'. Only valid with a pending create; empty or zero means no expiry."),
+		),
 	)
 }
 
@@ -343,7 +354,17 @@ func handleUserCreate(svc user.UserServicer, factorSvc user.FactorLister, authMW
 			}
 		}
 
+		var pendingTTL time.Duration
+		if ttl := mcp.ParseString(req, "pending_ttl", ""); ttl != "" {
+			d, perr := time.ParseDuration(ttl)
+			if perr != nil {
+				return mcp.NewToolResultError("pending_ttl must be a duration: " + perr.Error()), nil
+			}
+			pendingTTL = d
+		}
+
 		u, err := svc.CreateUser(ctx, &user.CreateUserRequest{
+			PendingTTL:           pendingTTL,
 			Username:             username,
 			Email:                mcp.ParseString(req, "email", ""),
 			Name:                 mcp.ParseString(req, "name", ""),
