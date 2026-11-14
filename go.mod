@@ -23,6 +23,7 @@ require (
 	github.com/cockroachdb/pebble/v2 v2.1.7
 	github.com/dolthub/go-mysql-server v0.20.1-0.20260812191550-bda99d66b4bf
 	github.com/dolthub/vitess v0.0.0-20260728212736-0542037326d7
+	github.com/dunglas/httpsfv v1.1.1 // held at upstream webtransport-go v0.13.0's requirement; internal/webtransport changes only what its NOTICE lists
 	github.com/flynn/noise v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-chi/chi/v5 v5.5.0
