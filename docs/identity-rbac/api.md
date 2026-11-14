@@ -749,6 +749,26 @@ A refused move returns a `LifecycleTransitionError`; an undefined or
 not-permitted-here state returns an `InvalidLifecycleError` naming what is
 allowed. Only `pending`, `active` and `disabled` may be created directly.
 
+**Pending TTL.** A pending create may carry a time-to-live; an account still
+`pending` when it lapses is deleted by the leader's reaper, together with its
+role assignments and enrolled factors, and each deletion is audited
+(`pending_reaped`). Activating the account (`EnableUser`) clears the expiry; an
+`active` account is never reaped, and nothing moves an account back to
+`pending`. A TTL on a non-pending create, or a negative TTL, is refused; zero
+or absent means the account never expires. The expiry is read back on the
+user record while it is set.
+
+| Transport | TTL on create | Expiry on read |
+|---|---|---|
+| REST `POST /users` | `pending_ttl` (Go duration, e.g. `"15m"`) | `pending_expires_at` (RFC 3339) |
+| gRPC / unix `CreateUser` | `pending_ttl_seconds` (int64) | `UserResponse.pending_expires_at_unix` (int64, 0 = none) |
+| QUIC | `pendingTTL` (Go duration) | `pendingExpiresAt` (RFC 3339) |
+| MCP `qrdb_user_create` | `pending_ttl` (Go duration) | `pendingExpiresAt` (RFC 3339) |
+| sdk/go | `CreateUserRequest.PendingTTL` | `User.PendingExpiresAt` |
+
+A malformed duration is refused as an invalid argument before the account is
+created. gRPC carries whole seconds, so a sub-second TTL there is no expiry.
+
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
 they are refused on an account already marked `deleting`. `SuspendUser` and
 `UnsuspendUser` move only between `active` and `suspended`: each is a no-op on
