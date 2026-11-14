@@ -1590,11 +1590,15 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// node's database_defaults are resolved.
 	var dedicatedRaft bool
 	strictTenant := false
+	// volumeTenant: a volume tenant's log is already under its own key on
+	// its own host, which is what a strict policy requires (see below).
+	volumeTenant := false
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
 		}
+		volumeTenant = info != nil && info.EffectiveIsolationType() == tenant.IsolationVolume
 		if strictTenant, err = s.strictIsolation(ctx, info); err != nil {
 			return nil, err
 		}
@@ -1733,7 +1737,10 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// one of its databases is a raft group on a dedicated WAL. A request
 	// without one, or on a backend that cannot carry one, is refused rather
 	// than upgraded silently; the entitlement and quota checks below still
-	// apply to the dedicated WAL it does request.
+	// apply to the dedicated WAL it does request. A volume tenant's log is
+	// already under its own key on its own tenant-encrypted host (the WAL
+	// serving that mode), so its creates carry no per-database WAL and the
+	// requirement is met by the isolation mode itself.
 	if strictTenant {
 		// Strict isolation phases 5 and 6 are judged by the cluster's
 		// strict-isolation activation: until every member runs a binary
@@ -1744,6 +1751,8 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 				return nil, gerr
 			}
 		}
+	}
+	if strictTenant && !volumeTenant {
 		if cfg.Backend != database.BackendRaft {
 			return nil, &database.StrictTenantDedicatedWALRequiredError{Name: cfg.Name, Tenant: tenantID, Backend: string(cfg.Backend)}
 		}

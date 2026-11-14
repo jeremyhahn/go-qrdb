@@ -61,6 +61,28 @@ func TestCreateForTenant_StrictTenant_DedicatedWALCreated(t *testing.T) {
 	}
 }
 
+// TestCreateForTenant_StrictVolumeTenant_Created: a strict volume tenant's
+// log is already under its own key on its own host, so its create succeeds
+// without a per-database WAL (which a volume tenant cannot carry) and meters
+// no dedicated-WAL group.
+func TestCreateForTenant_StrictVolumeTenant_Created(t *testing.T) {
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+	info := &tenant.TenantInfo{ID: "vt", IsolationType: tenant.IsolationVolume, IsolationPolicy: tenant.TenantIsolationPolicyStrict}
+	svc := newReplicaDatabaseService(t, info, f)
+	ctx := tenant.WithTenantID(context.Background(), "vt")
+
+	got, err := svc.CreateForTenant(ctx, testDBConfig("app"))
+	if err != nil {
+		t.Fatalf("CreateForTenant: %v", err)
+	}
+	if got.DedicatedWAL {
+		t.Errorf("persisted DedicatedWAL = true, want false")
+	}
+	if f.incWAL != 0 {
+		t.Errorf("dedicated-WAL increment = %d, want 0", f.incWAL)
+	}
+}
+
 // TestCreateDatabase_StrictTenantRefusedUntilStrictIsolationActive: until
 // the cluster activates strict-isolation (a mixed-version cluster), a strict
 // tenant's database create is refused with the gate's *feature.NotActiveError
