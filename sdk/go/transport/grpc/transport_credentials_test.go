@@ -22,6 +22,7 @@ import (
 	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
@@ -46,6 +47,7 @@ type fakeCredentialServicer struct {
 	retrieveVersFn func(ctx context.Context, name string, version uint64) ([]byte, error)
 	listVersionsFn func(ctx context.Context, name string) ([]credentials.CredentialVersion, error)
 	gcExpiredFn    func(ctx context.Context, name string) (int, error)
+	setPolicyFn    func(ctx context.Context, name string, policy credentials.RotationPolicy) error
 }
 
 func (f *fakeCredentialServicer) CredentialStore(_ context.Context, _ string, _ []byte) error {
@@ -79,22 +81,6 @@ func (f *fakeCredentialServicer) CredentialDelete(ctx context.Context, name stri
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, name)
 	}
-	return nil
-}
-
-func (*fakeCredentialServicer) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
-	return nil
-}
-
-func (*fakeCredentialServicer) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
-	return &service.CredentialRotationPolicyStatus{}, nil
-}
-
-func (*fakeCredentialServicer) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
-	return nil, nil
-}
-
-func (*fakeCredentialServicer) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 func (f *fakeCredentialServicer) CredentialStrategy(context.Context) (string, error) {
@@ -136,6 +122,34 @@ func (f *fakeCredentialServicer) CredentialGCExpired(ctx context.Context, name s
 		return f.gcExpiredFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (f *fakeCredentialServicer) CredentialSetRotationPolicy(ctx context.Context, name string, policy credentials.RotationPolicy) error {
+	if f.setPolicyFn != nil {
+		return f.setPolicyFn(ctx, name, policy)
+	}
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (f *fakeCredentialServicer) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (f *fakeCredentialServicer) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (f *fakeCredentialServicer) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -425,6 +439,157 @@ func TestTransportCredential_Rotate_AfterClose(t *testing.T) {
 	_, err := tr.CredentialRotate(context.Background(), &transport.CredentialRotateRequest{Name: "n"})
 	var ce *transport.ClosedError
 	if !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransportCredential_SetRotationPolicy_Success(t *testing.T) {
+	var gotName string
+	var gotPolicy credentials.RotationPolicy
+	svc := &fakeCredentialServicer{
+		setPolicyFn: func(_ context.Context, name string, policy credentials.RotationPolicy) error {
+			gotName, gotPolicy = name, policy
+			return nil
+		},
+	}
+	addr, stop := startCredentialServer(t, svc)
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "n", Enabled: true, Interval: "24h", RetainVersions: 3,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := credentials.RotationPolicy{Enabled: true, Interval: 24 * time.Hour, RetainVersions: 3}
+	if gotName != "n" || gotPolicy != want {
+		t.Errorf("service saw %q %+v, want %q %+v", gotName, gotPolicy, "n", want)
+	}
+}
+
+func TestTransportCredential_SetRotationPolicy_InvalidPolicy(t *testing.T) {
+	svc := &fakeCredentialServicer{
+		setPolicyFn: func(context.Context, string, credentials.RotationPolicy) error {
+			return &credentials.InvalidRotationPolicyError{Reason: "interval must be positive"}
+		},
+	}
+	addr, stop := startCredentialServer(t, svc)
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{
+		Name: "n", Enabled: true, Interval: "0s", RetainVersions: 1,
+	})
+	var re *transport.RequestError
+	if !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	if re.StatusCode != int(codes.InvalidArgument) {
+		t.Errorf("status = %d, want InvalidArgument (%d)", re.StatusCode, codes.InvalidArgument)
+	}
+}
+
+func TestTransportCredential_SetRotationPolicy_NilRequestAndAfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	var re *transport.RequestError
+	if err := tr.CredentialSetRotationPolicy(context.Background(), nil); !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	tr.closed.Store(true)
+	var ce *transport.ClosedError
+	if err := tr.CredentialSetRotationPolicy(context.Background(), &transport.CredentialSetRotationPolicyRequest{Name: "n"}); !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransportCredential_RotationPolicy_Success(t *testing.T) {
+	addr, stop := startCredentialServer(t, &fakeCredentialServicer{})
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.CredentialRotationPolicy(context.Background(), "n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Name != "n" || !resp.Enabled || resp.Interval != time.Hour.String() || resp.RetainVersions != 2 {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestTransportCredential_RotationPolicy_NotFoundAndAfterClose(t *testing.T) {
+	addr, stop := startCredentialServer(t, &fakeCredentialServicer{})
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	var nf *transport.KeyNotFoundError
+	if _, err := tr.CredentialRotationPolicy(context.Background(), "missing"); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+	closed := &Transport{config: &transport.Config{}}
+	closed.closed.Store(true)
+	var ce *transport.ClosedError
+	if _, err := closed.CredentialRotationPolicy(context.Background(), "n"); !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransportCredential_MigrationConflicts_Success(t *testing.T) {
+	addr, stop := startCredentialServer(t, &fakeCredentialServicer{})
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	resp, err := tr.CredentialMigrationConflicts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []transport.CredentialMigrationConflict{{Name: "db", Value: true, Policy: true}}
+	if len(resp.Conflicts) != 1 || resp.Conflicts[0] != want[0] {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+}
+
+func TestTransportCredential_MigrationConflicts_AfterClose(t *testing.T) {
+	closed := &Transport{config: &transport.Config{}}
+	closed.closed.Store(true)
+	var ce *transport.ClosedError
+	if _, err := closed.CredentialMigrationConflicts(context.Background()); !errors.As(err, &ce) {
+		t.Fatalf("expected ClosedError, got %T: %v", err, err)
+	}
+}
+
+func TestTransportCredential_ResolveMigrationConflict_SuccessAndNotFound(t *testing.T) {
+	addr, stop := startCredentialServer(t, &fakeCredentialServicer{})
+	defer stop()
+	tr, cleanup := connectCredentialTransport(t, addr)
+	defer cleanup()
+
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var nf *transport.KeyNotFoundError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); !errors.As(err, &nf) {
+		t.Fatalf("expected KeyNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestTransportCredential_ResolveMigrationConflict_NilRequestAndAfterClose(t *testing.T) {
+	tr := &Transport{config: &transport.Config{}}
+	var re *transport.RequestError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(), nil); !errors.As(err, &re) {
+		t.Fatalf("expected RequestError, got %T: %v", err, err)
+	}
+	tr.closed.Store(true)
+	var ce *transport.ClosedError
+	if err := tr.CredentialResolveMigrationConflict(context.Background(),
+		&transport.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); !errors.As(err, &ce) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
 	}
 }
