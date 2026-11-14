@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -179,6 +180,10 @@ type TenantOnboardingService struct {
 	soPINs     atomic.Pointer[bootstrap.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
+	// auditGuards holds one *sync.Mutex per tenant id: the once-guard that
+	// keeps concurrent emits of a tenant's pending onboarding audit record
+	// from appending it twice.
+	auditGuards sync.Map
 }
 
 // DefaultTenantOnboardingTimeout bounds an onboarding from the service's
@@ -612,6 +617,15 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	if s.pendingAudit == nil || sink == nil {
 		return nil
 	}
+	// Concurrent barrier-ready callbacks for one tenant each reach here.
+	// The record is read, emitted and deleted under the tenant's guard, so a
+	// second callback reads it only after the first deleted it (or failed
+	// and left it for a retry): the record is appended exactly once, and a
+	// failed emit still leaves it pending rather than lost.
+	muAny, _ := s.auditGuards.LoadOrStore(tenantID, &sync.Mutex{})
+	mu := muAny.(*sync.Mutex) //nolint:errcheck // the map only ever holds *sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
 	record, err := s.pendingAudit.Get(ctx, tenantID)
 	if err != nil || record == nil {
 		return err

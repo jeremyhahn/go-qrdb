@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"log/slog"
@@ -663,6 +664,74 @@ func TestOnboardTenant_NodeLocalRefusalLeavesOneTenantTrailRecord(t *testing.T) 
 	}
 	if got := onboardRecords(local.RingBuffer); len(got) != 0 {
 		t.Fatalf("node-local trail holds %+v, want nothing: its write failed", got)
+	}
+}
+
+// gatedTrail holds the first Emit until every concurrent caller has started,
+// so the callers that follow it race the pending record's delete.
+type gatedTrail struct {
+	*audit.RingBuffer
+	started *sync.WaitGroup
+	once    sync.Once
+}
+
+func (g *gatedTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	g.once.Do(g.started.Wait)
+	return g.RingBuffer.Emit(ctx, ev)
+}
+
+// Concurrent barrier-ready callbacks for one tenant each retry its pending
+// onboarding audit record: the tenant's trail holds it exactly once, and the
+// pending record is gone.
+func TestEmitPendingOnboardAudit_ConcurrentCallbacksAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	deps := newOnboardingDeps(t)
+	identity := kvstore.NewMemoryKVStore()
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+	deps.PendingAudit = pendingAudit
+	const callers = 8
+	var started sync.WaitGroup
+	started.Add(callers)
+	trail := &gatedTrail{RingBuffer: audit.NewRingBuffer(32), started: &started}
+	deps.TenantTrail = trail
+	svc := NewTenantOnboardingService(deps)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	errs := make(chan error, callers)
+	var done sync.WaitGroup
+	for range callers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			started.Done()
+			errs <- svc.EmitPendingOnboardAudit(ctx, "acme")
+		}()
+	}
+	done.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("EmitPendingOnboardAudit: %v", err)
+		}
+	}
+	n := 0
+	for _, ev := range trail.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want exactly 1", n)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the emits = %q, %v; want none", left, err)
 	}
 }
 
