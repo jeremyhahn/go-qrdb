@@ -1466,12 +1466,16 @@ func (n *homeLocatingNames) DatabaseNames(ctx context.Context, tenantID string) 
 	if _, err := n.store.Get(ctx, tenantID, tenant.HomeName); err != nil {
 		return nil
 	}
+	if _, err := n.store.ListForTenant(ctx, tenantID); err != nil {
+		return nil
+	}
 	return map[string]string{"db-1": "orders"}
 }
 
-// The home group is named without the catalog, so an isolated tenant's
-// catalog, which locates its home through this table, resolves its other
-// databases without recursing into itself.
+// The home group is named without the catalog, and a read made inside the
+// resolver does not ask it again, so an isolated tenant's catalog, which
+// locates its home through this table, resolves its databases without
+// recursing into itself.
 func TestStore_HomeNameResolvesWithoutTheCatalog(t *testing.T) {
 	ctx := context.Background()
 	kv := newAtomicKV()

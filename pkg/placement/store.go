@@ -239,7 +239,7 @@ func (s *Store) resolveNames(ctx context.Context, ps ...*Placement) {
 			continue
 		}
 		ref := s.resolver.Load()
-		if ref == nil {
+		if ref == nil || resolving(ctx) {
 			continue
 		}
 		if byTenant == nil {
@@ -247,7 +247,7 @@ func (s *Store) resolveNames(ctx context.Context, ps ...*Placement) {
 		}
 		names, ok := byTenant[p.TenantID]
 		if !ok {
-			names = ref.r.DatabaseNames(ctx, p.TenantID)
+			names = ref.r.DatabaseNames(context.WithValue(ctx, resolvingKey{}, true), p.TenantID)
 			byTenant[p.TenantID] = names
 		}
 		if name := names[p.DatabaseID]; name != "" {
@@ -255,6 +255,17 @@ func (s *Store) resolveNames(ctx context.Context, ps ...*Placement) {
 			s.names.Store(key, name)
 		}
 	}
+}
+
+// resolvingKey marks a context inside a NameResolver call. The resolver
+// reads the tenant's catalog, which for an isolated tenant first locates its
+// home through this table; a read made there returns its entries without
+// asking the resolver again, which would recurse without end.
+type resolvingKey struct{}
+
+func resolving(ctx context.Context) bool {
+	v, _ := ctx.Value(resolvingKey{}).(bool)
+	return v
 }
 
 func nameCacheKey(tenantID, databaseID string) string {
