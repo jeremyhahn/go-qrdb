@@ -85,6 +85,13 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/watch | TestHubClosedError_ImplementsErrorInterface | tautology (non-empty message) | TestHubClosedError_Error_ReturnsExpectedMessage |
 | pkg/watch | TestHubClosedError_NotNil | tautology (compile-time assignment) | TestHubClosedError_Error_ReturnsExpectedMessage |
 | pkg/watch | TestHubClosedError_ErrorsAs | tests errors.As on the concrete pointer (stdlib) | TestHubClosedError_Error_ReturnsExpectedMessage |
+| pkg/embedding | TestInvalidInputError_ImplementsError | tautology (no assertion) | TestInvalidInputError_Error |
+| pkg/embedding | TestEmptyResponseError_ImplementsError | tautology (no assertion) | TestEmptyResponseError_Error |
+| pkg/embedding | TestRetryExhaustedError_As | tests errors.As on the concrete pointer (stdlib) | TestRetryExhaustedError_Error |
+| pkg/embedding | TestHTTPError_As | tests errors.As on the concrete pointer (stdlib) | TestHTTPError_Error |
+| pkg/embedding | TestCacheCapacityError_Zero | duplicate with another value | TestCacheCapacityError_Error |
+| pkg/embedding | TestProviderAlreadyRegisteredError_As | tests errors.As on the concrete pointer (stdlib) | TestProviderAlreadyRegisteredError_Error |
+| pkg/embedding | TestProviderNotFoundError_As | tests errors.As on the concrete pointer (stdlib) | TestProviderNotFoundError_Error |
 
 ## Trimmed tests
 
