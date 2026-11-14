@@ -712,6 +712,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// before reporting success, so a crash before the composer copies
 		// it into the replicated store cannot strand strict first boot.
 		if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+			s.abandonSingleAdminInitLocked()
 			s.mu.Unlock()
 			return nil, err
 		}
@@ -881,6 +882,26 @@ func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []
 			s.logger.Error("ceremony: failed to roll back SO/User PIN provisioning after a batch officer enrolment failed",
 				slog.Any("error", err))
 		}
+	}
+}
+
+// abandonSingleAdminInitLocked returns a single-admin Initialize whose
+// system SO record could not be written to the state a restart restores:
+// the barrier initialized but sealed, the ceremony awaiting init, nothing
+// cached for the composer. The SO's only durable handoff is that record, so
+// an unsealed barrier without it would let the sealed-window listener tear
+// down and first boot enrol the admin with no SO, which strict separation
+// then cannot recover (go-qrdb#1129). Sealed, the listener stays up and a
+// retried Initialize with the same secret unseals the barrier
+// (initializeSystemBarrierLocked) and writes the record again; the PINs it
+// provisioned are re-verified, not re-set. Must be called with s.mu held.
+func (s *CeremonyService) abandonSingleAdminInitLocked() {
+	s.lastAdminCertPEM = nil
+	s.lastAdminSource = ""
+	s.lastSystemSO = nil
+	if err := s.barrier.Seal(); err != nil {
+		s.logger.Error("ceremony: sealing the system barrier after a failed system SO record write reported an error",
+			slog.String("error", err.Error()))
 	}
 }
 
