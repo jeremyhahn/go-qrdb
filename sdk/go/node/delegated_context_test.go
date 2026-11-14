@@ -226,7 +226,31 @@ func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.Nod
 			t.Fatalf("OnboardTenant(%s): %v", id, err)
 		}
 	}
+	for _, id := range []string{delegatingTenant, otherTenant} {
+		awaitTenantAdmin(t, n, id)
+	}
 	return n, cas, trail
+}
+
+// awaitTenantAdmin waits for a barrier tenant's admin account. OnboardTenant
+// answers once the tenant is committed; the admin account is completed
+// after that answer (and retried), so a lookup straight after onboarding
+// can find no user yet.
+func awaitTenantAdmin(t *testing.T, n *node.Node, tenantID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenantID), 30*time.Second)
+	defer cancel()
+	for {
+		_, err := n.Services().User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
+		if err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("admin account of %s never completed: %v", tenantID, err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 // issueDelegation has the delegating tenant issue a delegation to principal
