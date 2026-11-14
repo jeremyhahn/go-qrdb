@@ -628,6 +628,7 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 		Barrier:      meta.Barrier,
 		Connection:   meta.Connection,
 		SQL:          meta.SQL,
+		Objstore:     meta.Objstore,
 	}
 	if meta.Barrier != nil && meta.Barrier.Enabled && !cfg.HasDedicatedStore() {
 		return nil, &SharedStoreBarrierUnsupportedError{Name: name, Backend: cfg.Backend}
@@ -1420,6 +1421,7 @@ func metaFromConfig(cfg DatabaseConfig, dropping bool, incarnation string) Datab
 		Barrier:      cfg.Barrier,
 		Connection:   cfg.Connection,
 		SQL:          cfg.SQL,
+		Objstore:     cfg.Objstore,
 		Dropping:     dropping,
 		Incarnation:  incarnation,
 	}

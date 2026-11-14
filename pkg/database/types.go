@@ -757,6 +757,12 @@ type DatabaseMeta struct {
 	// node holds for itself, and for a database created where no node
 	// identity is set (a standalone node); such a record opens on any node.
 	OwnerNode string `json:"owner_node,omitempty"`
+
+	// Objstore is a `backend: objstore` database's provider, settings and
+	// credential file paths (DatabaseConfig.Objstore), so a reopen -- after a
+	// restart, on the owner node -- opens the same provider. It carries the
+	// paths of the credential files, never their contents.
+	Objstore *DatabaseObjstoreConfig `json:"objstore,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
