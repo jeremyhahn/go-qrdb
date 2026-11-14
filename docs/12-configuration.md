@@ -1012,26 +1012,30 @@ written. See [audit/architecture.md](audit/architecture.md),
 
 Cross-Origin Resource Sharing settings for the REST API (`config.CORSConfig`).
 
-| Field             | Type     | Default                              | Required | Description                            |
-|-------------------|----------|--------------------------------------|----------|----------------------------------------|
-| `allowed_origins` | []string | `["*"]`                              | no       | Allowed origins for CORS               |
-| `allowed_headers` | []string | `["Authorization", "Content-Type"]`  | no       | Allowed request headers                |
-| `max_age`         | int      | `3600`                               | no       | Preflight cache duration in seconds    |
+| Field               | Type     | Default                              | Required | Description                            |
+|---------------------|----------|--------------------------------------|----------|----------------------------------------|
+| `allowed_origins`   | []string | none (CORS off)                      | no       | Allowed origins for CORS               |
+| `allowed_headers`   | []string | `["Authorization", "Content-Type"]`  | no       | Allowed request headers                |
+| `max_age`           | int      | `3600`                               | no       | Preflight cache duration in seconds    |
+| `allow_credentials` | bool     | `false`                              | no       | Let cross-origin calls carry credentials |
 
 **Validation rules:**
 
 - `max_age` must not be negative (>= 0).
+- `allow_credentials: true` cannot be combined with the `"*"` origin
+  (the Fetch standard forbids it); the pair fails validation on
+  `cors.allow_credentials`.
 
 **Notes:**
 
-- `qrdbd` loads and validates this block but does not apply it: the REST
-  server adds CORS headers only when built with the `rest.WithCORS` option,
-  which an embedding program passes. Without it, the REST API sends no CORS
-  headers.
-- With `rest.WithCORS`, `["*"]` answers every origin with
-  `Access-Control-Allow-Origin: *`; any other list admits exactly those
-  origins. `max_age` sets `Access-Control-Max-Age` on preflight (OPTIONS)
-  responses.
+- With no `allowed_origins` the REST API sends no CORS headers.
+- `["*"]` answers every origin with `Access-Control-Allow-Origin: *`; any
+  other list admits exactly those origins, echoing the request's origin.
+  `max_age` sets `Access-Control-Max-Age` on preflight (OPTIONS) responses.
+- `allow_credentials: true` adds `Access-Control-Allow-Credentials: true`
+  to the preflight answer and to every response for an admitted origin, so
+  a browser may send cookies, a TLS client certificate or an
+  `Authorization` header it manages.
 
 ---
 
