@@ -61,7 +61,15 @@ func (s *Server) startPendingUserReaper() {
 		Logger:   s.logger,
 	}
 	if s.opts.userAuthFactorSvc != nil {
-		cfg.Factors = s.opts.userAuthFactorSvc
+		// Reaping without purging would leave a deleted account's factors
+		// and credential indexes behind, so a factor service that cannot
+		// purge disables the reaper instead.
+		purger, ok := s.opts.userAuthFactorSvc.(user.FactorPurger)
+		if !ok {
+			s.logger.Warn("pending user reaper disabled", "error", "auth factor service cannot purge a user's factors")
+			return
+		}
+		cfg.Factors = purger
 	}
 	reaper, err := user.NewPendingReaper(cfg)
 	if err != nil {

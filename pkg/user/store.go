@@ -1720,17 +1720,62 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
 	return err
 }
 
+// ClaimExpiredPending claims an expired pending account for the reaper: it
+// marks the record LifecycleDeleting, conditionally on the version it read,
+// and records the expiry it acted on in ExpiryClaim. The claim is durable,
+// so a reaper that stops between the claim and the delete (a failed factor
+// purge, a crash, a leadership change) leaves an account every later sweep
+// finds and resumes. From the claim on the account cannot authenticate, be
+// activated or have a factor enrolled: LifecycleDeleting is terminal.
+//
+// An account already claimed is returned unchanged. Any other account -- one
+// activated before the claim lands included, since the claim commits only
+// against the pending version it read -- is refused with
+// *AccountNotPendingError and nothing is written.
+func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
+	if id == 0 {
+		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
+	}
+	base, err := s.store.Get(ctx, primaryKey(id))
+	if err != nil {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "primary lookup", Err: err}
+	}
+	if base == nil {
+		return nil, &UserNotFoundError{ID: id}
+	}
+	existing := &User{}
+	if uerr := json.Unmarshal(base, existing); uerr != nil {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "unmarshal", Err: uerr}
+	}
+	if ExpiryClaimed(existing) {
+		return existing, nil
+	}
+	if existing.System || !PendingExpired(existing, now) {
+		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
+	}
+	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
+		return nil, err
+	}
+	claim := *existing.PendingExpiresAt
+	existing.ExpiryClaim = &claim
+	if _, err := s.markDeleting(ctx, id, base, existing); err != nil {
+		return nil, err
+	}
+	return existing, nil
+}
+
 // DeleteExpiredPending deletes the account only when it is pending and its
-// TTL has run out at now (PendingExpired), and returns the record it
-// removed. Any other account is refused with *AccountNotPendingError and
-// nothing is written.
+// TTL has run out at now (PendingExpired), or when ClaimExpiredPending has
+// already claimed it (ExpiryClaimed), and returns the record it removed. Any
+// other account is refused with *AccountNotPendingError and nothing is
+// written.
 //
 // The condition is checked on the version the delete then claims by marking
 // it deleting, so an activation that commits first makes the claim fail
 // instead of the reaper removing an account that has just become active.
 func (s *kvUserStore) DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
 	return s.deleteUser(ctx, id, func(u *User) error {
-		if !PendingExpired(u, now) {
+		if !PendingReapable(u, now) {
 			return &AccountNotPendingError{ID: u.ID, Lifecycle: u.Lifecycle}
 		}
 		return nil
@@ -1775,6 +1820,11 @@ func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*Use
 	}
 	// Kept for the audit: marking the record deleting below clears it.
 	pendingExpiresAt := existing.PendingExpiresAt
+	if pendingExpiresAt == nil && existing.ExpiryClaim != nil {
+		// A reaper claim (ClaimExpiredPending) already marked the record and
+		// moved the expiry it acted on into ExpiryClaim.
+		pendingExpiresAt = existing.ExpiryClaim
+	}
 	// Under "required" a node without its bootstrap admin refuses to boot,
 	// so the admin is not deleted. Checked before markDeleting, which commits
 	// against the version read here: a concurrent change cannot slip past it.

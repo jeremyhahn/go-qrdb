@@ -250,6 +250,18 @@ func PendingExpired(u *User, now time.Time) bool {
 		u.PendingExpiresAt != nil && !now.Before(*u.PendingExpiresAt)
 }
 
+// ExpiryClaimed reports whether u is a lapsed pending account the reaper has
+// claimed (ClaimExpiredPending) and not yet finished deleting.
+func ExpiryClaimed(u *User) bool {
+	return u != nil && u.Lifecycle == LifecycleDeleting && u.ExpiryClaim != nil
+}
+
+// PendingReapable reports whether the reaper should (finish) deleting u: an
+// expired pending account, or one it already claimed.
+func PendingReapable(u *User, now time.Time) bool {
+	return PendingExpired(u, now) || ExpiryClaimed(u)
+}
+
 // creatableLifecycles returns the directly-creatable states in a stable order
 // for error messages. Ordered by lifecycle progression rather than by map
 // iteration so the message reads the same on every call.

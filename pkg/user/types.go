@@ -81,6 +81,13 @@ type User struct {
 	// one. Nil means the pending account does not expire.
 	PendingExpiresAt *time.Time `json:"pendingExpiresAt,omitempty"`
 
+	// ExpiryClaim is the PendingExpiresAt of a pending account the reaper
+	// has claimed for deletion (ClaimExpiredPending): it is set together
+	// with the move to LifecycleDeleting and persists until the record is
+	// gone. It is the durable intent that lets a later sweep, on any node
+	// and after a restart, finish a deletion a failure interrupted.
+	ExpiryClaim *time.Time `json:"expiryClaim,omitempty"`
+
 	// System marks built-in users that cannot be deleted.
 	System bool `json:"system"`
 

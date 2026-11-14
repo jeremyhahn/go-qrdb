@@ -428,6 +428,24 @@ func (r *routingUserService) DeleteExpiredPending(ctx context.Context, userID ui
 	return expirer.DeleteExpiredPending(ctx, userID, now)
 }
 
+// ClaimExpiredPending routes to the store of the tenant that holds userID,
+// under that tenant's isolation, like DeleteExpiredPending.
+func (r *routingUserService) ClaimExpiredPending(ctx context.Context, userID uint64, now time.Time) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "claim expired pending user")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.ClaimExpiredPending(ctx, userID, now)
+}
+
 // RemoveCertBinding routes on the tenant that holds the user id, exactly as
 // AddCertBinding does. Withdrawal must reach the same store the enrolment
 // wrote, or it would report success having removed nothing.

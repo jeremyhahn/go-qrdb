@@ -94,9 +94,19 @@ type CertActivator interface {
 // whose TTL has run out, conditionally on that state. It is what
 // PendingReaper deletes through.
 type PendingExpirer interface {
+	// ClaimExpiredPending claims an expired pending account for deletion:
+	// conditionally on the version it read, it marks the account
+	// LifecycleDeleting and records the expiry that justified it
+	// (User.ExpiryClaim), and returns the claimed record. A claim is
+	// durable: until DeleteExpiredPending removes the record, every later
+	// sweep finds it (ExpiryClaimed) and resumes. An account already claimed
+	// is returned as is. Any other account -- one activated first included
+	// -- is refused with *AccountNotPendingError and nothing is written.
+	ClaimExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error)
+
 	// DeleteExpiredPending deletes the account, its role assignments with it,
-	// only when it is pending and PendingExpired at now, and returns the
-	// removed record. Any other account is refused with
-	// *AccountNotPendingError and nothing is written.
+	// only when it is PendingExpired at now or already claimed
+	// (ExpiryClaimed), and returns the removed record. Any other account is
+	// refused with *AccountNotPendingError and nothing is written.
 	DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error)
 }

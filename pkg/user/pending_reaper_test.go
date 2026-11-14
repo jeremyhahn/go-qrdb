@@ -47,8 +47,29 @@ type fakeFactors struct {
 	mu      sync.Mutex
 	byUser  map[uint64][]*auth.AuthFactor
 	deleted []string
-	// failDelete, while set, makes Delete fail without removing anything.
+	// failDelete, while set, makes Purge (and Delete) fail without removing
+	// anything.
 	failDelete error
+	// onPurge, when set, runs at the start of Purge, between the claim and
+	// the removal.
+	onPurge func(userID uint64)
+}
+
+func (f *fakeFactors) Purge(_ context.Context, userID uint64) (int, error) {
+	if f.onPurge != nil {
+		f.onPurge(userID)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failDelete != nil {
+		return 0, f.failDelete
+	}
+	n := len(f.byUser[userID])
+	for _, fa := range f.byUser[userID] {
+		f.deleted = append(f.deleted, fa.ID)
+	}
+	delete(f.byUser, userID)
+	return n, nil
 }
 
 func (f *fakeFactors) List(_ context.Context, userID uint64) ([]*auth.AuthFactor, error) {
@@ -297,7 +318,21 @@ func TestPendingReaper_DoesNothingOffLeader(t *testing.T) {
 	}
 }
 
-func TestPendingReaper_RetriesOrphanedFactorsOnNextSweep(t *testing.T) {
+// claimState re-reads the account's claim: ClaimExpiredPending returns a
+// claimed record unchanged, so it doubles as a read of the claim.
+func claimState(t *testing.T, svc UserServicer, id uint64, now time.Time) *User {
+	t.Helper()
+	u, err := svc.(PendingExpirer).ClaimExpiredPending(context.Background(), id, now)
+	if err != nil {
+		t.Fatalf("re-read claim of %d: %v", id, err)
+	}
+	return u
+}
+
+// A purge that fails after the claim leaves the account claimed in the
+// store -- unable to authenticate or be activated -- and the next sweep
+// resumes it: purge, then delete.
+func TestPendingReaper_FailedPurgeLeavesClaimNextSweepResumes(t *testing.T) {
 	svc := newTestStore(t)
 	ctx := context.Background()
 	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
@@ -311,33 +346,146 @@ func TestPendingReaper_RetriesOrphanedFactorsOnNextSweep(t *testing.T) {
 		t.Fatalf("NewPendingReaper: %v", err)
 	}
 
-	n, err := r.Sweep(ctx, "acme")
-	if n != 1 || err == nil {
-		t.Fatalf("first sweep = %d, %v; want 1 and the factor error", n, err)
-	}
-	if got := r.Orphans("acme"); got != 2 {
-		t.Fatalf("orphans after failed removal = %d, want 2", got)
-	}
-
-	// Still failing: the orphans are kept, nothing else is reaped.
-	if n, err := r.Sweep(ctx, "acme"); n != 0 || err == nil || r.Orphans("acme") != 2 {
-		t.Fatalf("second sweep = %d, %v, orphans %d; want 0, error, 2", n, err, r.Orphans("acme"))
+	for i := 0; i < 2; i++ {
+		if n, err := r.Sweep(ctx, "acme"); n != 0 || err == nil {
+			t.Fatalf("sweep %d with failing purge = %d, %v; want 0 and the purge error", i, n, err)
+		}
+		claimed := claimState(t, svc, u.ID, clock.Now())
+		if !ExpiryClaimed(claimed) || claimed.CanAuthenticate() {
+			t.Fatalf("after failed purge: lifecycle %q claim %v; want a claimed, unauthenticable account", claimed.Lifecycle, claimed.ExpiryClaim)
+		}
+		if err := svc.EnableUser(ctx, u.ID); err == nil {
+			t.Fatal("a claimed account was activated")
+		}
 	}
 
 	factors.mu.Lock()
 	factors.failDelete = nil
-	// One factor vanished meanwhile: a retry of it is idempotent.
-	factors.byUser[u.ID] = factors.byUser[u.ID][1:]
 	factors.mu.Unlock()
-
-	if n, err := r.Sweep(ctx, "acme"); n != 0 || err != nil {
-		t.Fatalf("retry sweep = %d, %v; want 0, nil", n, err)
-	}
-	if got := r.Orphans("acme"); got != 0 {
-		t.Fatalf("orphans after retry = %d, want 0", got)
+	if n, err := r.Sweep(ctx, "acme"); n != 1 || err != nil {
+		t.Fatalf("resume sweep = %d, %v; want 1, nil", n, err)
 	}
 	if left, _ := factors.List(ctx, u.ID); len(left) != 0 {
-		t.Fatalf("factors left after retry: %d", len(left))
+		t.Fatalf("factors left after resume: %d", len(left))
+	}
+	if _, err := svc.GetUser(ctx, u.ID); err == nil {
+		t.Fatal("claimed account still present after the resume sweep")
+	}
+}
+
+// failingDelete fails DeleteExpiredPending, the step after the claim and the
+// purge, while fail is set.
+type failingDelete struct {
+	UserServicer
+	PendingExpirer
+	fail bool
+}
+
+func (f *failingDelete) DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
+	if f.fail {
+		return nil, errors.New("store unavailable")
+	}
+	return f.PendingExpirer.DeleteExpiredPending(ctx, id, now)
+}
+
+// A reaper that stops after the claim and the purge (here the delete fails;
+// a crash or a leadership change is the same) holds nothing in memory: a
+// fresh reaper over the same store, as on a new leader, finds the claimed
+// account and finishes it, with the expiry audit still naming its TTL.
+func TestPendingReaper_FreshReaperFinishesClaimedAccount(t *testing.T) {
+	al := &fakeAuditLogger{}
+	svc, err := NewStore(newMemKVStore(), newTestIDGen(t), WithAuditLogger(al))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
+	u := createPending(t, svc, "restart", "acme", time.Minute)
+	factors := &fakeFactors{byUser: map[uint64][]*auth.AuthFactor{u.ID: {{ID: "f-r", UserID: u.ID}}}}
+
+	broken := &failingDelete{UserServicer: svc, PendingExpirer: svc.(PendingExpirer), fail: true}
+	first, err := NewPendingReaper(PendingReaperConfig{Users: broken, Factors: factors, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("NewPendingReaper: %v", err)
+	}
+	if n, err := first.Sweep(ctx, "acme"); n != 0 || err == nil {
+		t.Fatalf("sweep with failing delete = %d, %v; want 0 and the error", n, err)
+	}
+	if !ExpiryClaimed(claimState(t, svc, u.ID, clock.Now())) {
+		t.Fatal("account not left claimed after the failed delete")
+	}
+
+	// The TTL is no longer on the record (claiming cleared it); the claim
+	// alone makes the account a candidate.
+	fresh, err := NewPendingReaper(PendingReaperConfig{Users: svc, Factors: factors, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("NewPendingReaper: %v", err)
+	}
+	if n, err := fresh.Sweep(ctx, "acme"); n != 1 || err != nil {
+		t.Fatalf("fresh reaper sweep = %d, %v; want 1, nil", n, err)
+	}
+	if _, err := svc.GetUser(ctx, u.ID); err == nil {
+		t.Fatal("claimed account survived the fresh reaper")
+	}
+	var expired int
+	for _, ev := range al.snapshot() {
+		if ev.Action == AuditActionPendingExpired {
+			expired++
+		}
+	}
+	if expired != 1 {
+		t.Fatalf("pending-expired audit events = %d, want 1", expired)
+	}
+}
+
+// The account is claimed before its factors are purged: inside the purge
+// (driven by the hook, no sleeps) the account is already terminal, so an
+// activation racing the reaper is refused and cannot resurrect it.
+func TestPendingReaper_ClaimPrecedesPurge(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
+	createPending(t, svc, "racer", "acme", time.Minute)
+	var during *User
+	var enableErr error
+	factors := &fakeFactors{onPurge: func(id uint64) {
+		during = claimState(t, svc, id, clock.Now())
+		enableErr = svc.EnableUser(ctx, id)
+	}}
+	r, err := NewPendingReaper(PendingReaperConfig{Users: svc, Factors: factors, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("NewPendingReaper: %v", err)
+	}
+	if n, err := r.Sweep(ctx, "acme"); n != 1 || err != nil {
+		t.Fatalf("sweep = %d, %v; want 1, nil", n, err)
+	}
+	if during == nil || !ExpiryClaimed(during) {
+		t.Fatalf("account during the purge = %+v; want claimed", during)
+	}
+	if enableErr == nil {
+		t.Fatal("activation between claim and purge succeeded")
+	}
+}
+
+// An account activated before the claim is never claimed or purged.
+func TestClaimExpiredPending_RefusesActivatedAndFresh(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+	expirer := svc.(PendingExpirer)
+	later := time.Now().UTC().Add(time.Hour)
+	activated := createPending(t, svc, "act", "acme", time.Minute)
+	if err := svc.EnableUser(ctx, activated.ID); err != nil {
+		t.Fatalf("EnableUser: %v", err)
+	}
+	fresh := createPending(t, svc, "fresh", "acme", 2*time.Hour)
+	for name, id := range map[string]uint64{"activated": activated.ID, "fresh": fresh.ID} {
+		var notPending *AccountNotPendingError
+		if _, err := expirer.ClaimExpiredPending(ctx, id, later); !errors.As(err, &notPending) {
+			t.Fatalf("%s: claim err = %v, want AccountNotPendingError", name, err)
+		}
+	}
+	if got, err := svc.GetUser(ctx, activated.ID); err != nil || got.Lifecycle != LifecycleActive {
+		t.Fatalf("activated account after refused claim = %v, %v", got, err)
 	}
 }
 
