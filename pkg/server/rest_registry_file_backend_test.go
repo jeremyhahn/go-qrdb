@@ -70,14 +70,14 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	}
 }
 
-// objstore is a node-store backend only: the database manager refuses to
-// open a database over it, so no runtime-created database stores data there.
-func TestDatabaseManager_ObjstoreDatabaseRefused(t *testing.T) {
+// An objstore database opens the objstore engine from its own settings: one
+// that names no provider fails the open, before any store is created.
+func TestDatabaseManager_ObjstoreDatabaseWithoutProviderRefused(t *testing.T) {
 	mgr := databasetest.NewManager(nil, t.TempDir())
 	t.Cleanup(func() { _ = mgr.Close() })
 	_, err := mgr.Create(database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore})
-	var invalid *database.InvalidBackendError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("Create(objstore) = %v, want *database.InvalidBackendError", err)
+	var create *database.StorageCreateError
+	if !errors.As(err, &create) || create.Backend != string(database.BackendObjstore) {
+		t.Fatalf("Create(objstore, no provider) = %v, want *database.StorageCreateError for objstore", err)
 	}
 }

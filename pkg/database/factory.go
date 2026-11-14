@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/syncwatch"
 )
@@ -47,7 +48,7 @@ func NewEmbeddedBackendFactory() *EmbeddedBackendFactory {
 
 // Create creates a StandaloneBackend for the given configuration.
 func (f *EmbeddedBackendFactory) Create(cfg DatabaseConfig, dataDir string) (Backend, error) {
-	store, err := openStorage(cfg.Name, cfg.Backend, dataDir)
+	store, err := openStorage(cfg, dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +125,8 @@ func (b *RemoteBackend) Close() error {
 }
 
 // openStorage creates a storage.Storage for the given backend type.
-func openStorage(name string, backend BackendType, dataDir string) (storage.Storage, error) {
+func openStorage(cfg DatabaseConfig, dataDir string) (storage.Storage, error) {
+	name, backend := cfg.Name, cfg.Backend
 	switch backend {
 	case BackendMemory:
 		return memory.NewStorage(), nil
@@ -137,6 +139,22 @@ func openStorage(name string, backend BackendType, dataDir string) (storage.Stor
 	case BackendPebble:
 		cfg := pebble.DefaultConfig(dataDir)
 		store, err := pebble.New(cfg, pebble.WithSyncObserver(storageSyncs(syncwatch.BackendPebble, name, dataDir)))
+		if err != nil {
+			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
+		}
+		return store, nil
+	case BackendObjstore:
+		// The objstore engine keeps its data in the provider, not under the
+		// database's data root. The credential handle opens the key and
+		// secret files for the open only; no plaintext copy is held.
+		var oc DatabaseObjstoreConfig
+		if cfg.Objstore != nil {
+			oc = *cfg.Objstore
+		}
+		store, err := objstore.New(oc.Provider, oc.Settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
+			KeyFile:    oc.KeyFile,
+			SecretFile: oc.SecretFile,
+		}))
 		if err != nil {
 			return nil, &StorageCreateError{Name: name, Backend: string(backend), Err: err}
 		}

@@ -17,7 +17,12 @@ package database
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore/objstoretest"
 )
 
 // ---------------------------------------------------------------------------
@@ -576,7 +581,7 @@ func TestRemoteBackend_Close_Error(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenStorage_Memory(t *testing.T) {
-	store, err := openStorage("mem-db", BackendMemory, "")
+	store, err := openStorage(DatabaseConfig{Name: "mem-db", Backend: BackendMemory}, "")
 	if err != nil {
 		t.Fatalf("openStorage memory: unexpected error: %v", err)
 	}
@@ -590,7 +595,7 @@ func TestOpenStorage_Memory(t *testing.T) {
 
 func TestOpenStorage_File(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage("file-db", BackendFile, dataDir)
+	store, err := openStorage(DatabaseConfig{Name: "file-db", Backend: BackendFile}, dataDir)
 	if err != nil {
 		t.Fatalf("openStorage file: unexpected error: %v", err)
 	}
@@ -604,7 +609,7 @@ func TestOpenStorage_File(t *testing.T) {
 
 func TestOpenStorage_Pebble(t *testing.T) {
 	dataDir := t.TempDir()
-	store, err := openStorage("pebble-db", BackendPebble, dataDir)
+	store, err := openStorage(DatabaseConfig{Name: "pebble-db", Backend: BackendPebble}, dataDir)
 	if err != nil {
 		t.Fatalf("openStorage pebble: unexpected error: %v", err)
 	}
@@ -616,13 +621,90 @@ func TestOpenStorage_Pebble(t *testing.T) {
 	}
 }
 
+// writeObjstoreCredential writes one credential file the way an operator
+// provisions it: owner-only, with a trailing newline.
+func writeObjstoreCredential(t *testing.T, name, value string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+func TestOpenStorage_Objstore(t *testing.T) {
+	p := objstoretest.NewProvider(t)
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{
+		Provider:   p.Name(),
+		KeyFile:    writeObjstoreCredential(t, "key", "access-key-id"),
+		SecretFile: writeObjstoreCredential(t, "secret", "secret-access-key"),
+	}}
+	store, err := openStorage(cfg, "")
+	if err != nil {
+		t.Fatalf("openStorage objstore: unexpected error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, ok := store.(*objstore.Engine); !ok {
+		t.Fatalf("openStorage objstore: got %T, want *objstore.Engine", store)
+	}
+	if err := store.Set([]byte("k"), []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	got, err := store.Get([]byte("k"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("Get = %q, %v; want \"v\"", got, err)
+	}
+	deliveries := p.Deliveries()
+	if len(deliveries) == 0 || deliveries[0].Key != "access-key-id" {
+		t.Fatalf("provider deliveries = %+v, want the key file's handle", deliveries)
+	}
+}
+
+func TestOpenStorage_ObjstoreMissingCredentialFile(t *testing.T) {
+	p := objstoretest.NewProvider(t)
+	missing := filepath.Join(t.TempDir(), "absent")
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{
+		Provider:   p.Name(),
+		KeyFile:    writeObjstoreCredential(t, "key", "access-key-id"),
+		SecretFile: missing,
+	}}
+	store, err := openStorage(cfg, "")
+	if store != nil {
+		t.Fatalf("openStorage objstore: got a store with a missing credential file")
+	}
+	var createErr *StorageCreateError
+	if !errors.As(err, &createErr) || createErr.Backend != string(BackendObjstore) {
+		t.Fatalf("openStorage objstore = %v, want *StorageCreateError", err)
+	}
+	var fileErr *objstore.CredentialFileError
+	if !errors.As(err, &fileErr) || fileErr.File != missing {
+		t.Fatalf("openStorage objstore = %v, want *objstore.CredentialFileError naming %s", err, missing)
+	}
+	if len(p.Deliveries()) != 0 {
+		t.Fatal("a failed credential read reached the provider")
+	}
+}
+
+func TestOpenStorage_ObjstoreUnknownProvider(t *testing.T) {
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "no-such-provider"}}
+	_, err := openStorage(cfg, "")
+	var createErr *StorageCreateError
+	if !errors.As(err, &createErr) {
+		t.Fatalf("openStorage objstore = %v, want *StorageCreateError", err)
+	}
+	var unsupported *objstore.UnsupportedProviderError
+	if !errors.As(err, &unsupported) || unsupported.Provider != "no-such-provider" {
+		t.Fatalf("openStorage objstore = %v, want *objstore.UnsupportedProviderError", err)
+	}
+}
+
 func TestOpenStorage_Raft(t *testing.T) {
 	// openStorage returns a lightweight in-memory placeholder for the raft
 	// backend: the authoritative data plane is the per-database shard on the
 	// shared system Host (IsolationRaft), wired at the server layer. The
 	// placeholder lets the Manager track the catalog record and shard ID
 	// uniformly.
-	store, err := openStorage("raft-db", BackendRaft, "")
+	store, err := openStorage(DatabaseConfig{Name: "raft-db", Backend: BackendRaft}, "")
 	if err != nil {
 		t.Fatalf("openStorage raft: unexpected error: %v", err)
 	}
@@ -632,7 +714,7 @@ func TestOpenStorage_Raft(t *testing.T) {
 }
 
 func TestOpenStorage_InvalidBackend(t *testing.T) {
-	_, err := openStorage("bad-db", BackendType("unknown"), "")
+	_, err := openStorage(DatabaseConfig{Name: "bad-db", Backend: BackendType("unknown")}, "")
 	if err == nil {
 		t.Fatal("openStorage invalid: expected error, got nil")
 	}
