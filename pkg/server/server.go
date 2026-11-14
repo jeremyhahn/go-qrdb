@@ -196,6 +196,10 @@ type Server struct {
 	// retentionCancel stops the time-series retention scheduler (see
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
+
+	// pendingReaperCancel stops the pending-user reaper (see
+	// pending_user_reaper.go); nil when none is running.
+	pendingReaperCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -292,6 +296,13 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+
+	// Pending-user reaper (WithPendingUserReaper). A negative interval
+	// disables it; ticks/now are test hooks.
+	pendingSweepInterval time.Duration
+	pendingSweepLeader   func() bool
+	pendingSweepTicks    <-chan time.Time
+	pendingSweepNow      func() time.Time
 
 	// defaultRetention is the retention the scheduler applies to a metric
 	// with no policy, or a policy of duration zero. Zero keeps its points.
@@ -1949,6 +1960,9 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Pending users past their TTL are deleted by the leader.
+	s.startPendingUserReaper()
+
 	return nil
 }
 
@@ -2023,6 +2037,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopPendingUserReaper()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()

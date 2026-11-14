@@ -18,9 +18,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // FactorPurger is the slice of the auth-factor service the reaper needs to
@@ -71,6 +73,11 @@ type PendingReaper struct {
 	now      func() time.Time
 	log      *slog.Logger
 	pageSize int
+
+	// orphans holds, per tenant, the factor ids of reaped accounts whose
+	// removal failed; the next sweep of the tenant retries them.
+	mu      sync.Mutex
+	orphans map[string]map[string]uint64
 }
 
 // NewPendingReaper builds a reaper. It refuses a user service that cannot
@@ -116,6 +123,14 @@ func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error)
 		return 0, nil
 	}
 	now := r.now().UTC()
+	// Tenant-routed services (users, factors) resolve the tenant from ctx.
+	ctx = tenant.WithTenantID(ctx, tenantID)
+
+	// Factors a previous sweep failed to remove are retried first.
+	var errs []error
+	if err := r.retryOrphans(ctx, tenantID); err != nil {
+		errs = append(errs, err)
+	}
 
 	// Collect first, delete after: deleting while paging would shift the
 	// pages under the listing and skip accounts.
@@ -123,7 +138,7 @@ func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error)
 	for page := 1; ; page++ {
 		resp, err := r.users.ListUsers(ctx, &ListUsersRequest{TenantID: tenantID, Page: page, PageSize: r.pageSize})
 		if err != nil {
-			return 0, err
+			return 0, errors.Join(append(errs, err)...)
 		}
 		for _, u := range resp.Users {
 			if PendingExpired(u, now) {
@@ -136,12 +151,11 @@ func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error)
 	}
 
 	reaped := 0
-	var errs []error
 	for _, id := range candidates {
 		if err := ctx.Err(); err != nil {
 			return reaped, errors.Join(append(errs, err)...)
 		}
-		ok, err := r.reap(ctx, id, now)
+		ok, err := r.reap(ctx, tenantID, id, now)
 		if err != nil {
 			r.log.WarnContext(ctx, "pending user reap failed", "tenant", tenantID, "user", id, "error", err)
 			errs = append(errs, err)
@@ -156,7 +170,7 @@ func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error)
 // reap deletes one account and its factors. It reports whether the account
 // was deleted; an account that stopped being an expired pending one, or is
 // already gone, is skipped without error.
-func (r *PendingReaper) reap(ctx context.Context, id uint64, now time.Time) (bool, error) {
+func (r *PendingReaper) reap(ctx context.Context, tenantID string, id uint64, now time.Time) (bool, error) {
 	// The factors are listed before the account goes, while the user id
 	// still resolves, and removed after, so a refused delete leaves them.
 	var factors []*auth.AuthFactor
@@ -178,14 +192,71 @@ func (r *PendingReaper) reap(ctx context.Context, id uint64, now time.Time) (boo
 
 	var errs []error
 	for _, f := range factors {
-		if err := r.factors.Delete(ctx, f.ID, true); err != nil {
-			var gone *auth.FactorNotFoundError
-			if !errors.As(err, &gone) {
-				errs = append(errs, err)
-			}
+		if err := r.deleteFactor(ctx, f.ID); err != nil {
+			r.recordOrphan(tenantID, f.ID, id)
+			errs = append(errs, err)
 		}
 	}
 	return true, errors.Join(errs...)
+}
+
+// deleteFactor force-removes one factor; one already gone counts as removed,
+// which is what makes the retry of an orphan idempotent.
+func (r *PendingReaper) deleteFactor(ctx context.Context, factorID string) error {
+	err := r.factors.Delete(ctx, factorID, true)
+	var gone *auth.FactorNotFoundError
+	if err == nil || errors.As(err, &gone) {
+		return nil
+	}
+	return err
+}
+
+func (r *PendingReaper) recordOrphan(tenantID, factorID string, userID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.orphans == nil {
+		r.orphans = make(map[string]map[string]uint64)
+	}
+	if r.orphans[tenantID] == nil {
+		r.orphans[tenantID] = make(map[string]uint64)
+	}
+	r.orphans[tenantID][factorID] = userID
+}
+
+// Orphans returns how many factors of reaped accounts in the tenant still
+// await removal.
+func (r *PendingReaper) Orphans(tenantID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.orphans[tenantID])
+}
+
+// retryOrphans removes the factors a previous sweep of the tenant failed to
+// remove, forgetting each one once it is gone.
+func (r *PendingReaper) retryOrphans(ctx context.Context, tenantID string) error {
+	r.mu.Lock()
+	pending := make(map[string]uint64, len(r.orphans[tenantID]))
+	for f, u := range r.orphans[tenantID] {
+		pending[f] = u
+	}
+	r.mu.Unlock()
+
+	var errs []error
+	for factorID, userID := range pending {
+		if err := r.deleteFactor(ctx, factorID); err != nil {
+			r.log.WarnContext(ctx, "pending user reaper: orphaned factor removal failed",
+				"tenant", tenantID, "user", userID, "factor", factorID, "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		r.mu.Lock()
+		delete(r.orphans[tenantID], factorID)
+		if len(r.orphans[tenantID]) == 0 {
+			delete(r.orphans, tenantID)
+		}
+		r.mu.Unlock()
+	}
+	return errors.Join(errs...)
 }
 
 // Run sweeps every tenant tenants returns on each tick until ctx ends. The

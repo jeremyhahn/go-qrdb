@@ -47,6 +47,8 @@ type fakeFactors struct {
 	mu      sync.Mutex
 	byUser  map[uint64][]*auth.AuthFactor
 	deleted []string
+	// failDelete, while set, makes Delete fail without removing anything.
+	failDelete error
 }
 
 func (f *fakeFactors) List(_ context.Context, userID uint64) ([]*auth.AuthFactor, error) {
@@ -58,6 +60,9 @@ func (f *fakeFactors) List(_ context.Context, userID uint64) ([]*auth.AuthFactor
 func (f *fakeFactors) Delete(_ context.Context, factorID string, _ bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failDelete != nil {
+		return f.failDelete
+	}
 	for uid, list := range f.byUser {
 		for i, fa := range list {
 			if fa.ID == factorID {
@@ -289,6 +294,50 @@ func TestPendingReaper_DoesNothingOffLeader(t *testing.T) {
 	leader = true
 	if n, err := r.Sweep(ctx, "acme"); err != nil || n != 1 {
 		t.Fatalf("leader sweep = %d, %v; want 1, nil", n, err)
+	}
+}
+
+func TestPendingReaper_RetriesOrphanedFactorsOnNextSweep(t *testing.T) {
+	svc := newTestStore(t)
+	ctx := context.Background()
+	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
+	u := createPending(t, svc, "orphan", "acme", time.Minute)
+	factors := &fakeFactors{
+		byUser:     map[uint64][]*auth.AuthFactor{u.ID: {{ID: "f-1", UserID: u.ID}, {ID: "f-2", UserID: u.ID}}},
+		failDelete: errors.New("factor store unavailable"),
+	}
+	r, err := NewPendingReaper(PendingReaperConfig{Users: svc, Factors: factors, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("NewPendingReaper: %v", err)
+	}
+
+	n, err := r.Sweep(ctx, "acme")
+	if n != 1 || err == nil {
+		t.Fatalf("first sweep = %d, %v; want 1 and the factor error", n, err)
+	}
+	if got := r.Orphans("acme"); got != 2 {
+		t.Fatalf("orphans after failed removal = %d, want 2", got)
+	}
+
+	// Still failing: the orphans are kept, nothing else is reaped.
+	if n, err := r.Sweep(ctx, "acme"); n != 0 || err == nil || r.Orphans("acme") != 2 {
+		t.Fatalf("second sweep = %d, %v, orphans %d; want 0, error, 2", n, err, r.Orphans("acme"))
+	}
+
+	factors.mu.Lock()
+	factors.failDelete = nil
+	// One factor vanished meanwhile: a retry of it is idempotent.
+	factors.byUser[u.ID] = factors.byUser[u.ID][1:]
+	factors.mu.Unlock()
+
+	if n, err := r.Sweep(ctx, "acme"); n != 0 || err != nil {
+		t.Fatalf("retry sweep = %d, %v; want 0, nil", n, err)
+	}
+	if got := r.Orphans("acme"); got != 0 {
+		t.Fatalf("orphans after retry = %d, want 0", got)
+	}
+	if left, _ := factors.List(ctx, u.ID); len(left) != 0 {
+		t.Fatalf("factors left after retry: %d", len(left))
 	}
 }
 

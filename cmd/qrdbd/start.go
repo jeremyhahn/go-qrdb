@@ -186,6 +186,7 @@ type startFlags struct {
 	separationOfDuties    bool
 
 	invitationTTL           string
+	pendingUserSweep        string
 	invitationRequireKeyPin bool
 	invitationRedeemLimit   qrdbconfig.InvitationRedeemLimitConfig
 	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
@@ -905,6 +906,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.invitationTTL = cfg.Auth.InvitationTTL
+	f.pendingUserSweep = cfg.Auth.PendingUserSweepInterval
 	f.invitationRequireKeyPin = cfg.Auth.InvitationRequireKeyPin
 	f.invitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
@@ -2861,6 +2863,22 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, opt)
 			} else {
 				slog.Error("user auth-factor service (M14) disabled", slog.Any("error", err))
+			}
+
+			// Pending users past their TTL are deleted by one node: the
+			// KV shard's Raft leader, or this node when standalone.
+			if sweep, err := qrdbconfig.ParsePendingUserSweepInterval(f.pendingUserSweep); err == nil {
+				var pendingLeader func() bool
+				if host != nil {
+					localReplicaID := f.replicaID
+					pendingLeader = func() bool {
+						id, ok, lerr := host.LeaderID(shard.ShardKV)
+						return lerr == nil && ok && id == localReplicaID
+					}
+				}
+				serverOpts = append(serverOpts, server.WithPendingUserReaper(sweep, pendingLeader))
+			} else {
+				slog.Error("pending user reaper disabled", slog.Any("error", err))
 			}
 
 			if authResult != nil {

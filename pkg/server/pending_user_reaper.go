@@ -1,0 +1,119 @@
+// Copyright (c) 2026 Jeremy Hahn
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package server
+
+import (
+	"context"
+	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// DefaultPendingUserSweepInterval is how often the pending-user reaper sweeps
+// when no interval is configured.
+const DefaultPendingUserSweepInterval = time.Minute
+
+// WithPendingUserReaper configures the reaper that deletes pending users past
+// their TTL. interval is the sweep period (zero means
+// DefaultPendingUserSweepInterval, negative disables the reaper). isLeader
+// gates every sweep so exactly one node of a Raft group deletes; nil means
+// this node is its own leader (standalone).
+func WithPendingUserReaper(interval time.Duration, isLeader func() bool) ServerOption {
+	return func(o *serverOptions) {
+		o.pendingSweepInterval = interval
+		o.pendingSweepLeader = isLeader
+	}
+}
+
+// withPendingUserTicks replaces the reaper's ticker; tests drive sweeps
+// through it instead of waiting on a clock.
+func withPendingUserTicks(ticks <-chan time.Time, now func() time.Time) ServerOption {
+	return func(o *serverOptions) {
+		o.pendingSweepTicks = ticks
+		o.pendingSweepNow = now
+	}
+}
+
+// startPendingUserReaper starts the reaper over the served user service. It
+// needs a user service that deletes conditionally on the pending state; any
+// other is left unreaped (logged once).
+func (s *Server) startPendingUserReaper() {
+	if s.opts.userSvc == nil || s.opts.pendingSweepInterval < 0 {
+		return
+	}
+	cfg := user.PendingReaperConfig{
+		Users:    s.opts.userSvc,
+		IsLeader: s.opts.pendingSweepLeader,
+		Now:      s.opts.pendingSweepNow,
+		Logger:   s.logger,
+	}
+	if s.opts.userAuthFactorSvc != nil {
+		cfg.Factors = s.opts.userAuthFactorSvc
+	}
+	reaper, err := user.NewPendingReaper(cfg)
+	if err != nil {
+		s.logger.Warn("pending user reaper disabled", "error", err)
+		return
+	}
+
+	ticks := s.opts.pendingSweepTicks
+	var ticker *time.Ticker
+	if ticks == nil {
+		interval := s.opts.pendingSweepInterval
+		if interval == 0 {
+			interval = DefaultPendingUserSweepInterval
+		}
+		ticker = time.NewTicker(interval)
+		ticks = ticker.C
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.pendingReaperCancel = cancel
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if ticker != nil {
+			defer ticker.Stop()
+		}
+		reaper.Run(ctx, ticks, s.pendingSweepTenants)
+	}()
+}
+
+// pendingSweepTenants lists the tenants a sweep covers: the system tenant and
+// every registered tenant.
+func (s *Server) pendingSweepTenants(ctx context.Context) ([]string, error) {
+	ids := []string{tenantid.System}
+	if s.opts.tenantSvc == nil {
+		return ids, nil
+	}
+	infos, err := s.opts.tenantSvc.ListTenants(ctx)
+	if err != nil {
+		return ids, err
+	}
+	for _, info := range infos {
+		if info.ID != "" && info.ID != tenantid.System {
+			ids = append(ids, info.ID)
+		}
+	}
+	return ids, nil
+}
+
+func (s *Server) stopPendingUserReaper() {
+	if s.pendingReaperCancel != nil {
+		s.pendingReaperCancel()
+		s.pendingReaperCancel = nil
+	}
+}
