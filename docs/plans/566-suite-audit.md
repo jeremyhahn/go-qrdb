@@ -74,6 +74,10 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/consistency | TestInvalidLevelErrorImplementsError | tautology (compile-time assignment) | TestInvalidLevelErrorMessage |
 | pkg/consistency | TestInvalidTimeoutErrorWithLargeNegative | duplicate with another value | TestInvalidTimeoutErrorMessage |
 | pkg/consistency | TestInvalidTimeoutErrorImplementsError | tautology (compile-time assignment) | TestInvalidTimeoutErrorMessage |
+| pkg/quota | TestExceededErrorImplementsError | tautology (compile-time assignment) | TestExceededErrorMessageContainsTenantID |
+| pkg/quota | TestInvalidResourceErrorImplementsError | tautology (compile-time assignment) | TestInvalidResourceErrorMessageContainsResourceID |
+| pkg/quota | TestUnregisteredCounterErrorImplementsError | tautology (compile-time assignment) | TestUnregisteredCounterErrorMessageContainsResource |
+| pkg/quota | TestErrNilCheckerIsNotNil | tautology (errors.New package var) | TestErrNilCheckerMessageContainsQuota |
 
 ## Trimmed tests
 
