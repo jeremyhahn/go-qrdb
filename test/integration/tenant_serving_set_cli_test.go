@@ -86,19 +86,45 @@ func TestTenantServingSet_ThreeNode_CLI_PerProtocol(t *testing.T) {
 				t.Fatalf("[%s] tenant barrier-init over %s: %v\noutput: %s", proto.name, initProto.name, initErr, initOut)
 			}
 
+			// The init leaves the tenant's first admin pending until the
+			// tenant's home group elects a leader, which completes the
+			// account from its onboarding record; until then the admin's
+			// certificate names no user and the node refuses it.
+			var listOut string
+			var listErr error
+			if !pollUntil(2*time.Minute, time.Second, func() bool {
+				listOut, listErr = cliOn(nodes[0], "database", "list")
+				return listErr == nil
+			}) {
+				t.Fatalf("[%s] tenant admin not live after barrier-init: %v\noutput: %s", proto.name, listErr, listOut)
+			}
+
 			dbName := fmt.Sprintf("served3-%s", proto.name)
 			t.Cleanup(func() { _, _ = cliOn(nodes[0], "database", "drop", dbName) })
 			if out, err := cliOn(nodes[0], "database", "create", dbName, "--backend", "raft", "--replicas", "1"); err != nil {
 				t.Fatalf("[%s] database create %s --replicas 1: %v\noutput: %s", proto.name, dbName, err, out)
 			}
 
+			// The create returns once the database is recorded; the
+			// placement reconciler starts its shard after, and until that
+			// shard elects a scale is refused as retryable unavailable.
+			scale := func(replicas string) (string, error) {
+				var out string
+				var err error
+				pollUntil(time.Minute, time.Second, func() bool {
+					out, err = cliOn(nodes[0], "database", "scale", dbName, "--replicas", replicas)
+					return err == nil || !strings.Contains(strings.ToLower(out), "no raft leader known")
+				})
+				return out, err
+			}
+
 			// Scale-out within the serving set: every node hosts the home group.
-			if out, err := cliOn(nodes[0], "database", "scale", dbName, "--replicas", "3"); err != nil {
+			if out, err := scale("3"); err != nil {
 				t.Fatalf("[%s] database scale %s --replicas 3 (inside the serving set): %v\noutput: %s", proto.name, dbName, err, out)
 			}
 
 			// A fourth replica needs a node outside the serving set.
-			out, err := cliOn(nodes[0], "database", "scale", dbName, "--replicas", "4")
+			out, err := scale("4")
 			if err == nil {
 				t.Fatalf("[%s] database scale %s --replicas 4 succeeded, want a serving-set refusal (output: %s)", proto.name, dbName, out)
 			}
