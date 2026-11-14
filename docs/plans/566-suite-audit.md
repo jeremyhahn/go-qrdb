@@ -69,6 +69,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/shard | TestShardNotRegisteredErrorMessage, _WithZeroID | substring checks of the exact message | TestErrorMessagePrefixes/ShardNotRegistered |
 | pkg/shard | TestInvalidShardIDErrorMessage, _WithLargeID | substring checks of the exact message | TestErrorMessagePrefixes/InvalidShardID |
 | pkg/shard | TestShardAlreadyRegisteredErrorImplementsError, TestShardNotRegisteredErrorImplementsError, TestInvalidShardIDErrorImplementsError | tautology (compile-time assignment) | TestErrorMessagePrefixes |
+| pkg/consistency | TestUnknownLevelErrorImplementsError | tautology (compile-time assignment) | TestUnknownLevelErrorMessage |
+| pkg/consistency | TestInvalidLevelErrorWithNegativeLevel | duplicate with another value | TestInvalidLevelErrorMessage |
+| pkg/consistency | TestInvalidLevelErrorImplementsError | tautology (compile-time assignment) | TestInvalidLevelErrorMessage |
+| pkg/consistency | TestInvalidTimeoutErrorWithLargeNegative | duplicate with another value | TestInvalidTimeoutErrorMessage |
+| pkg/consistency | TestInvalidTimeoutErrorImplementsError | tautology (compile-time assignment) | TestInvalidTimeoutErrorMessage |
 
 ## Trimmed tests
 
