@@ -404,7 +404,9 @@ holds its own key for the tenant's barrier; no key is carried between nodes.
 For a `raft` tenant whose key auto-unseals, `qrdb tenant barrier-status` on two
 nodes shows different key fingerprints. A node added to the tenant shows the
 barrier as sealed and uninitialized until it has its key. A passphrase
-`tenant barrier-init` is sent by the CLI to every serving node.
+`tenant barrier-init` is sent by the CLI to every serving node, and only once
+every one of them can be reached: if one cannot, no node is initialized and the
+same command can be rerun.
 
 On a cluster, creating a `barrier`, `volume` or `raft` tenant, or changing a
 tenant to one of those types, is refused as unavailable until every node runs a

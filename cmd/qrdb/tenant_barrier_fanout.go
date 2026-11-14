@@ -197,17 +197,61 @@ func sendToServingNodes(ctx context.Context, nodes []servingNode, opName string,
 
 // runOnServingNodes sends op to every node in nodes and reports each node's
 // answer.
-func runOnServingNodes(cmd *cobra.Command, nodes []transport.TenantBarrierNode, opName string, op func(context.Context, transport.TenantClient) error) error {
+func runOnServingNodes(cmd *cobra.Command, nodes []transport.TenantBarrierNode, opName string, send fanOutSender, op func(context.Context, transport.TenantClient) error) error {
 	serving, closeNodes, err := dialServingNodes(cmd, nodes)
 	if err != nil {
 		return err
 	}
 	defer closeNodes()
-	results, err := sendToServingNodes(cmd.Context(), serving, opName, op)
+	results, err := send(cmd.Context(), serving, opName, op)
 	if renderErr := renderNodeResults(results); renderErr != nil {
 		return renderErr
 	}
 	return err
+}
+
+// fanOutSender sends a fan-out operation to the dialled serving nodes:
+// sendToServingNodes sends it to every node that answered,
+// sendToAllServingNodes only when every node answered.
+type fanOutSender func(ctx context.Context, nodes []servingNode, opName string, op func(context.Context, transport.TenantClient) error) ([]nodeResult, error)
+
+// NodeNotSentError reports a node that answered but was not sent an
+// all-or-none fan-out because other serving nodes could not be reached.
+type NodeNotSentError struct {
+	Op        string
+	Unreached []string
+}
+
+func (e *NodeNotSentError) Error() string {
+	return "qrdb: " + e.Op + " was not sent: " + strings.Join(e.Unreached, ", ") + " cannot be reached"
+}
+
+// sendToAllServingNodes sends op to every serving node only when every node
+// was dialled. A barrier init reaching some nodes leaves the others without
+// their key, so the tenant's home group cannot elect a leader and the init
+// cannot be rerun on the nodes that took it; refusing it everywhere keeps a
+// rerun, once every node is reachable, a whole init.
+func sendToAllServingNodes(ctx context.Context, nodes []servingNode, opName string, op func(context.Context, transport.TenantClient) error) ([]nodeResult, error) {
+	var unreached []string
+	for _, n := range nodes {
+		if n.err != nil {
+			unreached = append(unreached, n.addr)
+		}
+	}
+	if len(unreached) == 0 {
+		return sendToServingNodes(ctx, nodes, opName, op)
+	}
+	results := make([]nodeResult, 0, len(nodes))
+	failed := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		err := n.err
+		if err == nil {
+			err = &NodeNotSentError{Op: opName, Unreached: unreached}
+		}
+		results = append(results, nodeResult{Node: n.addr, Error: err.Error()})
+		failed = append(failed, n.addr)
+	}
+	return results, &BarrierFanOutError{Op: opName, Failed: failed}
 }
 
 // renderNodeResults prints each node's answer.

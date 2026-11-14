@@ -137,6 +137,35 @@ func TestSendToServingNodes_SendsToEveryNode(t *testing.T) {
 	}
 }
 
+// TestSendToAllServingNodes_SendsNothingWhileANodeIsUnreachable pins the
+// all-or-none barrier init: with one serving node unreachable, the node
+// that answered is not sent the passphrase, so the barrier is not left
+// initialized on part of its serving set and a rerun is a whole init.
+func TestSendToAllServingNodes_SendsNothingWhileANodeIsUnreachable(t *testing.T) {
+	n1 := newInitRecorder(nil, nil)
+	nodes := []servingNode{
+		servingNodeOn(t, "n1", n1.svc),
+		{addr: "n2", err: &NodeEndpointMissingError{Node: "n2", Transport: "grpc"}},
+	}
+	results, err := sendToAllServingNodes(context.Background(), nodes, "the barrier init", passphraseInit("pass"))
+	var fanOut *BarrierFanOutError
+	if !errors.As(err, &fanOut) || strings.Join(fanOut.Failed, ",") != "n1,n2" {
+		t.Fatalf("err = %v; want *BarrierFanOutError naming n1 and n2", err)
+	}
+	if len(n1.inits) != 0 {
+		t.Fatal("the node that answered was sent the init while n2 was unreachable")
+	}
+	if len(results) != 2 || !strings.Contains(results[0].Error, "the barrier init was not sent: n2 cannot be reached") ||
+		!strings.Contains(results[1].Error, "publishes no grpc endpoint") {
+		t.Fatalf("results = %+v; want n1 not sent and n2 unreachable", results)
+	}
+
+	all := newInitRecorder(nil, nil)
+	if _, err := sendToAllServingNodes(context.Background(), []servingNode{servingNodeOn(t, "n1", all.svc)}, "the barrier init", passphraseInit("pass")); err != nil || len(all.inits) != 1 {
+		t.Fatalf("err = %v, %d inits; want the init sent once every node is reachable", err, len(all.inits))
+	}
+}
+
 // TestSendToServingNodes_AllAccept proves no error is returned when every
 // node accepts, and each is sent the same passphrase.
 func TestSendToServingNodes_AllAccept(t *testing.T) {

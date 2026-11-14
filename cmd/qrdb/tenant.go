@@ -555,7 +555,9 @@ func newTenantBarrierInitCmd() *cobra.Command {
 			"A barrier served by several nodes holds its own key on each. A passphrase init\n" +
 			"reads the nodes from --server's barrier status and is sent to every one of them,\n" +
 			"over --server's transport (rest, grpc, quic or mcp) at the endpoint each node\n" +
-			"publishes, with one result printed per node. Under any other strategy the init\n" +
+			"publishes, with one result printed per node. It is sent only once every node can\n" +
+			"be reached, so a node that cannot be reached leaves every node uninitialized and\n" +
+			"the same command can be rerun. Under any other strategy the init\n" +
 			"goes to --server's node and the others initialize their own keys from it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -595,7 +597,7 @@ func newTenantBarrierInitCmd() *cobra.Command {
 					return &TenantServingNodesUnknownError{Command: "barrier-init", TenantID: tenantID}
 				}
 				if len(status.Nodes) > 1 {
-					return runOnServingNodes(cmd, status.Nodes, "the barrier init", func(ctx context.Context, tenants transport.TenantClient) error {
+					return runOnServingNodes(cmd, status.Nodes, "the barrier init", sendToAllServingNodes, func(ctx context.Context, tenants transport.TenantClient) error {
 						_, err := tenants.TenantBarrierInit(ctx, req)
 						return err
 					})
@@ -784,7 +786,7 @@ func newTenantBarrierUnsealCmd() *cobra.Command {
 				return &TenantServingNodesUnknownError{Command: "barrier-unseal", TenantID: tenantID}
 			}
 			if len(status.Nodes) > 1 {
-				return runOnServingNodes(cmd, status.Nodes, "the barrier unseal", barrierUnseal(req))
+				return runOnServingNodes(cmd, status.Nodes, "the barrier unseal", sendToServingNodes, barrierUnseal(req))
 			}
 
 			if err := client.Tenants().TenantBarrierUnseal(cmd.Context(), req); err != nil {
