@@ -1,13 +1,15 @@
 # ci-template: v1.35.1 — canonical CI for all first-party Go repos.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
-#   - every job runs on GitHub-hosted ubuntu-latest (DS-7377), except the
-#     Docker-free jobs, which run on the self-hosted bigdisk pool: preflight,
-#     coverage-merge, test-clusterproof, coverage-fts and ci-gate for a push
-#     to main and a same-repository PR (DS-8233, m2479), and test-typescript
-#     for any push and a same-repository PR (Company Agent m2396), where it
-#     leaves no credential in its checkout and installs no apt package; no
-#     registry, cache volume, reaper or schedule guard remains
+#   - every job runs on a self-hosted pool for a push to main and a
+#     same-repository PR, and on GitHub-hosted ubuntu-latest otherwise, a
+#     fork's PR included (CA ruling 617): a job that needs Docker on the
+#     bigdisk-docker pool, a Docker-free job (preflight, coverage-merge,
+#     test-clusterproof, coverage-fts, test-typescript, signatures, ci-gate;
+#     DS-8233, m2479, m2396) on the bigdisk pool, which has no Docker daemon;
+#     test-typescript leaves no credential in its checkout and installs no apt
+#     package there; no registry, cache volume, reaper or schedule guard
+#     remains
 #   - no schedule guard, so preflight merges changes and arch-gates only
 #     (DS-7377)
 #   - pull_request lists `ready_for_review`, ci-template v1.35.3's trigger,
@@ -27,9 +29,11 @@
 #   - test-typescript is a job of its own
 #   - no revert-red-main.yml beside this file
 #
-# Runners (DS-7377). A GitHub-hosted ubuntu-latest runner is an ephemeral VM
-# with 4 vCPUs, 16 GB of memory and about 14 GB of free disk, exclusive to one
-# job, with a 6-hour job limit. So:
+# Runners (DS-7377, ruling 617). A GitHub-hosted ubuntu-latest runner, a
+# fork's PR's and the schedule's, is an ephemeral VM with 4 vCPUs, 16 GB of
+# memory and about 14 GB of free disk, exclusive to one job, with a 6-hour
+# job limit; the self-hosted pools take the same jobs for this repository's
+# own pushes and PRs. So:
 #   - nothing a job builds survives into another job: docker-build saves each
 #     image it builds and uploads it as an artifact, and every consumer
 #     downloads and loads it, checking its image ID (scripts/ci-image.sh);
@@ -37,8 +41,10 @@
 #     $RUNNER_TEMP/ci-cache, which scripts/in-toolchain-image.sh bind-mounts
 #     (CI_CACHE_DIR). A job restores main's newest entry; only a push to main
 #     saves one (CI_PUBLISH), so a pull request never writes main's cache;
-#   - every job that loads an image first frees the runner's disk (the
-#     preinstalled SDKs it never uses);
+#   - every job that loads an image first frees a hosted runner's disk (the
+#     preinstalled SDKs it never uses); the step runs on the hosted runner
+#     alone (runner.environment == 'github-hosted'), never on a pool host,
+#     whose images and directories other jobs share (ruling 617);
 #   - the stage's CPU and memory bounds, GOMAXPROCS and go's -p are derived
 #     from the runner by scripts/in-toolchain-image.sh, never written here;
 #   - the long suites run as matrix legs sized for a 4x slowdown against the
@@ -259,7 +265,7 @@ jobs:
   docker-build:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     needs: [preflight]
     timeout-minutes: 90
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
@@ -298,7 +304,8 @@ jobs:
       # `docker compose config` (client-side, no daemon). The toolchain image
       # carries no Docker CLI, so the check runs on the runner's. A docker-build
       # step since m2479: preflight runs on the bigdisk pool, which has no
-      # Docker, and this job is hosted and runs on every event preflight does.
+      # Docker, and this job has Docker (bigdisk-docker or hosted) and runs on
+      # every event preflight does.
       - name: make check-compose-targets test-compose-targets
         if: needs.preflight.outputs.docs_only != 'true'
         run: make check-compose-targets test-compose-targets
@@ -306,6 +313,7 @@ jobs:
       # CUSTOMIZE (go-qrdb, DS-7377): the preinstalled SDKs no stage uses take
       # most of a hosted runner's disk; the two images and their tars need it.
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -425,7 +433,7 @@ jobs:
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer image [lint, gosec, deps-check]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
@@ -443,6 +451,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -513,7 +522,7 @@ jobs:
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Lint Gates [toolchain image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
@@ -543,7 +552,7 @@ jobs:
           fi
 
       - name: Free the runner's disk
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ runner.environment == 'github-hosted' && steps.probe.outputs.has_target == 'true' }}
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -594,7 +603,7 @@ jobs:
 
   image:
     name: Devcontainer image [build, security, trivy image]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -613,6 +622,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -725,7 +735,7 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -760,6 +770,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1042,7 +1053,7 @@ jobs:
 
   test-tags:
     name: Unit [make test-tags]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -1061,6 +1072,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1111,7 +1123,7 @@ jobs:
   # TEST_SDK_LEGS or a leg's budget is not the limit less 5 minutes.
   test-sdk:
     name: Unit [make test-sdk-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 150
@@ -1136,6 +1148,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1190,7 +1203,7 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1229,6 +1242,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1264,7 +1278,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1281,6 +1295,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1326,7 +1341,7 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
     strategy:
@@ -1380,6 +1395,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1476,7 +1492,7 @@ jobs:
   # (DS-3160). It needs docker-build only for the code-tier `if:` (v1.29.2).
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
-    runs-on: ${{ (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 30
@@ -1524,7 +1540,7 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     needs: [docker-build]
     timeout-minutes: 90
     env:
@@ -1544,6 +1560,7 @@ jobs:
           done
 
       - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           docker image prune -af >/dev/null
@@ -1593,7 +1610,7 @@ jobs:
 
   signatures:
     name: Signatures
-    runs-on: ubuntu-latest
+    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
     if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 5
     permissions:
