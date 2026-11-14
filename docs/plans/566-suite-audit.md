@@ -53,6 +53,13 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/seal | TestBarrier_Encryptor_Success (Put/Get tail only; the test stays) | duplicate Put/Get round trip | TestBarrier_UnsealThenDataRoundTrip |
 | pkg/server | TestWithCertEnrollment_NonNil | option-setter assignment, lower layer of the served call | TestMintDelegation_ServerHandsTheRequestToTheService |
 | pkg/server | TestWithDatabaseManager_NonNil | option-setter assignment, lower layer of the served call | TestSealedDatabase_RefusedOverSQLWire |
+| pkg/lease | TestNotFoundErrorWithLargeID | duplicate with another ID | TestNotFoundErrorMessage |
+| pkg/lease | TestNotFoundErrorImplementsError | tautology (compile-time assignment) | TestNotFoundErrorMessage |
+| pkg/lease | TestExistsErrorWithDifferentID | duplicate with another ID | TestExistsErrorMessage |
+| pkg/lease | TestExistsErrorImplementsError | tautology (compile-time assignment) | TestExistsErrorMessage |
+| pkg/lease | TestInvalidTTLErrorWithZero | weaker duplicate (contains "0") | TestInvalidTTLErrorMessage |
+| pkg/lease | TestInvalidTTLErrorImplementsError | tautology (compile-time assignment) | TestInvalidTTLErrorMessage |
+| pkg/lease | TestLessorClosedErrorImplementsError | tautology (compile-time assignment) | TestLessorClosedErrorMessage |
 
 ## Trimmed tests
 
