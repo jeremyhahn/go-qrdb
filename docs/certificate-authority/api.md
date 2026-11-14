@@ -191,7 +191,11 @@ the Go SDK has `PutDelegationPolicy`, `ListDelegationPolicies` and
 
 **Minting and renewal.** The embedding host mints the first certificate in
 process with `Node.MintDelegation`, as its service principal; it is audited as
-`cert.delegation.mint`. Before it expires, the delegation renews itself: a
+`cert.delegation.mint`. An embedder names the request, the result and the
+refusal through `sdk/go`, never `pkg/*`: `sdk.MintDelegationRequest` (tenant,
+CSR, an optional narrower scope and lifetime), `sdk.IssuedDelegation` and
+`sdk.DelegationPolicyNotFoundError`; an operation outside the minted scope is
+refused with `sdk.PermissionDeniedError`. Before it expires, the delegation renews itself: a
 caller authenticated by a delegation may call `IssueDelegation` for its own
 principal while a policy stands for it. The request is bounded by the policy
 (`Policy.Bound`): it may narrow the scope and shorten the lifetime, never widen

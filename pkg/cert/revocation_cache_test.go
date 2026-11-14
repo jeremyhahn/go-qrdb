@@ -102,6 +102,38 @@ func TestRevocationCache_NotRevokedIsCachedForTTL(t *testing.T) {
 	}
 }
 
+// TestRevocationCache_UncachedIgnoresCachedNotRevoked: IsCertRevokedUncached
+// consults the provider on every call even with a cached not-revoked answer
+// inside the TTL, so a revocation is seen on the next call; a revoked answer
+// it reads is cached for the ordinary path too.
+func TestRevocationCache_UncachedIgnoresCachedNotRevoked(t *testing.T) {
+	prov := &countingProvider{}
+	c := NewRevocationCache(prov, DefaultRevocationCacheTTL)
+	ctx := context.Background()
+	peer := certWithSerial(9)
+
+	if revoked, err := c.IsCertRevoked(ctx, peer); err != nil || revoked {
+		t.Fatalf("IsCertRevoked = %v, %v; want not revoked", revoked, err)
+	}
+	if revoked, err := c.IsCertRevokedUncached(ctx, peer); err != nil || revoked {
+		t.Fatalf("IsCertRevokedUncached = %v, %v; want not revoked", revoked, err)
+	}
+	if got := prov.calls.Load(); got != 2 {
+		t.Fatalf("provider consulted %d times, want 2 (the uncached call skips the cache)", got)
+	}
+
+	prov.revoked = true
+	if revoked, err := c.IsCertRevokedUncached(ctx, peer); err != nil || !revoked {
+		t.Fatalf("IsCertRevokedUncached after revoke = %v, %v; want revoked", revoked, err)
+	}
+	if revoked, err := c.IsCertRevoked(ctx, peer); err != nil || !revoked {
+		t.Fatalf("IsCertRevoked after the uncached read = %v, %v; want the cached revoked answer", revoked, err)
+	}
+	if got := prov.calls.Load(); got != 3 {
+		t.Fatalf("provider consulted %d times, want 3 (the revoked answer is cached)", got)
+	}
+}
+
 func TestRevocationCache_NotRevokedExpires(t *testing.T) {
 	prov := &countingProvider{}
 	// A TTL this short is expired by the time the second call runs, without

@@ -210,6 +210,15 @@ type RevocationChecker interface {
 	IsCertRevoked(ctx context.Context, peer *x509.Certificate) (bool, error)
 }
 
+// UncachedRevocationChecker answers without trusting a cached not-revoked
+// answer (pkg/cert.RevocationCache implements it). A delegation certificate
+// is checked through it, so revoking its serial refuses the next call
+// whatever auth.revocation_cache_ttl is; other certificates keep the window.
+type UncachedRevocationChecker interface {
+	RevocationChecker
+	IsCertRevokedUncached(ctx context.Context, peer *x509.Certificate) (bool, error)
+}
+
 func WithRevocationChecker(rc RevocationChecker) MTLSOption
 
 // EnforceRevocation is THE single definition of the three-way policy
