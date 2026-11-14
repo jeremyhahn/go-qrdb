@@ -96,6 +96,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/embedding | TestCacheCapacityError_Zero | duplicate with another value | TestCacheCapacityError_Error |
 | pkg/embedding | TestProviderAlreadyRegisteredError_As | tests errors.As on the concrete pointer (stdlib) | TestProviderAlreadyRegisteredError_Error |
 | pkg/embedding | TestProviderNotFoundError_As | tests errors.As on the concrete pointer (stdlib) | TestProviderNotFoundError_Error |
+| pkg/messaging | TestDeltaNilInputError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaNilInputError_Error_IncludesParameter |
+| pkg/messaging | TestDeltaTypeMismatchError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaTypeMismatchError_Error_WithPath |
+| pkg/messaging | TestDeltaMaxDepthExceededError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaMaxDepthExceededError_Error_IncludesPath |
+| pkg/messaging | TestDeltaDeserializationError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaDeserializationError_Error_IncludesCause |
+| pkg/messaging | TestDeltaDiffError_ImplementsErrorInterface | tautology (non-empty message) | TestDeltaDiffError_Error_IncludesCause |
 
 ## Trimmed tests
 
