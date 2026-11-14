@@ -28,6 +28,17 @@ are not reconstructed here — their history is in the git log.
   tenant barrier is read once, as the migration source of the old layout
   (part 1 of #1201).
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **Every node rotates due credentials on a ticker, and the rotation policy is
+  set and read on every server transport.** `pkg/server` checks every
+  `seal.credential_rotation_check_period` (default `1m`), skipping the pass
+  while the node is sealed. Rotation-policy set and get, and migration-conflict
+  list and resolve, are served on REST (`PUT`/`GET
+  /v1/credentials/{name}/rotation-policy`, `GET
+  /v1/credentials/migration-conflicts`, `POST
+  /v1/credentials/{name}/migration-resolve`), gRPC and Unix, QUIC and MCP under
+  `credentials:rotate`. A REST name holding `/` or `%` travels as one escaped
+  segment, produced by the Go SDK's REST transport; a segment that does not
+  unescape is a 400 (part 2 of #1201).
 - **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions; the server answers them `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template

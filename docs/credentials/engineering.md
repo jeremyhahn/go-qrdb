@@ -328,6 +328,18 @@ ownership across the stack is documented in
 record (`credential-meta/<name>`), and schedules `NextRotation` one interval from now. A disabled policy
 clears the schedule. Setting a policy emits a `rotation_policy` audit event.
 
+`pkg/server` drives the checks (`credential_rotation_scheduler.go`). When the
+server's credential service implements `CredentialRotateDue`, `Start` launches
+one goroutine that ticks every `WithCredentialRotationPeriod`, else
+`seal.credential_rotation_check_period` from the server's configuration, else
+`credentials.DefaultRotationCheckPeriod` (one minute). Each tick runs one pass
+unless a pass is still running (an atomic flag, so passes never overlap) or
+the server's sealed-window probe reports the node sealed (the pass is skipped and logged at debug). A failed
+pass is logged at warn with the count it did rotate; the next tick retries.
+The pass runs under the scheduler's context alone, which `Stop` cancels before
+it waits for the goroutine. qrdbd passes the configured period to both its
+servers, the started node's and the sealed-window listener's.
+
 `CredentialRotateDue` sweeps the system store and then the store of
 every tenant the `seal.BarrierRegistry` lists (`ListTenants`), in tenant-ID
 order, each under that tenant's context, so a tenant's due policy rotates

@@ -567,6 +567,10 @@ func TestCredentialTools_Registration(t *testing.T) {
 		"qrdb_credential_delete",
 		"qrdb_credential_list",
 		"qrdb_credential_rotate",
+		"qrdb_credential_set_rotation_policy",
+		"qrdb_credential_rotation_policy",
+		"qrdb_credential_migration_conflicts",
+		"qrdb_credential_resolve_migration_conflict",
 		"qrdb_credential_retrieve_version",
 		"qrdb_credential_list_versions",
 		"qrdb_credential_gc_expired",
@@ -603,6 +607,10 @@ func TestServer_WithCredentialService(t *testing.T) {
 		"qrdb_credential_delete",
 		"qrdb_credential_list",
 		"qrdb_credential_rotate",
+		"qrdb_credential_set_rotation_policy",
+		"qrdb_credential_rotation_policy",
+		"qrdb_credential_migration_conflicts",
+		"qrdb_credential_resolve_migration_conflict",
 		"qrdb_credential_retrieve_version",
 		"qrdb_credential_list_versions",
 		"qrdb_credential_gc_expired",
@@ -1039,6 +1047,103 @@ func TestHandleCredentialRotate_ServiceError(t *testing.T) {
 	}
 	if toolErr.Tool != "qrdb_credential_rotate" {
 		t.Errorf("tool: got %q, want %q", toolErr.Tool, "qrdb_credential_rotate")
+	}
+}
+
+func TestHandleCredentialSetRotationPolicy(t *testing.T) {
+	handler := handleCredentialSetRotationPolicy(newMockCredentialService())
+
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_set_rotation_policy", map[string]any{
+		"name": "db-password", "enabled": true, "interval": "720h", "retain_versions": float64(2),
+	}))
+	if err != nil || result.IsError {
+		t.Fatalf("set: result %+v, err %v", result, err)
+	}
+
+	result, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_set_rotation_policy", map[string]any{}))
+	if err != nil || !result.IsError {
+		t.Fatalf("missing name: result %+v, err %v", result, err)
+	}
+
+	_, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_set_rotation_policy", map[string]any{
+		"name": "db-password", "enabled": true, "interval": "monthly", "retain_versions": float64(1),
+	}))
+	var invalid *credentials.InvalidRotationPolicyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("bad interval: expected *credentials.InvalidRotationPolicyError, got %v", err)
+	}
+
+	_, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_set_rotation_policy", map[string]any{"name": "missing"}))
+	if !errors.Is(err, credentials.ErrCredentialNotFound) {
+		t.Fatalf("missing credential: expected ErrCredentialNotFound, got %v", err)
+	}
+}
+
+func TestHandleCredentialRotationPolicy(t *testing.T) {
+	handler := handleCredentialRotationPolicy(newMockCredentialService())
+
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_rotation_policy", map[string]any{"name": "db-password"}))
+	if err != nil || result.IsError {
+		t.Fatalf("get: result %+v, err %v", result, err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(resultText(t, result)), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["name"] != "db-password" || got["interval"] == "" {
+		t.Fatalf("unexpected response %v", got)
+	}
+
+	result, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_rotation_policy", map[string]any{}))
+	if err != nil || !result.IsError {
+		t.Fatalf("missing name: result %+v, err %v", result, err)
+	}
+
+	_, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_rotation_policy", map[string]any{"name": "missing"}))
+	if !errors.Is(err, credentials.ErrCredentialNotFound) {
+		t.Fatalf("missing credential: expected ErrCredentialNotFound, got %v", err)
+	}
+}
+
+func TestHandleCredentialMigrationConflicts(t *testing.T) {
+	handler := handleCredentialMigrationConflicts(newMockCredentialService())
+
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_migration_conflicts", map[string]any{}))
+	if err != nil || result.IsError {
+		t.Fatalf("list: result %+v, err %v", result, err)
+	}
+	var got struct {
+		Conflicts []migrationConflictJSON `json:"conflicts"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, result)), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Conflicts) != 1 || got.Conflicts[0] != (migrationConflictJSON{Name: "db", Value: true, Policy: true}) {
+		t.Fatalf("unexpected response %+v", got)
+	}
+}
+
+func TestHandleCredentialResolveMigrationConflict(t *testing.T) {
+	handler := handleCredentialResolveMigrationConflict(newMockCredentialService())
+
+	result, err := handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_resolve_migration_conflict",
+		map[string]any{"name": "db", "resolution": "import"}))
+	if err != nil || result.IsError {
+		t.Fatalf("resolve: result %+v, err %v", result, err)
+	}
+	if resultText(t, result) != "migration conflict resolved" {
+		t.Fatalf("unexpected text %q", resultText(t, result))
+	}
+
+	result, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_resolve_migration_conflict", map[string]any{}))
+	if err != nil || !result.IsError {
+		t.Fatalf("missing name: result %+v, err %v", result, err)
+	}
+
+	_, err = handler(context.Background(), buildCallToolRequest(t, "qrdb_credential_resolve_migration_conflict",
+		map[string]any{"name": "missing", "resolution": "discard"}))
+	if !errors.Is(err, credentials.ErrMigrationConflictNotFound) {
+		t.Fatalf("expected ErrMigrationConflictNotFound, got %v", err)
 	}
 }
 

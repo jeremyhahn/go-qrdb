@@ -16,6 +16,7 @@ package quic
 
 import (
 	"context"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
@@ -70,22 +71,6 @@ func (m *mockCredentialService) CredentialDelete(ctx context.Context, name strin
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, name)
 	}
-	return nil
-}
-
-func (*mockCredentialService) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
-	return nil
-}
-
-func (*mockCredentialService) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
-	return &service.CredentialRotationPolicyStatus{}, nil
-}
-
-func (*mockCredentialService) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
-	return nil, nil
-}
-
-func (*mockCredentialService) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 
@@ -158,4 +143,29 @@ func (m *mockCredentialService) CredentialGCExpired(ctx context.Context, name st
 		return m.gcExpiredFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (m *mockCredentialService) CredentialSetRotationPolicy(_ context.Context, name string, _ credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	return nil
+}
+
+func (m *mockCredentialService) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (m *mockCredentialService) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (m *mockCredentialService) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }

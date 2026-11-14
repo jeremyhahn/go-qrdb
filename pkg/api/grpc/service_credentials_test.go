@@ -36,6 +36,7 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeCredentialServicerProto struct {
+	setPolicy      credentials.RotationPolicy
 	storeFn        func(ctx context.Context, name string, value []byte) error
 	retrieveFn     func(ctx context.Context, name string) ([]byte, error)
 	submitFn       func(ctx context.Context, name string, value []byte) error
@@ -73,22 +74,6 @@ func (f *fakeCredentialServicerProto) CredentialDelete(ctx context.Context, name
 	if f.deleteFn != nil {
 		return f.deleteFn(ctx, name)
 	}
-	return nil
-}
-
-func (*fakeCredentialServicerProto) CredentialSetRotationPolicy(context.Context, string, credentials.RotationPolicy) error {
-	return nil
-}
-
-func (*fakeCredentialServicerProto) CredentialRotationPolicy(context.Context, string) (*service.CredentialRotationPolicyStatus, error) {
-	return &service.CredentialRotationPolicyStatus{}, nil
-}
-
-func (*fakeCredentialServicerProto) CredentialMigrationConflicts(context.Context) ([]credentials.CredentialMigrationConflictError, error) {
-	return nil, nil
-}
-
-func (*fakeCredentialServicerProto) CredentialResolveMigrationConflict(context.Context, string, credentials.MigrationResolution) error {
 	return nil
 }
 
@@ -152,6 +137,35 @@ func (f *fakeCredentialServicerProto) CredentialGCExpired(ctx context.Context, n
 		return f.gcExpiredFn(ctx, name)
 	}
 	return 0, nil
+}
+
+func (f *fakeCredentialServicerProto) CredentialSetRotationPolicy(_ context.Context, name string, policy credentials.RotationPolicy) error {
+	if name == "missing" {
+		return credentials.ErrCredentialNotFound
+	}
+	if policy.Enabled && policy.RetainVersions < 1 {
+		return &credentials.InvalidRotationPolicyError{Reason: "retain versions must be at least 1"}
+	}
+	f.setPolicy = policy
+	return nil
+}
+
+func (f *fakeCredentialServicerProto) CredentialRotationPolicy(_ context.Context, name string) (*service.CredentialRotationPolicyStatus, error) {
+	if name == "missing" {
+		return nil, credentials.ErrCredentialNotFound
+	}
+	return &service.CredentialRotationPolicyStatus{Policy: credentials.RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: 2}}, nil
+}
+
+func (f *fakeCredentialServicerProto) CredentialMigrationConflicts(_ context.Context) ([]credentials.CredentialMigrationConflictError, error) {
+	return []credentials.CredentialMigrationConflictError{{Name: "db", Value: true, Policy: true}}, nil
+}
+
+func (f *fakeCredentialServicerProto) CredentialResolveMigrationConflict(_ context.Context, name string, _ credentials.MigrationResolution) error {
+	if name == "missing" {
+		return credentials.ErrMigrationConflictNotFound
+	}
+	return nil
 }
 
 // codeOf returns the gRPC status code carried by err, or codes.Unknown when
@@ -407,6 +421,94 @@ func TestCredentialRotate_InvalidGracePeriod_Proto(t *testing.T) {
 	_, err := s.CredentialRotate(context.Background(), &pb.CredentialRotateRequest{Name: "n", NewValue: []byte("v")})
 	if codeOf(err) != codes.InvalidArgument {
 		t.Fatalf("expected InvalidArgument, got %s", codeOf(err))
+	}
+}
+
+func TestCredentialSetRotationPolicy_Success_Proto(t *testing.T) {
+	svc := &fakeCredentialServicerProto{}
+	s := &qrdbServiceServer{credentialSvc: svc}
+	_, err := s.CredentialSetRotationPolicy(context.Background(), &pb.CredentialSetRotationPolicyRequest{
+		Name: "n", Enabled: true, Interval: "720h", RetainVersions: 2,
+	})
+	if err != nil {
+		t.Fatalf("CredentialSetRotationPolicy: %v", err)
+	}
+	want := credentials.RotationPolicy{Enabled: true, Interval: 720 * time.Hour, RetainVersions: 2}
+	if svc.setPolicy != want {
+		t.Fatalf("policy = %+v, want %+v", svc.setPolicy, want)
+	}
+}
+
+func TestCredentialSetRotationPolicy_Refused_Proto(t *testing.T) {
+	s := &qrdbServiceServer{credentialSvc: &fakeCredentialServicerProto{}}
+	cases := map[string]struct {
+		req  *pb.CredentialSetRotationPolicyRequest
+		want codes.Code
+	}{
+		"bad interval": {&pb.CredentialSetRotationPolicyRequest{Name: "n", Enabled: true, Interval: "monthly", RetainVersions: 1}, codes.InvalidArgument},
+		"bad retain":   {&pb.CredentialSetRotationPolicyRequest{Name: "n", Enabled: true, Interval: "1h"}, codes.InvalidArgument},
+		"not found":    {&pb.CredentialSetRotationPolicyRequest{Name: "missing"}, codes.NotFound},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.CredentialSetRotationPolicy(context.Background(), tc.req)
+			if codeOf(err) != tc.want {
+				t.Fatalf("expected %s, got %s", tc.want, codeOf(err))
+			}
+		})
+	}
+	_, err := (&qrdbServiceServer{}).CredentialSetRotationPolicy(context.Background(), &pb.CredentialSetRotationPolicyRequest{Name: "n"})
+	if codeOf(err) != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", codeOf(err))
+	}
+}
+
+func TestCredentialRotationPolicy_Proto(t *testing.T) {
+	s := &qrdbServiceServer{credentialSvc: &fakeCredentialServicerProto{}}
+	resp, err := s.CredentialRotationPolicy(context.Background(), &pb.CredentialRotationPolicyRequest{Name: "n"})
+	if err != nil {
+		t.Fatalf("CredentialRotationPolicy: %v", err)
+	}
+	if resp.GetName() != "n" || !resp.GetEnabled() || resp.GetInterval() != "1h0m0s" ||
+		resp.GetRetainVersions() != 2 || resp.GetNextRotation() != "" {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+	if _, err := s.CredentialRotationPolicy(context.Background(), &pb.CredentialRotationPolicyRequest{Name: "missing"}); codeOf(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", codeOf(err))
+	}
+	if _, err := (&qrdbServiceServer{}).CredentialRotationPolicy(context.Background(), &pb.CredentialRotationPolicyRequest{Name: "n"}); codeOf(err) != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", codeOf(err))
+	}
+}
+
+func TestCredentialMigrationConflicts_Proto(t *testing.T) {
+	s := &qrdbServiceServer{credentialSvc: &fakeCredentialServicerProto{}}
+	resp, err := s.CredentialMigrationConflicts(context.Background(), &pb.CredentialMigrationConflictsRequest{})
+	if err != nil {
+		t.Fatalf("CredentialMigrationConflicts: %v", err)
+	}
+	got := resp.GetConflicts()
+	if len(got) != 1 || got[0].GetName() != "db" || !got[0].GetValue() || got[0].GetVersions() || !got[0].GetPolicy() {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+	if _, err := (&qrdbServiceServer{}).CredentialMigrationConflicts(context.Background(), &pb.CredentialMigrationConflictsRequest{}); codeOf(err) != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", codeOf(err))
+	}
+}
+
+func TestCredentialResolveMigrationConflict_Proto(t *testing.T) {
+	s := &qrdbServiceServer{credentialSvc: &fakeCredentialServicerProto{}}
+	if _, err := s.CredentialResolveMigrationConflict(context.Background(),
+		&pb.CredentialResolveMigrationConflictRequest{Name: "db", Resolution: "import"}); err != nil {
+		t.Fatalf("CredentialResolveMigrationConflict: %v", err)
+	}
+	if _, err := s.CredentialResolveMigrationConflict(context.Background(),
+		&pb.CredentialResolveMigrationConflictRequest{Name: "missing", Resolution: "discard"}); codeOf(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %s", codeOf(err))
+	}
+	if _, err := (&qrdbServiceServer{}).CredentialResolveMigrationConflict(context.Background(),
+		&pb.CredentialResolveMigrationConflictRequest{Name: "db"}); codeOf(err) != codes.Unimplemented {
+		t.Fatalf("expected Unimplemented, got %s", codeOf(err))
 	}
 }
 

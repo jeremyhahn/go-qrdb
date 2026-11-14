@@ -8,6 +8,8 @@
 
 package credentials
 
+import "time"
+
 const (
 	// StrategyManual stores credentials in-memory with blocking retrieval
 	// until a credential is submitted.
@@ -29,3 +31,8 @@ type Config struct {
 	// Valid values are "manual" and "barrier".
 	Strategy string
 }
+
+// DefaultRotationCheckPeriod is the server rotation scheduler's period when
+// neither WithCredentialRotationPeriod nor
+// seal.credential_rotation_check_period sets one.
+const DefaultRotationCheckPeriod = time.Minute
