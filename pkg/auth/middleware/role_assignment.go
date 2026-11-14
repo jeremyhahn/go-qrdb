@@ -223,7 +223,7 @@ func (m *AuthMiddleware) AuthorizeRoleAssignmentWriteOnCreate(
 // conditional commit swaps against, so the rule holds for the version written.
 // Every UpdateUser that follows one of those gates carries it.
 //
-// The guard refuses with *SORoleRequiredError or *SORoleUnresolvedError, as
+// The guard refuses with *auth.SORoleRequiredError or *SORoleUnresolvedError, as
 // the gates do. A nil m enforces no RBAC and returns nil.
 func (m *AuthMiddleware) SORoleGuard(ctx context.Context) user.UpdateGuard {
 	if m == nil {
@@ -263,10 +263,10 @@ func (m *AuthMiddleware) authorizeRolesAssign(ctx context.Context, target string
 // Admin role of its tenant -- the system Admin for a system-tenant account,
 // the tenant Admin otherwise (go-qrdb#1128, owner ruling 132). Any write that
 // changes the account's roles and leaves it holding both is refused with
-// *SORoleConflictError, whoever the caller, and a caller that holds both
+// *auth.SORoleConflictError, whoever the caller, and a caller that holds both
 // itself is no separate SO (requireSeparateSO).
 //
-// The refusal is *SORoleRequiredError or *SORoleConflictError (403 /
+// The refusal is *auth.SORoleRequiredError or *auth.SORoleConflictError (403 /
 // PermissionDenied); a role store that cannot say who holds the SO or Admin
 // role is *SORoleUnresolvedError (503), never an admission. A nil m
 // authorizes nothing, as every AuthMiddleware gate does when no RBAC is
@@ -289,7 +289,7 @@ func (m *AuthMiddleware) authorizeSORoleChange(ctx context.Context, target strin
 			return err
 		}
 		if admin {
-			return &SORoleConflictError{TenantID: target}
+			return &auth.SORoleConflictError{TenantID: target}
 		}
 	}
 	if held == holds {
@@ -324,12 +324,12 @@ func (m *AuthMiddleware) AuthorizeSOExclusive(ctx context.Context, requestedTena
 // Officer and does not also hold target's Admin role: an SO-exclusive act
 // runs as a separate SO principal. A caller of another tenant, the system
 // tenant's included, or one without the SO role is refused with
-// *SORoleRequiredError; an SO that is also Admin -- an account left holding
-// both from the standard posture -- with *SORoleConflictError.
+// *auth.SORoleRequiredError; an SO that is also Admin -- an account left holding
+// both from the standard posture -- with *auth.SORoleConflictError.
 func (m *AuthMiddleware) requireSeparateSO(ctx context.Context, target string) error {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil || tenantid.Normalize(identity.TenantID) != target {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
 	}
 	callerRoles := callerRoleIDs(identity, target)
 	isSO, err := m.holdsSO(ctx, target, callerRoles)
@@ -337,14 +337,14 @@ func (m *AuthMiddleware) requireSeparateSO(ctx context.Context, target string) e
 		return err
 	}
 	if !isSO {
-		return &SORoleRequiredError{}
+		return &auth.SORoleRequiredError{}
 	}
 	admin, err := m.holdsAdmin(ctx, target, callerRoles)
 	if err != nil {
 		return err
 	}
 	if admin {
-		return &SORoleConflictError{TenantID: target}
+		return &auth.SORoleConflictError{TenantID: target}
 	}
 	return nil
 }

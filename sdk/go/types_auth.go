@@ -343,13 +343,13 @@ type StoreUnavailableError = authmw.StoreUnavailableError
 // that does not hold the SO role -- under strict separation (compliance mode)
 // a tenant or system admin among them. Every transport, the embedded one
 // included, answers 403 / PermissionDenied.
-type SORoleRequiredError = authmw.SORoleRequiredError
+type SORoleRequiredError = auth.SORoleRequiredError
 
 // SORoleConflictError is the strict separation-of-duties (compliance mode)
 // refusal of a role write or an SO-exclusive call that would leave, or comes
 // from, a principal holding SO together with the system or tenant admin role.
 // Every transport, the embedded one included, answers 403 / PermissionDenied.
-type SORoleConflictError = authmw.SORoleConflictError
+type SORoleConflictError = auth.SORoleConflictError
 
 // IsLeadershipTransient reports whether err is a shard electing a leader or
 // its leader moving: a state the next attempt, after the election, does not

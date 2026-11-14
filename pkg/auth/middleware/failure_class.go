@@ -288,12 +288,12 @@ var authFailureRules = []struct {
 		var e *SOFactorError
 		return AuthFailureUnauthenticated, errors.As(err, &e)
 	}},
-	{"SORoleRequiredError", func(err error) (AuthFailureClass, bool) {
-		var e *SORoleRequiredError
+	{"auth.SORoleRequiredError", func(err error) (AuthFailureClass, bool) {
+		var e *auth.SORoleRequiredError
 		return AuthFailureUnauthorized, errors.As(err, &e)
 	}},
-	{"SORoleConflictError", func(err error) (AuthFailureClass, bool) {
-		var e *SORoleConflictError
+	{"auth.SORoleConflictError", func(err error) (AuthFailureClass, bool) {
+		var e *auth.SORoleConflictError
 		return AuthFailureUnauthorized, errors.As(err, &e)
 	}},
 	{"SORoleUnresolvedError", func(err error) (AuthFailureClass, bool) {

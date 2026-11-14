@@ -676,20 +676,20 @@ func TestAuthorizeSORoleChange(t *testing.T) {
 		before, after []string
 		check         func(t *testing.T, err error)
 	}{
-		{name: "admin grants SO", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
-		{name: "admin revokes SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "admin grants SO", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.so}, check: wantErrorAs[*auth.SORoleRequiredError]},
+		{name: "admin revokes SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so, f.userRole}, after: []string{f.userRole}, check: wantErrorAs[*auth.SORoleRequiredError]},
 		{name: "admin changes other roles of an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.userRole, f.so}, check: wantNoError},
 		{name: "admin grants a non-SO role", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.userRole}, check: wantNoError},
 		{name: "tenant SO grants SO", mw: f.mw, ctx: f.caller(f.so), after: []string{f.so}, check: wantNoError},
-		{name: "SO holding admin grants SO", mw: f.mw, ctx: f.caller(f.admin, f.so), after: []string{f.so}, check: wantErrorAs[*SORoleConflictError]},
-		{name: "tenant SO grants SO to an admin", mw: f.mw, ctx: f.caller(f.so), before: []string{f.admin}, after: []string{f.admin, f.so}, check: wantErrorAs[*SORoleConflictError]},
-		{name: "admin granted to an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so, f.admin}, check: wantErrorAs[*SORoleConflictError]},
+		{name: "SO holding admin grants SO", mw: f.mw, ctx: f.caller(f.admin, f.so), after: []string{f.so}, check: wantErrorAs[*auth.SORoleConflictError]},
+		{name: "tenant SO grants SO to an admin", mw: f.mw, ctx: f.caller(f.so), before: []string{f.admin}, after: []string{f.admin, f.so}, check: wantErrorAs[*auth.SORoleConflictError]},
+		{name: "admin granted to an SO", mw: f.mw, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so, f.admin}, check: wantErrorAs[*auth.SORoleConflictError]},
 		{name: "SO revoked from an admin", mw: f.mw, ctx: f.caller(f.so), before: []string{f.admin, f.so}, after: []string{f.admin}, check: wantNoError},
 		{name: "standard: SO granted to an admin", mw: standard, ctx: f.caller(f.admin), before: []string{f.admin}, after: []string{f.admin, f.so}, check: wantNoError},
 		{name: "tenant SO revokes SO", mw: f.mw, ctx: f.caller(f.so), before: []string{f.so}, check: wantNoError},
-		{name: "system SO grants the tenant's SO", mw: f.mw, ctx: sysSO, after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "system SO grants the tenant's SO", mw: f.mw, ctx: sysSO, after: []string{f.so}, check: wantErrorAs[*auth.SORoleRequiredError]},
 		{name: "another tenant's SO role is not this tenant's", mw: f.mw, ctx: f.caller(f.admin), after: []string{f.sysSO}, check: wantNoError},
-		{name: "no identity", mw: f.mw, ctx: context.Background(), after: []string{f.so}, check: wantErrorAs[*SORoleRequiredError]},
+		{name: "no identity", mw: f.mw, ctx: context.Background(), after: []string{f.so}, check: wantErrorAs[*auth.SORoleRequiredError]},
 		{name: "unresolvable SO role", mw: unresolvable, ctx: f.caller(f.so), after: []string{f.so}, check: wantErrorAs[*SORoleUnresolvedError]},
 		{name: "unchanged set needs no resolution", mw: unresolvable, ctx: f.caller(f.admin), before: []string{f.so}, after: []string{f.so}, check: wantNoError},
 		{name: "no RBAC", ctx: context.Background(), after: []string{f.so}, check: wantNoError},
@@ -723,12 +723,12 @@ func TestAuthorizeSOExclusive(t *testing.T) {
 	}{
 		{name: "separate SO", mw: f.mw, ctx: f.caller(f.so), check: wantNoError},
 		{name: "separate SO names its tenant", mw: f.mw, ctx: f.caller(f.so), requested: "acme", check: wantNoError},
-		{name: "tenant admin", mw: f.mw, ctx: f.caller(f.admin), check: wantErrorAs[*SORoleRequiredError]},
-		{name: "SO holding admin", mw: f.mw, ctx: f.caller(f.admin, f.so), check: wantErrorAs[*SORoleConflictError]},
-		{name: "plain user", mw: f.mw, ctx: f.caller(f.userRole), check: wantErrorAs[*SORoleRequiredError]},
+		{name: "tenant admin", mw: f.mw, ctx: f.caller(f.admin), check: wantErrorAs[*auth.SORoleRequiredError]},
+		{name: "SO holding admin", mw: f.mw, ctx: f.caller(f.admin, f.so), check: wantErrorAs[*auth.SORoleConflictError]},
+		{name: "plain user", mw: f.mw, ctx: f.caller(f.userRole), check: wantErrorAs[*auth.SORoleRequiredError]},
 		{name: "system SO on a tenant", mw: f.mw, ctx: sysSO, requested: "acme", check: wantErrorAs[*tenant.CrossTenantDeniedError]},
 		{name: "system SO on the system tenant", mw: f.mw, ctx: sysSO, check: wantNoError},
-		{name: "no identity", mw: f.mw, ctx: tenant.WithTenantID(context.Background(), "acme"), check: wantErrorAs[*SORoleRequiredError]},
+		{name: "no identity", mw: f.mw, ctx: tenant.WithTenantID(context.Background(), "acme"), check: wantErrorAs[*auth.SORoleRequiredError]},
 		{name: "unresolvable SO role", mw: unresolvable, ctx: f.caller(f.so), check: wantErrorAs[*SORoleUnresolvedError]},
 		{name: "no RBAC", ctx: f.caller(f.admin), check: wantNoError},
 		{name: "standard: tenant admin", mw: standard, ctx: f.caller(f.admin), check: wantNoError},
@@ -758,13 +758,13 @@ func TestSORoleGate_EveryRoleWrite(t *testing.T) {
 		call  func() error
 		check func(t *testing.T, err error)
 	}{
-		{"assign SO as admin", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(nil), f.roles, 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		{"assign SO as admin", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser(nil), f.roles, 7, f.so) }, wantErrorAs[*auth.SORoleRequiredError]},
 		{"assign SO as SO", func() error { return f.mw.AuthorizeRoleAssignment(so, acmeUser(nil), f.roles, 7, f.so) }, wantNoError},
 		{"assign SO it already holds as admin", func() error { return f.mw.AuthorizeRoleAssignment(admin, acmeUser([]string{f.so}), f.roles, 7, f.so) }, wantNoError},
 		{"assign another role to an SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignment(admin, acmeUser([]string{f.so}), f.roles, 7, f.userRole)
 		}, wantNoError},
-		{"unassign SO as admin", func() error { return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so}), 7, f.so) }, wantErrorAs[*SORoleRequiredError]},
+		{"unassign SO as admin", func() error { return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so}), 7, f.so) }, wantErrorAs[*auth.SORoleRequiredError]},
 		{"unassign SO as SO", func() error { return f.mw.AuthorizeRoleUnassignment(so, acmeUser([]string{f.so}), 7, f.so) }, wantNoError},
 		{"unassign SO a binding still grants as admin", func() error {
 			return f.mw.AuthorizeRoleUnassignment(admin, acmeUser([]string{f.so}, soBinding), 7, f.so)
@@ -774,16 +774,16 @@ func TestSORoleGate_EveryRoleWrite(t *testing.T) {
 		}, wantNoError},
 		{"update role_ids granting SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil), f.roles, 7, []string{f.so}, nil)
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"update role_ids dropping SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser([]string{f.so}), f.roles, 7, []string{}, nil)
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"update role_bindings granting SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil), f.roles, 7, nil, []user.RoleBinding{soBinding})
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"update role_bindings dropping SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil, soBinding), f.roles, 7, nil, []user.RoleBinding{})
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"update role_ids keeping a bound SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWrite(admin, acmeUser(nil, soBinding), f.roles, 7, []string{f.userRole}, nil)
 		}, wantNoError},
@@ -795,7 +795,7 @@ func TestSORoleGate_EveryRoleWrite(t *testing.T) {
 		}, wantNoError},
 		{"create with SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWriteOnCreate(admin, f.roles, "acme", []string{f.userRole, f.so})
-		}, wantErrorAs[*SORoleRequiredError]},
+		}, wantErrorAs[*auth.SORoleRequiredError]},
 		{"create with SO as SO", func() error { return f.mw.AuthorizeRoleAssignmentWriteOnCreate(so, f.roles, "acme", []string{f.so}) }, wantNoError},
 		{"create without SO as admin", func() error {
 			return f.mw.AuthorizeRoleAssignmentWriteOnCreate(admin, f.roles, "acme", []string{f.userRole})

@@ -92,8 +92,8 @@ func TestEmbeddedSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 		wantErr func(error) bool
 	}{
 		{name: "strict: separate SO", strict: true, roles: []string{soExclusiveSO}},
-		{name: "strict: tenant admin", strict: true, roles: []string{soExclusiveAdmin}, wantErr: errorIs[*authmw.SORoleRequiredError]},
-		{name: "strict: SO holding admin", strict: true, roles: []string{soExclusiveAdmin, soExclusiveSO}, wantErr: errorIs[*authmw.SORoleConflictError]},
+		{name: "strict: tenant admin", strict: true, roles: []string{soExclusiveAdmin}, wantErr: errorIs[*auth.SORoleRequiredError]},
+		{name: "strict: SO holding admin", strict: true, roles: []string{soExclusiveAdmin, soExclusiveSO}, wantErr: errorIs[*auth.SORoleConflictError]},
 		{name: "standard: tenant admin", roles: []string{soExclusiveAdmin}},
 		{name: "standard: SO holding admin", roles: []string{soExclusiveAdmin, soExclusiveSO}},
 	}

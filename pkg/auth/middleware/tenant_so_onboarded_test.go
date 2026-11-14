@@ -189,8 +189,8 @@ func TestOnboardedSO_GrantsTheSORoleAndTheAdminCannot(t *testing.T) {
 	if err := m.authorizeSORoleChange(f.caller(t, f.result.SOUserID), onboardedSOTenant, nil, grant); err != nil {
 		t.Fatalf("SO granting so = %v, want admitted", err)
 	}
-	var refused *SORoleRequiredError
+	var refused *auth.SORoleRequiredError
 	if err := m.authorizeSORoleChange(f.caller(t, f.result.AdminUserID), onboardedSOTenant, nil, grant); !errors.As(err, &refused) {
-		t.Fatalf("admin granting so = %v, want *SORoleRequiredError", err)
+		t.Fatalf("admin granting so = %v, want *auth.SORoleRequiredError", err)
 	}
 }
