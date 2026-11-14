@@ -47,6 +47,10 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/tenant | TestIsTransientCause_DecryptCause | lower layer of newStoreError (its only caller) | TestNewStoreError_DecryptCauseIsNotTransient |
 | pkg/tenant | TestValidateReservedTenantID_System | lower layer of CreateTenant | TestTenantService_CreateRejectsSystemID |
 | pkg/tenant | TestValidateReservedTenantID_LegacyDefault | lower layer of CreateTenant | TestTenantService_CreateRejectsLegacyDefaultID |
+| pkg/seal | TestBarrier_Unseal_Success | subset of the seal/unseal round trip (its sealed/unsealed asserts moved there) | TestBarrier_UnsealThenDataRoundTrip |
+| pkg/seal | TestBarrier_PutGet_RoundTrip | Put/Get path repeated by the seal/unseal round trip | TestBarrier_UnsealThenDataRoundTrip |
+| pkg/seal | TestBarrier_Seal_Success | init, seal, sealed-gate path repeated | TestBarrier_Seal_ZeroesDEK, TestBarrier_Get_Sealed |
+| pkg/seal | TestBarrier_Encryptor_Success (Put/Get tail only; the test stays) | duplicate Put/Get round trip | TestBarrier_UnsealThenDataRoundTrip |
 
 ## Trimmed tests
 
