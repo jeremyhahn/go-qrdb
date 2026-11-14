@@ -65,6 +65,10 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/lock | TestNotLockHolderError_ImplementsError | tautology (compile-time assignment) | TestNotLockHolderError_ContainsKey |
 | pkg/lock | TestLockNotFoundError_ImplementsError | tautology (compile-time assignment) | TestLockNotFoundError_ContainsKey |
 | pkg/lock | TestLockNotFoundError_EmptyKey | weaker duplicate (non-empty message) | TestLockNotFoundError_ContainsPrefix |
+| pkg/shard | TestShardAlreadyRegisteredErrorMessage, _WithLargeID | substring checks of the exact message | TestErrorMessagePrefixes/ShardAlreadyRegistered |
+| pkg/shard | TestShardNotRegisteredErrorMessage, _WithZeroID | substring checks of the exact message | TestErrorMessagePrefixes/ShardNotRegistered |
+| pkg/shard | TestInvalidShardIDErrorMessage, _WithLargeID | substring checks of the exact message | TestErrorMessagePrefixes/InvalidShardID |
+| pkg/shard | TestShardAlreadyRegisteredErrorImplementsError, TestShardNotRegisteredErrorImplementsError, TestInvalidShardIDErrorImplementsError | tautology (compile-time assignment) | TestErrorMessagePrefixes |
 
 ## Trimmed tests
 
