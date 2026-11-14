@@ -1498,6 +1498,30 @@ func TestStore_HomeNameResolvesWithoutTheCatalog(t *testing.T) {
 	}
 }
 
+// TestStore_GetByNameOfTheHomeAsksNoResolver: an isolated tenant's catalog
+// is located through GetByName of its home, so finding the home must not
+// resolve the tenant's other entries through that catalog.
+func TestStore_GetByNameOfTheHomeAsksNoResolver(t *testing.T) {
+	ctx := context.Background()
+	kv := newAtomicKV()
+	writer, _ := NewStore(kv)
+	for _, p := range []*Placement{samplePlacement("acme", tenant.HomeName, 1000), samplePlacement("acme", "db-1", 1001)} {
+		if err := writer.Put(ctx, p); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+	}
+	reader, _ := NewStore(kv)
+	names := &homeLocatingNames{store: reader}
+	reader.SetNameResolver(names)
+	home, err := reader.GetByName(ctx, "acme", tenant.HomeName)
+	if err != nil || home.DatabaseID != tenant.HomeName || home.Database != tenant.HomeName || names.calls != 0 {
+		t.Fatalf("GetByName(home) = %+v, %v, resolver calls %d; want the home entry with no resolver call", home, err, names.calls)
+	}
+	if _, err := reader.GetByName(ctx, "other", tenant.HomeName); !errors.Is(err, ErrPlacementNotFound) {
+		t.Fatalf("GetByName(home) of a tenant without one = %v; want ErrPlacementNotFound", err)
+	}
+}
+
 // kvMarshal is a tiny test helper exposing the JSON encoding the store uses.
 func (s *Store) kvMarshal(p *Placement) ([]byte, error) {
 	kv := newFakeKV()

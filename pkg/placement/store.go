@@ -696,6 +696,13 @@ func (s *Store) GetByName(ctx context.Context, tenantID, name string) (*Placemen
 	if name == "" {
 		return nil, &StoreError{TenantID: tenantID, Op: "get", Err: ErrEmptyDatabase}
 	}
+	if name == tenant.HomeName {
+		// The home group's id is its name, so its entry is read by key.
+		// Listing the tenant would resolve every other entry's name through
+		// the tenant's catalog, which for an isolated tenant lives in this
+		// very home: locating the home must not need the home.
+		return s.Get(ctx, tenantID, tenant.HomeName)
+	}
 	placements, err := s.ListForTenant(ctx, tenantID)
 	if err != nil {
 		return nil, err
