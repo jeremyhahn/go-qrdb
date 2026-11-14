@@ -378,6 +378,13 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if err != nil {
 		return err
 	}
+	// The cleanup is bound to the rotation it was scheduled for: once the
+	// record no longer names that rotation's claim, the credential was
+	// deleted (and perhaps recreated) or a later rotation owns the
+	// cleanup, and nothing of the current record is reaped.
+	if meta.PendingCleanup != id {
+		return nil
+	}
 	// A value staged for a version up to the current one is spent, or was
 	// staged by a rotation that lost that version to another. It lives
 	// under its own key, so a rotation that retained a version since the
@@ -390,7 +397,7 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if _, err := s.GCExpiredVersions(ctx, name); err != nil {
 		return err
 	}
-	if err := s.pruneBarrierHistory(ctx, name); err != nil {
+	if err := s.pruneBarrierHistory(ctx, name, id); err != nil {
 		return err
 	}
 	return s.updateBarrierMeta(ctx, name, "finish cleanup", func(meta *credentialMeta) bool {
@@ -550,10 +557,17 @@ func (s *CredentialService) releaseRotation(ctx context.Context, name string, cl
 // record read here, with the history it trims, and not the one the rotation
 // was claimed under: an operator may have changed it while the value source
 // ran, and a policy disabled or removed since trims nothing.
-func (s *CredentialService) pruneBarrierHistory(ctx context.Context, name string) error {
+func (s *CredentialService) pruneBarrierHistory(ctx context.Context, name, id string) error {
 	meta, err := s.loadBarrierMeta(ctx, name)
 	if err != nil {
 		return err
+	}
+	// The trim is re-bound to the scheduled rotation on the record it
+	// reads: a credential deleted and recreated since the cleanup began
+	// numbers its versions afresh, and its history is not this
+	// rotation's to trim.
+	if meta.PendingCleanup != id {
+		return nil
 	}
 	p := meta.Policy
 	if p == nil || !p.Enabled {
