@@ -176,8 +176,9 @@ func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.Nod
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
-	// A revocation is read on the very next use, not after a cache window.
-	cfg.Auth.RevocationCacheTTL = "0s"
+	// The default auth.revocation_cache_ttl stays: a delegation's
+	// revocation is read on the very next use even inside the cache window.
+	cfg.Auth.RevocationCacheTTL = ""
 
 	// Every use of a delegation is recorded in the delegating tenant's trail.
 	trail, err := audit.OpenTrailIn(cfg.Raft.DataDir, audit.DefaultTrailFile)

@@ -136,9 +136,10 @@ func startDelegationNodeWith(t *testing.T, extra ...string) (*multiProtoNode, de
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
-	// Revocation is read on every request, so a revoked delegation is
-	// refused on its very next use rather than after the cache window.
-	cfg.Auth.RevocationCacheTTL = "0s"
+	// The default auth.revocation_cache_ttl stays: a delegation's
+	// revocation is read on every request, so a revoked delegation is
+	// refused on its very next use even inside the cache window.
+	cfg.Auth.RevocationCacheTTL = ""
 
 	tlsCfg := &tls.Config{
 		Certificates: []tls.Certificate{serverCert},

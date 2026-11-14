@@ -163,7 +163,9 @@ func (a *MTLSAuthenticator) VerifyDelegation(ctx context.Context, der []byte) (*
 //     the issuing CA put in it;
 //   - revocation is consulted and must answer. Unlike a user login, a
 //     delegation is not admitted when revocation state is unreadable: a
-//     sealed node has no tenant for it to act in anyway;
+//     sealed node has no tenant for it to act in anyway. A cached
+//     not-revoked answer is not trusted (UncachedRevocationChecker), so
+//     revoking the serial refuses the next call whatever the cache TTL;
 //   - the certificate's service SPIFFE SAN names the grant's principal in
 //     the grant's tenant, and its first Subject OU agrees with that tenant;
 //     both are required;
@@ -181,7 +183,17 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 	if a.revocation == nil {
 		return nil, &DelegationRefusedError{Reason: "no revocation checker"}
 	}
-	revoked, err := a.revocation.IsCertRevoked(ctx, leaf)
+	// Revoking a delegation refuses its next call: a cached not-revoked
+	// answer is not trusted here, whatever the cache TTL.
+	var (
+		revoked bool
+		err     error
+	)
+	if u, ok := a.revocation.(UncachedRevocationChecker); ok {
+		revoked, err = u.IsCertRevokedUncached(ctx, leaf)
+	} else {
+		revoked, err = a.revocation.IsCertRevoked(ctx, leaf)
+	}
 	if err != nil {
 		return nil, &RevocationCheckError{Err: err}
 	}
