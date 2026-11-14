@@ -888,7 +888,10 @@ tenant create's optional `so_*` fields
 ([../multi-tenancy/api.md](../multi-tenancy/api.md)), not by a role write.
 
 An embedder reads the posture its node resolved with
-`node.Node.StrictSeparation()` (`true` under strict separation). The
+`node.Node.StrictSeparation()` (`true` under strict separation), and tells
+the two refusals apart through `sdk/go` alone: `sdk.SORoleRequiredError` (the
+caller does not hold `so`) and `sdk.SORoleConflictError` (the write or the
+caller combines `so` with `admin`), both 403 / PermissionDenied. The
 resolution itself is `sdk.ResolveStrictSeparation(configured bool) bool`:
 FIPS 140-3 mode answers `true`, and otherwise `configured` decides. The
 posture last recorded is the cluster record `__sys:cluster/separation_of_duties`
