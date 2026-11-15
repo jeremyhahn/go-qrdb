@@ -307,7 +307,9 @@ continue with no credential at all.
 
 One permission per verb, listed in the [API capability matrix](api.md#capability-matrix)
 (`pkg/permission/constants.go`). **Write, rotate and delete custody secret
-material and are gated separately from reads.** Every `credentials:*`
+material and are gated separately from reads.** Setting and reading a rotation
+policy both take `credentials:rotate`: a policy decides when secret material
+is replaced, so it is held to the same permission as the rotation itself. Every `credentials:*`
 permission is tenant self-scope, declared in `pkg/permission/self_scope.go`,
 so a tenant administrator can grant it inside the tenant. The grant reaches
 only that tenant's store because the store is resolved from the caller's
