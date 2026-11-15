@@ -15,12 +15,15 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 type kvLeader struct {
@@ -35,15 +38,17 @@ func (l *kvLeader) LeaderID(shardID uint64) (uint64, bool, error) {
 	return l.id, l.known, l.err
 }
 
-// A clustered follower never sweeps: only the KV shard's leader deletes
-// lapsed pending accounts, so each is deleted once per pass.
+// A clustered follower never sweeps a system-group tenant: only the KV
+// shard's leader deletes its lapsed pending accounts, so each is deleted once
+// per pass.
 func TestPendingUserLeader_FollowerDoesNotReap(t *testing.T) {
+	ctx := context.Background()
 	host := &kvLeader{id: 2, known: true}
-	isLeader := pendingUserLeader(host, 1, false)
+	isLeader := pendingUserLeader(host, 1, false, nil, nil)
 	if isLeader == nil {
 		t.Fatal("clustered node got no leader predicate; every replica would sweep")
 	}
-	if isLeader() {
+	if isLeader(ctx, tenantid.System) {
 		t.Fatal("follower (leader is replica 2) reported leadership")
 	}
 	if len(host.asked) != 1 || host.asked[0] != shard.ShardKV {
@@ -51,25 +56,82 @@ func TestPendingUserLeader_FollowerDoesNotReap(t *testing.T) {
 	}
 
 	host.id = 1
-	if !isLeader() {
+	if !isLeader(ctx, tenantid.System) {
 		t.Fatal("the KV shard's leader did not report leadership")
 	}
 	for name, h := range map[string]*kvLeader{
 		"unknown leader": {id: 1},
 		"leader error":   {id: 1, known: true, err: errors.New("closed")},
 	} {
-		if pendingUserLeader(h, 1, false)() {
+		if pendingUserLeader(h, 1, false, nil, nil)(ctx, tenantid.System) {
 			t.Fatalf("%s: reported leadership", name)
 		}
 	}
 }
 
 func TestPendingUserLeader_StandaloneSweepsAlways(t *testing.T) {
-	if pendingUserLeader(&kvLeader{id: 2, known: true}, 1, true) != nil {
+	if pendingUserLeader(&kvLeader{id: 2, known: true}, 1, true, nil, nil) != nil {
 		t.Fatal("standalone node got a leader predicate")
 	}
-	if pendingUserLeader(nil, 1, false) != nil {
+	if pendingUserLeader(nil, 1, false, nil, nil) != nil {
 		t.Fatal("node without a Raft host got a leader predicate")
+	}
+}
+
+// homePlacement is the cluster-wide tenant placement every replica's store
+// resolver reports: "iso" lives in its home store, the rest in the system
+// group.
+type homePlacement map[string]bool
+
+func (p homePlacement) InHome(_ context.Context, tenantID string) (bool, error) {
+	return p[tenantID], nil
+}
+
+// homeLeads is one replica's view of the tenant home groups it leads.
+type homeLeads map[string]bool
+
+func (h homeLeads) LeadsDatabase(tenantID, db string) bool {
+	return db == database.TenantHomeName && h[tenantID]
+}
+
+// Three replicas: replica 1 leads the KV shard (and holds the isolated
+// tenant sealed, so it cannot serve it), replica 2 leads the tenant's home
+// group, replica 3 leads neither. Every replica lists every tenant; exactly
+// one sweeps each: the KV leader the system and shared tenants, the home
+// leader the isolated tenant, which the KV leader alone would never sweep.
+func TestPendingUserLeader_ThreeReplicas_IsolatedTenantSweptOnItsHomeLeader(t *testing.T) {
+	ctx := context.Background()
+	placement := homePlacement{"iso": true}
+	kv := &kvLeader{id: 1, known: true}
+	gates := map[uint64]func(context.Context, string) bool{}
+	for replica, leads := range map[uint64]homeLeads{
+		1: {},
+		2: {"iso": true},
+		3: {},
+	} {
+		gates[replica] = pendingUserLeader(kv, replica, false, placement, leads)
+	}
+	for tenantID, want := range map[string]uint64{
+		tenantid.System: 1,
+		"shared":        1,
+		"iso":           2,
+	} {
+		var sweepers []uint64
+		for replica := uint64(1); replica <= 3; replica++ {
+			if gates[replica](ctx, tenantID) {
+				sweepers = append(sweepers, replica)
+			}
+		}
+		if len(sweepers) != 1 || sweepers[0] != want {
+			t.Errorf("tenant %q swept by replicas %v, want exactly [%d]", tenantID, sweepers, want)
+		}
+	}
+
+	// Home leadership moves to replica 3: the sweep follows it.
+	gates[2] = pendingUserLeader(kv, 2, false, placement, homeLeads{})
+	gates[3] = pendingUserLeader(kv, 3, false, placement, homeLeads{"iso": true})
+	if gates[1](ctx, "iso") || gates[2](ctx, "iso") || !gates[3](ctx, "iso") {
+		t.Fatal("the isolated tenant's sweep did not follow its home group's leader")
 	}
 }
 

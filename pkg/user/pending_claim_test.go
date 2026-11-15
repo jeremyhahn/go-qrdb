@@ -244,18 +244,25 @@ func (l *listFailUsers) ListUsers(ctx context.Context, req *ListUsersRequest) (*
 	return l.UserServicer.ListUsers(ctx, req)
 }
 
-// Run skips ticks off the leader, survives a tenant-listing failure and a
-// failed sweep, keeps sweeping, and returns when the tick channel closes.
+// Run asks the leader gate per tenant and sweeps none off its leader,
+// survives a tenant-listing failure and a failed sweep, keeps sweeping, and
+// returns when the tick channel closes.
 func TestPendingReaper_RunSurvivesFailuresAndStopsOnClose(t *testing.T) {
 	svc := newTestStore(t)
 	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
 	u := createPending(t, svc, "runner", "acme", time.Minute)
 	users := &listFailUsers{UserServicer: svc, PendingExpirer: svc.(PendingExpirer)}
-	users.fail.Store(true)
 	// The reaper's goroutine reads these while the test flips them.
 	var leader, failTenants atomic.Bool
 	failTenants.Store(true)
-	r, err := NewPendingReaper(PendingReaperConfig{Users: users, Now: clock.Now, IsLeader: func() bool { return leader.Load() }})
+	asked := make(chan string, 8)
+	r, err := NewPendingReaper(PendingReaperConfig{Users: users, Now: clock.Now, IsLeader: func(_ context.Context, tenantID string) bool {
+		// The answer is fixed before the test hears the question, so the
+		// test can flip leadership once it has received it.
+		v := leader.Load()
+		asked <- tenantID
+		return v
+	}})
 	if err != nil {
 		t.Fatalf("NewPendingReaper: %v", err)
 	}
@@ -276,23 +283,39 @@ func TestPendingReaper_RunSurvivesFailuresAndStopsOnClose(t *testing.T) {
 		close(done)
 	}()
 
-	// Off the leader: the tick is consumed and nothing is listed. The next
-	// unbuffered send only completes once Run is back in its select.
-	ticks <- time.Time{}
-	leader.Store(true)
 	ticks <- time.Time{} // tenants fail
 	<-listed
 	failTenants.Store(false)
-	ticks <- time.Time{} // the sweep fails on ListUsers
+
+	// Off the tenant's leader: the gate is asked for "acme" and the
+	// expired account is not swept, though a sweep would succeed.
+	ticks <- time.Time{}
 	<-listed
+	if got := <-asked; got != "acme" {
+		t.Fatalf("gate asked for tenant %q, want acme", got)
+	}
+	leader.Store(true)
+	users.fail.Store(true)
+	// This send completes only once Run is back in its select, so the
+	// off-leader tick has finished; this tick's sweep fails on ListUsers.
+	ticks <- time.Time{}
+	if _, err := svc.GetUser(context.Background(), u.ID); err != nil {
+		t.Fatalf("off-leader tick reaped the account: %v", err)
+	}
+	<-listed
+	<-asked
+	ticks <- time.Time{} // Run finished the failed sweep.
+	<-listed
+	<-asked
 	users.fail.Store(false)
 	ticks <- time.Time{} // the sweep succeeds
 	<-listed
+	<-asked
 	close(ticks)
 	<-done
 
-	if len(listed) != 0 {
-		t.Fatalf("tenants listed %d extra times (off-leader tick listed?)", len(listed))
+	if len(listed) != 0 || len(asked) != 0 {
+		t.Fatalf("extra listings %d / gate calls %d", len(listed), len(asked))
 	}
 	if _, err := svc.GetUser(context.Background(), u.ID); err == nil {
 		t.Fatal("account not reaped by the sweep after the failures")

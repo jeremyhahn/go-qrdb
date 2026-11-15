@@ -2865,16 +2865,28 @@ func runStart(f *startFlags) (err error) {
 				slog.Error("user auth-factor service (M14) disabled", slog.Any("error", err))
 			}
 
-			// Pending users past their TTL are deleted by one node: the
-			// KV shard's Raft leader, or this node when standalone.
+			// Pending users past their TTL are deleted by one node per
+			// tenant: an isolated tenant by its home group's Raft leader
+			// (the KV leader may hold it sealed while another node serves
+			// it), every other tenant by the KV shard's Raft leader; this
+			// node sweeps everything when standalone.
 			if sweep, err := qrdbconfig.ParsePendingUserSweepInterval(f.pendingUserSweep); err == nil {
-				var pendingLeader func() bool
+				var pendingLeader func(context.Context, string) bool
 				if host != nil {
 					localReplicaID := f.replicaID
-					pendingLeader = func() bool {
+					leadsSystem := func() bool {
 						id, ok, lerr := host.LeaderID(shard.ShardKV)
 						return lerr == nil && ok && id == localReplicaID
 					}
+					homes, _ := mgmtResult.storeResolver.(tenant.HomeLocator)
+					var leadsHome func(string) bool
+					if raftBackendReg != nil {
+						homeReg := raftBackendReg
+						leadsHome = func(tenantID string) bool {
+							return homeReg.LeadsDatabase(tenantID, database.TenantHomeName)
+						}
+					}
+					pendingLeader = server.PendingSweepLeader(leadsSystem, homes, leadsHome)
 				}
 				serverOpts = append(serverOpts, server.WithPendingUserReaper(sweep, pendingLeader))
 			} else {

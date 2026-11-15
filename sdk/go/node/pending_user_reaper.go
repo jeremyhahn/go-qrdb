@@ -15,21 +15,32 @@
 package node
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // pendingUserReaperOption wires the pending-user reaper exactly as qrdbd
 // does: the sweep interval comes from auth.pending_user_sweep_interval
-// ("off" disables it), and on a clustered node only the KV shard's Raft
-// leader sweeps, so a cluster deletes each lapsed account once per pass.
-// A standalone node sweeps unconditionally.
-func (n *Node) pendingUserReaperOption(cfg *qrdbconfig.Config, standalone bool) server.ServerOption {
-	return server.WithPendingUserReaper(pendingUserSweep(cfg), pendingUserLeader(n.host, cfg.Raft.ReplicaID, standalone))
+// ("off" disables it), and on a clustered node each tenant is swept only by
+// the leader of the group that serves it: an isolated tenant by its home
+// group's leader, every other tenant by the KV shard's leader. A cluster so
+// deletes each lapsed account once per pass, and an isolated tenant the KV
+// leader holds sealed is still swept where it is served. A standalone node
+// sweeps unconditionally.
+func (n *Node) pendingUserReaperOption(cfg *qrdbconfig.Config, standalone bool, resolver tenant.StoreResolver) server.ServerOption {
+	var homes databaseLeader
+	if n.raftBackend != nil {
+		homes = n.raftBackend
+	}
+	locator, _ := resolver.(tenant.HomeLocator)
+	return server.WithPendingUserReaper(pendingUserSweep(cfg), pendingUserLeader(n.host, cfg.Raft.ReplicaID, standalone, locator, homes))
 }
 
 // pendingUserSweep resolves auth.pending_user_sweep_interval to the server's
@@ -43,10 +54,18 @@ func pendingUserSweep(cfg *qrdbconfig.Config) time.Duration {
 	return sweep
 }
 
-// pendingUserLeader reports whether this replica leads the KV shard. It is
+// databaseLeader reports whether this node leads one tenant database's Raft
+// group; *server.RaftBackendFactory satisfies it.
+type databaseLeader interface {
+	LeadsDatabase(tenantID, db string) bool
+}
+
+// pendingUserLeader builds the per-tenant sweep gate (see
+// server.PendingSweepLeader): an isolated tenant is swept on its home
+// group's leader (homes), every other tenant on the KV shard's leader. It is
 // nil for a standalone node (or one without a Raft host), which the server
 // reads as "always sweep".
-func pendingUserLeader(host any, replicaID uint64, standalone bool) func() bool {
+func pendingUserLeader(host any, replicaID uint64, standalone bool, locator tenant.HomeLocator, homes databaseLeader) func(ctx context.Context, tenantID string) bool {
 	if standalone {
 		return nil
 	}
@@ -57,8 +76,13 @@ func pendingUserLeader(host any, replicaID uint64, standalone bool) func() bool 
 	if replicaID == 0 {
 		replicaID = 1 // buildClusteredHost's default replica.
 	}
-	return func() bool {
+	leadsSystem := func() bool {
 		id, known, err := lr.LeaderID(shard.ShardKV)
 		return err == nil && known && id == replicaID
 	}
+	var leadsHome func(string) bool
+	if homes != nil {
+		leadsHome = func(tenantID string) bool { return homes.LeadsDatabase(tenantID, database.TenantHomeName) }
+	}
+	return server.PendingSweepLeader(leadsSystem, locator, leadsHome)
 }

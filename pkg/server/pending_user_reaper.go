@@ -18,6 +18,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
@@ -29,12 +30,40 @@ const DefaultPendingUserSweepInterval = time.Minute
 // WithPendingUserReaper configures the reaper that deletes pending users past
 // their TTL. interval is the sweep period (zero means
 // DefaultPendingUserSweepInterval, negative disables the reaper). isLeader
-// gates every sweep so exactly one node of a Raft group deletes; nil means
-// this node is its own leader (standalone).
-func WithPendingUserReaper(interval time.Duration, isLeader func() bool) ServerOption {
+// gates each tenant's sweep so exactly one node deletes that tenant's pending
+// users: the leader of the group that serves the tenant (see
+// PendingSweepLeader). nil means this node leads every group (standalone).
+func WithPendingUserReaper(interval time.Duration, isLeader func(ctx context.Context, tenantID string) bool) ServerOption {
 	return func(o *serverOptions) {
 		o.pendingSweepInterval = interval
 		o.pendingSweepLeader = isLeader
+	}
+}
+
+// PendingSweepLeader composes the per-tenant leader gate of the pending-user
+// reaper. A tenant that lives in its home store (an isolated tenant) is swept
+// only on the leader of its home group, whatever the system group's leader
+// sees: the system leader may hold that tenant sealed while another node
+// serves it. Every other tenant (system, shared) lives in the system KV group
+// and is swept on that group's leader. A home lookup that fails sweeps
+// nothing, so no node deletes from a store it cannot place.
+//
+// leadsSystem reports whether this node leads the system KV group (nil means
+// it does). homes places tenants (nil means none is isolated). leadsHome
+// reports whether this node leads tenantID's home group (nil means it never
+// does).
+func PendingSweepLeader(leadsSystem func() bool, homes tenant.HomeLocator, leadsHome func(tenantID string) bool) func(ctx context.Context, tenantID string) bool {
+	return func(ctx context.Context, tenantID string) bool {
+		if homes != nil {
+			inHome, err := homes.InHome(ctx, tenantID)
+			if err != nil {
+				return false
+			}
+			if inHome {
+				return leadsHome != nil && leadsHome(tenantID)
+			}
+		}
+		return leadsSystem == nil || leadsSystem()
 	}
 }
 

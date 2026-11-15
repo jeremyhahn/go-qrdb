@@ -300,7 +300,7 @@ type serverOptions struct {
 	// Pending-user reaper (WithPendingUserReaper). A negative interval
 	// disables it; ticks/now are test hooks.
 	pendingSweepInterval time.Duration
-	pendingSweepLeader   func() bool
+	pendingSweepLeader   func(context.Context, string) bool
 	pendingSweepTicks    <-chan time.Time
 	pendingSweepNow      func() time.Time
 

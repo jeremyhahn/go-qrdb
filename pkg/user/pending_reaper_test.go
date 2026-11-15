@@ -302,7 +302,7 @@ func TestPendingReaper_DoesNothingOffLeader(t *testing.T) {
 	u := createPending(t, svc, "mona", "acme", time.Minute)
 
 	leader := false
-	r, err := NewPendingReaper(PendingReaperConfig{Users: svc, Now: clock.Now, IsLeader: func() bool { return leader }})
+	r, err := NewPendingReaper(PendingReaperConfig{Users: svc, Now: clock.Now, IsLeader: func(context.Context, string) bool { return leader }})
 	if err != nil {
 		t.Fatalf("NewPendingReaper: %v", err)
 	}

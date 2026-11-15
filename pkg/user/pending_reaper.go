@@ -43,10 +43,13 @@ type PendingReaperConfig struct {
 	// Factors, when set, removes each reaped account's enrolled factors.
 	Factors FactorPurger
 
-	// IsLeader reports whether this node may reap. A sweep on a node that is
-	// not the leader does nothing, so exactly one node of a Raft group
-	// deletes. Nil means always (a standalone node is its own leader).
-	IsLeader func() bool
+	// IsLeader reports whether this node reaps tenantID: whether it leads
+	// the Raft group that holds the tenant's users -- the system KV shard
+	// for a shared tenant, the tenant's own home group for an isolated one.
+	// A sweep of a tenant this node does not lead does nothing, so exactly
+	// one node deletes each tenant's accounts, and it is a node that can
+	// reach them. Nil means always (a standalone node is its own leader).
+	IsLeader func(ctx context.Context, tenantID string) bool
 
 	// Now is the clock expiry is judged against. Nil means time.Now.
 	Now func() time.Time
@@ -78,7 +81,7 @@ type PendingReaper struct {
 	users    UserServicer
 	expirer  PendingExpirer
 	factors  FactorPurger
-	isLeader func() bool
+	isLeader func(context.Context, string) bool
 	now      func() time.Time
 	log      *slog.Logger
 	pageSize int
@@ -104,7 +107,7 @@ func NewPendingReaper(cfg PendingReaperConfig) (*PendingReaper, error) {
 		pageSize: cfg.PageSize,
 	}
 	if r.isLeader == nil {
-		r.isLeader = func() bool { return true }
+		r.isLeader = func(context.Context, string) bool { return true }
 	}
 	if r.now == nil {
 		r.now = time.Now
@@ -124,7 +127,7 @@ func NewPendingReaper(cfg PendingReaperConfig) (*PendingReaper, error) {
 // delete does not stop the sweep; the failures are joined into the returned
 // error and the next sweep resumes them.
 func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error) {
-	if !r.isLeader() {
+	if !r.isLeader(ctx, tenantID) {
 		return 0, nil
 	}
 	now := r.now().UTC()
@@ -225,9 +228,8 @@ func (r *PendingReaper) Run(ctx context.Context, ticks <-chan time.Time, tenants
 			if !ok {
 				return
 			}
-			if !r.isLeader() {
-				continue
-			}
+			// Every node lists the tenants: which ones it reaps is decided
+			// per tenant (Sweep), since they are led by different groups.
 			ids, err := tenants(ctx)
 			if err != nil {
 				r.log.WarnContext(ctx, "pending user reaper: list tenants failed", "error", err)

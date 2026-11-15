@@ -62,7 +62,7 @@ func TestServer_PendingUserReaperStartStop(t *testing.T) {
 	ticks := make(chan time.Time)
 	srv := New(testConfig(t, false, false), newMockKVService(), &mockAdminService{},
 		WithUserService(users),
-		WithPendingUserReaper(0, leader.Load),
+		WithPendingUserReaper(0, PendingSweepLeader(leader.Load, nil, nil)),
 		withPendingUserTicks(ticks, func() time.Time { return now }),
 	)
 	srv.startPendingUserReaper()
