@@ -1964,7 +1964,11 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		releaseReservations()
 		return nil, err
 	}
-	if cfg.Backend == database.BackendRaft && !cfg.DedicatedWAL && !volumeTenant {
+	// Every database whose data lands on a node-keyed log takes part in the
+	// handshake, not only a shared-WAL raft group: a barrier tenant's
+	// pebble or memory database is served from the shared system shard
+	// (onNodeKeyLog).
+	if !volumeTenant && onNodeKeyLog(cfg.Backend, cfg.DataDir, cfg.Barrier, cfg.DedicatedWAL) {
 		if err := s.refuseNodeKeyLogUnderTightening(ctx, tenantID, cfg.Name); err != nil {
 			rbCtx, cancel := database.DropRollbackContext(ctx)
 			defer cancel()

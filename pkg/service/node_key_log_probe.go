@@ -27,8 +27,8 @@ type TenantDatabaseLister interface {
 	ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error)
 }
 
-// NodeKeyLogProbe lists a tenant's raft databases whose log is on the
-// shared, node-keyed WAL, for the tenant service's refusal to tighten such a
+// NodeKeyLogProbe lists a tenant's databases whose data is on a log under
+// the node key (onNodeKeyLog), for the tenant service's refusal to tighten such a
 // tenant to strict (tenant.NodeKeyLogProbe).
 type NodeKeyLogProbe struct {
 	lister TenantDatabaseLister
@@ -51,9 +51,32 @@ func (p *NodeKeyLogProbe) NodeKeyLogDatabases(ctx context.Context, tenantID stri
 	}
 	var out []string
 	for i := range infos {
-		if infos[i].TenantID == tenantID && infos[i].Backend == database.BackendRaft && !infos[i].DedicatedWAL {
+		if infos[i].TenantID == tenantID && onNodeKeyLog(infos[i].Backend, infos[i].DataDir, infos[i].Barrier, infos[i].DedicatedWAL) {
 			out = append(out, infos[i].Name)
 		}
 	}
 	return out, nil
+}
+
+// onNodeKeyLog reports whether a raft- or barrier-isolated tenant's
+// database writes its data to a log under the node key, judged by the route
+// restServiceRegistry.resolve serves it from rather than by its backend
+// field alone:
+//   - a raft-backed database is a raft group, on the shared node-keyed WAL
+//     unless it has a dedicated one;
+//   - any other database is served from the shared system shard, whose WAL
+//     is under the node key, unless its own barrier wraps the store it is
+//     served from (an explicit data dir, database.DatabaseConfig.
+//     BarrierOnDataPath).
+//
+// A barrier tenant never serves a raft database from its own group (its
+// dedicated-WAL create is refused, isolationDedicatedWALDataPath), so the
+// raft rule only spares a raft tenant's dedicated-WAL databases. A volume
+// tenant is never asked: its log is under its own key.
+func onNodeKeyLog(backend database.BackendType, dataDir string, barrier *database.DatabaseBarrierConfig, dedicatedWAL bool) bool {
+	cfg := database.DatabaseConfig{Backend: backend, DataDir: dataDir, Barrier: barrier, DedicatedWAL: dedicatedWAL}
+	if cfg.Backend == database.BackendRaft {
+		return !cfg.DedicatedWAL
+	}
+	return cfg.Barrier == nil || !cfg.Barrier.Enabled || !cfg.BarrierOnDataPath()
 }
