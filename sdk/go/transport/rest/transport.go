@@ -152,9 +152,11 @@ func (t *Transport) ensureClient() error {
 
 	// Every request made with a context bound by transport.WithSOPIN carries
 	// the SO PIN header -- over https to the configured host only, on every
-	// hop including redirects.
+	// hop including redirects. A POST the server never read, because it
+	// closed the idle connection it was written onto, is sent once more.
 	t.httpTransport = httpTransport
-	t.baseRT = transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL))
+	t.baseRT = transport.RetryServerClosedIdle(
+		transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL)))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,

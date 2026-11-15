@@ -273,7 +273,7 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 			capture.next = rt
 			rt = capture
 		}
-		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: &refusalCapture{next: rt}}))
+		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: &refusalCapture{next: transport.RetryServerClosedIdle(rt)}}))
 	}
 	if err != nil {
 		return nil, &transport.ConnectionError{
