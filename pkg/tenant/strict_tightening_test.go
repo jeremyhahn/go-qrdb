@@ -17,7 +17,10 @@ package tenant
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // markerSeeingProbe lists dbs for every tenant and records whether the
@@ -120,5 +123,246 @@ func TestTightenFloorToStrict_RefusedWhileARaftTenantHasNodeKeyedLogs(t *testing
 	}
 	if on, err := svc.IsolationTightening(ctx, "acme"); err != nil || on {
 		t.Fatalf("IsolationTightening after the floor commit = (%v, %v), want the marker removed", on, err)
+	}
+}
+
+// memMarkerStore is an in-memory markerStore: List returns the full keys
+// under a prefix, Get of an absent key is (nil, nil), and Delete fails with
+// deleteErr when armed.
+type memMarkerStore struct {
+	mu        sync.Mutex
+	kv        map[string][]byte
+	deleteErr error
+}
+
+func newMemMarkerStore() *memMarkerStore { return &memMarkerStore{kv: map[string][]byte{}} }
+
+func (s *memMarkerStore) Put(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kv[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (s *memMarkerStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.kv[key], nil
+}
+
+func (s *memMarkerStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.kv, key)
+	return nil
+}
+
+func (s *memMarkerStore) List(_ context.Context, prefix string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for k := range s.kv {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+// fixedProbe lists dbs for every tenant and records the tenants probed.
+type fixedProbe struct {
+	dbs    map[string][]string
+	probed []string
+	during func()
+}
+
+func (p *fixedProbe) NodeKeyLogDatabases(_ context.Context, tenantID string) ([]string, error) {
+	p.probed = append(p.probed, tenantID)
+	if p.during != nil {
+		p.during()
+	}
+	return p.dbs[tenantID], nil
+}
+
+// setTighteningClock pins the marker-lease clock for the test.
+func setTighteningClock(t *testing.T, now *time.Time) {
+	t.Helper()
+	prev := tighteningNow
+	tighteningNow = func() time.Time { return *now }
+	t.Cleanup(func() { tighteningNow = prev })
+}
+
+// TestTightenToStrict_RefusedWhileABarrierTenantHasNodeKeyedLogs: a barrier
+// tenant served from the shared system store can have raft databases on the
+// node-keyed WAL, so its own tightening and the floor's are refused while
+// they exist.
+func TestTightenToStrict_RefusedWhileABarrierTenantHasNodeKeyedLogs(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	if _, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
+	svc.SetNodeKeyLogProbe(probe)
+
+	_, err := svc.UpdateTenant(ctx, "secure", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
+	var nk *NodeKeyLogsError
+	if !errors.As(err, &nk) || nk.TenantID != "secure" {
+		t.Fatalf("UpdateTenant(strict) of a barrier tenant with shared-WAL databases = %v, want *NodeKeyLogsError", err)
+	}
+	if !probe.sawMarker["secure"] {
+		t.Fatal("a create racing the barrier tenant's tightening could not see its marker")
+	}
+	err = svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict)
+	if !errors.As(err, &nk) || nk.TenantID != "secure" {
+		t.Fatalf("SetClusterIsolationPolicy(strict) over a barrier tenant with shared-WAL databases = %v, want *NodeKeyLogsError", err)
+	}
+	if got, _ := svc.ClusterIsolationPolicy(ctx); got == ClusterIsolationPolicyStrict {
+		t.Fatal("refused floor tightening committed strict")
+	}
+}
+
+// TestGuardedFloor_MarksBeforeListingTenants: the cluster marker is in place
+// before the floor lists tenants -- even when none exist -- so a tenant
+// created while the list is taken has its creates refused.
+func TestGuardedFloor_MarksBeforeListingTenants(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name    string
+		tenants []TenantInfo
+	}{
+		{name: "no tenants", tenants: nil},
+		{name: "one tenant", tenants: []TenantInfo{{ID: "old", IsolationType: IsolationRaft}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var g isolationChangeGuard
+			g.SetNodeKeyLogProbe(&fixedProbe{})
+			store := newMemMarkerStore()
+			var sawMarker, committed bool
+			list := func(ctx context.Context) ([]TenantInfo, error) {
+				on, err := isolationTightening(ctx, store, "newcomer")
+				if err != nil {
+					return nil, err
+				}
+				sawMarker = on
+				return tc.tenants, nil
+			}
+			if err := g.guardedFloor(ctx, store, ClusterIsolationPolicyStrict, list, func() error {
+				committed = true
+				return nil
+			}); err != nil {
+				t.Fatalf("guardedFloor: %v", err)
+			}
+			if !sawMarker {
+				t.Fatal("a tenant created while the floor listed tenants could not see the cluster marker")
+			}
+			if !committed {
+				t.Fatal("guardedFloor did not commit")
+			}
+			if on, err := isolationTightening(ctx, store, "newcomer"); err != nil || on {
+				t.Fatalf("IsolationTightening after the floor commit = (%v, %v), want the marker removed", on, err)
+			}
+		})
+	}
+}
+
+// TestGuardedFloor_ProbesATenantCreatedDuringTheList: a tenant the list
+// returns because it was created after the marker is probed.
+func TestGuardedFloor_ProbesATenantCreatedDuringTheList(t *testing.T) {
+	var g isolationChangeGuard
+	probe := &fixedProbe{dbs: map[string][]string{"newcomer": {"orders"}}}
+	g.SetNodeKeyLogProbe(probe)
+	list := func(context.Context) ([]TenantInfo, error) {
+		return []TenantInfo{{ID: "newcomer", IsolationType: IsolationBarrier}}, nil
+	}
+	err := g.guardedFloor(context.Background(), newMemMarkerStore(), ClusterIsolationPolicyStrict, list, func() error {
+		t.Fatal("floor committed over a tenant with shared-WAL databases")
+		return nil
+	})
+	var nk *NodeKeyLogsError
+	if !errors.As(err, &nk) || nk.TenantID != "newcomer" {
+		t.Fatalf("guardedFloor = %v, want *NodeKeyLogsError for newcomer", err)
+	}
+}
+
+// TestIsolationTightening_StaleMarkersExpire: a marker left by a crash (past
+// its lease), by an earlier format, or by a failed removal no longer governs
+// creates once its lease is past, and the reader removes it.
+func TestIsolationTightening_StaleMarkersExpire(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	setTighteningClock(t, &now)
+
+	t.Run("crash leaves a marker past its lease", func(t *testing.T) {
+		store := newMemMarkerStore()
+		key := clusterTighteningPrefix + "deadbeef"
+		_ = store.Put(ctx, key, markerValue(now.Add(-time.Second)))
+		if on, err := isolationTightening(ctx, store, "acme"); err != nil || on {
+			t.Fatalf("IsolationTightening over an expired marker = (%v, %v), want false", on, err)
+		}
+		if keys, _ := store.List(ctx, tighteningPrefix); len(keys) != 0 {
+			t.Fatalf("expired marker not reconciled: %v", keys)
+		}
+	})
+	t.Run("marker of an earlier format", func(t *testing.T) {
+		store := newMemMarkerStore()
+		_ = store.Put(ctx, tighteningPrefix+"acme/deadbeef", []byte{1})
+		if on, err := isolationTightening(ctx, store, "acme"); err != nil || on {
+			t.Fatalf("IsolationTightening over a legacy marker = (%v, %v), want false", on, err)
+		}
+	})
+	t.Run("live marker governs", func(t *testing.T) {
+		store := newMemMarkerStore()
+		_ = store.Put(ctx, tighteningPrefix+"acme/deadbeef", markerValue(now.Add(time.Minute)))
+		if on, err := isolationTightening(ctx, store, "acme"); err != nil || !on {
+			t.Fatalf("IsolationTightening over a live marker = (%v, %v), want true", on, err)
+		}
+		if on, _ := isolationTightening(ctx, store, "other"); on {
+			t.Fatal("a tenant's own marker governed another tenant")
+		}
+	})
+	t.Run("failed removal after a refusal", func(t *testing.T) {
+		store := newMemMarkerStore()
+		store.deleteErr = errors.New("delete boom")
+		var g isolationChangeGuard
+		g.SetNodeKeyLogProbe(&fixedProbe{dbs: map[string][]string{"acme": {"orders"}}})
+		err := g.guardedUpdate(ctx, store, &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
+			TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func() error { return nil })
+		var nk *NodeKeyLogsError
+		if !errors.As(err, &nk) {
+			t.Fatalf("guardedUpdate = %v, want *NodeKeyLogsError", err)
+		}
+		if on, _ := isolationTightening(ctx, store, "acme"); !on {
+			t.Fatal("the marker a failed removal left is not live within its lease")
+		}
+		now = now.Add(tighteningLease + time.Second)
+		store.deleteErr = nil
+		if on, err := isolationTightening(ctx, store, "acme"); err != nil || on {
+			t.Fatalf("IsolationTightening past the lease = (%v, %v), want false", on, err)
+		}
+		if keys, _ := store.List(ctx, tighteningPrefix); len(keys) != 0 {
+			t.Fatalf("stale marker not reconciled: %v", keys)
+		}
+	})
+}
+
+// TestTightenToStrict_RefusesACommitPastItsLease: a tightening whose checks
+// outlast its marker's lease does not commit, since a create may already
+// have ignored the expired marker.
+func TestTightenToStrict_RefusesACommitPastItsLease(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	setTighteningClock(t, &now)
+	var g isolationChangeGuard
+	g.SetNodeKeyLogProbe(&fixedProbe{during: func() { now = now.Add(tighteningLease) }})
+	err := g.guardedUpdate(context.Background(), newMemMarkerStore(), &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
+		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func() error {
+			t.Fatal("tightening committed past its lease")
+			return nil
+		})
+	if !errors.Is(err, ErrTighteningLeaseExpired) {
+		t.Fatalf("guardedUpdate past the lease = %v, want ErrTighteningLeaseExpired", err)
 	}
 }
