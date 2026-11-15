@@ -763,12 +763,17 @@ func (r *TenantShardReconciler) runWatch(ctx context.Context, events <-chan plac
 func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Event) {
 	switch ev.Type {
 	case placement.EventPut:
-		if ev.Placement == nil || ev.Database == "" {
+		if ev.Placement == nil {
+			break
+		}
+		// The entry's shard is its immutable identity, recorded even when
+		// its name does not resolve, so a later delete still finds it.
+		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database, ev.Placement.ShardID)
+		if ev.Database == "" {
 			// An entry whose name the tenant's catalog does not resolve yet
 			// is started by a later poll pass.
 			break
 		}
-		r.rememberName(ev.TenantID, ev.DatabaseID, ev.Database, ev.Placement.ShardID)
 		if ev.Placement.IsLocalBinding() {
 			// Same as ReconcileOnce: a local binding has no Raft group for
 			// this reconciler to attach.
@@ -795,6 +800,12 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 		// one the entry placed while it existed, found by its shard id, so
 		// a recreated database of the same name keeps running.
 		name, shardID := r.forgetName(ev.TenantID, ev.DatabaseID)
+		if name == "" && shardID != 0 {
+			// Its name never resolved here, but a shard started under it
+			// (by an earlier name, or opened from the catalog) is found by
+			// the shard id alone.
+			name = r.startedShardName(ev.TenantID, shardID)
+		}
 		if name == "" || shardID == 0 {
 			r.logger.Debug("placement reconciler: delete of an entry never seen, nothing to close",
 				slog.String("tenant", ev.TenantID),
@@ -813,10 +824,30 @@ func (r *TenantShardReconciler) handleEvent(ctx context.Context, ev placement.Ev
 // rememberName records the database name and raft shard a placement entry carries, so a
 // later delete of the entry (which names only its id) closes that shard.
 func (r *TenantShardReconciler) rememberName(tenantID, databaseID, name string, shardID uint64) {
-	if databaseID == "" || name == "" {
+	if databaseID == "" || (name == "" && shardID == 0) {
 		return
 	}
-	r.placedNames.Store(tenantID+"/"+databaseID, placedShard{name: name, shardID: shardID})
+	key := tenantID + "/" + databaseID
+	if name == "" {
+		// An entry seen before its name resolves keeps the name it was
+		// last seen under; the shard id is recorded either way.
+		if v, ok := r.placedNames.Load(key); ok {
+			prev, _ := v.(placedShard) //nolint:errcheck // the map only ever holds placedShard
+			name = prev.name
+		}
+	}
+	r.placedNames.Store(key, placedShard{name: name, shardID: shardID})
+}
+
+// startedShardName returns the name the locally started shard shardID of
+// tenantID runs under, or "" when none runs.
+func (r *TenantShardReconciler) startedShardName(tenantID string, shardID uint64) string {
+	for _, s := range r.factory.ListStarted() {
+		if s.ShardID == shardID && s.TenantID == tenantID {
+			return s.Database
+		}
+	}
+	return ""
 }
 
 // forgetName returns and drops the name and shard id recorded for the entry, or "" and 0 when

@@ -1458,6 +1458,35 @@ func TestTenantShardReconciler_EventDelete_ByIDClosesTheNamedShard(t *testing.T)
 	}
 }
 
+// TestTenantShardReconciler_EventDelete_ReclaimsAShardWhoseNameNeverResolved:
+// an entry seen only before its name resolved (the tenant sealed) still has
+// its shard id recorded, so its delete closes the shard running locally
+// under that id -- opened from the catalog -- rather than leaking it.
+func TestTenantShardReconciler_EventDelete_ReclaimsAShardWhoseNameNeverResolved(t *testing.T) {
+	factory := newFakeShardLifecycle()
+	factory.seedStarted("acme", "orders", 1001)
+	factory.seedStarted("acme", "orders-successor", 1002)
+
+	store, _ := placement.NewStore(newMemKV())
+	r := NewTenantShardReconciler(store, factory, "local:1", nil)
+	const id = "0f4d9c2b7a6e5d4c3b2a19f8e7d6c5b4"
+	p := placement1("acme", "", 1001)
+	p.DatabaseID = id
+	r.handleEvent(context.Background(), placement.Event{
+		Type: placement.EventPut, TenantID: "acme", DatabaseID: id, Placement: p,
+	})
+	r.handleEvent(context.Background(), placement.Event{
+		Type: placement.EventDelete, TenantID: "acme", DatabaseID: id,
+	})
+
+	if factory.isStarted("acme", "orders") {
+		t.Error("the deleted entry's shard (1001) still runs: an unresolved name left it unreclaimed")
+	}
+	if !factory.isStarted("acme", "orders-successor") {
+		t.Error("a shard of another entry was closed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // JoinObserver / Observer→ObserverReady→Active promotion tests
 // ---------------------------------------------------------------------------
