@@ -749,6 +749,16 @@ func (s *userAuthFactorService) Purge(ctx context.Context, userID uint64) (int, 
 	for _, k := range keys {
 		ids[strings.TrimPrefix(k, prefix)] = struct{}{}
 	}
+	// The primaries are the authoritative set: an enrollment whose index
+	// write failed leaves a primary no user index entry names, and it still
+	// reserves its credential.
+	owned, err := s.primaryFactorIDsOf(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	for _, id := range owned {
+		ids[id] = struct{}{}
+	}
 
 	purged := 0
 	var errs []error
@@ -772,6 +782,35 @@ func (s *userAuthFactorService) Purge(ctx context.Context, userID uint64) (int, 
 		}
 	}
 	return purged, errors.Join(errs...)
+}
+
+// primaryFactorIDsOf returns the ids of every canonical factor primary record
+// that belongs to userID, with strict reads: a record that cannot be read or
+// decoded fails the call rather than being skipped, since a skipped one would
+// survive the purge. A record deleted since the listing is not an error.
+func (s *userAuthFactorService) primaryFactorIDsOf(ctx context.Context, userID uint64) ([]string, error) {
+	keys, err := s.kv.List(ctx, userFactorPrimaryPrefix)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, k := range keys {
+		raw, err := s.getRecord(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		var f auth.AuthFactor
+		if err := json.Unmarshal(raw, &f); err != nil {
+			return nil, &FactorSetDecodeError{Key: k, Err: err}
+		}
+		if f.UserID == userID {
+			ids = append(ids, strings.TrimPrefix(k, userFactorPrimaryPrefix))
+		}
+	}
+	return ids, nil
 }
 
 // dropUserIndexEntry deletes userID's index entry for factorID while it still

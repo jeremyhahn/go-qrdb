@@ -88,6 +88,62 @@ func TestPurge_RemovesRevokedFactorsAndIndexes(t *testing.T) {
 	}
 }
 
+// An enrollment interrupted after the primary write but before the user
+// index write leaves a primary no index entry names. Purge finds it from the
+// canonical primaries and removes it with its credential reservation.
+func TestPurge_RemovesPrimaryWithoutIndexEntry(t *testing.T) {
+	svc, purger := newPurger(t)
+	ctx := context.Background()
+	kv := svc.(*userAuthFactorService).kv
+	for _, f := range []*auth.AuthFactor{
+		mtlsFactor("orphan", 1, []byte("k1")),
+		mtlsFactor("other", 2, []byte("k3")),
+	} {
+		if err := svc.Add(ctx, f.UserID, f); err != nil {
+			t.Fatalf("Add %s: %v", f.ID, err)
+		}
+	}
+	deleter, ok := kv.(interface {
+		Delete(context.Context, string) error
+	})
+	if !ok {
+		t.Fatalf("test store %T cannot delete", kv)
+	}
+	if err := deleter.Delete(ctx, userIndexKey(1, "orphan")); err != nil {
+		t.Fatalf("drop index entry: %v", err)
+	}
+
+	n, err := purger.Purge(ctx, 1)
+	if err != nil || n != 1 {
+		t.Fatalf("Purge = %d, %v; want 1, nil", n, err)
+	}
+	assertNoPrimary(t, kv, "orphan")
+	if _, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("k1")); !errors.Is(err, auth.ErrFactorNotFound) {
+		t.Fatalf("credential after purge = %v, want ErrFactorNotFound", err)
+	}
+	if got, err := svc.LookupByCredentialKey(ctx, auth.AuthFactorMTLS, []byte("k3")); err != nil || got.UserID != 2 {
+		t.Fatalf("other user's factor after purge = %v, %v", got, err)
+	}
+}
+
+// A primary record that cannot be decoded fails the purge instead of being
+// skipped, since a skipped record could be the user's and survive.
+func TestPurge_RefusesUndecodablePrimary(t *testing.T) {
+	svc, purger := newPurger(t)
+	ctx := context.Background()
+	kv := svc.(*userAuthFactorService).kv
+	if err := svc.Add(ctx, 1, mtlsFactor("primary", 1, []byte("k1"))); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := kv.Put(ctx, primaryKey("garbled"), []byte("{not json")); err != nil {
+		t.Fatalf("Put garbled primary: %v", err)
+	}
+	var decodeErr *FactorSetDecodeError
+	if _, err := purger.Purge(ctx, 1); !errors.As(err, &decodeErr) {
+		t.Fatalf("Purge over an undecodable primary = %v, want FactorSetDecodeError", err)
+	}
+}
+
 // Purge seals the user's factor set first, so an enrollment that arrives
 // after it began -- the reaper's claim-to-purge window -- is refused rather
 // than leaving a factor behind for a deleted account.
