@@ -50,11 +50,11 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if req == nil {
 		return nil, nilRequestError("CreateUser")
 	}
-	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersCreate); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersCreate); err != nil {
 		return nil, err
 	}
 	if len(req.RoleIDs) > 0 {
-		if err := t.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, t.roleSvc, req.TenantID, req.RoleIDs); err != nil {
+		if err := t.authMW.AuthorizeRoleAssignmentWriteOnCreate(ctx, t.roleSvc, qualifiedTenant(ctx, req.TenantID), req.RoleIDs); err != nil {
 			return nil, err
 		}
 	}
@@ -63,7 +63,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		Email:                req.Email,
 		Name:                 req.Name,
 		WithoutEmailLoginKey: req.WithoutEmailLoginKey,
-		TenantID:             req.TenantID,
+		TenantID:             qualifiedTenant(ctx, req.TenantID),
 		RoleIDs:              req.RoleIDs,
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            user.Lifecycle(req.Lifecycle),
@@ -84,7 +84,7 @@ func (t *Transport) GetUser(ctx context.Context, id uint64) (*transport.User, er
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersRead); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersRead); err != nil {
 		return nil, err
 	}
 	u, err := t.userSvc.GetUser(ctx, id)
@@ -104,10 +104,10 @@ func (t *Transport) GetUserByUsername(ctx context.Context, tenantID, username st
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByUsername"}
 	}
-	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
 		return nil, err
 	}
-	u, err := t.userSvc.GetUserByUsername(ctx, tenantID, username)
+	u, err := t.userSvc.GetUserByUsername(ctx, qualifiedTenant(ctx, tenantID), username)
 	if err != nil {
 		return nil, err
 	}
@@ -123,10 +123,10 @@ func (t *Transport) GetUserByEmail(ctx context.Context, tenantID, email string) 
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByEmail"}
 	}
-	if err := t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, tenantID, permission.UsersRead); err != nil {
 		return nil, err
 	}
-	u, err := t.userSvc.GetUserByEmail(ctx, tenantID, email)
+	u, err := t.userSvc.GetUserByEmail(ctx, qualifiedTenant(ctx, tenantID), email)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (t *Transport) AddCertBinding(ctx context.Context, userID uint64, thumbprin
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "AddCertBinding"}
 	}
-	if err := t.authorizeUserTarget(ctx, userID, permission.UsersAddCertBinding); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, userID, permission.UsersAddCertBinding); err != nil {
 		return nil, err
 	}
 	// Binding a thumbprint binds a key: the certificate target rule applies.
@@ -187,7 +187,7 @@ func (t *Transport) RemoveCertBinding(ctx context.Context, userID uint64, thumbp
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "RemoveCertBinding"}
 	}
-	if err := t.authorizeUserTarget(ctx, userID, permission.UsersRemoveCertBinding); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, userID, permission.UsersRemoveCertBinding); err != nil {
 		return nil, err
 	}
 	u, err := t.userSvc.RemoveCertBinding(ctx, userID, thumbprint)
@@ -209,7 +209,7 @@ func (t *Transport) UpdateUser(ctx context.Context, req *transport.UpdateUserReq
 	if req == nil {
 		return nil, nilRequestError("UpdateUser")
 	}
-	if err := t.authorizeUserTarget(ctx, req.ID, permission.UsersUpdate); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, req.ID, permission.UsersUpdate); err != nil {
 		return nil, err
 	}
 	updateReq := &user.UpdateUserRequest{
@@ -253,7 +253,7 @@ func (t *Transport) DeleteUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersDelete); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersDelete); err != nil {
 		return err
 	}
 	return t.userSvc.DeleteUser(ctx, id)
@@ -271,11 +271,11 @@ func (t *Transport) ListUsers(ctx context.Context, req *transport.ListUsersReque
 	if req == nil {
 		return nil, nilRequestError("ListUsers")
 	}
-	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersList); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, req.TenantID, permission.UsersList); err != nil {
 		return nil, err
 	}
 	resp, err := t.userSvc.ListUsers(ctx, &user.ListUsersRequest{
-		TenantID: req.TenantID,
+		TenantID: qualifiedTenant(ctx, req.TenantID),
 		Page:     req.Page,
 		PageSize: req.PageSize,
 	})
@@ -304,7 +304,7 @@ func (t *Transport) EnableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "EnableUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersEnable); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersEnable); err != nil {
 		return err
 	}
 	return t.userSvc.EnableUser(ctx, id)
@@ -319,7 +319,7 @@ func (t *Transport) DisableUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "DisableUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersDisable); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersDisable); err != nil {
 		return err
 	}
 	return t.userSvc.DisableUser(ctx, id)
@@ -335,7 +335,7 @@ func (t *Transport) SuspendUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "SuspendUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersSuspend); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersSuspend); err != nil {
 		return err
 	}
 	return t.userSvc.SuspendUser(ctx, id)
@@ -351,7 +351,7 @@ func (t *Transport) UnsuspendUser(ctx context.Context, id uint64) error {
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "UnsuspendUser"}
 	}
-	if err := t.authorizeUserTarget(ctx, id, permission.UsersUnsuspend); err != nil {
+	if ctx, err = t.authorizeUserTarget(ctx, id, permission.UsersUnsuspend); err != nil {
 		return err
 	}
 	return t.userSvc.UnsuspendUser(ctx, id)
@@ -370,14 +370,14 @@ func (t *Transport) CreateRole(ctx context.Context, req *transport.CreateRoleReq
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "CreateRole"}
 	}
-	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesCreate); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesCreate); err != nil {
 		return nil, err
 	}
 	perms := stringsToPermissions(req.Permissions)
 	rl, err := t.roleSvc.CreateRole(ctx, &role.CreateRoleRequest{
 		ID:          req.ID,
 		Name:        req.Name,
-		TenantID:    req.TenantID,
+		TenantID:    qualifiedTenant(ctx, req.TenantID),
 		Permissions: perms,
 	})
 	if err != nil {
@@ -395,7 +395,7 @@ func (t *Transport) GetRole(ctx context.Context, id string) (*transport.Role, er
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetRole"}
 	}
-	if err := t.authorizeRoleTarget(ctx, id, permission.RolesRead); err != nil {
+	if ctx, err = t.authorizeRoleTarget(ctx, id, permission.RolesRead); err != nil {
 		return nil, err
 	}
 	rl, err := t.roleSvc.GetRole(ctx, id)
@@ -417,7 +417,7 @@ func (t *Transport) UpdateRole(ctx context.Context, req *transport.UpdateRoleReq
 	if req == nil {
 		return nil, nilRequestError("UpdateRole")
 	}
-	if err := t.authorizeRoleTarget(ctx, req.ID, permission.RolesUpdate); err != nil {
+	if ctx, err = t.authorizeRoleTarget(ctx, req.ID, permission.RolesUpdate); err != nil {
 		return nil, err
 	}
 	perms := stringsToPermissions(req.Permissions)
@@ -441,7 +441,7 @@ func (t *Transport) DeleteRole(ctx context.Context, id string) error {
 	if t.roleSvc == nil {
 		return &transport.NotImplementedError{Method: "DeleteRole"}
 	}
-	if err := t.authorizeRoleTarget(ctx, id, permission.RolesDelete); err != nil {
+	if ctx, err = t.authorizeRoleTarget(ctx, id, permission.RolesDelete); err != nil {
 		return err
 	}
 	return t.roleSvc.DeleteRole(ctx, id)
@@ -459,11 +459,11 @@ func (t *Transport) ListRoles(ctx context.Context, req *transport.ListRolesReque
 	if req == nil {
 		return nil, nilRequestError("ListRoles")
 	}
-	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesList); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesList); err != nil {
 		return nil, err
 	}
 	resp, err := t.roleSvc.ListRoles(ctx, &role.ListRolesRequest{
-		TenantID: req.TenantID,
+		TenantID: qualifiedTenant(ctx, req.TenantID),
 		Page:     req.Page,
 		PageSize: req.PageSize,
 	})
@@ -496,7 +496,12 @@ func (t *Transport) AssignRole(ctx context.Context, userID uint64, roleID string
 
 	// The same gate every role-assignment write passes: roles:assign in the
 	// user's tenant (when an AuthMiddleware is installed), and the role must
-	// exist there.
+	// exist there. A tenant-qualified request is first admitted as an
+	// operator write to the qualifier's tenant, which stands in for
+	// roles:assign there.
+	if ctx, err = t.operatorAccess(ctx, "", permission.RolesWriteTenant); err != nil {
+		return err
+	}
 	if err := t.authMW.AuthorizeRoleAssignment(ctx, t.userSvc, t.roleSvc, userID, roleID); err != nil {
 		return err
 	}
@@ -531,6 +536,9 @@ func (t *Transport) UnassignRole(ctx context.Context, userID uint64, roleID stri
 	}
 	if t.userSvc == nil {
 		return &transport.NotImplementedError{Method: "UnassignRole"}
+	}
+	if ctx, err = t.operatorAccess(ctx, "", permission.RolesWriteTenant); err != nil {
+		return err
 	}
 	if err := t.authMW.AuthorizeRoleUnassignment(ctx, t.userSvc, userID, roleID); err != nil {
 		return err

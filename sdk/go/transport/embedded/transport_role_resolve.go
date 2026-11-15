@@ -30,10 +30,10 @@ func (t *Transport) GetRoleByName(ctx context.Context, req *transport.GetRoleByN
 	if t.roleSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetRoleByName"}
 	}
-	if err := t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesRead); err != nil {
+	if ctx, err = t.authorizeIdentityTenant(ctx, req.TenantID, permission.RolesRead); err != nil {
 		return nil, err
 	}
-	rl, err := t.roleSvc.GetRoleByName(ctx, req.TenantID, req.Name)
+	rl, err := t.roleSvc.GetRoleByName(ctx, qualifiedTenant(ctx, req.TenantID), req.Name)
 	if err != nil {
 		return nil, err
 	}
