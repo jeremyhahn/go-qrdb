@@ -118,6 +118,31 @@ func (m *memKVStore) CompareAndSwap(_ context.Context, key string, expected, nex
 	return true, nil
 }
 
+// PutAllIfAllUnchanged applies writes only while every guard holds (a nil
+// Value: the key is absent), as kvstore.MultiGuardedBatchKVStore does: a
+// tightening's policy write is fenced on its marker through it.
+func (m *memKVStore) PutAllIfAllUnchanged(_ context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	for _, g := range guards {
+		current, ok := m.data[g.Key]
+		if g.Value == nil {
+			if ok {
+				return false, nil
+			}
+			continue
+		}
+		if !ok || !bytes.Equal(current, g.Value) {
+			return false, nil
+		}
+	}
+	for _, w := range writes {
+		m.data[w.Key] = append([]byte(nil), w.Value...)
+	}
+	return true, nil
+}
+
 func (m *memKVStore) Get(_ context.Context, key string) ([]byte, error) {
 	if m.err != nil {
 		return nil, m.err

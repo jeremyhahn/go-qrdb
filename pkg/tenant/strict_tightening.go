@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
@@ -150,6 +151,61 @@ var tighteningNow = time.Now
 // expired marker. Retrying is safe.
 var ErrTighteningLeaseExpired = errors.New("tenant: the tightening to strict outlasted its marker's lease; retry")
 
+// ErrTighteningNotAtomic refuses a tightening to strict on a store that
+// cannot write the policy in one batch guarded on the tightening marker
+// (kvstore.MultiGuardedBatchKVStore): without it a create that reaped the
+// expired marker could still race the policy write.
+var ErrTighteningNotAtomic = errors.New("tenant: the store cannot fence the strict policy write on its tightening marker")
+
+// fencedBatcher is the store capability a fenced policy write needs: the
+// multi-guard batch of kvstore.MultiGuardedBatchKVStore (which seal storage
+// backends implement too) and Get.
+type fencedBatcher interface {
+	PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error)
+	Get(ctx context.Context, key string) ([]byte, error)
+}
+
+// tighteningFenceKey carries, in a commit's context, the marker the
+// tightening's policy write is fenced on.
+type tighteningFenceKey struct{}
+
+func withTighteningFence(ctx context.Context, marker kvstore.Guard) context.Context {
+	return context.WithValue(ctx, tighteningFenceKey{}, marker)
+}
+
+// fencedSwap writes next at key in place of expected (nil: key absent) when
+// ctx carries a tightening's marker: one PutAllIfAllUnchanged guarded on
+// both the marker and the key's expected value, so the policy is committed
+// only while the marker still stands. A create that saw the marker expired
+// deletes it before it reads the policy (isolationTightening), so either
+// the write lands first and the create's policy read sees strict, or the
+// marker is gone and the write is refused with ErrTighteningLeaseExpired.
+// handled is false when ctx carries no fence: the caller writes as before.
+func fencedSwap(ctx context.Context, store any, key string, expected, next []byte) (handled, swapped bool, err error) {
+	marker, ok := ctx.Value(tighteningFenceKey{}).(kvstore.Guard)
+	if !ok {
+		return false, false, nil
+	}
+	batch, ok := store.(fencedBatcher)
+	if !ok {
+		return true, false, ErrTighteningNotAtomic
+	}
+	applied, err := batch.PutAllIfAllUnchanged(ctx,
+		[]kvstore.Guard{marker, {Key: key, Value: expected}},
+		[]kvstore.KV{{Key: key, Value: next}})
+	if err != nil || applied {
+		return true, applied, err
+	}
+	value, err := batch.Get(ctx, marker.Key)
+	if err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+		return true, false, err
+	}
+	if err != nil || string(value) != string(marker.Value) {
+		return true, false, ErrTighteningLeaseExpired
+	}
+	return true, false, nil
+}
+
 // markerValue encodes a marker's lease deadline.
 func markerValue(deadline time.Time) []byte {
 	return binary.BigEndian.AppendUint64(nil, uint64(deadline.UnixNano()))
@@ -170,7 +226,7 @@ func markerLive(value []byte, now time.Time) bool {
 // a database on the node-keyed WAL. tenants is called after the marker is
 // written, so a tenant or database created concurrently is either listed or
 // sees the marker.
-func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, tenants func(context.Context) ([]string, error), commit func() error) error {
+func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, tenants func(context.Context) ([]string, error), commit func(context.Context) error) error {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return &StoreError{Op: "isolation-tightening-mark", Err: err}
@@ -203,7 +259,7 @@ func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store marker
 	if !tighteningNow().Add(tighteningCommitMargin).Before(deadline) {
 		return ErrTighteningLeaseExpired
 	}
-	return commit()
+	return commit(withTighteningFence(ctx, kvstore.Guard{Key: key, Value: markerValue(deadline)}))
 }
 
 // governedByStrict reports whether kind is an isolation type whose
@@ -264,7 +320,14 @@ func isolationTightening(ctx context.Context, store markerStore, tenantID string
 			if markerLive(value, now) {
 				return true, nil
 			}
-			_ = store.Delete(ctx, key)
+			// The expired marker is deleted BEFORE the caller reads the
+			// policy: its tightening's write is fenced on the marker
+			// (fencedSwap), so once it is gone that write cannot land
+			// after the policy read. A delete that fails leaves the fence
+			// standing, so the marker still counts.
+			if err := store.Delete(ctx, key); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+				return false, &StoreError{Op: "isolation-tightening-reap", Err: err}
+			}
 		}
 	}
 	return false, nil
@@ -282,9 +345,9 @@ func (s *kvTenantService) IsolationTightening(ctx context.Context, tenantID stri
 
 // guardedUpdate runs update, UpdateTenant's commit, under tightenToStrict
 // when patch tightens tenantID's own policy to strict.
-func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerStore, info *TenantInfo, patch TenantPatch, update func() error) error {
+func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerStore, info *TenantInfo, patch TenantPatch, update func(context.Context) error) error {
 	if info == nil || !tightensToStrict(info, patch) {
-		return update()
+		return update(ctx)
 	}
 	id := info.ID
 	return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", func(context.Context) ([]string, error) {
@@ -297,9 +360,9 @@ func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerSt
 // tenants are listed after the cluster marker is written -- even when none
 // exist yet -- so a tenant created concurrently is either listed or its
 // databases' creates see the marker.
-func (g *isolationChangeGuard) guardedFloor(ctx context.Context, store markerStore, next ClusterIsolationPolicy, list func(context.Context) ([]TenantInfo, error), set func() error) error {
+func (g *isolationChangeGuard) guardedFloor(ctx context.Context, store markerStore, next ClusterIsolationPolicy, list func(context.Context) ([]TenantInfo, error), set func(context.Context) error) error {
 	if next != ClusterIsolationPolicyStrict {
-		return set()
+		return set(ctx)
 	}
 	return g.tightenToStrict(ctx, store, clusterTighteningPrefix, func(ctx context.Context) ([]string, error) {
 		tenants, err := list(ctx)

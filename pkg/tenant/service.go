@@ -1411,7 +1411,7 @@ func (s *TenantService) UpdateTenant(ctx context.Context, tenantID string, patch
 	}
 	swapper, _ := s.store.(tenantRecordSwapper)
 	var info *TenantInfo
-	if err := s.guardedUpdate(ctx, s.store, current, patch, func() error {
+	if err := s.guardedUpdate(ctx, s.store, current, patch, func(ctx context.Context) error {
 		var uerr error
 		info, uerr = updateTenantRecord(ctx, s, swapper, tenantID, patch)
 		return uerr

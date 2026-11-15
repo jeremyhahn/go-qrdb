@@ -105,7 +105,14 @@ func swapTenantRecord(ctx context.Context, r tenantRecordReader, swapper tenantR
 			settle(serr)
 			return nil, serr
 		}
-		swapped, err := swapper.CompareAndSwap(ctx, key, read, next)
+		handled, swapped, err := fencedSwap(ctx, swapper, key, read, next)
+		if !handled {
+			swapped, err = swapper.CompareAndSwap(ctx, key, read, next)
+		}
+		if errors.Is(err, ErrTighteningLeaseExpired) || errors.Is(err, ErrTighteningNotAtomic) {
+			settle(err)
+			return nil, err
+		}
 		if errors.Is(err, seal.ErrGuardedSwapUnsupported) {
 			settle(ErrTenantUpdateNotAtomic)
 			return nil, ErrTenantUpdateNotAtomic

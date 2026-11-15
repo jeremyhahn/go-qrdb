@@ -16,6 +16,7 @@ package tenant
 
 import (
 	"context"
+	"errors"
 )
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,23 @@ func setClusterIsolationPolicy(ctx context.Context, backend clusterPolicyBackend
 	if !clusterIsolationTransitionAllowed(current, next) {
 		return &IsolationPolicyChangeError{From: string(current), To: string(next)}
 	}
+	// A strict floor written under a tightening is fenced on its marker.
+	var expected []byte
+	if current != ClusterIsolationPolicyUnset {
+		expected = []byte(current)
+	}
+	if handled, swapped, err := fencedSwap(ctx, backend, clusterIsolationPolicyKey, expected, []byte(next)); handled {
+		if errors.Is(err, ErrTighteningLeaseExpired) || errors.Is(err, ErrTighteningNotAtomic) {
+			return err
+		}
+		if err != nil {
+			return &StoreError{Op: "cluster-isolation-policy-swap", Err: err}
+		}
+		if !swapped {
+			return &IsolationPolicyChangeError{From: string(current), To: string(next)}
+		}
+		return nil
+	}
 	if current == ClusterIsolationPolicyUnset {
 		stored, err := backend.PutIfAbsent(ctx, clusterIsolationPolicyKey, []byte(next))
 		if err != nil {
@@ -261,7 +279,7 @@ func (s *TenantService) SetClusterIsolationPolicy(ctx context.Context, next Clus
 	if current == next {
 		return setClusterIsolationPolicy(ctx, backend, next)
 	}
-	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func() error {
+	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func(ctx context.Context) error {
 		return setClusterIsolationPolicy(ctx, backend, next)
 	})
 }
@@ -292,7 +310,7 @@ func (s *kvTenantService) SetClusterIsolationPolicy(ctx context.Context, next Cl
 	if current == next {
 		return setClusterIsolationPolicy(ctx, backend, next)
 	}
-	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func() error {
+	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func(ctx context.Context) error {
 		return setClusterIsolationPolicy(ctx, backend, next)
 	})
 }

@@ -250,7 +250,7 @@ func TestGuardedFloor_MarksBeforeListingTenants(t *testing.T) {
 				sawMarker = on
 				return tc.tenants, nil
 			}
-			if err := g.guardedFloor(ctx, store, ClusterIsolationPolicyStrict, list, func() error {
+			if err := g.guardedFloor(ctx, store, ClusterIsolationPolicyStrict, list, func(context.Context) error {
 				committed = true
 				return nil
 			}); err != nil {
@@ -278,7 +278,7 @@ func TestGuardedFloor_ProbesATenantCreatedDuringTheList(t *testing.T) {
 	list := func(context.Context) ([]TenantInfo, error) {
 		return []TenantInfo{{ID: "newcomer", IsolationType: IsolationBarrier}}, nil
 	}
-	err := g.guardedFloor(context.Background(), newMemMarkerStore(), ClusterIsolationPolicyStrict, list, func() error {
+	err := g.guardedFloor(context.Background(), newMemMarkerStore(), ClusterIsolationPolicyStrict, list, func(context.Context) error {
 		t.Fatal("floor committed over a tenant with shared-WAL databases")
 		return nil
 	})
@@ -330,7 +330,7 @@ func TestIsolationTightening_StaleMarkersExpire(t *testing.T) {
 		var g isolationChangeGuard
 		g.SetNodeKeyLogProbe(&fixedProbe{dbs: map[string][]string{"acme": {"orders"}}})
 		err := g.guardedUpdate(ctx, store, &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
-			TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func() error { return nil })
+			TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func(context.Context) error { return nil })
 		var nk *NodeKeyLogsError
 		if !errors.As(err, &nk) {
 			t.Fatalf("guardedUpdate = %v, want *NodeKeyLogsError", err)
@@ -358,11 +358,65 @@ func TestTightenToStrict_RefusesACommitPastItsLease(t *testing.T) {
 	var g isolationChangeGuard
 	g.SetNodeKeyLogProbe(&fixedProbe{during: func() { now = now.Add(tighteningLease) }})
 	err := g.guardedUpdate(context.Background(), newMemMarkerStore(), &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
-		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func() error {
+		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func(context.Context) error {
 			t.Fatal("tightening committed past its lease")
 			return nil
 		})
 	if !errors.Is(err, ErrTighteningLeaseExpired) {
 		t.Fatalf("guardedUpdate past the lease = %v, want ErrTighteningLeaseExpired", err)
+	}
+}
+
+// TestTightenToStrict_PolicyWriteFencedOnItsMarker: the policy write is one
+// batch guarded on the tightening's marker, so a create that reaps the
+// expired marker after the lease check and before the write (the window a
+// separate deadline check leaves) makes the write refuse rather than land
+// after the create's policy read.
+func TestTightenToStrict_PolicyWriteFencedOnItsMarker(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	setTighteningClock(t, &now)
+	var g isolationChangeGuard
+	g.SetNodeKeyLogProbe(&fixedProbe{})
+	store := newMemKVStore()
+	const policyKey = "policy/acme"
+	store.data[policyKey] = []byte("inherit")
+	commit := func(ctx context.Context) error {
+		// The commit is delayed past the lease; a create sees the marker
+		// expired and reaps it before its policy read.
+		now = now.Add(tighteningLease)
+		reaped, err := isolationTightening(context.Background(), store, "acme")
+		if err != nil || reaped {
+			t.Fatalf("create's marker read = (%v, %v), want the expired marker reaped", reaped, err)
+		}
+		handled, swapped, err := fencedSwap(ctx, store, policyKey, []byte("inherit"), []byte("strict"))
+		if !handled || swapped {
+			t.Fatalf("fencedSwap = (handled %v, swapped %v), want a handled refusal", handled, swapped)
+		}
+		return err
+	}
+	err := g.guardedUpdate(context.Background(), store, &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
+		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, commit)
+	if !errors.Is(err, ErrTighteningLeaseExpired) {
+		t.Fatalf("fenced write after the marker was reaped = %v, want ErrTighteningLeaseExpired", err)
+	}
+	if got := string(store.data[policyKey]); got != "inherit" {
+		t.Fatalf("policy = %q after a refused fenced write, want inherit", got)
+	}
+
+	// With the marker standing the same write lands.
+	now = time.Unix(1_700_000_000, 0)
+	err = g.guardedUpdate(context.Background(), store, &TenantInfo{ID: "acme", IsolationType: IsolationRaft},
+		TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}, func(ctx context.Context) error {
+			_, swapped, err := fencedSwap(ctx, store, policyKey, []byte("inherit"), []byte("strict"))
+			if err == nil && !swapped {
+				t.Fatal("fenced write under a standing marker did not land")
+			}
+			return err
+		})
+	if err != nil {
+		t.Fatalf("fenced write under a standing marker = %v", err)
+	}
+	if got := string(store.data[policyKey]); got != "strict" {
+		t.Fatalf("policy = %q, want strict", got)
 	}
 }
