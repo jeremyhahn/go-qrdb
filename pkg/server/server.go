@@ -1591,7 +1591,8 @@ func (s *Server) wireTenantDataProbe() {
 	// node-keyed WAL. With no database manager it stays unset, and such a
 	// tightening fails closed.
 	if sw, ok := s.opts.tenantSvc.(tenant.StrictTighteningWiring); ok && s.opts.dbManager != nil {
-		sw.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(s.opts.dbManager))
+		lookup, _ := s.opts.tenantSvc.(service.TenantIsolationLookup)
+		sw.SetNodeKeyLogProbe(service.NewNodeKeyLogProbe(s.opts.dbManager, lookup))
 	}
 }
 

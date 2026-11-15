@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -94,7 +95,7 @@ func TestCreateForTenant_SharedWALKeptWithNoTightening(t *testing.T) {
 	if _, err := svc.CreateForTenant(ctx, testDBConfig("app")); err != nil {
 		t.Fatalf("CreateForTenant: %v", err)
 	}
-	dbs, err := NewNodeKeyLogProbe(svc.(*DatabaseService).manager).NodeKeyLogDatabases(context.Background(), "rt")
+	dbs, err := NewNodeKeyLogProbe(svc.(*DatabaseService).manager, l).NodeKeyLogDatabases(context.Background(), "rt")
 	if err != nil || len(dbs) != 1 || dbs[0] != "app" {
 		t.Fatalf("NodeKeyLogDatabases = (%v, %v), want [app]", dbs, err)
 	}
@@ -171,5 +172,69 @@ func TestCreateForTenant_BarrierSharedWALRolledBackUnderATighteningMarker(t *tes
 	var refused *database.StrictTenantDedicatedWALRequiredError
 	if !errors.As(err, &refused) {
 		t.Fatalf("CreateForTenant(barrier, shared store) under a tightening marker = %v, want *StrictTenantDedicatedWALRequiredError", err)
+	}
+}
+
+// TestCreateForTenant_BarrierPebbleRolledBackUnderATighteningMarker: a
+// pebble database of a barrier tenant served from the shared system store
+// is written through the shared system shard's node-keyed log, so its create
+// meets the tightening handshake as a raft one does.
+func TestCreateForTenant_BarrierPebbleRolledBackUnderATighteningMarker(t *testing.T) {
+	info := &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationBarrier}
+	l := &tighteningLookup{info: info, marker: true}
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+	svc := newReplicaDatabaseService(t, info, f)
+	svc.(*DatabaseService).tenantInfo = l
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	cfg := testDBConfig("app")
+	cfg.Backend = database.BackendPebble
+	_, err := svc.CreateForTenant(ctx, cfg)
+	var refused *database.StrictTenantDedicatedWALRequiredError
+	if !errors.As(err, &refused) {
+		t.Fatalf("CreateForTenant(barrier, pebble) under a tightening marker = %v, want *StrictTenantDedicatedWALRequiredError", err)
+	}
+	if got, gerr := svc.GetForTenant(ctx, "app"); gerr == nil {
+		t.Fatalf("refused create left %+v in the catalog", got)
+	}
+}
+
+// staticLister is a TenantDatabaseLister over a fixed catalog.
+type staticLister []database.DatabaseInfo
+
+func (l staticLister) ListForTenant(context.Context) ([]database.DatabaseInfo, error) {
+	return l, nil
+}
+
+// TestNodeKeyLogProbe_ClassifiesByDataRoute: a barrier tenant's pebble
+// database on the shared system shard blocks a tightening; a raft tenant's
+// pebble database, on its own group, does not; a probe with no tenant
+// lookup fails closed.
+func TestNodeKeyLogProbe_ClassifiesByDataRoute(t *testing.T) {
+	ctx := context.Background()
+	catalog := func(id string) staticLister {
+		return staticLister{
+			{TenantID: id, Name: "kv", Backend: database.BackendPebble},
+			{TenantID: id, Name: "logged", Backend: database.BackendRaft},
+			{TenantID: id, Name: "own-wal", Backend: database.BackendRaft, DedicatedWAL: true},
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		info *tenant.TenantInfo
+		want []string
+	}{
+		{name: "barrier", info: &tenant.TenantInfo{ID: "bt", IsolationType: tenant.IsolationBarrier}, want: []string{"kv", "logged", "own-wal"}},
+		{name: "raft", info: &tenant.TenantInfo{ID: "bt", IsolationType: tenant.IsolationRaft}, want: []string{"logged"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dbs, err := NewNodeKeyLogProbe(catalog("bt"), &tighteningLookup{info: tc.info}).NodeKeyLogDatabases(ctx, "bt")
+			if err != nil || !reflect.DeepEqual(dbs, tc.want) {
+				t.Fatalf("NodeKeyLogDatabases = (%v, %v), want %v", dbs, err, tc.want)
+			}
+		})
+	}
+	if _, err := NewNodeKeyLogProbe(catalog("bt"), nil).NodeKeyLogDatabases(ctx, "bt"); !errors.Is(err, ErrNodeKeyLogProbeNoTenants) {
+		t.Fatalf("NodeKeyLogDatabases without a tenant lookup = %v, want ErrNodeKeyLogProbeNoTenants", err)
 	}
 }

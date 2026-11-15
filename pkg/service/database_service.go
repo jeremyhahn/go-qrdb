@@ -1964,7 +1964,11 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		releaseReservations()
 		return nil, err
 	}
-	if cfg.Backend == database.BackendRaft && !cfg.DedicatedWAL && !volumeTenant {
+	// The handshake runs for every database whose data is written through
+	// the node-keyed WAL: a raft database on the shared WAL, and any database
+	// of a barrier tenant served from the shared system store, a pebble one
+	// included (NodeKeyLogProbe classifies the same routes).
+	if (cfg.Backend == database.BackendRaft && !cfg.DedicatedWAL && !volumeTenant) || walServedBy == database.ServedBySharedStore {
 		if err := s.refuseNodeKeyLogUnderTightening(ctx, tenantID, cfg.Name); err != nil {
 			rbCtx, cancel := database.DropRollbackContext(ctx)
 			defer cancel()
