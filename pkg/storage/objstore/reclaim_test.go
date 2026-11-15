@@ -15,6 +15,7 @@
 package objstore
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -112,6 +113,31 @@ func TestReclaim_ClosedEngine(t *testing.T) {
 	require.Error(t, closedErr)
 	require.Equal(t, closedErr, e.Reclaim())
 	require.NotEmpty(t, names(t, store))
+}
+
+// TestReclaim_RefusesLaterWrites pins that no write lands between a
+// reclamation and Close: every write path is refused once Reclaim has run, so
+// the reclaimed namespace stays empty.
+func TestReclaim_RefusesLaterWrites(t *testing.T) {
+	e, store, journal := newReclaimEngine(t)
+
+	require.NoError(t, e.Reclaim())
+	var closedErr *storage.ClosedError
+
+	require.ErrorAs(t, e.Set([]byte("k"), []byte("v")), &closedErr)
+	require.ErrorAs(t, e.Delete([]byte("k")), &closedErr)
+	require.ErrorAs(t, e.DeleteRange([]byte("a"), nil), &closedErr)
+	_, err := e.CompareAndSwap(context.Background(), []byte("k"), nil, []byte("v"))
+	require.ErrorAs(t, err, &closedErr)
+	b := e.Batch()
+	require.NoError(t, b.Set([]byte("k"), []byte("v")))
+	require.ErrorAs(t, b.Commit(), &closedErr)
+
+	require.Empty(t, names(t, store))
+	require.Empty(t, names(t, journal))
+	// A retry of the reclamation still runs, and Close releases the engine.
+	require.NoError(t, e.Reclaim())
+	require.NoError(t, e.Close())
 }
 
 func TestReclaim_ProviderFaults(t *testing.T) {

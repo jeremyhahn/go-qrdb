@@ -313,6 +313,10 @@ func (e *Engine) settlePendingJournal() error {
 func (e *Engine) enterWrite() error {
 	for {
 		e.writeMu.RLock()
+		if e.reclaimed {
+			e.writeMu.RUnlock()
+			return &storage.ClosedError{}
+		}
 		if !e.journalPending.Load() {
 			return nil
 		}

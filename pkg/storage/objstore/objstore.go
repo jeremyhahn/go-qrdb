@@ -83,6 +83,13 @@ type Engine struct {
 	// they are released once. It changes only under lifeMu exclusive.
 	providersClosed bool
 
+	// reclaimed is set when Reclaim starts deleting the namespace. From then
+	// every write is refused, so none lands between the reclamation and
+	// Close and leaves an object behind in a namespace its owner deleted. It
+	// changes only under writeMu exclusive, and every write reads it under
+	// writeMu (enterWrite, CompareAndSwap, a batch commit).
+	reclaimed bool
+
 	// beforeEnter, when set, runs in enter between its first closed check
 	// and lifeMu. Tests use it to hold a call in that gap; it is nil in
 	// production.
@@ -367,6 +374,9 @@ func (e *Engine) CompareAndSwap(ctx context.Context, key, expected, next []byte)
 	}
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
+	if e.reclaimed {
+		return false, &storage.ClosedError{}
+	}
 
 	current, err := e.get(key)
 	if err != nil {
@@ -612,8 +622,9 @@ func (e *Engine) Close() error {
 // dedicated store and journal hold -- each key, a pending commit journal, and
 // the layout mark last -- so no object outlives the database that owned it.
 // The store is dedicated to the engine (see New), so everything in it is the
-// engine's. It runs with every write excluded; the engine stays open, empty,
-// and the caller closes it. A failure leaves the rest in place for a retry.
+// engine's. It runs with every write excluded; the engine stays open and
+// empty, refuses every write from the moment it starts (so none lands between
+// the reclamation and Close), and the caller closes it. A failure leaves the rest in place for a retry.
 func (e *Engine) Reclaim() error {
 	leave, err := e.enter()
 	if err != nil {
@@ -624,6 +635,9 @@ func (e *Engine) Reclaim() error {
 	defer e.journalMu.Unlock()
 	e.writeMu.Lock()
 	defer e.writeMu.Unlock()
+	// Set before the first delete: even a reclamation that fails part-way
+	// has removed objects, so no write may follow it.
+	e.reclaimed = true
 
 	names, err := e.store.List("")
 	if err != nil {
