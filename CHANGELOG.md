@@ -833,6 +833,10 @@ are not reconstructed here — their history is in the git log.
   only `so_pin` from a passphrase-change payload, so the current and next
   passphrases are never decoded a second time.
 
+### Removed
+
+- The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
+
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added
