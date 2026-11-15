@@ -2280,12 +2280,13 @@ func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*Use
 			"username": existing.Username,
 			"tenantID": existing.TenantID,
 		})
-		if existing.ExpiryClaim != nil {
-			// A plain delete finished an account the reaper had claimed.
-			if err := s.store.Delete(ctx, reapMarkerKey(id)); err != nil {
-				return nil, &StoreError{Op: "delete", Detail: "reap marker", Err: err}
-			}
-		}
+		// An account the reaper had claimed keeps its reap marker. The
+		// reaper purges the account's factors and credential indexes after
+		// its claim, and that purge may have failed: this delete purges
+		// nothing, so dropping the marker here would strand them and lose
+		// the pending_reaped audit. The next sweep reads the marker, purges,
+		// finishes the record's identity and audits the reap, and only then
+		// removes the marker (DeleteExpiredPending, finishReap).
 	}
 	// Deleting the admin (possible only under "enrolled") leaves no deadline.
 	if IsBootstrapAdmin(existing) {
