@@ -224,6 +224,15 @@ func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.Nod
 		}); err != nil {
 			t.Fatalf("OnboardTenant(%s): %v", id, err)
 		}
+		// OnboardTenant answers once the tenant is committed; the admin's
+		// account is a chain of raft writes it completes alongside the
+		// answer, not before it (service.TenantOnboardingService). A barrier
+		// status read runs the same guarded completion synchronously
+		// (tenant.WithBarrierReadyHook), so once it returns the account
+		// exists, whichever of the two finished it.
+		if _, err := n.Services().Tenant.TenantBarrierStatus(context.Background(), id); err != nil {
+			t.Fatalf("TenantBarrierStatus(%s): %v", id, err)
+		}
 	}
 	for _, id := range []string{delegatingTenant, otherTenant} {
 		awaitTenantAdmin(t, n, id)

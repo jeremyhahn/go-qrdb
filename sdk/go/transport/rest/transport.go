@@ -117,6 +117,15 @@ func New(opts ...transport.Option) (*Transport, error) {
 // is the one call an unconnected client may make (see
 // transport.InvitationClient) and a sealed or not-yet-reachable server still
 // answers it the same opaque way as a bad token.
+// idleConnTimeout is how long the client keeps an idle keep-alive
+// connection for reuse. It must stay below the server's idle timeout
+// (go-qrdb's REST server: 120 s): a connection the server closes while the
+// client is reusing it fails the request, and net/http never resends a
+// non-idempotent POST such as CompareAndSwap that raced the close. With the
+// client's window the shorter one, the client always retires an idle
+// connection first. 90 s is net/http's DefaultTransport value.
+const idleConnTimeout = 90 * time.Second
+
 func (t *Transport) ensureClient() error {
 	if t.client != nil {
 		return nil
@@ -125,7 +134,7 @@ func (t *Transport) ensureClient() error {
 	httpTransport := &http.Transport{
 		ForceAttemptHTTP2: true,
 		MaxIdleConns:      100,
-		IdleConnTimeout:   90 * time.Second,
+		IdleConnTimeout:   idleConnTimeout,
 	}
 
 	tlsCfg, err := t.buildTLSConfig()
@@ -143,9 +152,11 @@ func (t *Transport) ensureClient() error {
 
 	// Every request made with a context bound by transport.WithSOPIN carries
 	// the SO PIN header -- over https to the configured host only, on every
-	// hop including redirects.
+	// hop including redirects. A POST the server never read, because it
+	// closed the idle connection it was written onto, is sent once more.
 	t.httpTransport = httpTransport
-	t.baseRT = transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL))
+	t.baseRT = transport.RetryServerClosedIdle(
+		transport.SOPINRoundTripper(httpTransport, "rest", transport.ConfiguredHost(t.baseURL)))
 	t.client = &http.Client{
 		Transport: t.scopedRoundTripper(),
 		Timeout:   timeout,
