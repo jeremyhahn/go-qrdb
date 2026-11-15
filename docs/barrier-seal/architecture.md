@@ -108,6 +108,8 @@ type StrategyRegistry interface {
 type StrategyFactory func() (SealingStrategy, error)
 ```
 
+Every strategy a factory returns keeps one error contract (ruling 677): `UnsealRootKey` reports a refused credential as an error that `errors.Is` `ErrInvalidCredentials` or `ErrDecryptionFailed`; any other error is an operational failure. `VerifyCredentials` maps the first to `ErrCredentialMismatch` and the second to a typed `*UnsealError` (`errors.Is` `ErrUnsealFailed`) wrapping the cause.
+
 ### Defaults — `NewDefaultStrategyRegistry`
 
 `NewDefaultStrategyRegistry()` (`pkg/seal/strategy_registry.go:88-98`) returns a registry pre-populated with the two software strategies qrdb owns outright:

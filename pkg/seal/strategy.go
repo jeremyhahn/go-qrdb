@@ -32,6 +32,11 @@ import (
 type StrategyID = quicraftseal.StrategyID
 
 // SealingStrategy defines the interface for root key seal/unseal operations.
+//
+// Contract (ruling 677): UnsealRootKey reports a refused credential as an
+// error that errors.Is ErrInvalidCredentials or ErrDecryptionFailed; any other
+// error is an operational failure, which VerifyCredentials reports as an
+// *UnsealError (ErrUnsealFailed), never as ErrCredentialMismatch.
 type SealingStrategy = quicraftseal.SealingStrategy
 
 // SymmetricEncrypter provides symmetric encryption/decryption operations.
