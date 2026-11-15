@@ -83,9 +83,8 @@ func (t *Transport) authorizeRoleTarget(ctx context.Context, roleID string, perm
 // authorizeIdentityTenant authorizes perm against the caller's own tenant
 // for an operation naming tenantID directly (create, list,
 // get-by-username/email/name), then admits the operator access the
-// request's tenant qualifier names (operatorAccess). Without a qualifier
-// tenantID plays no role in the decision; the routed service confines or
-// trusts it (see tenant.EffectiveTenant). The returned context is the one
+// tenant tenantID, else the request's tenant qualifier, names
+// (operatorAccess). The returned context is the one
 // the operation runs under.
 func (t *Transport) authorizeIdentityTenant(ctx context.Context, tenantID string, perm permission.Permission) (context.Context, error) {
 	if t.authMW == nil {
@@ -107,13 +106,15 @@ func (t *Transport) authorizeIdentityTenant(ctx context.Context, tenantID string
 // tenant-qualified permission standing for perm. A caller acting on its own
 // tenant passes unchanged; a platform operator reaching another tenant is
 // admitted, recorded and bound to that tenant, or refused, as on every
-// other transport. A request with no qualifier is not decided here.
+// other transport. The tenant the request itself names is a qualifier as
+// much as WithTenantQualifier's is: a ListUsers{TenantID: "acme"} with no
+// context qualifier is decided as the network transports decide it. A
+// request naming no tenant either way is not decided here.
 func (t *Transport) operatorAccess(ctx context.Context, explicit string, perm permission.Permission) (context.Context, error) {
-	qualifier := transport.TenantQualifierFromContext(ctx)
-	if qualifier == "" {
+	target := qualifiedTenant(ctx, explicit)
+	if target == "" {
 		return ctx, nil
 	}
-	target := qualifiedTenant(ctx, explicit)
 	if err := tenant.ValidateTenantIDShape(target); err != nil {
 		return ctx, err
 	}
