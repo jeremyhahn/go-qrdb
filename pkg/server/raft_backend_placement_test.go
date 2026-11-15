@@ -1118,3 +1118,78 @@ func TestRaftBackendFactory_FenceServicesBindsTheCatalogDatabaseID(t *testing.T)
 		t.Fatalf("the predecessor's shard holds %q, want its own data", got)
 	}
 }
+
+// TestRaftBackendFactory_StalePinnedFenceKeepsTheSuccessorsShard: a drop
+// whose fence read the catalog record, then lost the race to another drop
+// that finished it and created the name again, must not retire the
+// successor's live shard on the word of its own outlived placement entry.
+// The fence is refused with *database.DropSupersededError and the
+// successor's shard stays cached, holding its data.
+func TestRaftBackendFactory_StalePinnedFenceKeepsTheSuccessorsShard(t *testing.T) {
+	store := newPlacementStore(t)
+	reg := newVolumePooledRegistry(t)
+	registerVolumeTenant(t, reg, "rt")
+	ctx := context.Background()
+	key := raftShardKey{tenantID: "rt", database: "orders"}
+	place := func(databaseID string, shardID uint64) {
+		t.Helper()
+		if err := store.Put(ctx, &placement.Placement{
+			TenantID: "rt", DatabaseID: databaseID, Database: "orders", ShardID: shardID, RF: 1, LeaderReplicaID: 1,
+			Replicas: []placement.Replica{
+				{ReplicaID: 1, NodeID: sharedHostRaftAddr, RaftAddr: sharedHostRaftAddr},
+			},
+		}); err != nil {
+			t.Fatalf("Put(%s): %v", databaseID, err)
+		}
+	}
+	f := newPlacementRaftFactory(t, store, sharedHostRaftAddr, reg)
+	catalog := f.dbInfo.(*placementRaftInfoSource).fallback.(*fakeRaftInfoSource)
+	catalog.dropped = map[raftShardKey]bool{}
+	record := func(databaseID, incarnation string) {
+		catalog.databaseIDs = map[raftShardKey]string{key: databaseID}
+		catalog.incarnations = map[raftShardKey]string{key: incarnation}
+	}
+	cached := func() *raftShard {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.shards[key]
+	}
+
+	// The predecessor's placement entry outlived its drop's failed delete.
+	place("orders-1", 6040)
+	if err := store.SetDropping(ctx, "rt", "orders-1", true); err != nil {
+		t.Fatalf("SetDropping(orders-1): %v", err)
+	}
+	// The successor is live and cached under the name.
+	place("orders-2", 6041)
+	record("orders-2", "second")
+	svcs, err := f.Services(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("Services() for the successor: %v", err)
+	}
+	if err := svcs.KV.Put(ctx, "who", []byte("successor")); err != nil {
+		t.Fatalf("KV.Put into the successor: %v", err)
+	}
+	successor := cached()
+
+	// The predecessor's resumed drop reads its own record, then the
+	// successor's record replaces it before the shard is resolved.
+	record("orders-1", "first")
+	f.fenceResolveHook = func() { record("orders-2", "second") }
+	var superseded *database.DropSupersededError
+	if _, err := f.FenceServices(ctx, "rt", "orders", "first"); !errors.As(err, &superseded) {
+		t.Fatalf("FenceServices() for the superseded drop = %v, want *database.DropSupersededError", err)
+	}
+	f.fenceResolveHook = nil
+	if rs := cached(); rs != successor {
+		t.Fatalf("cached shard after the stale fence = %+v, want the successor's shard kept", rs)
+	}
+	svcs, err = f.Services(ctx, "rt", "orders")
+	if err != nil {
+		t.Fatalf("Services() for the successor after the stale fence: %v", err)
+	}
+	got, err := svcs.KV.Get(ctx, "who")
+	if err != nil || string(got) != "successor" {
+		t.Fatalf("successor KV.Get = %q, %v; want its own data", got, err)
+	}
+}
