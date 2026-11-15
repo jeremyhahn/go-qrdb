@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -385,14 +387,8 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 	if meta.PendingCleanup != id {
 		return nil
 	}
-	// A value staged for a version up to the current one is spent, or was
-	// staged by a rotation that lost that version to another. It lives
-	// under its own key, so a rotation that retained a version since the
-	// read above keeps it, and a value staged since is for a later version.
-	if meta.CurrentVersion > 0 {
-		if err := s.deleteBarrierStaged(ctx, name, meta.CurrentVersion); err != nil {
-			return err
-		}
+	if err := s.reapSpentStaged(ctx, name, id); err != nil {
+		return err
 	}
 	if _, err := s.GCExpiredVersions(ctx, name); err != nil {
 		return err
@@ -407,6 +403,51 @@ func (s *CredentialService) cleanupRotation(ctx context.Context, name, id string
 		meta.PendingCleanup = ""
 		return true
 	})
+}
+
+// reapSpentStaged deletes the staged values a cleanup owns: those for a
+// version up to the current one, which are spent or were staged by a
+// rotation that lost that version to another. Each is a separate key, so a
+// rotation that retained a version keeps it, and a value staged for a later
+// version is not touched. The deletes are one batch guarded on the record
+// that still names the cleanup's rotation: a credential deleted and
+// recreated since numbers its versions afresh, and the value its own
+// rotation staged is not this cleanup's to delete.
+func (s *CredentialService) reapSpentStaged(ctx context.Context, name, id string) error {
+	prefix := StagedKeyPrefix + encodedName(name) + "/"
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			return err
+		}
+		if meta.PendingCleanup != id || meta.CurrentVersion == 0 {
+			return nil
+		}
+		keys, err := s.store.List(ctx, prefix)
+		if err != nil {
+			return &OperationError{Op: "list staged rotations", Cause: err}
+		}
+		var writes []kvstore.KV
+		for _, k := range keys {
+			// A staged key ends in its version.
+			version, err := strconv.ParseUint(strings.TrimPrefix(k, prefix), 10, 64)
+			if err != nil || k != stagedKey(name, version) || version > meta.CurrentVersion {
+				continue
+			}
+			writes = append(writes, kvstore.KV{Key: k, Delete: true})
+		}
+		if len(writes) == 0 {
+			return nil
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
+		if err != nil {
+			return &OperationError{Op: "delete staged rotation", Cause: err}
+		}
+		if applied {
+			return nil
+		}
+	}
+	return &OperationError{Op: "delete staged rotation", Cause: ErrRotationMetaContended}
 }
 
 // claimRotation takes the rotation claim on name when its enabled policy is

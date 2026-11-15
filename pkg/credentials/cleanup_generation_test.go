@@ -150,3 +150,56 @@ func TestPruneBarrierHistory_RecreatedBetweenReadAndDelete(t *testing.T) {
 		buf.Destroy()
 	}
 }
+
+// TestCleanupRotation_RecreatedKeepsItsStagedValue: a credential deleted
+// and recreated after the cleanup listed the spent staged values, and before
+// it deleted them, keeps the value its own rotation staged under the same
+// key: the deletes are one batch guarded on the record that named the
+// cleanup's rotation, so they delete nothing.
+func TestCleanupRotation_RecreatedKeepsItsStagedValue(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 2)
+	rotateWithHistory(t, svc, "k", 3)
+	first, err := svc.loadBarrierMeta(ctx, "k")
+	require.NoError(t, err)
+	staged := first.CurrentVersion
+	// The first generation left a spent staged value for its current
+	// version; its cleanup is pending.
+	require.NoError(t, svc.store.Put(ctx, stagedKey("k", staged), []byte("spent")))
+	require.NoError(t, svc.updateBarrierMeta(ctx, "k", "mark", func(m *credentialMeta) bool {
+		m.PendingCleanup = "c1"
+		return true
+	}))
+
+	var recreated *credentialMeta
+	inner, err := svc.store.current()
+	require.NoError(t, err)
+	hook := &writeHookStore{Store: inner}
+	hook.before = func() {
+		require.NoError(t, svc.DeleteCredential(ctx, "k"))
+		setFaultPolicy(t, svc, "k", 2)
+		// The new generation's rotation stages its value under the key
+		// the first generation's cleanup listed.
+		require.NoError(t, svc.store.Put(ctx, stagedKey("k", staged), []byte("in-flight")))
+		require.NoError(t, svc.updateBarrierMeta(ctx, "k", "stage", func(m *credentialMeta) bool {
+			m.Staged = staged
+			return true
+		}))
+		var err error
+		recreated, err = svc.loadBarrierMeta(ctx, "k")
+		require.NoError(t, err)
+		require.Less(t, recreated.CurrentVersion, staged)
+	}
+	require.NoError(t, svc.store.bind(hook))
+
+	require.NoError(t, svc.cleanupRotation(ctx, "k", "c1"))
+	require.NotNil(t, recreated, "the hook never ran")
+
+	value, err := svc.store.Get(ctx, stagedKey("k", staged))
+	require.NoError(t, err, "the recreated credential's staged value was deleted")
+	assert.Equal(t, "in-flight", string(value))
+	after, err := svc.loadBarrierMeta(ctx, "k")
+	require.NoError(t, err)
+	assert.Equal(t, staged, after.Staged)
+}
