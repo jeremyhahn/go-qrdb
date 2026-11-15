@@ -278,7 +278,7 @@ func TestPendingReaper_ReapsOnlyExpiredPending(t *testing.T) {
 
 	var reapAudits int
 	for _, ev := range al.snapshot() {
-		if ev.Action == AuditActionPendingExpired {
+		if ev.Action == AuditActionPendingReaped {
 			reapAudits++
 			if ev.Attributes["username"] != "gina" || ev.Attributes["pendingExpiresAt"] == nil {
 				t.Errorf("reap audit attributes = %v", ev.Attributes)
@@ -429,7 +429,7 @@ func TestPendingReaper_FreshReaperFinishesClaimedAccount(t *testing.T) {
 	}
 	var expired int
 	for _, ev := range al.snapshot() {
-		if ev.Action == AuditActionPendingExpired {
+		if ev.Action == AuditActionPendingReaped {
 			expired++
 		}
 	}

@@ -54,6 +54,14 @@ const (
 	// secondary index (thumbprint -> user ID).
 	keyPrefixCertThumbprint = "__sys:user_idx/cert_spki/"
 
+	// keyPrefixReap is the prefix for the pending-user reaper's durable reap
+	// markers (id -> reapMarker). ClaimExpiredPending writes one before it
+	// claims the record, and the delete removes it only after the primary
+	// record and the identity claim are gone, so the reaper still finds an
+	// account whose delete stopped part way, after the indexes it lists by
+	// were removed (ListExpiryClaims).
+	keyPrefixReap = "__sys:user_reap/"
+
 	// keySystemSentinel is the single fixed key that names whichever user, if
 	// any, holds System: true. CreateUser and PromoteToSystemUser both claim
 	// it atomically (PutIfAbsent) before a record is ever written or flipped
@@ -1728,10 +1736,21 @@ func (s *kvUserStore) DeleteUser(ctx context.Context, id uint64) error {
 // finds and resumes. From the claim on the account cannot authenticate, be
 // activated or have a factor enrolled: LifecycleDeleting is terminal.
 //
-// An account already claimed is returned unchanged. Any other account -- one
-// activated before the claim lands included, since the claim commits only
-// against the pending version it read -- is refused with
-// *AccountNotPendingError and nothing is written.
+// The claim also writes a reap marker (keyPrefixReap) BEFORE it marks the
+// record. The delete removes the tenant index first and releases the
+// identity claim last, so a delete that stops in between leaves an account
+// ListUsers no longer returns; the marker is how the reaper still finds it
+// (ListExpiryClaims). It is removed only once the primary record and the
+// identity claim are both gone.
+//
+// An account already claimed is returned unchanged, its marker re-asserted.
+// One whose primary record is gone while its marker remains -- a delete
+// interrupted after the primary delete -- is returned from the marker, so
+// the reaper goes on to DeleteExpiredPending, which finishes it. Any other
+// account -- one activated before the claim lands included, since the claim
+// commits only against the pending version it read -- is refused with
+// *AccountNotPendingError, and its marker, if an interrupted claim left one,
+// is dropped.
 func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
 	if id == 0 {
 		return nil, &ValidationError{Field: "id", Reason: "must not be zero"}
@@ -1741,16 +1760,29 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		return nil, &StoreError{Op: "claim_expired_pending", Detail: "primary lookup", Err: err}
 	}
 	if base == nil {
-		return nil, &UserNotFoundError{ID: id}
+		marker, merr := s.readReapMarker(ctx, id)
+		if merr != nil {
+			return nil, merr
+		}
+		if marker == nil {
+			return nil, &UserNotFoundError{ID: id}
+		}
+		return marker.user(), nil
 	}
 	existing := &User{}
 	if uerr := json.Unmarshal(base, existing); uerr != nil {
 		return nil, &StoreError{Op: "claim_expired_pending", Detail: "unmarshal", Err: uerr}
 	}
 	if ExpiryClaimed(existing) {
+		if err := s.putReapMarker(ctx, existing); err != nil {
+			return nil, err
+		}
 		return existing, nil
 	}
 	if existing.System || !PendingExpired(existing, now) {
+		if err := s.store.Delete(ctx, reapMarkerKey(id)); err != nil {
+			return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+		}
 		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
 	}
 	if err := s.guardBootstrapAdmin(existing, nil); err != nil {
@@ -1758,7 +1790,13 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 	}
 	claim := *existing.PendingExpiresAt
 	existing.ExpiryClaim = &claim
+	if err := s.putReapMarker(ctx, existing); err != nil {
+		return nil, err
+	}
 	if _, err := s.markDeleting(ctx, id, base, existing); err != nil {
+		// Lost the record. A marker left behind here is dropped by the next
+		// claim, which finds the account no longer an expired pending one.
+		_ = s.store.Delete(ctx, reapMarkerKey(id))
 		return nil, err
 	}
 	return existing, nil
@@ -1773,18 +1811,142 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 // The condition is checked on the version the delete then claims by marking
 // it deleting, so an activation that commits first makes the claim fail
 // instead of the reaper removing an account that has just become active.
+//
+// An account whose primary record is already gone but whose reap marker
+// remains was claimed and then interrupted after the primary delete: the
+// identity claim is released, the reap audited, and the marker removed. The
+// audit is at least once: a reap interrupted after its audit but before the
+// marker is removed is audited again when it is finished.
 func (s *kvUserStore) DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
-	return s.deleteUser(ctx, id, func(u *User) error {
+	u, err := s.deleteUser(ctx, id, func(u *User) error {
 		if !PendingReapable(u, now) {
 			return &AccountNotPendingError{ID: u.ID, Lifecycle: u.Lifecycle}
 		}
 		return nil
 	})
+	var notFound *UserNotFoundError
+	if err == nil || id == 0 || !errors.As(err, &notFound) {
+		return u, err
+	}
+	marker, merr := s.readReapMarker(ctx, id)
+	if merr != nil {
+		return nil, merr
+	}
+	if marker == nil {
+		return nil, err
+	}
+	if ferr := s.forgetIdentity(ctx, id, marker.TenantID); ferr != nil {
+		return nil, &StoreError{Op: "delete", Detail: "identity index", Err: ferr}
+	}
+	gone := marker.user()
+	if err := s.finishReap(ctx, gone, marker.ExpiryClaim); err != nil {
+		return nil, err
+	}
+	return gone, nil
 }
 
-// AuditActionPendingExpired is the audit action of a pending account the
+// AuditActionPendingReaped is the audit action of a pending account the
 // reaper deleted because its TTL ran out.
-const AuditActionPendingExpired = "pending_expired"
+const AuditActionPendingReaped = "pending_reaped"
+
+// reapMarker is the durable record of a reaper claim, kept under
+// reapMarkerKey until the claimed account is fully deleted. It carries what
+// finishing the delete needs once the primary record is gone: the tenant
+// whose identity claim to release, and the audit's attributes.
+type reapMarker struct {
+	ID          uint64     `json:"id"`
+	TenantID    string     `json:"tenantID"`
+	Username    string     `json:"username"`
+	ExpiryClaim *time.Time `json:"expiryClaim,omitempty"`
+}
+
+// user is the claimed account as far as the marker describes it.
+func (m *reapMarker) user() *User {
+	return &User{ID: m.ID, TenantID: m.TenantID, Username: m.Username, Lifecycle: LifecycleDeleting, ExpiryClaim: m.ExpiryClaim}
+}
+
+func reapMarkerKey(id uint64) string {
+	return keyPrefixReap + idStringKey(id)
+}
+
+func (s *kvUserStore) putReapMarker(ctx context.Context, u *User) error {
+	b, err := json.Marshal(&reapMarker{ID: u.ID, TenantID: u.TenantID, Username: u.Username, ExpiryClaim: u.ExpiryClaim})
+	if err != nil {
+		return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+	}
+	if err := s.store.Put(ctx, reapMarkerKey(u.ID), b); err != nil {
+		return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+	}
+	return nil
+}
+
+// readReapMarker returns the account's reap marker, or nil when it has none.
+func (s *kvUserStore) readReapMarker(ctx context.Context, id uint64) (*reapMarker, error) {
+	b, err := s.store.Get(ctx, reapMarkerKey(id))
+	if err != nil {
+		return nil, &StoreError{Op: "reap_marker", Detail: "lookup", Err: err}
+	}
+	if b == nil {
+		return nil, nil
+	}
+	m := &reapMarker{}
+	if err := json.Unmarshal(b, m); err != nil {
+		return nil, &StoreError{Op: "reap_marker", Detail: "unmarshal", Err: err}
+	}
+	return m, nil
+}
+
+// finishReap audits a reaped account and then removes its reap marker, the
+// last step of a reap: the marker goes only once everything else has.
+func (s *kvUserStore) finishReap(ctx context.Context, u *User, expiry *time.Time) error {
+	attrs := map[string]any{
+		"username": u.Username,
+		"tenantID": u.TenantID,
+	}
+	if expiry != nil {
+		attrs["pendingExpiresAt"] = expiry.Format(time.RFC3339Nano)
+	}
+	// Named explicitly: the reaper runs with no caller identity, so the
+	// tenant cannot come from one.
+	s.emitAuditForTenant(ctx, u.TenantID, AuditActionPendingReaped, u.ID, attrs)
+	if err := s.store.Delete(ctx, reapMarkerKey(u.ID)); err != nil {
+		return &StoreError{Op: "delete", Detail: "reap marker", Err: err}
+	}
+	return nil
+}
+
+// ListExpiryClaims returns the ids of the tenant's accounts that carry a reap
+// marker: claimed by the reaper and not yet fully deleted. The reaper adds
+// them to its sweep because a delete interrupted after the tenant index was
+// removed leaves an account ListUsers no longer returns.
+func (s *kvUserStore) ListExpiryClaims(ctx context.Context, tenantID string) ([]uint64, error) {
+	if tenantID == "" {
+		tenantID = tenantid.System
+	}
+	var ids []uint64
+	err := s.store.Scan(ctx, keyPrefixReap, func(_ string, value []byte) error {
+		m := &reapMarker{}
+		if err := json.Unmarshal(value, m); err != nil {
+			return &StoreError{Op: "list_expiry_claims", Detail: "unmarshal", Err: err}
+		}
+		owner := m.TenantID
+		if owner == "" {
+			owner = tenantid.System
+		}
+		if owner == tenantID && m.ID != 0 {
+			ids = append(ids, m.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		var serr *StoreError
+		if errors.As(err, &serr) {
+			return nil, err
+		}
+		return nil, &StoreError{Op: "list_expiry_claims", Detail: "scan", Err: err}
+	}
+	return ids, nil
+}
 
 // deleteUser is DeleteUser with an optional guard evaluated on the record it
 // read, before anything is written; a guard error refuses the delete.
@@ -2035,24 +2197,25 @@ func (s *kvUserStore) deleteUser(ctx context.Context, id uint64, guard func(*Use
 		return nil, &StoreError{Op: "delete", Detail: "identity index", Err: err}
 	}
 
-	attrs := map[string]any{
-		"username": existing.Username,
-		"tenantID": existing.TenantID,
-	}
-	action := "delete"
-	auditTenant := ""
 	if guard != nil {
-		// Named explicitly: the reaper runs with no caller identity, so
-		// the tenant cannot come from one.
-		auditTenant = existing.TenantID
 		// Only the reaper deletes through a guard: its removals are audited
-		// as their own action, with the expiry that justified them.
-		action = AuditActionPendingExpired
-		if pendingExpiresAt != nil {
-			attrs["pendingExpiresAt"] = pendingExpiresAt.Format(time.RFC3339Nano)
+		// as their own action, with the expiry that justified them, and its
+		// reap marker goes last.
+		if err := s.finishReap(ctx, existing, pendingExpiresAt); err != nil {
+			return nil, err
+		}
+	} else {
+		s.emitAuditForTenant(ctx, "", "delete", id, map[string]any{
+			"username": existing.Username,
+			"tenantID": existing.TenantID,
+		})
+		if existing.ExpiryClaim != nil {
+			// A plain delete finished an account the reaper had claimed.
+			if err := s.store.Delete(ctx, reapMarkerKey(id)); err != nil {
+				return nil, &StoreError{Op: "delete", Detail: "reap marker", Err: err}
+			}
 		}
 	}
-	s.emitAuditForTenant(ctx, auditTenant, action, id, attrs)
 	// Deleting the admin (possible only under "enrolled") leaves no deadline.
 	if IsBootstrapAdmin(existing) {
 		s.observeBootstrapAdmin(nil)

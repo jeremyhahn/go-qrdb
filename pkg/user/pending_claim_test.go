@@ -347,8 +347,17 @@ func TestRoutingUserService_ClaimAndDeleteExpiredPending(t *testing.T) {
 	if err != nil || !ExpiryClaimed(claimed) {
 		t.Fatalf("claim = %+v, %v; want a claimed record", claimed, err)
 	}
+	if ids, err := expirer.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 1 || ids[0] != u.ID {
+		t.Fatalf("routed ListExpiryClaims = %v, %v; want [%d]", ids, err, u.ID)
+	}
+	if ids, err := expirer.ListExpiryClaims(foreign, "globex"); err != nil || len(ids) != 0 {
+		t.Fatalf("foreign tenant's ListExpiryClaims = %v, %v; want none", ids, err)
+	}
 	if _, err := expirer.DeleteExpiredPending(ctx, u.ID, later); err != nil {
 		t.Fatalf("delete of the claimed account: %v", err)
+	}
+	if ids, err := expirer.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 0 {
+		t.Fatalf("routed ListExpiryClaims after the delete = %v, %v; want none", ids, err)
 	}
 	if _, err := svc.GetUser(ctx, u.ID); err == nil {
 		t.Fatal("routed account still present after the delete")

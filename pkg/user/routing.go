@@ -446,6 +446,24 @@ func (r *routingUserService) ClaimExpiredPending(ctx context.Context, userID uin
 	return expirer.ClaimExpiredPending(ctx, userID, now)
 }
 
+// ListExpiryClaims routes to the named tenant's store under the caller's
+// isolation, exactly like ListUsers.
+func (r *routingUserService) ListExpiryClaims(ctx context.Context, tenantID string) ([]uint64, error) {
+	eff, err := tenant.EffectiveTenant(ctx, tenantID, "list expiry claims")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "list_expiry_claims", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.ListExpiryClaims(ctx, eff)
+}
+
 // RemoveCertBinding routes on the tenant that holds the user id, exactly as
 // AddCertBinding does. Withdrawal must reach the same store the enrolment
 // wrote, or it would report success having removed nothing.

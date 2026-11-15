@@ -148,6 +148,22 @@ func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error)
 			break
 		}
 	}
+	// A claimed account whose delete stopped after the tenant index went is
+	// no longer listed; its reap marker still names it.
+	claimed, err := r.expirer.ListExpiryClaims(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	listed := make(map[uint64]bool, len(candidates))
+	for _, id := range candidates {
+		listed[id] = true
+	}
+	for _, id := range claimed {
+		if !listed[id] {
+			listed[id] = true
+			candidates = append(candidates, id)
+		}
+	}
 
 	var errs []error
 	reaped := 0

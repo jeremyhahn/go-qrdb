@@ -109,4 +109,10 @@ type PendingExpirer interface {
 	// (ExpiryClaimed), and returns the removed record. Any other account is
 	// refused with *AccountNotPendingError and nothing is written.
 	DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error)
+
+	// ListExpiryClaims returns the ids of the tenant's accounts claimed by
+	// ClaimExpiredPending and not yet fully deleted. A delete interrupted
+	// after it removed the tenant index leaves such an account out of
+	// ListUsers; this is how the reaper still resumes it.
+	ListExpiryClaims(ctx context.Context, tenantID string) ([]uint64, error)
 }

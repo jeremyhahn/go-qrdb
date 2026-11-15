@@ -47,7 +47,7 @@ func TestPendingReaper_ExpiryAuditCarriesTenant(t *testing.T) {
 	}
 
 	for tenantID, want := range map[string]uint64{"acme": acme.ID, "globex": globex.ID} {
-		page, err := trail.Query(ctx, audit.Filter{TenantID: tenantID, Action: AuditActionPendingExpired})
+		page, err := trail.Query(ctx, audit.Filter{TenantID: tenantID, Action: AuditActionPendingReaped})
 		if err != nil {
 			t.Fatalf("Query(%s): %v", tenantID, err)
 		}
