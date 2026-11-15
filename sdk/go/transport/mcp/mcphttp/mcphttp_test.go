@@ -252,3 +252,110 @@ func TestStatusError_DecodesTheJSONErrorBody(t *testing.T) {
 func request(method mcp.MCPMethod) mcptransport.JSONRPCRequest {
 	return mcptransport.JSONRPCRequest{JSONRPC: mcp.JSONRPC_VERSION, ID: mcp.NewRequestId(int64(1)), Method: string(method)}
 }
+
+// TestTransport_EdgeReplies covers the replies and failures the main tests
+// do not reach: a JSON body that is not an object, an id of a type no
+// request carries, a reply as the stream's last event without a closing
+// blank line, a notification whose params do not decode, and a stream that
+// fails mid-read.
+func TestTransport_EdgeReplies(t *testing.T) {
+	serve := func(t *testing.T, contentType, body string) (*mcptransport.JSONRPCResponse, error) {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", contentType)
+			_, _ = io.WriteString(w, body)
+		}))
+		defer srv.Close()
+		return New(srv.URL, srv.Client()).SendRequest(context.Background(), request(mcp.MethodToolsCall))
+	}
+	for _, tc := range []struct {
+		name, contentType, body, want string
+	}{
+		{"a JSON array", "application/json", `[1]`, "decode"},
+		{"a boolean id", "application/json", `{"jsonrpc":"2.0","id":true,"result":{}}`, "does not match"},
+		{"a stream of a boolean id", "text/event-stream", "data: {\"jsonrpc\":\"2.0\",\"id\":true,\"result\":{}}\n\n", "without a reply"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := serve(t, tc.contentType, tc.body)
+			if err == nil || resp != nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("reply %+v, err %v; want a failure naming %q", resp, err, tc.want)
+			}
+		})
+	}
+
+	t.Run("a reply ending the stream without a blank line", func(t *testing.T) {
+		resp, err := serve(t, "text/event-stream", `data: {"jsonrpc":"2.0","id":1,"result":{}}`)
+		if err != nil || resp == nil {
+			t.Fatalf("reply %+v, err %v; want the final event's reply", resp, err)
+		}
+	})
+
+	t.Run("a notification whose params do not decode is skipped", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":5}\n\n")
+			_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		}))
+		defer srv.Close()
+		tr := New(srv.URL, srv.Client())
+		var notified atomic.Int32
+		tr.SetNotificationHandler(func(mcp.JSONRPCNotification) { notified.Add(1) })
+		resp, err := tr.SendRequest(context.Background(), request(mcp.MethodToolsCall))
+		if err != nil || resp == nil {
+			t.Fatalf("reply %+v, err %v; want the reply after the skipped notification", resp, err)
+		}
+		if notified.Load() != 0 {
+			t.Fatalf("%d notifications handled; want the undecodable one skipped", notified.Load())
+		}
+	})
+
+	t.Run("a stream that fails mid-read", func(t *testing.T) {
+		errRead := errors.New("read failed")
+		resp, err := New("http://127.0.0.1", nil).readEventStream(failingReader{errRead}, mcp.NewRequestId(int64(1)))
+		if resp != nil || !errors.Is(err, errRead) {
+			t.Fatalf("reply %+v, err %v; want the read error", resp, err)
+		}
+	})
+}
+
+// failingReader fails every read with err.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+// TestDecodeWireID_RejectsWhatIsNotOneID pins that an empty ID or more
+// than one JSON value is no ID.
+func TestDecodeWireID_RejectsWhatIsNotOneID(t *testing.T) {
+	for _, raw := range []string{"", "1 2", "{", "true", "[1]"} {
+		if id, ok := decodeWireID(json.RawMessage(raw)); ok {
+			t.Fatalf("decodeWireID(%q) = %+v; want no ID", raw, id)
+		}
+	}
+}
+
+// TestTransport_RequestFailures pins that an unusable URL and an
+// unreachable server fail the request, the notification and Close.
+func TestTransport_RequestFailures(t *testing.T) {
+	bad := New("http://\x7f", http.DefaultClient)
+	if err := bad.SendNotification(context.Background(), mcp.JSONRPCNotification{JSONRPC: mcp.JSONRPC_VERSION}); err == nil {
+		t.Fatal("SendNotification to an unusable URL succeeded")
+	}
+	if _, err := bad.SendRequest(context.Background(), request(mcp.MethodToolsCall)); err == nil {
+		t.Fatal("SendRequest to an unusable URL succeeded")
+	}
+	bad.sessionID = "s-1"
+	if err := bad.Close(); err == nil {
+		t.Fatal("Close on an unusable URL succeeded")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	gone := New(srv.URL, srv.Client())
+	srv.Close()
+	gone.sessionID = "s-1"
+	if err := gone.Close(); err == nil {
+		t.Fatal("Close against a closed server succeeded")
+	}
+	if gone.GetSessionId() != "s-1" {
+		t.Fatal("a failed Close dropped the session")
+	}
+}

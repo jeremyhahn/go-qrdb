@@ -34,7 +34,6 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -46,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/ratelimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // isolationFixture is one started MCP server holding the system tenant, acme
@@ -75,11 +75,7 @@ func newIsolationFixture(t *testing.T, opts ...authmw.Option) *isolationFixture 
 	httpClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: tlsCfg.RootCAs, ServerName: "localhost", MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient("https://"+srv.Addr()+"/mcp",
-		transport.WithHTTPBasicClient(httpClient))
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+srv.Addr()+"/mcp", httpClient))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {

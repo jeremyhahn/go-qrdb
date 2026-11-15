@@ -40,12 +40,12 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	mcpwire "github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // grpcCeremonyInitializeCode calls CeremonyInitialize over gRPC at addr (or,
@@ -123,10 +123,7 @@ func mcpCeremonyInitializeCode(t *testing.T, ca *testCA, addr string) mcpwire.Co
 	hc := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
 		RootCAs: ca.Pool, Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13,
 	}}}
-	client, err := mcpclient.NewStreamableHttpClient("https://"+addr+"/mcp", mcptransport.WithHTTPBasicClient(hc))
-	if err != nil {
-		t.Fatalf("mcp client: %v", err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+addr+"/mcp", hc))
 	defer func() { _ = client.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
