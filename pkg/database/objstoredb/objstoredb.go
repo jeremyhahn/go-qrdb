@@ -20,6 +20,8 @@
 package objstoredb
 
 import (
+	"strconv"
+
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
@@ -35,14 +37,25 @@ func Open(cfg database.DatabaseConfig) (storage.Storage, error) {
 	if cfg.Objstore != nil {
 		oc = *cfg.Objstore
 	}
-	engine, err := objstore.New(oc.Provider, oc.Settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
-		KeyFile:    oc.KeyFile,
-		SecretFile: oc.SecretFile,
-	}))
+	engine, err := objstore.New(oc.Provider, oc.Settings,
+		objstore.WithCredentialFiles(objstore.CredentialFiles{
+			KeyFile:    oc.KeyFile,
+			SecretFile: oc.SecretFile,
+		}),
+		// The database owns its provider namespace: a second database
+		// configured onto the same bucket or path is refused rather than
+		// reading, overwriting or reclaiming this one's objects.
+		objstore.WithOwner(namespaceOwner(cfg)))
 	if err != nil {
 		return nil, err
 	}
 	return engine, nil
+}
+
+// namespaceOwner is the owner a database records in its provider namespace:
+// its tenant and name, which identify it on the node.
+func namespaceOwner(cfg database.DatabaseConfig) string {
+	return "database:" + strconv.Quote(cfg.TenantID) + "/" + strconv.Quote(cfg.Name)
 }
 
 // NewBackendFactory returns the embedded backend factory with object storage

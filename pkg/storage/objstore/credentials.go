@@ -84,6 +84,7 @@ type Option func(*options)
 
 type options struct {
 	credentials CredentialFiles
+	owner       string
 }
 
 // WithCredentialFiles has New authenticate the provider with the credential
@@ -94,6 +95,16 @@ type options struct {
 // or past the open.
 func WithCredentialFiles(files CredentialFiles) Option {
 	return func(o *options) { o.credentials = files }
+}
+
+// WithOwner names the owner of the provider namespace the engine opens. The
+// first open records owner in the namespace, outside every key, and every
+// later open with a different owner is refused with *NamespaceOwnedError, so
+// two databases configured onto one bucket or path cannot read, overwrite or
+// reclaim each other's objects. Reclaim removes the record last. An empty
+// owner records and checks nothing.
+func WithOwner(owner string) Option {
+	return func(o *options) { o.owner = owner }
 }
 
 // readFileHandle reads a credential file into a protected-memory handle. It

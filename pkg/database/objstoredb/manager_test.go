@@ -16,6 +16,7 @@ package objstoredb_test
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 )
 
 // localObjstore is a `backend: objstore` database on go-objstore's "local"
@@ -177,5 +179,43 @@ func TestManager_DropReclaimsAClosedOrFailedBackendsObjects(t *testing.T) {
 				t.Fatalf("Drop left journal objects: %v", left)
 			}
 		})
+	}
+}
+
+// TestManager_SecondDatabaseCannotReachAnothersNamespace pins that a database
+// owns its provider namespace: a second database configured onto the first's
+// path is refused, cannot read or reclaim its objects, and the first still
+// serves them; once the first is dropped the path may be reused.
+func TestManager_SecondDatabaseCannotReachAnothersNamespace(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "objects")
+	mgr := newManager(t, t.TempDir())
+
+	first, err := mgr.Create(localObjstore("first", root))
+	if err != nil {
+		t.Fatalf("Create(first): %v", err)
+	}
+	if err := first.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	_, err = mgr.Create(localObjstore("second", root))
+	var owned *objstore.NamespaceOwnedError
+	if !errors.As(err, &owned) {
+		t.Fatalf("Create(second) on first's path = %v, want *objstore.NamespaceOwnedError", err)
+	}
+	if _, err := mgr.Get("second"); err == nil {
+		t.Fatal("the refused database is served")
+	}
+	got, err := first.Backend().Get(ctx, []byte("key"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("first Get = %q, %v; want v", got, err)
+	}
+
+	if err := mgr.Drop(ctx, "first"); err != nil {
+		t.Fatalf("Drop(first): %v", err)
+	}
+	if _, err := mgr.Create(localObjstore("second", root)); err != nil {
+		t.Fatalf("Create(second) after first's drop: %v", err)
 	}
 }

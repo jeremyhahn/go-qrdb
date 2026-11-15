@@ -235,6 +235,9 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err := e.ensureFormatMarker(); err != nil {
 		return nil, err
 	}
+	if err := e.claimOwner(o.owner); err != nil {
+		return nil, err
+	}
 	// An interrupted batch commit from a previous process is completed here;
 	// a corrupt journal fails the open rather than silently serving a
 	// half-applied batch.
@@ -280,6 +283,32 @@ func (e *Engine) ensureFormatMarker() error {
 		return &FormatMarkerMissingError{Provider: e.provider}
 	}
 	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
+}
+
+// claimOwner records owner as the namespace's owner when none is recorded,
+// and refuses the open when another is (WithOwner). Like CompareAndSwap it
+// does not guard against a second process claiming the namespace at once:
+// the provider offers no conditional put through this interface.
+func (e *Engine) claimOwner(owner string) error {
+	if owner == "" {
+		return nil
+	}
+	rc, err := e.store.Get(ownerMarkerName)
+	if err == nil {
+		defer func() { _ = rc.Close() }()
+		found, readErr := io.ReadAll(rc)
+		if readErr != nil {
+			return readErr
+		}
+		if string(found) != owner {
+			return &NamespaceOwnedError{Provider: e.provider, Owner: string(found), Want: owner}
+		}
+		return nil
+	}
+	if !notFound(err) {
+		return err
+	}
+	return e.store.Put(ownerMarkerName, strings.NewReader(owner))
 }
 
 // Get retrieves the value for key. Returns nil, nil when the key does not exist,
@@ -644,7 +673,7 @@ func (e *Engine) Reclaim() error {
 		return err
 	}
 	for _, name := range names {
-		if name == formatMarkerName {
+		if name == formatMarkerName || name == ownerMarkerName {
 			continue
 		}
 		if err := e.store.Delete(name); err != nil && !notFound(err) {
@@ -656,6 +685,11 @@ func (e *Engine) Reclaim() error {
 	}
 	e.journalPending.Store(false)
 	if err := e.store.Delete(formatMarkerName); err != nil && !notFound(err) {
+		return err
+	}
+	// The owner record goes last, so a reclamation that fails part-way
+	// leaves the namespace its owner's to retry.
+	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
 		return err
 	}
 	return nil

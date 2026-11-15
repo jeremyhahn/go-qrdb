@@ -14,6 +14,8 @@
 
 package objstore
 
+import "strconv"
+
 // UnsupportedProviderError indicates the requested go-objstore provider is not
 // registered in this build. Cloud providers are compiled in only when
 // go-objstore's matching build tag is set (e.g. -tags awss3 for "s3").
@@ -33,6 +35,19 @@ func (e *UnsupportedProviderError) Error() string {
 // object name — and opening it in this layout would silently hide or
 // overwrite them rather than refuse an upgrade this project does not support
 // in place. An EMPTY store is not refused: New writes the marker and proceeds.
+// NamespaceOwnedError is returned by New when the provider namespace it opens
+// is already recorded as another owner's (see WithOwner).
+type NamespaceOwnedError struct {
+	Provider string
+	Owner    string
+	Want     string
+}
+
+func (e *NamespaceOwnedError) Error() string {
+	return "objstore: " + strconv.Quote(e.Provider) + " namespace is owned by " + strconv.Quote(e.Owner) +
+		", not " + strconv.Quote(e.Want)
+}
+
 type FormatMarkerMissingError struct {
 	// Provider is the go-objstore provider whose store was refused.
 	Provider string
