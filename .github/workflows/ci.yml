@@ -1,4 +1,9 @@
 # ci-template: v1.35.1 — canonical CI for all first-party Go repos.
+# Ruling 640 (ci-template v1.39 deltas, adopted 2026-11-15): the lint job's
+# `Base commit for deps-check (ruling 640)` step passes DEPS_CHECK_BASE to
+# make deps-check (the shared depscheck v1.0.0 in scripts/depscheck), and a
+# workflow_dispatch on ci/deps-bump is not refused: deps-bump.yml dispatches
+# this workflow there, because the PR it opens starts no pull_request run.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on a self-hosted pool for a push to main and a
@@ -490,13 +495,31 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
+      # Ruling 640 (ci-template v1.39): the commit deps-check compares go.mod
+      # against: the PR's base sha or a push's `before`, fetched at depth 1. A
+      # schedule or workflow_dispatch run sets none and gets the full gate; a
+      # fetch that fails leaves it unset, with a warning: never a silent pass.
+      - name: Base commit for deps-check (ruling 640)
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && (github.event_name == 'pull_request' || github.event_name == 'push') }}
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          case $BASE_SHA in
+            ''|*[!0-9a-f]*|0000000000000000000000000000000000000000) echo "deps-check: no base commit; the full gate runs"; exit 0 ;;
+          esac
+          if git fetch --no-tags --depth=1 origin "$BASE_SHA"; then
+            echo "DEPS_CHECK_BASE=$BASE_SHA" >> "$GITHUB_ENV"
+          else
+            echo "::warning title=deps-check::base commit $BASE_SHA could not be fetched; the full gate runs"
+          fi
+
       # v1.28 (ruling 219(3)): a lint-class gate on the PR tier, on every
       # event, a docs-only PR included; bridge for the module proxy.
       - name: make deps-check
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         env:
           IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make deps-check DEPS_CHECK_BASE='${DEPS_CHECK_BASE:-}'"
 
       # ci-template v1.30: gosec on the PR tier; the full tier runs it inside
       # `make security` in the image job.
