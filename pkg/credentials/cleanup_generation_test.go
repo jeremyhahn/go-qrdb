@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 )
 
 // rotateWithHistory rotates name n times, each keeping the previous value
