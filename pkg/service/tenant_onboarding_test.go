@@ -26,6 +26,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -721,6 +722,73 @@ func TestEmitPendingOnboardAudit_ConcurrentCallbacksAppendOnce(t *testing.T) {
 			t.Fatalf("EmitPendingOnboardAudit: %v", err)
 		}
 	}
+	n := 0
+	for _, ev := range trail.Snapshot() {
+		if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("tenant trail holds %d tenant.onboard records, want exactly 1", n)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left != nil {
+		t.Fatalf("pending record after the emits = %q, %v; want none", left, err)
+	}
+}
+
+// heldTrail holds its first Emit, signalling entered, until release closes;
+// later Emits pass straight through.
+type heldTrail struct {
+	*audit.RingBuffer
+	entered chan struct{}
+	release chan struct{}
+	held    atomic.Bool
+}
+
+func (h *heldTrail) Emit(ctx context.Context, ev audit.AuditEvent) error {
+	if h.held.CompareAndSwap(false, true) {
+		close(h.entered)
+		<-h.release
+	}
+	return h.RingBuffer.Emit(ctx, ev)
+}
+
+// Two nodes' onboarding services retry one tenant's pending onboarding
+// record over the same replicated store and trail: while the first holds the
+// record mid-append, the second leaves it to the first, so the tenant's trail
+// holds it exactly once and the pending record is gone.
+func TestEmitPendingOnboardAudit_TwoInstancesAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &heldTrail{RingBuffer: audit.NewRingBuffer(32), entered: make(chan struct{}), release: make(chan struct{})}
+	newInstance := func() *TenantOnboardingService {
+		deps := newOnboardingDeps(t)
+		deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+		deps.TenantTrail = trail
+		return NewTenantOnboardingService(deps)
+	}
+	first, second := newInstance(), newInstance()
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() { firstErr <- first.EmitPendingOnboardAudit(ctx, "acme") }()
+	<-trail.entered
+	if err := second.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("second instance EmitPendingOnboardAudit: %v", err)
+	}
+	close(trail.release)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first instance EmitPendingOnboardAudit: %v", err)
+	}
+
 	n := 0
 	for _, ev := range trail.Snapshot() {
 		if ev.Action == ActionTenantOnboard && ev.TenantID == "acme" {

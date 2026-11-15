@@ -20,7 +20,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -182,10 +181,6 @@ type TenantOnboardingService struct {
 	soPINs     atomic.Pointer[bootstrap.SOPINSetter]
 	// strictSoD is TenantOnboardingDeps.SeparationOfDuties.
 	strictSoD bool
-	// auditGuards holds one *sync.Mutex per tenant id: the once-guard that
-	// keeps concurrent emits of a tenant's pending onboarding audit record
-	// from appending it twice.
-	auditGuards sync.Map
 }
 
 // DefaultTenantOnboardingTimeout bounds an onboarding from the service's
@@ -624,37 +619,84 @@ func (s *TenantOnboardingService) emitPendingOnboardAudit(ctx context.Context, t
 	if s.pendingAudit == nil || sink == nil {
 		return nil
 	}
-	// Concurrent barrier-ready callbacks for one tenant each reach here.
-	// The record is read, emitted and deleted under the tenant's guard, so a
-	// second callback reads it only after the first deleted it (or failed
-	// and left it for a retry): the record is appended exactly once, and a
-	// failed emit still leaves it pending rather than lost.
-	muAny, _ := s.auditGuards.LoadOrStore(tenantID, &sync.Mutex{})
-	mu := muAny.(*sync.Mutex) //nolint:errcheck // the map only ever holds *sync.Mutex
-	mu.Lock()
-	defer mu.Unlock()
+	// Concurrent barrier-ready callbacks for one tenant reach here, on this
+	// node and on others. The emitter first claims the record in the
+	// replicated store, swapping it for a lease-stamped claim atomically, so
+	// only one emitter at a time appends it: a second one finds the claim and
+	// leaves the record to its holder. A failed emit releases the claim,
+	// leaving the record pending for a retry; a holder that stops leaves a
+	// claim whose lease runs out, and the next emitter takes it over.
 	record, err := s.pendingAudit.Get(ctx, tenantID)
 	if err != nil || record == nil {
 		return err
 	}
-	var ev audit.AuditEvent
-	if err := json.Unmarshal(record, &ev); err != nil {
-		return &tenantadmin.StoreError{Op: "decode", Err: err}
-	}
-	// An earlier attempt may have appended the record and then failed to
-	// delete it, or stopped between the two: the trail already holding the
-	// event is the append, so only the pending record is removed.
-	appended, err := trailHolds(ctx, sink, ev)
+	ev, raw, claim, err := decodePendingAudit(record)
 	if err != nil {
 		return err
 	}
-	if !appended {
-		if err := sink.Emit(ctx, ev); err != nil {
-			return err
-		}
+	now := time.Now()
+	if claim != nil && now.Before(claim.ClaimedUntil) {
+		return nil
 	}
-	_, err = s.pendingAudit.Delete(ctx, tenantID, record)
+	until := now.Add(pendingAuditClaimLease)
+	claimed, err := json.Marshal(pendingAuditClaim{ClaimedBy: onboardEventID(), ClaimedUntil: until, Event: raw})
+	if err != nil {
+		return &tenantadmin.StoreError{Op: "encode", Err: err}
+	}
+	won, err := s.pendingAudit.Replace(ctx, tenantID, record, claimed)
+	if err != nil || !won {
+		return err
+	}
+	// The append runs within the lease, so it ends before another emitter
+	// may take the claim over.
+	emitCtx, cancel := context.WithDeadline(ctx, until)
+	defer cancel()
+	// An earlier attempt may have appended the record and then failed to
+	// delete it, or stopped between the two: the trail already holding the
+	// event is the append, so only the pending record is removed.
+	appended, err := trailHolds(emitCtx, sink, ev)
+	if err == nil && !appended {
+		err = sink.Emit(emitCtx, ev)
+	}
+	if err != nil {
+		// Release the claim so a retry need not wait out the lease; should
+		// the release fail, the lease running out releases it.
+		_, _ = s.pendingAudit.Replace(context.WithoutCancel(ctx), tenantID, claimed, raw)
+		return err
+	}
+	_, err = s.pendingAudit.Delete(ctx, tenantID, claimed)
 	return err
+}
+
+// pendingAuditClaimLease bounds how long an emitter holds a pending
+// onboarding record it claimed before another emitter may take it over.
+const pendingAuditClaimLease = 2 * time.Minute
+
+// pendingAuditClaim is a pending onboarding record claimed by an emitter:
+// the record as it was kept (Event), the claim's random identity and when
+// its lease runs out.
+type pendingAuditClaim struct {
+	ClaimedBy    string          `json:"claimed_by"`
+	ClaimedUntil time.Time       `json:"claimed_until"`
+	Event        json.RawMessage `json:"event"`
+}
+
+// decodePendingAudit decodes a pending onboarding record, either as kept or
+// claimed by an emitter, into its event, the event as kept, and the claim
+// (nil for an unclaimed record).
+func decodePendingAudit(record []byte) (audit.AuditEvent, []byte, *pendingAuditClaim, error) {
+	var ev audit.AuditEvent
+	var claim pendingAuditClaim
+	if err := json.Unmarshal(record, &claim); err == nil && claim.ClaimedBy != "" && len(claim.Event) > 0 {
+		if err := json.Unmarshal(claim.Event, &ev); err != nil {
+			return ev, nil, nil, &tenantadmin.StoreError{Op: "decode", Err: err}
+		}
+		return ev, claim.Event, &claim, nil
+	}
+	if err := json.Unmarshal(record, &ev); err != nil {
+		return ev, nil, nil, &tenantadmin.StoreError{Op: "decode", Err: err}
+	}
+	return ev, record, nil, nil
 }
 
 // onboardEventID is a random identity for an onboarding audit record.

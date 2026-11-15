@@ -233,6 +233,13 @@ type AuditStore interface {
 	// the record read, decided atomically; deleted=false with a nil error
 	// means another writer removed or replaced it first.
 	Delete(ctx context.Context, tenantID string, read []byte) (deleted bool, err error)
+
+	// Replace swaps tenantID's pending audit record for next only while it
+	// is still the record read, decided atomically against the replicated
+	// store; replaced=false with a nil error means another writer removed or
+	// replaced it first. It is how an emitter claims the record before
+	// appending it, so two nodes never append the same record at once.
+	Replace(ctx context.Context, tenantID string, read, next []byte) (replaced bool, err error)
 }
 
 // AuditKVStore is the built-in AuditStore over the replicated system store.
@@ -304,4 +311,24 @@ func (s *AuditKVStore) Delete(ctx context.Context, tenantID string, read []byte)
 		return false, &StoreError{Op: "delete", Err: err}
 	}
 	return deleted, nil
+}
+
+// Replace implements AuditStore.
+func (s *AuditKVStore) Replace(ctx context.Context, tenantID string, read, next []byte) (bool, error) {
+	if len(read) == 0 || len(next) == 0 {
+		return false, &IncompleteError{}
+	}
+	scoped, err := s.kv.scoped(tenantID)
+	if err != nil {
+		return false, err
+	}
+	atomic, ok := scoped.(kvstore.AtomicKVStore)
+	if !ok {
+		return false, &StoreError{Op: "replace", Err: kvstore.ErrAtomicWriteUnsupported}
+	}
+	replaced, err := atomic.CompareAndSwap(ctx, s.kv.key, read, next)
+	if err != nil {
+		return false, &StoreError{Op: "replace", Err: err}
+	}
+	return replaced, nil
 }
