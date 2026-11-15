@@ -17,10 +17,12 @@ package tenant
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
@@ -127,41 +129,92 @@ func WithNodeKeyLogProbe(p NodeKeyLogProbe) TenantServiceOption {
 	return func(s *TenantService) { s.SetNodeKeyLogProbe(p) }
 }
 
-// tightenToStrict runs commit, the tightening, between writing a marker
-// under markerPrefix and removing it, once no tenant in tenants has a
-// database on the node-keyed WAL.
-func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, tenants []string, commit func() error) error {
-	if len(tenants) == 0 {
-		return commit()
+// tighteningLease bounds how long a tightening's marker governs creates. A
+// marker records the deadline of its lease; one past it is stale -- left by a
+// crash between writing the marker and removing it, or by a failed removal --
+// and is ignored and removed by the next reader. A tightening commits only
+// while at least tighteningCommitMargin of its lease remains, so a create
+// that ignores an expired marker reads the policy after the commit landed.
+const (
+	tighteningLease        = 2 * time.Minute
+	tighteningCommitMargin = 30 * time.Second
+)
+
+// tighteningNow is the clock marker leases are read against.
+var tighteningNow = time.Now
+
+// ErrTighteningLeaseExpired refuses a tightening whose checks outlasted its
+// marker's lease: committing then could race a create that ignored the
+// expired marker. Retrying is safe.
+var ErrTighteningLeaseExpired = errors.New("tenant: the tightening to strict outlasted its marker's lease; retry")
+
+// markerValue encodes a marker's lease deadline.
+func markerValue(deadline time.Time) []byte {
+	return binary.BigEndian.AppendUint64(nil, uint64(deadline.UnixNano()))
+}
+
+// markerLive reports whether value, a marker's content, holds a lease not
+// yet past at now. A value that is not a lease (a marker of an earlier
+// format) is stale.
+func markerLive(value []byte, now time.Time) bool {
+	if len(value) != 8 {
+		return false
 	}
+	return now.UnixNano() < int64(binary.BigEndian.Uint64(value))
+}
+
+// tightenToStrict runs commit, the tightening, between writing a marker
+// under markerPrefix and removing it, once no tenant that tenants lists has
+// a database on the node-keyed WAL. tenants is called after the marker is
+// written, so a tenant or database created concurrently is either listed or
+// sees the marker.
+func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, tenants func(context.Context) ([]string, error), commit func() error) error {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return &StoreError{Op: "isolation-tightening-mark", Err: err}
 	}
 	key := markerPrefix + hex.EncodeToString(nonce[:])
-	if err := store.Put(ctx, key, []byte{1}); err != nil {
+	deadline := tighteningNow().Add(tighteningLease)
+	if err := store.Put(ctx, key, markerValue(deadline)); err != nil {
 		return &StoreError{Op: "isolation-tightening-mark", Err: err}
 	}
 	defer func() { _ = store.Delete(context.WithoutCancel(ctx), key) }()
-	ref := g.nodeKeyProbe.Load()
-	if ref == nil {
-		return ErrNodeKeyLogsUnverifiable
+	ids, err := tenants(ctx)
+	if err != nil {
+		return err
 	}
-	for _, id := range tenants {
-		dbs, err := ref.probe.NodeKeyLogDatabases(ctx, id)
-		if err != nil {
-			return &TenantDataProbeError{TenantID: id, Err: err}
+	if len(ids) > 0 {
+		ref := g.nodeKeyProbe.Load()
+		if ref == nil {
+			return ErrNodeKeyLogsUnverifiable
 		}
-		if len(dbs) > 0 {
-			return &NodeKeyLogsError{TenantID: id, Databases: dbs}
+		for _, id := range ids {
+			dbs, err := ref.probe.NodeKeyLogDatabases(ctx, id)
+			if err != nil {
+				return &TenantDataProbeError{TenantID: id, Err: err}
+			}
+			if len(dbs) > 0 {
+				return &NodeKeyLogsError{TenantID: id, Databases: dbs}
+			}
 		}
+	}
+	if !tighteningNow().Add(tighteningCommitMargin).Before(deadline) {
+		return ErrTighteningLeaseExpired
 	}
 	return commit()
 }
 
+// governedByStrict reports whether kind is an isolation type whose
+// databases can be raft groups on the shared, node-keyed WAL: a raft
+// tenant's, or a barrier tenant's served from the shared system store. A
+// volume tenant's log is already under its own key; a prefix tenant is
+// never strict.
+func governedByStrict(kind IsolationType) bool {
+	return kind == IsolationRaft || kind == IsolationBarrier
+}
+
 // tightensToStrict reports whether patch tightens info's own policy to
-// strict for a tenant whose databases are raft groups (a volume tenant's
-// log is already under its own key; a prefix tenant is never strict).
+// strict for a tenant whose databases can be raft groups on the shared WAL.
 func tightensToStrict(info *TenantInfo, patch TenantPatch) bool {
 	if patch.IsolationPolicy != TenantIsolationPolicyStrict || info.IsolationPolicy == TenantIsolationPolicyStrict {
 		return false
@@ -170,24 +223,26 @@ func tightensToStrict(info *TenantInfo, patch TenantPatch) bool {
 	if patch.IsolationType != "" {
 		kind = patch.IsolationType
 	}
-	return kind == IsolationRaft
+	return governedByStrict(kind)
 }
 
-// raftTenantsUnderFloor lists the raft tenants a strict floor would govern
-// anew: those whose own policy is not already strict.
+// raftTenantsUnderFloor lists the raft and barrier tenants a strict floor
+// would govern anew: those whose own policy is not already strict.
 func raftTenantsUnderFloor(tenants []TenantInfo) []string {
 	var out []string
 	for i := range tenants {
-		if tenants[i].EffectiveIsolationType() == IsolationRaft && tenants[i].IsolationPolicy != TenantIsolationPolicyStrict {
+		if governedByStrict(tenants[i].EffectiveIsolationType()) && tenants[i].IsolationPolicy != TenantIsolationPolicyStrict {
 			out = append(out, tenants[i].ID)
 		}
 	}
 	return out
 }
 
-// isolationTightening reports whether a marker of a tightening governing
-// tenantID -- its own, or the cluster floor's -- is in store.
+// isolationTightening reports whether a live marker of a tightening
+// governing tenantID -- its own, or the cluster floor's -- is in store. A
+// stale marker is ignored and removed (best effort: the next reader retries).
 func isolationTightening(ctx context.Context, store markerStore, tenantID string) (bool, error) {
+	now := tighteningNow()
 	for _, prefix := range []string{clusterTighteningPrefix, tighteningPrefix + tenantID + "/"} {
 		keys, err := store.List(ctx, prefix)
 		if err != nil {
@@ -196,8 +251,18 @@ func isolationTightening(ctx context.Context, store markerStore, tenantID string
 			}
 			return false, &StoreError{Op: "isolation-tightening-list", Err: err}
 		}
-		if len(keys) > 0 {
-			return true, nil
+		for _, key := range keys {
+			value, err := store.Get(ctx, key)
+			if err != nil {
+				if errors.Is(err, seal.ErrSecretNotFound) {
+					continue
+				}
+				return false, &StoreError{Op: "isolation-tightening-read", Err: err}
+			}
+			if markerLive(value, now) {
+				return true, nil
+			}
+			_ = store.Delete(ctx, key)
 		}
 	}
 	return false, nil
@@ -219,18 +284,26 @@ func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerSt
 	if info == nil || !tightensToStrict(info, patch) {
 		return update()
 	}
-	return g.tightenToStrict(ctx, store, tighteningPrefix+info.ID+"/", []string{info.ID}, update)
+	id := info.ID
+	return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", func(context.Context) ([]string, error) {
+		return []string{id}, nil
+	}, update)
 }
 
 // guardedFloor runs set, the cluster floor's tightening, under
-// tightenToStrict for every raft tenant it would govern anew.
+// tightenToStrict for every raft or barrier tenant it would govern anew. The
+// tenants are listed after the cluster marker is written -- even when none
+// exist yet -- so a tenant created concurrently is either listed or its
+// databases' creates see the marker.
 func (g *isolationChangeGuard) guardedFloor(ctx context.Context, store markerStore, next ClusterIsolationPolicy, list func(context.Context) ([]TenantInfo, error), set func() error) error {
 	if next != ClusterIsolationPolicyStrict {
 		return set()
 	}
-	tenants, err := list(ctx)
-	if err != nil {
-		return err
-	}
-	return g.tightenToStrict(ctx, store, clusterTighteningPrefix, raftTenantsUnderFloor(tenants), set)
+	return g.tightenToStrict(ctx, store, clusterTighteningPrefix, func(ctx context.Context) ([]string, error) {
+		tenants, err := list(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return raftTenantsUnderFloor(tenants), nil
+	}, set)
 }
