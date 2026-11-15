@@ -85,3 +85,51 @@ func TestDelegation_RevocationRefusesNextCallUnderDefaultCacheTTL(t *testing.T) 
 		t.Fatalf("forwarded delegation after revoke = %v, want ErrCertificateRevoked", err)
 	}
 }
+
+// embeddedChecker wraps a checker by embedding auth.RevocationChecker, which
+// promotes IsCertRevoked only: the wrapped checker's IsCertRevokedUncached is
+// hidden, so the wrapper can answer only from the cache.
+type embeddedChecker struct {
+	auth.RevocationChecker
+}
+
+// TestDelegation_WrappedCheckerWithoutUncachedIsRefused: a checker that
+// cannot answer uncached is refused outright, even while its cached answer
+// says not revoked and a fresh read says revoked; it never falls back to the
+// cached answer. The unwrapped cache over the same store refuses the revoked
+// serial on its next call.
+func TestDelegation_WrappedCheckerWithoutUncachedIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := &revocationStore{revoked: map[string]bool{}}
+	cache := cert.NewRevocationCache(store, cert.DefaultRevocationCacheTTL)
+	d := authtest.NewDelegation(t, delegation.Grant{Tenant: "acme", Principal: "svc-billing", Scope: []string{string(permission.KVGet)}})
+
+	// Warm the cache with a not-revoked answer, then revoke behind it.
+	if revoked, err := cache.IsCertRevoked(ctx, d.Certificate); err != nil || revoked {
+		t.Fatalf("warm cache = %v, %v; want not revoked", revoked, err)
+	}
+	store.revoke(cert.FormatSerial(d.Certificate.SerialNumber))
+	if revoked, err := cache.IsCertRevoked(ctx, d.Certificate); err != nil || revoked {
+		t.Fatalf("cached answer = %v, %v; want the stale not-revoked answer", revoked, err)
+	}
+
+	wrapped := d.NewAuthenticator(auth.WithRevocationChecker(embeddedChecker{cache}))
+	for name, call := range map[string]func() (*auth.Identity, error){
+		"presented": func() (*auth.Identity, error) { return wrapped.Authenticate(d.Context(ctx)) },
+		"forwarded": func() (*auth.Identity, error) { return wrapped.VerifyDelegation(ctx, d.Certificate.Raw) },
+	} {
+		id, err := call()
+		if id != nil {
+			t.Fatalf("%s through the wrapper: identity = %+v, want nil", name, id)
+		}
+		var refused *auth.DelegationRefusedError
+		if !errors.As(err, &refused) || refused.Reason != "revocation checker cannot answer uncached" {
+			t.Fatalf("%s through the wrapper: err = %v, want DelegationRefusedError for a checker that cannot answer uncached", name, err)
+		}
+	}
+
+	direct := d.NewAuthenticator(auth.WithRevocationChecker(cache))
+	if _, err := direct.Authenticate(d.Context(ctx)); !errors.Is(err, auth.ErrCertificateRevoked) {
+		t.Fatalf("unwrapped cache after revoke = %v, want ErrCertificateRevoked", err)
+	}
+}

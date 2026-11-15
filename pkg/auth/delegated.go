@@ -189,11 +189,16 @@ func (a *MTLSAuthenticator) authenticateDelegation(ctx context.Context, chain []
 		revoked bool
 		err     error
 	)
-	if u, ok := a.revocation.(UncachedRevocationChecker); ok {
-		revoked, err = u.IsCertRevokedUncached(ctx, leaf)
-	} else {
-		revoked, err = a.revocation.IsCertRevoked(ctx, leaf)
+	// A checker that can only answer from its cache would admit a revoked
+	// delegation for the rest of its TTL, and a wrapper that embeds
+	// RevocationChecker hides the uncached method of the checker it wraps:
+	// either way the freshness promise cannot be kept, so admission fails
+	// closed rather than falling back to the cached answer.
+	u, ok := a.revocation.(UncachedRevocationChecker)
+	if !ok {
+		return nil, &DelegationRefusedError{Reason: "revocation checker cannot answer uncached"}
 	}
+	revoked, err = u.IsCertRevokedUncached(ctx, leaf)
 	if err != nil {
 		return nil, &RevocationCheckError{Err: err}
 	}
