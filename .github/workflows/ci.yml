@@ -283,6 +283,12 @@ jobs:
       it_id: ${{ steps.save.outputs.it_id }}
       toolchain_ref: ${{ steps.push.outputs.toolchain_ref }}
       it_ref: ${{ steps.push.outputs.it_ref }}
+      # #1593 (rulings 682/687): the tag each image carries in the LAN CI
+      # registry (vars.CI_IMAGE_REGISTRY), empty when it was not pushed there.
+      # The tag alone crosses jobs: an output naming the masked registry would
+      # be dropped.
+      registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}
+      registry_it_tag: ${{ steps.lan.outputs.it_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
@@ -387,6 +393,39 @@ jobs:
           compression-level: 1
           if-no-files-found: error
 
+      # #1593 (rulings 682/687): on a self-hosted runner with
+      # vars.CI_IMAGE_REGISTRY set, push both images to the LAN CI registry,
+      # tagged <run_id>-<run_attempt>; the consumers pull them from there and
+      # fall back to the artifacts above, which stay the path on GitHub-hosted
+      # runners. The address is masked before any step names it. A refused
+      # push is a warning: its consumers take the artifact.
+      - name: Mask the LAN CI registry
+        if: ${{ vars.CI_IMAGE_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Push the devcontainer images to the LAN CI registry
+        id: lan
+        if: ${{ vars.CI_IMAGE_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        env:
+          REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
+          TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
+          IT_IMAGE: ${{ steps.build.outputs.it_image }}
+        run: |
+          lan_push() {
+            ref="$REGISTRY/go-qrdb/$2:$TAG"
+            if docker tag "$1" "$ref" && docker push -q "$ref" >/dev/null; then
+              echo "$3=$TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
+            fi
+            docker rmi "$ref" >/dev/null 2>&1 || true
+          }
+          lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
+          if [ -n "$IT_IMAGE" ]; then
+            lan_push "$IT_IMAGE" it-image it_tag
+          fi
+
       # CUSTOMIZE (go-qrdb): on a push to main alone, push each image once per
       # run, tagged <content-hash>-main, and output its digest reference.
       # scripts/ci-image.sh feeds the login to docker on stdin, into a private
@@ -458,7 +497,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -468,8 +529,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
@@ -559,8 +621,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ steps.probe.outputs.has_target == 'true' && needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ steps.probe.outputs.has_target == 'true' && needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -571,8 +654,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -629,7 +713,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -639,14 +745,35 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       # The full tier's trivy step scans the integration image docker-build
       # built, so the full tier loads it too.
+      - name: Mask the LAN CI registry
+        if: ${{ env.CI_FULL_TIER == 'true' && needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ env.CI_FULL_TIER == 'true' && needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/it-image:${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the integration image
-        if: ${{ env.CI_FULL_TIER == 'true' }}
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -657,8 +784,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -777,7 +905,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -787,8 +937,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -1079,7 +1230,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1089,8 +1262,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -1155,7 +1329,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1165,8 +1361,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
@@ -1249,7 +1446,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/it-image:${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the integration image
+        if: ${{ steps.pull_it.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1259,8 +1478,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Integration tests (shard ${{ matrix.shard }})
@@ -1402,7 +1622,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the toolchain image from the LAN CI registry
+        id: pull_toolchain
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
+          ID: ${{ needs.docker-build.outputs.toolchain_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1412,8 +1654,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
@@ -1567,7 +1810,29 @@ jobs:
           docker image prune -af >/dev/null
           df -h /
 
+      # #1593: the LAN CI registry first, the artifact when the pull fails.
+      - name: Mask the LAN CI registry
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        run: echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"
+
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ needs.docker-build.outputs.registry_it_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        env:
+          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/it-image:${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
+
       - name: Download the integration image
+        if: ${{ steps.pull_it.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1577,8 +1842,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Soak (integration suite, looped)
