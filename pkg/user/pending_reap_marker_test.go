@@ -272,7 +272,7 @@ func TestClaimExpiredPending_DropsStaleMarkerOfActivatedAccount(t *testing.T) {
 	now := time.Now().UTC().Add(time.Hour)
 	u := createPending(t, svc, "revived", "acme", time.Minute)
 	s := svc.(*kvUserStore)
-	if err := s.putReapMarker(ctx, u); err != nil {
+	if _, err := s.putReapMarker(ctx, u); err != nil {
 		t.Fatalf("putReapMarker: %v", err)
 	}
 	if err := svc.EnableUser(ctx, u.ID); err != nil {

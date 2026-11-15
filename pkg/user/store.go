@@ -17,7 +17,9 @@ package user
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -1774,7 +1776,7 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		return nil, &StoreError{Op: "claim_expired_pending", Detail: "unmarshal", Err: uerr}
 	}
 	if ExpiryClaimed(existing) {
-		if err := s.putReapMarker(ctx, existing); err != nil {
+		if _, err := s.putReapMarker(ctx, existing); err != nil {
 			return nil, err
 		}
 		return existing, nil
@@ -1790,16 +1792,60 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 	}
 	claim := *existing.PendingExpiresAt
 	existing.ExpiryClaim = &claim
-	if err := s.putReapMarker(ctx, existing); err != nil {
+	mine, err := s.putReapMarker(ctx, existing)
+	if err != nil {
 		return nil, err
 	}
 	if _, err := s.markDeleting(ctx, id, base, existing); err != nil {
-		// Lost the record. A marker left behind here is dropped by the next
-		// claim, which finds the account no longer an expired pending one.
-		_ = s.store.Delete(ctx, reapMarkerKey(id))
+		// Lost the record, perhaps to an overlapping claim that won it.
+		// Drop only the marker this claim wrote: a compare-and-delete
+		// against its bytes leaves any marker written since in place. A
+		// marker left behind is dropped by the next claim, which finds the
+		// account no longer an expired pending one.
+		atomicStore, ok := s.store.(kvstore.AtomicKVStore)
+		if !ok {
+			return nil, errors.Join(err, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: ErrStoreNotAtomic})
+		}
+		if _, derr := atomicStore.CompareAndDelete(ctx, reapMarkerKey(id), mine); derr != nil {
+			return nil, errors.Join(err, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: derr})
+		}
+		// This claim's marker may have been the one the winner's account
+		// relies on: the winner can finish its claim, re-write included,
+		// before this claim's marker write lands over it. The record names
+		// the winner's claim by now, so write the marker back for it.
+		if rerr := s.restoreWinnerMarker(ctx, id); rerr != nil {
+			return nil, errors.Join(err, rerr)
+		}
+		return nil, err
+	}
+	// Won the record. The losing claim may have deleted this claim's marker
+	// if it wrote its own over it first, so write it again now the claim is
+	// durable: whichever way the two interleave, the winner's marker stays.
+	if _, err := s.putReapMarker(ctx, existing); err != nil {
 		return nil, err
 	}
 	return existing, nil
+}
+
+// restoreWinnerMarker writes a reap marker for id when its record is claimed
+// for expiry, after a losing claim dropped its own marker.
+func (s *kvUserStore) restoreWinnerMarker(ctx context.Context, id uint64) error {
+	raw, err := s.store.Get(ctx, primaryKey(id))
+	if err != nil {
+		return &StoreError{Op: "claim_expired_pending", Detail: "primary lookup", Err: err}
+	}
+	if raw == nil {
+		return nil
+	}
+	current := &User{}
+	if err := json.Unmarshal(raw, current); err != nil {
+		return &StoreError{Op: "claim_expired_pending", Detail: "unmarshal", Err: err}
+	}
+	if !ExpiryClaimed(current) {
+		return nil
+	}
+	_, err = s.putReapMarker(ctx, current)
+	return err
 }
 
 // DeleteExpiredPending deletes the account only when it is pending and its
@@ -1858,6 +1904,11 @@ type reapMarker struct {
 	TenantID    string     `json:"tenantID"`
 	Username    string     `json:"username"`
 	ExpiryClaim *time.Time `json:"expiryClaim,omitempty"`
+	// Claimant is a per-write random token. It makes each claim's marker
+	// distinct, so a claim that lost the record can delete, by
+	// compare-and-delete, the marker it wrote and never one another claim
+	// wrote over it.
+	Claimant string `json:"claimant,omitempty"`
 }
 
 // user is the claimed account as far as the marker describes it.
@@ -1869,15 +1920,24 @@ func reapMarkerKey(id uint64) string {
 	return keyPrefixReap + idStringKey(id)
 }
 
-func (s *kvUserStore) putReapMarker(ctx context.Context, u *User) error {
-	b, err := json.Marshal(&reapMarker{ID: u.ID, TenantID: u.TenantID, Username: u.Username, ExpiryClaim: u.ExpiryClaim})
+// putReapMarker writes a fresh marker for u and returns its exact bytes, the
+// value a compare-and-delete of this write must match.
+func (s *kvUserStore) putReapMarker(ctx context.Context, u *User) ([]byte, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker token", Err: err}
+	}
+	b, err := json.Marshal(&reapMarker{
+		ID: u.ID, TenantID: u.TenantID, Username: u.Username, ExpiryClaim: u.ExpiryClaim,
+		Claimant: hex.EncodeToString(token[:]),
+	})
 	if err != nil {
-		return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
 	}
 	if err := s.store.Put(ctx, reapMarkerKey(u.ID), b); err != nil {
-		return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
 	}
-	return nil
+	return b, nil
 }
 
 // readReapMarker returns the account's reap marker, or nil when it has none.
