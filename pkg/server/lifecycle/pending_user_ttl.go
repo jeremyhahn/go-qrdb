@@ -20,14 +20,14 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// pendingUserTTLRequired returns the activation check user.WithPendingTTLGate
+// PendingUserTTLRequired returns the activation check user.WithPendingTTLGate
 // takes on host. A nil host, or a standalone node, which is its own whole
 // cluster, gets nil: the TTL is active from the first start. A clustered node
 // waits for featuregate.PendingUserTTL, judged cluster-wide, because a member
 // that predates it drops PendingExpiresAt and ExpiryClaim when it rewrites a
 // user record. A clustered host that gates no features cannot tell, so the
 // TTL stays refused on it.
-func pendingUserTTLRequired(host service.Host) func() error {
+func PendingUserTTLRequired(host service.Host) func() error {
 	if host == nil || standaloneHost(host) {
 		return nil
 	}

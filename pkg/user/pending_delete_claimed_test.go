@@ -45,6 +45,16 @@ func TestDeleteUser_ClaimedAccountKeepsMarkerForTheReaper(t *testing.T) {
 	ctx := context.Background()
 	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
 	u := createPending(t, svc, "stranded", "acme", time.Minute)
+	credentialIndexKeys := []string{
+		usernameIndexKey("acme", "stranded"),
+		emailIndexKey("acme", "stranded@example.com"),
+		tenantIndexKey("acme", u.ID),
+	}
+	for _, key := range credentialIndexKeys {
+		if raw, err := kv.Get(ctx, key); err != nil || raw == nil {
+			t.Fatalf("credential index %q after create = %q, %v; want written", key, raw, err)
+		}
+	}
 	factors := &fakeFactors{
 		byUser:     map[uint64][]*auth.AuthFactor{u.ID: {{ID: "f-s", UserID: u.ID}}},
 		failDelete: errors.New("factor store down"),
@@ -89,6 +99,13 @@ func TestDeleteUser_ClaimedAccountKeepsMarkerForTheReaper(t *testing.T) {
 	}
 	if ids, err := svc.(PendingExpirer).ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 0 {
 		t.Fatalf("reap marker after the finishing sweep = %v, %v; want none", ids, err)
+	}
+	// The account's credential indexes -- its login name, login email and
+	// tenant listing entry -- go with it, in the real store's keyspace.
+	for _, key := range credentialIndexKeys {
+		if raw, err := kv.Get(ctx, key); err != nil || raw != nil {
+			t.Fatalf("credential index %q after the finishing sweep = %q, %v; want gone", key, raw, err)
+		}
 	}
 
 	// A further sweep finds nothing and audits nothing again.

@@ -2362,6 +2362,11 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
+			// A pending-user TTL waits for every member to carry its
+			// record fields (featuregate.PendingUserTTL), as on the SDK
+			// node path; the reaper below waits on the same check.
+			pendingTTLGate, pendingTTLOpt := daemonPendingTTLGate(svcHost)
+			userOpts = append(userOpts, pendingTTLOpt)
 			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2888,7 +2893,7 @@ func runStart(f *startFlags) (err error) {
 					}
 					pendingLeader = server.PendingSweepLeader(leadsSystem, homes, leadsHome)
 				}
-				serverOpts = append(serverOpts, server.WithPendingUserReaper(sweep, pendingLeader))
+				serverOpts = append(serverOpts, server.WithPendingUserReaper(sweep, gatePendingSweep(pendingTTLGate, pendingLeader)))
 			} else {
 				slog.Error("pending user reaper disabled", slog.Any("error", err))
 			}
@@ -4520,6 +4525,34 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		tenantSvc:         tenantSvc,
 		legacyFactorStore: runtimeStore,
 	}, nil
+}
+
+// gatePendingSweep holds the pending-user reaper behind the pending-user TTL
+// activation check (lifecycle.PendingUserTTLRequired): until ttlGate passes,
+// no tenant is swept on this node, so a clustered node never claims or deletes
+// an expired pending user before every member carries the record fields. A
+// nil ttlGate (standalone) leaves leader as is; a nil leader means this node
+// leads every group.
+func gatePendingSweep(ttlGate func() error, leader func(context.Context, string) bool) func(context.Context, string) bool {
+	if ttlGate == nil {
+		return leader
+	}
+	return func(ctx context.Context, tenantID string) bool {
+		if ttlGate() != nil {
+			return false
+		}
+		return leader == nil || leader(ctx, tenantID)
+	}
+}
+
+// daemonPendingTTLGate builds the daemon's pending-user TTL activation check
+// on host, the same check the SDK node path takes
+// (lifecycle.PendingUserTTLRequired), and the user-store option that applies
+// it. Every user store bootstrapUserRoleStores builds takes the option, and
+// the reaper waits on the check through gatePendingSweep.
+func daemonPendingTTLGate(host service.Host) (func() error, user.Option) {
+	gate := lifecycle.PendingUserTTLRequired(host)
+	return gate, user.WithPendingTTLGate(gate)
 }
 
 // bootstrapAuthEnforcement initializes the auth enforcement layer: RBAC

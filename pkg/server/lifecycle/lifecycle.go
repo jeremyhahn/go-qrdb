@@ -954,7 +954,7 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// against THIS node's auth-chain vocabulary.
 	userOpts = append(userOpts, user.WithAuthMethodVocabulary(infra.AuthMethodVocabulary))
 	// A pending-user TTL waits for every member to carry its record fields.
-	userOpts = append(userOpts, user.WithPendingTTLGate(pendingUserTTLRequired(infra.Host)))
+	userOpts = append(userOpts, user.WithPendingTTLGate(PendingUserTTLRequired(infra.Host)))
 	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}

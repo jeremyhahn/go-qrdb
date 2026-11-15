@@ -23,17 +23,17 @@ import (
 )
 
 func TestPendingUserTTLRequired_ActiveWithoutACluster(t *testing.T) {
-	if required := pendingUserTTLRequired(nil); required != nil {
+	if required := PendingUserTTLRequired(nil); required != nil {
 		t.Fatalf("pendingUserTTLRequired(nil) = %v, want nil (active)", required())
 	}
-	if required := pendingUserTTLRequired(newStandaloneHost()); required != nil {
+	if required := PendingUserTTLRequired(newStandaloneHost()); required != nil {
 		t.Fatalf("pendingUserTTLRequired(standalone) = %v, want nil (active)", required())
 	}
 }
 
 func TestPendingUserTTLRequired_RefusedOnAnUngatedCluster(t *testing.T) {
 	var notActive *feature.NotActiveError
-	if err := pendingUserTTLRequired(&membershipHost{})(); !errors.As(err, &notActive) || notActive.Feature != featuregate.PendingUserTTL {
+	if err := PendingUserTTLRequired(&membershipHost{})(); !errors.As(err, &notActive) || notActive.Feature != featuregate.PendingUserTTL {
 		t.Fatalf("required on an ungated cluster = %v, want NotActiveError(%s)", err, featuregate.PendingUserTTL)
 	}
 }
@@ -41,11 +41,11 @@ func TestPendingUserTTLRequired_RefusedOnAnUngatedCluster(t *testing.T) {
 func TestPendingUserTTLRequired_FollowsTheGate(t *testing.T) {
 	before := gatedHost{enabled: map[feature.Feature]bool{featuregate.TenantUndo: true}}
 	var notActive *feature.NotActiveError
-	if err := pendingUserTTLRequired(before)(); !errors.As(err, &notActive) || notActive.Feature != featuregate.PendingUserTTL || notActive.ShardID != 0 {
+	if err := PendingUserTTLRequired(before)(); !errors.As(err, &notActive) || notActive.Feature != featuregate.PendingUserTTL || notActive.ShardID != 0 {
 		t.Fatalf("required before activation = %v, want cluster-wide NotActiveError(%s)", err, featuregate.PendingUserTTL)
 	}
 	after := gatedHost{enabled: map[feature.Feature]bool{featuregate.PendingUserTTL: true}}
-	if err := pendingUserTTLRequired(after)(); err != nil {
+	if err := PendingUserTTLRequired(after)(); err != nil {
 		t.Fatalf("required after activation = %v, want nil", err)
 	}
 }
