@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -54,44 +55,67 @@ func distinctKeys(n int) [][]byte {
 // the commit waits about one directory sync for all of them rather than one
 // per key in a row.
 func TestCommit_RecordSyncsOverlap(t *testing.T) {
-	// The delay dominates the commit's own CPU so the bound below measures
-	// sync depth, not instrumentation: under -race with GOFIPS140 every
-	// record's temp name draws on a FIPS DRBG that sync.Pool's race-mode
-	// eviction keeps reseeding from the jitter entropy source, which at
-	// 25ms pushed a fully overlapped commit past the bound (go-qrdb#20).
-	const n, delay = 32, 100 * time.Millisecond
-	e, err := New(memdir.TempDir(t))
+	// The records' directory syncs must run concurrently. The hook counts
+	// the syncs in flight and holds each record's sync until a second one
+	// has joined it, so a commit whose record syncs overlap passes however
+	// slow the machine is, and one that syncs records one after another
+	// never reaches two in flight.
+	const n = 32
+	root := memdir.TempDir(t)
+	e, err := New(root)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = e.Close() })
 	keys := distinctKeys(n)
-	// The first commit creates the shard directories; the timed one only
-	// replaces records, so every directory sync it waits on is a record's.
+	// The first commit creates the shard directories; the observed one only
+	// replaces records, so every directory sync below the root is a record's.
 	if err := commitKeys(t, e, keys, []byte("v1")); err != nil {
 		t.Fatalf("warm-up commit: %v", err)
 	}
 
-	var syncs atomic.Int32
-	t.Cleanup(fsync.SetForTest(func(string) error {
+	var (
+		syncs, inFlight, maxInFlight atomic.Int32
+		overlapOnce                  sync.Once
+		overlapped                   = make(chan struct{})
+		serial                       atomic.Bool
+	)
+	t.Cleanup(fsync.SetForTest(func(dir string) error {
 		syncs.Add(1)
-		time.Sleep(delay)
+		// The journal publish and clear sync the root, one at a time by
+		// design; only the records' syncs are held for company.
+		if filepath.Clean(dir) == filepath.Clean(root) {
+			return nil
+		}
+		now := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			prev := maxInFlight.Load()
+			if now <= prev || maxInFlight.CompareAndSwap(prev, now) {
+				break
+			}
+		}
+		if now > 1 {
+			overlapOnce.Do(func() { close(overlapped) })
+		}
+		select {
+		case <-overlapped:
+		case <-time.After(time.Minute):
+			// Only a commit whose record syncs never overlap gets here:
+			// release it so the test fails on the assertion, not by hanging.
+			serial.Store(true)
+		}
 		return nil
 	}))
-	began := time.Now()
 	if err := commitKeys(t, e, keys, []byte("v2")); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	elapsed := time.Since(began)
 
 	if got := syncs.Load(); got < n {
 		t.Fatalf("commit issued %d directory syncs, want at least one per record (%d)", got, n)
 	}
-	// The journal publish, the records and the journal clear: three syncs
-	// deep. One record after another is n+2 deep.
-	if limit := 8 * delay; elapsed > limit {
-		t.Fatalf("a %d-key commit took %s under a %s directory sync, want under %s (serial is about %s)",
-			n, elapsed, delay, limit, time.Duration(n+2)*delay)
+	if got := maxInFlight.Load(); got < 2 || serial.Load() {
+		t.Fatalf("at most %d record directory syncs were in flight at once, want them to overlap (at least 2)", got)
 	}
 	for _, k := range keys {
 		if v, err := e.Get(k); err != nil || !bytes.Equal(v, []byte("v2")) {
