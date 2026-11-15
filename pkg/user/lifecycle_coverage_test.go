@@ -317,6 +317,188 @@ func TestRoutingUserService_SealedTenantRefusesLifecycleOps(t *testing.T) {
 	}
 }
 
+// TestRoutingUserService_UnknownIDRefusesLifecycleOps drives every routed
+// lifecycle op with an id the identity index has never seen: the owning
+// tenant lookup fails, and each op returns that error before it reaches a
+// store.
+func TestRoutingUserService_UnknownIDRefusesLifecycleOps(t *testing.T) {
+	resolver := &fakeResolver{
+		shared:  newFakeKVStore(),
+		tenants: map[string]kvstore.KVStore{"acme": newFakeKVStore()},
+		sealed:  map[string]bool{},
+	}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	const id = uint64(0xdeadbeef)
+	later := time.Now().UTC().Add(time.Hour)
+	exp := svc.(PendingExpirer)
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"GetUser", func() error { _, err := svc.GetUser(ctx, id); return err }},
+		{"AddCertBinding", func() error { _, err := svc.AddCertBinding(ctx, id, strings.Repeat("a", 64), 0); return err }},
+		{"RemoveCertBinding", func() error { _, err := svc.RemoveCertBinding(ctx, id, strings.Repeat("a", 64)); return err }},
+		{"EnableUser", func() error { return svc.EnableUser(ctx, id) }},
+		{"DisableUser", func() error { return svc.DisableUser(ctx, id) }},
+		{"ClaimExpiredPending", func() error { _, err := exp.ClaimExpiredPending(ctx, id, later); return err }},
+		{"DeleteExpiredPending", func() error { _, err := exp.DeleteExpiredPending(ctx, id, later); return err }},
+	}
+	if s, ok := svc.(interface {
+		SuspendUser(context.Context, uint64) error
+		UnsuspendUser(context.Context, uint64) error
+	}); ok {
+		cases = append(cases,
+			struct {
+				name string
+				call func() error
+			}{"SuspendUser", func() error { return s.SuspendUser(ctx, id) }},
+			struct {
+				name string
+				call func() error
+			}{"UnsuspendUser", func() error { return s.UnsuspendUser(ctx, id) }},
+		)
+	}
+	if p, ok := svc.(systemPromoter); ok {
+		cases = append(cases, struct {
+			name string
+			call func() error
+		}{"PromoteToSystemUser", func() error { _, err := p.PromoteToSystemUser(ctx, id); return err }})
+	}
+	if a, ok := svc.(interface {
+		ActivateWithCertBinding(context.Context, uint64, string, int64) (*User, error)
+	}); ok {
+		cases = append(cases, struct {
+			name string
+			call func() error
+		}{"ActivateWithCertBinding", func() error {
+			_, err := a.ActivateWithCertBinding(ctx, id, strings.Repeat("b", 64), 0)
+			return err
+		}})
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); err == nil {
+				t.Fatalf("%s on an unknown id succeeded, want the owning-tenant lookup error", tc.name)
+			}
+		})
+	}
+}
+
+// lcplainKV hides the fault store's PutIfAbsent so the store under test
+// takes its non-atomic read-then-put path.
+type lcplainKV struct{ kvstore.KVStore }
+
+// TestRestoreWinnerMarker_Branches drives restoreWinnerMarker through each
+// outcome: a primary read fault, a gone primary with and without a removed
+// marker on atomic and non-atomic stores, an undecodable primary, and a
+// primary no claim holds.
+func TestRestoreWinnerMarker_Branches(t *testing.T) {
+	const id = uint64(42)
+	removed := []byte(`{"removed":true}`)
+	boom := errors.New("boom")
+
+	newStore := func(t *testing.T, atomic bool) (*lcfaultKV, *kvUserStore) {
+		t.Helper()
+		kv := &lcfaultKV{memKVStore: newMemKVStore()}
+		var backing kvstore.KVStore = kv
+		if !atomic {
+			backing = lcplainKV{kv}
+		}
+		svc, err := NewStore(backing, newTestIDGen(t))
+		if err != nil {
+			t.Fatalf("NewStore: %v", err)
+		}
+		s, ok := svc.(*kvUserStore)
+		if !ok {
+			t.Fatalf("NewStore returned %T, want *kvUserStore", svc)
+		}
+		return kv, s
+	}
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		atomic  bool
+		removed []byte
+		setup   func(t *testing.T, kv *lcfaultKV)
+		wantErr bool
+		// wantMarker is the marker the store must hold afterwards; nil
+		// means no marker.
+		wantMarker []byte
+	}{
+		{name: "primary read fault", atomic: true, removed: removed,
+			setup: func(_ *testing.T, kv *lcfaultKV) { kv.prefix, kv.getErr = primaryKey(id), boom }, wantErr: true},
+		{name: "primary gone, nothing removed", atomic: true},
+		{name: "primary gone, atomic restore", atomic: true, removed: removed, wantMarker: removed},
+		{name: "primary gone, atomic keeps a later marker", atomic: true, removed: removed,
+			setup: func(t *testing.T, kv *lcfaultKV) {
+				if err := kv.memKVStore.Put(ctx, reapMarkerKey(id), []byte("later")); err != nil {
+					t.Fatal(err)
+				}
+			}, wantMarker: []byte("later")},
+		{name: "primary gone, plain restore", removed: removed, wantMarker: removed},
+		{name: "primary gone, plain keeps a later marker", removed: removed,
+			setup: func(t *testing.T, kv *lcfaultKV) {
+				if err := kv.memKVStore.Put(ctx, reapMarkerKey(id), []byte("later")); err != nil {
+					t.Fatal(err)
+				}
+			}, wantMarker: []byte("later")},
+		{name: "primary gone, plain marker read fault", removed: removed,
+			setup: func(_ *testing.T, kv *lcfaultKV) { kv.prefix, kv.getErr = reapMarkerKey(id), boom }, wantErr: true},
+		{name: "primary gone, plain marker write fault", removed: removed,
+			setup: func(_ *testing.T, kv *lcfaultKV) { kv.prefix, kv.putErr = reapMarkerKey(id), boom }, wantErr: true},
+		{name: "primary undecodable", atomic: true, removed: removed,
+			setup: func(t *testing.T, kv *lcfaultKV) {
+				if err := kv.memKVStore.Put(ctx, primaryKey(id), []byte("{not json")); err != nil {
+					t.Fatal(err)
+				}
+			}, wantErr: true},
+		{name: "primary unclaimed", atomic: true, removed: removed,
+			setup: func(t *testing.T, kv *lcfaultKV) {
+				raw, err := json.Marshal(&User{ID: id, Username: "kept"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := kv.memKVStore.Put(ctx, primaryKey(id), raw); err != nil {
+					t.Fatal(err)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kv, s := newStore(t, tc.atomic)
+			if tc.setup != nil {
+				tc.setup(t, kv)
+			}
+			err := s.restoreWinnerMarker(ctx, id, tc.removed)
+			if tc.wantErr {
+				if !errors.Is(err, boom) {
+					var se *StoreError
+					if !errors.As(err, &se) {
+						t.Fatalf("restoreWinnerMarker = %v, want a StoreError", err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("restoreWinnerMarker: %v", err)
+			}
+			got, err := kv.memKVStore.Get(ctx, reapMarkerKey(id))
+			if err != nil {
+				t.Fatalf("read marker: %v", err)
+			}
+			if string(got) != string(tc.wantMarker) {
+				t.Fatalf("marker = %q, want %q", got, tc.wantMarker)
+			}
+		})
+	}
+}
+
 // TestRoutingUserService_ZeroIDRoutesToCaller checks that id 0 reaches the
 // caller's own store and gets its ValidationError.
 func TestRoutingUserService_ZeroIDRoutesToCaller(t *testing.T) {
