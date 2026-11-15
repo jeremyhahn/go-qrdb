@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 )
 
@@ -104,6 +105,95 @@ func TestServeSealedWindow_ObservesUnsealTransition(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("ServeSealedWindow did not observe the unseal transition")
+	}
+}
+
+// soWriteCeremony is a ceremony core double whose HoldsSealedWindow can be
+// parked, as the real core's is while Initialize holds its lock across the
+// system SO record write, and then answers what the write left behind.
+type soWriteCeremony struct {
+	held   atomic.Bool
+	park   atomic.Pointer[pollHold]
+	polled chan struct{}
+}
+
+func (c *soWriteCeremony) EnrollmentOpen(context.Context) bool { return c.held.Load() }
+
+func (c *soWriteCeremony) HoldsSealedWindow(context.Context) bool {
+	if h := c.park.Swap(nil); h != nil {
+		close(h.parked)
+		<-h.release
+	}
+	select {
+	case c.polled <- struct{}{}:
+	default:
+	}
+	return c.held.Load()
+}
+
+// TestServeSealedWindow_HoldsTheWindowAcrossAFailedSOWrite pins go-qrdb#1579
+// Codex round 1 P1 (3): a poll that reads the barrier unsealed while the
+// ceremony's SO record write is in flight waits for that write; when it
+// fails the window stays up and admits the retried CeremonyInitialize, and
+// it closes only once the SO handoff is durable.
+func TestServeSealedWindow_HoldsTheWindowAcrossAFailedSOWrite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	probe := &fakeSealedProbe{}
+	probe.sealed.Store(true)
+	core := &soWriteCeremony{polled: make(chan struct{})}
+	core.held.Store(true)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeSealedWindow(ctx, listenerTestConfig(), probe, withSealedWindowCeremony(core))
+	}()
+	nextPoll := func(stage string) {
+		t.Helper()
+		select {
+		case <-core.polled:
+		case err := <-done:
+			t.Fatalf("%s: the sealed window closed (%v)", stage, err)
+		case <-ctx.Done():
+			t.Fatalf("%s: the poll loop never polled", stage)
+		}
+	}
+
+	// Initialize unsealed the barrier and is writing the SO record: the
+	// next poll reads the barrier unsealed and waits on the ceremony.
+	hold := &pollHold{parked: make(chan struct{}), release: make(chan struct{})}
+	core.park.Store(hold)
+	probe.sealed.Store(false)
+	select {
+	case <-hold.parked:
+	case <-ctx.Done():
+		t.Fatal("the poll never consulted the ceremony with the barrier unsealed")
+	}
+	// The write fails: the M-of-N handoff stays pending.
+	close(hold.release)
+	nextPoll("after the failed SO write")
+	nextPoll("a later poll")
+
+	listener := NewSealedWindowListenerProbe(probe, nil).(sealedWindowListenerProbe)
+	listener.ceremony = core
+	decision := sealedwindow.Decide(sealedwindow.Request{
+		Sealed: listener.IsSealed(), Listener: true, Allowlisted: true,
+		PreOperationalOnly: true, EnrollmentOpen: listener.EnrollmentOpen(ctx),
+	})
+	if decision != sealedwindow.Serve {
+		t.Fatalf("the held window refuses the retried CeremonyInitialize: %v", decision)
+	}
+
+	// The retry records the SO: the window closes.
+	core.held.Store(false)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ServeSealedWindow after the SO handoff: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("the window never closed after the SO handoff")
 	}
 }
 

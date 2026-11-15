@@ -81,8 +81,13 @@ func (e *NilSealedWindowProbeError) Error() string {
 // (pkg/api/sealedwindow), gated by the sealed-window middleware /
 // interceptors installed by withSealedWindowListener.
 //
-// The function blocks until the probe reports unsealed (operator-driven)
-// or ctx is canceled, then stops the listener cleanly. On unseal it
+// The function blocks until the window closes or ctx is canceled, then
+// stops the listener cleanly. The window closes once the probe reports
+// unsealed (operator-driven) and the ceremony core from
+// WithCeremonyService no longer holds it: an initial ceremony whose system
+// SO record is not yet durable keeps the window -- its allowlist and the
+// retried CeremonyInitialize -- open with the barrier unsealed
+// (ceremony.CeremonyService.HoldsSealedWindow). On unseal it
 // returns nil; on cancellation it returns *SealedWindowCanceledError so
 // callers can treat shutdown-during-unseal as a clean exit.
 //
@@ -93,7 +98,7 @@ func (e *NilSealedWindowProbeError) Error() string {
 // appended automatically, so it wins over any WithSealedWindowProbe in
 // opts. The listener installs no authentication middleware unless opts
 // supply one, so its allowlist is anonymous while the barrier is sealed;
-// once the barrier is unsealed every request on every transport is refused,
+// once the window closes every request on every transport is refused,
 // on the request itself, before the poll below notices and stops the
 // listener. The SQL wire protocols are not started. All in-memory ceremony state
 // (enclave-held pending shares, cache-only officer registrations,
@@ -123,11 +128,24 @@ func ServeSealedWindow(ctx context.Context, cfg *config.Config, probe SealedWind
 	ticker := time.NewTicker(sealedWindowPollInterval)
 	defer ticker.Stop()
 
+	// The window closes on the listener probe, never the bare barrier: the
+	// probe also holds it while the ceremony's system SO handoff is pending
+	// (sealedWindowListenerProbe.IsSealed), and the ceremony core answers
+	// only once an Initialize writing the SO record has finished. A window
+	// that reads sealed again once stopped -- the barrier resealed under
+	// the poll -- is served again rather than reported unsealed.
 	for {
-		if !probe.IsSealed() {
-			slog.Info("barrier unsealed; tearing down sealed-window listener")
+		if !srv.sealedListener.IsSealed() {
 			srv.Stop()
-			return nil
+			if !srv.sealedListener.IsSealed() {
+				slog.Info("barrier unsealed; tearing down sealed-window listener")
+				return nil
+			}
+			slog.Warn("sealed window reopened while tearing down; serving it again")
+			srv = New(cfg, nil, nil, serverOpts...)
+			if err := srv.Start(); err != nil {
+				return &SealedWindowStartError{Err: err}
+			}
 		}
 		select {
 		case <-ctx.Done():
