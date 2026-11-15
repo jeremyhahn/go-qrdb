@@ -15,10 +15,12 @@
 package sealtest
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -38,6 +40,7 @@ type DeviceStrategy struct {
 	aead    cipher.AEAD
 	wraps   atomic.Int64
 	unwraps atomic.Int64
+	fault   atomic.Pointer[error]
 }
 
 // NewDeviceStrategy returns a DeviceStrategy registered under id, with a fresh
@@ -83,17 +86,68 @@ func (d *DeviceStrategy) BarrierEncryptor(context.Context, []byte) (seal.Symmetr
 }
 
 // SealRootKey implements seal.SealingStrategy.
-func (d *DeviceStrategy) SealRootKey(_ context.Context, rootKey []byte, _ seal.Credentials) (*seal.SealedRootKey, error) {
+func (d *DeviceStrategy) SealRootKey(ctx context.Context, rootKey []byte, creds seal.Credentials) (*seal.SealedRootKey, error) {
 	d.wraps.Add(1)
+	pin, err := devicePIN(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
 	// #nosec G407 -- the nonce argument MUST be nil: this AEAD is cipher.NewGCMWithRandomNonce, which samples a fresh nonce inside the FIPS module on every Seal and prepends it.
-	ct := d.aead.Seal(nil, nil, rootKey, nil)
+	ct := d.aead.Seal(nil, nil, rootKey, pin)
 	return &seal.SealedRootKey{Strategy: d.id, Version: 1, Ciphertext: ct}, nil
 }
 
-// UnsealRootKey implements seal.SealingStrategy.
-func (d *DeviceStrategy) UnsealRootKey(_ context.Context, sealed *seal.SealedRootKey, _ seal.Credentials) ([]byte, error) {
+// UnsealRootKey implements seal.SealingStrategy. As the SealingStrategy
+// contract asks, an AEAD open that fails under the presented credential is a
+// refused credential, reported as seal.ErrDecryptionFailed wrapped with its
+// cause; an injected device fault (InjectFault) is returned raw, as a real
+// device's operational failure is.
+func (d *DeviceStrategy) UnsealRootKey(ctx context.Context, sealed *seal.SealedRootKey, creds seal.Credentials) ([]byte, error) {
 	d.unwraps.Add(1)
-	return d.aead.Open(nil, nil, sealed.Ciphertext, nil)
+	if fault := d.fault.Load(); fault != nil {
+		return nil, *fault
+	}
+	pin, err := devicePIN(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	rootKey, err := d.aead.Open(nil, nil, sealed.Ciphertext, pin)
+	if err != nil {
+		return nil, fmt.Errorf("sealtest device: unwrap root key: %w: %w", seal.ErrDecryptionFailed, err)
+	}
+	return rootKey, nil
+}
+
+// InjectFault makes every later UnsealRootKey fail with err, as a device that
+// is unplugged or refuses service does; nil clears the fault.
+func (d *DeviceStrategy) InjectFault(err error) {
+	if err == nil {
+		d.fault.Store(nil)
+		return
+	}
+	d.fault.Store(&err)
+}
+
+// devicePIN returns the credential the device binds a wrap to (its PIN), used
+// as the AEAD's additional data: a wrap opens only under the credential it was
+// made with. No credential binds the empty PIN.
+func devicePIN(ctx context.Context, creds seal.Credentials) ([]byte, error) {
+	if creds.Secret == nil {
+		return nil, nil
+	}
+	opened, err := creds.Secret.Open(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("sealtest device: open credential: %w", err)
+	}
+	defer func() { _ = opened.Destroy() }()
+	var pin []byte
+	if err := opened.WithBytes(func(view []byte) error {
+		pin = bytes.Clone(view)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("sealtest device: read credential: %w", err)
+	}
+	return pin, nil
 }
 
 var _ seal.SealingStrategy = (*DeviceStrategy)(nil)
