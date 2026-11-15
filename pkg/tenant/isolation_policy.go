@@ -254,7 +254,16 @@ func (s *TenantService) SetClusterIsolationPolicy(ctx context.Context, next Clus
 	if !ok {
 		return ErrTenantStoreNotAtomic
 	}
-	return setClusterIsolationPolicy(ctx, backend, next)
+	current, err := s.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if current == next {
+		return setClusterIsolationPolicy(ctx, backend, next)
+	}
+	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func() error {
+		return setClusterIsolationPolicy(ctx, backend, next)
+	})
 }
 
 // ClusterIsolationPolicy returns the cluster-wide isolation floor. The read
@@ -276,5 +285,14 @@ func (s *kvTenantService) SetClusterIsolationPolicy(ctx context.Context, next Cl
 	if !ok {
 		return ErrTenantStoreNotAtomic
 	}
-	return setClusterIsolationPolicy(ctx, backend, next)
+	current, err := s.ClusterIsolationPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if current == next {
+		return setClusterIsolationPolicy(ctx, backend, next)
+	}
+	return s.guardedFloor(ctx, s.store, next, s.ListTenants, func() error {
+		return setClusterIsolationPolicy(ctx, backend, next)
+	})
 }

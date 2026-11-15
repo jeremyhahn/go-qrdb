@@ -217,6 +217,43 @@ func (s *DatabaseService) strictIsolation(ctx context.Context, info *tenant.Tena
 	return tenant.EffectiveIsolationPolicy(floor, info.IsolationPolicy) == tenant.ClusterIsolationPolicyStrict, nil
 }
 
+// refuseNodeKeyLogUnderTightening is the create side of the handshake with
+// a tightening to strict (tenant.IsolationTighteningReader): with the new
+// database on the shared, node-keyed WAL already in the catalog, it reads
+// the tenant's policy and the tightening markers again. A tightening that
+// began before the catalog write has its marker up (or has committed the
+// strict policy), so the create is refused; one that begins after it lists
+// the new database and is refused instead.
+func (s *DatabaseService) refuseNodeKeyLogUnderTightening(ctx context.Context, tenantID, name string) error {
+	if s.tenantInfo == nil {
+		return nil
+	}
+	info, err := s.tenantInfo.GetTenant(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if info == nil || info.EffectiveIsolationType() != tenant.IsolationRaft {
+		return nil
+	}
+	strict, err := s.strictIsolation(ctx, info)
+	if err != nil {
+		return err
+	}
+	if !strict {
+		r, ok := s.tenantInfo.(tenant.IsolationTighteningReader)
+		if !ok {
+			return nil
+		}
+		if strict, err = r.IsolationTightening(ctx, tenantID); err != nil {
+			return err
+		}
+	}
+	if strict {
+		return &database.StrictTenantDedicatedWALRequiredError{Name: name, Tenant: tenantID}
+	}
+	return nil
+}
+
 // WithPlacementStore sets the replicated placement table into which a
 // dedicated-raft (IsolationRaft) database's computed Placement is persisted on
 // create and removed on drop. When nil, no placement is persisted (the
@@ -1859,6 +1896,15 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		s.rollBackCreate(rbCtx, db, err)
 		releaseReservations()
 		return nil, err
+	}
+	if cfg.Backend == database.BackendRaft && !cfg.DedicatedWAL && !volumeTenant {
+		if err := s.refuseNodeKeyLogUnderTightening(ctx, tenantID, cfg.Name); err != nil {
+			rbCtx, cancel := database.DropRollbackContext(ctx)
+			defer cancel()
+			s.rollBackCreate(rbCtx, db, err)
+			releaseReservations()
+			return nil, err
+		}
 	}
 	info := db.Info()
 

@@ -1159,6 +1159,12 @@ var tenantRules = []rule{
 	// No data probe is wired to confirm the tenant is empty: the isolation
 	// change fails closed.
 	is(tenant.ErrTenantDataUnverifiable, Unavailable),
+	// Satisfiable by moving the databases the error names onto dedicated
+	// WALs (or dropping them) before tightening to strict.
+	as(&tenant.NodeKeyLogsError{}, FailedPrecondition),
+	// No probe is wired to list the databases on the node-keyed WAL: the
+	// tightening to strict fails closed.
+	is(tenant.ErrNodeKeyLogsUnverifiable, Unavailable),
 	is(tenant.ErrTenantNotFound, NotFound),
 	as(&tenant.InvalidTenantIDError{}, InvalidArgument),
 	// A tenant ID no SPIFFE ID could carry as its trust domain.
