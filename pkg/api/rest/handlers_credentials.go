@@ -17,7 +17,6 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -510,14 +509,33 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 // (db/main travels as db%252Fmain and arrives here as db%2Fmain); this
 // undoes that inner escape. A segment that does not unescape is refused.
 func credentialNameFromSegment(segment string) (string, error) {
-	name, err := url.PathUnescape(segment)
-	if err != nil {
-		return "", &InvalidParameterError{Param: "name", Err: err}
-	}
-	if name == "" {
+	if segment == "" {
 		return "", &InvalidParameterError{Param: "name", Err: &MissingParameterError{Param: "name"}}
 	}
-	return name, nil
+	// The segment is already decoded once. A client that escapes the name
+	// with url.PathEscape alone (the encoding the route always took) sends
+	// the name itself; the Go SDK escapes "%" and "/" once more so a name
+	// with a slash keeps to one segment. Only those two inner escapes are
+	// decoded: any other "%" is part of the name, so a name encoded the
+	// old way (a%b, a%41) reaches the service unchanged.
+	var b strings.Builder
+	b.Grow(len(segment))
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == '%' && i+2 < len(segment) {
+			switch strings.ToUpper(segment[i+1 : i+3]) {
+			case "25":
+				b.WriteByte('%')
+				i += 2
+				continue
+			case "2F":
+				b.WriteByte('/')
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(segment[i])
+	}
+	return b.String(), nil
 }
 
 // ---------------------------------------------------------------------------

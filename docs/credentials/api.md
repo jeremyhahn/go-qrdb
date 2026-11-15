@@ -29,9 +29,12 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 routes and authorizes on the once-decoded path, so `{name}` must still be one
 segment after that decode: escape `%` as `%25` and `/` as `%2F`, then
 percent-encode the result as a path segment. `db/main` travels as
-`db%252Fmain` and `a%b` as `a%2525b`; the server unescapes the segment once
-more to get the name, and answers 400 when that fails. The Go SDK's REST
-transport does this for you; the other transports carry the name unchanged.
+`db%252Fmain` and `a%b` as `a%2525b`. After the decode the server turns only
+`%25` back into `%` and `%2F` back into `/`; any other `%` is part of the name,
+so a name without `/` escaped once, as the route always took it (`a%b` as
+`a%25b`), still reaches the service unchanged. A name holding the text `%25`
+or `%2F` itself must take the double escape. The Go SDK's REST transport does
+this for you; the other transports carry the name unchanged.
 
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.

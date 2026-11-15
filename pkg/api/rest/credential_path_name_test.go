@@ -19,6 +19,7 @@ package rest
 import (
 	"context"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -169,10 +170,25 @@ func TestCredentialNameWithSlashOrPercent_ReachesEveryRoute(t *testing.T) {
 
 // TestCredentialNameSegment_BadEscapeIs400 sends a segment whose inner escape
 // is malformed: the handler refuses it instead of guessing a name.
-func TestCredentialNameSegment_BadEscapeIs400(t *testing.T) {
-	srv := NewServer(&mockKVService{}, newDefaultAdminSvc(), "127.0.0.1:0", WithCredentialService(newNamedCredentialService()))
-	rec := serveRaw(srv, "GET", "/v1/credentials/a%25zz/value")
-	if rec.Code != 400 {
-		t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+// A name escaped with url.PathEscape alone, the encoding the route took
+// before the SDK's inner escape, reaches the service unchanged: a "%" that is
+// not one of the SDK's inner escapes is part of the name, not a 400.
+func TestCredentialNameSegment_OldEncodingRoundTrips(t *testing.T) {
+	svc := newNamedCredentialService()
+	srv := NewServer(&mockKVService{}, newDefaultAdminSvc(), "127.0.0.1:0", WithCredentialService(svc))
+	names := []string{"a%zz", "a%41", "100%", "plain"}
+	svc.mu.Lock()
+	for _, name := range names {
+		svc.policies[name] = credentials.RotationPolicy{}
+	}
+	svc.mu.Unlock()
+	// The double finds a policy only under the exact name, so a 200 proves
+	// the name the handler passed on.
+	for _, name := range names {
+		path := "/v1/credentials/" + url.PathEscape(name) + "/rotation-policy"
+		rec := serveRaw(srv, "GET", path)
+		if rec.Code != 200 {
+			t.Fatalf("%s: status = %d, want 200 (body %s)", path, rec.Code, rec.Body.String())
+		}
 	}
 }
