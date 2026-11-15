@@ -34,6 +34,7 @@ type faultingKVStore struct {
 	putErr    error
 	getErr    error
 	deleteErr error
+	swapErr   error
 }
 
 func (s *faultingKVStore) Put(ctx context.Context, key string, value []byte) error {
@@ -61,6 +62,9 @@ func (s *faultingKVStore) CompareAndDelete(ctx context.Context, key string, expe
 }
 
 func (s *faultingKVStore) CompareAndSwap(ctx context.Context, key string, expected, next []byte) (bool, error) {
+	if s.swapErr != nil {
+		return false, s.swapErr
+	}
 	return s.inner.(kvstore.AtomicKVStore).CompareAndSwap(ctx, key, expected, next)
 }
 
@@ -681,6 +685,152 @@ func TestAuditKVStore_PropagatesAScopeFailure(t *testing.T) {
 	}
 	if _, err := s.Delete(ctx, "acme", []byte("record")); !errors.As(err, &se) || se.Op != "scope" {
 		t.Fatalf("Delete over a nil store = %v, want *StoreError{Op: scope}", err)
+	}
+}
+
+// TestAuditKVStore_Replace drives every Replace branch: an empty read or
+// next record, a scope failure, an invalid tenant id, a non-atomic store, a
+// failing compare-and-swap, a stale read and a swap of the read record.
+func TestAuditKVStore_Replace(t *testing.T) {
+	swapErr := errors.New("swap boom")
+	tests := []struct {
+		name       string
+		store      func() kvstore.KVStore
+		tenantID   string
+		seed       []byte
+		read, next []byte
+		want       bool
+		wantKept   []byte
+		check      func(t *testing.T, err error)
+	}{
+		{
+			name:  "empty read",
+			store: func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			read:  nil, next: []byte("next"),
+			check: wantIncomplete,
+		},
+		{
+			name:  "empty next",
+			store: func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			read:  []byte("read"), next: []byte{},
+			check: wantIncomplete,
+		},
+		{
+			name:  "scope failure",
+			store: func() kvstore.KVStore { return nil },
+			read:  []byte("read"), next: []byte("next"),
+			check: func(t *testing.T, err error) {
+				var se *StoreError
+				if !errors.As(err, &se) || se.Op != "scope" {
+					t.Fatalf("Replace over a nil store = %v, want *StoreError{Op: scope}", err)
+				}
+			},
+		},
+		{
+			name:     "invalid tenant id",
+			store:    func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			tenantID: "acme/evil",
+			read:     []byte("read"), next: []byte("next"),
+			check: func(t *testing.T, err error) {
+				if err == nil {
+					t.Fatal("Replace for an invalid tenant id succeeded, want an error")
+				}
+			},
+		},
+		{
+			name:  "non-atomic store",
+			store: func() kvstore.KVStore { return nonAtomicKVStore{kvstore.NewMemoryKVStore()} },
+			read:  []byte("read"), next: []byte("next"),
+			check: func(t *testing.T, err error) {
+				var se *StoreError
+				if !errors.As(err, &se) || se.Op != "replace" || !errors.Is(err, kvstore.ErrAtomicWriteUnsupported) {
+					t.Fatalf("Replace over a non-atomic store = %v, want *StoreError{Op: replace} wrapping ErrAtomicWriteUnsupported", err)
+				}
+			},
+		},
+		{
+			name: "failing compare-and-swap",
+			store: func() kvstore.KVStore {
+				return &faultingKVStore{inner: kvstore.NewMemoryKVStore(), swapErr: swapErr}
+			},
+			read: []byte("read"), next: []byte("next"),
+			check: func(t *testing.T, err error) {
+				var se *StoreError
+				if !errors.As(err, &se) || se.Op != "replace" || !errors.Is(err, swapErr) {
+					t.Fatalf("Replace over a failing store = %v, want *StoreError{Op: replace} wrapping %v", err, swapErr)
+				}
+			},
+		},
+		{
+			name:     "stale read leaves the kept record",
+			store:    func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			seed:     []byte("kept"),
+			read:     []byte("read"),
+			next:     []byte("next"),
+			want:     false,
+			wantKept: []byte("kept"),
+		},
+		{
+			name:     "absent record is not replaced",
+			store:    func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			read:     []byte("read"),
+			next:     []byte("next"),
+			want:     false,
+			wantKept: nil,
+		},
+		{
+			name:     "matching read swaps the record",
+			store:    func() kvstore.KVStore { return kvstore.NewMemoryKVStore() },
+			seed:     []byte("read"),
+			read:     []byte("read"),
+			next:     []byte("next"),
+			want:     true,
+			wantKept: []byte("next"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			tenantID := tc.tenantID
+			if tenantID == "" {
+				tenantID = "acme"
+			}
+			s := NewAuditKVStore(tc.store())
+			if tc.seed != nil {
+				if err := s.Create(ctx, tenantID, tc.seed); err != nil {
+					t.Fatalf("Create seed: %v", err)
+				}
+			}
+			got, err := s.Replace(ctx, tenantID, tc.read, tc.next)
+			if tc.check != nil {
+				if got {
+					t.Fatalf("Replace = true alongside error %v, want false", err)
+				}
+				tc.check(t, err)
+				return
+			}
+			if err != nil {
+				t.Fatalf("Replace: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("Replace = %v, want %v", got, tc.want)
+			}
+			kept, err := s.Get(ctx, tenantID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if string(kept) != string(tc.wantKept) || (kept == nil) != (tc.wantKept == nil) {
+				t.Fatalf("kept record = %q, want %q", kept, tc.wantKept)
+			}
+		})
+	}
+}
+
+func wantIncomplete(t *testing.T, err error) {
+	t.Helper()
+	var ie *IncompleteError
+	if !errors.As(err, &ie) {
+		t.Fatalf("Replace with an empty record = %v, want *IncompleteError", err)
 	}
 }
 
