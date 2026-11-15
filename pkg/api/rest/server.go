@@ -1327,6 +1327,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
 	}
 
 	return s
@@ -1335,6 +1336,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // serverWriteTimeout is the http.Server WriteTimeout: the longest a handler
 // may take before its response can no longer be written.
 const serverWriteTimeout = 30 * time.Second
+
+// serverIdleTimeout is the http.Server IdleTimeout: how long a keep-alive
+// connection may sit idle before the server closes it. It is set
+// explicitly because net/http falls back to ReadTimeout (5 s) when it is
+// zero, and a server that closes an idle connection the client is reusing
+// at that moment fails the client's request: net/http never resends a
+// non-idempotent POST (CompareAndSwap, CompareAndDelete) that raced the
+// close. Clients keep idle connections for less than this (the Go SDK's
+// REST transport keeps them 90 s, net/http's DefaultTransport value), so
+// the client always retires an idle connection before the server does.
+const serverIdleTimeout = 120 * time.Second
 
 // Start begins listening and serving HTTP requests in the background.
 // When TLS is configured, the listener is wrapped with tls.NewListener

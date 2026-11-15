@@ -63,7 +63,8 @@ and the conformance matrix run only in the SDK's legs.
 One run of both suites took 69.9 minutes, the longest job of the full tier, and
 set the time to a green main and to every tag. The legs are the Makefile's
 `UNIT_LEGS`, the same twelve the `coverage` job's legs run, and run side by
-side on GitHub-hosted runners, each under its own 120-minute limit, with go
+side on the self-hosted `bigdisk-docker` pool (a fork's pull request: on
+GitHub-hosted runners, ruling 617), each under its own 120-minute limit, with go
 test's per-package budget 5 minutes inside the limit. On the self-hosted
 fleet the legs took 7 to 14.3 minutes (run 76127); DS-7377 plans every job on
 a 4-vCPU hosted runner at four times its fleet time, about 57 minutes for the
