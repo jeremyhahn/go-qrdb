@@ -19,6 +19,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	unixserver "github.com/jeremyhahn/go-qrdb/pkg/api/unix"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -48,5 +49,41 @@ func TestUnixRT_CreateUser_RefusesNegativePendingTTL(t *testing.T) {
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("server CreateUser called %d times for refused TTLs", n)
+	}
+}
+
+// The unix wire carries whole seconds, so a positive sub-second TTL would
+// truncate to 0 -- no expiry. It is refused before the request is sent, and a
+// whole-second TTL still reaches the server.
+func TestUnixRT_CreateUser_RefusesSubSecondPendingTTL(t *testing.T) {
+	var calls atomic.Int32
+	var gotTTL atomic.Int64
+	usvc := &mockUserSvc{createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+		calls.Add(1)
+		gotTTL.Store(int64(req.PendingTTL))
+		return &user.User{ID: 1, Username: req.Username}, nil
+	}}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	for _, ttl := range []string{"500ms", "1ns", "999ms"} {
+		_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+			WithoutEmailLoginKey: true, Username: "sub", Pending: true, PendingTTL: ttl,
+		})
+		var sub *transport.SubSecondPendingTTLError
+		if !errors.As(err, &sub) {
+			t.Fatalf("CreateUser(pending_ttl=%s) err = %v, want SubSecondPendingTTLError", ttl, err)
+		}
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("server CreateUser called %d times for refused TTLs", n)
+	}
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+		WithoutEmailLoginKey: true, Username: "whole", Pending: true, PendingTTL: "2s",
+	}); err != nil {
+		t.Fatalf("CreateUser(pending_ttl=2s): %v", err)
+	}
+	if got := time.Duration(gotTTL.Load()); got != 2*time.Second {
+		t.Fatalf("server saw pending TTL %v, want 2s", got)
 	}
 }

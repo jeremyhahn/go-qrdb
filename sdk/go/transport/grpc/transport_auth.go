@@ -76,7 +76,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
-	ttl, err := req.PendingTTLDuration()
+	ttlSeconds, err := req.PendingTTLSeconds()
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
 	}
@@ -91,7 +91,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            req.Lifecycle,
 		Pending:              req.Pending,
-		PendingTtlSeconds:    int64(ttl / time.Second),
+		PendingTtlSeconds:    ttlSeconds,
 	})
 	if err != nil {
 		return nil, mapGRPCError("CreateUser", err)

@@ -45,6 +45,25 @@ func TestCreateUserRequest_PendingTTLDuration(t *testing.T) {
 	}
 }
 
+func TestCreateUserRequest_PendingTTLSeconds(t *testing.T) {
+	for ttl, want := range map[string]int64{"": 0, "1s": 1, "90s": 90, "1500ms": 1, "1h": 3600} {
+		if got, err := (&CreateUserRequest{PendingTTL: ttl}).PendingTTLSeconds(); err != nil || got != want {
+			t.Fatalf("%q = %d, %v; want %d, nil", ttl, got, err, want)
+		}
+	}
+	for _, sub := range []string{"500ms", "1ns", "999999999ns"} {
+		got, err := (&CreateUserRequest{PendingTTL: sub}).PendingTTLSeconds()
+		var serr *SubSecondPendingTTLError
+		if !errors.As(err, &serr) || got != 0 {
+			t.Fatalf("%s = %d, %v; want 0 and SubSecondPendingTTLError", sub, got, err)
+		}
+	}
+	var nerr *NegativePendingTTLError
+	if _, err := (&CreateUserRequest{PendingTTL: "-500ms"}).PendingTTLSeconds(); !errors.As(err, &nerr) {
+		t.Fatalf("-500ms = %v, want NegativePendingTTLError", err)
+	}
+}
+
 func TestPendingFieldsJSON(t *testing.T) {
 	b, err := json.Marshal(&CreateUserRequest{Pending: true, PendingTTL: "1h"})
 	if err != nil {

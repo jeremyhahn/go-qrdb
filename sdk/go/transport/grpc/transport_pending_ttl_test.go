@@ -44,3 +44,25 @@ func TestGRPCUser_CreateUser_RefusesNegativePendingTTL(t *testing.T) {
 		})
 	}
 }
+
+// The gRPC wire carries whole seconds, so a positive sub-second TTL would
+// truncate to 0 -- no expiry. The client refuses it before sending.
+func TestGRPCUser_CreateUser_RefusesSubSecondPendingTTL(t *testing.T) {
+	addr, stop := startUserRoleCertServer(t)
+	defer stop()
+	tr, cleanup := connectUserTransport(t, addr)
+	defer cleanup()
+
+	for _, ttl := range []string{"500ms", "1ns", "999ms"} {
+		t.Run(ttl, func(t *testing.T) {
+			u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+				WithoutEmailLoginKey: true, Username: "sub", TenantID: "system",
+				Pending: true, PendingTTL: ttl,
+			})
+			var sub *transport.SubSecondPendingTTLError
+			if !errors.As(err, &sub) {
+				t.Fatalf("CreateUser(pending_ttl=%s) = %v, %v; want SubSecondPendingTTLError", ttl, u, err)
+			}
+		})
+	}
+}
