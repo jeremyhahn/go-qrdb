@@ -19,8 +19,10 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
@@ -170,5 +172,45 @@ func TestPurge_SealRefusesLaterEnrollment(t *testing.T) {
 	}
 	if err := svc.Add(ctx, 8, mtlsFactor("fresh", 8, []byte("k9"))); !errors.Is(err, ErrFactorSetSealed) {
 		t.Fatalf("first enrollment after purge = %v, want ErrFactorSetSealed", err)
+	}
+}
+
+// TestPurge_ReaperEventsCarryTheRoutedTenant purges as the pending reaper
+// does: no caller identity, a context routed to the account's tenant. Each
+// factor deletion must name that tenant, so a tenant-filtered audit query
+// finds it.
+func TestPurge_ReaperEventsCarryTheRoutedTenant(t *testing.T) {
+	h := newDeleteHarness(t)
+	purger, ok := h.svc.(UserAuthFactorPurger)
+	if !ok {
+		t.Fatal("auth factor service does not implement UserAuthFactorPurger")
+	}
+	ctx := tenant.WithTenantID(context.Background(), "acme")
+	for _, f := range []*auth.AuthFactor{
+		mtlsFactor("primary", 1, []byte("k1")),
+		fido2Factor("backup", 1, []byte("k2")),
+	} {
+		if err := h.svc.Add(ctx, f.UserID, f); err != nil {
+			t.Fatalf("Add %s: %v", f.ID, err)
+		}
+	}
+	if n, err := purger.Purge(ctx, 1); err != nil || n != 2 {
+		t.Fatalf("Purge = %d, %v; want 2, nil", n, err)
+	}
+	page, err := h.trail.Query(context.Background(), audit.Filter{TenantID: "acme"})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	deleted := map[string]bool{}
+	for _, ev := range page.Events {
+		if ev.Action == "delete" {
+			if ev.TenantID != "acme" {
+				t.Fatalf("event %+v outside the tenant filter", ev)
+			}
+			deleted[ev.Resource] = true
+		}
+	}
+	if !deleted["authfactor:primary"] || !deleted["authfactor:backup"] {
+		t.Fatalf("tenant-filtered delete events = %v, want both factors", deleted)
 	}
 }

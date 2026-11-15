@@ -1785,6 +1785,14 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		if err := s.store.Delete(ctx, reapMarkerKey(id)); err != nil {
 			return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
 		}
+		// The marker was judged stale against the record this sweep read.
+		// An overlapping sweep with a later clock may have claimed the
+		// account since and written its marker, which the delete above just
+		// erased: re-read the primary and, if it now carries a claim, write
+		// the marker back so the account is not stranded.
+		if rerr := s.restoreWinnerMarker(ctx, id); rerr != nil {
+			return nil, rerr
+		}
 		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
 	}
 	if err := s.guardBootstrapAdmin(existing, nil); err != nil {

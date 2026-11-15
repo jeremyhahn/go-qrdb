@@ -2863,6 +2863,34 @@ func TestUserCreateTool_PendingTTL(t *testing.T) {
 	}
 }
 
+// TestUserCreateTool_PendingTTLRefusesNonString refuses a pending_ttl that is
+// not a string. ParseString would read an array or object as "", creating a
+// pending account with no expiry; the tool must refuse before CreateUser.
+func TestUserCreateTool_PendingTTLRefusesNonString(t *testing.T) {
+	for name, ttl := range map[string]any{
+		"array":  []any{"15m"},
+		"object": map[string]any{"d": "15m"},
+		"number": 900,
+		"bool":   true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := &mockUserService{
+				createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+					called = true
+					return &user.User{ID: 1001}, nil
+				},
+			}
+			res, err := handleUserCreate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
+				"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": ttl,
+			}))
+			if err != nil || res == nil || !res.IsError || called {
+				t.Fatalf("pending_ttl %v: res %+v err %v, service called %v", ttl, res, err, called)
+			}
+		})
+	}
+}
+
 // A flat tool argument cannot carry nil-vs-empty the way JSON null-vs-[] does,
 // so clearing is its own flag. Without it, lifting a method restriction would be
 // unexpressible over MCP: an empty string reads as "leave alone" and the clear

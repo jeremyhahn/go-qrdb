@@ -21,6 +21,8 @@ type lcfaultKV struct {
 	putErr    error
 	deleteErr error
 	scanErr   error
+	// beforeDelete runs once, just before the first Delete under prefix.
+	beforeDelete func()
 }
 
 func (f *lcfaultKV) hit(key string) bool { return strings.HasPrefix(key, f.prefix) }
@@ -42,6 +44,10 @@ func (f *lcfaultKV) Put(ctx context.Context, key string, value []byte) error {
 func (f *lcfaultKV) Delete(ctx context.Context, key string) error {
 	if f.deleteErr != nil && f.hit(key) {
 		return f.deleteErr
+	}
+	if hook := f.beforeDelete; hook != nil && f.hit(key) {
+		f.beforeDelete = nil
+		hook()
 	}
 	return f.memKVStore.Delete(ctx, key)
 }
@@ -424,5 +430,42 @@ func TestStoreLifecycleOps_ReadFaults(t *testing.T) {
 				t.Fatalf("%s on an unreadable record succeeded, want an error", o.name)
 			}
 		})
+	}
+}
+
+// TestClaimExpiredPending_OverlappingSweepsKeepLaterClaimsMarker runs two
+// sweeps with different clocks over one account. The early sweep reads the
+// record while it is still within its TTL and drops the marker as stale;
+// before that drop lands, the later sweep claims the account. The later
+// claim's marker must survive, or the account is stranded: claimed for
+// deletion with no marker for the reaper to find.
+func TestClaimExpiredPending_OverlappingSweepsKeepLaterClaimsMarker(t *testing.T) {
+	ctx := context.Background()
+	kv, exp, svc := lcnewFaultStore(t)
+	u := createPending(t, svc, "overlap", "acme", time.Hour)
+	early := time.Now().UTC()
+	late := early.Add(2 * time.Hour)
+
+	var lateClaim *User
+	var lateErr error
+	kv.prefix = keyPrefixReap
+	kv.beforeDelete = func() { lateClaim, lateErr = exp.ClaimExpiredPending(ctx, u.ID, late) }
+
+	var notPending *AccountNotPendingError
+	if _, err := exp.ClaimExpiredPending(ctx, u.ID, early); !errors.As(err, &notPending) {
+		t.Fatalf("early sweep = %v, want AccountNotPendingError", err)
+	}
+	if lateErr != nil || !ExpiryClaimed(lateClaim) {
+		t.Fatalf("late sweep = %+v, %v; want a claimed record", lateClaim, lateErr)
+	}
+	ids, err := exp.ListExpiryClaims(ctx, "acme")
+	if err != nil || len(ids) != 1 || ids[0] != u.ID {
+		t.Fatalf("ListExpiryClaims after the overlap = %v, %v; want [%d]", ids, err, u.ID)
+	}
+	if _, err := exp.DeleteExpiredPending(ctx, u.ID, late); err != nil {
+		t.Fatalf("reap of the claimed account: %v", err)
+	}
+	if ids, err := exp.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 0 {
+		t.Fatalf("ListExpiryClaims after the reap = %v, %v; want none", ids, err)
 	}
 }

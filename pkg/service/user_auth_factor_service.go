@@ -30,6 +30,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
 // ---------------------------------------------------------------------------
@@ -996,6 +997,11 @@ func (s *userAuthFactorService) emitDeleted(ctx context.Context, f *auth.AuthFac
 	if id := auth.IdentityFromContext(ctx); id != nil {
 		actor = id.Subject
 		tenantID = id.TenantID
+	}
+	if tenantID == "" {
+		// The pending reaper purges with no caller identity; its context
+		// is routed to the account's tenant, so the event names that one.
+		tenantID = tenant.FromContext(ctx)
 	}
 	audit.EmitBestEffort(ctx, s.audit, "user_authfactor", audit.AuditEvent{
 		Actor:    actor,

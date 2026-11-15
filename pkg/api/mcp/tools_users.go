@@ -355,6 +355,14 @@ func handleUserCreate(svc user.UserServicer, factorSvc user.FactorLister, authMW
 		}
 
 		var pendingTTL time.Duration
+		// ParseString converts any value and drops the conversion error, so
+		// an array or object would read as "" and create a pending account
+		// with no expiry. Refuse anything but a string outright.
+		if raw, ok := req.GetArguments()["pending_ttl"]; ok && raw != nil {
+			if _, isString := raw.(string); !isString {
+				return mcp.NewToolResultError("pending_ttl must be a duration string such as '15m' or '24h'"), nil
+			}
+		}
 		if ttl := mcp.ParseString(req, "pending_ttl", ""); ttl != "" {
 			d, perr := time.ParseDuration(ttl)
 			if perr != nil {
