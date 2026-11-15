@@ -1912,6 +1912,16 @@ func (s *kvUserStore) dropStaleMarker(ctx context.Context, id uint64) error {
 // audit is at least once: a reap interrupted after its audit but before the
 // marker is removed is audited again when it is finished.
 func (s *kvUserStore) DeleteExpiredPending(ctx context.Context, id uint64, now time.Time) (*User, error) {
+	// Establish the durable expiry claim (ExpiryClaim plus the reap marker)
+	// BEFORE the delete mutates the account. Without it, deleteUser's
+	// markDeleting clears PendingExpiresAt and records no claim, so a delete
+	// that then fails part way leaves a deleting record PendingReapable
+	// refuses and every sweep skips. Re-claiming an already-claimed account
+	// only re-asserts its marker; a record already gone falls through to the
+	// marker path below.
+	if _, err := s.ClaimExpiredPending(ctx, id, now); err != nil {
+		return nil, err
+	}
 	u, err := s.deleteUser(ctx, id, func(u *User) error {
 		if !PendingReapable(u, now) {
 			return &AccountNotPendingError{ID: u.ID, Lifecycle: u.Lifecycle}
