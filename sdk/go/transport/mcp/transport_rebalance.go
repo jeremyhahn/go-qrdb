@@ -38,8 +38,18 @@ type mcpRebalanceMove struct {
 // rebalance tools (service.RebalancePlanResult). Durations are nanoseconds.
 type mcpRebalancePlan struct {
 	Moves             []mcpRebalanceMove
+	Skipped           []mcpRebalanceSkippedMove `json:",omitempty"`
 	EstimatedDuration time.Duration
 	CurrentImbalance  float64
+}
+
+// mcpRebalanceSkippedMove mirrors service.RebalanceSkippedMove as the MCP
+// server marshals it: the refusal's error is not on the wire, its Reason is.
+type mcpRebalanceSkippedMove struct {
+	ShardID  uint64
+	FromNode string
+	ToNode   string
+	Reason   string
 }
 
 // GetShardStats returns statistics for a single shard via the
@@ -184,10 +194,23 @@ func (m *mcpRebalancePlan) toRebalancePlan() *transport.RebalancePlan {
 			EstimatedBytes: m.Moves[i].EstimatedBytes,
 		}
 	}
+	var skipped []transport.RebalanceSkippedMove
+	if len(m.Skipped) > 0 {
+		skipped = make([]transport.RebalanceSkippedMove, len(m.Skipped))
+		for i, s := range m.Skipped {
+			skipped[i] = transport.RebalanceSkippedMove{
+				ShardID:  s.ShardID,
+				FromNode: s.FromNode,
+				ToNode:   s.ToNode,
+				Reason:   s.Reason,
+			}
+		}
+	}
 	return &transport.RebalancePlan{
 		Moves:             moves,
 		EstimatedDuration: m.EstimatedDuration,
 		CurrentImbalance:  m.CurrentImbalance,
+		Skipped:           skipped,
 	}
 }
 
@@ -206,8 +229,21 @@ func planToMCP(plan *transport.RebalancePlan) mcpRebalancePlan {
 			EstimatedBytes: plan.Moves[i].EstimatedBytes,
 		}
 	}
+	var skipped []mcpRebalanceSkippedMove
+	if len(plan.Skipped) > 0 {
+		skipped = make([]mcpRebalanceSkippedMove, len(plan.Skipped))
+		for i, s := range plan.Skipped {
+			skipped[i] = mcpRebalanceSkippedMove{
+				ShardID:  s.ShardID,
+				FromNode: s.FromNode,
+				ToNode:   s.ToNode,
+				Reason:   s.Reason,
+			}
+		}
+	}
 	return mcpRebalancePlan{
 		Moves:             moves,
+		Skipped:           skipped,
 		EstimatedDuration: plan.EstimatedDuration,
 		CurrentImbalance:  plan.CurrentImbalance,
 	}
