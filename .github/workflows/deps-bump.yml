@@ -1,10 +1,11 @@
-# deps-bump-template: v1.0.0 — the daily dependency bump PR (ruling 640).
-# v1.0.0 (2026-11-14, ruling 640, owner decision 222 (a); ruling 633 allows
-# the schedule trigger, and no host timer runs it): ci-template v1.39's
+# deps-bump-template: v1.0.0 — the dependency bump PR (ruling 640).
+# v1.0.0 (2026-11-14, ruling 640, owner decision 222 (a)): ci-template v1.39's
 # deps-check fails a library behind its latest release only when a change
 # adds or bumps it, so a lag nobody touches no longer reddens a PR. This
-# workflow carries those lags instead. Once a day, and on workflow_dispatch,
-# it runs the shared depscheck's `make deps-bump` in the toolchain image,
+# workflow carries those lags instead. On workflow_dispatch (go-qrdb allows
+# no scheduler but ci.yml's nightly, rulings 135, 216(1) and 633; dispatch
+# it by hand), it runs the shared depscheck's `make deps-bump` in the
+# toolchain image,
 # verifies with `make deps-check` (the full gate, no base) and `make build`,
 # and lands the go.mod and go.sum changes as ONE commit on the fixed branch
 # ci/deps-bump, with ONE pull request into main labelled `code-review` and
@@ -33,14 +34,11 @@
 #
 # GitHub only (the git data API calls are GitHub's). Copy to
 # .github/workflows/deps-bump.yml. The Makefile needs `deps-bump`, `deps-check`
-# and `build` (handbook templates/deps/depscheck/README.md). CUSTOMIZE: the
-# cron minute, per repository, off 03:00 (nightly), 04:00 (ci) and fuzz.yml's.
+# and `build` (handbook templates/deps/depscheck/README.md).
 
 name: Deps Bump
 
 on:
-  schedule:
-    - cron: '11 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -61,7 +59,7 @@ env:
 jobs:
   bump:
     name: Deps bump
-    if: ${{ github.server_url == 'https://github.com' && github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -120,9 +118,6 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
-
-      - name: Pull the toolchain image from the registry cache
-        run: scripts/ci-image-cache.sh pull || true
 
       - name: Build the toolchain image
         run: |
