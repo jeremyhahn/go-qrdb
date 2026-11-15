@@ -197,9 +197,9 @@ ci.yml evaluates the full-tier condition once, into its `CI_FULL_TIER`
 environment variable, which the steps it gates and `ci-gate` read; a job-level
 `if:` cannot read the environment, so each full-tier job repeats the
 expression. The nightly tier's condition is a scheduled run or a
-`workflow_dispatch`, and ci.yml carries one weekly `schedule:` (cron
-`0 4 * * 0`, early Sunday UTC, this project's night in the factory's rotation,
-#1349): `soak` loops the `clustering` integration suite, a fresh
+`workflow_dispatch`, and ci.yml carries one nightly `schedule:` (cron
+`0 4 * * *`, 04:00 UTC every night, ruling 633; host cron and timers stay
+banned): `soak` loops the `clustering` integration suite, a fresh
 stack each iteration, for 30 minutes and fails on the first red iteration.
 
 `ci-gate` is the one required check in every tier. It fails on any result
@@ -214,10 +214,14 @@ progress, so adding `ci:full` starts nothing by
 itself: it takes effect on the PR's next push, an update-branch, or a
 `workflow_dispatch`.
 
-Every job runs on a GitHub-hosted `ubuntu-latest` runner (DS-7377) but
-code review, which keeps its self-hosted review host: 4 vCPU, 16 GB of
-memory, about 14 GB of free disk and a 6-hour job limit, a fresh machine per
-job with no state from the last. Every job's limit is at most 350 minutes,
+ci.yml's jobs run on the self-hosted pools for a push to `main` and a
+same-repository pull request (CA ruling 617): a job that needs Docker on
+`bigdisk-docker`, a Docker-free job on `bigdisk`. A fork's pull request, a
+schedule and a dispatch run them, and every other workflow but code review
+(which keeps its self-hosted review host) runs, on a GitHub-hosted
+`ubuntu-latest` runner (DS-7377): 4 vCPU, 16 GB of memory, about 14 GB of
+free disk and a 6-hour job limit, a fresh machine per job with no state from
+the last. Every job's limit is at most 350 minutes,
 under the runner's 360, and is planned at four times the job's time measured
 on the self-hosted fleet (run 76127), so a leg sized for a 4-vCPU runner has
 room on a slow one; a job whose four-times estimate passed 150 minutes was
@@ -315,8 +319,8 @@ since the full tier's `make security` in `image` runs it already
 (ci-template v1.30). `make lint-sweeps`, `make vet-tags` and
 `make secure-analyzer` over every `SUPPORTED_TAG_SETS` combination, is the
 longest stage (about 45 minutes), so the `lint` job runs it on `ci.yml`'s
-weekly `schedule:` event alone, cron `0 4 * * 0` (early Sunday UTC, this
-project's night in the factory's rotation, #1349), never on a pull request, a
+nightly `schedule:` event alone, cron `0 4 * * *` (04:00 UTC every night,
+ruling 633), never on a pull request, a
 push or a dispatch (ci-template v1.30; the template's `nightly.yml` home for it
 would need a second schedule trigger, which ruling 216(1) forbids).
 Every job carries a `timeout-minutes` of at most 350, sized from four times
@@ -364,9 +368,8 @@ requests keep one group per ref (handbook `devops.md` §9), whose
 `cancel-in-progress` expression spares `main`.
 `test/buildgates/ci_tiers_test.go` holds both values.
 
-`ci.yml` runs on ci-template v1.27.0's `schedule:` trigger, here a weekly
-scheduled run (cron `0 4 * * 0`, early Sunday UTC, this project's night in the
-factory's rotation, #1349), which selects the full and nightly tiers on main, soak included.
+`ci.yml` runs on ci-template v1.27.0's `schedule:` trigger, here a nightly
+scheduled run (cron `0 4 * * *`, 04:00 UTC every night, ruling 633), which selects the full and nightly tiers on main, soak included.
 It was restored under Company Agent ruling 216(1) (Software's typed order
 DS-3913): ruling 135 makes the in-template Gitea schedule trigger the one
 scheduler, and the owner ruling of 2026-10-11 and Company Agent m433 forbid
