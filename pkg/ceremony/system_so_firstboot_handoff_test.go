@@ -59,7 +59,12 @@ func (s *mapPendingStore) Delete(_ context.Context, key string) error {
 // SO first boot publishes both and the window closes.
 func TestShamirSOWriteFault_HoldsAdminPublishAndSealedWindowUntilRetry(t *testing.T) {
 	ctx := context.Background()
-	core, retry := ceremony.ShamirSOWriteFaultForTest(t)
+	// f.failed is the core whose 2-of-3 Initialize issued a system SO and
+	// failed the SO record write after everything else committed; retry
+	// repeats that Initialize on it.
+	f := newShamirSOPersistFault(t)
+	core := f.failed
+	retry := func() (*ceremony.InitResult, error) { return core.Initialize(ctx, f.ca, f.options()) }
 	store := &mapPendingStore{m: map[string][]byte{}}
 
 	require.True(t, core.SystemSOHandoffPending(ctx), "the SO record is not durable")
