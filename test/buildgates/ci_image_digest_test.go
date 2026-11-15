@@ -103,19 +103,22 @@ type imageFamily struct {
 	ref      string
 	// lan is the producer output carrying the image's tag in the LAN CI
 	// registry (#1593), empty when the image was not pushed there.
-	lan   string
-	stage *regexp.Regexp
+	lan string
+	// lanOut is the output of the producer's push step (id lan) that
+	// carries that tag.
+	lanOut string
+	stage  *regexp.Regexp
 }
 
 var imageFamilies = map[string]imageFamily{
 	"toolchain": {
 		artifact: "toolchain-image", image: "toolchain_image", id: "toolchain_id", ref: "toolchain_ref",
-		lan:   "registry_toolchain_tag",
+		lan: "registry_toolchain_tag", lanOut: "toolchain_tag",
 		stage: regexp.MustCompile(`scripts/in-toolchain-image\.sh`),
 	},
 	"it": {
 		artifact: "it-image", image: "it_image", id: "it_id", ref: "it_ref",
-		lan:   "registry_it_tag",
+		lan: "registry_it_tag", lanOut: "it_tag",
 		stage: regexp.MustCompile(`make integration-test(-features)?\s`),
 	},
 }
@@ -139,6 +142,7 @@ const (
 
 type digestStep struct {
 	Name string            `yaml:"name"`
+	ID   string            `yaml:"id"`
 	If   string            `yaml:"if"`
 	Uses string            `yaml:"uses"`
 	Run  string            `yaml:"run"`
@@ -173,6 +177,12 @@ func digestProblems(body []byte, floor int) (problems, consumers []string) {
 	}
 	if holdsRegistryToken(wf.Env) {
 		problems = append(problems, "ci.yml's workflow env holds the registry token: every step of every event would have it")
+	}
+	for _, k := range slices.Sorted(maps.Keys(wf.Env)) {
+		if v := wf.Env[k]; lanRegistryVar.MatchString(v) || strings.Contains(v, "secrets.CI_IMAGE_REGISTRY") {
+			problems = append(problems, "ci.yml's workflow env "+k+" holds the LAN CI registry: want it in the env "+
+				"of the jobs that reach it alone, from "+lanRegistrySecret)
+		}
 	}
 	producer, ok := wf.Jobs[digestProducer]
 	if !ok {
@@ -252,6 +262,17 @@ func producerProblems(job digestJob) []string {
 	if !pushed {
 		problems = append(problems, digestProducer+" does not push with scripts/ci-image.sh push: main publishes no image")
 	}
+	if !slices.ContainsFunc(job.Steps, func(s digestStep) bool { return s.ID == lanPushID }) {
+		problems = append(problems, digestProducer+" has no step with id "+lanPushID+
+			": nothing pushes to the LAN CI registry, or its tag outputs read a step that does not exist")
+	}
+	for _, family := range slices.Sorted(maps.Keys(imageFamilies)) {
+		f := imageFamilies[family]
+		if want := "${{ steps." + lanPushID + ".outputs." + f.lanOut + " }}"; job.Outputs[f.lan] != want {
+			problems = append(problems, digestProducer+"'s output "+f.lan+" is "+strconv.Quote(job.Outputs[f.lan])+
+				"; want "+want+": its consumers would never pull the "+family+" image")
+		}
+	}
 	for _, family := range slices.Sorted(maps.Keys(imageFamilies)) {
 		f := imageFamilies[family]
 		for _, out := range []string{f.image, f.id, f.ref} {
@@ -280,8 +301,9 @@ func registryProblems(name string, job digestJob) []string {
 	if holdsRegistryToken(job.Env) {
 		problems = append(problems, name+"'s job env holds the registry token: every step of every event would have it")
 	}
+	problems = append(problems, lanLeakProblems(name, job)...)
 	for _, s := range job.Steps {
-		if lan, ok := lanRegistryProblems(name, s); ok {
+		if lan, ok := lanRegistryProblems(name, job, s); ok {
 			problems = append(problems, lan...)
 			continue
 		}
@@ -301,76 +323,210 @@ func registryProblems(name string, job digestJob) []string {
 }
 
 // The LAN CI registry hand-off (#1593, rulings 682/687). On a self-hosted
-// runner with vars.CI_IMAGE_REGISTRY set, the producer pushes each image
-// there, credential-free, and a consumer pulls it, checks it against the
-// producer's image ID and falls back to the artifact when the pull or the
-// check fails. Every event therefore still runs the image this commit built,
-// which is what the GHCR rules above guard; the address is masked and never
-// written down.
+// runner with the repository secret CI_IMAGE_REGISTRY set, the producer pushes
+// each image there, credential-free, and a consumer pulls it, checks it
+// against the producer's image ID and falls back to the artifact when the
+// pull or the check fails. Every event therefore still runs the image this
+// commit built, which is what the GHCR rules above guard. The address is a
+// secret, which the runner masks in every log line; a repository variable is
+// not masked, and a run: script that interpolates it with ${{ }} is printed
+// expanded, so the address reaches a step only through the job's env
+// (CI_REGISTRY, which the steps' if: conditions read) and a script only as
+// "$CI_REGISTRY". The address is never written down.
 const (
-	lanRegistryVar  = "${{ vars.CI_IMAGE_REGISTRY }}"
-	lanRegistryCond = "vars.CI_IMAGE_REGISTRY != ''"
-	lanSelfHosted   = "runner.environment != 'github-hosted'"
-	lanMaskStepName = "Mask the LAN CI registry"
-	lanMaskRun      = `echo "::add-mask::${{ vars.CI_IMAGE_REGISTRY }}"`
-	lanPullRun      = `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+	lanRegistryEnv    = "CI_REGISTRY"
+	lanRegistrySecret = "${{ secrets.CI_IMAGE_REGISTRY }}"
+	lanRegistryCond   = "env.CI_REGISTRY != ''"
+	lanSelfHosted     = "runner.environment != 'github-hosted'"
+	lanPushID         = "lan"
+	lanPushTag        = "${{ github.run_id }}-${{ github.run_attempt }}"
+	// lanPushRun pushes each family and records its tag output on success
+	// alone; a refused push is a warning, so its consumers take the artifact.
+	lanPushRun = `lan_push() {
+  ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
+  if docker tag "$1" "$ref" && docker push -q "$ref" >/dev/null; then
+    echo "$3=$TAG" >> "$GITHUB_OUTPUT"
+  else
+    echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
+  fi
+  docker rmi "$ref" >/dev/null 2>&1 || true
+}
+lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
+if [ -n "$IT_IMAGE" ]; then
+  lan_push "$IT_IMAGE" it-image it_tag
+fi`
+	lanPullRun = `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
    [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
   echo "pulled=true" >> "$GITHUB_OUTPUT"
 else
   echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
 fi
 docker rmi "$REF" >/dev/null 2>&1 || true`
+	// lanLoadGuard skips the artifact load when the pull took the image.
+	lanLoadGuard = `[ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/`
 )
 
 // lanLogin is a step reaching for a credential: the LAN CI registry takes none.
 var lanLogin = regexp.MustCompile(`docker login|scripts/ci-image\.sh push|docker/login-action`)
 
-// lanRegistryProblems checks a step that names the LAN CI registry. ok is
-// false for any other step, which the GHCR rules check instead.
-func lanRegistryProblems(name string, s digestStep) (problems []string, ok bool) {
+// lanRegistryVar is the registry read from a repository variable, which the
+// runner does not mask.
+var lanRegistryVar = regexp.MustCompile(`\bvars\.CI_IMAGE_REGISTRY\b`)
+
+// lanInterpolated is the registry interpolated with ${{ }}: in a run: script
+// the Run log prints it expanded.
+var lanInterpolated = regexp.MustCompile(`\$\{\{[^}]*\b(secrets\.CI_IMAGE_REGISTRY|vars\.CI_IMAGE_REGISTRY|env\.CI_REGISTRY)\b`)
+
+// lanPullRunFor is the canonical pull step script of family f.
+func lanPullRunFor(f imageFamily) string {
+	return `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n" + lanPullRun
+}
+
+// producerOut is the expression a consumer reads the producer's output o by.
+func producerOut(o string) string {
+	return "${{ needs." + digestProducer + ".outputs." + o + " }}"
+}
+
+// lanPullFamily returns the family whose registry tag output the step binds
+// to TAG, or "".
+func lanPullFamily(s digestStep) string {
+	for family, f := range imageFamilies {
+		if s.Env["TAG"] == producerOut(f.lan) {
+			return family
+		}
+	}
+	return ""
+}
+
+// lanLeakProblems names every place job lets the registry address reach a
+// log: a value read from the unmasked variable, a run: script interpolating
+// it, or a job output carrying it.
+func lanLeakProblems(name string, job digestJob) []string {
+	var problems []string
+	viaVar := func(where, v string) {
+		if lanRegistryVar.MatchString(v) {
+			problems = append(problems, where+" reads vars.CI_IMAGE_REGISTRY: a repository variable is not masked; "+
+				"want "+lanRegistrySecret+" in the job's env")
+		}
+	}
+	for _, k := range slices.Sorted(maps.Keys(job.Env)) {
+		viaVar(name+"'s job env "+k, job.Env[k])
+	}
+	for _, k := range slices.Sorted(maps.Keys(job.Outputs)) {
+		if v := job.Outputs[k]; strings.Contains(v, "CI_IMAGE_REGISTRY") || strings.Contains(v, lanRegistryEnv) {
+			problems = append(problems, name+"'s output "+k+" names the registry: a masked value crosses no job")
+		}
+	}
+	for _, s := range job.Steps {
+		where := name + "'s step " + strconv.Quote(s.Name)
+		if m := lanInterpolated.FindString(s.Run); m != "" {
+			problems = append(problems, where+" interpolates the registry with "+strconv.Quote(m)+
+				" in its run: script, which the Run log prints expanded; want \"$"+lanRegistryEnv+"\"")
+		}
+		viaVar(where+"'s if:", s.If)
+		viaVar(where+"'s run:", s.Run)
+		for _, k := range slices.Sorted(maps.Keys(s.Env)) {
+			viaVar(where+"'s env "+k, s.Env[k])
+		}
+		for _, k := range slices.Sorted(maps.Keys(s.With)) {
+			viaVar(where+"'s with "+k, s.With[k])
+		}
+	}
+	return problems
+}
+
+// lanRegistryProblems checks a step that reaches the LAN CI registry: the
+// producer's push (id lan) or a consumer's pull (a run naming $CI_REGISTRY).
+// ok is false for any other step, which the GHCR rules check instead.
+func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []string, ok bool) {
+	isPush := name == digestProducer && s.ID == lanPushID
+	if !isPush && !strings.Contains(s.Run, "$"+lanRegistryEnv) {
+		return nil, false
+	}
 	where := name + "'s step " + strconv.Quote(s.Name)
 	if holdsRegistryToken(s.Env) || lanLogin.MatchString(s.Run) || lanLogin.MatchString(s.Uses) {
 		problems = append(problems, where+" takes a credential to the LAN CI registry, which needs none")
 	}
+	if v := job.Env[lanRegistryEnv]; v != lanRegistrySecret {
+		problems = append(problems, name+" reaches the LAN CI registry with job env "+lanRegistryEnv+" "+strconv.Quote(v)+
+			"; want "+lanRegistrySecret+": a secret is masked in every log line, and the steps' if: reads the job's env")
+	}
 	if !condHasTerm(s.If, lanRegistryCond) {
 		problems = append(problems, where+" reaches the LAN CI registry under if: "+strconv.Quote(s.If)+
-			"; want "+lanRegistryCond+" among its && terms: an unset variable keeps the artifact path alone")
+			"; want "+lanRegistryCond+" among its && terms: an unset secret keeps the artifact path alone")
 	}
-	if name == digestProducer {
-		if s.Env["REGISTRY"] != lanRegistryVar {
-			return nil, false
-		}
+	if isPush {
 		if !condHasTerm(s.If, lanSelfHosted) {
 			problems = append(problems, where+" pushes to the LAN CI registry without "+lanSelfHosted+
 				": a GitHub-hosted runner cannot reach it")
 		}
+		if strings.TrimSpace(s.Run) != lanPushRun {
+			problems = append(problems, where+" runs "+strconv.Quote(firstLine(s.Run))+"; want the canonical push, "+
+				"which records each family's tag output on success alone and warns, never fails, on a refused push")
+		}
+		if s.Env["TAG"] != lanPushTag {
+			problems = append(problems, where+" pushes with TAG "+strconv.Quote(s.Env["TAG"])+"; want "+lanPushTag)
+		}
 		return problems, true
 	}
-	if !strings.HasPrefix(s.Env["REF"], lanRegistryVar+"/") {
-		return nil, false
+	if name == digestProducer {
+		return append(problems, where+" reaches the LAN CI registry outside the push step (id "+lanPushID+")"), true
 	}
-	if strings.TrimSpace(s.Run) != lanPullRun {
+	family := lanPullFamily(s)
+	if family == "" {
+		return append(problems, where+" pulls with TAG "+strconv.Quote(s.Env["TAG"])+
+			"; want the producer's registry_*_tag output"), true
+	}
+	f := imageFamilies[family]
+	if s.ID != "pull_"+family {
+		problems = append(problems, where+" has id "+strconv.Quote(s.ID)+"; want pull_"+family+
+			", the id its download and load read")
+	}
+	if term := producerOutTerm(f.lan); !condHasTerm(s.If, term) {
+		problems = append(problems, where+" pulls under if: "+strconv.Quote(s.If)+"; want "+term+
+			" among its && terms: an image the producer did not push cannot be pulled")
+	}
+	if strings.TrimSpace(s.Run) != lanPullRunFor(f) {
 		problems = append(problems, where+" runs "+strconv.Quote(firstLine(s.Run))+
 			"; want the canonical pull, which checks the image against "+digestProducer+"'s ID and falls back to the artifact")
 	}
-	matched := false
-	for _, f := range imageFamilies {
-		out := func(o string) string { return "${{ needs." + digestProducer + ".outputs." + o + " }}" }
-		if s.Env["REF"] != lanRegistryVar+"/go-qrdb/"+f.artifact+":"+out(f.lan) {
-			continue
-		}
-		matched = true
-		if s.Env["IMAGE"] != out(f.image) || s.Env["ID"] != out(f.id) {
-			problems = append(problems, where+" pulls "+f.artifact+" with IMAGE "+strconv.Quote(s.Env["IMAGE"])+
-				" and ID "+strconv.Quote(s.Env["ID"])+"; want "+out(f.image)+" and "+out(f.id)+
-				": the pull must prove it took the image "+digestProducer+" built")
-		}
-	}
-	if !matched {
-		problems = append(problems, where+" pulls "+strconv.Quote(s.Env["REF"])+
-			"; want "+lanRegistryVar+"/go-qrdb/<artifact>:<the producer's registry_*_tag output>")
+	if s.Env["IMAGE"] != producerOut(f.image) || s.Env["ID"] != producerOut(f.id) {
+		problems = append(problems, where+" pulls "+f.artifact+" with IMAGE "+strconv.Quote(s.Env["IMAGE"])+
+			" and ID "+strconv.Quote(s.Env["ID"])+"; want "+producerOut(f.image)+" and "+producerOut(f.id)+
+			": the pull must prove it took the image "+digestProducer+" built")
 	}
 	return problems, true
+}
+
+// producerOutTerm is the condition that the producer's output o is set.
+func producerOutTerm(o string) string {
+	return "needs." + digestProducer + ".outputs." + o + " != ''"
+}
+
+// lanDownloadProblems checks the artifact download s of a family job pulls
+// with the step pull: it must run exactly when the pull did not succeed, so
+// its if: requires the pull's output not true and narrows by nothing the
+// pull's own if: does not also require.
+func lanDownloadProblems(name string, s, pull digestStep, f imageFamily) []string {
+	where := name + "'s download of " + strconv.Quote(f.artifact)
+	want := "steps." + pull.ID + ".outputs.pulled != 'true'"
+	terms, ok := condTerms(s.If)
+	if !ok || !slices.Contains(terms, want) {
+		return []string{where + " runs under if: " + strconv.Quote(s.If) + "; want " + want +
+			" among its && terms: the artifact is the fallback for exactly a pull that did not succeed"}
+	}
+	pullTerms, _ := condTerms(pull.If)
+	var problems []string
+	for _, t := range terms {
+		if t == want {
+			continue
+		}
+		if t == lanRegistryCond || t == producerOutTerm(f.lan) || !slices.Contains(pullTerms, t) {
+			problems = append(problems, where+" also requires "+strconv.Quote(t)+
+				", which a skipped or failed pull does not imply: the job would load no image")
+		}
+	}
+	return problems
 }
 
 // familyOf returns the image family whose output out is, and whether out is
@@ -439,9 +595,17 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 	for family := range stage {
 		families[family] = true
 	}
+	pulls := map[string]digestStep{}
+	for _, s := range job.Steps {
+		if family := lanPullFamily(s); family != "" && strings.Contains(s.Run, "$"+lanRegistryEnv) {
+			pulls[family] = s
+		}
+	}
 	downloaded, loaded := map[string]int{}, map[string]int{}
 	for i, s := range job.Steps {
-		if imageRebuild.MatchString(s.Run) && strings.TrimSpace(s.Run) != lanPullRun {
+		family := lanPullFamily(s)
+		isPull := family != "" && strings.TrimSpace(s.Run) == lanPullRunFor(imageFamilies[family])
+		if imageRebuild.MatchString(s.Run) && !isPull {
 			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" builds or probes for an image (\""+
 				firstLine(s.Run)+"\"): a consumer loads the image "+digestProducer+" built, never its own")
 		}
@@ -453,9 +617,14 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 			if _, seen := downloaded[art]; !seen {
 				downloaded[art] = i
 			}
+			for fam, f := range imageFamilies {
+				if pull, ok := pulls[fam]; ok && f.artifact == art {
+					problems = append(problems, lanDownloadProblems(name, s, pull, f)...)
+				}
+			}
 		}
 		for _, m := range imageLoad.FindAllStringSubmatch(s.Run, -1) {
-			problems = append(problems, loadProblems(name, job, s, i, m, downloaded, loaded)...)
+			problems = append(problems, loadProblems(name, job, s, i, m, downloaded, loaded, pulls)...)
 		}
 		if imageFamilies["it"].stage.MatchString(s.Run) && !strings.Contains(s.Run, "IT_PREBUILT=1") {
 			problems = append(problems, name+"'s step "+strconv.Quote(s.Name)+" runs the integration stage without "+
@@ -479,7 +648,7 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 // match m at step i: both variables bound to one family's outputs, the
 // directory that family's artifact, downloaded in an earlier step.
 func loadProblems(name string, job digestJob, s digestStep, i int, m []string,
-	downloaded, loaded map[string]int) []string {
+	downloaded, loaded map[string]int, pulls map[string]digestStep) []string {
 	where := name + "'s step " + strconv.Quote(s.Name)
 	imageOut, idOut := boundOutput(job, s, m[2]), boundOutput(job, s, m[3])
 	family, kind, ok := familyOf(imageOut)
@@ -500,6 +669,17 @@ func loadProblems(name string, job digestJob, s digestStep, i int, m []string,
 		problems = append(problems, where+" loads the "+family+" image before any download of the artifact "+
 			strconv.Quote(f.artifact))
 	}
+	if pull, ok := pulls[family]; ok {
+		want := "${{ steps." + pull.ID + ".outputs.pulled }}"
+		if v, bound := s.Env["PULLED"]; !bound || strings.TrimSpace(v) != want {
+			problems = append(problems, where+" binds PULLED to "+strconv.Quote(v)+"; want "+want+
+				": after a pull the artifact is not downloaded, and the load would fail")
+		}
+		if !strings.Contains(s.Run, lanLoadGuard+f.artifact+`"`) {
+			problems = append(problems, where+" loads the "+family+" artifact without `"+lanLoadGuard+f.artifact+
+				"\"`: after a pull it would load an artifact never downloaded")
+		}
+	}
 	if _, seen := loaded[family]; !seen && len(problems) == 0 {
 		loaded[family] = i
 	}
@@ -510,17 +690,26 @@ func loadProblems(name string, job digestJob, s digestStep, i int, m []string,
 // is the whole condition or one operand of a top-level &&, and nothing in it
 // can turn the condition true without term.
 func condHasTerm(cond, term string) bool {
+	terms, ok := condTerms(cond)
+	return ok && slices.Contains(terms, term)
+}
+
+// condTerms splits the step condition cond into its top-level && operands.
+// ok is false when anything in it (|| or a negated group) could turn it true
+// without one of them.
+func condTerms(cond string) (terms []string, ok bool) {
 	c := strings.TrimSpace(cond)
 	c = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(c, "${{"), "}}"))
 	if strings.Contains(c, "||") || strings.Contains(c, "!(") {
-		return false
+		return nil, false
+	}
+	if c == "" {
+		return nil, true
 	}
 	for _, part := range strings.Split(c, "&&") {
-		if strings.TrimSpace(part) == term {
-			return true
-		}
+		terms = append(terms, strings.TrimSpace(part))
 	}
-	return false
+	return terms, true
 }
 
 // holdsRegistryToken reports whether env carries the registry credential.
@@ -606,6 +795,9 @@ jobs:
       toolchain_ref: ${{ steps.push.outputs.toolchain_ref }}
       it_ref: ${{ steps.push.outputs.it_ref }}
       registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}
+      registry_it_tag: ${{ steps.lan.outputs.it_tag }}
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - name: Build the images
         id: build
@@ -637,22 +829,40 @@ jobs:
         run: toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
       - name: Push to the LAN CI registry
         id: lan
-        if: ${{ vars.CI_IMAGE_REGISTRY != '' && runner.environment != 'github-hosted' }}
+        if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
         env:
-          REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}
-        run: docker push -q "$REGISTRY/go-qrdb/toolchain-image:$TAG"
+          TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+          TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
+          IT_IMAGE: ${{ steps.build.outputs.it_image }}
+        run: |
+          lan_push() {
+            ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
+            if docker tag "$1" "$ref" && docker push -q "$ref" >/dev/null; then
+              echo "$3=$TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
+            fi
+            docker rmi "$ref" >/dev/null 2>&1 || true
+          }
+          lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
+          if [ -n "$IT_IMAGE" ]; then
+            lan_push "$IT_IMAGE" it-image it_tag
+          fi
   lint:
     runs-on: ubuntu-latest
     needs: [preflight, docker-build]
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
       - name: Pull the toolchain image from the LAN CI registry
         id: pull_toolchain
-        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}
+        if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}
         env:
-          REF: ${{ vars.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}
+          TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
              [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -661,6 +871,7 @@ jobs:
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the toolchain image
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -669,14 +880,36 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
-        run: scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
+          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
+        run: |
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
       - name: make lint
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make lint
   legs:
     runs-on: ubuntu-latest
     needs: [docker-build]
+    env:
+      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
+      FULL: 'true'
     steps:
+      - name: Pull the integration image from the LAN CI registry
+        id: pull_it
+        if: ${{ env.FULL == 'true' && needs.docker-build.outputs.registry_it_tag != '' && env.CI_REGISTRY != '' }}
+        env:
+          TAG: ${{ needs.docker-build.outputs.registry_it_tag }}
+          IMAGE: ${{ needs.docker-build.outputs.it_image }}
+          ID: ${{ needs.docker-build.outputs.it_id }}
+        run: |
+          REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
+          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
+             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+            echo "pulled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
+          fi
+          docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the integration image
+        if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -685,7 +918,9 @@ jobs:
         env:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
-        run: scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          PULLED: ${{ steps.pull_it.outputs.pulled }}
+        run: |
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
       - name: Integration tests
         run: make integration-test IT_FEATURE=audit IT_PREBUILT=1
   soak:
@@ -725,12 +960,12 @@ func TestCIImageDigest_FixtureIsValid(t *testing.T) {
 
 func TestCIImageDigest_CanFail(t *testing.T) {
 	const (
-		lintLoad = `run: scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"`
+		lintLoad = `scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"`
 		legsTest = "        run: make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"
 	)
 	for _, tc := range []struct{ name, old, new string }{
 		{name: "the probe-and-rebuild form", old: lintLoad,
-			new: `run: docker image inspect "$IMAGE" || make docker-build-toolchain`},
+			new: `docker image inspect "$IMAGE" || make docker-build-toolchain`},
 		{name: "a rebuild beside the load", old: legsTest,
 			new: "        run: make docker-build-it && make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"},
 		{name: "a buildx build", old: legsTest,
@@ -752,7 +987,7 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "the other family's ID", old: "          ID: ${{ needs.docker-build.outputs.toolchain_id }}",
 			new: "          ID: ${{ needs.docker-build.outputs.it_id }}"},
 		{name: "the other family's directory", old: lintLoad,
-			new: `run: scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"`},
+			new: `scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"`},
 		{name: "a download to another directory", old: "          path: ${{ runner.temp }}/toolchain-image\n",
 			new: "          path: ${{ runner.temp }}/elsewhere\n"},
 		{name: "the wrong artifact downloaded", old: "          name: toolchain-image\n          path: ${{ runner.temp }}/toolchain-image\n",
@@ -787,19 +1022,71 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "no producer", old: "  docker-build:\n", new: "  docker-build-old:\n"},
 		{name: "CI_PUBLISH on a pull request", old: "  CI_PUBLISH: ${{ github.event_name == 'push'", new: "  CI_PUBLISH: ${{ github.event_name == 'pull_request'"},
 		{name: "a LAN pull without the ID check", old: `[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]`, new: `true`},
-		{name: "a LAN pull without the variable check",
-			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && vars.CI_IMAGE_REGISTRY != '' }}",
+		{name: "a LAN pull without the registry check",
+			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
 			new: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' }}"},
-		{name: "a LAN pull of the other family's tag", old: "toolchain-image:${{ needs.docker-build.outputs.registry_toolchain_tag }}",
-			new: "toolchain-image:${{ needs.docker-build.outputs.registry_it_tag }}"},
+		{name: "a LAN pull without the tag check",
+			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
+			new: "if: ${{ env.CI_REGISTRY != '' }}"},
+		{name: "a LAN pull of the other family's tag", old: "TAG: ${{ needs.docker-build.outputs.registry_toolchain_tag }}",
+			new: "TAG: ${{ needs.docker-build.outputs.registry_it_tag }}"},
 		{name: "a LAN pull checked against the other family's ID",
 			old: "toolchain_tag }}\n          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}\n          ID: ${{ needs.docker-build.outputs.toolchain_id }}",
 			new: "toolchain_tag }}\n          IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}\n          ID: ${{ needs.docker-build.outputs.it_id }}"},
-		{name: "a LAN push on a GitHub-hosted runner", old: "vars.CI_IMAGE_REGISTRY != '' && runner.environment != 'github-hosted'",
-			new: "vars.CI_IMAGE_REGISTRY != ''"},
-		{name: "a LAN push with the token", old: "          REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n",
-			new: "          REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"},
+		{name: "a LAN pull under another id", old: "        id: pull_toolchain\n", new: "        id: pull\n"},
+		{name: "a LAN push on a GitHub-hosted runner", old: "env.CI_REGISTRY != '' && runner.environment != 'github-hosted'",
+			new: "env.CI_REGISTRY != ''"},
+		{name: "a LAN push with the token", old: "          TAG: ${{ github.run_id }}-${{ github.run_attempt }}\n",
+			new: "          TAG: ${{ github.run_id }}-${{ github.run_attempt }}\n          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"},
 		{name: "the workflow env holds the token", old: "env:\n  CI_PUBLISH:", new: "env:\n  GH: ${{ secrets.GITHUB_TOKEN }}\n  CI_PUBLISH:"},
+		// #1595 Codex round 1: the producer's tag outputs and push step.
+		{name: "no toolchain tag output", old: "      registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}\n", new: ""},
+		{name: "no integration tag output", old: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n", new: ""},
+		{name: "a tag output from another step", old: "registry_it_tag: ${{ steps.lan.outputs.it_tag }}",
+			new: "registry_it_tag: ${{ steps.push.outputs.it_tag }}"},
+		{name: "a LAN push without its id", old: "        id: lan\n", new: ""},
+		{name: "a LAN push that fails the job",
+			old: `echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"`,
+			new: `exit 1`},
+		{name: "a LAN push that records a tag it did not push", old: `    echo "$3=$TAG" >> "$GITHUB_OUTPUT"
+            else`, new: `    :
+            else
+              echo "$3=$TAG" >> "$GITHUB_OUTPUT"`},
+		// The fallback: download exactly when the pull did not succeed.
+		{name: "a download only after a successful pull", old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}",
+			new: "if: ${{ steps.pull_toolchain.outputs.pulled == 'true' }}"},
+		{name: "a download beside a pull with no condition",
+			old: "        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n", new: ""},
+		{name: "a download gated on the registry",
+			old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}",
+			new: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && env.CI_REGISTRY != '' }}"},
+		{name: "a download widened past the pull", old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}",
+			new: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' || always() }}"},
+		{name: "an integration download without the fallback term",
+			old: "if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' }}",
+			new: "if: ${{ env.FULL == 'true' }}"},
+		{name: "no PULLED binding", old: "          PULLED: ${{ steps.pull_toolchain.outputs.pulled }}\n", new: ""},
+		{name: "no integration PULLED binding", old: "          PULLED: ${{ steps.pull_it.outputs.pulled }}\n", new: ""},
+		{name: "PULLED bound to the other pull", old: "PULLED: ${{ steps.pull_toolchain.outputs.pulled }}",
+			new: "PULLED: ${{ steps.pull_it.outputs.pulled }}"},
+		{name: "a load without the PULLED guard", old: `[ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image"`,
+			new: `scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image"`},
+		// Codex round 1 P1: the address never reaches a log.
+		{name: "a pull run: interpolating the registry secret", old: `REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"`,
+			new: `REF="${{ secrets.CI_IMAGE_REGISTRY }}/go-qrdb/toolchain-image:$TAG"`},
+		{name: "a push run: interpolating the registry env", old: `ref="$CI_REGISTRY/go-qrdb/$2:$TAG"`,
+			new: `ref="${{ env.CI_REGISTRY }}/go-qrdb/$2:$TAG"`},
+		{name: "a run: masking the registry variable", old: "      - name: make lint\n",
+			new: "      - name: Mask\n        run: echo \"::add-mask::${{ vars.CI_IMAGE_REGISTRY }}\"\n      - name: make lint\n"},
+		{name: "the registry from a variable", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
+			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n"},
+		{name: "a pull job without the registry env", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
+			new: "    needs: [preflight, docker-build]\n"},
+		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Build the images\n",
+			new: "    steps:\n      - name: Build the images\n"},
+		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
+		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n",
+			new: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.Contains(digestFixture, tc.old) {

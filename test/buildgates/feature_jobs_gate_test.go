@@ -215,10 +215,9 @@ func featureJobProblems(body []byte, want []string) []string {
 		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
-		// The LAN CI registry's mask and pull (#1593) lead the load in their
-		// exact shapes alone; ci_image_digest_test.go checks the pull's binding.
-		run := strings.TrimSpace(s.Run)
-		if len(runs) == 0 && ((s.Name == lanMaskStepName && run == lanMaskRun) || run == lanPullRun) {
+		// The LAN CI registry's pull (#1593) leads the load in its exact
+		// shape alone; ci_image_digest_test.go checks the pull's binding.
+		if len(runs) == 0 && strings.TrimSpace(s.Run) == lanPullRunFor(imageFamilies["it"]) {
 			continue
 		}
 		if strings.HasPrefix(s.Uses, downloadArtifactAction) && len(runs) == 0 {
