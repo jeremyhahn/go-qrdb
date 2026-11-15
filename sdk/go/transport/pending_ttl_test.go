@@ -46,16 +46,16 @@ func TestCreateUserRequest_PendingTTLDuration(t *testing.T) {
 }
 
 func TestCreateUserRequest_PendingTTLSeconds(t *testing.T) {
-	for ttl, want := range map[string]int64{"": 0, "1s": 1, "90s": 90, "1500ms": 1, "1h": 3600} {
+	for ttl, want := range map[string]int64{"": 0, "1s": 1, "90s": 90, "1h": 3600, "2000ms": 2} {
 		if got, err := (&CreateUserRequest{PendingTTL: ttl}).PendingTTLSeconds(); err != nil || got != want {
 			t.Fatalf("%q = %d, %v; want %d, nil", ttl, got, err, want)
 		}
 	}
-	for _, sub := range []string{"500ms", "1ns", "999999999ns"} {
+	for _, sub := range []string{"500ms", "1500ms", "1999ms", "1ns", "999999999ns", "1h0m0.5s"} {
 		got, err := (&CreateUserRequest{PendingTTL: sub}).PendingTTLSeconds()
-		var serr *SubSecondPendingTTLError
+		var serr *FractionalPendingTTLError
 		if !errors.As(err, &serr) || got != 0 {
-			t.Fatalf("%s = %d, %v; want 0 and SubSecondPendingTTLError", sub, got, err)
+			t.Fatalf("%s = %d, %v; want 0 and FractionalPendingTTLError", sub, got, err)
 		}
 	}
 	var nerr *NegativePendingTTLError

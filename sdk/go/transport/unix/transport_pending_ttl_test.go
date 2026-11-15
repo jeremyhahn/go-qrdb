@@ -52,10 +52,11 @@ func TestUnixRT_CreateUser_RefusesNegativePendingTTL(t *testing.T) {
 	}
 }
 
-// The unix wire carries whole seconds, so a positive sub-second TTL would
-// truncate to 0 -- no expiry. It is refused before the request is sent, and a
-// whole-second TTL still reaches the server.
-func TestUnixRT_CreateUser_RefusesSubSecondPendingTTL(t *testing.T) {
+// The unix wire carries whole seconds, so a positive TTL that is not a whole
+// number of seconds would truncate: early expiry, or none under one second. It
+// is refused before the request is sent, and a whole-second TTL still reaches
+// the server.
+func TestUnixRT_CreateUser_RefusesFractionalPendingTTL(t *testing.T) {
 	var calls atomic.Int32
 	var gotTTL atomic.Int64
 	usvc := &mockUserSvc{createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -66,13 +67,13 @@ func TestUnixRT_CreateUser_RefusesSubSecondPendingTTL(t *testing.T) {
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
 	defer cleanup()
 
-	for _, ttl := range []string{"500ms", "1ns", "999ms"} {
+	for _, ttl := range []string{"500ms", "1ns", "999ms", "1500ms", "1999ms"} {
 		_, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
 			WithoutEmailLoginKey: true, Username: "sub", Pending: true, PendingTTL: ttl,
 		})
-		var sub *transport.SubSecondPendingTTLError
+		var sub *transport.FractionalPendingTTLError
 		if !errors.As(err, &sub) {
-			t.Fatalf("CreateUser(pending_ttl=%s) err = %v, want SubSecondPendingTTLError", ttl, err)
+			t.Fatalf("CreateUser(pending_ttl=%s) err = %v, want FractionalPendingTTLError", ttl, err)
 		}
 	}
 	if n := calls.Load(); n != 0 {

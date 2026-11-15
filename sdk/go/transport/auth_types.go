@@ -218,28 +218,30 @@ func (e *NegativePendingTTLError) Error() string {
 }
 
 // PendingTTLSeconds is PendingTTLDuration in the whole seconds the gRPC and
-// unix wires carry, where 0 means no expiry. A positive TTL under one second
-// is refused with *SubSecondPendingTTLError before the request is sent: it
-// would otherwise truncate to 0 and create an account that never expires.
+// unix wires carry, where 0 means no expiry. A positive TTL that is not a
+// whole number of seconds is refused with *FractionalPendingTTLError before
+// the request is sent: truncating it would expire the account early (or, under
+// one second, never), while the other transports keep the full duration.
 func (r *CreateUserRequest) PendingTTLSeconds() (int64, error) {
 	d, err := r.PendingTTLDuration()
 	if err != nil {
 		return 0, err
 	}
-	if d > 0 && d < time.Second {
-		return 0, &SubSecondPendingTTLError{Value: r.PendingTTL}
+	if d > 0 && d%time.Second != 0 {
+		return 0, &FractionalPendingTTLError{Value: r.PendingTTL}
 	}
 	return int64(d / time.Second), nil
 }
 
-// SubSecondPendingTTLError reports a positive CreateUserRequest.PendingTTL
-// below the one-second resolution of the whole-seconds wires.
-type SubSecondPendingTTLError struct {
+// FractionalPendingTTLError reports a positive CreateUserRequest.PendingTTL
+// that is not a whole number of seconds, the resolution of the gRPC and unix
+// wires.
+type FractionalPendingTTLError struct {
 	Value string
 }
 
-func (e *SubSecondPendingTTLError) Error() string {
-	return "pending_ttl " + strconv.Quote(e.Value) + " is under one second"
+func (e *FractionalPendingTTLError) Error() string {
+	return "pending_ttl " + strconv.Quote(e.Value) + " is not a whole number of seconds"
 }
 
 // UpdateUserRequest holds parameters for updating a user.

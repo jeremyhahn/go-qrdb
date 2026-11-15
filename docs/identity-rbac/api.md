@@ -767,7 +767,9 @@ user record while it is set.
 | sdk/go | `CreateUserRequest.PendingTTL` | `User.PendingExpiresAt` |
 
 A malformed duration is refused as an invalid argument before the account is
-created. gRPC carries whole seconds, so a sub-second TTL there is no expiry.
+created. gRPC and unix carry whole seconds, so the Go SDK refuses a positive
+`PendingTTL` that is not a whole number of seconds (`FractionalPendingTTLError`)
+on those transports before the request is sent.
 
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
 they are refused on an account already marked `deleting`. `SuspendUser` and
