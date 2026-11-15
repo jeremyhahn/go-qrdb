@@ -30,7 +30,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
@@ -43,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 const (

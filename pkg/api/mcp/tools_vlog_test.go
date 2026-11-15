@@ -33,7 +33,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
@@ -46,6 +45,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 

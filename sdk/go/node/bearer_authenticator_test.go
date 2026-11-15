@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
@@ -39,6 +38,7 @@ import (
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/testutil/qrdbdharness"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // The token the host's bearer authenticator accepts, and the account it

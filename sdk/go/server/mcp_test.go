@@ -30,13 +30,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 	sdkstorage "github.com/jeremyhahn/go-qrdb/sdk/go/storage"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // mcpTestTLS returns a server TLS config with a self-signed certificate for
