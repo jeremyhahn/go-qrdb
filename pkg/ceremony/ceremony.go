@@ -810,11 +810,26 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// boot is never left without its required SO record.
 	result.ShareCount = params.ShareCount
 	result.State = StateEnrolling
-	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
+	// The write-ahead marker outlives a restart, which the carried result
+	// does not: CompleteClaimShare reads it, so a restarted ceremony whose
+	// SO record was never written stays enrolling too.
+	persist := func() error {
+		if systemSO == nil {
+			return nil
+		}
+		if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
+			return err
+		}
+		return s.persistIssuedSystemSOLocked(ctx, systemSO)
+	}
+	if err := persist(); err != nil {
 		s.state = StateEnrolling
 		s.unrecordedMofNResult = result
 		s.mu.Unlock()
 		return nil, err
+	}
+	if systemSO != nil {
+		s.clearSystemSOWriteOutstandingLocked(ctx)
 	}
 	s.lastSystemSO = systemSO
 	s.state = StateEnrolling
@@ -1163,7 +1178,7 @@ func (s *CeremonyService) CompleteClaimShare(ctx context.Context, domain seal.Qu
 		// strand an SO record the M-of-N Initialize failed to write: the
 		// ceremony stays enrolling until the retry records the SO, and
 		// the retry then makes it operational (retrySystemSOPersistLocked).
-		if s.unrecordedMofNResult != nil {
+		if s.systemSOWriteOutstandingLocked(ctx) {
 			s.logger.Warn("all share envelopes claimed; the ceremony becomes operational " +
 				"once a retried Initialize records the system SO")
 			return res, nil

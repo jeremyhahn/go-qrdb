@@ -4,6 +4,7 @@
 package ceremony
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 var errSystemSOWrite = errors.New("simulated system SO record write fault")
@@ -111,6 +113,77 @@ func TestInitialize_ShamirSystemSOPersistFaultIsRetriableAcrossRestart(t *testin
 
 	_, err = svc2.Initialize(ctx, e.ca, opts())
 	assert.ErrorIs(t, err, ErrAlreadyInitialized, "once the SO is recorded the ceremony refuses a replay")
+}
+
+// TestInitialize_ShamirSystemSOPersistFaultHoldsEnrollingAcrossRestart
+// covers claims made after a restart: the carried result is gone, but the
+// barrier's write-ahead marker still holds the ceremony enrolling until a
+// retried Initialize writes the SO record.
+func TestInitialize_ShamirSystemSOPersistFaultHoldsEnrollingAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	backend := &systemSOWriteFailBackend{StorageBackend: seal.NewMemoryBackend(), armed: true}
+	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pintest.NewBackend(t), factors: testFactors(t)}
+	e.barrier = shamirBarrier(t, e.backend, 2, 3)
+	e.svc = e.newService(e.barrier)
+
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	carol := newHolder(t, "carol", seal.RoleSecurityOfficer)
+	soCSR, _ := generateCSRPEM(t, "ignored-cn")
+	opts := func() *InitializeOptions {
+		o := initOpts(2, alice, bob, carol)
+		o.SOUsername = "secofficer"
+		o.SOCSRPEM = soCSR
+		return o
+	}
+
+	_, err := e.svc.Initialize(ctx, e.ca, opts())
+	require.ErrorIs(t, err, errSystemSOWrite)
+	require.False(t, backend.armed, "the fault hit the SO record write")
+	officers, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, err)
+	for _, o := range officers {
+		for _, h := range []*testHolder{alice, bob, carol} {
+			if o.Username == h.username {
+				h.thumb = o.CertThumbprint
+			}
+		}
+	}
+	e.claim(seal.DomainUnseal, alice)
+	e.claim(seal.DomainUnseal, bob)
+
+	b2, svc2 := e.restart(2, 3)
+	require.Equal(t, StateEnrolling, svc2.State())
+	_, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, alice, "")
+	require.NoError(t, err)
+	_, err = e.submit(svc2, b2, seal.DomainUnseal, seal.OpUnseal, bob, "")
+	require.NoError(t, err)
+	require.False(t, b2.IsSealed())
+	e.barrier, e.svc = b2, svc2
+
+	// A fresh distribution after the restart hands every holder a new
+	// envelope; claiming them all must not make the ceremony operational
+	// while its SO record is unwritten.
+	roster, err := svc2.PrepareRoster(ctx, seal.DomainUnseal, 2, "", nil)
+	require.NoError(t, err)
+	key, err := secure.NewBufferFromBytes(bytes.Repeat([]byte{7}, 32))
+	require.NoError(t, err)
+	defer key.Destroy()
+	_, err = svc2.Distribute(ctx, key, roster, []byte("digest-"+roster.Distribution))
+	require.NoError(t, err)
+	require.NoError(t, svc2.Committed(ctx, roster, nil))
+	e.claim(seal.DomainUnseal, alice)
+	e.claim(seal.DomainUnseal, bob)
+	e.claim(seal.DomainUnseal, carol)
+	assert.Equal(t, StateEnrolling, svc2.State(), "no operational ceremony without the SO record, restart or not")
+
+	result, err := svc2.Initialize(ctx, e.ca, opts())
+	require.NoError(t, err, "the retried ceremony persists the SO")
+	assert.NotEmpty(t, result.SOCertPEM)
+	assert.Equal(t, StateOperational, result.State, "the retry completes the claims' transition")
+	assert.Equal(t, StateOperational, svc2.State())
+	_, err = b2.Get(ctx, systemSOWriteOutstandingKey)
+	assert.ErrorIs(t, err, seal.ErrSecretNotFound, "the written record retires its marker")
 }
 
 // An M-of-N Initialize whose SO record write failed returned none of what

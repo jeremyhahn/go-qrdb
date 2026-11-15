@@ -267,6 +267,13 @@ func (s *CeremonyService) LastIssuedSystemSO() *IssuedSystemSO {
 // records the system SO it issued, before it reports success.
 const pendingSystemSOKey = "ceremony/pending-system-so"
 
+// systemSOWriteOutstandingKey is the system barrier's write-ahead marker
+// for an M-of-N Initialize's system SO record: written before the record,
+// removed once the record is written. It outlives a restart, which the
+// in-memory unrecordedMofNResult does not, so a ceremony whose SO record
+// was never written stays enrolling however its envelopes are claimed.
+const systemSOWriteOutstandingKey = "ceremony/system-so-write-outstanding"
+
 // persistIssuedSystemSOLocked records so in the system barrier, which
 // Initialize has unsealed by now. The composer copies the SO into the
 // replicated store only once that store exists; a node that crashes before
@@ -326,6 +333,7 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
 		return nil, true, err
 	}
+	s.clearSystemSOWriteOutstandingLocked(ctx)
 	s.lastSystemSO = systemSO
 	s.logger.Info("ceremony: system SO credential issued on retry", slog.String("username", systemSO.Username))
 	// The failed call committed the holders, the TLS certificate and the
@@ -344,7 +352,8 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 	// Every holder may have claimed its envelope while the SO record was
 	// missing; CompleteClaimShare held the ceremony enrolling for this
 	// retry, which now completes that transition. Claims are held in
-	// memory, so after a restart none are and the ceremony stays enrolling.
+	// memory, so after a restart none are and the ceremony stays enrolling
+	// until a fresh distribution's envelopes are claimed.
 	if s.system.allClaimed() {
 		s.becomeOperationalLocked(ctx)
 		result.State = StateOperational
@@ -383,8 +392,55 @@ func (s *CeremonyService) PendingSystemSO(ctx context.Context) (*IssuedSystemSO,
 func (s *CeremonyService) ForgetPendingSystemSO(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// The marker goes first: a marker left behind a removed record would
+	// read as a write still outstanding and hold the ceremony enrolling.
+	if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+		return &SystemSOPersistError{Op: "remove", Cause: err}
+	}
 	if err := s.barrier.Delete(ctx, pendingSystemSOKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
 		return &SystemSOPersistError{Op: "remove", Cause: err}
 	}
 	return nil
+}
+
+// markSystemSOWriteOutstandingLocked writes the write-ahead marker for the
+// system SO record an M-of-N Initialize is about to write.
+func (s *CeremonyService) markSystemSOWriteOutstandingLocked(ctx context.Context) error {
+	if err := s.barrier.Put(ctx, systemSOWriteOutstandingKey, []byte{1}); err != nil {
+		return &SystemSOPersistError{Op: "write", Cause: err}
+	}
+	return nil
+}
+
+// clearSystemSOWriteOutstandingLocked removes the write-ahead marker once
+// the system SO record is written. Best-effort: a marker left beside its
+// written record reads as no write outstanding and is removed on that read.
+func (s *CeremonyService) clearSystemSOWriteOutstandingLocked(ctx context.Context) {
+	if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+		s.logger.Warn("ceremony: failed to remove the system SO write-ahead marker", slog.String("error", err.Error()))
+	}
+}
+
+// systemSOWriteOutstandingLocked reports whether an M-of-N Initialize's
+// system SO record is still unwritten: in this process (the failed call's
+// carried result) or, across a restart, by the barrier's write-ahead marker
+// standing without its record. An unreadable barrier counts as outstanding:
+// the ceremony then stays enrolling rather than strand the SO.
+func (s *CeremonyService) systemSOWriteOutstandingLocked(ctx context.Context) bool {
+	if s.unrecordedMofNResult != nil {
+		return true
+	}
+	if _, err := s.barrier.Get(ctx, systemSOWriteOutstandingKey); err != nil {
+		if errors.Is(err, seal.ErrSecretNotFound) {
+			return false
+		}
+		s.logger.Warn("ceremony: cannot read the system SO write-ahead marker", slog.String("error", err.Error()))
+		return true
+	}
+	blob, err := s.barrier.Get(ctx, pendingSystemSOKey)
+	if err == nil && len(blob) > 0 {
+		s.clearSystemSOWriteOutstandingLocked(ctx)
+		return false
+	}
+	return true
 }
