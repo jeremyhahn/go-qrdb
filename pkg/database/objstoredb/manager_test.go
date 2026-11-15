@@ -134,3 +134,48 @@ func TestManager_DropReclaimsProviderObjects(t *testing.T) {
 		t.Fatalf("List after re-create = %q, %v; want no keys", keys, err)
 	}
 }
+
+// TestManager_DropReclaimsAClosedOrFailedBackendsObjects pins that a drop
+// reclaims an object-storage database's objects whatever its backend's state:
+// a database closed before the drop, and one whose backend was released under
+// it (a failed backend, still listed as open), leave nothing in the provider.
+func TestManager_DropReclaimsAClosedOrFailedBackendsObjects(t *testing.T) {
+	cases := map[string]func(t *testing.T, db *database.Database){
+		"database closed": func(t *testing.T, db *database.Database) {
+			if err := db.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+		},
+		"backend failed": func(t *testing.T, db *database.Database) {
+			if err := db.Backend().Close(); err != nil {
+				t.Fatalf("backend Close: %v", err)
+			}
+		},
+	}
+	for name, breakIt := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "objects")
+			mgr := newManager(t, t.TempDir())
+
+			db, err := mgr.Create(localObjstore("blobs", root))
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := db.Backend().Put(ctx, []byte("key"), []byte("v")); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			breakIt(t, db)
+
+			if err := mgr.Drop(ctx, "blobs"); err != nil {
+				t.Fatalf("Drop: %v", err)
+			}
+			if left := objects(t, root); len(left) != 0 {
+				t.Fatalf("Drop left provider objects: %v", left)
+			}
+			if left := objects(t, root+".journal"); len(left) != 0 {
+				t.Fatalf("Drop left journal objects: %v", left)
+			}
+		})
+	}
+}

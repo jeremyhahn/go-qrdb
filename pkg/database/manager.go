@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -861,6 +862,36 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 }
 
 // drop drops the open database db, held under key. See Drop.
+// reclaimDatabaseObjects deletes the data a dropped database keeps outside
+// the node's data directory (Manager.drop, step 2), whatever its status. The
+// database's own raw backend is used, never the barrier wrapper Backend
+// returns, which does not expose the reclaim. A backend that is closed or
+// failed cannot reclaim: an object-storage database's store is then opened
+// again from its configuration, reclaimed and closed, so its objects do not
+// outlive it.
+func (m *Manager) reclaimDatabaseObjects(key dbKey, db *Database) error {
+	if r, ok := db.rawDataBackend().(backendReclaimer); ok {
+		err := r.Reclaim()
+		var closed *storage.ClosedError
+		if !errors.As(err, &closed) {
+			return err
+		}
+	}
+	cfg := db.Config()
+	if cfg.Backend != BackendObjstore {
+		return nil
+	}
+	backend, err := m.factory.Create(cfg, m.dbDir(key.tenant, cfg.Name))
+	if err != nil {
+		return err
+	}
+	var reclaimErr error
+	if r, ok := backend.(backendReclaimer); ok {
+		reclaimErr = r.Reclaim()
+	}
+	return errors.Join(reclaimErr, backend.Close())
+}
+
 func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	name := key.name
 	cat, err := m.catalog("drop database")
@@ -962,13 +993,13 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	//    object-storage database's objects, with its provider -- is reclaimed
 	//    first, while it is still open: removing the directory in step 4
 	//    would leave every object behind. A failed reclaim keeps the record
-	//    fenced, so a retry reclaims what is left.
+	//    fenced, so a retry reclaims what is left. The reclaim does not
+	//    depend on the status: a database whose backend is closed or failed
+	//    still owns its objects (reclaimDatabaseObjects).
+	if err := m.reclaimDatabaseObjects(key, db); err != nil {
+		return &DropError{Name: name, Err: err}
+	}
 	if db.Status() == StatusOpen || db.Status() == StatusSealed {
-		if r, ok := db.Backend().(backendReclaimer); ok {
-			if err := r.Reclaim(); err != nil {
-				return &DropError{Name: name, Err: err}
-			}
-		}
 		if err := db.Close(); err != nil {
 			return &DropError{Name: name, Err: err}
 		}
