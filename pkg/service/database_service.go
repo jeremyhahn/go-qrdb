@@ -1056,6 +1056,9 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		if err != nil {
 			return err
 		}
+		if err := s.recordDrop(ctx, tenantID, name, databaseID, hadPlacement, owned); err != nil {
+			return err
+		}
 	}
 
 	if err := s.manager.Drop(ctx, name); err != nil {
@@ -1069,9 +1072,36 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
+		return s.finishDropTeardown(ctx, tenantID, name, databaseID)
 	}
 	return nil
+}
+
+// recordDrop writes the tenant's drop record of name (database.
+// DropRecordKeyPrefix) before the manager removes the catalog record, for a
+// drop with a placement to tear down. A failure to write it stops the drop
+// before anything is reclaimed, rolling back a fence this drop set.
+func (s *DatabaseService) recordDrop(ctx context.Context, tenantID, name, databaseID string, hadPlacement, owned bool) error {
+	if !hadPlacement {
+		return nil
+	}
+	if err := s.manager.RecordDrop(ctx, tenantID, name, databaseID); err != nil {
+		if owned {
+			s.clearRaftPlacementFence(ctx, tenantID, databaseID)
+		}
+		return err
+	}
+	return nil
+}
+
+// finishDropTeardown removes the placement entry of a committed drop, then
+// its drop record: the record stays until nothing it names remains, so a
+// retry after a failed teardown still finds the entry.
+func (s *DatabaseService) finishDropTeardown(ctx context.Context, tenantID, name, databaseID string) error {
+	if err := s.finishRaftPlacementTeardown(ctx, tenantID, databaseID); err != nil {
+		return err
+	}
+	return s.manager.ClearDropRecord(ctx, tenantID, name, databaseID)
 }
 
 // placementID resolves the placement id of the tenant's database named name.
@@ -1083,6 +1113,21 @@ func (s *DatabaseService) Drop(ctx context.Context, name string) error {
 func (s *DatabaseService) placementID(ctx context.Context, tenantID, name, knownID string) (string, error) {
 	if knownID != "" || s.placementStore == nil {
 		return knownID, nil
+	}
+	// A drop that removed the catalog record left its name-to-id mapping
+	// in the tenant's drop record: the placement table alone learns names
+	// from the catalog, so without it a resumed drop would find its entry
+	// only through a name this process happened to cache.
+	if id, err := s.manager.DroppedID(ctx, tenantID, name); err != nil {
+		return "", err
+	} else if id != "" {
+		// A record whose entry is gone is stale (its teardown finished
+		// without clearing it); the name may since have been reused.
+		if _, gerr := s.placementStore.Get(ctx, tenantID, id); gerr == nil {
+			return id, nil
+		} else if !errors.Is(gerr, placement.ErrPlacementNotFound) {
+			return "", gerr
+		}
 	}
 	p, err := s.placementStore.GetByName(ctx, tenantID, name)
 	if err != nil {
@@ -2239,6 +2284,9 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 	if err != nil {
 		return err
 	}
+	if err := s.recordDrop(ctx, tenantID, name, databaseID, hadPlacement, owned); err != nil {
+		return err
+	}
 
 	if err := s.manager.DropForTenant(ctx, name); err != nil {
 		var notFound *database.NotFoundError
@@ -2248,7 +2296,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 				return cerr
 			}
 			if committed {
-				return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
+				return s.finishDropTeardown(ctx, tenantID, name, databaseID)
 			}
 			// Defense in depth: the upfront GetForTenantIgnoringFence check
 			// above already refuses a request with no local record and no
@@ -2284,7 +2332,7 @@ func (s *DatabaseService) DropForTenant(ctx context.Context, name string) error 
 		if err := s.markRaftPlacementDropCommitted(ctx, tenantID, databaseID); err != nil {
 			return err
 		}
-		return s.finishRaftPlacementTeardown(ctx, tenantID, databaseID)
+		return s.finishDropTeardown(ctx, tenantID, name, databaseID)
 	}
 	return nil
 }
