@@ -69,6 +69,9 @@ persisted root-key blob is replaced, sealed under the new passphrase.
   but holding an unsealed barrier is not holding its passphrase: the change
   opens the persisted blob with the current passphrase and compares it with
   the live key. A mismatch is `ErrCredentialMismatch` and nothing is written.
+  A strategy that cannot unseal at all (an enclave or hardware open failure,
+  not a refused credential) is a typed `*UnsealError` (errors.Is
+  `ErrUnsealFailed`) wrapping the cause, never a mismatch.
 - **The write is a guarded swap.** The new blob replaces the old one only
   while the old one is still the blob the check read, so a rotation, rekey or
   second change that lands in between is never overwritten

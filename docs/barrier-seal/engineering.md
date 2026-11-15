@@ -1405,6 +1405,7 @@ key.
 | Wrong passphrase on unseal | refused; barrier stays sealed (`seal.ErrDecryptionFailed`, inside `*node.UnsealError` for `Node.Unseal`) | **yes** |
 | Unseal of a barrier never initialized | `seal.ErrNotInitialized` (`BARRIER_NOT_INITIALIZED` on QUIC and MCP), never `ErrCorruptRootKey` | **yes** |
 | Passphrase change whose current passphrase does not open the persisted root key | `seal.ErrCredentialMismatch`; nothing written | **yes** |
+| Passphrase change or `VerifyCredentials` whose strategy fails to unseal for a reason other than a refused credential (enclave or hardware open failure) | `*seal.UnsealError` (errors.Is `seal.ErrUnsealFailed`, wraps the cause), never `ErrCredentialMismatch`; nothing written | **yes** |
 | Passphrase change whose blob was replaced between the check and the write | `seal.ErrPassphraseChangeConflict`; nothing written; retry | **yes** |
 | Passphrase change while another rewrite of the root key, such as a second change, is in flight | `seal.ErrRootKeyWriteInProgress`, `409` / `Aborted` (`BARRIER_ROOT_KEY_WRITE_IN_PROGRESS`); nothing written; retry | **yes** |
 | Passphrase change on a store without a guarded swap | `seal.ErrGuardedSwapUnsupported`; never an unguarded write | **yes** |

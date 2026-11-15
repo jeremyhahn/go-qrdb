@@ -782,8 +782,11 @@ func (b *StorageBarrier) GetMasterKey(ctx context.Context) ([]byte, error) {
 // if the persisted blob is missing or unreadable, ErrStrategyNotFound if
 // the persisted strategy is not registered, ErrCredentialMismatch if creds
 // does not unseal the matching key (including when the strategy itself
-// refuses creds outright), or any error encountered loading the persisted
-// blob.
+// refuses creds outright: ErrDecryptionFailed, ErrInvalidCredentials or an
+// invalid passphrase), an *UnsealError (errors.Is ErrUnsealFailed) wrapping
+// the strategy's error when UnsealRootKey fails for any other reason (an
+// enclave or hardware open failure is not a wrong credential), or any error
+// encountered loading the persisted blob.
 func (b *StorageBarrier) VerifyCredentials(ctx context.Context, creds Credentials) error {
 	if b.IsSealed() {
 		return ErrSealed
