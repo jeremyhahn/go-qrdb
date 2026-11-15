@@ -713,6 +713,50 @@ func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {
 	}
 }
 
+// TestManager_SealedNodeRefusesToReopenObjstoreRecord pins that the sealed
+// node's refusal covers a catalog record as well as a create: an objstore
+// database recorded while the node was unsealed is not reopened once it is
+// sealed, and never reaches the opener, while the node's other databases
+// still open.
+func TestManager_SealedNodeRefusesToReopenObjstoreRecord(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	opener := &openerStore{store: memory.NewStorage()}
+	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open)))
+	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
+
+	unsealed := newCatalogManager(nil, dir, WithSealedNode(false), factory)
+	if _, err := unsealed.Create(cfg); err != nil {
+		t.Fatalf("unsealed Create(objstore): %v", err)
+	}
+	if _, err := unsealed.Create(DatabaseConfig{Name: "kv", Backend: BackendFile}); err != nil {
+		t.Fatalf("unsealed Create(file): %v", err)
+	}
+	if err := unsealed.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	opened := len(opener.got)
+
+	sealed := newCatalogManager(nil, dir, WithSealedNode(true), factory)
+	t.Cleanup(func() { _ = sealed.Close() })
+	if err := sealed.OpenAll(ctx); err != nil {
+		t.Fatalf("OpenAll: %v", err)
+	}
+	if _, err := sealed.Get("blobs"); err == nil {
+		t.Fatal("the sealed node reopened the objstore record")
+	}
+	if len(opener.got) != opened {
+		t.Fatal("the sealed node's reopen reached the opener")
+	}
+	if _, err := sealed.Get("kv"); err != nil {
+		t.Fatalf("Get(kv) on the sealed node: %v", err)
+	}
+	var refused *SealedNodeBackendError
+	if _, err := sealed.Open(ctx, "", "blobs"); !errors.As(err, &refused) {
+		t.Fatalf("sealed Open(objstore) = %v, want *SealedNodeBackendError", err)
+	}
+}
+
 func TestOpenStorage_Raft(t *testing.T) {
 	// openStorage returns a lightweight in-memory placeholder for the raft
 	// backend: the authoritative data plane is the per-database shard on the

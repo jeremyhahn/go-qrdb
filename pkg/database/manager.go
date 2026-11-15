@@ -650,6 +650,13 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 			slog.String("name", name),
 			slog.String("backend", string(cfg.Backend)))
 	}
+	// A sealed node refuses a store outside the seal barrier when it reopens
+	// a record as when it creates one (create): a record written before the
+	// node was sealed, or by another node, must not open an unencrypted-at-
+	// rest store here. OpenAll logs the refusal and opens the rest.
+	if m.sealedNode && cfg.Backend == BackendObjstore {
+		return nil, &SealedNodeBackendError{Name: name, Backend: cfg.Backend}
+	}
 	if err := m.validateDataDir(key.tenant, name, meta.DataDir); err != nil {
 		return nil, err
 	}
