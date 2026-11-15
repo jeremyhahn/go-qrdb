@@ -36,6 +36,7 @@ func TestSORefusals_RoundTripTyped(t *testing.T) {
 		resp := conflictResponse(t, transport.ErrorResponse{Error: sent.Error(), Code: reason, Metadata: md})
 		resp.StatusCode, resp.Status = http.StatusForbidden, "403 Forbidden"
 		got := (&Transport{}).decodeErrorResponse("AssignRole", resp)
+		_ = resp.Body.Close()
 		switch want := sent.(type) {
 		case *auth.SORoleRequiredError:
 			var e *auth.SORoleRequiredError
