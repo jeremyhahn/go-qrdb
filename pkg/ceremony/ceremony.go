@@ -95,6 +95,13 @@ type CeremonyService struct {
 	// ListOfficers and the admin credential re-issued through
 	// ReissueAdminCredential.
 	unrecordedMofNResult *InitResult
+	// systemSOInitInFlight is set while an M-of-N Initialize that issued a
+	// system SO runs the barrier's Shamir initialization. Distribute then
+	// writes the SO write-ahead marker into the freshly unsealed barrier
+	// BEFORE the barrier commits the initialization, so no crash after the
+	// commit can leave an initialized barrier with neither the SO record
+	// nor its marker.
+	systemSOInitInFlight bool
 
 	// strictSoD is the node's resolved strict separation-of-duties posture
 	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
@@ -773,6 +780,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		registered = append(registered, o.Username)
 		result.Holders = append(result.Holders, reg)
 	}
+	s.systemSOInitInFlight = systemSO != nil
 	s.mu.Unlock()
 
 	// InitializeShamir calls back into this service (the distributor), so
@@ -791,12 +799,14 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
 		s.mu.Lock()
+		s.systemSOInitInFlight = false
 		s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 		s.mu.Unlock()
 		return nil, err
 	}
 
 	s.mu.Lock()
+	s.systemSOInitInFlight = false
 	// InitializeShamir left the barrier unsealed; record the issued system
 	// SO in it before reporting success, as the single-admin path does.
 	//
@@ -812,13 +822,12 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	result.State = StateEnrolling
 	// The write-ahead marker outlives a restart, which the carried result
 	// does not: CompleteClaimShare reads it, so a restarted ceremony whose
-	// SO record was never written stays enrolling too.
+	// SO record was never written stays enrolling too. Distribute wrote it
+	// before the barrier committed the initialization (systemSOInitInFlight),
+	// so it stands from that commit until the SO record below is durable.
 	persist := func() error {
 		if systemSO == nil {
 			return nil
-		}
-		if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
-			return err
 		}
 		return s.persistIssuedSystemSOLocked(ctx, systemSO)
 	}
@@ -1251,6 +1260,13 @@ func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer,
 	h, err := s.scope(roster.Domain)
 	if err != nil {
 		return 0, err
+	}
+	if s.systemSOInitInFlight && roster.Domain == seal.DomainUnseal {
+		// The initialization this distribution belongs to commits only
+		// after Distribute returns: the marker is durable before it.
+		if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
+			return 0, err
+		}
 	}
 	return h.distribute(ctx, secret, roster, digest)
 }
