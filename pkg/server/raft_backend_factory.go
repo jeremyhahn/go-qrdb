@@ -291,6 +291,12 @@ type RaftBackendFactory struct {
 	purgeHook     func()
 	purgeWaitHook func()
 
+	// fenceResolveHook, when non-nil, runs in FenceServices between the
+	// first catalog read and the shard's resolution. It is a TEST-ONLY
+	// seam, used to finish a drop and create the name again there.
+	// Production leaves it nil.
+	fenceResolveHook func()
+
 	// generation counts the shards removed from shards (forgetLocked,
 	// CloseAll) and the purges of a database, cached or not (CloseAndPurge).
 	// A start planned with mu released re-checks it before starting: a
@@ -622,14 +628,34 @@ func refusalForCached(db string, rs *raftShard, pInfo *placement.Placement, info
 // which can be a dropped predecessor's entry that outlived its drop. An entry
 // under the id that names another database is an error, so the cached shard is
 // left alone rather than retired on another database's word.
-func (f *RaftBackendFactory) cachedServices(key raftShardKey, rs *raftShard, honorFence bool, databaseID string) (svcs *DatabaseServices, again bool, err error) {
+//
+// A fence retires a cached shard only on the word of a catalog record read
+// after the shard was snapshotted and its placement read: the record must
+// still name the fence's id and incarnation. A drop that resumes after
+// another drop finished it and the name was created again would otherwise
+// read its own outlived placement entry, find the successor's live shard
+// cached under the name, and retire it; the successor's shard is cached
+// only once its record replaced the fence's, so a record still naming the
+// fence's incarnation means the cached shard is not a successor's. A record
+// that no longer does refuses with *database.DropSupersededError, leaving
+// the cached shard alone.
+func (f *RaftBackendFactory) cachedServices(ctx context.Context, key raftShardKey, rs *raftShard, honorFence bool, pin fencePin) (svcs *DatabaseServices, again bool, err error) {
 	tenantID, db := key.tenantID, key.database
-	pInfo, infoOK, err := f.placementFor(tenantID, db, databaseID)
+	pInfo, infoOK, err := f.placementFor(tenantID, db, pin.databaseID)
 	if err != nil {
 		return nil, false, &RaftBackendError{TenantID: tenantID, Database: db, Op: "placement-lookup", Err: err}
 	}
 	switch {
 	case infoOK && pInfo.ShardID != rs.shardID:
+		if !honorFence {
+			current, err := f.recordedFenceTarget(ctx, tenantID, db, pin.incarnation)
+			if err != nil {
+				return nil, false, err
+			}
+			if current != pin.databaseID {
+				return nil, false, &database.DropSupersededError{Name: db, TenantID: tenantID}
+			}
+		}
 		if f.forgetIfCached(key, rs) {
 			f.logger.Info("evicting a dropped incarnation's shard; the database was created again on a new shard",
 				slog.String("tenant", tenantID), slog.String("database", db),
@@ -811,7 +837,7 @@ func (f *RaftBackendFactory) RefuseIfDropping(tenantID, db string) error {
 // creation and restart re-attach. If no placement is found the existing
 // single-node path is used unchanged (Phase-4b compatibility).
 func (f *RaftBackendFactory) Services(ctx context.Context, tenantID, db string) (*DatabaseServices, error) {
-	return f.services(ctx, tenantID, db, true, "")
+	return f.services(ctx, tenantID, db, true, fencePin{})
 }
 
 // HomeGroup names the Raft propose target of tenantID's home group: the
@@ -864,7 +890,10 @@ func (f *RaftBackendFactory) FenceServices(ctx context.Context, tenantID, db, in
 	if err != nil {
 		return nil, err
 	}
-	svcs, err := f.services(ctx, tenantID, db, false, databaseID)
+	if f.fenceResolveHook != nil {
+		f.fenceResolveHook()
+	}
+	svcs, err := f.services(ctx, tenantID, db, false, fencePin{databaseID: databaseID, incarnation: incarnation})
 	if err != nil {
 		return nil, err
 	}
@@ -895,9 +924,17 @@ func (f *RaftBackendFactory) recordedFenceTarget(ctx context.Context, tenantID, 
 	return databaseID, nil
 }
 
+// fencePin is what a drop's fence is bound to: the catalog record's database
+// id and incarnation. Services passes the zero value.
+type fencePin struct {
+	databaseID  string
+	incarnation string
+}
+
 // services is Services and FenceServices. honorFence selects whether the
 // replicated placement drop marker refuses the resolution.
-func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, honorFence bool, databaseID string) (*DatabaseServices, error) {
+func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, honorFence bool, pin fencePin) (*DatabaseServices, error) {
+	databaseID := pin.databaseID
 	if f == nil || f.host == nil || f.barrierReg == nil || f.dbInfo == nil {
 		return nil, &RaftBackendError{TenantID: tenantID, Database: db, Op: "resolve", Err: ErrRaftBackendUnavailable}
 	}
@@ -926,7 +963,7 @@ func (f *RaftBackendFactory) services(ctx context.Context, tenantID, db string, 
 			<-purge
 			continue
 		case cached:
-			services, again, err := f.cachedServices(key, rs, honorFence, databaseID)
+			services, again, err := f.cachedServices(ctx, key, rs, honorFence, pin)
 			if !again {
 				return services, err
 			}
