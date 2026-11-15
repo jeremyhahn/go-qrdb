@@ -166,6 +166,12 @@ func (m *AuthMiddleware) AuthorizeOperatorIdentityAccess(ctx context.Context, te
 		return nil, auditErr
 	}
 	ctx = context.WithValue(ctx, operatorAdmittedKey{}, operatorAdmission{tenant: target, perm: perm})
+	if perm == permission.RolesWriteTenant || perm == permission.UsersWriteTenant {
+		// The grant checks of the write (role.ValidateGrantable, through
+		// ValidateAssignable and the role service's grant guard) judge the
+		// operator by what it holds in its own tenant.
+		ctx = auth.WithOperatorIdentityWrite(ctx, target, identity.TenantID)
+	}
 	return tenant.WithTenantID(ctx, target), nil
 }
 
