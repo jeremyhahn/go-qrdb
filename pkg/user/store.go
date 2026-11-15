@@ -1782,15 +1782,20 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		return existing, nil
 	}
 	if existing.System || !PendingExpired(existing, now) {
-		if err := s.store.Delete(ctx, reapMarkerKey(id)); err != nil {
+		read, err := s.store.Get(ctx, reapMarkerKey(id))
+		if err != nil {
 			return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+		}
+		removed, err := s.dropStaleMarker(ctx, id, read)
+		if err != nil {
+			return nil, err
 		}
 		// The marker was judged stale against the record this sweep read.
 		// An overlapping sweep with a later clock may have claimed the
 		// account since and written its marker, which the delete above just
 		// erased: re-read the primary and, if it now carries a claim, write
 		// the marker back so the account is not stranded.
-		if rerr := s.restoreWinnerMarker(ctx, id); rerr != nil {
+		if rerr := s.restoreWinnerMarker(ctx, id, removed); rerr != nil {
 			return nil, rerr
 		}
 		return nil, &AccountNotPendingError{ID: existing.ID, Lifecycle: existing.Lifecycle}
@@ -1814,14 +1819,19 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 		if !ok {
 			return nil, errors.Join(err, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: ErrStoreNotAtomic})
 		}
-		if _, derr := atomicStore.CompareAndDelete(ctx, reapMarkerKey(id), mine); derr != nil {
+		dropped, derr := atomicStore.CompareAndDelete(ctx, reapMarkerKey(id), mine)
+		if derr != nil {
 			return nil, errors.Join(err, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: derr})
 		}
 		// This claim's marker may have been the one the winner's account
 		// relies on: the winner can finish its claim, re-write included,
 		// before this claim's marker write lands over it. The record names
 		// the winner's claim by now, so write the marker back for it.
-		if rerr := s.restoreWinnerMarker(ctx, id); rerr != nil {
+		var removed []byte
+		if dropped {
+			removed = mine
+		}
+		if rerr := s.restoreWinnerMarker(ctx, id, removed); rerr != nil {
 			return nil, errors.Join(err, rerr)
 		}
 		return nil, err
@@ -1837,12 +1847,35 @@ func (s *kvUserStore) ClaimExpiredPending(ctx context.Context, id uint64, now ti
 
 // restoreWinnerMarker writes a reap marker for id when its record is claimed
 // for expiry, after a losing claim dropped its own marker.
-func (s *kvUserStore) restoreWinnerMarker(ctx context.Context, id uint64) error {
+func (s *kvUserStore) restoreWinnerMarker(ctx context.Context, id uint64, removed []byte) error {
 	raw, err := s.store.Get(ctx, primaryKey(id))
 	if err != nil {
 		return &StoreError{Op: "claim_expired_pending", Detail: "primary lookup", Err: err}
 	}
 	if raw == nil {
+		// The primary is gone: a later claim won and deleted it, and may
+		// not have released the identity claim yet. The marker this sweep
+		// removed may be that claim's only recovery record, so put it back
+		// unless a marker is already in place; the next sweep finishes the
+		// release from it and drops it.
+		if removed == nil {
+			return nil
+		}
+		if atomicStore, ok := s.store.(kvstore.AtomicKVStore); ok {
+			if _, err := atomicStore.PutIfAbsent(ctx, reapMarkerKey(id), removed); err != nil {
+				return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+			}
+			return nil
+		}
+		existing, err := s.store.Get(ctx, reapMarkerKey(id))
+		if err != nil {
+			return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+		}
+		if existing == nil {
+			if err := s.store.Put(ctx, reapMarkerKey(id), removed); err != nil {
+				return &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+			}
+		}
 		return nil
 	}
 	current := &User{}
@@ -1854,6 +1887,29 @@ func (s *kvUserStore) restoreWinnerMarker(ctx context.Context, id uint64) error 
 	}
 	_, err = s.putReapMarker(ctx, current)
 	return err
+}
+
+// dropStaleMarker removes the reap marker a sweep read and judged stale. On
+// an atomic store the delete compares against the bytes read, so a marker an
+// overlapping claim wrote since stays in place. It returns the bytes it
+// removed, or nil when it removed nothing.
+func (s *kvUserStore) dropStaleMarker(ctx context.Context, id uint64, read []byte) ([]byte, error) {
+	if read == nil {
+		return nil, nil
+	}
+	dropped, err := true, error(nil)
+	if atomicStore, ok := s.store.(kvstore.AtomicKVStore); ok {
+		dropped, err = atomicStore.CompareAndDelete(ctx, reapMarkerKey(id), read)
+	} else {
+		err = s.store.Delete(ctx, reapMarkerKey(id))
+	}
+	if err != nil {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "reap marker", Err: err}
+	}
+	if !dropped {
+		return nil, nil
+	}
+	return read, nil
 }
 
 // DeleteExpiredPending deletes the account only when it is pending and its

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
@@ -212,5 +213,103 @@ func TestPurge_ReaperEventsCarryTheRoutedTenant(t *testing.T) {
 	}
 	if !deleted["authfactor:primary"] || !deleted["authfactor:backup"] {
 		t.Fatalf("tenant-filtered delete events = %v, want both factors", deleted)
+	}
+}
+
+// sealRaceKV runs beforeReserve once, just before a factor primary's
+// reservation, standing in for a purge on another node that lands while an
+// enrollment is delayed before its reservation. From then on every attempt
+// to remove that primary fails, standing in for a rollback that never runs.
+type sealRaceKV struct {
+	*kvstoretest.GuardedMemoryStore
+	primary       string
+	beforeReserve func()
+	failRelease   bool
+}
+
+var errReleaseLost = errors.New("rollback lost")
+
+func (s *sealRaceKV) reserving(key string) {
+	if hook := s.beforeReserve; hook != nil && key == s.primary {
+		s.beforeReserve = nil
+		hook()
+		s.failRelease = true
+	}
+}
+
+func (s *sealRaceKV) PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error) {
+	s.reserving(key)
+	return s.GuardedMemoryStore.PutIfAbsent(ctx, key, value)
+}
+
+func (s *sealRaceKV) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	if isPrimaryReservation(guards, writes) {
+		s.reserving(writes[0].Key)
+		return s.GuardedMemoryStore.PutAllIfAllUnchanged(ctx, guards, writes)
+	}
+	if s.failRelease {
+		for _, g := range guards {
+			if g.Key == s.primary {
+				return false, errReleaseLost
+			}
+		}
+	}
+	return s.GuardedMemoryStore.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+func (s *sealRaceKV) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	if s.failRelease && key == s.primary {
+		return false, errReleaseLost
+	}
+	return s.GuardedMemoryStore.CompareAndDelete(ctx, key, expected)
+}
+
+func (s *sealRaceKV) Delete(ctx context.Context, key string) error {
+	if s.failRelease && key == s.primary {
+		return errReleaseLost
+	}
+	return s.GuardedMemoryStore.Delete(ctx, key)
+}
+
+func TestPurge_EnrollmentDelayedPastTheSealLeavesNoPrimary(t *testing.T) {
+	ctx := context.Background()
+	kv := &sealRaceKV{GuardedMemoryStore: kvstoretest.NewGuardedMemoryStore()}
+	newNode := func() UserAuthFactorServicer {
+		svc, err := NewUserAuthFactorService(UserAuthFactorServiceConfig{
+			KV:               kv,
+			UserStateUpdater: newStubUserStateUpdater(),
+			AuditLogger:      audit.NewRingBuffer(16),
+		})
+		if err != nil {
+			t.Fatalf("NewUserAuthFactorService: %v", err)
+		}
+		return svc
+	}
+	enroller, reaper := newNode(), newNode()
+	purger, ok := reaper.(UserAuthFactorPurger)
+	if !ok {
+		t.Fatal("auth factor service does not implement UserAuthFactorPurger")
+	}
+
+	f := mtlsFactor("late", 1, []byte("k1"))
+	kv.primary = primaryKey(f.ID)
+	var purged int
+	var purgeErr error
+	kv.beforeReserve = func() { purged, purgeErr = purger.Purge(ctx, 1) }
+
+	if err := enroller.Add(ctx, f.UserID, f); err == nil {
+		t.Fatal("enrollment delayed past the purge seal succeeded")
+	}
+	// The purge may or may not have found the reservation; either way it
+	// must succeed and no primary may outlive it.
+	if purgeErr != nil {
+		t.Fatalf("Purge = %d, %v; want no error", purged, purgeErr)
+	}
+	raw, err := kv.Get(ctx, primaryKey(f.ID))
+	if err != nil {
+		t.Fatalf("Get primary: %v", err)
+	}
+	if raw != nil {
+		t.Fatal("a delayed enrollment left a primary record after the purge")
 	}
 }

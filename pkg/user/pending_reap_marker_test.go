@@ -264,6 +264,90 @@ func TestPendingReaper_ResumesFailedIdentityRelease(t *testing.T) {
 	}
 }
 
+// An earlier sweep judges the account not yet expired and pauses before it
+// drops the reap marker. A later sweep claims the account, deletes the
+// primary and fails to release the identity claim, so its marker is the only
+// recovery record. The earlier sweep must leave that marker in place, and the
+// next sweep must finish the release from it.
+func TestClaimExpiredPending_EarlierSweepKeepsMarkerOfUnreleasedDelete(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemKVStore()
+	base, err := tenant.NewIdentityIndex(mem)
+	if err != nil {
+		t.Fatalf("NewIdentityIndex: %v", err)
+	}
+	idx := &forgetFailIndex{IdentityIndex: base}
+	kv := &lcfaultKV{memKVStore: mem, prefix: keyPrefixReap}
+	svc, err := NewStore(kv, newTestIDGen(t), WithIdentityIndex(idx))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	exp := svc.(PendingExpirer)
+	u := createPending(t, svc, "paused", "acme", time.Hour)
+	early := time.Now().UTC()
+	late := early.Add(2 * time.Hour)
+
+	var lateErr, deleteErr error
+	kv.beforeGet = func() {
+		if _, lateErr = exp.ClaimExpiredPending(ctx, u.ID, late); lateErr != nil {
+			return
+		}
+		idx.fail = true
+		_, deleteErr = exp.DeleteExpiredPending(ctx, u.ID, late)
+		idx.fail = false
+	}
+
+	var notPending *AccountNotPendingError
+	if _, err := exp.ClaimExpiredPending(ctx, u.ID, early); !errors.As(err, &notPending) {
+		t.Fatalf("early sweep = %v, want AccountNotPendingError", err)
+	}
+	if lateErr != nil || deleteErr == nil {
+		t.Fatalf("late sweep claim = %v, delete = %v; want a claim and a failed release", lateErr, deleteErr)
+	}
+	if _, err := svc.GetUser(ctx, u.ID); err == nil {
+		t.Fatal("primary record survived the late sweep's delete")
+	}
+	if ids, err := exp.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 1 || ids[0] != u.ID {
+		t.Fatalf("ListExpiryClaims after the overlap = %v, %v; want [%d]", ids, err, u.ID)
+	}
+
+	if _, err := exp.DeleteExpiredPending(ctx, u.ID, late); err != nil {
+		t.Fatalf("next sweep's reap: %v", err)
+	}
+	if _, held, err := base.Lookup(ctx, tenant.IdentityUser, identityID(u.ID)); err != nil || held {
+		t.Fatalf("identity claim after the next sweep = held %v, %v; want released", held, err)
+	}
+	if ids, err := exp.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 0 {
+		t.Fatalf("reap marker left after the release: %v, %v", ids, err)
+	}
+}
+
+// A marker an overlapping claim writes between the earlier sweep's marker
+// read and its delete survives: the stale-marker delete compares against the
+// bytes the earlier sweep read.
+func TestClaimExpiredPending_StaleDropComparesTheMarkerRead(t *testing.T) {
+	ctx := context.Background()
+	kv, exp, svc := lcnewFaultStore(t)
+	u := createPending(t, svc, "window", "acme", time.Hour)
+	early := time.Now().UTC()
+	late := early.Add(2 * time.Hour)
+
+	kv.prefix = keyPrefixReap
+	var lateErr error
+	kv.afterGet = func() { _, lateErr = exp.ClaimExpiredPending(ctx, u.ID, late) }
+
+	var notPending *AccountNotPendingError
+	if _, err := exp.ClaimExpiredPending(ctx, u.ID, early); !errors.As(err, &notPending) {
+		t.Fatalf("early sweep = %v, want AccountNotPendingError", err)
+	}
+	if lateErr != nil {
+		t.Fatalf("late sweep: %v", lateErr)
+	}
+	if ids, err := exp.ListExpiryClaims(ctx, "acme"); err != nil || len(ids) != 1 || ids[0] != u.ID {
+		t.Fatalf("ListExpiryClaims after the overlap = %v, %v; want [%d]", ids, err, u.ID)
+	}
+}
+
 // A marker an interrupted claim left on an account that was then activated
 // is dropped by the next claim, which refuses the account.
 func TestClaimExpiredPending_DropsStaleMarkerOfActivatedAccount(t *testing.T) {

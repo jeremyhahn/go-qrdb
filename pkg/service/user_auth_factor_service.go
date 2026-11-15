@@ -472,10 +472,35 @@ func (s *userAuthFactorService) reservePrimary(ctx context.Context, factor *auth
 		stored bool
 		err    error
 	)
-	if store := s.atomicStore(); store != nil {
+	if batch := s.batchStore(); batch != nil {
+		// The reservation is guarded on the factor set record as read, so a
+		// purge that seals the set first makes this write fail: a delayed
+		// enrollment never writes a primary behind a purge's scan, and so
+		// leaves nothing for a lost or failed rollback to strand.
+		for range factorSetCommitAttempts {
+			set, raw, rerr := s.readFactorSet(ctx, factor.UserID)
+			if rerr != nil {
+				return rerr
+			}
+			if set.Sealed {
+				return &FactorSetSealedError{UserID: factor.UserID}
+			}
+			stored, err = batch.PutAllIfAllUnchanged(ctx,
+				[]kvstore.Guard{{Key: key}, {Key: factorSetKey(factor.UserID), Value: raw}},
+				[]kvstore.KV{{Key: key, Value: data}})
+			if err != nil || stored {
+				break
+			}
+			existing, gerr := s.getRecord(ctx, key)
+			if gerr != nil {
+				return gerr
+			}
+			if existing != nil {
+				break
+			}
+		}
+	} else if store := s.atomicStore(); store != nil {
 		stored, err = store.PutIfAbsent(ctx, key, data)
-	} else if batch := s.batchStore(); batch != nil {
-		stored, err = batch.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: key}}, []kvstore.KV{{Key: key, Value: data}})
 	} else {
 		var existing []byte
 		if existing, err = s.getRecord(ctx, key); err == nil && existing == nil {
@@ -491,6 +516,13 @@ func (s *userAuthFactorService) reservePrimary(ctx context.Context, factor *auth
 	return nil
 }
 
+// releaseIfSealed checks the purge seal after a reservation landed. A purge
+// seals the factor set before it scans the primaries, and an enrollment
+// reserves its primary before it reads the seal, so one of the two sees the
+// other: either the purge's scan finds this primary and deletes it, or this
+// read finds the seal and the enrollment takes its own primary back. A
+// delayed enrollment on another node can therefore never leave a primary
+// behind a purge.
 // List returns the user's factors sorted by registration time.
 func (s *userAuthFactorService) List(ctx context.Context, userID uint64) ([]*auth.AuthFactor, error) {
 	if userID == 0 {

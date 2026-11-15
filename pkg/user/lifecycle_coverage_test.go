@@ -23,6 +23,9 @@ type lcfaultKV struct {
 	scanErr   error
 	// beforeDelete runs once, just before the first Delete under prefix.
 	beforeDelete func()
+	// beforeGet and afterGet run once, around the first Get under prefix.
+	beforeGet func()
+	afterGet  func()
 }
 
 func (f *lcfaultKV) hit(key string) bool { return strings.HasPrefix(key, f.prefix) }
@@ -31,7 +34,16 @@ func (f *lcfaultKV) Get(ctx context.Context, key string) ([]byte, error) {
 	if f.getErr != nil && f.hit(key) {
 		return nil, f.getErr
 	}
-	return f.memKVStore.Get(ctx, key)
+	if hook := f.beforeGet; hook != nil && f.hit(key) {
+		f.beforeGet = nil
+		hook()
+	}
+	raw, err := f.memKVStore.Get(ctx, key)
+	if hook := f.afterGet; hook != nil && f.hit(key) {
+		f.afterGet = nil
+		hook()
+	}
+	return raw, err
 }
 
 func (f *lcfaultKV) Put(ctx context.Context, key string, value []byte) error {
@@ -161,12 +173,12 @@ func TestClaimExpiredPending_MarkerBranches(t *testing.T) {
 			t.Fatalf("claim = %v, want the marker write error", err)
 		}
 	})
-	t.Run("stale marker drop fails", func(t *testing.T) {
+	t.Run("stale marker read fails", func(t *testing.T) {
 		kv, exp, svc := lcnewFaultStore(t)
 		u := createPending(t, svc, "fresh", "acme", time.Hour*24)
-		kv.prefix, kv.deleteErr = keyPrefixReap, boom
+		kv.prefix, kv.getErr = keyPrefixReap, boom
 		if _, err := exp.ClaimExpiredPending(ctx, u.ID, later); !errors.Is(err, boom) {
-			t.Fatalf("claim = %v, want the marker delete error", err)
+			t.Fatalf("claim = %v, want the marker read error", err)
 		}
 	})
 	t.Run("already claimed record rewrites its marker", func(t *testing.T) {
@@ -449,7 +461,7 @@ func TestClaimExpiredPending_OverlappingSweepsKeepLaterClaimsMarker(t *testing.T
 	var lateClaim *User
 	var lateErr error
 	kv.prefix = keyPrefixReap
-	kv.beforeDelete = func() { lateClaim, lateErr = exp.ClaimExpiredPending(ctx, u.ID, late) }
+	kv.beforeGet = func() { lateClaim, lateErr = exp.ClaimExpiredPending(ctx, u.ID, late) }
 
 	var notPending *AccountNotPendingError
 	if _, err := exp.ClaimExpiredPending(ctx, u.ID, early); !errors.As(err, &notPending) {
