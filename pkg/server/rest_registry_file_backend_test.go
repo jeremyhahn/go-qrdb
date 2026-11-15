@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/rest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/objstoredb"
@@ -111,6 +112,55 @@ func TestRESTServiceRegistry_ObjstoreDatabaseServedFromItsProvider(t *testing.T)
 	}
 	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenantid.System, "blobs")+"k"); err == nil && got != nil {
 		t.Fatalf("the write reached the node's shared store: %q, %v", got, err)
+	}
+}
+
+// TestRESTServiceRegistry_VolumeTenantObjstoreDatabaseServedFromItsProvider
+// pins that a volume-isolated tenant's objstore database is routed to its own
+// store, not to the tenant's per-tenant Host: the volume branch of resolve
+// would otherwise serve it from the tenant's shard (or, with no Host registry,
+// refuse it) while the database reports objstore.
+func TestRESTServiceRegistry_VolumeTenantObjstoreDatabaseServedFromItsProvider(t *testing.T) {
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(objstoredb.NewBackendFactory()))
+	t.Cleanup(func() { _ = mgr.Close() })
+	db, err := mgr.Create(database.DatabaseConfig{
+		TenantID: "acme",
+		Name:     "blobs",
+		Backend:  database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{
+			Provider: "local",
+			Settings: map[string]string{"path": filepath.Join(t.TempDir(), "objects")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reg := NewRESTServiceRegistry(newFilledRegistry(), nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
+		withDatabaseManager(mgr),
+		WithTenantServicer(&isolationTenantServicer{isolation: tenant.IsolationVolume}),
+	)
+
+	kv, err := reg.KVService("acme", "blobs")
+	if err != nil {
+		t.Fatalf("KVService for a volume tenant's objstore database: %v", err)
+	}
+	ctx := context.Background()
+	if err := kv.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got, err := db.Backend().Get(ctx, []byte("k")); err != nil || string(got) != "v" {
+		t.Fatalf("the write is not in the database's own store: %q, %v", got, err)
+	}
+
+	// Another tenant does not reach it, and the tenant's other databases
+	// still take the volume branch (which fails closed with no Host registry).
+	if _, err := reg.KVService("other", "blobs"); err == nil {
+		t.Fatal("another tenant resolved acme's objstore database")
+	}
+	var ibu *rest.IsolationBackendUnavailableError
+	if _, err := reg.KVService("acme", "default"); !errors.As(err, &ibu) {
+		t.Fatalf("acme/default = %v, want *rest.IsolationBackendUnavailableError", err)
 	}
 }
 

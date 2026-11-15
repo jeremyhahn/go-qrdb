@@ -289,6 +289,15 @@ func (r *restServiceRegistry) resolve(tenantID, db string) (*DatabaseServices, e
 		return nil, err
 	}
 
+	// A `backend: objstore` database is served from its own store whatever
+	// the tenant's isolation (servesFromNodeLocalStore): its data is the
+	// provider's. Resolving it first keeps the volume branch below from
+	// serving it from the tenant's shard, where its writes would land in the
+	// tenant's Host while the database reports objstore.
+	if svcs, ok := r.resolveObjstoreDatabase(tenantID, db, info); ok {
+		return svcs, nil
+	}
+
 	// IsolationVolume tenants are backed by a dedicated per-tenant Raft Host on
 	// their own DataRoot (full engines, encrypted under the tenant DEK). The
 	// per-tenant Host exposes one shard shared by all the tenant's databases;
@@ -473,6 +482,20 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 	}
 
 	return r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info), nil
+}
+
+// resolveObjstoreDatabase serves a tenant's own `backend: objstore` database
+// from its own store, and reports false for every other database. It runs
+// ahead of the isolation branches in resolve, so no isolation mode routes an
+// objstore database onto a shared or per-tenant store.
+func (r *restServiceRegistry) resolveObjstoreDatabase(tenantID, db string, info *tenant.TenantInfo) (*DatabaseServices, bool) {
+	dbase, ok := r.ownedDatabase(tenantID, db)
+	if !ok || dbase.Config().Backend != database.BackendObjstore {
+		return nil, false
+	}
+	svcs := r.applyQuota(r.dedicatedStore.getOrBuild(dbase), tenantID, info)
+	svcs.Placement = service.StorePlacementNode
+	return svcs, true
 }
 
 // servesFromNodeLocalStore reports whether a catalogued database is served
