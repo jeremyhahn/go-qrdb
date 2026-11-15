@@ -812,7 +812,7 @@ jobs:
         env:
           COVER_LEG: ${{ matrix.leg }}
           IN_IMAGE_COPY_OUT: coverage/leg-${{ matrix.leg }}.out
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage-leg COVER_LEG='$COVER_LEG' GOTEST_TIMEOUT=175m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make coverage-leg COVER_LEG='$COVER_LEG' GOTEST_TIMEOUT=55m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Upload the leg's profile
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -1185,7 +1185,7 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         env:
           SDK_LEG: ${{ matrix.leg }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=55m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
         if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
