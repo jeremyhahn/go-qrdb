@@ -10,7 +10,7 @@ The row's PR closes its row issue and marks the row shipped in
 
 | Row | Row issue | Status | Folded | Open PRs |
 |---|---|---|---|---|
-| desktop-gui | #1478 | shipped in SPEC; owner order m2578 extends it | 0 | #1497, #1479, #1545, #1509, #1503, #1501 |
+| desktop-gui | #1478 | in progress | 0 | #1497, #1479, #1545, #1509, #1503, #1501 |
 | separation-of-duties | #1129 | in progress | 0 | #1368 |
 | strict-tenant-isolation | #1565 | in progress | 0 | #1498, #1499, #1514, #1517, #1519, #1423 |
 | object-storage-credential-handle | #1566 | planned | 0 | #1404 |

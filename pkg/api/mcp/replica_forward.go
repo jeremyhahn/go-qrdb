@@ -42,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	sdktransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
 // WithReplicaForwarding makes this listener forward a tool call it refuses
@@ -88,9 +89,18 @@ func newReplicaForwarder(cfg replicaforward.Config, nodeTLS *tls.Config) *replic
 			ForceAttemptHTTP2:   true,
 			DialContext:         (&net.Dialer{Timeout: connect}).DialContext,
 			TLSHandshakeTimeout: connect,
+			IdleConnTimeout:     forwardIdleConnTimeout,
 		},
 	}
 }
+
+// forwardIdleConnTimeout is how long a forward keeps an idle connection to
+// a replica's MCP listener for reuse. It stays below the listener's own
+// idle timeout (serverIdleTimeout), so the forwarder retires an idle
+// connection before the replica closes it: a forwarded tool call is a POST,
+// which net/http never resends after it raced the server's close. Zero, the
+// http.Transport default, would keep idle connections forever.
+const forwardIdleConnTimeout = 90 * time.Second
 
 // close releases the idle connections to targets.
 func (f *replicaForwarder) close() { f.base.CloseIdleConnections() }
@@ -320,10 +330,15 @@ func (t *onBehalfTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 	out := req.Clone(ctx)
 	out.Body = io.NopCloser(bytes.NewReader(body))
+	out.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
 	out.ContentLength = int64(len(body))
 	out.Header.Set(forward.HeaderAssertion, assertion)
 	out.Header.Set(forward.HeaderSignature, sig)
-	return t.base.RoundTrip(out)
+	// The target's listener may close the pooled connection this is
+	// written onto as idle, before it reads it; that request never reached
+	// the target, so it is sent once more rather than answered to the
+	// caller as the tool call's failure.
+	return sdktransport.RetryServerClosedIdle(t.base).RoundTrip(out)
 }
 
 // isToolCall reports whether body is a JSON-RPC tools/call request.

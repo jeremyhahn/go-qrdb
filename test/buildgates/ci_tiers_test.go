@@ -19,8 +19,9 @@ package buildgates
 // every event; the full tier runs on every event but a pull request, and on a
 // pull request labelled `ci:full` (ci-template v1.23's CI_FULL_TIER); the
 // nightly tier runs on schedule and workflow_dispatch only (v1.24); ci.yml's
-// schedule is the one scheduler (ruling 135, restored under ruling 216(1));
-// m433 forbids host cron and timers, not this trigger. CI Gate
+// nightly schedule is the one scheduler (ruling 135, restored under ruling
+// 216(1), nightly under ruling 633); m433 forbids host cron and timers, not
+// this trigger. CI Gate
 // stays the one required check, and it passes a skipped job only when the job
 // is tagged `full` or `nightly` and the run did not select that tier. The code
 // tier (DS-3160) runs on every event but a docs-only pull request, and the gate
@@ -49,8 +50,9 @@ package buildgates
 //     whose cancel-in-progress spares main (devops.md §9, ci-template
 //     v1.22.1), or any workflow but ci.yml regaining a
 //     `schedule:` (ruling 135: ci.yml's in-template trigger is the one
-//     scheduler, restored under Company Agent ruling 216(1); the owner ruling
-//     of 2026-10-11 and m433 forbid host cron and timers).
+//     scheduler, restored under Company Agent ruling 216(1), nightly under
+//     ruling 633; the owner ruling of 2026-10-11 and m433 forbid host cron
+//     and timers, which stay banned).
 //
 // The gate's own shell is executed, not read: TestCIGateScriptHonoursTheTiers
 // runs ci-gate's step under bash with each combination of results.
@@ -144,10 +146,11 @@ const (
 )
 
 // scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
-// ci-template v1.27.0's cron, weekly here (ciSchedule), the one scheduler under ruling 135,
-// restored under Company Agent ruling 216(1) (Software DS-3913); the owner
-// ruling of 2026-10-11 and m433 forbid host cron and timers, not this
-// trigger.
+// ci-template v1.27.0's cron, nightly here (ciSchedule), the one scheduler under ruling 135,
+// restored under Company Agent ruling 216(1) (Software DS-3913) and nightly
+// under ruling 633 (owner decision 219(a): GitHub Actions schedule triggers
+// are allowed for CI soak and fuzz); the owner ruling of 2026-10-11 and m433
+// forbid host cron and timers, which stay banned, not this trigger.
 var scheduleAllowed = map[string]bool{
 	ciWorkflowName: true,
 }
@@ -894,13 +897,13 @@ type workflowFile struct {
 }
 
 // workflowTriggerProblems checks one workflow file against devops.md §9b and
-// the schedule rule (rulings 135 and 216(1)).
+// the schedule rule (rulings 135, 216(1) and 633).
 func workflowTriggerProblems(name string, wf workflowFile) []string {
 	var problems []string
 	triggers := onTriggers(wf.On)
 	if slices.Contains(triggers, "schedule") && !scheduleAllowed[name] {
 		problems = append(problems, name+" runs on `schedule:`: only ci.yml's in-template nightly is a scheduler (rulings "+
-			"135 and 216(1)); keep workflow_dispatch and dispatch it by hand")
+			"135, 216(1) and 633; host cron and timers stay banned); keep workflow_dispatch and dispatch it by hand")
 	}
 	if !slices.Contains(triggers, "pull_request") {
 		return problems
@@ -934,14 +937,13 @@ func workflowTriggerProblems(name string, wf workflowFile) []string {
 	return problems
 }
 
-// ciSchedule is the one cron ci.yml may carry: 04:00 UTC on Sunday, the end of
-// this project's Saturday night in the factory's rotation (#1349).
-const ciSchedule = "0 4 * * 0"
+// ciSchedule is the one cron ci.yml may carry: 04:00 UTC every night, the
+// nightly soak and fuzz run (ruling 633, owner decision 219(a)).
+const ciSchedule = "0 4 * * *"
 
 // ciScheduleProblems checks that ci.yml's `on.schedule` is exactly one entry
-// whose cron is ciSchedule. The rotation gives each project one night a week;
-// a nightly cron, another weekday or a second entry takes another project's
-// night.
+// whose cron is ciSchedule (ruling 633): another hour, a weekly cron or a
+// second entry reddens it.
 func ciScheduleProblems(wf workflowFile) []string {
 	if wf.On.Kind != yaml.MappingNode {
 		return []string{"on: has no schedule key; want one cron, " + strconv.Quote(ciSchedule)}
@@ -975,13 +977,13 @@ func ciScheduleProblems(wf workflowFile) []string {
 	}
 	if cron != ciSchedule {
 		return []string{"on.schedule cron is " + strconv.Quote(cron) + "; want " + strconv.Quote(ciSchedule) +
-			", this project's night alone (#1349)"}
+			", the nightly run alone (ruling 633)"}
 	}
 	return nil
 }
 
-// TestCIScheduleIsThisProjectsNight holds ci.yml's one schedule to this
-// project's night in the factory's rotation (#1349).
+// TestCIScheduleIsThisProjectsNight holds ci.yml's one schedule to the
+// nightly cron (ruling 633).
 func TestCIScheduleIsThisProjectsNight(t *testing.T) {
 	var wf workflowFile
 	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
@@ -992,10 +994,10 @@ func TestCIScheduleIsThisProjectsNight(t *testing.T) {
 	}
 }
 
-// TestCIScheduleProblems_CanFail proves the schedule gate reddens on a nightly
-// cron, another weekday, a second entry and a missing schedule.
+// TestCIScheduleProblems_CanFail proves the schedule gate reddens on a weekly
+// cron, another hour, a second entry and a missing schedule.
 func TestCIScheduleProblems_CanFail(t *testing.T) {
-	const good = "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * 0'\n"
+	const good = "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n"
 	parse := func(body string) workflowFile {
 		var wf workflowFile
 		if err := yaml.Unmarshal([]byte(body), &wf); err != nil {
@@ -1007,10 +1009,10 @@ func TestCIScheduleProblems_CanFail(t *testing.T) {
 		t.Fatalf("the valid fixture must have no problems, got %v", p)
 	}
 	cases := map[string]string{
-		"nightly cron":    strings.Replace(good, "'0 4 * * 0'", "'0 4 * * *'", 1),
-		"another weekday": strings.Replace(good, "'0 4 * * 0'", "'0 4 * * 6'", 1),
-		"two entries":     good + "    - cron: '0 4 * * 3'\n",
-		"no schedule":     "on:\n  workflow_dispatch:\n",
+		"weekly cron":  strings.Replace(good, "'0 4 * * *'", "'0 4 * * 1'", 1),
+		"another hour": strings.Replace(good, "'0 4 * * *'", "'0 3 * * *'", 1),
+		"two entries":  good + "    - cron: '0 4 * * 3'\n",
+		"no schedule":  "on:\n  workflow_dispatch:\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1081,10 +1083,9 @@ func TestWorkflowTriggerProblems_CanFail(t *testing.T) {
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciGood)); len(p) != 0 {
 		t.Fatalf("the valid %s fixture must have no problems, got %v", ciWorkflowName, p)
 	}
-	// Ruling 216(1): ci.yml carries one weekly cron, this project's night in the
-	// factory's rotation (#1349); any other workflow's schedule still reddens
-	// (the "schedule" case below).
-	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * 0'\n", 1)
+	// Rulings 216(1) and 633: ci.yml carries one nightly cron; any other
+	// workflow's schedule still reddens (the "schedule" case below).
+	ciScheduled := strings.Replace(ciGood, "  workflow_dispatch:\n", "  workflow_dispatch:\n  schedule:\n    - cron: '0 4 * * *'\n", 1)
 	if p := workflowTriggerProblems(ciWorkflowName, parse(ciScheduled)); len(p) != 0 {
 		t.Fatalf("%s may run on schedule, got %v", ciWorkflowName, p)
 	}
