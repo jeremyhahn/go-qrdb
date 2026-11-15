@@ -1227,19 +1227,13 @@ func (s *userAuthFactorService) Relabel(ctx context.Context, factorID string, la
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	factor, err := s.Get(ctx, factorID)
-	if err != nil {
-		return err
-	}
-	if factor.RevokedAt != nil {
-		return &auth.FactorRevokedError{FactorID: factor.ID}
-	}
-	factor.Label = label
-	data, err := json.Marshal(factor)
-	if err != nil {
-		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
-	}
-	return s.kv.Put(ctx, primaryKey(factor.ID), data)
+	return s.updateFactor(ctx, factorID, func(factor *auth.AuthFactor) error {
+		if factor.RevokedAt != nil {
+			return &auth.FactorRevokedError{FactorID: factor.ID}
+		}
+		factor.Label = label
+		return nil
+	})
 }
 
 // MarkUsed updates LastUsedAt. LastUsedAt itself is best-effort metadata,
@@ -1255,16 +1249,70 @@ func (s *userAuthFactorService) MarkUsed(ctx context.Context, factorID string, t
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	factor, err := s.Get(ctx, factorID)
-	if err != nil {
-		return err
+	return s.updateFactor(ctx, factorID, func(factor *auth.AuthFactor) error {
+		factor.LastUsedAt = &ts
+		return nil
+	})
+}
+
+// updateFactor rewrites a factor's primary record with mutate applied, as a
+// compare-and-set against both the primary record and the user's factor set
+// as read. The service mutex only orders writers in this process; the guards
+// order it against every other writer of the cluster. A Purge that seals the
+// set or deletes the primary after the read makes the write fail its guard,
+// and the retry then sees the sealed set or the missing record and refuses,
+// so a stale read can never recreate a purged credential. A sealed set
+// refuses the update outright (*FactorSetSealedError): its user is being
+// deleted. A store without guarded batches cannot be purged, so there the
+// write is a plain Put ordered by s.mu. Caller must hold s.mu.
+func (s *userAuthFactorService) updateFactor(ctx context.Context, factorID string, mutate func(*auth.AuthFactor) error) error {
+	store := s.batchStore()
+	key := primaryKey(factorID)
+	for range factorSetCommitAttempts {
+		raw, err := s.getRecord(ctx, key)
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 {
+			return &auth.FactorNotFoundError{FactorID: factorID}
+		}
+		var factor auth.AuthFactor
+		if err := json.Unmarshal(raw, &factor); err != nil {
+			return &auth.InvalidFactorError{Reason: "unmarshal: " + err.Error()}
+		}
+		set, setRaw, err := s.readFactorSet(ctx, factor.UserID)
+		if err != nil {
+			return err
+		}
+		if set.Sealed {
+			return &FactorSetSealedError{UserID: factor.UserID}
+		}
+		if err := mutate(&factor); err != nil {
+			return err
+		}
+		data, err := json.Marshal(&factor)
+		if err != nil {
+			return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
+		}
+		if store == nil {
+			// Purge needs guarded batches, so no set on this store is ever
+			// sealed under the write; s.mu orders it with every other writer.
+			return s.kv.Put(ctx, key, data)
+		}
+		if len(setRaw) == 0 {
+			setRaw = nil
+		}
+		applied, err := store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: key, Value: raw}, {Key: factorSetKey(factor.UserID), Value: setRaw}},
+			[]kvstore.KV{{Key: key, Value: data}})
+		if err != nil {
+			return err
+		}
+		if applied {
+			return nil
+		}
 	}
-	factor.LastUsedAt = &ts
-	data, err := json.Marshal(factor)
-	if err != nil {
-		return &auth.InvalidFactorError{Reason: "marshal: " + err.Error()}
-	}
-	return s.kv.Put(ctx, primaryKey(factor.ID), data)
+	return &FactorSetContendedError{Attempts: factorSetCommitAttempts}
 }
 
 // countActive returns how many of the user's factors are still active.
