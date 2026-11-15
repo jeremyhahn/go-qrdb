@@ -351,6 +351,13 @@ only to other certificates, keeps the record and returns
 `*firstboot.SystemSOUnverifiedError`; an account not yet bound keeps it
 quietly, as enrolment binds after it commits the PIN.
 
+`cmd/qrdbd` runs that check off its boot path
+(`firstboot.ClearPendingSystemSOInBackground`): the committed SO PIN is a
+linearizable read, which on a node booting before its peers waits for a
+quorum the cluster cannot form until the node serves. The check is retried
+on a bounded schedule; a record still pending at the end stays for the next
+start.
+
 ## Startup sequence
 
 1. Configuration loading
