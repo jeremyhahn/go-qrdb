@@ -3800,6 +3800,24 @@ func resolveNodeSealStrategies(ctx context.Context, cfg *qrdbconfig.Config, nOpt
 //   - StrategyShamir: shares are never persisted server-side; the operator
 //     must submit quorum shares via the barrier API.
 //   - StrategyPassphrase without a supplied passphrase.
+//
+// bootPendingRecordStore is the pending-record store startup reads and
+// writes the ceremony's hand-off records through: the system shard's KV
+// with SyncRead redirected to a local StaleRead (raftbackend.BootstrapAdapter),
+// the same boot store cmd/qrdbd hands firstboot.WriteIssuedSystemSOIfAny.
+// A linearizable read there would block startup until the cluster has a
+// quorum, although a node whose ceremony issued no SO and no admin
+// certificate writes nothing. Writes still go through Raft. A node with no
+// Raft host (standalone) reads its local backend through svcNode.KV.
+func (n *Node) bootPendingRecordStore(svcNode *lifecycle.Node) firstboot.PendingAdminCertStore {
+	host, ok := n.host.(*quicraft.Host)
+	if !ok || host == nil {
+		return PendingAdminCertStore(svcNode.KV)
+	}
+	boot := raftbackend.NewBootstrapAdapter(raftbackend.New(host, raftbackend.WithFeatureGate(n.featureGate)))
+	return PendingAdminCertStore(service.NewKVService(boot, shard.ShardKV))
+}
+
 func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCfg qrdbconfig.SealConfig, passphrase []byte, log *slog.Logger) bool {
 	strategyID := seal.StrategyID(sealCfg.Strategy)
 	if strategyID == "" {
@@ -3928,10 +3946,14 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		// downstream calls FirstBootWithCeremony.
 		// The ceremony's system SO (go-qrdb#1128) is recorded first, as
 		// cmd/qrdbd does: a replica that sees the admin's record sees it.
-		if err := firstboot.WriteIssuedSystemSOIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
+		// Both records are read through the boot store, locally, as
+		// cmd/qrdbd reads them: a node whose ceremony issued nothing
+		// proposes nothing and so needs no quorum to start.
+		bootPending := n.bootPendingRecordStore(svcNode)
+		if err := firstboot.WriteIssuedSystemSOIfAny(ctx, core, bootPending, service.LeadershipTransient); err != nil {
 			return &PendingAdminCertWriteError{Err: err}
 		}
-		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, PendingAdminCertStore(svcNode.KV), service.LeadershipTransient); err != nil {
+		if err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, bootPending, service.LeadershipTransient); err != nil {
 			return &PendingAdminCertWriteError{Err: err}
 		}
 	}
