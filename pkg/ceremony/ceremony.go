@@ -1351,7 +1351,7 @@ func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
 func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx)
+	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx) || s.mofnSOWriteRetryOpenLocked(ctx)
 }
 
 // singleAdminSOWriteRetryOpenLocked reports the one sealed state, besides a

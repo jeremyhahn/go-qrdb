@@ -1,0 +1,88 @@
+// Copyright (c) 2026 Jeremy Hahn
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package ceremony_test
+
+import (
+	"context"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
+	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+)
+
+// mapPendingStore is a minimal in-memory firstboot.PendingAdminCertStore.
+type mapPendingStore struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func (s *mapPendingStore) PutIfAbsent(_ context.Context, key string, value []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.m[key]; ok {
+		return false, nil
+	}
+	s.m[key] = append([]byte(nil), value...)
+	return true, nil
+}
+
+func (s *mapPendingStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.m[key], nil
+}
+
+func (s *mapPendingStore) Put(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[key] = append([]byte(nil), value...)
+	return nil
+}
+
+func (s *mapPendingStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, key)
+	return nil
+}
+
+// TestShamirSOWriteFault_HoldsAdminPublishAndSealedWindowUntilRetry pins
+// go-qrdb#1579 Codex round 1 P1 (2): after an M-of-N Initialize unsealed the
+// barrier and failed its SO record write, first boot publishes no admin
+// credential (it would bind an admin with no SO), the sealed window stays
+// held and admits the retried Initialize, and once the retry records the
+// SO first boot publishes both and the window closes.
+func TestShamirSOWriteFault_HoldsAdminPublishAndSealedWindowUntilRetry(t *testing.T) {
+	ctx := context.Background()
+	core, retry := ceremony.ShamirSOWriteFaultForTest(t)
+	store := &mapPendingStore{m: map[string][]byte{}}
+
+	require.True(t, core.SystemSOHandoffPending(ctx), "the SO record is not durable")
+	assert.True(t, core.HoldsSealedWindow(ctx), "the sealed window stays up for the retry")
+	assert.True(t, core.EnrollmentOpen(ctx), "the sealed gate admits the retried Initialize")
+
+	require.NoError(t, firstboot.WriteIssuedSystemSOIfAny(ctx, core, store, nil))
+	err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, store, nil)
+	var pending *firstboot.SystemSOHandoffPendingError
+	require.ErrorAs(t, err, &pending)
+	recorded, _ := store.Get(ctx, firstboot.PendingAdminCertKey)
+	assert.Empty(t, recorded, "no admin credential is published without the SO")
+
+	result, err := retry()
+	require.NoError(t, err, "the retry records the SO")
+	require.NotEmpty(t, result.SOCertPEM)
+
+	assert.False(t, core.SystemSOHandoffPending(ctx))
+	assert.False(t, core.HoldsSealedWindow(ctx), "the window closes once the SO is durable")
+	require.NoError(t, firstboot.WriteIssuedSystemSOIfAny(ctx, core, store, nil))
+	require.NoError(t, firstboot.WriteIssuedAdminCertIfAny(ctx, core, store, nil))
+	so, _ := store.Get(ctx, firstboot.PendingSystemSOKey)
+	assert.NotEmpty(t, so, "first boot holds the SO")
+	recorded, _ = store.Get(ctx, firstboot.PendingAdminCertKey)
+	assert.NotEmpty(t, recorded, "and then the admin credential")
+}

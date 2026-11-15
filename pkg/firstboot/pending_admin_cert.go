@@ -144,6 +144,12 @@ func WritePendingAdminCert(ctx context.Context, store PendingAdminCertStore, cer
 // package cannot import (pkg/service imports it). A timed-out attempt may
 // still have committed; its retry then loses the create-if-absent race to
 // itself, which is tolerated above, so the retry is idempotent.
+//
+// While core's system SO handoff is not durable
+// (ceremony.CeremonyService.SystemSOHandoffPending) it publishes nothing and
+// returns *SystemSOHandoffPendingError: first boot would otherwise bind the
+// admin with no SO, and a strict node's API would refuse the retried
+// CeremonyInitialize that records the SO (go-qrdb#1129).
 func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyService, store PendingAdminCertStore, transient func(error) bool) error {
 	if core == nil || store == nil {
 		return nil
@@ -151,6 +157,12 @@ func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyServi
 	certPEM, _ := core.LastIssuedAdminCertPEM()
 	if len(certPEM) == 0 {
 		return nil
+	}
+	// An admin published while the system SO record is not yet durable
+	// would be bound by first boot with no SO, and a strict node's API
+	// would then refuse the Initialize retry that records the SO.
+	if core.SystemSOHandoffPending(ctx) {
+		return &SystemSOHandoffPendingError{}
 	}
 	if recorded, err := store.Get(ctx, PendingAdminCertKey); err == nil && len(recorded) > 0 {
 		return nil
@@ -163,6 +175,17 @@ func WriteIssuedAdminCertIfAny(ctx context.Context, core *ceremony.CeremonyServi
 		}
 		return err
 	})
+}
+
+// SystemSOHandoffPendingError refuses to publish the bootstrap admin
+// credential while the initial ceremony's system SO handoff is not durable
+// (ceremony.CeremonyService.SystemSOHandoffPending): the retried
+// CeremonyInitialize that records the SO must complete first, on the
+// sealed-window listener.
+type SystemSOHandoffPendingError struct{}
+
+func (e *SystemSOHandoffPendingError) Error() string {
+	return "firstboot: the system SO record is not durable; retry CeremonyInitialize before the admin credential is published"
 }
 
 // writeSettled runs write until it succeeds, its error is not transient,

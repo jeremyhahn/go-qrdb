@@ -438,6 +438,58 @@ func (s *CeremonyService) ForgetPendingSystemSO(ctx context.Context) error {
 	return nil
 }
 
+// SystemSOHandoffPending reports whether an initial ceremony's system SO
+// handoff is not yet durable: an M-of-N Initialize is between its Shamir
+// initialization and its SO record write, or that write failed (in this
+// process, or across a restart by the barrier's write-ahead marker) and no
+// retry has recorded the SO. While it holds, the bootstrap admin credential
+// must not be published (first boot would bind an admin with no SO) and the
+// sealed-window listener keeps serving, so the retried Initialize stays on
+// the unauthenticated, PIN-authenticated ceremony path. An unreadable
+// barrier counts as pending.
+func (s *CeremonyService) SystemSOHandoffPending(ctx context.Context) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.systemSOHandoffPendingLocked(ctx)
+}
+
+// HoldsSealedWindow reports whether the sealed-window listener must keep
+// serving: the barrier is sealed, or it is unsealed but the system SO
+// handoff is pending (SystemSOHandoffPending). It reads both under s.mu, so
+// a poll that arrives while Initialize writes the SO record waits for that
+// write and sees the barrier as the write left it -- resealed by a failed
+// single-admin write, or unsealed with the M-of-N retry outstanding.
+func (s *CeremonyService) HoldsSealedWindow(ctx context.Context) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.barrier.IsSealed() || s.systemSOHandoffPendingLocked(ctx)
+}
+
+func (s *CeremonyService) systemSOHandoffPendingLocked(ctx context.Context) bool {
+	if s.systemSOInitInFlight || s.unrecordedMofNResult != nil {
+		return true
+	}
+	if s.state == StateOperational || s.barrier.IsSealed() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
+	defer cancel()
+	return s.systemSOWriteOutstandingLocked(ctx)
+}
+
+// mofnSOWriteRetryOpenLocked reports the one unsealed state in which the
+// sealed-window gate admits the pre-operational verbs: an M-of-N Initialize
+// committed the barrier and the holders but not its system SO record, and
+// the retried Initialize must reach retrySystemSOPersistLocked. The verbs
+// themselves still refuse anonymous enrollment (enrollmentOpenLocked); the
+// retry is authenticated by the SO and User PINs it must repeat.
+func (s *CeremonyService) mofnSOWriteRetryOpenLocked(ctx context.Context) bool {
+	if s.systemSOInitInFlight {
+		return false
+	}
+	return s.systemSOHandoffPendingLocked(ctx)
+}
+
 // markSystemSOWriteOutstandingLocked writes the write-ahead marker for the
 // system SO record an M-of-N Initialize is about to write.
 func (s *CeremonyService) markSystemSOWriteOutstandingLocked(ctx context.Context) error {
