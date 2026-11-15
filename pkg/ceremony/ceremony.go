@@ -1159,6 +1159,15 @@ func (s *CeremonyService) CompleteClaimShare(ctx context.Context, domain seal.Qu
 		return nil, err
 	}
 	if s.state == StateEnrolling && s.system.allClaimed() {
+		// An operational ceremony refuses Initialize, and that would
+		// strand an SO record the M-of-N Initialize failed to write: the
+		// ceremony stays enrolling until the retry records the SO, and
+		// the retry then makes it operational (retrySystemSOPersistLocked).
+		if s.unrecordedMofNResult != nil {
+			s.logger.Warn("all share envelopes claimed; the ceremony becomes operational " +
+				"once a retried Initialize records the system SO")
+			return res, nil
+		}
 		s.becomeOperationalLocked(ctx)
 		s.logger.Info("all share envelopes claimed, ceremony operational")
 	}

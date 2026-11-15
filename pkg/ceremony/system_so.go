@@ -341,6 +341,15 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 		s.unrecordedMofNResult = nil
 	}
 	result.SOCertPEM = systemSO.CertPEM
+	// Every holder may have claimed its envelope while the SO record was
+	// missing; CompleteClaimShare held the ceremony enrolling for this
+	// retry, which now completes that transition. Claims are held in
+	// memory, so after a restart none are and the ceremony stays enrolling.
+	if s.system.allClaimed() {
+		s.becomeOperationalLocked(ctx)
+		result.State = StateOperational
+		s.logger.Info("all share envelopes claimed, ceremony operational")
+	}
 	return result, true, nil
 }
 

@@ -63,11 +63,12 @@ func TestInitialize_ShamirSystemSOPersistFaultIsRetriableAcrossRestart(t *testin
 	require.False(t, backend.armed, "the fault hit the SO record write")
 	assert.Equal(t, StateEnrolling, e.svc.State(), "the barrier is initialized: the ceremony is enrolling, as a restart restores it")
 
-	// Two of three holders claim their envelopes; the ceremony stays enrolling.
+	// Every holder claims its envelope. The SO record is still missing, so
+	// the ceremony stays enrolling: an operational one would refuse the retry.
 	officers, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
 	require.NoError(t, err)
 	for _, o := range officers {
-		for _, h := range []*testHolder{alice, bob} {
+		for _, h := range []*testHolder{alice, bob, carol} {
 			if o.Username == h.username {
 				h.thumb = o.CertThumbprint
 			}
@@ -75,6 +76,8 @@ func TestInitialize_ShamirSystemSOPersistFaultIsRetriableAcrossRestart(t *testin
 	}
 	e.claim(seal.DomainUnseal, alice)
 	e.claim(seal.DomainUnseal, bob)
+	e.claim(seal.DomainUnseal, carol)
+	assert.Equal(t, StateEnrolling, e.svc.State(), "no operational ceremony without the SO record")
 
 	b2, svc2 := e.restart(2, 3)
 	require.Equal(t, StateEnrolling, svc2.State())
@@ -94,7 +97,7 @@ func TestInitialize_ShamirSystemSOPersistFaultIsRetriableAcrossRestart(t *testin
 
 	result, err := svc2.Initialize(ctx, e.ca, opts())
 	require.NoError(t, err, "the retried ceremony persists the SO")
-	assert.Equal(t, StateEnrolling, result.State)
+	assert.Equal(t, StateEnrolling, result.State, "claims are held in memory: a restarted ceremony has none")
 	assert.NotEmpty(t, result.SOCertPEM)
 	assert.Empty(t, result.Holders, "the retry enrolls no officer")
 	assert.Equal(t, StateEnrolling, svc2.State())
@@ -139,9 +142,27 @@ func TestInitialize_ShamirSystemSOPersistRetryCarriesTheFailedCallsCredentials(t
 	adminPEM, _ := e.svc.LastIssuedAdminCertPEM()
 	require.NotEmpty(t, adminPEM, "the failed call issued the admin credential")
 
+	// Every holder claims its envelope before the retry. The SO record is
+	// still missing, so the ceremony must stay enrolling: an operational
+	// one refuses Initialize and the SO could never be recorded.
+	officers, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
+	require.NoError(t, err)
+	for _, o := range officers {
+		for _, h := range []*testHolder{alice, bob, carol} {
+			if o.Username == h.username {
+				h.thumb = o.CertThumbprint
+			}
+		}
+	}
+	for _, h := range []*testHolder{alice, bob, carol} {
+		e.claim(seal.DomainUnseal, h)
+	}
+	require.Equal(t, StateEnrolling, e.svc.State(), "no operational ceremony without the SO record")
+
 	result, err := e.svc.Initialize(ctx, e.ca, opts())
 	require.NoError(t, err, "the retry records the SO")
-	assert.Equal(t, StateEnrolling, result.State)
+	assert.Equal(t, StateOperational, result.State, "recording the SO completes the fully claimed ceremony")
+	assert.Equal(t, StateOperational, e.svc.State())
 	assert.NotEmpty(t, result.SOCertPEM)
 	assert.Len(t, result.Holders, 3, "the failed call's holders")
 	assert.Equal(t, 3, result.ShareCount)
