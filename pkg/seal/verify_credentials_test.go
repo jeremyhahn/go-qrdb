@@ -155,16 +155,16 @@ func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.
 
 	newBarrier := func(t *testing.T) (*StorageBarrier, *unsealFaultStrategy) {
 		t.Helper()
-		strat := &unsealFaultStrategy{SealingStrategy: NewDeferredSoftwareStrategy()}
+		strategy := &unsealFaultStrategy{SealingStrategy: NewDeferredSoftwareStrategy()}
 		b, err := NewStorageBarrier(testLogger(), NewMemoryBackend(),
-			BarrierConfig{RootKeyPath: "verify/unseal-root-key"}, strat)
+			BarrierConfig{RootKeyPath: "verify/unseal-root-key"}, strategy)
 		if err != nil {
 			t.Fatalf("NewStorageBarrier: %v", err)
 		}
 		if err := b.Initialize(ctx, MustCredentials(ctx, []byte(pass))); err != nil {
 			t.Fatalf("Initialize: %v", err)
 		}
-		return b, strat
+		return b, strategy
 	}
 	verify := func(t *testing.T, b *StorageBarrier, secret string) error {
 		t.Helper()
@@ -182,8 +182,8 @@ func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.
 	})
 
 	t.Run("strategy unseal failure is ErrUnsealFailed", func(t *testing.T) {
-		b, strat := newBarrier(t)
-		strat.fail = fmt.Errorf("software strategy: %w", errEnclave)
+		b, strategy := newBarrier(t)
+		strategy.fail = fmt.Errorf("software strategy: %w", errEnclave)
 		err := verify(t, b, pass)
 		if !errors.Is(err, ErrUnsealFailed) {
 			t.Fatalf("VerifyCredentials = %v, want ErrUnsealFailed", err)
@@ -195,8 +195,8 @@ func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.
 		if !errors.As(err, &ue) {
 			t.Fatalf("VerifyCredentials = %T, want *UnsealError", err)
 		}
-		if ue.Strategy != string(strat.ID()) {
-			t.Fatalf("UnsealError.Strategy = %q, want %q", ue.Strategy, strat.ID())
+		if ue.Strategy != string(strategy.ID()) {
+			t.Fatalf("UnsealError.Strategy = %q, want %q", ue.Strategy, strategy.ID())
 		}
 		if !errors.Is(err, errEnclave) {
 			t.Fatalf("VerifyCredentials = %v, want it to wrap the enclave cause", err)
@@ -204,8 +204,8 @@ func TestStorageBarrier_VerifyCredentials_UnsealFailureIsNotMismatch(t *testing.
 	})
 
 	t.Run("credential opening to a different key is a mismatch", func(t *testing.T) {
-		b, strat := newBarrier(t)
-		strat.other = true
+		b, strategy := newBarrier(t)
+		strategy.other = true
 		err := verify(t, b, pass)
 		if !errors.Is(err, ErrCredentialMismatch) || errors.Is(err, ErrUnsealFailed) {
 			t.Fatalf("VerifyCredentials = %v, want ErrCredentialMismatch and not ErrUnsealFailed", err)
