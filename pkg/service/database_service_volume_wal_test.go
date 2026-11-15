@@ -153,3 +153,45 @@ func TestDatabaseService_RaftTenant_DedicatedWALStillCreates(t *testing.T) {
 		t.Fatalf("created DedicatedWAL=%v incWAL=%d, want a dedicated WAL metered once", got.DedicatedWAL, f.incWAL)
 	}
 }
+
+// TestDatabaseService_OffPathDedicatedWAL_RefusedUnderARaftDefault is Codex
+// round 3 on #1576: a request that omits its backend on a node whose
+// database_defaults name raft resolves to a raft database, so a dedicated WAL
+// on it is judged as the raft database it becomes. Both a volume and a
+// barrier tenant -- neither serves a database from its own group -- are
+// refused before anything is made.
+func TestDatabaseService_OffPathDedicatedWAL_RefusedUnderARaftDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		info     *tenant.TenantInfo
+		servedBy string
+	}{
+		{name: "volume", info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationVolume, VolumePool: "default"}, servedBy: database.ServedByVolumeTenantStore},
+		{name: "barrier", info: &tenant.TenantInfo{ID: "acme", IsolationType: tenant.IsolationBarrier}, servedBy: database.ServedBySharedStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataRoot := t.TempDir()
+			mgr := databasetest.NewManager(nil, t.TempDir(), database.WithDefaults(database.Defaults{Backend: database.BackendRaft}))
+			t.Cleanup(func() { _ = mgr.Close() })
+			svc := NewDatabaseService(mgr, WithTenantInfoLookup(&fakeTenantInfoLookup{info: tc.info}),
+				WithTenantDataRootResolver(&fakeDataRootResolver{roots: map[string]string{"acme": dataRoot}}))
+			ctx := tenant.WithTenantID(context.Background(), "acme")
+
+			cfg := testDBConfig("orders")
+			cfg.Backend = ""
+			cfg.Raft = &database.DatabaseRaftConfig{ClusterMode: database.RaftLocal}
+			cfg.DedicatedWAL = true
+			_, err := svc.CreateForTenant(ctx, cfg)
+			var offPath *database.DedicatedWALOffDataPathError
+			if !errors.As(err, &offPath) {
+				t.Fatalf("CreateForTenant(omitted backend under a raft default, dedicated WAL) error = %v (%T), want *database.DedicatedWALOffDataPathError", err, err)
+			}
+			if offPath.ServedBy != tc.servedBy || offPath.Tenant != "acme" {
+				t.Fatalf("refusal = %+v, want %s named", offPath, tc.servedBy)
+			}
+			if _, gerr := mgr.GetForTenant(ctx, "orders"); gerr == nil {
+				t.Fatal("the refused create left the database in the catalog")
+			}
+		})
+	}
+}

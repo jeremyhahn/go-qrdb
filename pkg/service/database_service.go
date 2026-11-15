@@ -220,10 +220,14 @@ func (s *DatabaseService) strictIsolation(ctx context.Context, info *tenant.Tena
 // refuseNodeKeyLogUnderTightening is the create side of the handshake with
 // a tightening to strict (tenant.IsolationTighteningReader): with the new
 // database on the shared, node-keyed WAL already in the catalog, it reads
-// the tenant's policy and the tightening markers again. A tightening that
-// began before the catalog write has its marker up (or has committed the
-// strict policy), so the create is refused; one that begins after it lists
-// the new database and is refused instead.
+// the tightening markers and then, freshly, the tenant's policy. A
+// tightening that began before the catalog write either still has its
+// marker up, or removed it only after committing -- and the policy read
+// that follows the marker read then sees strict -- so the create is
+// refused; one that begins after it lists the new database and is refused
+// instead. Reading the policy first would leave a window: a tightening
+// could commit and remove its marker between the two reads. It governs a
+// raft tenant and a barrier tenant served from the shared system store.
 func (s *DatabaseService) refuseNodeKeyLogUnderTightening(ctx context.Context, tenantID, name string) error {
 	if s.tenantInfo == nil {
 		return nil
@@ -232,24 +236,33 @@ func (s *DatabaseService) refuseNodeKeyLogUnderTightening(ctx context.Context, t
 	if err != nil {
 		return err
 	}
-	if info == nil || info.EffectiveIsolationType() != tenant.IsolationRaft {
+	if info == nil {
 		return nil
+	}
+	if kind := info.EffectiveIsolationType(); kind != tenant.IsolationRaft && kind != tenant.IsolationBarrier {
+		return nil
+	}
+	refused := &database.StrictTenantDedicatedWALRequiredError{Name: name, Tenant: tenantID}
+	if r, ok := s.tenantInfo.(tenant.IsolationTighteningReader); ok {
+		tightening, err := r.IsolationTightening(ctx, tenantID)
+		if err != nil {
+			return err
+		}
+		if tightening {
+			return refused
+		}
+	}
+	// Fresh: a tightening that removed its marker after the read above
+	// committed strict before removing it.
+	if info, err = s.tenantInfo.GetTenant(ctx, tenantID); err != nil {
+		return err
 	}
 	strict, err := s.strictIsolation(ctx, info)
 	if err != nil {
 		return err
 	}
-	if !strict {
-		r, ok := s.tenantInfo.(tenant.IsolationTighteningReader)
-		if !ok {
-			return nil
-		}
-		if strict, err = r.IsolationTightening(ctx, tenantID); err != nil {
-			return err
-		}
-	}
 	if strict {
-		return &database.StrictTenantDedicatedWALRequiredError{Name: name, Tenant: tenantID}
+		return refused
 	}
 	return nil
 }
@@ -1675,6 +1688,10 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// volumeTenant: a volume tenant's log is already under its own key on
 	// its own host, which is what a strict policy requires (see below).
 	volumeTenant := false
+	// walServedBy names what serves the tenant's databases when its
+	// isolation never serves one from a dedicated group and WAL (empty
+	// otherwise); the refusal is applied to the resolved config below.
+	walServedBy := ""
 	if s.tenantInfo != nil {
 		info, err := s.tenantInfo.GetTenant(ctx, tenantID)
 		if err != nil {
@@ -1693,11 +1710,13 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 		}
 		// A dedicated group and WAL under an isolation that does not serve
 		// the database from its own group would be persisted and metered
-		// but never carry the database's data. Refused, not downgraded,
-		// before the strict-tenant check (a strict volume or barrier
-		// tenant gets this refusal) and before any quota or store I/O.
-		if servedBy, offPath := isolationDedicatedWALDataPath[info.EffectiveIsolationType()]; offPath && cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
-			return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: servedBy}
+		// but never carry the database's data. Refused, not downgraded, on
+		// the resolved config (a backend left to the node's defaults is
+		// judged as the backend it resolves to), before the strict-tenant
+		// check (a strict volume or barrier tenant gets this refusal) and
+		// before any quota or store I/O.
+		if servedBy, offPath := isolationDedicatedWALDataPath[info.EffectiveIsolationType()]; offPath {
+			walServedBy = servedBy
 		}
 		switch info.IsolationType {
 		case tenant.IsolationVolume:
@@ -1752,6 +1771,9 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// the database the manager records, never as the request it arrived as.
 	requested := cfg
 	cfg = s.manager.ResolveDefaults(cfg)
+	if walServedBy != "" && cfg.Backend == database.BackendRaft && cfg.DedicatedWAL {
+		return nil, &database.DedicatedWALOffDataPathError{Name: cfg.Name, Tenant: tenantID, ServedBy: walServedBy}
+	}
 	// A dedicated Raft group needs a real cluster mode: when neither the
 	// request nor the node's database_defaults name one, the resolution
 	// records none (or, with no manager defaults, leaves it empty), and the

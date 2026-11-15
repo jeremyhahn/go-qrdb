@@ -40,7 +40,9 @@ import (
 // A tightening and a concurrent create are serialized by a marker, as in
 // Dekker's algorithm: the tightening writes its marker, then lists the
 // databases; a create of a database on the shared WAL writes its catalog
-// record, then reads the policy and the markers. Whichever reads second sees
+// record, then reads the markers and, after them, the policy (a tightening
+// removes its marker only after committing, so a create that misses the
+// marker reads the committed policy). Whichever reads second sees
 // the other's write, so either the tightening finds the new database and is
 // refused, or the create finds the marker (or the strict policy the
 // tightening committed) and rolls itself back. Both may refuse; neither can

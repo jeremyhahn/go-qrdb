@@ -99,3 +99,77 @@ func TestCreateForTenant_SharedWALKeptWithNoTightening(t *testing.T) {
 		t.Fatalf("NodeKeyLogDatabases = (%v, %v), want [app]", dbs, err)
 	}
 }
+
+// windowLookup models a tightening that commits strict and removes its
+// marker just before the create reads the markers: the marker read finds
+// none, and every tenant read after it returns the committed strict policy.
+type windowLookup struct {
+	info      *tenant.TenantInfo
+	committed bool
+}
+
+func (l *windowLookup) GetTenant(context.Context, string) (*tenant.TenantInfo, error) {
+	if l.committed {
+		strict := *l.info
+		strict.IsolationPolicy = tenant.TenantIsolationPolicyStrict
+		return &strict, nil
+	}
+	return l.info, nil
+}
+
+func (l *windowLookup) IsolationTightening(context.Context, string) (bool, error) {
+	l.committed = true
+	return false, nil
+}
+
+// TestCreateForTenant_SharedWALRolledBackWhenTheMarkerIsRemovedAfterCommit is
+// Codex round 3 on #1576: the create reads the markers before a fresh policy
+// read, so a tightening that committed strict and removed its marker between
+// the create's catalog write and its marker read is still seen. Read the
+// other way round, the create saw neither and kept a node-keyed log. Both a
+// raft tenant and a barrier tenant on the shared store are governed.
+func TestCreateForTenant_SharedWALRolledBackWhenTheMarkerIsRemovedAfterCommit(t *testing.T) {
+	for _, info := range []*tenant.TenantInfo{
+		looseRaftTenant(),
+		{ID: "rt", IsolationType: tenant.IsolationBarrier},
+	} {
+		t.Run(string(info.IsolationType), func(t *testing.T) {
+			l := &windowLookup{info: info}
+			f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+			svc := newReplicaDatabaseService(t, info, f)
+			svc.(*DatabaseService).tenantInfo = l
+			ctx := tenant.WithTenantID(context.Background(), "rt")
+
+			cfg := testDBConfig("app")
+			cfg.Backend = database.BackendRaft
+			_, err := svc.CreateForTenant(ctx, cfg)
+			var refused *database.StrictTenantDedicatedWALRequiredError
+			if !errors.As(err, &refused) || refused.Name != "app" || refused.Tenant != "rt" {
+				t.Fatalf("CreateForTenant across a tightening's commit = %v, want *StrictTenantDedicatedWALRequiredError", err)
+			}
+			if got, gerr := svc.GetForTenant(ctx, "app"); gerr == nil {
+				t.Fatalf("refused create left %+v in the catalog", got)
+			}
+		})
+	}
+}
+
+// TestCreateForTenant_BarrierSharedWALRolledBackUnderATighteningMarker: a
+// barrier tenant's raft database on the shared store meets the same
+// handshake as a raft tenant's.
+func TestCreateForTenant_BarrierSharedWALRolledBackUnderATighteningMarker(t *testing.T) {
+	info := &tenant.TenantInfo{ID: "rt", IsolationType: tenant.IsolationBarrier}
+	l := &tighteningLookup{info: info, marker: true}
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+	svc := newReplicaDatabaseService(t, info, f)
+	svc.(*DatabaseService).tenantInfo = l
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	cfg := testDBConfig("app")
+	cfg.Backend = database.BackendRaft
+	_, err := svc.CreateForTenant(ctx, cfg)
+	var refused *database.StrictTenantDedicatedWALRequiredError
+	if !errors.As(err, &refused) {
+		t.Fatalf("CreateForTenant(barrier, shared store) under a tightening marker = %v, want *StrictTenantDedicatedWALRequiredError", err)
+	}
+}
