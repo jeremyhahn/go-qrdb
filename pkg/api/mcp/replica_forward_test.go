@@ -29,7 +29,6 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/mcp/wire"
@@ -43,6 +42,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // mcpTarget is a replica's MCP listener: the real server, authenticating a
@@ -189,10 +189,7 @@ func (mt *mcpTarget) endpoint() string {
 
 func dialMCP(t *testing.T, addr string, hc *http.Client) *mcpclient.Client {
 	t.Helper()
-	client, err := mcpclient.NewStreamableHttpClient("https://"+addr+"/mcp", transport.WithHTTPBasicClient(hc))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := mcpclient.NewClient(mcphttp.New("https://"+addr+"/mcp", hc))
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := callCtx(t)
 	if err := client.Start(ctx); err != nil {

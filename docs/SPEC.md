@@ -147,7 +147,7 @@ Status is one of **shipped** (on main and documented), **in progress** (an open 
 
 | Feature | Status | Requirements | Detail |
 |---|---|---|---|
-| desktop-gui | shipped | The Wails desktop application, under build tag `desktop`. | [desktop-gui/](desktop-gui/), [gui/README.md](gui/README.md) |
+| desktop-gui | in progress | The Wails desktop application, under build tag `desktop`. | [desktop-gui/](desktop-gui/), [gui/README.md](gui/README.md) |
 | typescript-sdk | shipped | The `@qrdb/sdk` TypeScript client: REST and Wails transports, typed errors, contract tests. | [typescript-sdk/](typescript-sdk/) |
 
 ### Remaining work
