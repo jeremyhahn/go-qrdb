@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -319,6 +320,13 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 	if s.pins == nil || !s.pins.SOPINSet() {
 		return nil, false, nil
 	}
+	// The carried result's holders are the failed call's roster: a retry
+	// naming another one would hand them back under the wrong names, so it
+	// is refused here, before anything is recorded or the carried result
+	// is consumed.
+	if s.unrecordedMofNResult != nil && !s.unrecordedMofNRoster.equal(rosterOf(opts)) {
+		return nil, true, ErrInitializeRetryRoster
+	}
 	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
 		return nil, true, err
 	}
@@ -347,6 +355,7 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 		result = &copied
 		result.State = StateEnrolling
 		s.unrecordedMofNResult = nil
+		s.unrecordedMofNRoster = initRoster{}
 	}
 	result.SOCertPEM = systemSO.CertPEM
 	// Every holder may have claimed its envelope while the SO record was
@@ -360,6 +369,32 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 		s.logger.Info("all share envelopes claimed, ceremony operational")
 	}
 	return result, true, nil
+}
+
+// ErrInitializeRetryRoster refuses a retried M-of-N Initialize whose roster
+// (officer usernames, their order, the threshold, the officer count) differs
+// from the failed call's: that call's holders were committed for its roster
+// and are handed back only to a retry naming the same one. Nothing is
+// recorded and the carried result stays for the matching retry.
+var ErrInitializeRetryRoster = errors.New("ceremony: the retried Initialize names a different officer roster than the call it completes")
+
+// initRoster is an M-of-N Initialize's roster: its officer usernames in
+// request order (N is their count) and its threshold M.
+type initRoster struct {
+	usernames []string
+	threshold int
+}
+
+func rosterOf(opts *InitializeOptions) initRoster {
+	r := initRoster{threshold: opts.Threshold}
+	for _, o := range opts.Officers {
+		r.usernames = append(r.usernames, o.Username)
+	}
+	return r
+}
+
+func (r initRoster) equal(o initRoster) bool {
+	return r.threshold == o.threshold && slices.Equal(r.usernames, o.usernames)
 }
 
 // PendingSystemSO returns the system SO this node's Initialize issued: the

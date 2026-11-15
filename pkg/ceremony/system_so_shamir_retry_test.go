@@ -254,3 +254,52 @@ func TestInitialize_ShamirSystemSOPersistRetryCarriesTheFailedCallsCredentials(t
 	_, err = e.svc.Initialize(ctx, e.ca, opts())
 	assert.ErrorIs(t, err, ErrAlreadyInitialized, "the carried result is handed back once")
 }
+
+// TestInitialize_ShamirSystemSOPersistRetryRefusesADifferentRoster pins
+// go-qrdb#1579 Codex round 1 P1 (1): the carried result's holders belong to
+// the failed call's roster, so a same-process retry naming fewer, other or
+// reordered officers, or another threshold, is refused before it records
+// anything, and the carried result survives for the matching retry, whose
+// holders carry their own usernames.
+func TestInitialize_ShamirSystemSOPersistRetryRefusesADifferentRoster(t *testing.T) {
+	ctx := context.Background()
+	backend := &systemSOWriteFailBackend{StorageBackend: seal.NewMemoryBackend(), armed: true}
+	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pintest.NewBackend(t), factors: testFactors(t)}
+	e.barrier = shamirBarrier(t, e.backend, 2, 3)
+	e.svc = e.newService(e.barrier)
+
+	alice := newHolder(t, "alice", seal.RoleSecurityOfficer)
+	bob := newHolder(t, "bob", seal.RoleSecurityOfficer)
+	carol := newHolder(t, "carol", seal.RoleSecurityOfficer)
+	soCSR, _ := generateCSRPEM(t, "ignored-cn")
+	opts := func(threshold int, holders ...*testHolder) *InitializeOptions {
+		o := initOpts(threshold, holders...)
+		o.SOUsername = "secofficer"
+		o.SOCSRPEM = soCSR
+		return o
+	}
+
+	_, err := e.svc.Initialize(ctx, e.ca, opts(2, alice, bob, carol))
+	require.ErrorIs(t, err, errSystemSOWrite)
+
+	for name, retry := range map[string]*InitializeOptions{
+		"fewer officers":     opts(2, alice, bob),
+		"reordered officers": opts(2, bob, alice, carol),
+		"other threshold":    opts(3, alice, bob, carol),
+	} {
+		_, err := e.svc.Initialize(ctx, e.ca, retry)
+		require.ErrorIs(t, err, ErrInitializeRetryRoster, name)
+		pending, perr := e.newService(e.barrier).PendingSystemSO(ctx)
+		require.NoError(t, perr, name)
+		require.Nil(t, pending, "%s: a refused retry records no SO", name)
+		require.Equal(t, StateEnrolling, e.svc.State(), name)
+	}
+
+	result, err := e.svc.Initialize(ctx, e.ca, opts(2, alice, bob, carol))
+	require.NoError(t, err, "the matching retry records the SO")
+	require.Len(t, result.Holders, 3, "the carried result survived the refusals")
+	for i, want := range []string{"alice", "bob", "carol"} {
+		assert.Equal(t, want, result.Holders[i].Username, "holders carry their own usernames")
+	}
+	assert.NotEmpty(t, result.AdminKeyPEM, "the carried admin key survived the refusals")
+}

@@ -76,6 +76,11 @@ type RegisterOfficerRequest struct {
 // RegisterOfficerResult is the outcome of a successful registration. It
 // carries no share material: shares come only from a distribution.
 type RegisterOfficerResult struct {
+	// Username is the holder's username. Initialize sets it on each of
+	// InitResult.Holders, so a caller pairs a certificate with its holder
+	// by name, never by its position in a request.
+	Username string
+
 	// CertPEM is the certificate the CA issued, to be delivered to the
 	// holder out of band.
 	CertPEM []byte

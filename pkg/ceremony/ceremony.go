@@ -95,6 +95,11 @@ type CeremonyService struct {
 	// ListOfficers and the admin credential re-issued through
 	// ReissueAdminCredential.
 	unrecordedMofNResult *InitResult
+	// unrecordedMofNRoster is the roster (officer usernames in order and
+	// the threshold) of the call that saved unrecordedMofNResult. A
+	// retry naming any other roster is refused before it records anything
+	// (ErrInitializeRetryRoster): the carried holders are that roster's.
+	unrecordedMofNRoster initRoster
 	// systemSOInitInFlight is set while an M-of-N Initialize that issued a
 	// system SO runs the barrier's Shamir initialization. Distribute then
 	// writes the SO write-ahead marker into the freshly unsealed barrier
@@ -778,6 +783,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			return nil, rerr
 		}
 		registered = append(registered, o.Username)
+		reg.Username = o.Username
 		result.Holders = append(result.Holders, reg)
 	}
 	s.systemSOInitInFlight = systemSO != nil
@@ -834,6 +840,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	if err := persist(); err != nil {
 		s.state = StateEnrolling
 		s.unrecordedMofNResult = result
+		s.unrecordedMofNRoster = rosterOf(opts)
 		s.mu.Unlock()
 		return nil, err
 	}

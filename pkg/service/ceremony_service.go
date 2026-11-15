@@ -300,16 +300,18 @@ func (s *CeremonyService) CeremonyInitialize(ctx context.Context, ca ceremony.Ce
 		return nil, err
 	}
 	out := ceremonyInitResultFromCore(result)
-	for i, h := range result.Holders {
-		out.Holders = append(out.Holders, CeremonyHolderCert{Username: opts.Officers[i].Username, Role: h.Role, CertPEM: h.CertPEM})
+	// Each holder carries its own username: a retry completing an earlier
+	// call hands back that call's holders, so the request's positions
+	// must not name them.
+	for _, h := range result.Holders {
+		out.Holders = append(out.Holders, CeremonyHolderCert{Username: h.Username, Role: h.Role, CertPEM: h.CertPEM})
 	}
 	return out, nil
 }
 
 // ceremonyInitResultFromCore maps the ceremony-package result onto the
-// service-layer type, except Holders: zipping a RegisterOfficerResult (which
-// carries no username of its own) with its officer needs the caller's own
-// request, so CeremonyInitialize fills Holders in itself after calling this.
+// service-layer type, except Holders, which CeremonyInitialize fills in
+// itself from each RegisterOfficerResult's own Username.
 // CeremonyReissueAdminCredential's result never carries holders at all, so
 // it does not need to.
 func ceremonyInitResultFromCore(result *ceremony.InitResult) *CeremonyInitResult {
