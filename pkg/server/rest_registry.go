@@ -482,7 +482,16 @@ func (r *restServiceRegistry) resolveDedicatedDatabaseBarrier(tenantID, db strin
 // never served that way: it comes exclusively from an IsolationRaft tenant's
 // dedicated shard, never from a per-database barrier layered onto a
 // shared/prefix tenant's database.
+//
+// A `backend: objstore` database is always served from its own store, the
+// object-storage engine over its provider: its data is the provider's,
+// never the shared engine's, with or without a barrier. Serving it from the
+// shared store would report objstore while its writes landed in the node's
+// default engine.
 func servesFromNodeLocalStore(cfg *database.DatabaseConfig) bool {
+	if cfg.Backend == database.BackendObjstore {
+		return true
+	}
 	return cfg.Barrier != nil && cfg.Barrier.Enabled && cfg.BarrierOnDataPath()
 }
 

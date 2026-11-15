@@ -71,6 +71,49 @@ func TestRESTServiceRegistry_FileBackendDatabaseServedFromNodeStore(t *testing.T
 	}
 }
 
+// A `backend: objstore` database is served from its own store, over its
+// provider, with no barrier: a write through the registry lands with the
+// provider and is read back from it, and the node's shared store never sees
+// it.
+func TestRESTServiceRegistry_ObjstoreDatabaseServedFromItsProvider(t *testing.T) {
+	mgr := databasetest.NewManager(nil, t.TempDir(), database.WithBackendFactory(objstoredb.NewBackendFactory()))
+	t.Cleanup(func() { _ = mgr.Close() })
+	db, err := mgr.Create(database.DatabaseConfig{
+		Name:    "blobs",
+		Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{
+			Provider: "local",
+			Settings: map[string]string{"path": filepath.Join(t.TempDir(), "objects")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	nodeStore := newFilledRegistry()
+	reg := NewRESTServiceRegistry(nodeStore, nil, tenantid.System,
+		WithDatabaseCatalog(newManagerCatalog(mgr)),
+		withDatabaseManager(mgr),
+	)
+
+	kv, err := reg.KVService(tenantid.System, "blobs")
+	if err != nil {
+		t.Fatalf("KVService: %v", err)
+	}
+	ctx := context.Background()
+	if err := kv.Put(ctx, "k", []byte("v")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got, err := kv.Get(ctx, "k"); err != nil || string(got) != "v" {
+		t.Fatalf("Get through the registry = %q, %v; want \"v\"", got, err)
+	}
+	if got, err := db.Backend().Get(ctx, []byte("k")); err != nil || string(got) != "v" {
+		t.Fatalf("the write is not in the database's own store: %q, %v", got, err)
+	}
+	if got, err := nodeStore.Default().KV.Get(ctx, tenant.ComposeNamespace(tenantid.System, "blobs")+"k"); err == nil && got != nil {
+		t.Fatalf("the write reached the node's shared store: %q, %v", got, err)
+	}
+}
+
 // An objstore database opens the objstore engine from its own settings: one
 // that names no provider fails the open, before any store is created.
 func TestDatabaseManager_ObjstoreDatabaseWithoutProviderRefused(t *testing.T) {
