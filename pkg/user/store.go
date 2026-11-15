@@ -156,6 +156,38 @@ type kvUserStore struct {
 	// function's doc and WithReconcilePolling for why a test overrides them.
 	reconcilePollInterval time.Duration
 	reconcileWindow       time.Duration
+
+	// pendingTTLGate, set by WithPendingTTLGate, reports whether the
+	// pending-user TTL is active cluster-wide. nil means it is.
+	pendingTTLGate func() error
+}
+
+// WithPendingTTLGate installs the activation check for the pending-user TTL
+// (featuregate.PendingUserTTL). A binary that predates it decodes a user
+// record without PendingExpiresAt and ExpiryClaim and drops them on its next
+// update, so while active returns an error (feature.NotActiveError) a create
+// that asks for a TTL is refused with it and the pending-user reaper does
+// not sweep (PendingTTLGated). nil, the default, leaves the TTL active: a
+// standalone node is its own whole cluster.
+func WithPendingTTLGate(active func() error) Option {
+	return func(s *kvUserStore) {
+		s.pendingTTLGate = active
+	}
+}
+
+// PendingTTLGated is implemented by a user service whose pending-user TTL
+// waits on a cluster-wide activation (WithPendingTTLGate). PendingTTLActive
+// returns nil once the TTL is active, and the activation error until then.
+type PendingTTLGated interface {
+	PendingTTLActive() error
+}
+
+// PendingTTLActive implements PendingTTLGated.
+func (s *kvUserStore) PendingTTLActive() error {
+	if s.pendingTTLGate == nil {
+		return nil
+	}
+	return s.pendingTTLGate()
 }
 
 // NewStore creates a new KVStore-backed UserServicer. The provided kvstore
@@ -231,6 +263,11 @@ func (s *kvUserStore) WithQuotaChecker(checker quota.Checker) *kvUserStore {
 func (s *kvUserStore) CreateUser(ctx context.Context, req *CreateUserRequest) (created *User, retErr error) {
 	if req == nil {
 		return nil, &ValidationError{Field: "request", Reason: "must not be nil"}
+	}
+	if req.PendingTTL > 0 {
+		if err := s.PendingTTLActive(); err != nil {
+			return nil, err
+		}
 	}
 	if req.Username == "" {
 		return nil, &ValidationError{Field: "username", Reason: "must not be empty"}

@@ -107,6 +107,16 @@ func NewRoutingService(resolver tenant.StoreResolver, idgen dao.IDGenerator, opt
 	}, nil
 }
 
+// PendingTTLActive implements PendingTTLGated with the gate the router's
+// options install on every per-tenant store (WithPendingTTLGate).
+func (r *routingUserService) PendingTTLActive() error {
+	var probe kvUserStore
+	for _, o := range r.opts {
+		o(&probe)
+	}
+	return probe.PendingTTLActive()
+}
+
 // targetTenant returns the tenant whose store holds the user with this id.
 //
 // A user id is globally unique but user STORAGE is per-tenant, so an

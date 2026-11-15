@@ -17,10 +17,13 @@ package user
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -94,5 +97,72 @@ func TestDeleteUser_ClaimedAccountKeepsMarkerForTheReaper(t *testing.T) {
 	}
 	if n := countAudits(al, AuditActionPendingReaped); n != 1 {
 		t.Fatalf("pending_reaped audits = %d, want 1", n)
+	}
+}
+
+// Until the cluster activates the pending-user TTL a TTL-bearing create is
+// refused with the gate's error, a create without a TTL goes through, and the
+// reaper sweeps nothing; once it is active both work.
+func TestPendingTTLGate_RefusesTTLCreatesAndHoldsTheReaper(t *testing.T) {
+	var active atomic.Bool
+	gate := func() error {
+		if active.Load() {
+			return nil
+		}
+		return &feature.NotActiveError{Feature: "pending-user-ttl"}
+	}
+	al := &fakeAuditLogger{}
+	svc, err := NewStore(newMemKVStore(), newTestIDGen(t), WithAuditLogger(al), WithPendingTTLGate(gate))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+
+	var notActive *feature.NotActiveError
+	_, err = svc.CreateUser(ctx, &CreateUserRequest{Username: "early", Email: "early@example.com", TenantID: "acme", Pending: true, PendingTTL: time.Minute})
+	if !errors.As(err, &notActive) {
+		t.Fatalf("TTL create before activation = %v, want NotActiveError", err)
+	}
+	if _, err := svc.CreateUser(ctx, &CreateUserRequest{Username: "plain", Email: "plain@example.com", TenantID: "acme", Pending: true}); err != nil {
+		t.Fatalf("create without a TTL before activation: %v", err)
+	}
+	if gated, ok := svc.(PendingTTLGated); !ok || !errors.As(gated.PendingTTLActive(), &notActive) {
+		t.Fatalf("store does not report the inactive gate (PendingTTLGated %v)", ok)
+	}
+
+	// An expired account written before the gate closed (for example by a
+	// node that activated first) stays until the gate opens.
+	active.Store(true)
+	u := createPending(t, svc, "late", "acme", time.Minute)
+	active.Store(false)
+	clock := &fakeClock{now: time.Now().UTC().Add(time.Hour)}
+	r, err := NewPendingReaper(PendingReaperConfig{Users: svc, Now: clock.Now})
+	if err != nil {
+		t.Fatalf("NewPendingReaper: %v", err)
+	}
+	if n, err := r.Sweep(ctx, "acme"); err != nil || n != 0 {
+		t.Fatalf("sweep before activation = %d, %v; want 0, nil", n, err)
+	}
+	if got, err := svc.GetUser(ctx, u.ID); err != nil || ExpiryClaimed(got) {
+		t.Fatalf("account after the held sweep = %+v, %v; want untouched", got, err)
+	}
+
+	active.Store(true)
+	if n, err := r.Sweep(ctx, "acme"); err != nil || n != 1 {
+		t.Fatalf("sweep after activation = %d, %v; want 1, nil", n, err)
+	}
+}
+
+// The router reports the gate its options install on every tenant store.
+func TestRoutingService_ReportsThePendingTTLGate(t *testing.T) {
+	want := errors.New("not yet")
+	resolver := &fakeResolver{shared: newFakeKVStore(), tenants: map[string]kvstore.KVStore{"acme": newFakeKVStore()}}
+	svc, err := NewRoutingService(resolver, newTestIDGen(t), WithPendingTTLGate(func() error { return want }))
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	gated, ok := svc.(PendingTTLGated)
+	if !ok || !errors.Is(gated.PendingTTLActive(), want) {
+		t.Fatalf("router gate = %v (PendingTTLGated %v), want %v", gated, ok, want)
 	}
 }

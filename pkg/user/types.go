@@ -78,7 +78,10 @@ type User struct {
 	// with its role assignments and enrolled factors. It is set only by a
 	// create that asked for a TTL (CreateUserRequest.PendingTTL) and cleared
 	// by every transition out of pending, so an active account never carries
-	// one. Nil means the pending account does not expire.
+	// one. Nil means the pending account does not expire. A binary that
+	// predates the field drops it when it rewrites the record, so on a
+	// cluster it is written only once featuregate.PendingUserTTL is active
+	// (WithPendingTTLGate).
 	PendingExpiresAt *time.Time `json:"pendingExpiresAt,omitempty"`
 
 	// ExpiryClaim is the PendingExpiresAt of a pending account the reaper
@@ -214,7 +217,9 @@ type CreateUserRequest struct {
 	// User.PendingExpiresAt as creation time plus this. Zero means the
 	// pending account never expires. It is refused when negative, and when
 	// the account is not being created pending: a TTL on an active account
-	// would describe a deletion nobody asked for.
+	// would describe a deletion nobody asked for. Until the cluster
+	// activates featuregate.PendingUserTTL a create with a TTL is refused
+	// with feature.NotActiveError (WithPendingTTLGate).
 	PendingTTL time.Duration
 
 	// AuthMethods are the initial permitted authentication methods. Empty

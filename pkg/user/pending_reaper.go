@@ -125,8 +125,13 @@ func NewPendingReaper(cfg PendingReaperConfig) (*PendingReaper, error) {
 // earlier sweep claimed but did not delete, and returns how many it removed.
 // Off the leader it returns 0 and touches nothing. An account that fails to
 // delete does not stop the sweep; the failures are joined into the returned
-// error and the next sweep resumes them.
+// error and the next sweep resumes them. Until the pending-user TTL is active
+// cluster-wide (PendingTTLGated) it also returns 0 and touches nothing: a
+// member that predates the TTL would drop the fields a claim writes.
 func (r *PendingReaper) Sweep(ctx context.Context, tenantID string) (int, error) {
+	if gated, ok := r.users.(PendingTTLGated); ok && gated.PendingTTLActive() != nil {
+		return 0, nil
+	}
 	if !r.isLeader(ctx, tenantID) {
 		return 0, nil
 	}
