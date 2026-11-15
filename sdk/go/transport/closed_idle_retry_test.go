@@ -91,3 +91,28 @@ func TestRetryServerClosedIdle_UnreplayableBody(t *testing.T) {
 		t.Fatalf("error %v, applied %d; want the closed-idle error and nothing applied", err, srv.Applied())
 	}
 }
+
+// TestRetryServerClosedIdle_AmbiguousFailureNotResent pins the retry's
+// boundary: a POST the server applied and then dropped the connection on,
+// without answering, fails with an error that is not the closed-idle one.
+// The caller gets that error, and the server saw the request exactly once.
+// Resending it would apply a committed compare-and-swap a second time.
+func TestRetryServerClosedIdle_AmbiguousFailureNotResent(t *testing.T) {
+	srv := closedidletest.New(t)
+	base := srv.Transport()
+	defer base.CloseIdleConnections()
+	client := &http.Client{Transport: transport.RetryServerClosedIdle(base)}
+
+	resp, err := client.Do(srv.DropRequest(t, context.Background()))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("dropped swap answered %s, want the broken connection's error", resp.Status)
+	}
+	if transport.IsServerClosedIdle(err) {
+		t.Fatalf("dropped swap error = %v, want an error other than server-closed-idle", err)
+	}
+	if srv.Received() != 1 || srv.Applied() != 1 {
+		t.Fatalf("received %d, applied %d; want the swap seen once and applied once, not resent",
+			srv.Received(), srv.Applied())
+	}
+}

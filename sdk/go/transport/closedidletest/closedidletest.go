@@ -49,10 +49,11 @@ const (
 type Server struct {
 	srv *httptest.Server
 
-	mu      sync.Mutex
-	value   string
-	applied atomic.Int64
-	closes  atomic.Int64
+	mu       sync.Mutex
+	value    string
+	applied  atomic.Int64
+	closes   atomic.Int64
+	received atomic.Int64
 }
 
 // New starts a Server, closed when t ends.
@@ -64,6 +65,7 @@ func New(t testing.TB) *Server {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /cas", s.cas)
+	mux.HandleFunc("POST /cas-drop", s.casDrop)
 	s.srv = httptest.NewServer(mux)
 	t.Cleanup(s.srv.Close)
 	return s
@@ -84,6 +86,49 @@ func (s *Server) cas(w http.ResponseWriter, r *http.Request) {
 	s.value = Swapped
 	s.applied.Add(1)
 	w.WriteHeader(http.StatusOK)
+}
+
+// casDrop applies the swap like cas, then closes the connection without
+// writing a response: the server committed the request and the client sees
+// only a broken connection, an ambiguous failure that must not be resent.
+func (s *Server) casDrop(w http.ResponseWriter, r *http.Request) {
+	s.received.Add(1)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	if string(body) == s.value {
+		s.value = Swapped
+		s.applied.Add(1)
+	}
+	s.mu.Unlock()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "connection cannot be hijacked", http.StatusInternalServerError)
+		return
+	}
+	conn, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	_ = conn.Close()
+}
+
+// Received is how many requests reached POST "/cas-drop".
+func (s *Server) Received() int64 { return s.received.Load() }
+
+// DropRequest returns a POST /cas-drop carrying Initial, bound to ctx: the
+// server applies it and then closes the connection without answering. Its
+// body is a strings.Reader, so http.NewRequest sets GetBody.
+func (s *Server) DropRequest(t testing.TB, ctx context.Context) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.srv.URL+"/cas-drop", strings.NewReader(Initial))
+	if err != nil {
+		t.Fatalf("drop request: %v", err)
+	}
+	return req
 }
 
 // URL is the server's base URL.

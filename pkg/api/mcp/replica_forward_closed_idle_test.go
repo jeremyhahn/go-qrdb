@@ -22,6 +22,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
 	"github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest"
+	sdktransport "github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/closedidletest"
 )
 
@@ -49,5 +50,30 @@ func TestOnBehalfTransport_ServerClosedIdleAppliesOnce(t *testing.T) {
 	if srv.Closes() != 1 || srv.Applied() != 1 {
 		t.Fatalf("closes %d, applied %d; want the connection closed once and the swap applied once",
 			srv.Closes(), srv.Applied())
+	}
+}
+
+// TestOnBehalfTransport_AmbiguousFailureNotResent: a forwarded call the
+// target applied and then dropped the connection on, without answering, is
+// not resent; the error reaches the caller and the target saw it once.
+func TestOnBehalfTransport_AmbiguousFailureNotResent(t *testing.T) {
+	srv := closedidletest.New(t)
+	base := srv.Transport()
+	defer base.CloseIdleConnections()
+
+	key, nodeID := forward.NodeIdentity(replicaforwardtest.NewCA(t).TLS(t, "node-a"))
+	rt := &onBehalfTransport{base: base, caller: &auth.Identity{Subject: "alice", TenantID: "tenant-a"}, key: key, nodeID: nodeID}
+
+	resp, err := (&http.Client{Transport: rt}).Do(srv.DropRequest(t, context.Background()))
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Fatalf("dropped forwarded swap answered %s, want the broken connection's error", resp.Status)
+	}
+	if sdktransport.IsServerClosedIdle(err) {
+		t.Fatalf("dropped forwarded swap error = %v, want an error other than server-closed-idle", err)
+	}
+	if srv.Received() != 1 || srv.Applied() != 1 {
+		t.Fatalf("received %d, applied %d; want the swap seen once and applied once, not resent",
+			srv.Received(), srv.Applied())
 	}
 }
