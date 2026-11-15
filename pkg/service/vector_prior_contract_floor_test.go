@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -46,7 +47,11 @@ func (s priorContractKVStore) CompareAndDelete(ctx context.Context, key string, 
 // pre-upgrade contract) still refuses a system-context namespace create.
 func TestCreateNamespace_PriorContractStrictFloorRefusesSystemCreate(t *testing.T) {
 	ctx := context.Background()
-	mem := kvstore.NewMemoryKVStore()
+	// The seeder writes the strict floor through the fenced multi-guard
+	// batch, so it runs over the guarded in-memory store; the prior-contract
+	// view shares its underlying memory store.
+	guarded := kvstoretest.NewGuardedMemoryStore()
+	mem := guarded.MemoryKVStore
 	store := priorContractKVStore{KVStore: mem, mem: mem}
 	tenants, err := tenant.NewKVTenantService(store, slog.Default())
 	if err != nil {
@@ -55,7 +60,7 @@ func TestCreateNamespace_PriorContractStrictFloorRefusesSystemCreate(t *testing.
 	// The floor's storage key is pkg/tenant's, so tighten it through a
 	// service over the full in-memory store; the record is the same bytes a
 	// cluster on the prior contract persisted before the upgrade.
-	seeder, err := tenant.NewKVTenantService(mem, slog.Default())
+	seeder, err := tenant.NewKVTenantService(guarded, slog.Default())
 	if err != nil {
 		t.Fatalf("NewKVTenantService(seeder): %v", err)
 	}

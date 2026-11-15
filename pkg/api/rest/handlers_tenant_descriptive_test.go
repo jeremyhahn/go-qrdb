@@ -23,7 +23,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore/kvstoretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 )
 
@@ -31,7 +31,7 @@ import (
 // service holding one tenant, "acme".
 func descriptiveRESTServer(t *testing.T) *Server {
 	t.Helper()
-	svc, err := tenant.NewKVTenantService(kvstore.NewMemoryKVStore(), slog.New(slog.DiscardHandler))
+	svc, err := tenant.NewKVTenantService(kvstoretest.NewGuardedMemoryStore(), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
