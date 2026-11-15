@@ -1,0 +1,121 @@
+package firstboot
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
+)
+
+// blockingPINChecker holds SOPINCommitted until release closes, the way a
+// linearizable read holds on a node whose cluster has no quorum yet.
+type blockingPINChecker struct {
+	entered chan struct{}
+	release chan struct{}
+	inner   SOPINChecker
+}
+
+func (b *blockingPINChecker) SOPINCommitted(ctx context.Context, tenantID string) (bool, error) {
+	select {
+	case b.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	return b.inner.SOPINCommitted(ctx, tenantID)
+}
+
+func (b *blockingPINChecker) SOPINRecordMatches(ctx context.Context, tenantID, record string) (bool, error) {
+	return b.inner.SOPINRecordMatches(ctx, tenantID, record)
+}
+
+func TestClearPendingSystemSOInBackground_DoesNotBlockTheCallerOnTheSOPINRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	bindPendingSO(t, users, so)
+
+	pins := &blockingPINChecker{
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+		inner:   scriptedPINChecker{committed: true, matches: true},
+	}
+	returned := make(chan (<-chan struct{}), 1)
+	go func() {
+		returned <- ClearPendingSystemSOInBackground(ctx, store, users, pins, time.Millisecond, 3, discardLogger())
+	}()
+
+	var done <-chan struct{}
+	select {
+	case done = <-returned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the caller blocked on the SO PIN read")
+	}
+	select {
+	case <-pins.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background check never ran")
+	}
+	pending, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	assert.NotNil(t, pending, "the record stays until the read answers")
+
+	close(pins.release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background check never finished")
+	}
+	assert.True(t, SystemSOConsumed(ctx, store), "an enrolled SO's record is consumed once the read answers")
+}
+
+func TestClearPendingSystemSOInBackground_RetriesUntilTheSOIsEnrolled(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	bindPendingSO(t, users, so)
+
+	// A failing check is retried, and a bounded run that never succeeds
+	// keeps the record for the next start.
+	done := ClearPendingSystemSOInBackground(ctx, store, users,
+		scriptedPINChecker{committedErr: errBranchFault}, time.Millisecond, 3, discardLogger())
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("bounded retries never ended")
+	}
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	done = ClearPendingSystemSOInBackground(ctx, store, users,
+		scriptedPINChecker{committed: true, matches: true}, time.Millisecond, 3, discardLogger())
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background check never finished")
+	}
+	assert.True(t, SystemSOConsumed(ctx, store))
+}

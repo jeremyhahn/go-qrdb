@@ -4212,6 +4212,14 @@ type authBootstrapResult struct {
 // so no transport can make a change that leaves the bootstrap admin unable to
 // log in by certificate (delete, rename, disable or suspend it, drop mtls from
 // its methods, or withdraw its last live binding).
+// pendingSystemSOClearInterval and pendingSystemSOClearAttempts bound the
+// background retries that consume the pending system SO record once the SO
+// is enrolled (firstboot.ClearPendingSystemSOInBackground).
+const (
+	pendingSystemSOClearInterval = 5 * time.Second
+	pendingSystemSOClearAttempts = 60
+)
+
 func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc service.KVServicer, txSvc service.TransactionServicer, node raftNode, leaderWait time.Duration, shardID, replicaID uint64, tenantSvc tenant.TenantServicer, strictSoD bool, barriers *seal.BarrierRegistry, sealStrategy seal.StrategyID, auditLogger audit.AuditLogger, mtlsBindingPolicy auth.MTLSBindingPolicy, ceremonyCoreSvc *ceremony.CeremonyService, ceremonyCA ceremony.CeremonyCA, clientCACertPEM []byte, soTrust soTrustSeams, userOpts ...user.Option) (*mgmtBootstrapResult, error) {
 	// User IDs are Snowflake-assigned by the user store; map the Raft
 	// ReplicaID onto the Snowflake node field (zero maps to node 1 per the
@@ -4430,12 +4438,12 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	// (firstboot.SystemSOConsumed), and a node that only waited for the
 	// leader to replicate the admin may have returned before the SO exists.
 	// Kept, the record makes the next start's first boot enrol the SO.
+	// The check reads the committed SO PIN linearizably, which blocks until
+	// the cluster has a quorum; a node booting before its peers would never
+	// serve, so the check runs off the boot path and is retried there.
 	soPINCheck, _ := bootSOPINs.(firstboot.SOPINChecker)
-	if cleared, err := firstboot.ClearPendingSystemSOIfEnrolled(ctx, pendingAdminStore, bootUserSvc, soPINCheck); err != nil {
-		slog.Warn("first-boot: failed to clear the pending system SO record", slog.Any("error", err))
-	} else if !cleared {
-		slog.Warn("first-boot: the pending system SO is not enrolled yet; keeping its record for the next start")
-	}
+	firstboot.ClearPendingSystemSOInBackground(ctx, pendingAdminStore, bootUserSvc, soPINCheck,
+		pendingSystemSOClearInterval, pendingSystemSOClearAttempts, slog.Default())
 
 	systemStore, err := kvstore.NewNamespacedKVStore(
 		runtimeStore, tenant.IdentityNamespace(tenantid.System))
