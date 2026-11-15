@@ -68,6 +68,67 @@ func TestTenantRoundTripper_QualifiesIdentityRoutes(t *testing.T) {
 	}
 }
 
+// TestTenantRoundTripper_FillsTheFieldEachRouteReads round-trips each REST
+// identity route that does not read the tenantID query parameter through a
+// server reading the tenant where the go-qrdb REST handler does: the body's
+// tenant_id for POST /users, POST /roles and POST /users/lookup, the
+// tenant_id query parameter for GET /roles/by-name. The qualifier fills the
+// field; a tenant set explicitly there is kept.
+func TestTenantRoundTripper_FillsTheFieldEachRouteReads(t *testing.T) {
+	bodyTenant := func(r *http.Request) string {
+		var b struct {
+			TenantID string `json:"tenant_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		return b.TenantID
+	}
+	mux := http.NewServeMux()
+	for _, p := range []string{"POST /v1/users", "POST /v1/roles", "POST /v1/users/lookup"} {
+		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, bodyTenant(r)) })
+	}
+	mux.HandleFunc("GET /v1/roles/by-name", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.URL.Query().Get("tenant_id"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := &http.Client{Transport: TenantRoundTripper(http.DefaultTransport)}
+	ctx := WithTenantQualifier(context.Background(), "acme")
+
+	call := func(method, path, body string) string {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, srv.URL+path, rd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		got, _ := io.ReadAll(resp.Body)
+		return string(got)
+	}
+
+	for _, c := range []struct{ method, path, body, want string }{
+		{http.MethodPost, "/v1/users", `{"username":"ann"}`, "acme"},
+		{http.MethodPost, "/v1/roles", `{"name":"readers"}`, "acme"},
+		{http.MethodPost, "/v1/users/lookup", `{"email":"ann@example.com"}`, "acme"},
+		{http.MethodGet, "/v1/roles/by-name?name=readers", "", "acme"},
+		{http.MethodPost, "/v1/users", `{"username":"ann","tenant_id":"globex"}`, "globex"},
+		{http.MethodPost, "/v1/roles", `{"name":"readers","tenant_id":"globex"}`, "globex"},
+		{http.MethodPost, "/v1/users/lookup", `{"email":"ann@example.com","tenant_id":"globex"}`, "globex"},
+		{http.MethodGet, "/v1/roles/by-name?name=readers&tenant_id=globex", "", "globex"},
+	} {
+		if got := call(c.method, c.path, c.body); got != c.want {
+			t.Errorf("%s %s %s: the server read tenant %q, want %q", c.method, c.path, c.body, got, c.want)
+		}
+	}
+}
+
 func TestTenantUnaryClientInterceptor_SetsEmptyTenantField(t *testing.T) {
 	icpt := TenantUnaryClientInterceptor()
 	ctx := WithTenantQualifier(context.Background(), "acme")

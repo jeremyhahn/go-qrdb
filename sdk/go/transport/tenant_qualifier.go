@@ -59,8 +59,8 @@ func setTenantField(m protoreflect.Message, tenantID string) {
 }
 
 // TenantRoundTripper sends the tenant qualifier on the REST user and role
-// routes: the tenantID query parameter, and tenant_id in the body of a role
-// assignment.
+// routes, in the field each route reads (see RoundTrip): the tenantID or
+// tenant_id query parameter, or tenant_id in the JSON body.
 func TenantRoundTripper(base http.RoundTripper) http.RoundTripper {
 	return &tenantRoundTripper{base: base}
 }
@@ -73,17 +73,45 @@ func (rt *tenantRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		return rt.base.RoundTrip(req)
 	}
 	req = req.Clone(req.Context())
+	// Each route reads the tenant from one place: GET /roles/by-name from
+	// the tenant_id query parameter; the creates, the email lookup and the
+	// role assignments from tenant_id in their body; every other user and
+	// role route from the tenantID query parameter. A tenant the caller
+	// set explicitly is kept.
 	q := req.URL.Query()
-	if q.Get("tenantID") == "" {
-		q.Set("tenantID", tid)
+	queryKey := "tenantID"
+	if strings.HasSuffix(req.URL.Path, "/roles/by-name") {
+		queryKey = "tenant_id"
+	}
+	if q.Get(queryKey) == "" {
+		q.Set(queryKey, tid)
 		req.URL.RawQuery = q.Encode()
 	}
-	if strings.HasSuffix(req.URL.Path, "/roles/assign") || strings.HasSuffix(req.URL.Path, "/roles/unassign") {
+	if bodyTenantRoute(req.Method, req.URL.Path) {
 		if err := setBodyTenant(req, "tenant_id", tid); err != nil {
 			return nil, err
 		}
 	}
 	return rt.base.RoundTrip(req)
+}
+
+// bodyTenantRoute reports whether the REST route reads its tenant from
+// tenant_id in the JSON body: POST /users, POST /roles, POST /users/lookup
+// and the role assignments.
+func bodyTenantRoute(method, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	return hasAnySuffix(path, "/users", "/roles", "/users/lookup", "/roles/assign", "/roles/unassign")
+}
+
+func hasAnySuffix(s string, suffixes ...string) bool {
+	for _, x := range suffixes {
+		if strings.HasSuffix(s, x) {
+			return true
+		}
+	}
+	return false
 }
 
 func isIdentityPath(p string) bool {
