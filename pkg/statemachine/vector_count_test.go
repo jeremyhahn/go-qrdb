@@ -4,6 +4,7 @@ package statemachine
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -90,4 +91,33 @@ func TestVectorCount_TenantAtQuotaCanReUpsertStoredID(t *testing.T) {
 	require.Error(t, applyCountCmd(t, vsm, 5, &VectorCommand{Op: OpUpsertVector, ID: 3, Vector: []float32{1, 1}}),
 		"a new id past the quota is still refused")
 	require.Equal(t, uint64(2), storedCount(vsm))
+}
+
+// A failed existence read is not "absent": with the backing store still
+// writable, an upsert, a batch upsert and a delete whose existence read fails
+// are refused before they write, so neither the store nor VectorCount moves.
+func TestVectorCount_FailedExistenceReadRefusesTheWrite(t *testing.T) {
+	vsm := newCountTestVSM(t, 0)
+	require.NoError(t, applyCountCmd(t, vsm, 1, &VectorCommand{Op: OpUpsertVector, ID: 1, Vector: []float32{1, 0}}))
+	store := vsm.adapter.(*MockStorageAdapter).vecStor
+	readFault := errors.New("vector read fault")
+	store.mu.Lock()
+	store.getErr = readFault
+	store.mu.Unlock()
+
+	err := applyCountCmd(t, vsm, 2, &VectorCommand{Op: OpUpsertVector, ID: 2, Vector: []float32{0, 1}})
+	require.ErrorIs(t, err, readFault, "an upsert whose existence read fails must be refused")
+	err = applyCountCmd(t, vsm, 3, &VectorCommand{
+		Op: OpBatchUpsert, IDs: []uint64{3, 4}, Vectors: [][]float32{{1, 1}, {0, 1}},
+	})
+	require.ErrorIs(t, err, readFault, "a batch upsert whose existence read fails must be refused")
+	err = applyCountCmd(t, vsm, 4, &VectorCommand{Op: OpDeleteVector, IDs: []uint64{1, 5}})
+	require.ErrorIs(t, err, readFault, "a delete whose existence read fails must be refused")
+
+	store.mu.Lock()
+	store.getErr = nil
+	held := len(store.vectors["ns"])
+	store.mu.Unlock()
+	require.Equal(t, 1, held, "the refused writes must leave the store as it was")
+	require.Equal(t, uint64(1), storedCount(vsm), "the refused writes must leave VectorCount as it was")
 }

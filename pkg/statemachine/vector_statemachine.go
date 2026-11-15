@@ -16,6 +16,7 @@ package statemachine
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -742,18 +743,26 @@ func (vsm *VectorStateMachine) applyEntry(entry sm.Entry) (sm.Result, error) {
 	}
 }
 
-// handleUpsert handles vector upsert operations.
 // vectorStored reports whether store holds vector id in namespace. Apply
 // reads it before a write so that every replica, holding the same applied
 // state, decides the same way whether the write adds or removes a vector.
-func vectorStored(ctx context.Context, store vector.Storage, namespace string, id uint64) bool {
+// Only a not-found read means absent: any other failed read is returned, so
+// the write is refused before it mutates anything rather than counted as if
+// the vector were absent.
+func vectorStored(ctx context.Context, store vector.Storage, namespace string, id uint64) (bool, error) {
 	vec, err := store.GetVector(ctx, namespace, id)
-	return err == nil && vec != nil
+	if stderrors.Is(err, vector.ErrVectorNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, api.NewOperationFailedError("read vector", err)
+	}
+	return vec != nil, nil
 }
 
 // newVectorIDs counts the distinct ids of a batch that store does not yet
 // hold in namespace: the vectors a batch upsert adds to VectorCount.
-func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, ids []uint64) int {
+func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, ids []uint64) (int, error) {
 	seen := make(map[uint64]struct{}, len(ids))
 	added := 0
 	for _, id := range ids {
@@ -761,12 +770,18 @@ func newVectorIDs(ctx context.Context, store vector.Storage, namespace string, i
 			continue
 		}
 		seen[id] = struct{}{}
-		if !vectorStored(ctx, store, namespace, id) {
+		stored, err := vectorStored(ctx, store, namespace, id)
+		if err != nil {
+			return 0, err
+		}
+		if !stored {
 			added++
 		}
 	}
-	return added
+	return added, nil
 }
+
+// handleUpsert handles vector upsert operations.
 
 func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorCommand) (sm.Result, error) {
 	start := time.Now()
@@ -798,8 +813,12 @@ func (vsm *VectorStateMachine) handleUpsert(ctx context.Context, cmd *VectorComm
 
 	// Check quota before upsert: a re-upsert of a stored id adds no vector,
 	// so it neither raises VectorCount nor counts against the vector quota.
+	stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID)
+	if err != nil {
+		return sm.Result{}, err
+	}
 	added := 0
-	if !vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.ID) {
+	if !stored {
 		added = 1
 	}
 	estimatedBytes := EstimateVectorBytes(len(cmd.Vector), len(cmd.Metadata))
@@ -894,12 +913,28 @@ func (vsm *VectorStateMachine) handleDelete(ctx context.Context, cmd *VectorComm
 	// Get namespace-specific HNSW index (SECURITY FIX: per-namespace isolation)
 	hnswIdx := vsm.getIndex(cmd.Namespace)
 
+	// Only an id stored before the delete removes a vector; a missing or
+	// repeated id leaves VectorCount where it is, on every replica. Every
+	// id's existence is read before any is deleted, so a failed read refuses
+	// the whole command before it mutates anything.
+	wasStored := make([]bool, len(idsToDelete))
+	seen := make(map[uint64]struct{}, len(idsToDelete))
+	for i, id := range idsToDelete {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		stored, err := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, id)
+		if err != nil {
+			return sm.Result{}, err
+		}
+		wasStored[i] = stored
+	}
+
 	// Delete all vectors
 	deletedCount := 0
-	for _, id := range idsToDelete {
-		// Only an id stored before the delete removes a vector; a missing
-		// or repeated id leaves VectorCount where it is, on every replica.
-		stored := vectorStored(ctx, vectorStorage.VectorStorage(), cmd.Namespace, id)
+	for i, id := range idsToDelete {
+		stored := wasStored[i]
 
 		// Delete via vector storage API
 		if err := vectorStorage.VectorStorage().DeleteVector(ctx, cmd.Namespace, id); err != nil {
@@ -995,7 +1030,10 @@ func (vsm *VectorStateMachine) handleBatchUpsert(ctx context.Context, cmd *Vecto
 
 	// Check vector count and storage quotas: only the batch's distinct ids
 	// not yet stored are new vectors.
-	added := newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
+	added, err := newVectorIDs(ctx, vectorStorage.VectorStorage(), cmd.Namespace, cmd.IDs)
+	if err != nil {
+		return sm.Result{}, err
+	}
 	if err := ns.CheckQuota(added, totalEstimatedBytes); err != nil {
 		return sm.Result{}, err
 	}
