@@ -4779,8 +4779,9 @@ message CeremonyInitializeRequest {
     // so_username names the system tenant's Security Officer first boot
     // enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
     // the system tenant) and so_cert_pem (adopted; verified against
-    // admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. A
-    // strict separation-of-duties deployment requires it.
+    // admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. It is
+    // optional in both separation-of-duties postures: without an SO the
+    // SO-exclusive operations are refused.
     string so_username = 14;
     string so_csr_pem = 15;
     string so_cert_pem = 16;

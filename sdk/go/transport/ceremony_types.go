@@ -73,8 +73,9 @@ type CeremonyInitializeRequest struct {
 	// SOUsername names the system tenant's Security Officer first boot
 	// enrols (go-qrdb#1128), with exactly one of SOCSRPEM (signed under the
 	// system tenant) and SOCertPEM (adopted; verified against
-	// AdminCertPoolPEM through SOChainPEM). Its PIN is SOPin. A strict
-	// separation-of-duties deployment requires it.
+	// AdminCertPoolPEM through SOChainPEM). Its PIN is SOPin. It is optional
+	// in both separation-of-duties postures: without an SO the SO-exclusive
+	// operations are refused.
 	SOUsername string `json:"so_username,omitempty"`
 	SOCSRPEM   string `json:"so_csr_pem,omitempty"`
 	SOCertPEM  string `json:"so_cert_pem,omitempty"`

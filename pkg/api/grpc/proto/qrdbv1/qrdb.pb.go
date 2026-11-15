@@ -22464,8 +22464,9 @@ type CeremonyInitializeRequest struct {
 	// so_username names the system tenant's Security Officer first boot
 	// enrols (go-qrdb#1128), with exactly one of so_csr_pem (signed under
 	// the system tenant) and so_cert_pem (adopted; verified against
-	// admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. A
-	// strict separation-of-duties deployment requires it.
+	// admin_cert_pool_pem through so_chain_pem). Its PIN is so_pin. It is
+	// optional in both separation-of-duties postures: without an SO the
+	// SO-exclusive operations are refused.
 	SoUsername    string `protobuf:"bytes,14,opt,name=so_username,json=soUsername,proto3" json:"so_username,omitempty"`
 	SoCsrPem      string `protobuf:"bytes,15,opt,name=so_csr_pem,json=soCsrPem,proto3" json:"so_csr_pem,omitempty"`
 	SoCertPem     string `protobuf:"bytes,16,opt,name=so_cert_pem,json=soCertPem,proto3" json:"so_cert_pem,omitempty"`

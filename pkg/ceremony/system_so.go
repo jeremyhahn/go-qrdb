@@ -255,6 +255,40 @@ func parsePEMCert(certPEM []byte) *x509.Certificate {
 	return cert
 }
 
+// checkSOAgainstIssuedAdmin refuses a system SO whose key is the key of the
+// admin certificate already issued (adminCertPEM), under the rule
+// validateSystemSOInputs applies to the supplied admin inputs: strict
+// separation refuses any shared key, the standard posture allows one only
+// for the admin enrolled as SO. Options naming no SO, or no issued admin
+// certificate, pass.
+func checkSOAgainstIssuedAdmin(adminCertPEM []byte, opts *InitializeOptions, strict bool) error {
+	if !systemSORequested(opts) || len(adminCertPEM) == 0 {
+		return nil
+	}
+	admin := parsePEMCert(adminCertPEM)
+	if admin == nil {
+		return &SystemSORejectedError{Cause: errors.New("the issued bootstrap admin certificate does not parse")}
+	}
+	var soKey []byte
+	if len(opts.SOCertPEM) > 0 {
+		cert := parsePEMCert(opts.SOCertPEM)
+		if cert == nil {
+			return &SystemSORejectedError{Cause: errors.New("the system SO certificate does not parse")}
+		}
+		soKey = cert.RawSubjectPublicKeyInfo
+	} else {
+		csr, err := parseAndVerifyCSR(opts.SOCSRPEM)
+		if err != nil {
+			return &SystemSORejectedError{Cause: err}
+		}
+		soKey = csr.RawSubjectPublicKeyInfo
+	}
+	if bytes.Equal(admin.RawSubjectPublicKeyInfo, soKey) && (strict || opts.SOUsername != adminUsername) {
+		return &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
+	}
+	return nil
+}
+
 // LastIssuedSystemSO returns a copy of the system SO the last successful
 // Initialize issued, or nil when it named none. The composer writes it to
 // the replicated pending store so first boot on any node can enrol the SO.
@@ -326,6 +360,17 @@ func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca Cer
 	// is consumed.
 	if s.unrecordedMofNResult != nil && !s.unrecordedMofNRoster.equal(rosterOf(opts)) {
 		return nil, true, ErrInitializeRetryRoster
+	}
+	// validateSystemSOInputs checked the SO's key against this retry's admin
+	// inputs, but the admin the retry hands back is the carried one the
+	// failed call issued: a retry naming another admin key could pass that
+	// check with an SO sharing the real admin's key. The separation is
+	// checked again here against the carried certificate, before anything
+	// is recorded.
+	if carried := s.unrecordedMofNResult; carried != nil {
+		if err := checkSOAgainstIssuedAdmin(carried.AdminCertPEM, opts, s.strictSoD); err != nil {
+			return nil, true, err
+		}
 	}
 	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
 		return nil, true, err

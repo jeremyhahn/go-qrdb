@@ -619,6 +619,21 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		}
 	}
 
+	// failAfterUnseal ends the call on an error after the single-admin
+	// barrier was unsealed above. A fresh barrier unsealed here holds no
+	// SO record and no handoff marker yet, so leaving it unsealed would let
+	// HoldsSealedWindow report false and startup go on to first boot
+	// without the SO the operator asked for: every such exit reseals it,
+	// exactly as a failed SO record write does, so the init stays
+	// retryable.
+	failAfterUnseal := func(err error) (*InitResult, error) {
+		if !isMofN {
+			s.abandonSingleAdminInitLocked()
+		}
+		s.mu.Unlock()
+		return nil, err
+	}
+
 	// Resolve the TLS certificate, SPKI pin and CA bundle this call
 	// returns. A CeremonyCA self-issues the node's TLS certificate and
 	// pins its OWN certificate (the issuer): any certificate it issues
@@ -640,8 +655,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// exactly as the key the CA used to generate for it was.
 		tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, &CertEncodeError{Err: err}
+			return failAfterUnseal(&CertEncodeError{Err: err})
 		}
 		tlsCert, err := ca.IssueCertificate(ctx, &IssueCertRequest{
 			PublicKey:    tlsKey.Public(),
@@ -652,30 +666,26 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			ValidityDays: 365,
 		})
 		if err != nil {
-			s.mu.Unlock()
 			s.logger.Error("failed to issue TLS certificate", slog.String("error", err.Error()))
-			return nil, ErrInitFailed
+			return failAfterUnseal(ErrInitFailed)
 		}
 		tlsCertPEM = tlsCert.CertPEM
 
 		caCert, err := ca.CACertificate(ctx)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, &CABundleError{Err: err}
+			return failAfterUnseal(&CABundleError{Err: err})
 		}
 		spkiPin, err = computeSPKIPin(caCert)
 		if err != nil {
-			s.mu.Unlock()
-			return nil, err
+			return failAfterUnseal(err)
 		}
 	} else {
 		// serverCert was already resolved and validated up front, before
 		// any side effect ran (see above): reused here, never reparsed.
 		spkiPin, err = computeSPKIPin(serverCert)
 		if err != nil {
-			s.mu.Unlock()
 			s.logger.Error("failed to compute SPKI pin from server certificate", slog.String("error", err.Error()))
-			return nil, ErrInitFailed
+			return failAfterUnseal(ErrInitFailed)
 		}
 		tlsCertPEM = s.config.ServerCertPEM
 	}
@@ -703,9 +713,8 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// NEVER written anywhere by this package.
 	adminCertPEM, adminKeyPEM, adminSource, err := issueAdminCredential(ctx, ca, s.deps.TrustDomain, opts, caBundle)
 	if err != nil {
-		s.mu.Unlock()
 		s.logger.Error("bootstrap admin credential issuance failed", slog.String("error", err.Error()))
-		return nil, err
+		return failAfterUnseal(err)
 	}
 	s.lastAdminCertPEM = adminCertPEM
 	s.lastAdminSource = adminSource

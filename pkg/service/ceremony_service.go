@@ -99,7 +99,8 @@ type CeremonyInitializeOptions struct {
 	// enrols at first boot (go-qrdb#1128), with exactly one of SOCSRPEM
 	// (signed under the system tenant) and SOCertPEM (adopted, verified
 	// against AdminCertPoolPEM through SOChainPEM). The SO's PIN is SOPin.
-	// A strict separation-of-duties deployment requires it.
+	// It is optional in both separation-of-duties postures: without an SO
+	// the SO-exclusive operations are refused.
 	SOUsername string
 	SOCSRPEM   string
 	SOCertPEM  string

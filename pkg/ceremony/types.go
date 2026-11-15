@@ -189,8 +189,9 @@ type InitializeOptions struct {
 	AdminGenerate bool
 
 	// SOUsername names the system tenant's Security Officer, enrolled at
-	// first boot with the so role alone; a strict separation-of-duties
-	// deployment refuses to boot without one. Its login certificate is
+	// first boot with the so role alone. It is optional in both
+	// separation-of-duties postures: a deployment without one starts and
+	// refuses the SO-exclusive operations. Its login certificate is
 	// SOCSRPEM signed by the ceremony CA or SOCertPEM adopted, exactly one;
 	// its PIN is SOPin, kept only as the hash auth.HashSOPIN makes. Optional
 	// as a whole: no SOUsername and no SO certificate input names no SO.

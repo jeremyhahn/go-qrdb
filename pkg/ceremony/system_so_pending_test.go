@@ -161,9 +161,9 @@ func TestInitialize_SystemSO_SigningFaultIssuesNoSO(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "simulated CA signing fault")
 	assert.Nil(t, svc.LastIssuedSystemSO())
-	pending, err := svc.PendingSystemSO(ctx)
-	require.NoError(t, err)
-	assert.Nil(t, pending)
+	// The failed call resealed the barrier it unsealed: nothing was
+	// recorded in it, and the sealed window holds until a retry.
+	assert.True(t, svc.HoldsSealedWindow(ctx), "the failed init reseals the barrier")
 }
 
 // faultCA fails the TLS issuance or the CA certificate read Initialize
@@ -228,9 +228,9 @@ func TestInitialize_SystemSO_CAFaultsRecordNoSO(t *testing.T) {
 			require.Error(t, err)
 			tc.want(t, err)
 			assert.Nil(t, svc.LastIssuedSystemSO())
-			pending, err := svc.PendingSystemSO(ctx)
-			require.NoError(t, err)
-			assert.Nil(t, pending)
+			// The failed call resealed the barrier it unsealed: nothing was
+			// recorded in it, and the sealed window holds until a retry.
+			assert.True(t, svc.HoldsSealedWindow(ctx), "the failed init reseals the barrier")
 		})
 	}
 }

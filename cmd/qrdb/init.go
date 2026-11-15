@@ -132,8 +132,8 @@ Canonical environment variables (Viper-bound):
 
 --so-username with --so-csr or --so-cert names the system tenant's Security
 Officer, enrolled at first boot with only the so role and --so-pin as its
-PIN. A server running separation of duties strict refuses to boot without
-one; the standard posture keeps it optional.
+PIN. The SO is optional in both separation-of-duties postures: a server
+without one starts, and refuses the SO-exclusive operations.
 
 M-of-N Shamir custody (--barrier-strategy shamir with --threshold >= 2)
 names the initial share holders up front: Security Officers via --officers
@@ -227,7 +227,7 @@ func registerInitFlags(cmd *cobra.Command, f *initFlags) {
 	cmd.Flags().BoolVar(&f.adminGenerate, "admin-generate", false,
 		"Generate the bootstrap admin's key pair and certificate in-process, returning the private key exactly once. Mutually exclusive with --admin-csr/--admin-cert. NOT suitable for production (dev/test/evaluation ONLY). Exactly one of --admin-csr, --admin-cert or --admin-generate is required.")
 	cmd.Flags().StringVar(&f.soUsername, "so-username", "",
-		"Username of the system tenant's Security Officer, enrolled at first boot with only the so role; its PIN is --so-pin. Needs exactly one of --so-csr and --so-cert. Required when the server runs separation of duties strict.")
+		"Username of the system tenant's Security Officer, enrolled at first boot with only the so role; its PIN is --so-pin. Needs exactly one of --so-csr and --so-cert. Optional in both separation-of-duties postures; without an SO the SO-exclusive operations are refused.")
 	cmd.Flags().StringVar(&f.soCSR, "so-csr", "",
 		"Path to a PEM-encoded CSR for the system SO's certificate, signed under the system tenant. Its key must not be the admin's. Mutually exclusive with --so-cert.")
 	cmd.Flags().StringVar(&f.soCert, "so-cert", "",
