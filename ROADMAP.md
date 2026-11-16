@@ -101,6 +101,9 @@ The cluster engine and database system for every project in the stack: embedded,
 - **sdk-embedded-index-service** — sdk/go type and constructor aliases for the index service — [#928](../../issues/928), [docs/secondary-indexes/](docs/secondary-indexes/) — done
 - **sdk-compaction-policy-reexport** — sdk/go type, constant and value aliases for the compaction policy — [#927](../../issues/927), [docs/key-value/](docs/key-value/) — done
 - **sdk-rbac-authorization-reexport** — sdk/go aliases for the surfaces a layer above authorizes its own requests with — [docs/identity-rbac/](docs/identity-rbac/), [docs/audit/](docs/audit/) — done
+- **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
+- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — done
+- **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — done
 
 ## Now
 
@@ -108,9 +111,8 @@ The cluster engine and database system for every project in the stack: embedded,
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683), [docs/multi-tenancy/](docs/multi-tenancy/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702), [docs/release/](docs/release/) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
-- **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
-- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729), [docs/databases/](docs/databases/) — in progress
+- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
 
 ## Next
 
@@ -119,12 +121,10 @@ The cluster engine and database system for every project in the stack: embedded,
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
-- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
 - **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — open
 
 ## Future
 
-- **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — open
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision
 - **volume-pool-tenant-moves** — tenant moves between volume pools, in phase 2 — [docs/volume-pools/](docs/volume-pools/) — open
