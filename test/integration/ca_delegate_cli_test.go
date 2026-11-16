@@ -96,7 +96,16 @@ type delegationCredential struct {
 // second value is tenant B's, and the third holds each tenant's login CA.
 func startDelegationNode(t *testing.T) (*multiProtoNode, delegationCredential, delegationKeyB) {
 	t.Helper()
-	sdk.RegisterPermissionRoleGrant(delegationPrincipal, permission.KVGet, permission.KVPut)
+	mp, adminB, keyB, _ := startDelegationNodeWith(t)
+	return mp, adminB, keyB
+}
+
+// startDelegationNodeWith is startDelegationNode that also gives each of
+// extra a login CA, for the caller to onboard on the returned node: Key B is
+// fixed once the node serves.
+func startDelegationNodeWith(t *testing.T, extra ...string) (*multiProtoNode, delegationCredential, delegationKeyB, *node.Node) {
+	t.Helper()
+	sdk.RegisterPermissionRoleGrant(delegationPrincipal, permission.KVGet, permission.KVPut, permission.CertsDelegate)
 
 	ca := generateTestCA(t)
 	serverKP := ca.issue(t, t.TempDir(), qrdbdharness.WithSubject("node", ""), qrdbdharness.WithServerAuth())
@@ -149,6 +158,9 @@ func startDelegationNode(t *testing.T) (*multiProtoNode, delegationCredential, d
 		delegationTenantA: newDelegationCA(t, delegationTenantA+"-login-ca"),
 		delegationTenantB: newDelegationCA(t, delegationTenantB+"-login-ca"),
 	}
+	for _, id := range extra {
+		keyB[id] = newDelegationCA(t, id+"-login-ca")
+	}
 	n, err := node.NewStandaloneNode(context.Background(), cfg,
 		[]server.ServerOption{server.WithTLS(tlsCfg), server.WithAuditLogger(trail)},
 		node.WithServicePrincipal(delegationPrincipal),
@@ -182,7 +194,7 @@ func startDelegationNode(t *testing.T) (*multiProtoNode, delegationCredential, d
 		grpcPort:   tcp[1],
 		mcpPort:    tcp[2],
 		quicPort:   quic[0],
-	}, adminB, keyB
+	}, adminB, keyB, n
 }
 
 // onboardDelegationTenant creates a barrier tenant with its first admin and
@@ -204,6 +216,13 @@ func delegationEntitlements() *quota.Entitlements {
 
 func onboardDelegationTenant(t *testing.T, n *node.Node, tenantID string) delegationCredential {
 	t.Helper()
+	return onboardDelegationTenantIn(t, n, tenantID, tenant.IsolationBarrier)
+}
+
+// onboardDelegationTenantIn is onboardDelegationTenant for any isolation: a
+// prefix tenant has no home store, so its records share the system's.
+func onboardDelegationTenantIn(t *testing.T, n *node.Node, tenantID string, isolation tenant.IsolationType) delegationCredential {
+	t.Helper()
 	keyPEM, csrPEM, err := certtest.NewCSR(tenantID + "-admin")
 	if err != nil {
 		t.Fatalf("NewCSR: %v", err)
@@ -211,8 +230,8 @@ func onboardDelegationTenant(t *testing.T, n *node.Node, tenantID string) delega
 	res, err := n.Services().TenantOnboarding.OnboardTenant(context.Background(), &service.OnboardTenantRequest{
 		ID:                tenantID,
 		Name:              tenantID,
-		IsolationType:     tenant.IsolationBarrier,
-		BarrierAutoUnseal: true,
+		IsolationType:     isolation,
+		BarrierAutoUnseal: isolation == tenant.IsolationBarrier,
 		AdminUsername:     tenantID + "-admin",
 		AdminCSRPEM:       csrPEM,
 	})

@@ -129,7 +129,7 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_vector_get_index_stats":             permission.VectorGetIndexStats,
 	"qrdb_vector_compact_namespace":           permission.VectorCompact,
 	"qrdb_vector_get_compaction_progress":     permission.VectorGetCompactProg,
-	"qrdb_health":                             permission.AdminHealth,
+	"qrdb_health":                             permission.Public,
 	"qrdb_status":                             permission.AdminStatus,
 	"qrdb_peers":                              permission.AdminPeers,
 	"qrdb_add_member":                         permission.AdminAddMember,
@@ -184,6 +184,9 @@ var expectedToolPerms = map[string]permission.Permission{
 	"qrdb_cert_issue":                         permission.CertsIssue,
 	"qrdb_cert_enroll":                        permission.CertsEnroll,
 	"qrdb_cert_delegate":                      permission.CertsDelegate,
+	"qrdb_cert_delegation_policy_put":         permission.CertsDelegate,
+	"qrdb_cert_delegation_policy_list":        permission.CertsDelegate,
+	"qrdb_cert_delegation_policy_delete":      permission.CertsDelegate,
 	"qrdb_trust_anchor_add":                   permission.TrustAnchorsAdd,
 	"qrdb_trust_anchor_list":                  permission.TrustAnchorsList,
 	"qrdb_trust_anchor_remove":                permission.TrustAnchorsRemove,
@@ -534,7 +537,8 @@ func TestBuiltinToolCatalogue_CoversFullyWiredServer(t *testing.T) {
 func TestToolMappingGuard_PermissionsRegistered(t *testing.T) {
 	srv := newFullyWiredGuardServer(t)
 	for tool, perm := range srv.toolPerms.Entries() {
-		if perm == permission.IdentityGated {
+		// IdentityGated and Public are sentinels, deliberately unregistered.
+		if perm == permission.IdentityGated || perm == permission.Public {
 			continue
 		}
 		if !permission.IsRegistered(perm) {

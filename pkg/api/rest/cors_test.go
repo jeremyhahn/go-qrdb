@@ -16,6 +16,7 @@ package rest
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -163,6 +164,52 @@ func TestCORSMiddleware_PreflightSpecificOrigin(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Max-Age"); got != "7200" {
 		t.Fatalf("expected max-age 7200, got %q", got)
+	}
+}
+
+func TestCORSMiddleware_AllowCredentials(t *testing.T) {
+	for _, creds := range []bool{true, false} {
+		for _, method := range []string{http.MethodOptions, http.MethodGet} {
+			t.Run(fmt.Sprintf("credentials=%v/%s", creds, method), func(t *testing.T) {
+				cfg := CORSConfig{
+					AllowedOrigins:   []string{"https://app.example.com"},
+					AllowedHeaders:   []string{"Content-Type"},
+					MaxAge:           60,
+					AllowCredentials: creds,
+				}
+				handler := corsMiddleware(cfg, testHandler)
+
+				req := httptest.NewRequest(method, "/kv/mykey", nil)
+				req.Header.Set("Origin", "https://app.example.com")
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				want := ""
+				if creds {
+					want = "true"
+				}
+				if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != want {
+					t.Fatalf("Access-Control-Allow-Credentials = %q, want %q", got, want)
+				}
+				if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+					t.Fatalf("Access-Control-Allow-Origin = %q, want the origin echoed", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCORSMiddleware_AllowCredentials_DeniedOrigin(t *testing.T) {
+	cfg := CORSConfig{AllowedOrigins: []string{"https://app.example.com"}, AllowCredentials: true}
+	handler := corsMiddleware(cfg, testHandler)
+	for _, method := range []string{http.MethodOptions, http.MethodGet} {
+		req := httptest.NewRequest(method, "/kv/mykey", nil)
+		req.Header.Set("Origin", "https://evil.example.com")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("%s: Access-Control-Allow-Credentials = %q for an unlisted origin, want none", method, got)
+		}
 	}
 }
 

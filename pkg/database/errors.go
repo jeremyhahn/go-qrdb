@@ -523,6 +523,23 @@ func (e *CallerShardIDError) Error() string {
 		strconv.FormatUint(e.ShardID, 10) + "; shard IDs are issued by the cluster, never chosen by the caller"
 }
 
+// StateStorageUpdateError reports a Raft update that names a state storage
+// other than the one recorded at create. The state storage holds the
+// database's Raft state and is fixed for its lifetime, so the update is
+// refused rather than silently keeping the recorded store.
+type StateStorageUpdateError struct {
+	Name      string
+	Recorded  BackendType
+	Requested BackendType
+}
+
+// Error returns a human-readable description of the refusal.
+func (e *StateStorageUpdateError) Error() string {
+	return "database: database " + strconv.Quote(e.Name) + " records raft state storage " +
+		strconv.Quote(string(e.Recorded)) + "; an update cannot change it to " +
+		strconv.Quote(string(e.Requested))
+}
+
 // DiscoverySecretRebindError is returned when a Raft update changes what a
 // stored discovery secret authenticates -- the static peer set (the static
 // block's peers and, under static discovery, the top-level ones; Field is

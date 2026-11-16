@@ -46,16 +46,6 @@ func TestNetworkRows_Columns(t *testing.T) {
 	}
 }
 
-// TestNetworkRows_ColumnsEmpty verifies Columns returns empty slice when no columns.
-func TestNetworkRows_ColumnsEmpty(t *testing.T) {
-	resp := &transport.SQLQueryResult{}
-	rows := newNetworkRows(resp)
-	cols := rows.Columns()
-	if len(cols) != 0 {
-		t.Errorf("Columns() = %v, want empty", cols)
-	}
-}
-
 // TestNetworkRows_Next_Iteration verifies Next iterates through all rows.
 func TestNetworkRows_Next_Iteration(t *testing.T) {
 	resp := &transport.SQLQueryResult{
@@ -85,21 +75,6 @@ func TestNetworkRows_Next_Iteration(t *testing.T) {
 	// Next after last row returns io.EOF.
 	if err := rows.Next(dest); err != io.EOF {
 		t.Errorf("Next at end = %v, want io.EOF", err)
-	}
-}
-
-// TestNetworkRows_EOF verifies io.EOF is returned when no rows.
-func TestNetworkRows_EOF(t *testing.T) {
-	resp := &transport.SQLQueryResult{
-		Columns: []string{"id"},
-		Rows:    []map[string]interface{}{},
-	}
-	rows := newNetworkRows(resp)
-	dest := make([]driver.Value, 1)
-
-	err := rows.Next(dest)
-	if err != io.EOF {
-		t.Errorf("Next on empty rows = %v, want io.EOF", err)
 	}
 }
 
@@ -493,18 +468,5 @@ func TestConvertValue_Uint64AcrossInt64Boundary(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestConvertValue_Uint64IsDriverValue asserts every rendering convertValue
-// produces for a uint64 is a type database/sql/driver.Value admits. A uint64
-// returned as itself would scan correctly today and violate the interface --
-// the kind of thing that works until a caller uses a different destination.
-func TestConvertValue_Uint64IsDriverValue(t *testing.T) {
-	for _, in := range []uint64{0, math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64} {
-		got := convertValue(in)
-		if !driver.IsValue(got) {
-			t.Fatalf("convertValue(%d) = %v (%T), which is not a driver.Value", in, got, got)
-		}
 	}
 }

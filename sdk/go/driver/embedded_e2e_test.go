@@ -297,7 +297,7 @@ func TestEmbedded_TimeoutIsHonoured(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
-	time.Sleep(time.Millisecond)
+	<-ctx.Done()
 
 	_, err := db.ExecContext(ctx, "INSERT INTO kv (`key`, value) VALUES (?, ?)", "k", "v")
 	if err == nil {

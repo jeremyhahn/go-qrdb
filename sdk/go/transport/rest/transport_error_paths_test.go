@@ -17,7 +17,6 @@ package rest
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -388,15 +387,6 @@ func TestRESTPatchJSONDecode_BadJSON(t *testing.T) {
 // ===========================================================================
 // Watch closed already covered, here ensure Watch with empty options compiles
 // ===========================================================================
-
-func TestRESTWatchTypes_Compile(t *testing.T) {
-	// Just verify type construction works for completeness.
-	opts := transport.WatchOptions{StartRevision: 1, PrevKV: true, ProgressNotify: true}
-	if opts.StartRevision != 1 {
-		t.Fatal("type mismatch")
-	}
-	_ = strings.Repeat("", 0)
-}
 
 // ===========================================================================
 // AuthFactor + Ceremony BadJSON paths

@@ -66,24 +66,9 @@ func TestGRPCTenant_CRUDMethods_Success(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	t.Run("CreateTenant", func(t *testing.T) {
-		resp, err := tr.CreateTenant(ctx, &transport.CreateTenantRequest{ID: "t1", Name: "test"})
-		if err != nil {
-			t.Fatalf("CreateTenant: %v", err)
-		}
-		if resp.Tenant.ID != "t1" {
-			t.Fatalf("ID = %q", resp.Tenant.ID)
-		}
-	})
-	t.Run("GetTenant", func(t *testing.T) {
-		resp, err := tr.GetTenant(ctx, "t1")
-		if err != nil {
-			t.Fatalf("GetTenant: %v", err)
-		}
-		if resp.Tenant.ID != "t1" {
-			t.Fatalf("ID = %q", resp.Tenant.ID)
-		}
-	})
+	// CreateTenant runs over a real gRPC node in conformance's
+	// TestTenantOnboarding_CSRAdminLogsInUnderRequired, and GetTenant and
+	// UpdateTenant in TestTenantDescriptiveFields_RoundTripOnEveryTransport.
 	t.Run("ListTenants", func(t *testing.T) {
 		if _, err := tr.ListTenants(ctx); err != nil {
 			t.Fatalf("ListTenants: %v", err)
@@ -92,11 +77,6 @@ func TestGRPCTenant_CRUDMethods_Success(t *testing.T) {
 	t.Run("DeleteTenant", func(t *testing.T) {
 		if err := tr.DeleteTenant(ctx, "t1"); err != nil {
 			t.Fatalf("DeleteTenant: %v", err)
-		}
-	})
-	t.Run("UpdateTenant", func(t *testing.T) {
-		if _, err := tr.UpdateTenant(ctx, &transport.UpdateTenantRequest{TenantID: "t1"}); err != nil {
-			t.Fatalf("UpdateTenant: %v", err)
 		}
 	})
 	t.Run("UpdateTenantQuotas", func(t *testing.T) {

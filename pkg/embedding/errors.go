@@ -116,21 +116,6 @@ func (e *HTTPError) Error() string {
 	return fmt.Sprintf("embedding: HTTP %d: %s", e.StatusCode, e.Body)
 }
 
-// DimensionMismatchError is returned when the embedding dimensions returned by
-// the provider do not match the expected dimensions.
-type DimensionMismatchError struct {
-	// Expected is the number of dimensions that was anticipated.
-	Expected int
-
-	// Received is the number of dimensions that the provider actually returned.
-	Received int
-}
-
-// Error implements the error interface.
-func (e *DimensionMismatchError) Error() string {
-	return fmt.Sprintf("embedding: dimension mismatch: expected %d, received %d", e.Expected, e.Received)
-}
-
 // MarshalError is returned when the client fails to marshal the request body.
 type MarshalError struct {
 	// Cause is the underlying marshalling error.

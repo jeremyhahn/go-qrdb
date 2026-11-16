@@ -69,8 +69,8 @@ limitations under the License.
   coverage-merge`, the one repo-wide coverage gate over every leg's profile. The two
   sweeps, `make vet-tags` and `make secure-analyzer`, run here on every tag
   although ci.yml runs them (`make lint-sweeps`, in the `lint` job) only on its
-  weekly `schedule:` event, cron `0 4 * * 0` (early Sunday UTC, this project's
-  night in the factory's rotation, #1349), never on a pull request, a push
+  nightly `schedule:` event, cron `0 4 * * *` (04:00 UTC every night,
+  ruling 633), never on a pull request, a push
   or a dispatch (ci-template v1.30; the one schedule trigger, ruling 216(1)).
   `make lint` includes `lint-workflows`, which runs actionlint over
   `.github/workflows/` and `.gitea/workflows/` after asserting the binary is
@@ -99,13 +99,13 @@ Release workflow's `publish` job uses the run's own token, scoped by its
 | `scripts/check-tag-lockstep_test.sh` (`make test-tag-lockstep`) | the audit refuses a skewed set, including one whose deepest module's tag sits on another commit |
 | `test/buildgates/release_workflow_test.go` | `release.yml`'s shape, with a mutation for each property: an added trigger, a widened tag pattern, a hand-written tag push, a call to `make release-alpha`, a lockstep audit with no retry or none at all, a skipped VERSION/CHANGELOG check, a gate job (`gate`, `gate-sweeps`, `gate-tags`, the `coverage` legs and `coverage-merge`) missing one of the matching ci.yml commands, `publish` losing its write permission or its dependency on `gate` or `coverage-merge`, a hardcoded `github.com` instead of `github.api_url`, a `RELEASE_BOT` reference, and a step that tolerates failure. It also scans every OTHER workflow file for the same tag-write and `release-alpha` violations |
 | `test/buildgates/action_pins_test.go` | every `uses:` is pinned to a 40-hex commit |
-| `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `code`, `full` or `nightly`; a `code` job carries exactly `if: needs.preflight.outputs.docs_only != 'true'`, needs `preflight`, and `ci-gate`'s DOCS_ONLY is `${{ needs.preflight.outputs.docs_only }}`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no code, full-tier or nightly job, and a code job needs no full-tier or nightly job; every `integration*` job (and a job named `trivy`) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run). Every tier's jobs are pinned by name (`prTierJobs`: `preflight`, `lint`, `lint-gates`; `codeTierJobs`: `test-typescript`, `image`, `coverage`, `coverage-merge`, `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`; `fullTierJobs`: `integration-standalone`, `integration-features`, `fips`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, a `nightly` job outside a schedule or dispatch run or a `code` job when DOCS_ONLY is `true`, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml`'s group on `main` carries the event and the commit, a scheduled run's group is `schedule-<repository>` (ci-template v1.29.3), with a literal `cancel-in-progress: true` (no `main` run cancels another; an expression, a `main` group that carries the event only, or a ref-keyed group reddens it); every other workflow on pull_request has the ref-keyed group with `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `ci.yml` (its in-template cron, the one scheduler under rulings 135 and 216(1)) has a `schedule:`; `ci.yml`'s is exactly one entry, cron `0 4 * * 0`, early Sunday UTC, this project's night in the factory's rotation (#1349), and a nightly cron, another weekday or a second entry reddens it. Each rule has a fixture mutation that must redden it |
+| `test/buildgates/ci_tiers_test.go` | ci.yml's tiers (see architecture.md, "CI tiers"): every job is in `ci-gate`'s `needs` and has a `check` line tagged `pr`, `code`, `full` or `nightly`; a `code` job carries exactly `if: needs.preflight.outputs.docs_only != 'true'`, needs `preflight`, and `ci-gate`'s DOCS_ONLY is `${{ needs.preflight.outputs.docs_only }}`; a `full` job carries exactly the full-tier `if:`, ci.yml's `CI_FULL_TIER` is the same expression and `ci-gate`'s FULL_TIER is `${{ env.CI_FULL_TIER }}`; a `nightly` job carries exactly the schedule-or-dispatch `if:` and NIGHTLY is the same expression; a PR-tier job carries no `if:` and needs no code, full-tier or nightly job, and a code job needs no full-tier or nightly job; every `integration*` job (and a job named `trivy`) is `full`; the pull_request trigger lists `opened`, `synchronize` and `reopened` and not `labeled` (a label change starts no run). Every tier's jobs are pinned by name (`prTierJobs`: `preflight`, `lint`, `lint-gates`; `codeTierJobs`: `test-typescript`, `image`, `coverage`, `coverage-merge`, `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`; `fullTierJobs`: `integration-standalone`, `integration-features`, `fips`; `nightlyTierJobs`: `soak`), each must be in ci.yml with its tag, and the tag counts carry discovery floors, so an empty parse cannot pass. It runs `ci-gate`'s real script under bash: a skip passes only for a `full` job outside a full-tier run, a `nightly` job outside a schedule or dispatch run or a `code` job when DOCS_ONLY is `true`, and `cancelled`, `failure`, an unreadable result, an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY fail, including the `integration-features` matrix's aggregate result when one leg fails or is cancelled. It also scans every workflow: `ci.yml`'s group on `main` carries the event and the commit, a scheduled run's group is `schedule-<repository>` (ci-template v1.29.3), with a literal `cancel-in-progress: true` (no `main` run cancels another; an expression, a `main` group that carries the event only, or a ref-keyed group reddens it); every other workflow on pull_request has the ref-keyed group with `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}` (a push to `main` never cancels a `main` run; a literal `true` reddens it), and none but `ci.yml` (its in-template cron, the one scheduler under rulings 135, 216(1) and 633; host cron and timers stay banned) has a `schedule:`; `ci.yml`'s is exactly one entry, cron `0 4 * * *`, 04:00 UTC every night (ruling 633), and a weekly cron, another hour or a second entry reddens it. Each rule has a fixture mutation that must redden it |
 | `test/buildgates/no_deprecated_test.go` (`TestNoLegacyOrDeprecatedAliasLanguage` alone is `make check-no-alias-language`, in `make lint-gates`) | no Go source, proto, CLI command or `docs/*.md` file carries a deprecated declaration, a redirect stub or legacy-alias language. The `docs/` scan is in `make lint-gates` as well as `make test` because a docs-only pull request runs lint and skips the unit suite |
 | `test/buildgates/ci_logs_test.go` | no CI log carries a forge credential: every ci.yml job is in `credentialJobs` or in `unmaskedJobs` (`ci-gate`, which prints only job results); in every job of `credentialJobs` (`docker-build`, `lint`, `lint-gates`, `image`, `coverage`, `coverage-merge`, `test-clusterproof`, `coverage-fts`, `test-tags`, `test-sdk`, `test-typescript`, `preflight`, `integration-standalone`, `integration-features`, `fips`, `soak`) the first step after the checkout is "Mask the forge credentials", and it masks `GIT_CONFIG_KEY_0`, `GIT_CONFIG_VALUE_0` and the token inside a `*://*:*@*` URL with `::add-mask::`; no step in ci.yml runs `env`, `printenv`, `set -x` or `set -o xtrace`, or prints a `.env`, a `gomodauth` file or `MODULE_ENV_FILE`; ci.yml's `GO_BUILD_TAGS` is exactly, in order, the set `make -s print-build-tags` composes. Each rule has a fixture mutation that must redden it |
 | `test/buildgates/fips_legs_test.go` | the `fips` job's parallel legs are exactly `make test` and `make test-sdk` (#1230): every package `go list` finds under `make -s print-test-pkgs` and in `sdk/go` is printed by `make -s print-unit-leg-packages` for exactly one leg of `make -s print-fips-legs` (`UNIT_LEGS`), no leg is empty or runs a package outside both suites, and ci.yml's `fips` matrix is one literal `include:` list naming every leg once, each with its own `minutes` limit over 5 and at most 350 (a hosted job's ceiling, DS-7377), with `timeout-minutes: ${{ matrix.minutes }}`, `fail-fast: false` and one step running `make test-fips-leg FIPS_LEG='$FIPS_LEG'` from `${{ matrix.leg }}` with `GOTEST_TIMEOUT=$((FIPS_LEG_MINUTES - 5))m` from `${{ matrix.minutes }}`; a package may be in two legs only when both select tests by name; discovery floors on the leg and package counts, and a fixture mutation for each rule |
 | `test/buildgates/fips_split_test.go` | a package the `fips` job splits by test name (#1234) runs each of its top-level tests in exactly one of its legs: every `Test`, `Fuzz` and `Example` function `go list` and `go/parser` find in the package's test files under `make -s print-build-tags` is selected by the `-run` and `-skip` patterns `make -s print-fips-leg-filter` prints for exactly one leg, each split leg names one package, and every pattern compiles and holds no `/`, quote, comma or space; discovery floors on the split-package and test counts, and a case for each rule |
 | `test/buildgates/coverage_legs_test.go` | the sharded unit suites (DS-7377): `COVER_LEGS` and `FIPS_LEGS` are `UNIT_LEGS` and `TEST_SDK_LEGS` names only unit legs; ci.yml's and release.yml's `coverage` matrices are exactly `make -s print-coverage-legs`, and ci.yml's `test-sdk` matrix exactly `make -s print-test-sdk-legs`, each leg named once, no other axis, `fail-fast: false`, a literal `timeout-minutes` of at most 350 with go test's `GOTEST_TIMEOUT` that limit less 5 minutes, one step running the matrix's leg, and for a coverage leg the profile copied out of the stage (`IN_IMAGE_COPY_OUT`) and uploaded as `coverage-leg-<leg>`; each workflow's `coverage-merge` needs `coverage`, downloads every `coverage-leg-*` profile into `coverage/` and runs `make coverage-merge`. Discovery floors on the leg counts, and a fixture mutation for each rule |
-| `test/buildgates/ci_runners_test.go` | where the workflows run (DS-7377): every `runs-on` is the literal `ubuntu-latest` but `code-review.yml`'s; no `if:` splits on `github.server_url` but in `nightly.yml`'s `signal`, which speaks the Gitea API, and in `batch.yml`; no workflow names the removed self-hosted machinery and no removed script is back in `scripts/`; every job has a `timeout-minutes` of at most 350; every `actions/cache` save is `actions/cache/save` under `env.CI_PUBLISH == 'true'`, never the combined action; no workflow writes a `GOMAXPROCS` or `go -p` count. Discovery floors on the workflow and job counts, and a fixture mutation for each rule |
+| `test/buildgates/ci_runners_test.go` | where the workflows run (DS-7377, CA ruling 617): every ci.yml job's `runs-on` is exactly one of two expressions, the self-hosted `bigdisk-docker` pool for a job that needs Docker (a `container:`, `services:`, a docker command or action, a compose-stack make target, the image wrappers) or the Docker-free `bigdisk` pool for one that needs none, on a push to `main` and a same-repository pull request, and `ubuntu-latest` for anything else (a fork's pull request included); ci.yml has no `pull_request_target` trigger, no step that wipes a hosted runner's disk (`sudo rm`, `docker prune`) without `runner.environment == 'github-hosted'`, and a floor of jobs on each pool; every other workflow's `runs-on` is the literal `ubuntu-latest` but `code-review.yml`'s; `test-typescript` leaves no credential in its checkout and installs no apt package on the pool; no `if:` splits on `github.server_url` but in `nightly.yml`'s `signal`, which speaks the Gitea API, and in `batch.yml`; no workflow names the removed self-hosted machinery and no removed script is back in `scripts/`; every job has a `timeout-minutes` of at most 350; every `actions/cache` save is `actions/cache/save` under `env.CI_PUBLISH == 'true'`, never the combined action; no workflow writes a `GOMAXPROCS` or `go -p` count. Discovery floors on the workflow and job counts, and a fixture mutation for each rule |
 
 ## Test tooling this feature folder also owns
 
@@ -188,18 +188,30 @@ golangci-lint (`--output.text.print-issued-lines=false`) and actionlint
 (`-oneline`) name a finding without quoting the line it is in, so a log never
 repeats the value a scanner exists to keep out of the tree.
 
-**Every job runs on a GitHub-hosted `ubuntu-latest` runner** (DS-7377): an
+**ci.yml's jobs run on the self-hosted pools for this repository's own
+pushes and pull requests, and on GitHub-hosted `ubuntu-latest` otherwise**
+(CA ruling 617). A push to `main` and a pull request whose head is this
+repository run a job that needs Docker (a `container:`, `services:`, a docker
+command or action, `scripts/in-toolchain-image.sh`) on the `bigdisk-docker`
+pool and a Docker-free job on the `bigdisk` pool, which has no Docker daemon;
+a fork's pull request, a schedule and a dispatch run on `ubuntu-latest`, an
 ephemeral VM with 4 vCPUs, 16 GB of memory, about 14 GB of free disk and a
-6-hour job limit, exclusive to one job. Every `runs-on` is that literal label;
-the review jobs in `code-review.yml` alone keep their self-hosted hosts. No
+6-hour job limit, exclusive to one job. Each job's `runs-on` is one of two
+expressions, character for character, with `ubuntu-latest` as its fallback,
+and the "Free the runner's disk" step runs on the hosted runner alone
+(`runner.environment == 'github-hosted'`), never on a shared pool host. Every
+other workflow's `runs-on` is the literal `ubuntu-latest`; the review jobs in
+`code-review.yml` alone keep their self-hosted hosts. No
 `if:` splits on `github.server_url` but in the one job that speaks the Gitea
 API, `nightly.yml`'s `signal`, which keeps its guard so that it never runs on
 github.com. Every job has a
 `timeout-minutes` of at most 350, under the runner's 360, so a runaway job is
 named rather than cancelled unnamed. `test/buildgates/ci_runners_test.go`
-fails on any other `runs-on`, a `server_url` split outside those jobs, a job
-with no limit or one over 350, a name of the removed self-hosted machinery
-(the `bigdisk`, `batch` and `ci-gate` labels, the forge registry and its
+fails on any other `runs-on`, a Docker job on the `bigdisk` pool or a
+Docker-free one on `bigdisk-docker`, a disk wipe a pool host could run, a
+`pull_request_target` trigger in ci.yml, a `server_url` split outside those
+jobs, a job with no limit or one over 350, a name of the removed self-hosted
+machinery (the `batch` and `ci-gate` labels, `bigdisk` outside ci.yml, the forge registry and its
 `RELEASE_REGISTRY` credential, the named cache volumes and their trim, the
 stale-stack reaper, the schedule guard), a removed script back in `scripts/`,
 an `actions/cache` save on any event but a push to `main`, and a written
@@ -259,7 +271,7 @@ the token reaching no command line.
 The consumers, each before its first stage: `lint`, in the PR tier
 (`make lint`, `make deps-check`, a lint-class gate on the PR tier from
 ci-template v1.28.0, and, on the PR tier, `make gosec`; the sweeps,
-`make lint-sweeps`, run in it on the weekly `schedule:` event alone from
+`make lint-sweeps`, run in it on the nightly `schedule:` event alone from
 ci-template v1.30), `lint-gates`, in the PR tier (`make lint-gates`, its own
 job from ci-template v1.27.0), the unit-suite jobs, in the code tier, one
 suite each (ruling 211): the `coverage` legs and their `coverage-merge`,
@@ -562,10 +574,11 @@ those jobs' checks; `ci-gate` still fails the run on any red check. The label go
 request is green on the PR tier and ready to merge (architecture.md, "CI
 tiers").
 
-Each shard runs on its own `ubuntu-latest` runner, as the image job and the
-standalone and soak jobs do. Load on a runner breaks a 3-node cluster's
-elections and a CLI call's 10-second deadline first; a hosted runner VM runs
-one job, so the load is the shard's own. The selection runs
+Each shard runs on its own runner, a `bigdisk-docker` pool host or, for a
+fork, `ubuntu-latest`, as the image job and the standalone and soak jobs do.
+Load on a runner breaks a 3-node cluster's elections and a CLI call's
+10-second deadline first; a hosted runner VM runs one job, so the load there
+is the shard's own. The selection runs
 `go test -timeout=30m` per package, under the job's limit, so a hung test
 still dumps its goroutines.
 
@@ -599,6 +612,35 @@ and `pkg/tenant`, 22 and 27.5 under it on one 80-core host), so a name split
 halves a leg's time; the one outlier, a 195-second race test on the
 production KDF, now uses the cheap test parameters. Rebalance from each leg's "Package results and slowest tests"
 step when a leg's measured time drifts toward its limit.
+
+### linux/arm64 before the RC
+
+The release publishes linux/arm64 binaries, plain and FIPS (`make
+release-cross PLATFORM=linux/arm64`, CI's full tier), but no CI job runs a
+test on arm64. Two steps close that gap:
+
+- `make test-cross PLATFORM=linux/arm64` compiles and links the unit and
+  integration test binaries of the root module, the Go SDK (`sdk/go`) and
+  `test/clusterproof` for linux/arm64, plain and FIPS, and runs none. The
+  other nested modules (`test/performance/*`, `test/vanguardprobe`,
+  `sdk/go/gorm/conformance`) are out: no release test target runs them. It
+  needs no arm64 host. It is not wired into CI on every pull request: the
+  workflows' routing is Software's (DS-8237), so until a job runs it, a
+  change touching arch-specific code runs it by hand. Its own behaviour is
+  pinned by `make test-test-cross` (in the lint gates, so CI runs it): a
+  recording stub `GO` checks the three modules, both variants, their tags
+  and environment, `-exec /bin/true`, the refusal of a missing or malformed
+  `PLATFORM`, and that a failed compilation fails make and stops the rest.
+- Once before the RC, the integration suite runs on a linux/arm64 host, from
+  a clean checkout of the RC candidate commit:
+
+  ```sh
+  make test-cross PLATFORM=linux/arm64 && make integration-test
+  ```
+
+  `make integration-test` builds the integration image for the host's
+  architecture and runs every self-spawned qrdbdharness suite
+  (`./test/integration`) in it. A failure blocks the RC like a red `main`.
 
 ### Cluster stage, locally
 
@@ -640,8 +682,9 @@ docker for the lowering, the pass-through and every refusal.
 ### Batch workflow
 
 `.github/workflows/batch.yml` is long-running CPU work that never gates a
-merge: it is `workflow_dispatch` only and, like every other job but
-code review's, runs on GitHub-hosted `ubuntu-latest` (DS-7377).
+merge: it is `workflow_dispatch` only and, like every workflow but ci.yml
+(whose jobs take the self-hosted pools, ruling 617) and code review, runs
+on GitHub-hosted `ubuntu-latest` (DS-7377).
 Dispatch it on `main` after a merge:
 
 ```

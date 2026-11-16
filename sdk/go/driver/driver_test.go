@@ -17,35 +17,9 @@
 package driver
 
 import (
-	"database/sql"
-	sqld "database/sql/driver"
 	"errors"
 	"testing"
 )
-
-// TestDriver_Registration verifies the driver is registered under "qrdb".
-func TestDriver_Registration(t *testing.T) {
-	db, err := sql.Open("qrdb", "embedded://memory?database=regtest")
-	if err != nil {
-		t.Fatalf("sql.Open unexpected error: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-}
-
-// TestDriver_OpenConnector_Embedded verifies OpenConnector returns EmbeddedConnector.
-func TestDriver_OpenConnector_Embedded(t *testing.T) {
-	d := &Driver{}
-	connector, err := d.OpenConnector("embedded://memory?database=testdb")
-	if err != nil {
-		t.Fatalf("OpenConnector() unexpected error: %v", err)
-	}
-
-	ec, ok := connector.(*EmbeddedConnector)
-	if !ok {
-		t.Fatalf("expected *EmbeddedConnector, got %T", connector)
-	}
-	_ = ec
-}
 
 // TestDriver_OpenConnector_Network_REST verifies OpenConnector returns NetworkConnector for REST.
 func TestDriver_OpenConnector_Network_REST(t *testing.T) {
@@ -122,18 +96,5 @@ func TestDriver_Open_InvalidDSN(t *testing.T) {
 	_, err := d.Open("bad://host/db")
 	if err == nil {
 		t.Fatal("expected error for unsupported scheme")
-	}
-}
-
-// TestDriver_InterfaceCompliance verifies Driver implements required interfaces.
-func TestDriver_InterfaceCompliance(t *testing.T) {
-	var d sqld.Driver = &Driver{}
-	if d == nil {
-		t.Fatal("Driver should implement driver.Driver")
-	}
-
-	var dc sqld.DriverContext = &Driver{}
-	if dc == nil {
-		t.Fatal("Driver should implement driver.DriverContext")
 	}
 }

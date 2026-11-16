@@ -586,37 +586,6 @@ func TestFactorType_PKCS11_IsValid(t *testing.T) {
 	}
 }
 
-func TestFactorType_UnknownInvalid(t *testing.T) {
-	for _, s := range []string{"", "PKCS11", "totp", "hardware"} {
-		if transport.FactorType(s).IsValid() {
-			t.Fatalf("FactorType(%q).IsValid() = true, want false", s)
-		}
-	}
-}
-
-func TestFactorTypeToDomain_PKCS11(t *testing.T) {
-	got := factorTypeToDomain(transport.FactorTypePKCS11)
-	if got != auth.AuthFactorPKCS11 {
-		t.Fatalf("factorTypeToDomain(PKCS11) = %q, want %q", got, auth.AuthFactorPKCS11)
-	}
-}
-
-func TestFactorTypeFromDomain_PKCS11(t *testing.T) {
-	got := factorTypeFromDomain(auth.AuthFactorPKCS11)
-	if got != transport.FactorTypePKCS11 {
-		t.Fatalf("factorTypeFromDomain(PKCS11) = %q, want %q", got, transport.FactorTypePKCS11)
-	}
-}
-
-func TestFactorTypeToDomain_PKCS11_RoundTrip(t *testing.T) {
-	original := transport.FactorTypePKCS11
-	domain := factorTypeToDomain(original)
-	back := factorTypeFromDomain(domain)
-	if back != original {
-		t.Fatalf("round-trip failed: %q -> %q -> %q", original, domain, back)
-	}
-}
-
 func TestFactorClient_Enroll_PKCS11(t *testing.T) {
 	tr := newFactorTransport(t)
 	fc := tr.FactorClient()
@@ -724,6 +693,7 @@ func TestFactorTypeToDomain_AllBranches(t *testing.T) {
 		{transport.FactorTypeMTLS, "mtls"},
 		{transport.FactorTypeFIDO2, "fido2"},
 		{transport.FactorTypePIV, "piv"},
+		{transport.FactorTypePKCS11, "pkcs11"},
 		{transport.FactorType("custom"), "custom"},
 	}
 	for _, tt := range tests {
@@ -742,6 +712,7 @@ func TestFactorTypeFromDomain_AllBranches(t *testing.T) {
 		{"mtls", transport.FactorTypeMTLS},
 		{"fido2", transport.FactorTypeFIDO2},
 		{"piv", transport.FactorTypePIV},
+		{"pkcs11", transport.FactorTypePKCS11},
 		{"custom", transport.FactorType("custom")},
 	}
 	for _, tt := range tests {

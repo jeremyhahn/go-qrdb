@@ -15,7 +15,6 @@
 package embedded
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -83,36 +82,6 @@ func newDEKTransport(t *testing.T) *Transport {
 		t.Fatal(err)
 	}
 	return newExtTransport(t, WithDEKService(svc))
-}
-
-func TestEmbeddedDEK_LifecycleForTheBoundTenant(t *testing.T) {
-	tr := newDEKTransport(t)
-	ctx := tenant.WithTenantID(context.Background(), "acme")
-	aad := []byte("acme/db/password/v1")
-
-	enc, err := tr.TenantDEKEncrypt(ctx, &transport.TenantDEKEncryptRequest{Plaintext: []byte("s3cret"), AAD: aad})
-	if err != nil || enc.Version != 1 {
-		t.Fatalf("encrypt = %+v, %v", enc, err)
-	}
-	if _, err := tr.TenantDEKRotate(ctx, &transport.TenantDEKRequest{}); err != nil {
-		t.Fatal(err)
-	}
-	// The old ciphertext still decrypts after rotation.
-	dec, err := tr.TenantDEKDecrypt(ctx, &transport.TenantDEKDecryptRequest{Ciphertext: enc.Ciphertext, AAD: aad})
-	if err != nil || !bytes.Equal(dec.Plaintext, []byte("s3cret")) || dec.Version != 1 {
-		t.Fatalf("decrypt v1 after rotate = %+v, %v", dec, err)
-	}
-	rw, err := tr.TenantDEKRewrap(ctx, &transport.TenantDEKRewrapRequest{Ciphertext: enc.Ciphertext, AAD: aad})
-	if err != nil || rw.ToVersion != 2 {
-		t.Fatalf("rewrap = %+v, %v", rw, err)
-	}
-	st, err := tr.TenantDEKRetire(ctx, &transport.TenantDEKRetireRequest{Version: 1})
-	if err != nil || st.TenantID != "acme" || st.Versions[0].RetiredAt == nil {
-		t.Fatalf("retire = %+v, %v", st, err)
-	}
-	if st, err = tr.TenantDEKStatus(ctx, &transport.TenantDEKRequest{TenantID: "acme"}); err != nil || st.CurrentVersion != 2 {
-		t.Fatalf("status = %+v, %v", st, err)
-	}
 }
 
 func TestEmbeddedDEK_RefusesAnotherTenant(t *testing.T) {

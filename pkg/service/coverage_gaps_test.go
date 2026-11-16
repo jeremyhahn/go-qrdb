@@ -1075,22 +1075,6 @@ func TestEmbeddingProviderNotFoundError_Error(t *testing.T) {
 	}
 }
 
-func TestEmbeddingBatchTooLargeError_Error(t *testing.T) {
-	e := &EmbeddingBatchTooLargeError{Requested: 200, Maximum: 100}
-	want := "service: embedding batch too large: requested 200, maximum 100"
-	if e.Error() != want {
-		t.Fatalf("got %q, want %q", e.Error(), want)
-	}
-}
-
-func TestEmbeddingDimensionMismatchError_Error(t *testing.T) {
-	e := &EmbeddingDimensionMismatchError{Expected: 768, Received: 512}
-	want := "service: embedding dimension mismatch: expected 768, received 512"
-	if e.Error() != want {
-		t.Fatalf("got %q, want %q", e.Error(), want)
-	}
-}
-
 func TestEmbeddingServiceClosedError_Error(t *testing.T) {
 	e := &EmbeddingServiceClosedError{}
 	want := "service: embedding service is closed"

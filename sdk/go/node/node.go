@@ -1762,7 +1762,7 @@ func (n *Node) completeStandaloneBoot(ctx context.Context, pending *pendingStand
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(pending.dataDir)
+	dbManager := n.newStandaloneDatabaseManager(pending.dataDir, pending.cfg)
 
 	// The effective capability profile of THIS node: NewStandaloneNode is
 	// the raft-free composition by construction, so the profile is computed
@@ -1943,9 +1943,10 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 // handed to BuildServices, which attaches the database catalog and opens every
 // database it records, and to the server, so a named database resolves
 // through the server's registry, is confined to its owning tenant, and is
-// refused while sealed.
-func (n *Node) newStandaloneDatabaseManager(dataDir string) *database.Manager {
-	dbManager := database.NewManager(n.logger, dataDir)
+// refused while sealed. The manager carries the node's database_defaults
+// (standaloneDatabaseDefaults), as the daemon's does.
+func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
+	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)))
 	n.dbManager = dbManager
 	return dbManager
 }
@@ -1981,6 +1982,22 @@ func (n *Node) closeDatabaseManager() {
 // place of sm_storage, under the same data-plane file system; every other
 // type, the MVCC store included, refuses it with
 // statemachine.ReplicaStorageNotApplicableError.
+// standaloneDatabaseDefaults is the database_defaults of a standalone node:
+// cfg's, under the standalone run mode, exactly as the daemon builds them.
+func standaloneDatabaseDefaults(cfg *qrdbconfig.Config) database.Defaults {
+	d := database.DefaultsFromConfig(cfg.DatabaseDefaults)
+	d.RunMode = database.RunModeStandalone
+	return d
+}
+
+// clusteredDatabaseDefaults is the database_defaults of a clustered node:
+// cfg's, under the raft run mode, exactly as the daemon builds them.
+func clusteredDatabaseDefaults(cfg *qrdbconfig.Config) database.Defaults {
+	d := database.DefaultsFromConfig(cfg.DatabaseDefaults)
+	d.RunMode = database.RunModeRaft
+	return d
+}
+
 func clusteredCreateFunc(cfg *qrdbconfig.Config, pebbleOpts []store.Option, mvccOpts []store.MVCCOption, encryptor *atrest.Encryptor, lr *lease.Lessor, replicaStorage ReplicaStorageFactory) (sm.CreateFunc, error) {
 	if usesClusteredMVCCStore(cfg) {
 		// The MVCC store opens its own Pebble database; a composer's replica
@@ -2352,7 +2369,8 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 	// with BuildTenantInfra (reattachRaftTenants walks manager.List()). The
 	// node owns the manager's lifetime; lifecycle does NOT add a closer for an
 	// externally-supplied manager.
-	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir)
+	dbManager := database.NewManager(n.logger, pending.cfg.Raft.DataDir,
+		database.WithDefaults(clusteredDatabaseDefaults(pending.cfg)))
 	n.dbManager = dbManager
 
 	gate, err := raftbackend.NewFeatureGate(host, pending.cfg.Raft.ReplicaID, shard.ShardKV)
@@ -3152,7 +3170,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 
 	localHost := backend.NewLocalBackend(smAdapter)
 
-	dbManager := n.newStandaloneDatabaseManager(dataDir)
+	dbManager := n.newStandaloneDatabaseManager(dataDir, cfg)
 
 	// Per-instance effective capability profile: standalone semantics by
 	// construction (see completeStandaloneBoot for the rationale).
@@ -3410,11 +3428,22 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		return nil, err
 	}
 
+	// The node builds the database manager, as the sealed clustered path
+	// does, so the service BuildServices wires and both provisioning
+	// authorization wrappers (embedded and network) resolve the node's
+	// database_defaults against the same manager. The node owns its
+	// lifetime; lifecycle adds no closer for a supplied manager.
+	dbManager := database.NewManager(n.logger, dataDir,
+		database.WithDefaults(clusteredDatabaseDefaults(cfg)))
+	n.dbManager = dbManager
+
 	infra, err := withCryptoInfra(lifecycle.Infra{
 		Host:              hostAdapter,
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(cfg),
 		WatchHub:          watchHub,
 		DataDir:           dataDir,
+		Backend:           database.BackendRaft,
+		DatabaseManager:   dbManager,
 		ReplicaID:         cfg.Raft.ReplicaID,
 		Index:             cfg.Index,
 		TimeSeries:        cfg.TimeSeries,
@@ -3435,12 +3464,14 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 	}, cfg, serverOpts)
 	if err != nil {
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 
 	svcNode, err := lifecycle.BuildServices(ctx, infra)
 	if err != nil {
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, &ServicesCreateError{Err: err}
 	}
 	n.svcNode.Store(svcNode)
@@ -3464,6 +3495,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		n.bgWG.Wait()
 		_ = svcNode.Stop(context.Background())
 		_ = host.Close()
+		n.closeDatabaseManager()
 		return nil, err
 	}
 	n.startFeatureGate(host, svcNode.KV)
@@ -4207,7 +4239,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// the network transports.
 	if authMW != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithDatabaseService(
-			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant)))
+			service.NewProvisioningAuthorizedDatabaseService(svcNode.Database, authMW, svcNode.Tenant, n.dbManager.ResolveDefaults)))
 	}
 	if pinBackend := n.pinBackend(callerOpts); pinBackend != nil {
 		embeddedOpts = append(embeddedOpts, embedded.WithPINBackend(pinBackend))

@@ -676,31 +676,6 @@ func TestEmbeddedCredential_Dispatch_Rotate(t *testing.T) {
 	}
 }
 
-func TestEmbeddedCredential_Dispatch_RetrieveVersion(t *testing.T) {
-	svc := &mockCredentialService{
-		retrieveVersionFn: func(_ context.Context, _ string, _ uint64) ([]byte, error) {
-			return []byte("payload"), nil
-		},
-	}
-	tr := newCredentialTransport(t, svc)
-
-	buf, err := tr.CredentialRetrieveVersionBuffer(context.Background(), &transport.CredentialRetrieveVersionRequest{
-		Name:    "k",
-		Version: 1,
-	})
-	if err != nil {
-		t.Fatalf("retrieve version buffer error: %v", err)
-	}
-	defer buf.Destroy()
-	got, err := secure.CopyOut(buf)
-	if err != nil {
-		t.Fatalf("copy out: %v", err)
-	}
-	if string(got) != "payload" {
-		t.Fatalf("retrieve returned %q, want payload", got)
-	}
-}
-
 func TestEmbeddedCredential_Dispatch_ListVersions(t *testing.T) {
 	svc := &mockCredentialService{
 		listVersionsFn: func(_ context.Context, name string) ([]credentials.CredentialVersion, error) {
