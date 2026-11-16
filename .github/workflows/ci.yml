@@ -369,6 +369,10 @@ jobs:
             it_image=$(make -s it-image)
           fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
+          # Pin each image's ID under a per-run tag at the build boundary;
+          # save archives the pin, never the shared tag another run can move.
+          scripts/ci-image.sh pin "$(make -s toolchain-image)" >/dev/null
+          if [ -n "$it_image" ]; then scripts/ci-image.sh pin "$it_image" >/dev/null; fi
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 
@@ -1502,6 +1506,8 @@ jobs:
     timeout-minutes: ${{ matrix.minutes }}
     env:
       FIPS_ENV: GOFIPS140=latest GODEBUG=fips140=only
+      # No cache, as the comment above says: the legs mount no Go cache.
+      CI_CACHE: 'off'
       CI_STACK_PREFIX: ${{ github.event.repository.name }}-ci-
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

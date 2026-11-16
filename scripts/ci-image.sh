@@ -91,17 +91,32 @@ run_tag() { printf '%s-run-%s\n' "$1" "$(run_suffix)"; }
 # inputs, so on a shared daemon another run can move it to other bytes at any
 # moment. The archive carries a per-run tag created from the ID; the ID behind
 # it is checked again after the save, and only then is the ID printed.
-save() {
-	[ $# -eq 2 ] || die "usage: save <image> <dir>"
-	local image=$1 dir=$2 id rtag got
+pin() {
+	[ $# -eq 1 ] || die "usage: pin <image>"
+	local image=$1 id rtag got
 	check_image "$image"
 	id=$(image_id "$image")
 	rtag=$(run_tag "$image")
 	docker tag "$id" "$rtag" || die "cannot tag $id as $rtag"
+	got=$(image_id "$rtag")
+	[ "$got" = "$id" ] || die "$rtag names $got after the tag, not $id, the image $image resolved to at the build"
+	echo "==> pinned $image ($id) as $rtag" >&2
+	printf '%s\n' "$id"
+}
+
+save() {
+	[ $# -eq 2 ] || die "usage: save <image> <dir>"
+	local image=$1 dir=$2 id rtag got
+	check_image "$image"
+	rtag=$(run_tag "$image")
+	# The ID comes from the per-run tag pin set at the build, never from the
+	# shared tag, which another run on the daemon can move after the build.
+	docker image inspect "$rtag" >/dev/null 2>&1 || die "$rtag does not exist: pin $image right after its build"
+	id=$(image_id "$rtag")
 	mkdir -p "$dir"
 	docker save -o "$dir/image.tar" "$rtag" || die "cannot save $rtag"
 	got=$(image_id "$rtag")
-	[ "$got" = "$id" ] || die "$rtag names $got after the save, not $id, the image $image resolved to: the archive is refused"
+	[ "$got" = "$id" ] || die "$rtag names $got after the save, not $id, the image $image was pinned to: the archive is refused"
 	printf '%s\n' "$id" >"$dir/image.id"
 	echo "==> saved $image ($id) as $rtag, $(du -h "$dir/image.tar" | cut -f1)" >&2
 	printf '%s\n' "$id"
@@ -288,10 +303,11 @@ prune() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh save|load|push|untag|prune|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|push|untag|prune|check-ref ..."
 	local cmd=$1
 	shift
 	case $cmd in
+	pin) pin "$@" ;;
 	save) save "$@" ;;
 	load) load "$@" ;;
 	push) push "$@" ;;
