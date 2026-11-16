@@ -852,6 +852,73 @@ func TestRunFirstBoot_StrictRestartWithoutAnSOFastPaths(t *testing.T) {
 	require.Equal(t, 1, lookups)
 }
 
+// A cluster first booted in standard mode with the admin named as the
+// system SO holds an account with both Admin and SO. Restarted with
+// auth.separation_of_duties=true, the start fails closed with the typed
+// error naming the account (SPEC row 124), before the bound-admin fast path
+// can return. The same restart with the SO on a distinct principal starts.
+func TestRunFirstBoot_StrictRestartRefusesAdminHoldingSO(t *testing.T) {
+	certPEM, _ := selfSignedAdminCertPEM(t)
+
+	var admin, distinctSO *user.User
+	userSvc := &mockUserServicer{
+		getUserByUsernameFn: func(_ context.Context, _ string, _ string) (*user.User, error) {
+			if admin == nil {
+				return nil, &user.UserNotFoundError{}
+			}
+			return admin, nil
+		},
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			admin = &user.User{ID: 9001, Username: req.Username, TenantID: req.TenantID, RoleIDs: req.RoleIDs, System: true, Lifecycle: user.LifecycleActive}
+			return admin, nil
+		},
+		addCertBindingFn: func(_ context.Context, _ uint64, thumbprint string, _ int64) (*user.User, error) {
+			admin.CertBindings = append(admin.CertBindings, user.CertBinding{
+				Thumbprint: thumbprint, NotAfter: time.Now().Add(365 * 24 * time.Hour),
+			})
+			return admin, nil
+		},
+		listUsersFn: func(_ context.Context, req *user.ListUsersRequest) (*user.ListUsersResponse, error) {
+			require.Equal(t, tenantid.System, tenantid.Normalize(req.TenantID))
+			users := []*user.User{admin}
+			if distinctSO != nil {
+				users = append(users, distinctSO)
+			}
+			return &user.ListUsersResponse{Users: users, Total: len(users)}, nil
+		},
+	}
+	roleSvc := &mockRoleServicer{}
+	node := &mockRaftNode{}
+	pendingStore := newMockKVStore(make(map[string][]byte))
+	ctx := context.Background()
+	require.NoError(t, firstboot.WritePendingAdminCert(ctx, pendingStore, certPEM))
+
+	// Boot 1, standard mode: the admin is created, bound, and (as standard
+	// mode allows) named as the system SO.
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
+	require.NotEmpty(t, admin.CertBindings)
+	require.NoError(t, firstboot.ClearPendingAdminCert(ctx, pendingStore))
+	adminRoleID := "r-" + role.RoleNameAdmin
+	soRoleID := "r-" + role.RoleNameSO
+	admin.RoleIDs = []string{adminRoleID, soRoleID}
+
+	// Boot 2, strict: refused, naming the account.
+	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
+	var conflict *StrictSeparationSOAdminError
+	require.ErrorAs(t, err, &conflict)
+	require.Equal(t, admin.ID, conflict.UserID)
+	require.Equal(t, tenantid.System, conflict.AdminTenantID)
+	require.Contains(t, err.Error(), "separation_of_duties=false")
+
+	// Standard mode still starts with the combined account.
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, false, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
+
+	// The repair: the SO role moves to a distinct principal; strict starts.
+	admin.RoleIDs = []string{adminRoleID}
+	distinctSO = &user.User{ID: 9002, Username: "so", TenantID: tenantid.System, RoleIDs: []string{soRoleID}, Lifecycle: user.LifecycleActive}
+	require.NoError(t, runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{}))
+}
+
 // TestRunFirstBoot_Required_AdminCertWithoutSPIFFEIDRefused presents a trusted
 // OU=system certificate carrying no SPIFFE ID SAN, a credential the mTLS
 // authenticator's tenant rule refuses at every login. First boot must refuse

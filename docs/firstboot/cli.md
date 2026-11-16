@@ -29,7 +29,7 @@ default role set in a single transactional ceremony**.
 | `--admin-cert` | string | — | path to a PEM certificate the admin already holds; selects bring-your-own-certificate (mutually exclusive with `--admin-csr`/`--admin-generate`) |
 | `--admin-cert-pool` | string | — | PEM trust-anchor bundle `--admin-cert` and `--so-cert` must chain to; only valid with `--admin-cert` or `--so-cert` (so a CSR or generated admin can still present an SO certificate), and required unless the certificate was issued by this deployment's own CA |
 | `--admin-generate` | bool | `false` | selects the dev/test-only GENERATE path explicitly (mutually exclusive with `--admin-csr`/`--admin-cert`) |
-| `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. **Required when the server runs strict separation of duties** |
+| `--so-username` | string | — | the system tenant's Security Officer, enrolled at first boot with only the `so` role and `--so-pin` as its PIN; needs exactly one of `--so-csr`/`--so-cert`. Optional in both postures |
 | `--so-csr` | string | — | path to a PEM CSR for the system SO, signed under the system tenant; its key must not be the admin's (mutually exclusive with `--so-cert`) |
 | `--so-cert` | string | — | path to a PEM certificate the system SO already holds, naming the system tenant; verified against `--admin-cert-pool` or this deployment's own CA and refused without the client-auth profile (digital signature key usage, client authentication EKU); an `--admin-cert-pool` it chains to becomes system tenant trust anchors, loaded into runtime client trust before the SO is bound (mutually exclusive with `--so-csr`) |
 | `--so-chain` | string | — | path to PEM intermediates for `--so-cert`; only valid with `--so-cert` |
@@ -69,6 +69,13 @@ admin can never be given the `so` role. A strict deployment that booted
 without an SO starts and serves, and refuses only those SO-exclusive
 operations until an SO is enrolled. Enrolment is idempotent across restarts:
 once the SO is enrolled its pending record is marked consumed.
+
+Standard mode lets the admin be named as the system SO. A server that
+restarts with `auth.separation_of_duties=true` refuses to start while any
+system-tenant account holds the `so` role together with system or tenant
+Admin; the error names the user ID. To repair, restart with
+`separation_of_duties=false`, move the `so` role to a distinct principal, then
+restart strict.
 
 ### Environment variables
 
