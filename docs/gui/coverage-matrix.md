@@ -24,7 +24,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | AuditQuery | `query` | views/admin/AuditLog.svelte | admin-audit.spec.ts | *verified* |
 | Backup | `create` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `delete` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
-| Backup | `get` | none (hits are other clients' `get`) | none | not in UI; *verified* |
+| Backup | `get` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `list` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `restore` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
 | Backup | `verify` | views/admin/BackupManager.svelte | backup-manager.spec.ts | *verified* |
@@ -45,7 +45,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Collection | `deleteDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts collection-advanced.spec.ts | *verified* |
 | Collection | `drop` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
 | Collection | `get` | views/user/CollectionView.svelte | collections-crud.spec.ts (runs on collection select; not asserted alone) | UI *verified* |
-| Collection | `getDocument` | none | none | not in UI; *verified* |
+| Collection | `getDocument` | views/user/CollectionView.svelte | collection-advanced.spec.ts | *verified* |
 | Collection | `insertDocument` | views/user/CollectionView.svelte | collections-crud.spec.ts | *verified* |
 | Collection | `list` | views/admin/UserDetail.svelte views/admin/UserManager.svelte stores/connection-manager.svelte.ts  | tenant-barrier-unseal.spec.ts admin-nav-smoke.spec.ts  |  |
 | Collection | `listDocuments` | views/user/CollectionView.svelte | collections-crud.spec.ts (documents appear in the list) | *verified* |
@@ -68,7 +68,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Credential | `list` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `listVersions` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (version history) | *verified* |
 | Credential | `retrieve` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (reveal) | *verified* |
-| Credential | `retrieveVersion` | none | none | not in UI; *verified* |
+| Credential | `retrieveVersion` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `rotate` | views/admin/CredentialManager.svelte  | credential-manager.spec.ts  |  |
 | Credential | `store` | views/admin/CredentialManager.svelte | credential-manager.spec.ts | *verified* |
 | Credential | `strategy` | views/admin/CredentialManager.svelte | credential-manager.spec.ts (strategy badge) | *verified* |
@@ -266,13 +266,13 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 | 11 | Cluster operations | `admin.mintJoinToken`, `nodeCompaction`, `setNodeCompaction`; `rebalance.getShardStats` | views/admin/Cluster.svelte, views/admin/RebalancePanel.svelte; e2e/admin-cluster.spec.ts, e2e/rebalance-panel.spec.ts | mocked; real for join token |
 | 12 | Dashboard displays | `status.shards`, `capabilities.index`, metrics (needs an SDK method first) | views/admin/Dashboard.svelte; sdk/typescript/src/interfaces.ts, rest.ts, wails.ts for metrics; e2e/admin-dashboard.spec.ts, e2e/admin-metrics.spec.ts, e2e/dom/dashboard-displays-roundtrip.spec.ts, e2e/dom/metrics-roundtrip.spec.ts | mocked; real for metrics; **covered** |
 | 13 | Connections and embedded server | `connectionManager.deleteProfile`, `disconnect`, `saveProfile`, `setActive` (no e2e); `connection.disconnect`, `isConnected`; `config.initialized`, `isEmbeddedAvailable`; `embeddedServer.*` (6); `batch.availableCodecs` | components/ConnectionManager.svelte, stores/connection-manager.svelte.ts, views/user/BatchView.svelte; e2e/web-mode-connection-manager.spec.ts, e2e/batch.spec.ts, e2e/admin-settings-connection.spec.ts, e2e/dom/connection-profiles-roundtrip.spec.ts, new e2e/embedded-server.spec.ts (Wails mock) | mocked; **covered** |
-| 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts | mocked |
+| 14 | Detail reads | `backups.get`, `credentials.retrieveVersion`, `collection.getDocument` | views/admin/BackupManager.svelte, views/admin/CredentialManager.svelte, views/user/CollectionView.svelte; e2e/backup-manager.spec.ts, e2e/credential-manager.spec.ts, e2e/collection-advanced.spec.ts, e2e/dom/backups-detail-roundtrip.spec.ts | mocked; **covered** |
 
 ## Summary
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 219 | 182 | 170 |
+| operations | 219 | 185 | 173 |
 | displays | 12 | 11 | 10 |
 
-Operations not in UI: 37. In UI without e2e: 12. Displays with a partial field gap: 1 (cluster seal).
+Operations not in UI: 34. In UI without e2e: 12. Displays with a partial field gap: 1 (cluster seal).

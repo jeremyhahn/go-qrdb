@@ -35,6 +35,8 @@
   let loading: boolean = $state(true);
   let selectedBackup: BackupInfo | null = $state(null);
   let lastVerifyResult: VerifyResult | null = $state(null);
+  let detailLoading: boolean = $state(false);
+  let detailError: string | null = $state(null);
 
   // Create-backup form
   let showCreateModal: boolean = $state(false);
@@ -201,9 +203,31 @@
     }
   }
 
+  // loadDetail fetches the authoritative BackupInfo for one backup through
+  // backups.get, so the detail panel shows what the server holds now (not
+  // the possibly stale list row). detailToken drops a response that a
+  // later row click has superseded.
+  let detailToken = 0;
+  async function loadDetail(id: string): Promise<void> {
+    const token = ++detailToken;
+    detailLoading = true;
+    detailError = null;
+    try {
+      const info = await client.backups.get(id);
+      if (token !== detailToken) return;
+      selectedBackup = info;
+    } catch (err: unknown) {
+      if (token !== detailToken) return;
+      detailError = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (token === detailToken) detailLoading = false;
+    }
+  }
+
   function handleRowClick(event: RowClickEvent<BackupInfo>): void {
     selectedBackup = event.row;
     lastVerifyResult = null;
+    void loadDetail(event.row.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -253,7 +277,18 @@
         <h3 class="card-title text-base font-semibold">Backup Detail</h3>
         {#if selectedBackup !== null}
           <div class="flex flex-col gap-3">
-            <div class="bg-base-300 rounded p-3">
+            {#if detailLoading}
+              <div class="flex items-center gap-2 text-xs" data-testid="backup-detail-loading">
+                <span class="loading loading-spinner loading-xs"></span>
+                Loading backup detail...
+              </div>
+            {/if}
+            {#if detailError !== null}
+              <div class="alert alert-error py-2 text-xs" data-testid="backup-detail-error">
+                <span>Could not load backup detail: {detailError}</span>
+              </div>
+            {/if}
+            <div class="bg-base-300 rounded p-3" data-testid="backup-detail">
               <table class="table table-sm">
                 <tbody>
                   <tr><th class="w-24">ID</th><td class="font-mono text-xs break-all">{selectedBackup.id}</td></tr>
@@ -262,6 +297,20 @@
                   <tr><th>Size</th><td>{formatBytes(selectedBackup.size)}</td></tr>
                   <tr><th>Status</th><td>{selectedBackup.status}</td></tr>
                   <tr><th>Checksum</th><td class="font-mono text-xs break-all">{selectedBackup.checksum}</td></tr>
+                  <tr><th>Destination</th><td class="font-mono text-xs break-all">{selectedBackup.destination}</td></tr>
+                  <tr><th>Compression</th><td>{selectedBackup.compression}</td></tr>
+                  <tr><th>Encryption</th><td>{selectedBackup.encryption}</td></tr>
+                  <tr><th>Key Provider</th><td class="font-mono text-xs break-all">{selectedBackup.keyProviderId ?? ""}</td></tr>
+                  <tr><th>Duration</th><td>{selectedBackup.duration}</td></tr>
+                  <tr><th>Error</th><td class="text-xs break-all">{selectedBackup.errorMessage}</td></tr>
+                  <tr>
+                    <th>Metadata</th>
+                    <td class="font-mono text-xs break-all">
+                      {#each Object.entries(selectedBackup.metadata ?? {}) as [k, v] (k)}
+                        <div>{k}={v}</div>
+                      {/each}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
             </div>
