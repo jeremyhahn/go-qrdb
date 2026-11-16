@@ -441,7 +441,7 @@ jobs:
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
           rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image"
-          if [ -n "$TOOLCHAIN_IMAGE" ]; then scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" $IT_IMAGE; fi
+          if [ -n "$TOOLCHAIN_IMAGE" ]; then scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" ${IT_IMAGE:+"$IT_IMAGE"}; fi
 
       # #1597: a pool daemon outlives the job, and each commit's integration
       # image has its own tag; drop the CI images neither built nor tagged in
