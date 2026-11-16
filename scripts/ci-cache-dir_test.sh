@@ -130,6 +130,39 @@ age 8 "$base/golangci"
 run CI_CACHE_ROOT="$r1" -- bash "$SH"
 check "pre-generation dirs: old deleted, recent kept" '[ ! -e "$base/golangci" ] && [ -d "$base/gobuild" ]'
 
+# --- du failures --------------------------------------------------------------
+# A du that exits nonzero (pipefail, a partial read, an entry vanishing under
+# it) must never read as 0 GB: a number it printed is used, and no number at
+# all counts as over the cap.
+fakedu=$tmp/fakedu
+mkdir -p "$fakedu"
+cat >"$fakedu/du" <<'EOF'
+#!/usr/bin/env bash
+for a; do p=$a; done
+[ -z "${FAKE_DU_GB:-}" ] || printf '%s\t%s\n' "$FAKE_DU_GB" "$p"
+exit 1
+EOF
+chmod +x "$fakedu/du"
+r4=$tmp/r4
+mkdir -p "$r4"
+run CI_CACHE_ROOT="$r4" -- bash "$SH"
+b4=$r4/go-qrdb-ci-cache
+h1=$(cat "$b4/current" 2>/dev/null)
+mkdir -p "$b4/$h1/gobuild"
+run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 PATH="$fakedu:$PATH" -- bash "$SH"
+h2=$(cat "$b4/current" 2>/dev/null)
+check "du fails, prints nothing: warns, a new generation is current" \
+  '[ $rc = 0 ] && [ "$h2" != "$h1" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h2" ] && [[ $err == *"::warning::"* ]]'
+mkdir -p "$b4/$h2/gobuild"
+run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=9 PATH="$fakedu:$PATH" -- bash "$SH"
+h3=$(cat "$b4/current" 2>/dev/null)
+check "du fails, prints a size over the cap: a new generation is current" \
+  '[ $rc = 0 ] && [ "$h3" != "$h2" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ] && [[ $err == *"9 GB, over the 5 GB cap"* ]]'
+mkdir -p "$b4/$h3/gobuild"
+run CI_CACHE_ROOT="$r4" CI_CACHE_MAX_GB=5 FAKE_DU_GB=2 PATH="$fakedu:$PATH" -- bash "$SH"
+check "du fails, prints a size under the cap: the same generation" \
+  '[ $rc = 0 ] && [ "$(cat "$b4/current")" = "$h3" ] && [ "$out" = "CI_CACHE_DIR=$b4/$h3" ]'
+
 # --- legacy temp cache, stage-owned files -------------------------------------
 if [ "$(id -u)" = 0 ]; then
   echo "skip stage-owned stand-ins: running as root, read-only dirs do not stop rm"

@@ -104,8 +104,11 @@ size_gb() {
   local used=0 sub gb
   for sub in gobuild golangci; do
     [ -e "$1/$sub" ] || continue
-    gb=$(du -s --block-size=1G "$1/$sub" 2>/dev/null | cut -f1) || gb=
-    case $gb in '' | *[!0-9]*) gb=0 ;; esac
+    # du exits nonzero when an entry vanishes or cannot be read, but still
+    # prints the total of what it read: use that number. With no number, the
+    # size is unknown: fail, never read it as 0 GB.
+    gb=$(du -s --block-size=1G "$1/$sub" 2>/dev/null | cut -f1) || true
+    case $gb in '' | *[!0-9]*) return 1 ;; esac
     used=$((used + gb))
   done
   echo "$used"
@@ -126,8 +129,10 @@ select_locked() {
   cur=$(cat "$base/current" 2>/dev/null || true)
   case $cur in gen-*) [ -d "$base/$cur" ] || cur= ;; *) cur= ;; esac
   if [ -n "$cur" ]; then
-    used=$(size_gb "$base/$cur")
-    if [ "$used" -gt "$cap" ]; then
+    if ! used=$(size_gb "$base/$cur"); then
+      echo "::warning::du could not measure the Go caches in $base/$cur: counted as over the ${cap} GB cap, a new generation is current; the old one is deleted once unused for ${hours} h" >&2
+      cur=
+    elif [ "$used" -gt "$cap" ]; then
       echo "::notice::The Go caches in $base/$cur hold ${used} GB, over the ${cap} GB cap: a new generation is current; the old one is deleted once unused for ${hours} h" >&2
       cur=
     fi
