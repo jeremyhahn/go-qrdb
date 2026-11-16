@@ -126,6 +126,12 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/api/grpc | TestWithLock_Nil, TestWithPINBackend_Nil, TestWithAuthFactorService_ServerOption, TestWithUserAuthFactorService_Nil, TestWithTenantService_ServerOption | tautology (nil option on a nil default) | TestWithLock_ServerOption, TestWithPINBackend_ServerOption, TestWithUserAuthFactorService_ServerOption |
 | pkg/api/rest | TestWithCollectionService_NilOption | tautology (nil option on a nil default) | TestWithCollectionService_Option |
 | cmd/qrdb | TestSQLExecutionError_ImplementsError | tautology (compile-time assignment) | TestSQLExecutionError_Error |
+| pkg/sql/provider | TestCollectionTable_Implements{Insertable,Deletable,Updatable,Replaceable}Table, TestCollectionWriter_ImplementsRowReplacer | duplicate of the package-level `var _ sqle.X` guards in collection_table.go | the compile-time guards; the collection INSERT/DELETE/UPDATE/REPLACE tests |
+| pkg/sql/provider | TestEntityTable_Implements{Table,InsertableTable,DeletableTable,UpdatableTable,ReplaceableTable,IndexAddressableTable,IndexedTable}, TestEntityWriter_ImplementsRow{Inserter,Deleter,Updater,Replacer} | duplicate of the guards in entity_table.go | the compile-time guards |
+| pkg/sql/provider | TestKVTable_Implements{Insertable,Deletable,Updatable,Replaceable}Table, TestKVWriter_ImplementsRowReplacer | duplicate of the guards in kv_table.go | the compile-time guards |
+| pkg/sql/provider | TestProvider_ImplementsDatabaseProvider, TestProvider_ImplementsMutableDatabaseProvider, TestDatabase_ImplementsDatabase | duplicate of the guards in provider.go | the compile-time guards |
+| pkg/sql/provider | TestQRDBSession_ImplementsTransactionSession | duplicate of the guard in session.go | the compile-time guard |
+| pkg/sql/provider | TestMetricsTable_ImplementsTable, TestNamespacesTable_ImplementsTable, TestDatapointsTable_ImplementsTable, TestVectorsTable_ImplementsTable | duplicate of the guards in metrics_table.go, namespaces_table.go, timeseries_table.go, vector_table.go | the compile-time guards |
 
 ## Trimmed tests
 
