@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"time"
@@ -45,7 +46,8 @@ const freshWindow = 7 * 24 * time.Hour
 // own, so for it the latest is the highest release in Versions.
 //
 // now is the clock the release age is measured against. Only the Update
-// answer carries a release time; a latest version without one is old.
+// answer carries a release time here; for any other latest version
+// (needsReleaseTime) checkModule looks up that tag's own time.
 func assess(dep dependency, mod listedModule, listed bool, firstParty string, now time.Time) finding {
 	f := finding{Dep: dep}
 	switch {
@@ -82,6 +84,26 @@ func isFresh(released, now time.Time) bool {
 		return false
 	}
 	return now.Sub(released) < freshWindow
+}
+
+// needsReleaseTime reports whether a behind finding's Latest is a tag the
+// listing's Update does not describe, such as a first-party -alpha newer
+// than the latest release or a replace's highest tag, so its release age is
+// unknown until that tag's own publication time is looked up. Without it a
+// fresh tag would be judged old: failed, or bumped to, inside the window.
+func needsReleaseTime(f finding, mod listedModule) bool {
+	return f.Behind && f.Lookup == nil && f.Latest != forkLatest &&
+		(mod.Update == nil || mod.Update.Version != f.Latest)
+}
+
+// lookupError reports a failed release-time lookup as module's lookup
+// failure.
+func lookupError(module string, err error) *LookupError {
+	var lookup *LookupError
+	if errors.As(err, &lookup) {
+		return lookup
+	}
+	return &LookupError{Module: module, Reason: err.Error()}
 }
 
 func latestVersion(dep dependency, mod listedModule, firstParty bool) string {

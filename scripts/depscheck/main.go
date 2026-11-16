@@ -204,7 +204,17 @@ func checkModule(src moduleSource, dir, firstParty string, now time.Time) ([]fin
 	findings := make([]finding, 0, len(deps))
 	for _, dep := range deps {
 		mod, listed := listing[dep.Module]
-		findings = append(findings, assess(dep, mod, listed, firstParty, now))
+		f := assess(dep, mod, listed, firstParty, now)
+		if needsReleaseTime(f, mod) {
+			released, err := src.Released(dir, dep.Path, f.Latest)
+			if err != nil {
+				f.Lookup = lookupError(dep.Module, err)
+			} else {
+				f.Released = released
+				f.Fresh = isFresh(released, now)
+			}
+		}
+		findings = append(findings, f)
 	}
 	return findings, nil
 }

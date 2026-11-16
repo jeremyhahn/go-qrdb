@@ -22,7 +22,10 @@ type listedModule struct {
 	// Update is the go command's own "latest release" answer: set only when
 	// it is newer than Version.
 	Update *moduleUpdate
-	Error  *struct{ Err string }
+	// Time is when Version was published; zero when the go command does
+	// not print it.
+	Time  time.Time
+	Error *struct{ Err string }
 }
 
 // moduleUpdate is the go command's latest release. Time is when it was
@@ -32,10 +35,12 @@ type moduleUpdate struct {
 	Time    time.Time
 }
 
-// moduleSource answers the two questions deps-check asks the go command.
+// moduleSource answers the questions deps-check asks the go command.
 type moduleSource interface {
 	GoProxy(dir string) (string, error)
 	List(dir string, modules []string) (map[string]listedModule, error)
+	// Released is when path@version was published; zero when unknown.
+	Released(dir, path, version string) (time.Time, error)
 }
 
 // goCommand is the moduleSource that runs the go command.
@@ -59,6 +64,33 @@ func (g goCommand) List(dir string, modules []string) (map[string]listedModule, 
 		return nil, err
 	}
 	return decodeList(dir, bytes.NewReader(out))
+}
+
+// Released runs `go list -m -json -e path@version` for the publication time
+// of a version the listing's Update does not describe (a first-party
+// prerelease newer than the latest release, or a replace's latest tag).
+func (g goCommand) Released(dir, path, version string) (time.Time, error) {
+	out, err := g.run(dir, "list", "-m", "-json", "-e", path+"@"+version)
+	if err != nil {
+		return time.Time{}, err
+	}
+	listing, err := decodeList(dir, bytes.NewReader(out))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return releasedIn(listing, path, version)
+}
+
+// releasedIn reads path@version's publication time out of a listing.
+func releasedIn(listing map[string]listedModule, path, version string) (time.Time, error) {
+	mod, ok := listing[path]
+	switch {
+	case !ok || mod.Version != version:
+		return time.Time{}, &LookupError{Module: path, Reason: "go list returned no entry for " + path + "@" + version}
+	case mod.Error != nil:
+		return time.Time{}, &LookupError{Module: path, Reason: mod.Error.Err}
+	}
+	return mod.Time, nil
 }
 
 func (g goCommand) run(dir string, args ...string) ([]byte, error) {

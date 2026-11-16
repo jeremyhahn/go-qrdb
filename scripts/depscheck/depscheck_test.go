@@ -29,6 +29,25 @@ func (s fixtureSource) List(dir string, _ []string) (map[string]listedModule, er
 	return decodeList(dir, f)
 }
 
+// Released serves `go list -m -json path@version` from the fixture's
+// released.json. A fixture without one has no tag that needs the lookup, so
+// the time is unknown (zero), as when the go command prints none.
+func (s fixtureSource) Released(dir, path, version string) (time.Time, error) {
+	f, err := os.Open(filepath.Join(dir, "released.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	listing, err := decodeList(dir, f)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return releasedIn(listing, path, version)
+}
+
 // testNow is the fixed clock release ages are measured against.
 var testNow = time.Date(2026, time.October, 20, 0, 0, 0, 0, time.UTC)
 
@@ -438,6 +457,44 @@ func TestAssessReleaseAge(t *testing.T) {
 			assert.True(t, tc.released.Equal(f.Released), "released %v, want %v", f.Released, tc.released)
 		})
 	}
+}
+
+// A first-party -alpha newer than the latest stable Update, published one
+// day ago, is inside the seven-day window: reported fresh, not failed, and
+// not bumped to (Codex P1 on #1589).
+func TestFreshFirstPartyAlphaNewerThanUpdate(t *testing.T) {
+	dir := filepath.Join("testdata", "fresh-alpha")
+	findings, err := checkModule(fixtureSource{goproxy: "direct"}, dir, firstParty, testNow)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	f := findings[0]
+	require.Nil(t, f.Lookup)
+	assert.Equal(t, "v0.5.0-alpha", f.Latest)
+	assert.True(t, f.Behind)
+	assert.True(t, f.Fresh)
+	assert.True(t, f.Released.Equal(testNow.Add(-24*time.Hour)), "released %v", f.Released)
+	assert.False(t, bumpable(f))
+
+	code, stdout, stderr := runFixture(t, fixtureSource{goproxy: "direct"}, dir)
+	assert.Equal(t, exitOK, code)
+	assert.Empty(t, stderr)
+	assert.Contains(t, stdout, filepath.Join(dir, "go.mod")+":5: fresh: github.com/jeremyhahn/go-alpha v0.3.0-alpha, latest v0.5.0-alpha released 2026-10-19, under 7 days: reported, not failed")
+}
+
+// The tag's own lookup failing is that module's lookup failure, not an
+// unknown age judged old.
+func TestReleaseLookupFailureIsALookupError(t *testing.T) {
+	_, err := releasedIn(map[string]listedModule{}, "github.com/jeremyhahn/go-alpha", "v0.5.0-alpha")
+	var lookup *LookupError
+	require.ErrorAs(t, err, &lookup)
+	assert.Equal(t, "github.com/jeremyhahn/go-alpha", lookup.Module)
+
+	_, err = releasedIn(map[string]listedModule{"m": {Path: "m", Version: "v1.0.0", Error: &struct{ Err string }{Err: "gone"}}}, "m", "v1.0.0")
+	require.ErrorAs(t, err, &lookup)
+	assert.Equal(t, "gone", lookup.Reason)
+
+	assert.Equal(t, lookup, lookupError("m", lookup))
+	assert.Equal(t, "boom", lookupError("m", errors.New("boom")).Reason)
 }
 
 func TestReportFreshRelease(t *testing.T) {
