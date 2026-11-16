@@ -2867,9 +2867,11 @@ func runStart(f *startFlags) (err error) {
 					server.WithAuthMiddleware(authResult.authMW),
 				)
 				// An operator's access to a tenant's identity records is
-				// recorded in that tenant's own replicated trail, beside the
-				// platform decision log the middleware was built with.
-				authResult.authMW.BindOperatorAccessTenantTrail(svcNode.TenantTrail)
+				// recorded in that tenant's own replicated trail and its
+				// node-local trail (where the tenant's ordinary audit query
+				// reads it), beside the platform decision log the middleware
+				// was built with.
+				authResult.authMW.BindOperatorAccessTenantTrail(svcNode.OperatorAccessTrail)
 				if authResult.soAuthenticator != nil {
 					serverOpts = append(serverOpts, server.WithSOAuthenticator(authResult.soAuthenticator))
 					// Tenant create commits a named SO's PIN through the

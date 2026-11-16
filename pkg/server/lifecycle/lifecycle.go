@@ -629,6 +629,15 @@ type Node struct {
 	// that is sealed, unavailable or unsupported refuses them.
 	TenantTrail audit.AuditLogger
 
+	// OperatorAccessTrail is where an operator's access to a tenant's
+	// identity records is written for that tenant: TenantTrail, joined with
+	// the node-local trail when the composition has one. The tenant admin's
+	// ordinary audit query reads the node-local trail and, only when the
+	// tenant is entitled, the replicated chain; without the node-local leg a
+	// tenant that has not opted in to replicated audit could never read the
+	// record it is owed. Either leg failing refuses the access (fail-closed).
+	OperatorAccessTrail audit.AuditLogger
+
 	// ClusterCAProv is the cluster CA (Key A) provider: the built-in
 	// cakey.SoftwareProvider over the replicated store, or
 	// Infra.ClusterCAKeyProvider when one was injected. Nil when neither
@@ -859,8 +868,10 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// passed no node-local logger at all (infra.AuditLogger nil) gets none
 	// here either: introducing a sink where the caller asked for none would
 	// change its behavior, not merely extend it.
+	n.OperatorAccessTrail = n.TenantTrail
 	if infra.AuditLogger != nil {
 		n.nodeLocalAudit = infra.AuditLogger
+		n.OperatorAccessTrail = audit.NewAggregateLogger(infra.AuditLogger, n.TenantTrail)
 		infra.AuditLogger = audit.NewAggregateLogger(infra.AuditLogger, n.ReplicatedAudit)
 	}
 
