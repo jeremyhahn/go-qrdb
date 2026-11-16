@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/errclass"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 )
 
 func TestRefusal_SORefusals(t *testing.T) {
@@ -66,5 +67,21 @@ func TestRefusal_NonSOErrorsCarryNoSOReason(t *testing.T) {
 		if reason == auth.ReasonSORoleRequired || reason == auth.ReasonSORoleConflict {
 			t.Fatalf("%s: classified as SO refusal %q", name, reason)
 		}
+	}
+}
+
+// A strict RBAC refusal of a combined SO/Admin caller carries the typed
+// conflict, so the transports report SO_ROLE_CONFLICT with its tenant.
+func TestRefusal_RBACDenialCarriesSOConflict(t *testing.T) {
+	err := fmt.Errorf("authorize: %w", &rbac.PermissionDeniedError{
+		Resource: "kv", Action: "put", Subject: "both",
+		Cause: &auth.SORoleConflictError{TenantID: "acme"},
+	})
+	reason, md, ok := errclass.Refusal(err)
+	if !ok || reason != auth.ReasonSORoleConflict {
+		t.Fatalf("Refusal = (%q, %v, %v), want %q", reason, md, ok, auth.ReasonSORoleConflict)
+	}
+	if got := auth.SORoleConflictFromMetadata(md); got == nil || got.TenantID != "acme" {
+		t.Fatalf("metadata %v does not round-trip tenant acme", md)
 	}
 }

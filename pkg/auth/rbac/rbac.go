@@ -307,19 +307,35 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 // every tenant, so Authorize refuses it outright: an account a standard
 // posture named both SO and Admin stays unusable after a strict restart
 // whichever tenant it lives in, without a boot-time scan of every tenant.
-func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, error) {
+//
+// It also returns the tenant whose SO and Admin roles are combined: the
+// identity's home tenant when both come from its home Roles, else the
+// call's target tenant whose binding supplied one of them.
+func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, string, error) {
+	viaBinding := false
 	holds := func(name string) (bool, error) {
 		ok, err := a.holdsSystemRole(ctx, identity, name)
 		if err != nil || ok || len(bound) == 0 {
 			return ok, err
 		}
-		return a.roleIDsHoldSystemRole(ctx, bound, target, name)
+		ok, err = a.roleIDsHoldSystemRole(ctx, bound, target, name)
+		if ok {
+			viaBinding = true
+		}
+		return ok, err
 	}
 	isSO, err := holds(role.RoleNameSO)
 	if err != nil || !isSO {
-		return false, err
+		return false, "", err
 	}
-	return holds(role.RoleNameAdmin)
+	isAdmin, err := holds(role.RoleNameAdmin)
+	if err != nil || !isAdmin {
+		return false, "", err
+	}
+	if viaBinding {
+		return true, target, nil
+	}
+	return true, identity.TenantID, nil
 }
 
 // roleIDsHoldSystemRole reports whether roleIDs — all belonging to tenantID —
@@ -612,16 +628,20 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// Admin is refused every permission, in every tenant, before any grant
 	// is considered (see holdsSOWithAdmin).
 	if a.strictSoD {
-		combined, err := a.holdsSOWithAdmin(ctx, identity, bound, target)
+		combined, conflictTenant, err := a.holdsSOWithAdmin(ctx, identity, bound, target)
 		if err != nil {
 			return err
 		}
 		if combined {
+			// Carry the typed refusal so the transports report
+			// SO_ROLE_CONFLICT with its tenant and the SDK's errors.As
+			// check holds for a combined caller refused here.
 			return &PermissionDeniedError{
 				Resource: resource,
 				Action:   action,
 				Subject:  identity.Subject,
 				Reason:   "strict separation of duties: a principal holding the SO role together with Admin is refused",
+				Cause:    &auth.SORoleConflictError{TenantID: conflictTenant},
 			}
 		}
 	}

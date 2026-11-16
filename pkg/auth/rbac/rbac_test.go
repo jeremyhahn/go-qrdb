@@ -380,6 +380,16 @@ func TestAuthorize_SOWithAdminRefusedUnderStrictSeparation(t *testing.T) {
 			if !errors.As(err, &denied) {
 				t.Fatalf("expected *PermissionDeniedError, got %v", err)
 			}
+			// The SDK's documented errors.As check for the typed
+			// refusal (docs/identity-rbac/api.md) must hold for a
+			// combined caller refused here, not only at the SO gate.
+			var conflict *auth.SORoleConflictError
+			if !errors.As(err, &conflict) || conflict.TenantID != "tenant-1" {
+				t.Fatalf("expected *auth.SORoleConflictError{tenant-1} in the chain, got %v", err)
+			}
+			if !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatalf("expected the ErrUnauthorized sentinel in the chain, got %v", err)
+			}
 			if !strings.Contains(denied.Reason, "SO role together with Admin") {
 				t.Fatalf("reason = %q, want the strict SO/Admin refusal", denied.Reason)
 			}
