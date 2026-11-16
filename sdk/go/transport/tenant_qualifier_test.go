@@ -87,6 +87,7 @@ func TestTenantRoundTripper_FillsTheFieldEachRouteReads(t *testing.T) {
 		mux.HandleFunc(p, func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, bodyTenant(r)) })
 	}
 	mux.HandleFunc("GET /v1/roles/by-name", func(w http.ResponseWriter, r *http.Request) {
+		// #nosec G705 -- the httptest server echoes tenant_id back so the test can assert which tenant the round tripper attached; the reader is the test itself, never a browser.
 		_, _ = io.WriteString(w, r.URL.Query().Get("tenant_id"))
 	})
 	srv := httptest.NewServer(mux)
