@@ -262,6 +262,7 @@ func producerProblems(job digestJob) []string {
 	if !pushed {
 		problems = append(problems, digestProducer+" does not push with scripts/ci-image.sh push: main publishes no image")
 	}
+	problems = append(problems, digestRecordProblems(job)...)
 	if !slices.ContainsFunc(job.Steps, func(s digestStep) bool { return s.ID == lanPushID }) {
 		problems = append(problems, digestProducer+" has no step with id "+lanPushID+
 			": nothing pushes to the LAN CI registry, or its tag outputs read a step that does not exist")
@@ -287,6 +288,61 @@ func producerProblems(job digestJob) []string {
 		if !uploaded[f.artifact] {
 			problems = append(problems, digestProducer+" does not upload the artifact "+strconv.Quote(f.artifact)+
 				": no consumer could load the "+family+" image")
+		}
+	}
+	return problems
+}
+
+// digestRecordProblems holds the producer to the #1609 digest records:
+// scripts/image-registry.sh pulls from the LAN registry only by the repo
+// digest recorded in CI_IMAGE_DIGEST_DIR, so the build step names that
+// directory, each image's record, keyed by its content-hash name, is restored
+// from the GitHub cache before the build, and saved after it only on a push to
+// main and only when the build's own push wrote a new digest.
+func digestRecordProblems(job digestJob) []string {
+	var problems []string
+	build := slices.IndexFunc(job.Steps, func(s digestStep) bool { return s.ID == "build" })
+	names := slices.IndexFunc(job.Steps, func(s digestStep) bool { return s.ID == "names" })
+	if build < 0 {
+		return []string{digestProducer + " has no step with id build"}
+	}
+	if !strings.Contains(job.Steps[build].Env["CI_IMAGE_DIGEST_DIR"], "/ci-image-digests") {
+		problems = append(problems, digestProducer+"'s build step sets no CI_IMAGE_DIGEST_DIR under <temp>/ci-image-digests: "+
+			"no registry pull could find its record")
+	}
+	if names < 0 || names > build {
+		problems = append(problems, digestProducer+" has no step with id names before its build step: no record has a name")
+	}
+	for _, f := range []string{"toolchain", "it"} {
+		record := "${{ steps.names.outputs." + f + "_record }}"
+		path := "${{ runner.temp }}/ci-image-digests/" + record
+		key := "ci-image-digest-" + record + "-${{ github.run_id }}-${{ github.run_attempt }}"
+		if names >= 0 && !strings.Contains(job.Steps[names].Run, f+"_record=") {
+			problems = append(problems, digestProducer+"'s names step outputs no "+f+"_record")
+		}
+		if !strings.Contains(job.Steps[build].Run, f+"_recorded=true") {
+			problems = append(problems, digestProducer+"'s build step outputs no "+f+"_recorded: its record is never saved")
+		}
+		restored := slices.ContainsFunc(job.Steps[:build], func(s digestStep) bool {
+			return strings.HasPrefix(s.Uses, "actions/cache/restore@") && s.With["path"] == path &&
+				s.With["key"] == key && s.With["restore-keys"] == "ci-image-digest-"+record+"-"
+		})
+		if !restored {
+			problems = append(problems, digestProducer+" restores no "+f+" record before its build: want actions/cache/restore of "+
+				path+", key "+key+", restore-keys ci-image-digest-"+record+"-")
+		}
+		saved := slices.ContainsFunc(job.Steps[build+1:], func(s digestStep) bool {
+			return strings.HasPrefix(s.Uses, "actions/cache/save@") && s.With["path"] == path && s.With["key"] == key
+		})
+		if !saved {
+			problems = append(problems, digestProducer+" saves no "+f+" record after its build: want actions/cache/save of "+path+", key "+key)
+		}
+		for _, s := range job.Steps {
+			if strings.HasPrefix(s.Uses, "actions/cache/save@") && s.With["path"] == path &&
+				(!strings.Contains(s.If, ciPublishTerm) || !strings.Contains(s.If, "steps.build.outputs."+f+"_recorded == 'true'")) {
+				problems = append(problems, digestProducer+" saves the "+f+" record under if: "+strconv.Quote(s.If)+
+					"; want "+ciPublishTerm+" and steps.build.outputs."+f+"_recorded == 'true': only main's own push writes a record")
+			}
 		}
 	}
 	return problems
@@ -852,9 +908,45 @@ jobs:
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
+      - name: Name the images
+        id: names
+        run: |
+          t=$(make -s toolchain-image)
+          echo "toolchain_record=${t//:/_}" >> "$GITHUB_OUTPUT"
+          i=$(make -s it-image)
+          echo "it_record=${i//:/_}" >> "$GITHUB_OUTPUT"
+      - name: Restore the toolchain record
+        uses: actions/cache/restore@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-
+      - name: Restore the integration record
+        uses: actions/cache/restore@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.it_record }}-
       - name: Build the images
         id: build
-        run: make docker-build
+        env:
+          CI_IMAGE_DIGEST_DIR: ${{ format('{0}/ci-image-digests', runner.temp) }}
+        run: |
+          make docker-build
+          echo "toolchain_recorded=true" >> "$GITHUB_OUTPUT"
+          echo "it_recorded=true" >> "$GITHUB_OUTPUT"
+      - name: Save the toolchain record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.toolchain_recorded == 'true' }}
+        uses: actions/cache/save@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save the integration record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.it_recorded == 'true' }}
+        uses: actions/cache/save@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save
         id: save
         run: |
@@ -1019,6 +1111,22 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		legsTest = "        run: make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"
 	)
 	for _, tc := range []struct{ name, old, new string }{
+		{name: "no digest record directory", old: "          CI_IMAGE_DIGEST_DIR: ${{ format('{0}/ci-image-digests', runner.temp) }}\n",
+			new: "          DOCS_ONLY: x\n"},
+		{name: "a record saved by a pull request", old: "if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.it_recorded == 'true' }}",
+			new: "if: ${{ steps.build.outputs.it_recorded == 'true' }}"},
+		{name: "a record saved when no push wrote one", old: "if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.toolchain_recorded == 'true' }}",
+			new: "if: ${{ env.CI_PUBLISH == 'true' }}"},
+		{name: "no restore of a record", old: "      - name: Restore the integration record\n        uses: actions/cache/restore@",
+			new: "      - name: Restore the integration record\n        uses: actions/upload-artifact@"},
+		{name: "a record keyed by something else", old: "restore-keys: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-",
+			new: "restore-keys: ci-image-digest-"},
+		{name: "a record path off its name", old: "          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}\n          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}\n          restore",
+			new: "          path: ${{ runner.temp }}/ci-image-digests\n          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}\n          restore"},
+		{name: "no record names", old: `echo "it_record=${i//:/_}" >> "$GITHUB_OUTPUT"`,
+			new: `echo "it_name=$i" >> "$GITHUB_OUTPUT"`},
+		{name: "no recorded output", old: `echo "toolchain_recorded=true" >> "$GITHUB_OUTPUT"`,
+			new: `echo "toolchain_saved=true" >> "$GITHUB_OUTPUT"`},
 		{name: "the probe-and-rebuild form", old: lintLoad,
 			new: `docker image inspect "$IMAGE" || make docker-build-toolchain`},
 		{name: "a rebuild beside the load", old: legsTest,
@@ -1143,8 +1251,8 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n"},
 		{name: "a pull job without the registry env", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
 			new: "    needs: [preflight, docker-build]\n"},
-		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Build the images\n",
-			new: "    steps:\n      - name: Build the images\n"},
+		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Name the images\n",
+			new: "    steps:\n      - name: Name the images\n"},
 		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
 		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n",
 			new: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
