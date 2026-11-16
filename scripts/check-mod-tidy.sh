@@ -18,7 +18,8 @@
 # sources, by `GOWORK=off go mod tidy -diff`, which mutates nothing.
 #
 # The module set is every tracked go.mod in the current directory's
-# repository, not a list, so a new module is checked the day it is committed.
+# repository, not a list, so a new module is checked the day it is committed;
+# modules under a testdata/ directory are fixtures and are skipped.
 # The root go.mod missing from it means discovery failed, and an empty loop
 # must not report success. Every module is asked before failing, so one run
 # names all of them.
@@ -49,7 +50,10 @@ STDERR_MAX_LINES=40
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 
-mapfile -t mods < <(git ls-files -- 'go.mod' '*/go.mod')
+# A go.mod under a testdata/ path segment is a test fixture, often untidy on
+# purpose, and the go tool ignores testdata directories; so does this gate.
+mapfile -t mods < <(git ls-files -- 'go.mod' '*/go.mod' \
+	':(exclude,glob)testdata/**' ':(exclude,glob)**/testdata/**')
 case " ${mods[*]} " in
 *" go.mod "*) ;;
 *)
