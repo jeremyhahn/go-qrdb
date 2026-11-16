@@ -43,9 +43,19 @@ b. Row 8 (barrier): not closed in this lane. Serving a barrier tenant or a
 
 ## Step 3
 
-Row stays `in progress` while row 8 is a GAP. ROADMAP.md still moves
-fsync-stall-leadership, lean-node-build and barrier-passphrase-change to
-Complete (SPEC marks them shipped).
+Row stays `in progress` while row 8 is a GAP; `pm/rows.md` lists it as
+`in progress` under #1613. The architecture §8 "Barrier" bullet now states
+what the code does. Not done here: ROADMAP.md is a protected path this lane
+may not edit, so moving fsync-stall-leadership, lean-node-build and
+barrier-passphrase-change to Complete (SPEC marks them shipped) is left to a
+lane launched with ROADMAP.md allowed.
+
+## Remains
+
+- Row 8, the barrier: an owner decision on where a barrier tenant's (and a
+  barrier database's) logs live, then the move with apply, snapshot, restore
+  and a CLI E2E on a barrier tenant.
+- The ROADMAP.md moves above.
 
 ## Out of scope
 
