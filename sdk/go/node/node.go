@@ -4010,6 +4010,17 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	strictSoD := wiring.ResolveStrictSeparation(cfg.Auth.SeparationOfDuties)
 	n.strictSeparation.Store(strictSoD)
 	n.separationConfigured.Store(cfg.Auth.SeparationOfDuties)
+	// A strict node refuses to start while a system SO holder also holds
+	// Admin (docs/SPEC.md separation-of-duties), as cmd/qrdbd does: an
+	// existing store reopened by NewStandaloneNode/NewClusteredNode reaches
+	// here without FirstBoot, so the check runs before the client is
+	// published or any listener starts. A sealed barrier holds no readable
+	// user store; its wiring pass after unseal runs the check.
+	if strictSoD && (barrier == nil || !barrier.IsSealed()) && svcNode.User != nil && svcNode.Role != nil {
+		if err := firstboot.CheckStrictSeparationHolders(ctx, svcNode.User, svcNode.Role); err != nil {
+			return err
+		}
+	}
 	embeddedOpts, err := n.buildEmbeddedOpts(svcNode, ceremonySvc, strictSoD, standalone)
 	if err != nil {
 		return err
