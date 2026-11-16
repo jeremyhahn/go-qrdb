@@ -26,7 +26,6 @@ import (
 
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
-
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
