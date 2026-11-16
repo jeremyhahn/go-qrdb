@@ -87,6 +87,29 @@ load() {
 	[ "$got" = "$want" ] || die "$image loaded as $got, not $want, the image docker-build built"
 	rm -f "$dir/image.tar"
 	echo "==> $image is $want, the image docker-build built" >&2
+	# The verified ID, never the tag, is what the stages run: the tag is
+	# shared by every commit with the same build inputs (and two builds of
+	# them differ, the base stage runs apk upgrade), so on a shared daemon
+	# another job can load different bytes under it after this check. The ID
+	# is recorded in the job's own directory, where scripts/in-toolchain-image.sh
+	# swaps it in for the tag, and printed for a caller that runs it directly.
+	record_id "$image" "$want"
+	echo "$want"
+}
+
+# The job's record of verified image IDs, one file per tag: CI_IMAGE_IDS, else
+# RUNNER_TEMP/ci-image-ids (a runner's own, emptied at each job's start). No
+# directory (a local run) records nothing. scripts/in-toolchain-image.sh reads it.
+ids_dir() { echo "${CI_IMAGE_IDS:-${RUNNER_TEMP:+$RUNNER_TEMP/ci-image-ids}}"; }
+
+record_id() {
+	local dir key
+	dir=$(ids_dir)
+	[ -n "$dir" ] || return 0
+	key=${1//[^A-Za-z0-9._-]/_}
+	mkdir -p "$dir" || die "cannot create $dir"
+	printf '%s\n' "$2" > "$dir/$key.tmp" || die "cannot record $1's ID in $dir"
+	mv -f "$dir/$key.tmp" "$dir/$key" || die "cannot record $1's ID in $dir"
 }
 
 # registry_owner prints the repository owner, lowercased, the namespace the

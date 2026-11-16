@@ -69,7 +69,7 @@ run() {
   while [ $# -gt 0 ] && [ "$1" != -- ]; do args+=("$1"); shift; done
   [ $# -eq 0 ] || shift
   rc=0
-  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org "$@" \
+  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org CI_IMAGE_IDS="$D/no-ids" "$@" \
     "$here/ci-image.sh" "${args[@]}" > "$D/out" 2> "$D/err" || rc=$?
 }
 called() { grep -q -- "$1" "$D/state/calls" 2>/dev/null; }
@@ -97,6 +97,25 @@ run load "$D/art" "$tc" "$id_a"
 if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err"; then
   ok "load accepts the image docker-build built"
 else bad "load accepts the image docker-build built (rc=$rc)"; cat "$D/err"; fi
+
+# 3a. #1597: load prints the verified ID and records it for the tag, where
+# scripts/in-toolchain-image.sh runs the ID instead of the shared tag.
+reset
+rm -rf "$D/ids"
+run save "$tc" "$D/art"
+run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids"
+if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$id_a" ] &&
+  [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
+  ok "load prints and records the verified ID"
+else bad "load prints and records the verified ID (rc=$rc)"; cat "$D/err"; ls "$D/ids" 2>&1; fi
+# A refused image records nothing.
+reset
+rm -rf "$D/ids"
+run save "$tc" "$D/art"
+run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
+if [ "$rc" = 1 ] && [ ! -e "$D/ids" ]; then
+  ok "a refused image records no ID"
+else bad "a refused image records no ID (rc=$rc)"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
