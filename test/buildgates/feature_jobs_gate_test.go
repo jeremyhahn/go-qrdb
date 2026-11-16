@@ -104,7 +104,9 @@ const (
 	// loads docker-build's integration image, checks it against
 	// docker-build's image ID, and hands that verified ID, never the tag
 	// (another job can retag it on a shared daemon), to the tests as IT_IMAGE.
-	featureLoad = "scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
+	// A LAN registry pull (#1593) that already verified and tagged the ID
+	// skips the artifact load.
+	featureLoad = "[ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
 
 	// featureStep is the one test command each shard runs: every feature in
 	// its list, each the feature's features.mk selection in the integration
@@ -219,6 +221,11 @@ func featureJobProblems(body []byte, want []string) []string {
 		// The self-hosted image prune trails the teardown; its shape and
 		// place are ci_image_id_handoff_test.go's pruneProblems to check.
 		if len(runs) == 3 && pruneRun.MatchString(strings.TrimSpace(s.Run)) && strings.TrimSpace(s.If) == pruneIf {
+			continue
+		}
+		// The LAN CI registry's pull (#1593) leads the load in its exact
+		// shape alone; ci_image_digest_test.go checks the pull's binding.
+		if len(runs) == 0 && strings.TrimSpace(s.Run) == lanPullRunFor(imageFamilies["it"]) {
 			continue
 		}
 		if strings.HasPrefix(s.Uses, downloadArtifactAction) && len(runs) == 0 {
@@ -563,7 +570,7 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
-          scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
+          [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
       - name: Integration tests (shard ${{ matrix.shard }})
         run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
@@ -655,7 +662,8 @@ func TestIntegrationFeatureCoverage_JobProblemsCanFail(t *testing.T) {
 		{name: "docker-build not needed", old: "needs: [docker-build, preflight]", new: "needs: [preflight]"},
 		{name: "no download", old: "      - name: Download the integration image\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n", new: ""},
 		{name: "the toolchain artifact", old: "          name: it-image\n", new: "          name: toolchain-image\n"},
-		{name: "no load", old: "          scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n", new: ""},
+		{name: "no load", old: "          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\n", new: ""},
+		{name: "the load skipped whatever the pull did", old: "[ \"$PULLED\" = true ] || scripts", new: "[ \"$PULLED\" = true ] && scripts"},
 		{name: "a rebuild in place of the load", old: "scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "docker image inspect \"$IMAGE\" || make docker-build-it"},
 		{name: "a load with no ID check", old: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"", new: "load \"$RUNNER_TEMP/it-image\" \"$IMAGE\""},
 		{name: "the retaggable tag handed on", old: "echo \"IT_IMAGE=$ID\"", new: "echo \"IT_IMAGE=$IMAGE\""},
