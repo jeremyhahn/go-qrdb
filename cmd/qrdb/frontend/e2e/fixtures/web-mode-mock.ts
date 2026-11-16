@@ -69,8 +69,9 @@ export interface WebMockState {
   databases: WebMockDatabaseInfo[];
   /**
    * Cluster topology returned by GET /admin/topology. The web UI derives its
-   * server mode from this (more than one distinct node ⇒ raft). Defaults to a
-   * single-node topology so the UI resolves to standalone.
+   * server mode from this (a readable topology with any node ⇒ raft; the
+   * database wizard's Raft steps need more than one). Defaults to a
+   * single-node topology: Cluster nav shown, single-node wizard steps.
    */
   topology?: WebMockTopology;
 }

@@ -409,4 +409,112 @@ test.describe("Admin - Cluster", () => {
 
     await clearError(page, "AdminBinding.RemoveMember");
   });
+
+  // -------------------------------------------------------------------------
+  // Node compaction (admin.nodeCompaction / admin.setNodeCompaction)
+  // -------------------------------------------------------------------------
+
+  test("node compaction loads the unset policy as off", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("node-compaction-card");
+    await expect(card.getByLabel("Node compaction mode")).toHaveValue("off", {
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card.getByRole("button", { name: "Save Compaction" })).toBeEnabled();
+  });
+
+  test("node compaction saves a revision policy and reloads it", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("node-compaction-card");
+    const mode = card.getByLabel("Node compaction mode");
+    await expect(mode).toHaveValue("off", { timeout: LOAD_TIMEOUT });
+
+    await mode.selectOption("revision");
+    await card.getByLabel("Node retain revisions").fill("5");
+    await card.getByRole("button", { name: "Save Compaction" }).click();
+    await expect(page.getByText("Node compaction saved")).toBeVisible({ timeout: 5_000 });
+
+    // The policy persisted in the binding: a fresh visit loads it back.
+    await page.locator("aside").getByText("Dashboard").first().click();
+    await page.locator("aside").getByText("Cluster").click();
+    await expect(mode).toHaveValue("revision", { timeout: LOAD_TIMEOUT });
+    await expect(card.getByLabel("Node retain revisions")).toHaveValue("5");
+
+    // Switching to a period policy saves the duration.
+    await mode.selectOption("period");
+    await card.getByLabel("Node retain period").fill("24h");
+    await card.getByRole("button", { name: "Save Compaction" }).click();
+    await expect(card.getByLabel("Node retain period")).toHaveValue("24h");
+  });
+
+  test("node compaction rejects a revision policy without a count", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("node-compaction-card");
+    const mode = card.getByLabel("Node compaction mode");
+    await expect(mode).toHaveValue("off", { timeout: LOAD_TIMEOUT });
+    await mode.selectOption("revision");
+    await card.getByRole("button", { name: "Save Compaction" }).click();
+    await expect(page.getByText("Retain revisions must be at least 1")).toBeVisible({
+      timeout: 5_000,
+    });
+  });
+
+  test("node compaction load error shows the error state", async ({ page }) => {
+    await page.goto("/");
+    await expect(
+      page.locator(".breadcrumbs").getByText("Dashboard"),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT });
+
+    await injectError(page, "AdminBinding.NodeCompaction", "node compaction unavailable");
+    await page.locator("aside").getByText("Cluster").click();
+
+    const errorBox = page.getByTestId("node-compaction-error");
+    await expect(errorBox).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(errorBox).toContainText("node compaction unavailable");
+
+    await clearError(page, "AdminBinding.NodeCompaction");
+    await page.getByTestId("node-compaction-card").getByRole("button", { name: "Retry" }).click();
+    await expect(
+      page.getByTestId("node-compaction-card").getByLabel("Node compaction mode"),
+    ).toHaveValue("off", { timeout: LOAD_TIMEOUT });
+  });
+
+  test("node compaction save error shows error toast", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("node-compaction-card");
+    const mode = card.getByLabel("Node compaction mode");
+    await expect(mode).toHaveValue("off", { timeout: LOAD_TIMEOUT });
+
+    await injectError(page, "AdminBinding.SetNodeCompaction", "set compaction failed");
+    await mode.selectOption("period");
+    await card.getByLabel("Node retain period").fill("1h");
+    await card.getByRole("button", { name: "Save Compaction" }).click();
+
+    const alert = page.locator('[role="alert"]');
+    await expect(alert).toBeVisible({ timeout: 5_000 });
+    await expect(alert.locator("span")).toContainText("set compaction failed");
+
+    await clearError(page, "AdminBinding.SetNodeCompaction");
+  });
+
+  // -------------------------------------------------------------------------
+  // Join token (admin.mintJoinToken): the embedded desktop transport has no
+  // authorization, so the form is replaced by a note; web-mode-cluster.spec.ts
+  // covers minting over REST.
+  // -------------------------------------------------------------------------
+
+  test("desktop shows the join token note instead of the form", async ({ page }) => {
+    await navigateToCluster(page);
+
+    const card = page.getByTestId("join-token-card");
+    await expect(card.getByTestId("join-token-desktop-note")).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await expect(card).toContainText("authenticated remote connection");
+    await expect(card.getByRole("button", { name: "Mint Token" })).toHaveCount(0);
+  });
 });

@@ -20,7 +20,7 @@
     RaftGroupsConfig,
     RaftClusterMode,
   } from "$stores/database-wizard.svelte.ts";
-  import { connManagerStore } from "$stores/connection-manager.svelte.ts";
+  import { connManagerStore, isMultiNodeServer } from "$stores/connection-manager.svelte.ts";
   import { AlertCircle, Info } from "lucide-svelte";
 
   let { onNext, onBack }: { onNext: () => void; onBack: () => void } =
@@ -30,8 +30,8 @@
   // Derived server topology from connection manager
   // ---------------------------------------------------------------------------
 
-  /** True when the connected server is running in Raft cluster mode. */
-  let isRaft = $derived(connManagerStore.activeServerMode === "raft");
+  /** True when the connected server is a multi-node Raft cluster. */
+  let isRaft = $derived(isMultiNodeServer());
 
   /**
    * Maximum replication factor is bounded by the number of available cluster

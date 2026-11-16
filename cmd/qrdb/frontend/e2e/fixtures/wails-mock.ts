@@ -87,6 +87,11 @@ export interface MockState {
   isFirstRun: boolean;
   wizardState: Record<string, unknown> | null;
   configInitialized: boolean;
+  /**
+   * CeremonyBinding.Status override. Unset reports "operational" with the
+   * mock pin once configured ("awaiting_init" before).
+   */
+  ceremonyStatus?: { state: string; spkiPin?: string };
   /** Server topology mode — controls whether the Cluster nav item is visible. */
   serverMode: 'standalone' | 'raft';
   /**
@@ -108,6 +113,26 @@ export interface MockState {
     sharesProvided: number;
     sharesTotal: number;
     strategy?: string;
+    /** The node barrier's cluster seal state (SealStatus.clusterSeal). */
+    clusterSeal?: {
+      active: boolean;
+      sealed: boolean;
+      epoch: number;
+      principal?: string;
+      principalTenant?: string;
+      node?: string;
+      at?: string;
+      local?: string;
+    };
+    /** The node barrier's cluster migration (SealStatus.clusterMigration). */
+    clusterMigration?: {
+      unconfirmed?: boolean;
+      target?: string;
+      generation?: number;
+      acked: number;
+      total: number;
+      nodes?: { nodeId: string; step?: string; phase?: string; attempts?: number; detail?: string }[];
+    };
   };
   unsealProgress: {
     sealed: boolean;
@@ -649,6 +674,25 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             maybeReject("SealBinding.Status");
             return { ...getState().sealStatus };
           },
+          // SealBinding.ClusterUnseal(): clears the replicated cluster seal
+          // record, written through this node by the caller, and returns it.
+          ClusterUnseal: async () => {
+            maybeReject("SealBinding.ClusterUnseal");
+            const s = getState();
+            const prev = s.sealStatus.clusterSeal;
+            const next = {
+              active: true,
+              sealed: false,
+              epoch: (prev?.epoch ?? 0) + 1,
+              principal: "admin",
+              principalTenant: "system",
+              node: "127.0.0.1:7000",
+              at: "2026-11-12T10:00:00Z",
+              local: "serving",
+            };
+            s.sealStatus.clusterSeal = next;
+            return { ...next };
+          },
         },
         CeremonyBinding: {
           // CeremonyBinding.Initialize(req): `qrdb init`'s desktop
@@ -725,6 +769,8 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           Status: async () => {
             maybeReject("CeremonyBinding.Status");
+            const override = getState().ceremonyStatus;
+            if (override) return { ...override };
             return {
               state: getState().configInitialized ? "operational" : "awaiting_init",
               spkiPin: "mockpin",
@@ -1461,8 +1507,12 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           const tsRetentionStore = new Map<string, number>();
           const tsDeletedMetrics = new Set<string>();
           return {
-            Write: async (metric: string, value: number, timestampNs: number) => {
+            Write: async (point: Record<string, unknown>) => {
+              // TimeSeriesBinding.Write(point *TSDataPoint): one snake_case object.
               maybeReject("TimeSeriesBinding.Write");
+              const metric = point["metric"] as string;
+              const value = point["value"] as number;
+              const timestampNs = (point["timestamp_ns"] ?? point["timestampNs"] ?? Date.now() * 1_000_000) as number;
               if (!tsDeletedMetrics.has(metric)) {
                 tsPoints.push({ metric, value, timestampNs });
               }

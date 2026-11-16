@@ -15,9 +15,18 @@
   limitations under the License.
 -->
 <script lang="ts">
-  import type { Client, PeersResponse, ShardPeers, PeerInfo } from "@qrdb/sdk";
+  import type {
+    Client,
+    PeersResponse,
+    ShardPeers,
+    PeerInfo,
+    CompactionMode,
+    DatabaseCompactionConfig,
+    MintJoinTokenResponse,
+  } from "@qrdb/sdk";
+  import { isDesktop } from "@qrdb/sdk";
   import { onMount } from "svelte";
-  import { RefreshCw, ChevronDown, UserMinus, Minus } from "lucide-svelte";
+  import { RefreshCw, ChevronDown, UserMinus, Minus, Copy } from "lucide-svelte";
   import { showToast } from "$stores/toast.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
@@ -55,6 +64,27 @@
   // Drain state
   let drainLoading: boolean = $state(false);
   let showDrainConfirm: boolean = $state(false);
+
+  // ---------------------------------------------------------------------------
+  // Node compaction state
+  // ---------------------------------------------------------------------------
+
+  let compactionLoading: boolean = $state(true);
+  let compactionError: string | null = $state(null);
+  let compactionSaving: boolean = $state(false);
+  let compactionMode: CompactionMode = $state("off");
+  let compactionRetainRevisions: string = $state("");
+  let compactionRetainPeriod: string = $state("");
+
+  // ---------------------------------------------------------------------------
+  // Join token state
+  // ---------------------------------------------------------------------------
+
+  const desktop = isDesktop();
+  let joinNodeId: string = $state("");
+  let joinTtlSeconds: string | number | null = $state("");
+  let joinLoading: boolean = $state(false);
+  let joinToken = $state<MintJoinTokenResponse | null>(null);
 
   // ---------------------------------------------------------------------------
   // Discovery configuration state
@@ -237,8 +267,107 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Node compaction actions
+  // ---------------------------------------------------------------------------
+
+  /** Copies a compaction policy into the editor fields. */
+  function applyCompaction(config: DatabaseCompactionConfig | undefined): void {
+    compactionMode = config?.mode ?? "off";
+    compactionRetainRevisions =
+      config?.retainRevisions !== undefined ? String(config.retainRevisions) : "";
+    compactionRetainPeriod = config?.retainPeriod ?? "";
+  }
+
+  /** Loads the node-wide compaction policy. */
+  async function fetchCompaction(): Promise<void> {
+    try {
+      compactionLoading = true;
+      compactionError = null;
+      applyCompaction(await client.admin.nodeCompaction());
+    } catch (err: unknown) {
+      compactionError = err instanceof Error ? err.message : "Failed to load node compaction";
+    } finally {
+      compactionLoading = false;
+    }
+  }
+
+  /** Saves the node-wide compaction policy from the editor fields. */
+  async function handleSaveCompaction(): Promise<void> {
+    let policy: DatabaseCompactionConfig | undefined;
+    if (compactionMode === "revision") {
+      const revisions = parseInt(compactionRetainRevisions, 10);
+      if (isNaN(revisions) || revisions < 1) {
+        showToast("warning", "Retain revisions must be at least 1");
+        return;
+      }
+      policy = { mode: "revision", retainRevisions: revisions };
+    } else if (compactionMode === "period") {
+      if (compactionRetainPeriod.trim() === "") {
+        showToast("warning", "Retain period is required (e.g. 24h)");
+        return;
+      }
+      policy = { mode: "period", retainPeriod: compactionRetainPeriod.trim() };
+    }
+
+    try {
+      compactionSaving = true;
+      applyCompaction(await client.admin.setNodeCompaction(policy));
+      showToast("success", "Node compaction saved");
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : "Failed to save node compaction");
+    } finally {
+      compactionSaving = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Join token actions
+  // ---------------------------------------------------------------------------
+
+  /** Mints a single-use join token for the given node identity. */
+  async function handleMintJoinToken(): Promise<void> {
+    const nodeId = joinNodeId.trim();
+    if (nodeId === "") {
+      showToast("warning", "Node ID is required");
+      return;
+    }
+    // A number input binds a number (or null when cleared), not a string.
+    const ttlText = String(joinTtlSeconds ?? "").trim();
+    let ttl: number | undefined;
+    if (ttlText !== "") {
+      ttl = parseInt(ttlText, 10);
+      if (isNaN(ttl) || ttl < 1) {
+        showToast("warning", "TTL must be a positive number of seconds");
+        return;
+      }
+    }
+
+    try {
+      joinLoading = true;
+      joinToken = await client.admin.mintJoinToken(nodeId, ttl);
+      showToast("success", `Join token minted for ${nodeId}`);
+    } catch (err: unknown) {
+      showToast("error", err instanceof Error ? err.message : "Failed to mint join token");
+    } finally {
+      joinLoading = false;
+    }
+  }
+
+  /** Copies the minted join token to the clipboard. */
+  async function handleCopyJoinToken(): Promise<void> {
+    if (joinToken === null) return;
+    try {
+      await navigator.clipboard.writeText(joinToken.token);
+      showToast("success", "Join token copied");
+    } catch {
+      showToast("error", "Failed to copy join token");
+    }
+  }
+
   onMount(() => {
     void fetchPeers();
+    void fetchCompaction();
   });
 </script>
 
@@ -407,6 +536,134 @@
           </table>
         </div>
       {/if}
+    </div>
+  </div>
+
+  <!-- Node compaction and join token row -->
+  <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <!-- Node compaction -->
+    <div class="card bg-base-200 shadow" data-testid="node-compaction-card">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Node Compaction</h2>
+        <p class="text-base-content/70 text-sm">
+          The node-wide MVCC history compaction policy, applied to every
+          database without its own policy.
+        </p>
+        {#if compactionLoading}
+          <div class="flex justify-center py-4">
+            <span class="loading loading-spinner loading-md text-primary"></span>
+          </div>
+        {:else if compactionError !== null}
+          <div class="alert alert-error mt-2" data-testid="node-compaction-error">
+            <span>Failed to load node compaction: {compactionError}</span>
+          </div>
+          <button class="btn btn-ghost btn-sm mt-2" onclick={() => void fetchCompaction()}>
+            <RefreshCw class="h-4 w-4" />
+            Retry
+          </button>
+        {:else}
+          <div class="form-control gap-4">
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Mode</span></div>
+              <select
+                class="select select-bordered select-sm w-full"
+                aria-label="Node compaction mode"
+                bind:value={compactionMode}
+              >
+                <option value="off">Off — keep all history</option>
+                <option value="revision">Revision — keep the newest N revisions</option>
+                <option value="period">Period — keep history for a duration</option>
+              </select>
+            </label>
+            {#if compactionMode === "revision"}
+              <input
+                type="number"
+                min="1"
+                class="input input-bordered input-sm"
+                placeholder="Retain revisions"
+                aria-label="Node retain revisions"
+                bind:value={compactionRetainRevisions}
+              />
+            {:else if compactionMode === "period"}
+              <input
+                type="text"
+                class="input input-bordered input-sm"
+                placeholder="Retain period (e.g. 24h)"
+                aria-label="Node retain period"
+                bind:value={compactionRetainPeriod}
+              />
+            {/if}
+            <button
+              class="btn btn-primary btn-sm mt-2"
+              onclick={() => void handleSaveCompaction()}
+              disabled={compactionSaving}
+            >
+              {#if compactionSaving}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Save Compaction
+            </button>
+          </div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Mint join token -->
+    <div class="card bg-base-200 shadow" data-testid="join-token-card">
+      <div class="card-body">
+        <h2 class="card-title text-lg">Mint Join Token</h2>
+        {#if desktop}
+          <div class="alert alert-info mt-2" data-testid="join-token-desktop-note">
+            <span class="text-sm">
+              Join tokens are minted over an authenticated remote connection.
+              Connect to the cluster remotely to mint one.
+            </span>
+          </div>
+        {:else}
+          <div class="form-control gap-5">
+            <input
+              type="text"
+              class="input input-bordered input-sm"
+              placeholder="Node ID"
+              aria-label="Join node ID"
+              bind:value={joinNodeId}
+            />
+            <input
+              type="number"
+              min="1"
+              class="input input-bordered input-sm"
+              placeholder="TTL seconds (optional)"
+              aria-label="Join token TTL seconds"
+              bind:value={joinTtlSeconds}
+            />
+            <button
+              class="btn btn-primary btn-sm mt-2"
+              onclick={() => void handleMintJoinToken()}
+              disabled={joinLoading}
+            >
+              {#if joinLoading}
+                <span class="loading loading-spinner loading-xs"></span>
+              {/if}
+              Mint Token
+            </button>
+          </div>
+          {#if joinToken !== null}
+            <div class="mt-3 flex flex-col gap-2" data-testid="join-token-result">
+              <div class="flex items-center gap-2">
+                <code class="bg-base-300 flex-1 break-all rounded p-2 text-xs" data-testid="join-token-value">{joinToken.token}</code>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  aria-label="Copy join token"
+                  onclick={() => void handleCopyJoinToken()}
+                >
+                  <Copy class="h-4 w-4" />
+                </button>
+              </div>
+              <span class="text-base-content/60 text-xs">Expires {joinToken.expiresAt}</span>
+            </div>
+          {/if}
+        {/if}
+      </div>
     </div>
   </div>
 
