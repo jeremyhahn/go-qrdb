@@ -346,6 +346,18 @@ func unsealNoneBarrier(ctx context.Context, barrier *seal.StorageBarrier) error 
 	if !barrier.IsSealed() || barrier.PersistedStrategy(ctx) != seal.StrategyNone {
 		return nil
 	}
+	// A single-admin initialization that requested a system SO and never
+	// made its record durable (a failed write, or a crash between the
+	// barrier's initialization and the write) leaves its intent standing.
+	// Unsealing here would skip the sealed window and boot without that SO:
+	// the barrier stays sealed instead, and the sealed window serves the
+	// initialization retry that completes the handoff. An unreadable intent
+	// is treated as standing.
+	if pending, err := barrier.SystemSOIntent(ctx); err != nil || pending {
+		slog.Warn("none barrier kept sealed at boot: a requested system SO was never recorded; retry the initialization",
+			"intent_read_error", err)
+		return nil
+	}
 	if err := barrier.Unseal(ctx, seal.Credentials{}); err != nil && !errors.Is(err, seal.ErrAlreadyUnsealed) {
 		return &SealBarrierError{Err: err}
 	}

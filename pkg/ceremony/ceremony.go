@@ -613,6 +613,19 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// shares -- a single operator-supplied secret here would defeat the
 	// quorum requirement that mode exists for.
 	if !isMofN {
+		// The SO intent is the single-admin write-ahead marker, the
+		// counterpart of the M-of-N path's systemSOWriteOutstandingKey:
+		// written before the barrier is initialized, it stands through a
+		// failed SO record write or a crash anywhere before the record is
+		// durable, and a boot that auto-unseals (the none strategy) keeps
+		// the barrier sealed while it stands, so startup never reaches
+		// first boot without the SO the operator asked for.
+		if systemSO != nil {
+			if err := s.barrier.MarkSystemSOIntent(ctx); err != nil {
+				s.mu.Unlock()
+				return nil, &SystemSOPersistError{Op: "write", Cause: err}
+			}
+		}
 		if err := s.initializeSystemBarrierLocked(ctx, opts.Secret); err != nil {
 			s.mu.Unlock()
 			return nil, err
@@ -749,6 +762,15 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 			s.abandonSingleAdminInitLocked()
 			s.mu.Unlock()
 			return nil, err
+		}
+		// The SO record is durable: the intent is spent. It is cleared
+		// before the ceremony is marked operational, so a standing intent
+		// always leaves the single-admin retry open. A retry without an SO
+		// clears an intent an earlier, abandoned attempt left too.
+		if err := s.barrier.ClearSystemSOIntent(ctx); err != nil {
+			s.abandonSingleAdminInitLocked()
+			s.mu.Unlock()
+			return nil, &SystemSOPersistError{Op: "write", Cause: err}
 		}
 		s.lastSystemSO = systemSO
 		s.becomeOperationalLocked(ctx)

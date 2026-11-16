@@ -137,3 +137,30 @@ func TestInitialize_SingleAdminSystemSOPersistFaultIsRetriableAcrossRestart(t *t
 	_, err = svc2.Initialize(ctx, e.ca, e.opts())
 	assert.ErrorIs(t, err, ErrAlreadyInitialized)
 }
+
+// TestInitialize_SingleAdminSystemSOPersistFaultLeavesIntentStanding pins
+// go-qrdb#1129's round-5 finding: the single-admin path records a durable SO
+// intent before barrier init, so a failed SO record write (or a crash after
+// init) leaves it standing for startup to honor, readable while sealed and
+// across a restart; the retry that records the SO clears it.
+func TestInitialize_SingleAdminSystemSOPersistFaultLeavesIntentStanding(t *testing.T) {
+	ctx := context.Background()
+	e := newSingleAdminSOFaultEnv(t)
+	_, svc := e.boot()
+
+	_, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.ErrorIs(t, err, errSystemSOWrite)
+
+	b2, svc2 := e.boot()
+	require.True(t, b2.IsSealed())
+	pending, err := b2.SystemSOIntent(ctx)
+	require.NoError(t, err)
+	require.True(t, pending, "the SO intent must survive the failed write and the restart")
+
+	result, err := svc2.Initialize(ctx, e.ca, e.opts())
+	require.NoError(t, err)
+	requireSOHandedOff(t, b2, svc2, result)
+	pending, err = b2.SystemSOIntent(ctx)
+	require.NoError(t, err)
+	assert.False(t, pending, "a recorded SO clears the intent")
+}
