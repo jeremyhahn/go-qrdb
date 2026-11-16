@@ -42,15 +42,6 @@ func (f *fakeSealedProbe) EnrollmentOpen(context.Context) bool { return f.enroll
 
 func (f *fakeSealedProbe) IsSealed() bool { return f.sealed }
 
-func TestWithSQLService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-sql.sock",
-		WithSQLService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.sqlSvc != nil {
-		t.Fatal("expected nil sqlSvc")
-	}
-}
-
 func TestWithSQLService_NonNil(t *testing.T) {
 	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-sql-nn.sock",
 		WithSQLService(stubSQLService{}),
@@ -76,15 +67,6 @@ func TestStart_WithSQLService_Registered(t *testing.T) {
 
 	if srv.Addr() == "" {
 		t.Fatal("expected non-empty Addr after Start")
-	}
-}
-
-func TestWithSealedWindowProbe_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-sealed.sock",
-		WithSealedWindowProbe(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.sealedWindowProbe != nil {
-		t.Fatal("expected nil sealedWindowProbe")
 	}
 }
 

@@ -116,6 +116,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/api/quic/wire | TestPayloadTooLargeErrorWithDifferentValues | duplicate with other values | TestPayloadTooLargeErrorMessage |
 | pkg/api/quic/wire | TestReadErrorUnwrap | lower layer of errors.Is through Unwrap | TestReadErrorUnwrapWithErrorsIs |
 | pkg/api/quic/wire | TestWriteErrorUnwrap | lower layer of errors.Is through Unwrap | TestWriteErrorUnwrapWithErrorsIs |
+| pkg/api/unix | TestWithLock_Applied, TestWithTenantService_Applied, TestWithAuthFactorService_Applied, TestWithAuditLogger_Applied | tautology (With…(nil) on a field NewServer leaves nil) | TestStartRegistersEveryWiredService, TestStartInstallsTheAuthMiddlewareAndAuditService |
+| pkg/api/unix | TestWithEncryptionMigrator_Applied, TestWithTenantBarrierService_Applied, TestWithSQLService_Applied, TestWithSealedWindowProbe_Applied, TestWithPINBackend_Nil | tautology (nil option on a nil default) | the matching TestWithXxx_NonNil / _Applied |
+| pkg/api/unix | TestWithEmbedding_Nil, TestWithRAGService_Nil, TestWithBackupService_Nil, TestWithRebalanceService_Nil | tautology (nil option on a nil default) | the matching TestWithXxx_Applied |
+| pkg/api/unix | TestWithAllNewOptions_StartStop | Start with only nil options, duplicate of the plain Start path | TestStartRegistersEveryWiredService |
+| pkg/api/unix | TestStart_WithTenantBarrierService_Registered | duplicate (same option in the every-service Start) | TestStartRegistersEveryWiredService |
 
 ## Trimmed tests
 
