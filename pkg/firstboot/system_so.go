@@ -199,8 +199,12 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 	// The SO must be a separate identity only under strict separation
 	// (SPEC row 124); in the standard posture the bootstrap admin may hold
 	// SO, which enrollment grants it as a role on the admin's own account.
-	soIsAdmin := strings.EqualFold(so.Username, adminUsername)
-	if soIsAdmin && deps.SeparationOfDuties {
+	// The username index is case-sensitive, so only the exact bootstrap
+	// name is the admin's own account; a case variant such as "Admin" is a
+	// separate account and gets no shared-key exemption. Strict separation
+	// still refuses any case variant of the admin's name.
+	soIsAdmin := so.Username == adminUsername
+	if deps.SeparationOfDuties && strings.EqualFold(so.Username, adminUsername) {
 		return &SOMatchesAdminError{Field: "username"}
 	}
 	switch {
@@ -486,7 +490,7 @@ func createSystemSO(ctx context.Context, deps Dependencies, tenantID string) (*u
 		}
 		existing, lookupErr := users.GetUserByUsername(ctx, tenantID, so.Username)
 		if lookupErr == nil && existing != nil {
-			if !deps.SeparationOfDuties && strings.EqualFold(so.Username, adminUsername) &&
+			if !deps.SeparationOfDuties && so.Username == adminUsername &&
 				existing.TenantID == tenantID && slices.Contains(existing.RoleIDs, adminRoleID) &&
 				!slices.Contains(existing.RoleIDs, soRoleID) &&
 				existing.Lifecycle.Valid() && !existing.Lifecycle.Terminal() {

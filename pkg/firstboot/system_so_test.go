@@ -978,6 +978,24 @@ func TestInitialize_StandardEnrolsTheAdminAsSO(t *testing.T) {
 	}
 }
 
+// The user store's username index is case-sensitive, so an SO named
+// "Admin" is a separate account from the bootstrap "admin": the
+// shared-admin-key exemption must not reach it, and preflight refuses
+// the shared key before any account or PIN is written.
+func TestInitialize_StandardRefusesACaseVariantAdminSharingTheKey(t *testing.T) {
+	h := newSOHarness(t, false)
+	h.deps.SO.Username = "Admin"
+	h.deps.AdminCSRPEM = h.deps.SO.CSRPEM
+	_, err := Initialize(context.Background(), h.deps)
+	var matches *SOMatchesAdminError
+	if !errors.As(err, &matches) || matches.Field != "key" {
+		t.Fatalf("standard Initialize with SO \"Admin\" sharing the admin key = %v, want *SOMatchesAdminError{key}", err)
+	}
+	if len(h.users.creates) != 0 {
+		t.Fatalf("users created before the refusal: %v", h.users.creates)
+	}
+}
+
 // The ceremony hand-off carries the PIN hashed; first boot commits that
 // record, and the SO's PIN then verifies at the node's SO authenticator.
 func TestInitialize_SystemSOFromAHashedPINRecord(t *testing.T) {
