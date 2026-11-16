@@ -125,6 +125,7 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/api/unix | TestWithBarrierService_Applied, TestWithCeremonyService_Applied, TestWithCredentialService_Applied, TestWithCollectionService_Applied, TestWithMVCC_Applied, TestWithTransaction_Applied, TestWithBatch_Applied, TestWithWatch_Applied, TestWithLease_Applied, TestWithIndex_Applied, TestWithTimeSeries_Applied, TestWithVector_Applied, TestWithDatabaseService_Applied | tautology (nil option on a nil default) | TestStart_WithNonNilOptionalServices, TestStartRegistersEveryWiredService |
 | pkg/api/grpc | TestWithLock_Nil, TestWithPINBackend_Nil, TestWithAuthFactorService_ServerOption, TestWithUserAuthFactorService_Nil, TestWithTenantService_ServerOption | tautology (nil option on a nil default) | TestWithLock_ServerOption, TestWithPINBackend_ServerOption, TestWithUserAuthFactorService_ServerOption |
 | pkg/api/rest | TestWithCollectionService_NilOption | tautology (nil option on a nil default) | TestWithCollectionService_Option |
+| cmd/qrdb | TestSQLExecutionError_ImplementsError | tautology (compile-time assignment) | TestSQLExecutionError_Error |
 
 ## Trimmed tests
 
