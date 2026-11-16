@@ -132,6 +132,7 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/sql/provider | TestProvider_ImplementsDatabaseProvider, TestProvider_ImplementsMutableDatabaseProvider, TestDatabase_ImplementsDatabase | duplicate of the guards in provider.go | the compile-time guards |
 | pkg/sql/provider | TestQRDBSession_ImplementsTransactionSession | duplicate of the guard in session.go | the compile-time guard |
 | pkg/sql/provider | TestMetricsTable_ImplementsTable, TestNamespacesTable_ImplementsTable, TestDatapointsTable_ImplementsTable, TestVectorsTable_ImplementsTable | duplicate of the guards in metrics_table.go, namespaces_table.go, timeseries_table.go, vector_table.go | the compile-time guards |
+| sdk/go/transport/quic | TestTransport_Implements{Transport,KVClient,AdminClient,MVCCClient,TransactionClient,BatchClient,LeaseClient,UserClient,RoleClient,CertClient}Interface | duplicate of the package-level guards in transport.go, transport_auth.go, transport_mvcc.go | the compile-time guards |
 
 ## Trimmed tests
 
