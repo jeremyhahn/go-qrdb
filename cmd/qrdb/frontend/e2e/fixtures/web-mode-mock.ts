@@ -176,6 +176,15 @@ export async function injectWebRestMock(
     });
   });
 
+  // The Dashboard Metrics card reads the Prometheus exposition at GET /metrics.
+  await page.route(/\/metrics(\?.*)?$/, (route) => {
+    void route.fulfill({
+      status: 200,
+      contentType: "text/plain; version=0.0.4",
+      body: "# HELP go_goroutines Number of goroutines that currently exist.\n# TYPE go_goroutines gauge\ngo_goroutines 8\n",
+    });
+  });
+
   // Intercept capabilities endpoint (used by Dashboard on every load).
   await page.route("**/capabilities", (route) => {
     void route.fulfill({
