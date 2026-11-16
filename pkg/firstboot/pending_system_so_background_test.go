@@ -133,3 +133,46 @@ func TestClearPendingSystemSOInBackground_RetriesUntilTheSOIsEnrolled(t *testing
 	}
 	assert.True(t, SystemSOConsumed(ctx, store))
 }
+
+func TestClearPendingSystemSOInBackground_StopsOnUnverifiedAndCancel(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	users := newSOUsers()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+	_, err = users.CreateUser(ctx, &user.CreateUserRequest{Username: so.Username, TenantID: tenantid.System,
+		RoleIDs: []string{role.SystemRoleID(tenantid.System, role.RoleNameSO)}})
+	require.NoError(t, err)
+	bindPendingSO(t, users, so)
+
+	wait := func(done <-chan struct{}, what string) {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal(what)
+		}
+	}
+
+	// A committed PIN that is not the record's is never retried, even with
+	// a long interval, a nil logger and a non-positive attempt count.
+	wait(ClearPendingSystemSOInBackground(ctx, store, users,
+		scriptedPINChecker{committed: true, matches: false}, time.Hour, 0, nil),
+		"an unverified SO was retried")
+	assert.False(t, SystemSOConsumed(ctx, store))
+
+	// A cancelled context ends the wait between attempts.
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	wait(ClearPendingSystemSOInBackground(cctx, store, users,
+		scriptedPINChecker{committedErr: errBranchFault}, time.Hour, 5, discardLogger()),
+		"a cancelled context did not stop the retries")
+	assert.False(t, SystemSOConsumed(ctx, store))
+}
+
+func TestSystemSOHandoffPendingError_Error(t *testing.T) {
+	err := error(&SystemSOHandoffPendingError{})
+	assert.Contains(t, err.Error(), "system SO record is not durable")
+}
