@@ -88,6 +88,22 @@
   // default) uses the tenant's default pool, the first entry of its
   // allowedVolumePools. The field is only shown/sent for volume/raft.
   let newTenantVolumePool: string = $state("");
+  // Pool names from client.volumePools.list(), loaded the first time the
+  // pool field is shown. Empty (no pools, or the list call failed) keeps
+  // the field free text so a pool mapped on the nodes but not yet listed
+  // can still be named.
+  let volumePoolNames: string[] = $state([]);
+  let volumePoolNamesRequested = false;
+
+  /** Loads the pool catalog's names for the create form's pool picker. */
+  async function loadVolumePoolNames(): Promise<void> {
+    try {
+      const resp = await client.volumePools.list();
+      volumePoolNames = (resp.pools ?? []).map((p) => p.name).sort();
+    } catch {
+      volumePoolNames = [];
+    }
+  }
   let createLoading: boolean = $state(false);
 
   // Admin onboarding fields. A tenant is created with its first admin's
@@ -146,6 +162,13 @@
   $effect(() => {
     if (!isVolumePoolEligible && newTenantVolumePool !== "") {
       newTenantVolumePool = "";
+    }
+  });
+
+  $effect(() => {
+    if (isVolumePoolEligible && !volumePoolNamesRequested) {
+      volumePoolNamesRequested = true;
+      void loadVolumePoolNames();
     }
   });
 
@@ -356,6 +379,8 @@
     newTenantIsolationType = "prefix";
     newTenantBarrierAutoUnseal = false;
     newTenantVolumePool = "";
+    // Re-read the pool catalog the next time the pool field is shown.
+    volumePoolNamesRequested = false;
     newAdminUsername = "";
     newAdminCredentialKind = "csr";
     newAdminCsrPem = "";
@@ -906,14 +931,28 @@
               <span class="label-text font-semibold">Volume Pool</span>
               <span class="label-text-alt text-base-content/50">Optional</span>
             </label>
-            <input
-              id="tenant-volume-pool"
-              type="text"
-              class="input input-bordered w-full"
-              placeholder="fast"
-              data-testid="create-tenant-volume-pool"
-              bind:value={newTenantVolumePool}
-            />
+            {#if volumePoolNames.length > 0}
+              <select
+                id="tenant-volume-pool"
+                class="select select-bordered w-full"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              >
+                <option value="">Default pool</option>
+                {#each volumePoolNames as poolName (poolName)}
+                  <option value={poolName}>{poolName}</option>
+                {/each}
+              </select>
+            {:else}
+              <input
+                id="tenant-volume-pool"
+                type="text"
+                class="input input-bordered w-full"
+                placeholder="fast"
+                data-testid="create-tenant-volume-pool"
+                bind:value={newTenantVolumePool}
+              />
+            {/if}
             <div class="label">
               <span class="label-text-alt text-base-content/60">
                 The named volume pool to place this tenant on. Leave empty to use the tenant's default pool.
