@@ -344,7 +344,7 @@ const (
 	// alone; a refused push is a warning, so its consumers take the artifact.
 	lanPushRun = `lan_push() {
   ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-  if docker tag "$1" "$ref" && docker push -q "$ref" >/dev/null; then
+  if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
     echo "$3=$TAG" >> "$GITHUB_OUTPUT"
   else
     echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
@@ -355,8 +355,9 @@ lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
 if [ -n "$IT_IMAGE" ]; then
   lan_push "$IT_IMAGE" it-image it_tag
 fi`
-	lanPullRun = `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
-   [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+	lanPullRun = `if docker pull -q "$REF" >/dev/null 2>&1 &&
+   [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+   docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
   echo "pulled=true" >> "$GITHUB_OUTPUT"
 else
   echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
@@ -460,6 +461,7 @@ func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []s
 			problems = append(problems, where+" pushes to the LAN CI registry without "+lanSelfHosted+
 				": a GitHub-hosted runner cannot reach it")
 		}
+		problems = append(problems, lanScriptProblems(where, s.Run, false)...)
 		if strings.TrimSpace(s.Run) != lanPushRun {
 			problems = append(problems, where+" runs "+strconv.Quote(firstLine(s.Run))+"; want the canonical push, "+
 				"which records each family's tag output on success alone and warns, never fails, on a refused push")
@@ -486,6 +488,7 @@ func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []s
 		problems = append(problems, where+" pulls under if: "+strconv.Quote(s.If)+"; want "+term+
 			" among its && terms: an image the producer did not push cannot be pulled")
 	}
+	problems = append(problems, lanScriptProblems(where, s.Run, true)...)
 	if strings.TrimSpace(s.Run) != lanPullRunFor(f) {
 		problems = append(problems, where+" runs "+strconv.Quote(firstLine(s.Run))+
 			"; want the canonical pull, which checks the image against "+digestProducer+"'s ID and falls back to the artifact")
@@ -496,6 +499,40 @@ func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []s
 			": the pull must prove it took the image "+digestProducer+" built")
 	}
 	return problems, true
+}
+
+// lanDockerCmd is one registry docker command of a script, up to its && ,
+// || or ; (#1595).
+var lanDockerCmd = regexp.MustCompile(`docker (pull|push|tag|rmi)\s[^&|;]*`)
+
+// lanScriptProblems names every way a registry script lets a rejected image
+// move a tag or prints the registry's error output (#1595). A runner's docker
+// daemon may be shared, so a pull checks the pulled "$REF" against "$ID"
+// before any docker tag and then tags the verified "$ID", never "$REF": a
+// rejected pull leaves "$IMAGE" where it was. docker's stderr names the
+// registry address, which the runner masks only as a whole secret, so every
+// registry docker pull, push, tag and rmi discards it.
+func lanScriptProblems(where, run string, pull bool) (problems []string) {
+	if pull {
+		inspect := strings.Index(run, `docker image inspect -f '{{.Id}}' "$REF"`)
+		tag := strings.Index(run, "docker tag ")
+		switch {
+		case inspect < 0:
+			problems = append(problems, where+` never checks the pulled "$REF" against "$ID"`)
+		case tag >= 0 && tag < inspect:
+			problems = append(problems, where+` tags before it checks the pulled "$REF" against "$ID": a rejected pull moves the tag`)
+		}
+		if !strings.Contains(run, `docker tag "$ID" "$IMAGE"`) || strings.Contains(run, `docker tag "$REF"`) {
+			problems = append(problems, where+` tags something other than the verified "$ID": want docker tag "$ID" "$IMAGE"`)
+		}
+	}
+	for _, cmd := range lanDockerCmd.FindAllString(run, -1) {
+		if !strings.Contains(cmd, "2>") {
+			problems = append(problems, where+" runs "+strconv.Quote(strings.TrimSpace(cmd))+
+				" without discarding its stderr, which names the registry address")
+		}
+	}
+	return problems
 }
 
 // producerOutTerm is the condition that the producer's output o is set.
@@ -837,7 +874,7 @@ jobs:
         run: |
           lan_push() {
             ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if docker tag "$1" "$ref" && docker push -q "$ref" >/dev/null; then
+            if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
               echo "$3=$TAG" >> "$GITHUB_OUTPUT"
             else
               echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
@@ -863,8 +900,9 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
-             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+          if docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
@@ -901,8 +939,9 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&
-             [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then
+          if docker pull -q "$REF" >/dev/null 2>&1 &&
+             [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
+             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
@@ -1021,7 +1060,9 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "no ref output", old: "      it_ref: ${{ steps.push.outputs.it_ref }}\n", new: ""},
 		{name: "no producer", old: "  docker-build:\n", new: "  docker-build-old:\n"},
 		{name: "CI_PUBLISH on a pull request", old: "  CI_PUBLISH: ${{ github.event_name == 'push'", new: "  CI_PUBLISH: ${{ github.event_name == 'pull_request'"},
-		{name: "a LAN pull without the ID check", old: `[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]`, new: `true`},
+		{name: "a LAN pull without the ID check", old: `[ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ]`, new: `true`},
+		{name: "a LAN push printing the registry's stderr", old: `docker push -q "$ref" >/dev/null 2>&1;`, new: `docker push -q "$ref" >/dev/null;`},
+		{name: "a LAN push tag printing the registry's stderr", old: `docker tag "$1" "$ref" >/dev/null 2>&1 &&`, new: `docker tag "$1" "$ref" &&`},
 		{name: "a LAN pull without the registry check",
 			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
 			new: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' }}"},
@@ -1098,5 +1139,63 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			}
 			t.Logf("%s: %s", tc.name, strings.Join(problems, "; "))
 		})
+	}
+}
+
+// TestCIImageDigest_LANVerifyBeforeTag pins #1595's two Codex findings for
+// both image families: the pull checks the pulled "$REF" against "$ID" before
+// any docker tag and tags the verified "$ID", and no registry docker command
+// prints its stderr. The canonical scripts pass, each regressed form fails
+// lanScriptProblems on its own and the whole gate on the fixture.
+func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
+	if p := lanScriptProblems("push", lanPushRun, false); len(p) != 0 {
+		t.Fatalf("the canonical push fails its own gate: %s", strings.Join(p, "; "))
+	}
+	const (
+		pull    = `if docker pull -q "$REF" >/dev/null 2>&1 &&`
+		inspect = `[ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&`
+		tagID   = `docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then`
+	)
+	regressions := []struct{ name, old, new string }{
+		{name: "the pre-#1595 tag-then-check pull", old: pull + "\n             " + inspect + "\n             " + tagID,
+			new: `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
+				`[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then`},
+		{name: "a tag of the registry ref", old: tagID, new: `docker tag "$REF" "$IMAGE" >/dev/null 2>&1; then`},
+		{name: "a tag before the check", old: pull, new: pull + ` docker tag "$ID" "$IMAGE" >/dev/null 2>&1 &&`},
+		{name: "a check of the tagged image", old: inspect, new: `[ "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" = "$ID" ] &&`},
+		{name: "a pull printing its stderr", old: pull, new: `if docker pull -q "$REF" >/dev/null &&`},
+		{name: "a tag printing its stderr", old: tagID, new: `docker tag "$ID" "$IMAGE"; then`},
+		{name: "an rmi printing its stderr", old: `docker rmi "$REF" >/dev/null 2>&1`, new: `docker rmi "$REF" >/dev/null`},
+	}
+	for _, family := range []string{"toolchain", "it"} {
+		f := imageFamilies[family]
+		canon := lanPullRunFor(f)
+		if p := lanScriptProblems(family, canon, true); len(p) != 0 {
+			t.Fatalf("the canonical %s pull fails its own gate: %s", family, strings.Join(p, "; "))
+		}
+		head := `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n          "
+		for _, tc := range regressions {
+			t.Run(family+"/"+tc.name, func(t *testing.T) {
+				if !strings.Contains(digestFixture, head+pull) {
+					t.Fatalf("the fixture has no %s pull: the case tests nothing", family)
+				}
+				i := strings.Index(digestFixture, head)
+				j := strings.Index(digestFixture[i:], tc.old)
+				if j < 0 {
+					t.Fatalf("the fixture's %s pull has no %q: the case tests nothing", family, tc.old)
+				}
+				mutated := digestFixture[:i+j] + tc.new + digestFixture[i+j+len(tc.old):]
+				if problems, _ := digestProblems([]byte(mutated), 3); len(problems) == 0 {
+					t.Fatalf("a %s pull with %s passed the gate", family, tc.name)
+				}
+				script := strings.Replace(strings.ReplaceAll(canon, "\n   ", "\n             "), tc.old, tc.new, 1)
+				if script == strings.ReplaceAll(canon, "\n   ", "\n             ") {
+					t.Fatalf("the canonical %s pull has no %q: the case tests nothing", family, tc.old)
+				}
+				if p := lanScriptProblems(family, script, true); len(p) == 0 {
+					t.Fatalf("a %s pull with %s passed lanScriptProblems", family, tc.name)
+				}
+			})
+		}
 	}
 }
