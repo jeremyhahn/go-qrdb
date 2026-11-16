@@ -17,6 +17,7 @@ package unix
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,7 +63,9 @@ func TestUnixRT_CreateUser_RefusesFractionalPendingTTL(t *testing.T) {
 	usvc := &mockUserSvc{createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
 		calls.Add(1)
 		gotTTL.Store(int64(req.PendingTTL))
-		return &user.User{ID: 1, Username: req.Username}, nil
+		// A current server honours the TTL and reports the expiry.
+		at := time.Unix(1700000000, 0).Add(req.PendingTTL)
+		return &user.User{ID: 1, Username: req.Username, Lifecycle: user.LifecyclePending, PendingExpiresAt: &at}, nil
 	}}
 	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
 	defer cleanup()
@@ -86,5 +89,58 @@ func TestUnixRT_CreateUser_RefusesFractionalPendingTTL(t *testing.T) {
 	}
 	if got := time.Duration(gotTTL.Load()); got != 2*time.Second {
 		t.Fatalf("server saw pending TTL %v, want 2s", got)
+	}
+}
+
+// TestUnixRT_CreateUser_OlderServerRefusesPendingTTL is the rolling-upgrade
+// case. The double is a base-version server: it predates the pending-user TTL
+// (protobuf drops pending_ttl_seconds), so it creates the pending account and
+// never sets an expiry. A TTL-bearing create must fail with
+// *CapabilityUnsupportedError and leave no immortal pending account; a create
+// without a TTL still succeeds.
+func TestUnixRT_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
+	var mu sync.Mutex
+	live := map[uint64]bool{}
+	var nextID uint64
+	usvc := &mockUserSvc{
+		createFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			nextID++
+			live[nextID] = true
+			lc := user.LifecycleActive
+			if req.Pending {
+				lc = user.LifecyclePending
+			}
+			return &user.User{ID: nextID, Username: req.Username, Lifecycle: lc}, nil
+		},
+		deleteFn: func(_ context.Context, id uint64) error {
+			mu.Lock()
+			defer mu.Unlock()
+			delete(live, id)
+			return nil
+		},
+	}
+	tr, cleanup := startAuthServer(t, unixserver.WithUserService(usvc))
+	defer cleanup()
+
+	u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+		WithoutEmailLoginKey: true, Username: "ttl", Pending: true, PendingTTL: "24h",
+	})
+	var unsupported *transport.CapabilityUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("CreateUser(pending_ttl=24h) on an older server = %+v, %v; want CapabilityUnsupportedError", u, err)
+	}
+	mu.Lock()
+	n := len(live)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d pending account(s) survive with no expiry; want 0", n)
+	}
+
+	if _, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+		WithoutEmailLoginKey: true, Username: "nottl", Pending: true,
+	}); err != nil {
+		t.Fatalf("CreateUser without a TTL on an older server: %v", err)
 	}
 }

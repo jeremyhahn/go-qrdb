@@ -97,7 +97,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		return nil, mapGRPCError("CreateUser", err)
 	}
 
-	return protoToUser(resp), nil
+	// An older server drops pending_ttl_seconds: undo its immortal account.
+	return transport.EnforcePendingTTL(ctx, req, protoToUser(resp), t.DeleteUser)
 }
 
 // GetUser retrieves a user by ID.

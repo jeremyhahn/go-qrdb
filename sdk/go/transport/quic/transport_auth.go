@@ -353,7 +353,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &UnmarshalError{Err: err}}
 	}
 
-	return wireToUser(&wire), nil
+	// An older server ignores pendingTtl: undo its immortal account.
+	return transport.EnforcePendingTTL(ctx, req, wireToUser(&wire), t.DeleteUser)
 }
 
 // mapUserNotFound is mapWireError for the single-user endpoints: it turns the

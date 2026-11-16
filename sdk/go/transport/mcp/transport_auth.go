@@ -325,7 +325,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return serverUserToTransport(&raw), nil
+	// An older server ignores pending_ttl: undo its immortal account.
+	return transport.EnforcePendingTTL(ctx, req, serverUserToTransport(&raw), t.DeleteUser)
 }
 
 // GetUser retrieves a user by its globally unique ID. Calls the

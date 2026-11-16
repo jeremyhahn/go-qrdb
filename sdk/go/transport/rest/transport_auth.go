@@ -127,7 +127,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if err := t.postJSONDecode(ctx, "CreateUser", "/users", req, &user); err != nil {
 		return nil, err
 	}
-	return &user, nil
+	// An older server ignores pending_ttl: undo its immortal account.
+	return transport.EnforcePendingTTL(ctx, req, &user, t.DeleteUser)
 }
 
 // GetUser retrieves a user by its globally unique ID. Maps to GET /users/{id}.

@@ -15,6 +15,9 @@
 package transport
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -242,6 +245,31 @@ type FractionalPendingTTLError struct {
 
 func (e *FractionalPendingTTLError) Error() string {
 	return "pending_ttl " + strconv.Quote(e.Value) + " is not a whole number of seconds"
+}
+
+// EnforcePendingTTL refuses a create whose pending-user TTL the server did
+// not honour. An older server drops the unknown TTL field and creates a
+// pending account that never expires while reporting success; a current one
+// either sets PendingExpiresAt or refuses the create. So a TTL-bearing create
+// answered with no PendingExpiresAt is undone: the account is deleted through
+// del and *CapabilityUnsupportedError returned, never success. Any other
+// create passes through unchanged.
+func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del func(context.Context, uint64) error) (*User, error) {
+	if req == nil || u == nil || u.PendingExpiresAt != "" {
+		return u, nil
+	}
+	if d, err := req.PendingTTLDuration(); err != nil || d <= 0 {
+		return u, nil
+	}
+	unsupported := &CapabilityUnsupportedError{
+		Message: "server ignored pending_ttl " + strconv.Quote(req.PendingTTL) +
+			": it cannot expire pending users; upgrade the server",
+	}
+	if delErr := del(context.WithoutCancel(ctx), u.ID); delErr != nil {
+		return nil, errors.Join(unsupported,
+			fmt.Errorf("delete of the unexpiring pending user %d: %w", u.ID, delErr))
+	}
+	return nil, unsupported
 }
 
 // UpdateUserRequest holds parameters for updating a user.
