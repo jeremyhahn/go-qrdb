@@ -1,273 +1,185 @@
 #!/usr/bin/env bash
-# Self-test for scripts/ci-cache-dir.sh (#1596): where each runner kind keeps
-# the Go caches, the generations and leases that keep a mounted cache alive
-# past the size cap, and cleanup of files a stage's uid owns. Runs on a temp
-# CI_CACHE_ROOT; no Docker: CI_CACHE_RM_HELPER stands in for the privileged
-# container. A file another uid owns is, to the runner's user, a file in a
-# directory it cannot write: the tests make one with chmod a-w (as root, which
-# writes anywhere, they chown to the stage uid instead).
+# Self-test for scripts/ci-cache-dir.sh and scripts/ci-cache-clean.sh (#1596),
+# run by `make test-in-toolchain-image`. Every case works on a temp
+# CI_CACHE_ROOT. Stage-owned files are stood in for by read-only directories
+# (a non-root runner cannot delete their contents) and the privileged helper
+# by a fake `docker` on PATH; the real helper runs on a uid-10001 fixture only
+# when docker and a local image are available, and is skipped with a message
+# otherwise.
+# shellcheck disable=SC2016,SC2034 # check() evals its single-quoted condition
 set -uo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
-script=$here/ci-cache-dir.sh
-D=$(mktemp -d)
-trap 'chmod -R u+w "$D" 2>/dev/null; rm -rf "$D"' EXIT
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SH=$here/ci-cache-dir.sh
+CLEAN=$here/ci-cache-clean.sh
 fail=0
 ok() { echo "ok   $1"; }
 bad() { echo "FAIL $1"; fail=1; }
-is_root=false
-[ "$(id -u)" = 0 ] && is_root=true
+check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-# The privileged helper's stand-in: logs its arguments, then deletes them.
-helper=$D/helper.sh
-printf '#!/bin/sh\necho "$@" >>"%s/helper.log"\nchmod -R u+w "$@"\nrm -rf "$@"\n' "$D" >"$helper"
-chmod +x "$helper"
+tmp=$(mktemp -d)
+cleanup() { chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"; }
+trap cleanup EXIT
 
-# run VAR=value... [release]: the script under a clean environment; sets out,
-# err, rc, and dir and lease (the CI_CACHE_DIR and CI_CACHE_LEASE it printed).
+# run VAR=VAL... -- CMD...: runs CMD with a clean cache environment, leaving
+# stdout in $out, stderr in $err and the status in $rc.
 run() {
-  local args=()
-  rc=0
-  if [ "${*: -1}" = release ]; then
-    args=(release)
-    set -- "${@:1:$#-1}"
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
+  out=$(env -u RUNNER_ENVIRONMENT -u RUNNER_TEMP -u CI_CACHE_ROOT \
+    -u CI_CACHE_MAX_GB -u CI_CACHE_RECLAIM_HOURS -u TOOLCHAIN_IMAGE \
+    -u CI_CACHE_CLEAN_IMAGE "${envs[@]}" "$@" 2>"$tmp/err")
+  rc=$?
+  err=$(cat "$tmp/err")
+}
+
+age() { touch -d "@$(($(date +%s) - $1 * 3600))" "$2"; }
+
+# stage_owned DIR: a tree the runner's (non-root) user cannot delete.
+stage_owned() {
+  mkdir -p "$1/sub"
+  echo x >"$1/sub/f"
+  chmod 0555 "$1/sub"
+}
+
+# The fake privileged helper: a `docker` that empties the -v source as the
+# real one does as root, or fails when FAKE_DOCKER_FAIL is set.
+fake=$tmp/fakebin
+mkdir -p "$fake"
+cat >"$fake/docker" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FAKE_DOCKER_FAIL:-}" ] || exit 1
+src=
+while [ $# -gt 0 ]; do
+  case $1 in -v) src=${2%%:*}; shift ;; esac
+  shift
+done
+[ -n "$src" ] || exit 2
+echo "$src" >>"${FAKE_DOCKER_LOG:-/dev/null}"
+chmod -R u+w "$src" && find "$src" -mindepth 1 -delete
+EOF
+chmod +x "$fake/docker"
+
+# --- hosted runner -----------------------------------------------------------
+run RUNNER_ENVIRONMENT=github-hosted RUNNER_TEMP="$tmp/rt" -- bash "$SH"
+check "hosted: \$RUNNER_TEMP/ci-cache" '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=$tmp/rt/ci-cache" ]'
+run RUNNER_ENVIRONMENT=github-hosted -- bash "$SH"
+check "hosted: no RUNNER_TEMP exits 2" '[ $rc = 2 ]'
+
+# --- argument checks ---------------------------------------------------------
+run CI_CACHE_ROOT="$tmp" CI_CACHE_MAX_GB=x -- bash "$SH"
+check "bad CI_CACHE_MAX_GB exits 2" '[ $rc = 2 ]'
+run CI_CACHE_ROOT="$tmp" CI_CACHE_RECLAIM_HOURS=0 -- bash "$SH"
+check "bad CI_CACHE_RECLAIM_HOURS exits 2" '[ $rc = 2 ]'
+
+# --- base selection ----------------------------------------------------------
+run CI_CACHE_ROOT="$tmp/missing" -- bash "$SH"
+check "no writable root: named volumes" '[ $rc = 0 ] && [ "$out" = "CI_CACHE_DIR=" ]'
+
+r1=$tmp/r1
+mkdir -p "$r1"
+run CI_CACHE_ROOT="$r1" -- bash "$SH"
+base=$r1/go-qrdb-ci-cache
+g1=$(cat "$base/current" 2>/dev/null)
+check "root: base go-qrdb-ci-cache, a gen- generation" \
+  '[ $rc = 0 ] && case $g1 in gen-*) true ;; *) false ;; esac && [ "$out" = "CI_CACHE_DIR=$base/$g1" ]'
+check "the selected generation has a last-use marker" '[ -f "$base/$g1/.last-use" ]'
+
+r2=$tmp/r2
+mkdir -p "$r2/gh-runner-cache"
+run CI_CACHE_ROOT="$r2" -- bash "$SH"
+check "gh-runner-cache: base under it" \
+  '[ $rc = 0 ] && case $out in "CI_CACHE_DIR=$r2/gh-runner-cache/go-qrdb/ci-cache/gen-"*) true ;; *) false ;; esac'
+
+# --- reuse, rotation, reclaim ------------------------------------------------
+age 1 "$base/$g1/.last-use"
+run CI_CACHE_ROOT="$r1" -- bash "$SH"
+check "under the cap: the same generation" '[ "$out" = "CI_CACHE_DIR=$base/$g1" ]'
+check "selection refreshes the marker" '[ -z "$(find "$base/$g1/.last-use" -mmin +5)" ]'
+
+mkdir -p "$base/$g1/gobuild"
+echo x >"$base/$g1/gobuild/f"
+run CI_CACHE_ROOT="$r1" CI_CACHE_MAX_GB=0 -- bash "$SH"
+g2=$(cat "$base/current" 2>/dev/null)
+check "over the cap: a new generation is current" \
+  '[ $rc = 0 ] && [ "$g2" != "$g1" ] && [ "$out" = "CI_CACHE_DIR=$base/$g2" ] && [[ $err == *"over the 0 GB cap"* ]]'
+check "over the cap: the old generation is kept while recent" '[ -f "$base/$g1/gobuild/f" ]'
+check "no temp current file is left" '! ls "$base"/current.tmp.* >/dev/null 2>&1'
+
+age 6 "$base/$g1/.last-use"
+run CI_CACHE_ROOT="$r1" -- bash "$SH"
+check "reclaim: kept under CI_CACHE_RECLAIM_HOURS" '[ -d "$base/$g1" ] && [ "$out" = "CI_CACHE_DIR=$base/$g2" ]'
+
+age 8 "$base/$g1/.last-use"
+run CI_CACHE_ROOT="$r1" -- bash "$SH"
+check "reclaim: deleted past CI_CACHE_RECLAIM_HOURS" '[ ! -e "$base/$g1" ] && ! ls -d "$base"/trash-* >/dev/null 2>&1'
+
+age 8 "$base/$g2/.last-use"
+run CI_CACHE_ROOT="$r1" CI_CACHE_RECLAIM_HOURS=1 -- bash "$SH"
+check "the current generation is never deleted, however old" \
+  '[ -d "$base/$g2" ] && [ "$out" = "CI_CACHE_DIR=$base/$g2" ] && [ -z "$(find "$base/$g2/.last-use" -mmin +5)" ]'
+
+# --- pre-generation layout ---------------------------------------------------
+mkdir -p "$base/gobuild" "$base/golangci"
+age 8 "$base/golangci"
+run CI_CACHE_ROOT="$r1" -- bash "$SH"
+check "pre-generation dirs: old deleted, recent kept" '[ ! -e "$base/golangci" ] && [ -d "$base/gobuild" ]'
+
+# --- legacy temp cache, stage-owned files -------------------------------------
+if [ "$(id -u)" = 0 ]; then
+  echo "skip stage-owned stand-ins: running as root, read-only dirs do not stop rm"
+else
+  rt=$tmp/rt2
+  stage_owned "$rt/ci-cache"
+  run CI_CACHE_ROOT="$r1" RUNNER_TEMP="$rt" -- bash "$SH"
+  check "legacy temp cache, no helper: warns, job not failed" \
+    '[ $rc = 0 ] && [ -e "$rt/ci-cache" ] && [[ $err == *"::warning::"* ]] && [ "$out" = "CI_CACHE_DIR=$base/$g2" ]'
+  run CI_CACHE_ROOT="$r1" RUNNER_TEMP="$rt" CI_CACHE_CLEAN_IMAGE=img PATH="$fake:$PATH" -- bash "$SH"
+  check "legacy temp cache: deleted through the helper" '[ $rc = 0 ] && [ ! -e "$rt/ci-cache" ]'
+
+  stage_owned "$base/$g2/gobuild"
+  run CI_CACHE_ROOT="$r1" CI_CACHE_MAX_GB=0 -- bash "$SH"
+  g3=$(cat "$base/current")
+  age 8 "$base/$g2/.last-use"
+  run CI_CACHE_ROOT="$r1" CI_CACHE_CLEAN_IMAGE=img PATH="$fake:$PATH" -- bash "$SH"
+  check "a stage-owned old generation is reclaimed through the helper" \
+    '[ $rc = 0 ] && [ ! -e "$base/$g2" ] && [ "$out" = "CI_CACHE_DIR=$base/$g3" ]'
+
+  # The helper alone, as ci.yml's cleanup steps call it.
+  d=$tmp/clean1
+  stage_owned "$d"
+  run -- bash "$CLEAN" "$d" "$tmp/absent"
+  check "clean: no docker image, plain rm, warns, exit 0" '[ $rc = 0 ] && [ -e "$d" ] && [[ $err == *"::warning::"* ]]'
+  run TOOLCHAIN_IMAGE=img PATH="$fake:$PATH" FAKE_DOCKER_LOG="$tmp/dlog" -- bash "$CLEAN" "$d"
+  check "clean: TOOLCHAIN_IMAGE helper deletes, mounts the dir" \
+    '[ $rc = 0 ] && [ ! -e "$d" ] && [ -z "$err" ] && [ "$(cat "$tmp/dlog")" = "$d" ]'
+  stage_owned "$d"
+  run TOOLCHAIN_IMAGE=img PATH="$fake:$PATH" FAKE_DOCKER_FAIL=1 -- bash "$CLEAN" "$d"
+  check "clean: helper failure warns, exit 0" '[ $rc = 0 ] && [ -e "$d" ] && [[ $err == *"::warning::"* ]]'
+fi
+
+# --- the real helper on a root-owned fixture ----------------------------------
+img=${CI_CACHE_TEST_IMAGE:-${TOOLCHAIN_IMAGE:-}}
+if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+  echo "skip real helper: docker is not available"
+elif [ -z "$img" ] || ! docker image inspect "$img" >/dev/null 2>&1; then
+  echo "skip real helper: no local image (set CI_CACHE_TEST_IMAGE or TOOLCHAIN_IMAGE)"
+else
+  d=$tmp/real
+  mkdir -p "$d"
+  docker run --rm --user 0:0 -v "$d:/c" --entrypoint sh "$img" -c \
+    'mkdir -p /c/a/b && echo x >/c/a/b/f && chmod 0555 /c/a/b && chown -R 10001:10001 /c/a' >/dev/null 2>&1
+  if [ ! -e "$d/a/b/f" ]; then
+    bad "real helper: could not build the uid-10001 fixture"
+  else
+    run TOOLCHAIN_IMAGE="$img" -- bash "$CLEAN" "$d"
+    check "real helper: uid-10001 tree deleted" '[ $rc = 0 ] && [ ! -e "$d" ]'
   fi
-  env -i PATH="$PATH" "$@" "$script" "${args[@]}" >"$D/out" 2>"$D/err" || rc=$?
-  out=$(cat "$D/out")
-  err=$(cat "$D/err")
-  dir=$(printf '%s\n' "$out" | while IFS= read -r l; do case $l in CI_CACHE_DIR=*) echo "${l#CI_CACHE_DIR=}" ;; esac; done)
-  lease=$(printf '%s\n' "$out" | while IFS= read -r l; do case $l in CI_CACHE_LEASE=*) echo "${l#CI_CACHE_LEASE=}" ;; esac; done)
-}
-
-reset() {
-  chmod -R u+w "$D/root" "$D/temp" 2>/dev/null
-  rm -rf "$D/root" "$D/temp" "$D/helper.log"
-  mkdir -p "$D/root" "$D/temp"
-}
-
-# owned_by_stage DIR: fills DIR with a file the runner's user cannot delete.
-owned_by_stage() {
-  mkdir -p "$1/00"
-  echo entry >"$1/00/a"
-  if $is_root; then chown -R 10001:10001 "$1"; else chmod a-w "$1/00"; fi
-}
-
-SH=(RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$D/temp" CI_CACHE_ROOT="$D/root")
-
-# 1. A hosted runner keeps the cache in its temp dir, whatever the root holds,
-# with no lease.
-reset
-mkdir -p "$D/root/gh-runner-cache"
-run RUNNER_ENVIRONMENT=github-hosted RUNNER_TEMP="$D/temp" CI_CACHE_ROOT="$D/root"
-if [ "$rc" = 0 ] && [ "$dir" = "$D/temp/ci-cache" ] && [ -z "$lease" ] &&
-  [ -z "$(ls -A "$D/root/gh-runner-cache")" ]; then
-  ok "a hosted runner uses \$RUNNER_TEMP/ci-cache"
-else bad "a hosted runner uses \$RUNNER_TEMP/ci-cache (rc=$rc out=$out)"; fi
-
-# 2. A self-hosted runner with the shared runner-cache root leases a
-# generation under it.
-reset
-mkdir -p "$D/root/gh-runner-cache"
-run "${SH[@]}"
-base=$D/root/gh-runner-cache/go-qrdb/ci-cache
-if [ "$rc" = 0 ] && [[ $dir == "$base"/gen.* ]] && [ -d "$dir" ] &&
-  [[ $lease == "$dir"/.leases/* ]] && [ -f "$lease" ] &&
-  [ "$(cat "$base/current")" = "${dir##*/}" ]; then
-  ok "a self-hosted runner leases a generation in gh-runner-cache/go-qrdb/ci-cache"
-else bad "a self-hosted runner leases a generation in gh-runner-cache/go-qrdb/ci-cache (rc=$rc out=$out err=$err)"; fi
-
-# 3. Without gh-runner-cache, a writable root holds go-qrdb-ci-cache. An unset
-# RUNNER_ENVIRONMENT is a self-hosted runner too.
-reset
-run RUNNER_TEMP="$D/temp" CI_CACHE_ROOT="$D/root"
-if [ "$rc" = 0 ] && [[ $dir == "$D/root/go-qrdb-ci-cache"/gen.* ]] && [ -f "$lease" ]; then
-  ok "a self-hosted runner without gh-runner-cache uses go-qrdb-ci-cache"
-else bad "a self-hosted runner without gh-runner-cache uses go-qrdb-ci-cache (rc=$rc out=$out)"; fi
-
-# 4. Without the root, the cache is the named volumes (empty), never the temp
-# dir, and the step says so.
-reset
-run RUNNER_ENVIRONMENT=self-hosted RUNNER_TEMP="$D/temp" CI_CACHE_ROOT="$D/absent"
-if [ "$rc" = 0 ] && [ "$out" = $'CI_CACHE_DIR=\nCI_CACHE_LEASE=' ] && [[ $err == *::notice::* ]] &&
-  [ -z "$(ls -A "$D/temp")" ]; then
-  ok "a self-hosted runner without the root falls back to the named volumes"
-else bad "a self-hosted runner without the root falls back to the named volumes (rc=$rc out=$out)"; fi
-
-# 5. A read-only root is no root (skipped as root, who writes anywhere).
-if ! $is_root; then
-  reset
-  chmod a-w "$D/root"
-  run "${SH[@]}"
-  if [ "$rc" = 0 ] && [ -z "$dir" ] && [ -z "$lease" ]; then
-    ok "a read-only root falls back to the named volumes"
-  else bad "a read-only root falls back to the named volumes (rc=$rc out=$out)"; fi
 fi
-
-# 6. Under the cap a second job shares the first job's generation, and the
-# cache is kept.
-reset
-run "${SH[@]}" CI_CACHE_MAX_GB=40
-dir1=$dir lease1=$lease
-mkdir -p "$dir1/gobuild/00" "$dir1/golangci"
-echo entry >"$dir1/gobuild/00/a"
-run "${SH[@]}" CI_CACHE_MAX_GB=40
-lease2=$lease
-if [ "$rc" = 0 ] && [ "$dir" = "$dir1" ] && [ "$lease2" != "$lease1" ] &&
-  [ -f "$dir1/gobuild/00/a" ] && [[ $err != *::notice::* ]]; then
-  ok "a cache under the cap is shared and kept"
-else bad "a cache under the cap is shared and kept (rc=$rc out=$out err=$err)"; fi
-
-# 7. Over the cap the next job gets a new, empty generation, with a notice,
-# and the generation a running job has mounted is left whole: its directory
-# (the bind mount's inode) and its files stay. du rounds each directory up to
-# 1 GB, so a cap of 0 is exceeded by any cache.
-run "${SH[@]}" CI_CACHE_MAX_GB=0
-dir3=$dir lease3=$lease
-if [ "$rc" = 0 ] && [[ $dir3 == "$D/root/go-qrdb-ci-cache"/gen.* ]] && [ "$dir3" != "$dir1" ] &&
-  [ -z "$(find "$dir3" -mindepth 1 -maxdepth 1 ! -name .leases)" ] && [[ $err == *::notice::*rotated* ]] &&
-  [ -f "$dir1/gobuild/00/a" ]; then
-  ok "a cache over the cap rotates to a new generation, the leased one kept"
-else bad "a cache over the cap rotates to a new generation, the leased one kept (rc=$rc out=$out err=$err)"; fi
-
-# 8. The old generation outlives the release of one of its two leases, and is
-# reclaimed with the last; the current generation is never reclaimed.
-run "${SH[@]}" CI_CACHE_LEASE="$lease1" release
-if [ "$rc" = 0 ] && [ ! -e "$lease1" ] && [ -f "$dir1/gobuild/00/a" ]; then
-  ok "a generation with a live lease survives another job's release"
-else bad "a generation with a live lease survives another job's release (rc=$rc err=$err)"; fi
-run "${SH[@]}" CI_CACHE_LEASE="$lease2" release
-if [ "$rc" = 0 ] && [ ! -e "$dir1" ] && [ -d "$dir3" ] &&
-  [ -z "$(ls -d "$D/root/go-qrdb-ci-cache"/trash.* 2>/dev/null)" ]; then
-  ok "a generation is reclaimed when its last lease is released"
-else bad "a generation is reclaimed when its last lease is released (rc=$rc err=$err)"; fi
-run "${SH[@]}" CI_CACHE_LEASE="$lease3" release
-if [ "$rc" = 0 ] && [ -d "$dir3" ] && [ ! -e "$lease3" ]; then
-  ok "the current generation is kept when its leases are released"
-else bad "the current generation is kept when its leases are released (rc=$rc err=$err)"; fi
-
-# 9. A lease older than CI_CACHE_LEASE_MAX_MIN belongs to a job that is gone:
-# its generation is reclaimed by the next job.
-reset
-run "${SH[@]}"
-old=$dir
-mkdir -p "$old/gobuild"
-echo entry >"$old/gobuild/a"
-run "${SH[@]}" CI_CACHE_MAX_GB=0
-touch -d '7 hours ago' "$old"/.leases/*
-run "${SH[@]}" CI_CACHE_LEASE_MAX_MIN=360
-if [ "$rc" = 0 ] && [ ! -e "$old" ]; then
-  ok "a generation whose leases are stale is reclaimed"
-else bad "a generation whose leases are stale is reclaimed (rc=$rc err=$err)"; fi
-
-# 10. A generation holding files the stage's uid owns is deleted by the
-# privileged helper once plain rm cannot.
-reset
-run "${SH[@]}"
-old=$dir oldlease=$lease
-owned_by_stage "$old/gobuild"
-run "${SH[@]}" CI_CACHE_MAX_GB=0
-run "${SH[@]}" CI_CACHE_LEASE="$oldlease" CI_CACHE_RM_HELPER="$helper" release
-if [ "$rc" = 0 ] && [ ! -e "$old" ] &&
-  [ -z "$(ls -d "$D/root/go-qrdb-ci-cache"/trash.* 2>/dev/null)" ] &&
-  { $is_root || [ -s "$D/helper.log" ]; }; then
-  ok "a stage-owned generation is deleted through the privileged helper"
-else bad "a stage-owned generation is deleted through the privileged helper (rc=$rc err=$err)"; fi
-
-# 11. When no helper can delete it, the job still succeeds, with a warning, and
-# the next job retries (skipped as root, whose plain rm cannot fail here).
-if ! $is_root; then
-  reset
-  run "${SH[@]}"
-  old=$dir oldlease=$lease
-  owned_by_stage "$old/gobuild"
-  run "${SH[@]}" CI_CACHE_MAX_GB=0
-  run "${SH[@]}" CI_CACHE_LEASE="$oldlease" CI_CACHE_RM_HELPER=false release
-  t=$(ls -d "$D/root/go-qrdb-ci-cache"/trash.* 2>/dev/null)
-  if [ "$rc" = 0 ] && [[ $err == *::warning::* ]] && [ -n "$t" ]; then
-    ok "a failed privileged delete warns and keeps the job green"
-  else bad "a failed privileged delete warns and keeps the job green (rc=$rc err=$err)"; fi
-  run "${SH[@]}" CI_CACHE_RM_HELPER="$helper"
-  if [ "$rc" = 0 ] && [ -n "$dir" ] && [ -z "$(ls -d "$D/root/go-qrdb-ci-cache"/trash.* 2>/dev/null)" ]; then
-    ok "the next job deletes the leftover trash"
-  else bad "the next job deletes the leftover trash (rc=$rc err=$err)"; fi
-fi
-
-# 12. Release removes the legacy $RUNNER_TEMP/ci-cache, stage-owned files
-# included, without a lease.
-reset
-owned_by_stage "$D/temp/ci-cache/gobuild"
-run "${SH[@]}" CI_CACHE_RM_HELPER="$helper" release
-if [ "$rc" = 0 ] && [ ! -e "$D/temp/ci-cache" ] && { $is_root || [ -s "$D/helper.log" ]; }; then
-  ok "release removes a stage-owned legacy \$RUNNER_TEMP/ci-cache"
-else bad "release removes a stage-owned legacy \$RUNNER_TEMP/ci-cache (rc=$rc err=$err)"; fi
-
-# 12b. Without a release step, the job's first step removes the stage-owned
-# legacy $RUNNER_TEMP/ci-cache, so the workflow's final plain rm -rf
-# succeeds.
-reset
-owned_by_stage "$D/temp/ci-cache/gobuild"
-run "${SH[@]}" CI_CACHE_RM_HELPER="$helper"
-if [ "$rc" = 0 ] && [ -n "$dir" ] && [ ! -e "$D/temp/ci-cache" ] &&
-  rm -rf "$D/temp/ci-cache" && { $is_root || [ -s "$D/helper.log" ]; }; then
-  ok "acquire removes a stage-owned legacy \$RUNNER_TEMP/ci-cache"
-else bad "acquire removes a stage-owned legacy \$RUNNER_TEMP/ci-cache (rc=$rc err=$err)"; fi
-
-# 13. A cache from before the generations (gobuild directly under the base) is
-# reclaimed, and the job gets a generation.
-reset
-mkdir -p "$D/root/go-qrdb-ci-cache/gobuild/00"
-echo entry >"$D/root/go-qrdb-ci-cache/gobuild/00/a"
-run "${SH[@]}"
-if [ "$rc" = 0 ] && [[ $dir == "$D/root/go-qrdb-ci-cache"/gen.* ]] &&
-  [ ! -e "$D/root/go-qrdb-ci-cache/gobuild" ]; then
-  ok "a pre-generation cache is reclaimed"
-else bad "a pre-generation cache is reclaimed (rc=$rc out=$out err=$err)"; fi
-
-# 14. A lease that is not under the base is refused with a warning; nothing
-# is deleted.
-reset
-run "${SH[@]}"
-keep=$lease
-run "${SH[@]}" CI_CACHE_LEASE="$D/temp/elsewhere" release
-if [ "$rc" = 0 ] && [[ $err == *::warning::* ]] && [ -f "$keep" ]; then
-  ok "a lease outside the base is refused"
-else bad "a lease outside the base is refused (rc=$rc err=$err)"; fi
-
-# 15. Concurrent jobs: every one gets a leased generation that exists.
-reset
-for i in 1 2 3 4 5 6 7 8; do
-  (env -i PATH="$PATH" "${SH[@]}" CI_CACHE_MAX_GB=0 "$script" >"$D/c$i.out" 2>/dev/null) &
-done
-wait
-cok=true
-for i in 1 2 3 4 5 6 7 8; do
-  cd_=
-  IFS= read -r cd_ <"$D/c$i.out" || true
-  cd_=${cd_#CI_CACHE_DIR=}
-  [[ $cd_ == "$D/root/go-qrdb-ci-cache"/gen.* ]] && [ -d "$cd_" ] || cok=false
-done
-if $cok; then
-  ok "concurrent jobs each keep a leased generation"
-else bad "concurrent jobs each keep a leased generation"; fi
-
-# 16. A cap that is not a number is refused, and so is a zero lease age.
-run "${SH[@]}" CI_CACHE_MAX_GB=4x
-if [ "$rc" = 2 ] && [ -z "$out" ]; then
-  ok "a non-numeric cap is refused"
-else bad "a non-numeric cap is refused (rc=$rc out=$out)"; fi
-run "${SH[@]}" CI_CACHE_LEASE_MAX_MIN=0
-if [ "$rc" = 2 ] && [ -z "$out" ]; then
-  ok "a zero lease age is refused"
-else bad "a zero lease age is refused (rc=$rc out=$out)"; fi
-
-# 17. A hosted runner without RUNNER_TEMP is refused, not pointed at /ci-cache.
-run RUNNER_ENVIRONMENT=github-hosted CI_CACHE_ROOT="$D/root"
-if [ "$rc" = 2 ] && [ -z "$out" ]; then
-  ok "a hosted runner without RUNNER_TEMP is refused"
-else bad "a hosted runner without RUNNER_TEMP is refused (rc=$rc out=$out)"; fi
 
 if [ "$fail" != 0 ]; then
-  echo "ci-cache-dir_test: FAILED"
+  echo "ci-cache-dir_test: FAIL"
   exit 1
 fi
-echo "ci-cache-dir_test: all passed"
+echo "ci-cache-dir_test: ok"

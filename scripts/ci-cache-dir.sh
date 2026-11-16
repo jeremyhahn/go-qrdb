@@ -1,19 +1,15 @@
 #!/usr/bin/env bash
 # CUSTOMIZE (go-qrdb, #1596): where a CI job keeps its Go build and
-# golangci-lint caches, and their cleanup.
+# golangci-lint caches.
 #
-#   ci-cache-dir.sh            prints CI_CACHE_DIR=<dir> and CI_CACHE_LEASE=<file>
-#                              for "$GITHUB_ENV"; scripts/in-toolchain-image.sh
-#                              bind-mounts <dir>/gobuild and <dir>/golangci, or,
-#                              when <dir> is empty, uses its named Docker volumes.
-#   ci-cache-dir.sh release    for a job's always() step on a self-hosted runner:
-#                              drops the job's lease, reclaims generations no job
-#                              uses, and removes the legacy $RUNNER_TEMP/ci-cache.
-#                              Optional: an unreleased lease expires (below).
+#   ci-cache-dir.sh   prints CI_CACHE_DIR=<dir> for "$GITHUB_ENV";
+#                     scripts/in-toolchain-image.sh bind-mounts <dir>/gobuild
+#                     and <dir>/golangci, or, when <dir> is empty, uses its
+#                     named Docker volumes.
 #
 #   - A hosted runner (RUNNER_ENVIRONMENT=github-hosted) is thrown away after
 #     the job: the cache is $RUNNER_TEMP/ci-cache, which actions/cache
-#     restores and saves; there is no lease.
+#     restores and saves.
 #   - A self-hosted pool host keeps its disk: $RUNNER_TEMP is on the root
 #     filesystem and outlives the job, and the cache there grew to 168 GB
 #     (#1596). The cache is a persistent base directory on the data array:
@@ -24,86 +20,41 @@
 #       none (CI_CACHE_DIR empty: the named volumes), never $RUNNER_TEMP.
 #     CI_CACHE_ROOT defaults to /mnt/raid0.
 #
-# Generations. Every self-hosted job on a host shares the base, and a stage's
-# bind mount pins the directory's inode: deleting a directory a running stage
-# has mounted leaves that stage writing into an unlinked tree (ENOENT on the
-# next mkdir). So the base holds generations, gen.<id>/{gobuild,golangci}, and
-# a `current` file naming the one new jobs use. A job takes a lease,
-# gen.<id>/.leases/<lease>, in the generation it is given; the lease lives
-# until it is older than CI_CACHE_LEASE_MAX_MIN, longer than any job may run,
-# or until the job runs `ci-cache-dir.sh release` (CI_CACHE_LEASE set), which
-# frees it early. When the current generation's gobuild and golangci
-# together exceed CI_CACHE_MAX_GB (default 40; du -s --block-size=1G, which
-# rounds each up), a new, empty generation becomes current, with a ::notice::.
-# A generation that is not current is reclaimed only when it holds no live
-# lease; a lease older than CI_CACHE_LEASE_MAX_MIN minutes (default 360, the
-# GitHub job limit; ci.yml's longest job has 180 minutes) belongs to a job that
-# is gone. Leases, rotation and
-# reclaim happen under flock(1) on <base>/.lock; a reclaimed generation is
-# renamed to trash.<id> under the lock and deleted after it.
+# Generations. Every self-hosted job on a host shares the base, and a running
+# stage has <gen>/gobuild and <gen>/golangci bind-mounted: deleting them under
+# it fails the stage (ENOENT). So the cache lives in <base>/gen-<UTC stamp>/
+# and <base>/current names the live generation. Each job that selects a
+# generation touches its <gen>/.last-use marker. When the live generation's
+# gobuild and golangci together exceed CI_CACHE_MAX_GB (default 40; du -s
+# --block-size=1G, which rounds each up), the job creates a new generation
+# and switches `current` to it by an atomic rename of a temp file, with a
+# ::notice::. A generation that is not current is deleted only once its
+# last-use marker is older than CI_CACHE_RECLAIM_HOURS (default 7, longer
+# than the 6 h longest a job may run), so no job still using it can remain.
+# A job never deletes the generation it uses, nor the current one. Anything
+# else in the base (a cache from before the generations) goes by the same
+# age, from its own mtime. Selection, rotation and the reclaim decision run
+# under flock(1) on <base>/.lock when flock is present; a reclaimed
+# generation is renamed to trash-<name> there and deleted after.
 #
-# Deletion. The stages give the cache's files to their non-root uid (10001,
-# scripts/in-toolchain-image.sh), which the runner's user cannot delete. A
-# plain rm runs first; what survives goes to a privileged helper: a --rm
-# container from CI_CACHE_RM_IMAGE (default TOOLCHAIN_IMAGE) as root with only
-# DAC_OVERRIDE and FOWNER, no network, no new privileges.
-# CI_CACHE_RM_HELPER, a command, replaces the container (the self-test's
-# stand-in); it is called with the paths to delete. A deletion that still
-# fails is a ::warning:: and is retried by the next job: cleanup never fails
-# a job.
+# Deletion goes through scripts/ci-cache-clean.sh: the stages give the
+# cache's files to their uid 10001, which the runner's user cannot delete, so
+# the helper deletes them as root in the toolchain image, and a failure is a
+# ::warning::, never a failed job. The legacy $RUNNER_TEMP/ci-cache is
+# removed the same way before any stage runs.
 #
 # Notices go to stderr: stdout is the environment file.
 set -euo pipefail
 
-mode=${1:-acquire}
-case $mode in
-  acquire | release) ;;
-  *) echo "usage: ci-cache-dir.sh [release]" >&2; exit 2 ;;
-esac
-
-# rm_tree PATH...: deletes each path, privileged when a plain rm cannot.
-# Returns 1, after a ::warning::, when one survives.
-rm_tree() {
-  local p left=()
-  for p in "$@"; do
-    [ -e "$p" ] || [ -L "$p" ] || continue
-    rm -rf -- "$p" 2>/dev/null || true
-    if [ -e "$p" ] || [ -L "$p" ]; then left+=("$p"); fi
-  done
-  [ "${#left[@]}" -gt 0 ] || return 0
-  if [ -n "${CI_CACHE_RM_HELPER:-}" ]; then
-    # shellcheck disable=SC2086 # a command and its arguments
-    ${CI_CACHE_RM_HELPER} "${left[@]}" >/dev/null 2>&1 || true
-  else
-    local image=${CI_CACHE_RM_IMAGE:-${TOOLCHAIN_IMAGE:-}}
-    if [ -n "$image" ] && command -v docker >/dev/null 2>&1; then
-      for p in "${left[@]}"; do
-        docker run --rm --network none --cap-drop ALL \
-          --cap-add DAC_OVERRIDE --cap-add FOWNER \
-          --security-opt no-new-privileges:true --user 0:0 \
-          -v "$(dirname -- "$p"):/p" --entrypoint rm "$image" \
-          -rf -- "/p/$(basename -- "$p")" >/dev/null 2>&1 || true
-      done
-    fi
-  fi
-  local failed=0
-  for p in "${left[@]}"; do
-    if [ -e "$p" ] || [ -L "$p" ]; then
-      echo "::warning::Could not delete $p (owned by a stage's uid; no privileged helper ran): the next job retries" >&2
-      failed=1
-    fi
-  done
-  return "$failed"
-}
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+clean() { bash "$here/ci-cache-clean.sh" "$@" || true; }
 
 if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
   if [ -z "${RUNNER_TEMP:-}" ]; then
     echo "ci-cache-dir: RUNNER_TEMP is unset on a hosted runner" >&2
     exit 2
   fi
-  [ "$mode" = release ] && exit 0
   echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache"
-  echo "CI_CACHE_LEASE="
   exit 0
 fi
 
@@ -115,13 +66,26 @@ case $cap in
     exit 2
     ;;
 esac
-lease_max=${CI_CACHE_LEASE_MAX_MIN:-360}
-case $lease_max in
+hours=${CI_CACHE_RECLAIM_HOURS:-7}
+case $hours in
   '' | 0 | *[!0-9]*)
-    echo "ci-cache-dir: CI_CACHE_LEASE_MAX_MIN must be a positive whole number of minutes: $lease_max" >&2
+    echo "ci-cache-dir: CI_CACHE_RECLAIM_HOURS must be a positive whole number of hours: $hours" >&2
     exit 2
     ;;
 esac
+reclaim_min=$((hours * 60))
+
+named_volumes() {
+  echo "::notice::$1: the Go caches are the stage's named Docker volumes" >&2
+  echo "CI_CACHE_DIR="
+  exit 0
+}
+
+# The legacy cache in the pool host's temp dir holds stage-owned files: delete
+# it before any stage runs. No stage on a self-hosted runner writes there.
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  clean "$RUNNER_TEMP/ci-cache"
+fi
 
 writable_dir() { [ -d "$1" ] && [ -w "$1" ]; }
 
@@ -131,84 +95,9 @@ if writable_dir "$root/gh-runner-cache"; then
 elif writable_dir "$root"; then
   base=$root/go-qrdb-ci-cache
 fi
-
-# live_leases GEN: prints the generation's leases younger than lease_max.
-live_leases() {
-  [ -d "$1/.leases" ] || return 0
-  find "$1/.leases" -mindepth 1 -maxdepth 1 -type f -mmin "-$lease_max" -print 2>/dev/null
-}
-
-# reclaim_locked: under the lock, renames to trash.<id> every generation that
-# is not current and has no live lease, and anything else that is not part of
-# the layout (a cache from before the generations).
-reclaim_locked() {
-  local cur e name
-  cur=$(cat "$base/current" 2>/dev/null || true)
-  for e in "$base"/* "$base"/.[!.]*; do
-    [ -e "$e" ] || [ -L "$e" ] || continue
-    name=${e##*/}
-    case $name in
-      .lock | current | current.tmp.* | trash.*) continue ;;
-      gen.*)
-        [ "$name" = "$cur" ] && continue
-        [ -z "$(live_leases "$e")" ] || continue
-        ;;
-    esac
-    mv -- "$e" "$base/trash.$name.$$.$RANDOM" 2>/dev/null || true
-  done
-}
-
-# reclaim_trash: deletes every trash.* entry, outside the lock.
-reclaim_trash() {
-  local t=()
-  local e
-  for e in "$base"/trash.*; do
-    [ -e "$e" ] || [ -L "$e" ] || continue
-    t+=("$e")
-  done
-  [ "${#t[@]}" -eq 0 ] || rm_tree "${t[@]}" || true
-}
-
-if [ "$mode" = release ]; then
-  if [ -n "${CI_CACHE_LEASE:-}" ] && [ -n "$base" ] && [ -d "$base" ] &&
-    command -v flock >/dev/null 2>&1; then
-    case $CI_CACHE_LEASE in
-      "$base"/gen.*/.leases/*)
-        (
-          flock 9
-          rm -f -- "$CI_CACHE_LEASE"
-          reclaim_locked
-        ) 9>>"$base/.lock" || true
-        reclaim_trash
-        ;;
-      *) echo "::warning::CI_CACHE_LEASE is not a lease under $base: $CI_CACHE_LEASE" >&2 ;;
-    esac
-  fi
-  if [ -n "${RUNNER_TEMP:-}" ]; then
-    rm_tree "$RUNNER_TEMP/ci-cache" || true
-  fi
-  exit 0
-fi
-
-named_volumes() {
-  echo "::notice::$1: the Go caches are the stage's named Docker volumes" >&2
-  echo "CI_CACHE_DIR="
-  echo "CI_CACHE_LEASE="
-  exit 0
-}
-
-# The legacy cache in the pool host's temp dir holds stage-owned files that
-# the job's final plain `rm -rf "$RUNNER_TEMP/ci-cache"` step cannot delete:
-# delete it here, through the helper, before any stage runs. No stage on a
-# self-hosted runner writes there any more.
-if [ -n "${RUNNER_TEMP:-}" ]; then
-  rm_tree "$RUNNER_TEMP/ci-cache" || true
-fi
-
 if [ -z "$base" ] || ! mkdir -p "$base" 2>/dev/null || ! writable_dir "$base"; then
   named_volumes "No writable cache directory under $root"
 fi
-command -v flock >/dev/null 2>&1 || named_volumes "flock(1) is missing, so $base cannot be shared"
 
 # size_gb GEN: gobuild plus golangci, in whole GB rounded up.
 size_gb() {
@@ -222,41 +111,71 @@ size_gb() {
   echo "$used"
 }
 
-# Under the lock: pick (or rotate) the current generation and lease it. The
-# subshell's own errexit holds because it is not in an || list.
-set +e
-out=$(
-  set -euo pipefail
-  exec 9>>"$base/.lock"
-  flock 9
+# stale PATH: true when PATH was last used more than reclaim_min minutes ago
+# (its .last-use marker for a generation, else its own mtime).
+stale() {
+  local mark=$1
+  [ -e "$1/.last-use" ] && mark=$1/.last-use
+  [ -n "$(find "$mark" -maxdepth 0 -mmin "+$reclaim_min" -print 2>/dev/null)" ]
+}
+
+# select_locked: prints the generation this job uses, rotating past the cap,
+# touches its marker, and moves stale generations to trash-*.
+select_locked() {
+  local cur used e name
   cur=$(cat "$base/current" 2>/dev/null || true)
-  case $cur in gen.*) [ -d "$base/$cur" ] || cur= ;; *) cur= ;; esac
-  rotate=
-  if [ -z "$cur" ]; then
-    rotate=new
-  else
+  case $cur in gen-*) [ -d "$base/$cur" ] || cur= ;; *) cur= ;; esac
+  if [ -n "$cur" ]; then
     used=$(size_gb "$base/$cur")
     if [ "$used" -gt "$cap" ]; then
-      echo "::notice::The Go caches in $base/$cur hold ${used} GB, over the ${cap} GB cap: rotated to a new generation; the old one is reclaimed once no job uses it" >&2
-      rotate=cap
+      echo "::notice::The Go caches in $base/$cur hold ${used} GB, over the ${cap} GB cap: a new generation is current; the old one is deleted once unused for ${hours} h" >&2
+      cur=
     fi
   fi
-  if [ -n "$rotate" ]; then
-    cur=gen.$(date -u +%Y%m%dT%H%M%S).$$.$RANDOM
-    mkdir -p "$base/$cur/.leases"
+  if [ -z "$cur" ]; then
+    cur=gen-$(date -u +%Y%m%dT%H%M%SZ)-$$
+    mkdir "$base/$cur"
     printf '%s\n' "$cur" >"$base/current.tmp.$$"
     mv -f -- "$base/current.tmp.$$" "$base/current"
   fi
-  mkdir -p "$base/$cur/.leases"
-  lease=$base/$cur/.leases/${GITHUB_RUN_ID:-local}.${GITHUB_RUN_ATTEMPT:-0}.${GITHUB_JOB:-job}.$$.$RANDOM
-  : >"$lease"
-  reclaim_locked
-  echo "CI_CACHE_DIR=$base/$cur"
-  echo "CI_CACHE_LEASE=$lease"
-)
+  touch "$base/$cur/.last-use"
+  for e in "$base"/* "$base"/.[!.]*; do
+    [ -e "$e" ] || [ -L "$e" ] || continue
+    name=${e##*/}
+    case $name in
+      .lock | current | trash-*) continue ;;
+      "$cur") continue ;;
+      current.tmp.*) ;;
+    esac
+    stale "$e" || continue
+    mv -- "$e" "$base/trash-$name.$$" 2>/dev/null || true
+  done
+  echo "$cur"
+}
+
+set +e
+if command -v flock >/dev/null 2>&1; then
+  gen=$(
+    set -euo pipefail
+    exec 9>>"$base/.lock"
+    flock 9
+    select_locked
+  )
+else
+  gen=$(
+    set -euo pipefail
+    select_locked
+  )
+fi
 rc=$?
 set -e
-[ "$rc" = 0 ] || named_volumes "Could not lease a generation in $base"
+[ "$rc" = 0 ] && [ -n "$gen" ] || named_volumes "Could not select a generation in $base"
 
-reclaim_trash
-echo "$out"
+trash=()
+for e in "$base"/trash-*; do
+  [ -e "$e" ] || [ -L "$e" ] || continue
+  trash+=("$e")
+done
+[ "${#trash[@]}" -eq 0 ] || clean "${trash[@]}"
+
+echo "CI_CACHE_DIR=$base/$gen"

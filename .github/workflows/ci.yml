@@ -44,10 +44,15 @@
 #     restores main's newest entry, and only a push to main saves one
 #     (CI_PUBLISH), so a pull request never writes main's cache. On a
 #     self-hosted pool host, whose temp dir is on the root filesystem and
-#     outlives the job, they are a persistent directory on /mnt/raid0, cleared
-#     past CI_CACHE_MAX_GB (40 GB), or the stage's named Docker volumes when
-#     /mnt/raid0 is not writable; actions/cache is skipped there, and every
-#     job removes $RUNNER_TEMP/ci-cache at its end;
+#     outlives the job, they are a generation directory on /mnt/raid0 that
+#     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
+#     current, and an old one is deleted only once no job has used it for
+#     CI_CACHE_RECLAIM_HOURS (7, longer than any job), so no running stage
+#     loses its bind mount; or they are the stage's named Docker volumes when
+#     /mnt/raid0 is not writable. actions/cache is skipped there, and every
+#     job removes $RUNNER_TEMP/ci-cache at its end through
+#     scripts/ci-cache-clean.sh, which deletes the stages' uid-10001 files as
+#     root in the toolchain image and only warns when it cannot;
 #   - every job that loads an image first frees a hosted runner's disk (the
 #     preinstalled SDKs it never uses); the step runs on the hosted runner
 #     alone (runner.environment == 'github-hosted'), never on a pool host,
@@ -528,10 +533,12 @@ jobs:
           key: go-lint-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
   # v1.27.0 (ruling 211): `make lint-gates` beside `make lint`, on the PR tier.
   lint-gates:
@@ -617,10 +624,12 @@ jobs:
           key: go-lint-gates-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
   image:
     name: Devcontainer image [build, security, trivy image]
@@ -741,10 +750,12 @@ jobs:
           key: go-image-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
       - name: Tear down
         if: always()
@@ -858,10 +869,12 @@ jobs:
           key: go-coverage-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, DS-7377): the one coverage gate over every leg's
   # profile. It needs coverage, so a failed leg skips it and CI Gate fails on
@@ -1152,10 +1165,12 @@ jobs:
           key: go-test-tags-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, DS-7377): `make test-sdk` in legs, the Makefile's
   # TEST_SDK_LEGS, each `make test-sdk-leg SDK_LEG=<leg>`; together they are
@@ -1237,10 +1252,12 @@ jobs:
           key: go-test-sdk-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
       # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
-      # remove any cache an older run left there.
+      # remove any cache an older run left there. Its files belong to the
+      # stages' uid, so the helper deletes them as root in the toolchain
+      # image; a failure is a ::warning::, never a failed job.
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
-        run: rm -rf "$RUNNER_TEMP/ci-cache"
+        run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, #674): the self-spawned integration suites, one
   # feature list per shard; `make -s print-integration-features` is every
