@@ -139,6 +139,260 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/index/pebbleindex | TestIndex_ImplementsIndex, TestIndex_ImplementsIndex_ViaConstructor | duplicate of the package-level guard in index.go | the compile-time guard |
 | pkg/store | TestMVCCStateMachine_Implements{DiskStateMachine,Hasher}, TestPebbleStateMachine_Implements{DiskStateMachine,Hasher,NALookup} | duplicate of the package-level guards in mvcc.go, pebble.go | the compile-time guards |
 
+## Removed tests and what still covers them
+
+One row per test function this branch deletes (`git diff origin/main...HEAD -- '*_test.go'`, 200 functions). The last column names the retained test (file:func) or the production compile-time guard (file:line) that still checks the behaviour. Every row has a retained check, so no test was restored.
+
+### pkg/api
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/api/grpc/grpc_coverage2_test.go:TestWithLock_Nil` | `WithLock(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/grpc/grpc_coverage2_test.go:TestWithLock_ServerOption` |
+| `pkg/api/grpc/grpc_coverage2_test.go:TestWithPINBackend_Nil` | `WithPINBackend(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/grpc/grpc_coverage2_test.go:TestWithPINBackend_ServerOption` |
+| `pkg/api/grpc/grpc_coverage2_test.go:TestWithAuthFactorService_ServerOption` | `WithAuthFactorService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/grpc/authfactor_server_test.go:TestServer_WithAuthFactorService_ServesEnroll`, `pkg/api/grpc/service_lock_test.go:TestServerOption_WithAuthFactorService` |
+| `pkg/api/grpc/grpc_coverage2_test.go:TestWithUserAuthFactorService_Nil` | `WithUserAuthFactorService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/grpc/grpc_coverage2_test.go:TestWithUserAuthFactorService_ServerOption` |
+| `pkg/api/grpc/grpc_coverage2_test.go:TestWithTenantService_ServerOption` | `WithTenantService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/grpc/service_lock_test.go:TestRegisterService_WithTenantService` |
+| `pkg/api/quic/wire/wire_test.go:TestMethodTooLongErrorWithDifferentValues` | method too long error with different values; duplicate with other values | `pkg/api/quic/wire/wire_test.go:TestMethodTooLongErrorMessage` |
+| `pkg/api/quic/wire/wire_test.go:TestMethodTooLongErrorImplementsError` | `MethodTooLongError` satisfies `error`; tautology (compile-time assignment) | `pkg/api/quic/wire/wire_test.go:TestMethodTooLongErrorMessage` |
+| `pkg/api/quic/wire/wire_test.go:TestPayloadTooLargeErrorWithDifferentValues` | payload too large error with different values; duplicate with other values | `pkg/api/quic/wire/wire_test.go:TestPayloadTooLargeErrorMessage` |
+| `pkg/api/quic/wire/wire_test.go:TestPayloadTooLargeErrorImplementsError` | `PayloadTooLargeError` satisfies `error`; tautology (compile-time assignment) | `pkg/api/quic/wire/wire_test.go:TestPayloadTooLargeErrorMessage` |
+| `pkg/api/quic/wire/wire_test.go:TestReadErrorUnwrap` | read error unwrap; lower layer of errors.Is through Unwrap | `pkg/api/quic/wire/wire_test.go:TestReadErrorUnwrapWithErrorsIs` |
+| `pkg/api/quic/wire/wire_test.go:TestReadErrorImplementsError` | `ReadError` satisfies `error`; tautology (compile-time assignment) | `pkg/api/quic/wire/wire_test.go:TestReadErrorMessage` |
+| `pkg/api/quic/wire/wire_test.go:TestWriteErrorUnwrap` | write error unwrap; lower layer of errors.Is through Unwrap | `pkg/api/quic/wire/wire_test.go:TestWriteErrorUnwrapWithErrorsIs` |
+| `pkg/api/quic/wire/wire_test.go:TestWriteErrorImplementsError` | `WriteError` satisfies `error`; tautology (compile-time assignment) | `pkg/api/quic/wire/wire_test.go:TestWriteErrorMessage` |
+| `pkg/api/rest/handlers_collection_test.go:TestWithCollectionService_NilOption` | `WithCollectionService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/rest/handlers_collection_test.go:TestWithCollectionService_Option` |
+| `pkg/api/unix/options_embedding_test.go:TestWithEmbedding_Nil` | `WithEmbedding(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_embedding_test.go:TestWithEmbedding_Applied` |
+| `pkg/api/unix/options_embedding_test.go:TestWithRAGService_Nil` | `WithRAGService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_embedding_test.go:TestWithRAGService_Applied` |
+| `pkg/api/unix/options_embedding_test.go:TestWithBackupService_Nil` | `WithBackupService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_embedding_test.go:TestWithBackupService_Applied` |
+| `pkg/api/unix/options_embedding_test.go:TestWithRebalanceService_Nil` | `WithRebalanceService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_embedding_test.go:TestWithRebalanceService_Applied` |
+| `pkg/api/unix/options_sql_sealed_test.go:TestWithSQLService_Applied` | `WithSQLService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_sql_sealed_test.go:TestWithSQLService_NonNil` |
+| `pkg/api/unix/options_sql_sealed_test.go:TestWithSealedWindowProbe_Applied` | `WithSealedWindowProbe(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_sql_sealed_test.go:TestWithSealedWindowProbe_NonNil` |
+| `pkg/api/unix/options_test.go:TestWithLock_Applied` | `WithLock(nil)` leaves a nil field nil; tautology (With…(nil) on a field NewServer leaves nil), the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/options_test.go:TestWithTenantService_Applied` | `WithTenantService(nil)` leaves a nil field nil; tautology (With…(nil) on a field NewServer leaves nil), the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/options_test.go:TestWithEncryptionMigrator_Applied` | `WithEncryptionMigrator(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_test.go:TestWithEncryptionMigrator_NonNil` |
+| `pkg/api/unix/options_test.go:TestWithAuthFactorService_Applied` | `WithAuthFactorService(nil)` leaves a nil field nil; tautology (With…(nil) on a field NewServer leaves nil), the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/options_test.go:TestWithTenantBarrierService_Applied` | `WithTenantBarrierService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_test.go:TestWithTenantBarrierService_NonNil` |
+| `pkg/api/unix/options_test.go:TestWithAuditLogger_Applied` | `WithAuditLogger(nil)` leaves a nil field nil; tautology (With…(nil) on a field NewServer leaves nil), the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartInstallsTheAuthMiddlewareAndAuditService` |
+| `pkg/api/unix/options_test.go:TestWithAllNewOptions_StartStop` | `WithAllNewOptions_StartStop(nil)` leaves a nil field nil; Start with only nil options, duplicate of the plain Start path, the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/options_test.go:TestStart_WithTenantBarrierService_Registered` | `Start`: with tenant barrier service, registered; duplicate (same option in the every-service Start) | `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_pin_test.go:TestWithPINBackend_Nil` | `WithPINBackend(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_pin_test.go:TestWithPINBackend_Applied` |
+| `pkg/api/unix/server_test.go:TestWithUserService_Applied` | `WithUserService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithAllOptionalServices` |
+| `pkg/api/unix/server_test.go:TestWithRoleService_Applied` | `WithRoleService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithAllOptionalServices` |
+| `pkg/api/unix/server_test.go:TestWithCertProvider_Applied` | `WithCertProvider(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithAllOptionalServices` |
+| `pkg/api/unix/server_test.go:TestWithCertEnrollment_NilIsNil` | `WithCertEnrollment(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestWithCertEnrollment_Applied` |
+| `pkg/api/unix/server_test.go:TestWithAuthMiddleware_Applied` | `WithAuthMiddleware(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/options_wiring_test.go:TestStartInstallsTheAuthMiddlewareAndAuditService` |
+| `pkg/api/unix/server_test.go:TestWithBarrierService_Applied` | `WithBarrierService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithCeremonyService_Applied` | `WithCeremonyService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithCredentialService_Applied` | `WithCredentialService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithCollectionService_Applied` | `WithCollectionService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithMVCC_Applied` | `WithMVCC(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithTransaction_Applied` | `WithTransaction(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithBatch_Applied` | `WithBatch(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithWatch_Applied` | `WithWatch(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithLease_Applied` | `WithLease(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithIndex_Applied` | `WithIndex(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithTimeSeries_Applied` | `WithTimeSeries(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithVector_Applied` | `WithVector(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+| `pkg/api/unix/server_test.go:TestWithDatabaseService_Applied` | `WithDatabaseService(nil)` leaves a nil field nil; tautology (nil option on a nil default), the setter is checked with a real value by the retained test | `pkg/api/unix/server_test.go:TestStart_WithNonNilOptionalServices`, `pkg/api/unix/options_wiring_test.go:TestStartRegistersEveryWiredService` |
+
+### pkg/database
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/database/backend_barrier_test.go:TestBarrierBackend_InterfaceCompliance` | `*BarrierBackend` satisfies `Backend`; duplicate of the guard | `pkg/database/backend_barrier.go:73` `var _ Backend = (*BarrierBackend)(nil)` |
+| `pkg/database/backend_standalone_test.go:TestStandaloneBackend_InterfaceCompliance` | `*StandaloneBackend` satisfies `Backend`; duplicate of the guard | `pkg/database/backend_standalone.go:25` `var _ Backend = (*StandaloneBackend)(nil)` |
+| `pkg/database/backend_storage_adapter_test.go:TestBackendStorageAdapter_InterfaceCompliance` | `*BackendStorageAdapter` satisfies `seal.StorageBackend`; duplicate of the guard | `pkg/database/backend_storage_adapter.go:38` `var _ seal.StorageBackend = (*BackendStorageAdapter)(nil)` |
+
+### pkg/engine
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/engine/kv_engine_test.go:TestKVEngine_ImplementsEngine` | `*KVEngine` satisfies `Engine`; duplicate of the guard | `pkg/engine/kv_engine.go:40` `var _ Engine = (*KVEngine)(nil)` |
+| `pkg/engine/mvcc_engine_test.go:TestMVCCEngine_ImplementsEngine` | `*MVCCEngine` satisfies `Engine`; duplicate of the guard | `pkg/engine/mvcc_engine.go:2840` `var _ Engine = (*MVCCEngine)(nil)` |
+
+### pkg/index
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/index/memory_index_test.go:TestMemoryIndex_ImplementsIndex` | `*MemoryIndex` satisfies `Index`; duplicate of the guard | `pkg/index/memory_index.go:297` `var _ Index = (*MemoryIndex)(nil)` |
+| `pkg/index/memory_index_test.go:TestMemoryIndex_ImplementsIndex_ViaNewMemoryIndex` | `*MemoryIndex` satisfies `Index`; duplicate of the guard | `pkg/index/memory_index.go:297` `var _ Index = (*MemoryIndex)(nil)` |
+| `pkg/index/pebbleindex/index_test.go:TestIndex_ImplementsIndex` | `*Index` satisfies `index.Index`; duplicate of the guard | `pkg/index/pebbleindex/index.go:564` `var _ index.Index = (*Index)(nil)` |
+| `pkg/index/pebbleindex/index_test.go:TestIndex_ImplementsIndex_ViaConstructor` | `*Index` satisfies `index.Index`; duplicate of the guard | `pkg/index/pebbleindex/index.go:564` `var _ index.Index = (*Index)(nil)` |
+| `pkg/index/storage_pebble_index_test.go:TestStoragePebbleIndex_ImplementsIndex` | `*StoragePebbleIndex` satisfies `Index`; duplicate of the guard | `pkg/index/storage_pebble_index.go:933` `var _ Index = (*StoragePebbleIndex)(nil)` |
+| `pkg/index/storage_pebble_index_test.go:TestStoragePebbleIndex_ImplementsIndexWithContext` | `*StoragePebbleIndex` satisfies `IndexWithContext`; duplicate of the guard | `pkg/index/storage_pebble_index.go:934` `var _ IndexWithContext = (*StoragePebbleIndex)(nil)` |
+
+### pkg/server
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/server/server_test.go:TestWithCertEnrollment_NonNil` | `WithCertEnrollment`: non nil; option-setter assignment, lower layer of the served call | `pkg/server/embedded_mint_delegation_test.go:TestMintDelegation_ServerHandsTheRequestToTheService` |
+| `pkg/server/server_test.go:TestWithDatabaseManager_NonNil` | `WithDatabaseManager`: non nil; option-setter assignment, lower layer of the served call | `pkg/server/server_sealed_database_sql_test.go:TestSealedDatabase_RefusedOverSQLWire` |
+| `pkg/server/server_with_options_test.go:TestWithStrategyRegistry_Applied` | `WithStrategyRegistry`: applied; duplicate (same field asserted; the extra lookup tests pkg/seal) | `pkg/server/server_with_options_test.go:TestWithAllInjections_Compose` |
+| `pkg/server/server_with_options_test.go:TestWithFactorRegistry_Applied` | `WithFactorRegistry`: applied; duplicate (same field asserted; the extra List tests pkg/authfactors) | `pkg/server/server_with_options_test.go:TestWithAllInjections_Compose` |
+| `pkg/server/server_with_options_test.go:TestWithTrustAnchors_Applied` | `WithTrustAnchors`: applied; lower layer of the exported crypto options | `pkg/server/server_with_options_test.go:TestResolveCryptoOptions_SurfacesTrustAnchors` |
+| `pkg/server/server_with_options_test.go:TestWithTrustAnchors_UnsetIsNil` | `WithTrustAnchors`: unset is nil; lower layer of the exported crypto options | `pkg/server/server_with_options_test.go:TestResolveCryptoOptions_TrustAnchorsNilWhenAbsent` |
+
+### pkg/sql/provider
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/sql/provider/collection_table_test.go:TestCollectionTable_ImplementsInsertableTable` | `*CollectionTable` satisfies `sqle.InsertableTable`; duplicate of the guard | `pkg/sql/provider/collection_table.go:37` `var _ sqle.InsertableTable = (*CollectionTable)(nil)` |
+| `pkg/sql/provider/collection_table_test.go:TestCollectionTable_ImplementsDeletableTable` | `*CollectionTable` satisfies `sqle.DeletableTable`; duplicate of the guard | `pkg/sql/provider/collection_table.go:38` `var _ sqle.DeletableTable = (*CollectionTable)(nil)` |
+| `pkg/sql/provider/collection_table_test.go:TestCollectionTable_ImplementsUpdatableTable` | `*CollectionTable` satisfies `sqle.UpdatableTable`; duplicate of the guard | `pkg/sql/provider/collection_table.go:40` `var _ sqle.UpdatableTable = (*CollectionTable)(nil)` |
+| `pkg/sql/provider/collection_table_test.go:TestCollectionTable_ImplementsReplaceableTable` | `*CollectionTable` satisfies `sqle.ReplaceableTable`; duplicate of the guard | `pkg/sql/provider/collection_table.go:39` `var _ sqle.ReplaceableTable = (*CollectionTable)(nil)` |
+| `pkg/sql/provider/collection_table_test.go:TestCollectionWriter_ImplementsRowReplacer` | `*collectionWriter` satisfies `sqle.RowReplacer`; duplicate of the guard | `pkg/sql/provider/collection_table.go:457` `var _ sqle.RowReplacer = (*collectionWriter)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsTable` | `*EntityTable` satisfies `sqle.Table`; duplicate of the guard | `pkg/sql/provider/entity_table.go:36` `var _ sqle.Table = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsInsertableTable` | `*EntityTable` satisfies `sqle.InsertableTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:37` `var _ sqle.InsertableTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsDeletableTable` | `*EntityTable` satisfies `sqle.DeletableTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:38` `var _ sqle.DeletableTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsUpdatableTable` | `*EntityTable` satisfies `sqle.UpdatableTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:40` `var _ sqle.UpdatableTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsReplaceableTable` | `*EntityTable` satisfies `sqle.ReplaceableTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:39` `var _ sqle.ReplaceableTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsIndexAddressableTable` | `*EntityTable` satisfies `sqle.IndexAddressableTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:41` `var _ sqle.IndexAddressableTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityTable_ImplementsIndexedTable` | `*EntityTable` satisfies `sqle.IndexedTable`; duplicate of the guard | `pkg/sql/provider/entity_table.go:42` `var _ sqle.IndexedTable = (*EntityTable)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityWriter_ImplementsRowInserter` | `*entityWriter` satisfies `sqle.RowInserter`; duplicate of the guard | `pkg/sql/provider/entity_table.go:459` `var _ sqle.RowInserter = (*entityWriter)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityWriter_ImplementsRowDeleter` | `*entityWriter` satisfies `sqle.RowDeleter`; duplicate of the guard | `pkg/sql/provider/entity_table.go:460` `var _ sqle.RowDeleter = (*entityWriter)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityWriter_ImplementsRowUpdater` | `*entityWriter` satisfies `sqle.RowUpdater`; duplicate of the guard | `pkg/sql/provider/entity_table.go:461` `var _ sqle.RowUpdater = (*entityWriter)(nil)` |
+| `pkg/sql/provider/entity_table_test.go:TestEntityWriter_ImplementsRowReplacer` | `*entityWriter` satisfies `sqle.RowReplacer`; duplicate of the guard | `pkg/sql/provider/entity_table.go:462` `var _ sqle.RowReplacer = (*entityWriter)(nil)` |
+| `pkg/sql/provider/kv_table_test.go:TestKVTable_ImplementsInsertableTable` | `*KVTable` satisfies `sqle.InsertableTable`; duplicate of the guard | `pkg/sql/provider/kv_table.go:56` `var _ sqle.InsertableTable = (*KVTable)(nil)` |
+| `pkg/sql/provider/kv_table_test.go:TestKVTable_ImplementsDeletableTable` | `*KVTable` satisfies `sqle.DeletableTable`; duplicate of the guard | `pkg/sql/provider/kv_table.go:57` `var _ sqle.DeletableTable = (*KVTable)(nil)` |
+| `pkg/sql/provider/kv_table_test.go:TestKVTable_ImplementsUpdatableTable` | `*KVTable` satisfies `sqle.UpdatableTable`; duplicate of the guard | `pkg/sql/provider/kv_table.go:59` `var _ sqle.UpdatableTable = (*KVTable)(nil)` |
+| `pkg/sql/provider/kv_table_test.go:TestKVTable_ImplementsReplaceableTable` | `*KVTable` satisfies `sqle.ReplaceableTable`; duplicate of the guard | `pkg/sql/provider/kv_table.go:58` `var _ sqle.ReplaceableTable = (*KVTable)(nil)` |
+| `pkg/sql/provider/kv_table_test.go:TestKVWriter_ImplementsRowReplacer` | `*kvWriter` satisfies `sqle.RowReplacer`; duplicate of the guard | `pkg/sql/provider/kv_table.go:298` `var _ sqle.RowReplacer = (*kvWriter)(nil)` |
+| `pkg/sql/provider/metrics_table_test.go:TestMetricsTable_ImplementsTable` | `*MetricsTable` satisfies `sqle.Table`; duplicate of the guard | `pkg/sql/provider/metrics_table.go:51` `var _ sqle.Table = (*MetricsTable)(nil)` |
+| `pkg/sql/provider/namespaces_table_test.go:TestNamespacesTable_ImplementsTable` | `*NamespacesTable` satisfies `sqle.Table`; duplicate of the guard | `pkg/sql/provider/namespaces_table.go:57` `var _ sqle.Table = (*NamespacesTable)(nil)` |
+| `pkg/sql/provider/provider_test.go:TestProvider_ImplementsDatabaseProvider` | `*Provider` satisfies `sqle.DatabaseProvider`; duplicate of the guard | `pkg/sql/provider/provider.go:40` `var _ sqle.DatabaseProvider = (*Provider)(nil)` |
+| `pkg/sql/provider/provider_test.go:TestDatabase_ImplementsDatabase` | `*Database` satisfies `sqle.Database`; duplicate of the guard | `pkg/sql/provider/provider.go:42` `var _ sqle.Database = (*Database)(nil)` |
+| `pkg/sql/provider/provider_test.go:TestProvider_ImplementsMutableDatabaseProvider` | `*Provider` satisfies `sqle.MutableDatabaseProvider`; duplicate of the guard | `pkg/sql/provider/provider.go:41` `var _ sqle.MutableDatabaseProvider = (*Provider)(nil)` |
+| `pkg/sql/provider/session_transaction_test.go:TestQRDBSession_ImplementsTransactionSession` | `*QRDBSession` satisfies `sqle.TransactionSession`; duplicate of the guard | `pkg/sql/provider/session.go:106` `var _ sqle.TransactionSession = (*QRDBSession)(nil)` |
+| `pkg/sql/provider/timeseries_table_test.go:TestDatapointsTable_ImplementsTable` | `*DatapointsTable` satisfies `sqle.Table`; duplicate of the guard | `pkg/sql/provider/timeseries_table.go:58` `var _ sqle.Table = (*DatapointsTable)(nil)` |
+| `pkg/sql/provider/vector_table_test.go:TestVectorsTable_ImplementsTable` | `*VectorsTable` satisfies `sqle.Table`; duplicate of the guard | `pkg/sql/provider/vector_table.go:51` `var _ sqle.Table = (*VectorsTable)(nil)` |
+
+### pkg/store
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/store/mvcc_test.go:TestMVCCStateMachine_ImplementsDiskStateMachine` | `*MVCCStateMachine` satisfies `sm.DiskStateMachine`; duplicate of the guard | `pkg/store/mvcc.go:967` `var _ sm.DiskStateMachine = (*MVCCStateMachine)(nil)` |
+| `pkg/store/mvcc_test.go:TestMVCCStateMachine_ImplementsHasher` | `*MVCCStateMachine` satisfies `sm.Hasher`; duplicate of the guard | `pkg/store/mvcc.go:968` `var _ sm.Hasher = (*MVCCStateMachine)(nil)` |
+| `pkg/store/store_test.go:TestPebbleStateMachine_ImplementsDiskStateMachine` | `*PebbleStateMachine` satisfies `sm.DiskStateMachine`; duplicate of the guard | `pkg/store/pebble.go:2885` `var _ sm.DiskStateMachine = (*PebbleStateMachine)(nil)` |
+| `pkg/store/store_test.go:TestPebbleStateMachine_ImplementsHasher` | `*PebbleStateMachine` satisfies `sm.Hasher`; duplicate of the guard | `pkg/store/pebble.go:2886` `var _ sm.Hasher = (*PebbleStateMachine)(nil)` |
+| `pkg/store/store_test.go:TestPebbleStateMachine_ImplementsNALookup` | `*PebbleStateMachine` satisfies `sm.NALookup`; duplicate of the guard | `pkg/store/pebble.go:2887` `var _ sm.NALookup = (*PebbleStateMachine)(nil)` |
+
+### pkg/tenant
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `pkg/tenant/context_test.go:TestNestedContextsInnerTenantWins` | nested contexts inner tenant wins; tests context.WithValue shadowing (stdlib) | `pkg/tenant/context_test.go:TestWithTenantIDAndFromContextRoundTrip` |
+| `pkg/tenant/context_test.go:TestWithTenantIDPreservesParentValues` | with tenant idpreserves parent values; tests context.WithValue chaining (stdlib) | `pkg/tenant/context_test.go:TestWithTenantIDAndFromContextRoundTrip` |
+| `pkg/tenant/context_test.go:TestFromContextWithCancelledContext` | from context with cancelled context; tests that cancellation keeps values (stdlib) | `pkg/tenant/context_test.go:TestWithTenantIDAndFromContextRoundTrip` |
+| `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorMessage` | invalid tenant iderror message; duplicate (substring of the exact format) | `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorFormat` |
+| `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorEmptyTenantID` | invalid tenant iderror empty tenant id; duplicate of the format path | `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorFormat` |
+| `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorImplementsErrorInterface` | `InvalidTenantIDError` satisfies `error`; tautology | `pkg/tenant/errors_test.go:TestInvalidTenantIDErrorFormat` |
+| `pkg/tenant/errors_test.go:TestInvalidTenantIDCharError_NonEmpty` | `InvalidTenantIDCharError`: non empty; weaker duplicate | `pkg/tenant/errors_test.go:TestInvalidTenantIDCharError_ContainsHex` |
+| `pkg/tenant/errors_test.go:TestInvalidTenantIDCharError_ImplementsError` | `InvalidTenantIDCharError` satisfies `error`; tautology | `pkg/tenant/errors_test.go:TestInvalidTenantIDCharError_ContainsHex` |
+| `pkg/tenant/errors_test.go:TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError` | `TenantStoreError`: read transient, true when set by new store error; duplicate | `pkg/tenant/errors_test.go:TestNewStoreError_NonDecryptCauseIsTransient` |
+| `pkg/tenant/errors_test.go:TestIsTransientCause_NonDecryptCause` | `IsTransientCause`: non decrypt cause; lower layer of newStoreError (its only caller) | `pkg/tenant/errors_test.go:TestNewStoreError_NonDecryptCauseIsTransient` |
+| `pkg/tenant/errors_test.go:TestIsTransientCause_DecryptCause` | `IsTransientCause`: decrypt cause; lower layer of newStoreError (its only caller) | `pkg/tenant/errors_test.go:TestNewStoreError_DecryptCauseIsNotTransient` |
+| `pkg/tenant/kv_service_test.go:TestKVTenantBarrierSeal_NotEnabled2` | `KVTenantBarrierSeal`: not enabled2; duplicate | `pkg/tenant/quota_barrier_test.go:TestKVTenantBarrierSeal_NotEnabled` |
+| `pkg/tenant/kv_service_test.go:TestKVTenantBarrierStatus_NotEnabled2` | `KVTenantBarrierStatus`: not enabled2; duplicate | `pkg/tenant/quota_barrier_test.go:TestKVTenantBarrierStatus_NotEnabled` |
+| `pkg/tenant/quota_barrier_test.go:TestQuotaExceededError_ImplementsError` | `QuotaExceededError` satisfies `error`; tautology (compile-time assignment) | `pkg/tenant/quota_barrier_test.go:TestQuotaExceededError_Error` |
+| `pkg/tenant/reserved_test.go:TestValidateReservedTenantID_System` | `ValidateReservedTenantID`: system; lower layer of CreateTenant | `pkg/tenant/service_test.go:TestTenantService_CreateRejectsSystemID` |
+| `pkg/tenant/reserved_test.go:TestValidateReservedTenantID_LegacyDefault` | `ValidateReservedTenantID`: legacy default; lower layer of CreateTenant | `pkg/tenant/service_test.go:TestTenantService_CreateRejectsLegacyDefaultID` |
+| `pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_Success` | `IncrementQuotaUsage`: success; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_Success` |
+| `pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_ExceedsLimit` | `IncrementQuotaUsage`: exceeds limit; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_AtLimit`, `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_QuotaExceeded` |
+| `pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_UnlimitedLimit` | `IncrementQuotaUsage`: unlimited limit; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_UnlimitedLimit` |
+| `pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_ZeroDelta` | `IncrementQuotaUsage`: zero delta; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_ZeroDelta` |
+| `pkg/tenant/update_tenant_test.go:TestIncrementQuotaUsage_EmptyTenantID` | `IncrementQuotaUsage`: empty tenant id; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_IncrementQuotaUsage_EmptyID` |
+| `pkg/tenant/update_tenant_test.go:TestDecrementQuotaUsage_Success` | `DecrementQuotaUsage`: success; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_DecrementQuotaUsage_Success` |
+| `pkg/tenant/update_tenant_test.go:TestDecrementQuotaUsage_ClampToZero` | `DecrementQuotaUsage`: clamp to zero; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_DecrementQuotaUsage_ClampToZero` |
+| `pkg/tenant/update_tenant_test.go:TestDecrementQuotaUsage_ZeroDelta` | `DecrementQuotaUsage`: zero delta; duplicate (weaker assertion) | `pkg/tenant/quota_barrier_test.go:TestTenantService_DecrementQuotaUsage_ZeroDelta` |
+| `pkg/tenant/update_tenant_test.go:TestDecrementQuotaUsage_EmptyTenantID` | `DecrementQuotaUsage`: empty tenant id; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_DecrementQuotaUsage_EmptyID` |
+| `pkg/tenant/update_tenant_test.go:TestGetQuotaUsage_Success` | `GetQuotaUsage`: success; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_GetQuotaUsage_Success` |
+| `pkg/tenant/update_tenant_test.go:TestGetQuotaUsage_NoQuotasSetReturnsZero` | `GetQuotaUsage`: no quotas set returns zero; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_GetQuotaUsage_NilQuotas` |
+| `pkg/tenant/update_tenant_test.go:TestGetQuotaUsage_EmptyTenantID` | `GetQuotaUsage`: empty tenant id; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_GetQuotaUsage_EmptyID` |
+| `pkg/tenant/update_tenant_test.go:TestGetQuotaUsage_TenantNotFound` | `GetQuotaUsage`: tenant not found; duplicate | `pkg/tenant/quota_barrier_test.go:TestTenantService_GetQuotaUsage_NotFound` |
+
+### sdk/go/transport/quic
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsTransportInterface` | `*Transport` satisfies `transport.Transport`; duplicate of the guard | `sdk/go/transport/quic/transport.go:41` `var _ transport.Transport = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsKVClientInterface` | `*Transport` satisfies `transport.KVClient`; duplicate of the guard | `sdk/go/transport/quic/transport.go:42` `var _ transport.KVClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsAdminClientInterface` | `*Transport` satisfies `transport.AdminClient`; duplicate of the guard | `sdk/go/transport/quic/transport.go:43` `var _ transport.AdminClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsMVCCClientInterface` | `*Transport` satisfies `transport.MVCCClient`; duplicate of the guard | `sdk/go/transport/quic/transport_mvcc.go:29` `var _ transport.MVCCClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsTransactionClientInterface` | `*Transport` satisfies `transport.TransactionClient`; duplicate of the guard | `sdk/go/transport/quic/transport_mvcc.go:30` `var _ transport.TransactionClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsBatchClientInterface` | `*Transport` satisfies `transport.BatchClient`; duplicate of the guard | `sdk/go/transport/quic/transport_mvcc.go:31` `var _ transport.BatchClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsLeaseClientInterface` | `*Transport` satisfies `transport.LeaseClient`; duplicate of the guard | `sdk/go/transport/quic/transport_mvcc.go:32` `var _ transport.LeaseClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsUserClientInterface` | `*Transport` satisfies `transport.UserClient`; duplicate of the guard | `sdk/go/transport/quic/transport_auth.go:25` `var _ transport.UserClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsRoleClientInterface` | `*Transport` satisfies `transport.RoleClient`; duplicate of the guard | `sdk/go/transport/quic/transport_auth.go:26` `var _ transport.RoleClient = (*Transport)(nil)` |
+| `sdk/go/transport/quic/transport_test.go:TestTransport_ImplementsCertClientInterface` | `*Transport` satisfies `transport.CertClient`; duplicate of the guard | `sdk/go/transport/quic/transport_auth.go:27` `var _ transport.CertClient = (*Transport)(nil)` |
+
+### Other packages
+
+| Removed test | Behaviour it checked; why removed | Still checked by |
+|---|---|---|
+| `cmd/qrdb/bindings_sql_test.go:TestSQLExecutionError_ImplementsError` | `SQLExecutionError` satisfies `error`; tautology (compile-time assignment) | `cmd/qrdb/bindings_sql_test.go:TestSQLExecutionError_Error` |
+| `pkg/audit/audit_logger_test.go:TestAggregateLogger_ImplementsAuditLogger` | `AggregateLogger`: implements audit logger; tautology (no assertion: `var _ = NewAggregateLogger()`) | `pkg/audit/verify_test.go:TestAggregateLogger_ImplementsVerifier` |
+| `pkg/backend/errors_test.go:TestClusterOperationError_ImplementsError` | `ClusterOperationError` satisfies `error`; tautology (non-empty message) | `pkg/backend/errors_test.go:TestClusterOperationError_Message` |
+| `pkg/backend/errors_test.go:TestUnsupportedOperationError_ImplementsError` | `UnsupportedOperationError` satisfies `error`; tautology (non-empty message) | `pkg/backend/errors_test.go:TestUnsupportedOperationError_Message` |
+| `pkg/backend/errors_test.go:TestBackendClosedError_ImplementsError` | `BackendClosedError` satisfies `error`; tautology (non-empty message) | `pkg/backend/errors_test.go:TestBackendClosedError_Message` |
+| `pkg/backend/errors_test.go:TestLookupTypeError_ImplementsError` | `LookupTypeError` satisfies `error`; tautology (non-empty message) | `pkg/backend/errors_test.go:TestLookupTypeError_Message` |
+| `pkg/consistency/errors_test.go:TestUnknownLevelErrorImplementsError` | `UnknownLevelError` satisfies `error`; tautology (compile-time assignment) | `pkg/consistency/errors_test.go:TestUnknownLevelErrorMessage` |
+| `pkg/consistency/errors_test.go:TestInvalidLevelErrorWithNegativeLevel` | invalid level error with negative level; duplicate with another value | `pkg/consistency/errors_test.go:TestInvalidLevelErrorMessage` |
+| `pkg/consistency/errors_test.go:TestInvalidLevelErrorImplementsError` | `InvalidLevelError` satisfies `error`; tautology (compile-time assignment) | `pkg/consistency/errors_test.go:TestInvalidLevelErrorMessage` |
+| `pkg/consistency/errors_test.go:TestInvalidTimeoutErrorWithLargeNegative` | invalid timeout error with large negative; duplicate with another value | `pkg/consistency/errors_test.go:TestInvalidTimeoutErrorMessage` |
+| `pkg/consistency/errors_test.go:TestInvalidTimeoutErrorImplementsError` | `InvalidTimeoutError` satisfies `error`; tautology (compile-time assignment) | `pkg/consistency/errors_test.go:TestInvalidTimeoutErrorMessage` |
+| `pkg/embedding/errors_test.go:TestInvalidInputError_ImplementsError` | `InvalidInputError` satisfies `error`; tautology (no assertion) | `pkg/embedding/errors_test.go:TestInvalidInputError_Error` |
+| `pkg/embedding/errors_test.go:TestEmptyResponseError_ImplementsError` | `EmptyResponseError` satisfies `error`; tautology (no assertion) | `pkg/embedding/errors_test.go:TestEmptyResponseError_Error` |
+| `pkg/embedding/errors_test.go:TestRetryExhaustedError_As` | `errors.As` matches `*RetryExhaustedError`; tests errors.As on the concrete pointer (stdlib) | `pkg/embedding/errors_test.go:TestRetryExhaustedError_Error` |
+| `pkg/embedding/errors_test.go:TestHTTPError_As` | `errors.As` matches `*HTTPError`; tests errors.As on the concrete pointer (stdlib) | `pkg/embedding/errors_test.go:TestHTTPError_Error` |
+| `pkg/embedding/errors_test.go:TestCacheCapacityError_Zero` | `CacheCapacityError`: zero; duplicate with another value | `pkg/embedding/errors_test.go:TestCacheCapacityError_Error` |
+| `pkg/embedding/errors_test.go:TestProviderAlreadyRegisteredError_As` | `errors.As` matches `*ProviderAlreadyRegisteredError`; tests errors.As on the concrete pointer (stdlib) | `pkg/embedding/errors_test.go:TestProviderAlreadyRegisteredError_Error` |
+| `pkg/embedding/errors_test.go:TestProviderNotFoundError_As` | `errors.As` matches `*ProviderNotFoundError`; tests errors.As on the concrete pointer (stdlib) | `pkg/embedding/errors_test.go:TestProviderNotFoundError_Error` |
+| `pkg/lease/errors_test.go:TestNotFoundErrorWithLargeID` | not found error with large id; duplicate with another ID | `pkg/lease/errors_test.go:TestNotFoundErrorMessage` |
+| `pkg/lease/errors_test.go:TestNotFoundErrorImplementsError` | `NotFoundError` satisfies `error`; tautology (compile-time assignment) | `pkg/lease/errors_test.go:TestNotFoundErrorMessage` |
+| `pkg/lease/errors_test.go:TestExistsErrorWithDifferentID` | exists error with different id; duplicate with another ID | `pkg/lease/errors_test.go:TestExistsErrorMessage` |
+| `pkg/lease/errors_test.go:TestExistsErrorImplementsError` | `ExistsError` satisfies `error`; tautology (compile-time assignment) | `pkg/lease/errors_test.go:TestExistsErrorMessage` |
+| `pkg/lease/errors_test.go:TestInvalidTTLErrorWithZero` | invalid ttlerror with zero; weaker duplicate (contains "0") | `pkg/lease/errors_test.go:TestInvalidTTLErrorMessage` |
+| `pkg/lease/errors_test.go:TestInvalidTTLErrorImplementsError` | `InvalidTTLError` satisfies `error`; tautology (compile-time assignment) | `pkg/lease/errors_test.go:TestInvalidTTLErrorMessage` |
+| `pkg/lease/errors_test.go:TestLessorClosedErrorImplementsError` | `LessorClosedError` satisfies `error`; tautology (compile-time assignment) | `pkg/lease/errors_test.go:TestLessorClosedErrorMessage` |
+| `pkg/lock/errors_test.go:TestSentinelErrors_NonNil` | `SentinelErrors`: non nil; tautology (errors.New package vars) | `pkg/lock/errors_test.go:TestSentinelErrors_DistinctMessages` |
+| `pkg/lock/errors_test.go:TestLockHeldError_ImplementsError` | `LockHeldError` satisfies `error`; tautology (compile-time assignment) | `pkg/lock/errors_test.go:TestLockHeldError_ContainsKey` |
+| `pkg/lock/errors_test.go:TestNotLockHolderError_ImplementsError` | `NotLockHolderError` satisfies `error`; tautology (compile-time assignment) | `pkg/lock/errors_test.go:TestNotLockHolderError_ContainsKey` |
+| `pkg/lock/errors_test.go:TestLockNotFoundError_ImplementsError` | `LockNotFoundError` satisfies `error`; tautology (compile-time assignment) | `pkg/lock/errors_test.go:TestLockNotFoundError_ContainsKey` |
+| `pkg/lock/errors_test.go:TestLockNotFoundError_EmptyKey` | `LockNotFoundError`: empty key; weaker duplicate (non-empty message) | `pkg/lock/errors_test.go:TestLockNotFoundError_ContainsPrefix` |
+| `pkg/messaging/errors_test.go:TestDeltaNilInputError_ImplementsErrorInterface` | `DeltaNilInputError` satisfies `error`; tautology (non-empty message) | `pkg/messaging/errors_test.go:TestDeltaNilInputError_Error_IncludesParameter` |
+| `pkg/messaging/errors_test.go:TestDeltaTypeMismatchError_ImplementsErrorInterface` | `DeltaTypeMismatchError` satisfies `error`; tautology (non-empty message) | `pkg/messaging/errors_test.go:TestDeltaTypeMismatchError_Error_WithPath` |
+| `pkg/messaging/errors_test.go:TestDeltaMaxDepthExceededError_ImplementsErrorInterface` | `DeltaMaxDepthExceededError` satisfies `error`; tautology (non-empty message) | `pkg/messaging/errors_test.go:TestDeltaMaxDepthExceededError_Error_IncludesPath` |
+| `pkg/messaging/errors_test.go:TestDeltaDeserializationError_ImplementsErrorInterface` | `DeltaDeserializationError` satisfies `error`; tautology (non-empty message) | `pkg/messaging/errors_test.go:TestDeltaDeserializationError_Error_IncludesCause` |
+| `pkg/messaging/errors_test.go:TestDeltaDiffError_ImplementsErrorInterface` | `DeltaDiffError` satisfies `error`; tautology (non-empty message) | `pkg/messaging/errors_test.go:TestDeltaDiffError_Error_IncludesCause` |
+| `pkg/quota/errors_test.go:TestExceededErrorImplementsError` | `ExceededError` satisfies `error`; tautology (compile-time assignment) | `pkg/quota/errors_test.go:TestExceededErrorMessageContainsTenantID` |
+| `pkg/quota/errors_test.go:TestInvalidResourceErrorImplementsError` | `InvalidResourceError` satisfies `error`; tautology (compile-time assignment) | `pkg/quota/errors_test.go:TestInvalidResourceErrorMessageContainsResourceID` |
+| `pkg/quota/errors_test.go:TestUnregisteredCounterErrorImplementsError` | `UnregisteredCounterError` satisfies `error`; tautology (compile-time assignment) | `pkg/quota/errors_test.go:TestUnregisteredCounterErrorMessageContainsResource` |
+| `pkg/quota/errors_test.go:TestErrNilCheckerIsNotNil` | err nil checker is not nil; tautology (errors.New package var) | `pkg/quota/errors_test.go:TestErrNilCheckerMessageContainsQuota` |
+| `pkg/seal/barrier_test.go:TestBarrier_Unseal_Success` | `Barrier`: unseal, success; subset of the seal/unseal round trip (its sealed/unsealed asserts moved there) | `pkg/seal/barrier_test.go:TestBarrier_UnsealThenDataRoundTrip` |
+| `pkg/seal/barrier_test.go:TestBarrier_Seal_Success` | `Barrier`: seal, success; init, seal, sealed-gate path repeated | `pkg/seal/barrier_test.go:TestBarrier_Seal_ZeroesDEK`, `pkg/seal/barrier_test.go:TestBarrier_Get_Sealed` |
+| `pkg/seal/barrier_test.go:TestBarrier_PutGet_RoundTrip` | `Barrier`: put get, round trip; Put/Get path repeated by the seal/unseal round trip | `pkg/seal/barrier_test.go:TestBarrier_UnsealThenDataRoundTrip` |
+| `pkg/service/entity_errors_test.go:TestInvalidEntityOpTypeError_ImplementsError` | `InvalidEntityOpTypeError` satisfies `error`; tautology (compile-time assignment) | `pkg/service/entity_errors_test.go:TestInvalidEntityOpTypeError_Message` |
+| `pkg/service/entity_errors_test.go:TestBatchEntityEmptyOpsError_ImplementsError` | `BatchEntityEmptyOpsError` satisfies `error`; tautology (compile-time assignment) | `pkg/service/entity_errors_test.go:TestBatchEntityEmptyOpsError_Message` |
+| `pkg/service/vector_errors_test.go:TestVectorNotFoundErrorImplementsError` | `VectorNotFoundError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestVectorNotFoundError` |
+| `pkg/service/vector_errors_test.go:TestNamespaceNotFoundErrorImplementsError` | `NamespaceNotFoundError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestNamespaceNotFoundError` |
+| `pkg/service/vector_errors_test.go:TestNamespaceExistsErrorImplementsError` | `NamespaceExistsError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestNamespaceExistsError` |
+| `pkg/service/vector_errors_test.go:TestDimensionMismatchErrorImplementsError` | `DimensionMismatchError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestDimensionMismatchError` |
+| `pkg/service/vector_errors_test.go:TestInvalidVectorErrorImplementsError` | `InvalidVectorError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestInvalidVectorError` |
+| `pkg/service/vector_errors_test.go:TestInvalidNamespaceNameErrorImplementsError` | `InvalidNamespaceNameError` satisfies `error`; tests errors.As on the concrete pointer (stdlib) | `pkg/service/vector_errors_test.go:TestInvalidNamespaceNameError` |
+| `pkg/shard/errors_test.go:TestShardAlreadyRegisteredErrorMessage` | shard already registered error message; substring checks of the exact message | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/ShardAlreadyRegistered` |
+| `pkg/shard/errors_test.go:TestShardAlreadyRegisteredErrorImplementsError` | `ShardAlreadyRegisteredError` satisfies `error`; tautology (compile-time assignment) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes` |
+| `pkg/shard/errors_test.go:TestShardNotRegisteredErrorMessage` | shard not registered error message; substring checks of the exact message | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/ShardNotRegistered` |
+| `pkg/shard/errors_test.go:TestShardNotRegisteredErrorImplementsError` | `ShardNotRegisteredError` satisfies `error`; tautology (compile-time assignment) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes` |
+| `pkg/shard/errors_test.go:TestInvalidShardIDErrorMessage` | invalid shard iderror message; substring checks of the exact message | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/InvalidShardID` |
+| `pkg/shard/errors_test.go:TestInvalidShardIDErrorImplementsError` | `InvalidShardIDError` satisfies `error`; tautology (compile-time assignment) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes` |
+| `pkg/sql/engine/errors_test.go:TestUnsupportedSyntaxError_ImplementsError` | `UnsupportedSyntaxError` satisfies `error`; weaker duplicate of the message check | `pkg/sql/engine/errors_test.go:TestUnsupportedSyntaxError_Error` |
+| `pkg/watch/errors_test.go:TestHubClosedError_ImplementsErrorInterface` | `HubClosedError` satisfies `error`; tautology (non-empty message) | `pkg/watch/errors_test.go:TestHubClosedError_Error_ReturnsExpectedMessage` |
+| `pkg/watch/errors_test.go:TestHubClosedError_ErrorsAs` | `errors.As` matches `*HubClosedError`; tests errors.As on the concrete pointer (stdlib) | `pkg/watch/errors_test.go:TestHubClosedError_Error_ReturnsExpectedMessage` |
+| `pkg/watch/errors_test.go:TestHubClosedError_NotNil` | `HubClosedError`: not nil; tautology (compile-time assignment) | `pkg/watch/errors_test.go:TestHubClosedError_Error_ReturnsExpectedMessage` |
+| `pkg/shard/errors_test.go:TestShardAlreadyRegisteredErrorWithLargeID` | shard already registered error with large id; duplicate with another ID (substring check of the exact message) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/ShardAlreadyRegistered` |
+| `pkg/shard/errors_test.go:TestShardNotRegisteredErrorWithZeroID` | shard not registered error with zero id; duplicate with another ID (substring check of the exact message) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/ShardNotRegistered` |
+| `pkg/shard/errors_test.go:TestInvalidShardIDErrorWithLargeID` | invalid shard iderror with large id; duplicate with another ID (substring check of the exact message) | `pkg/shard/errors_test.go:TestErrorMessagePrefixes/InvalidShardID` |
+
 ## Trimmed tests
 
 | Package | Test | Change | Test that pins the path |
