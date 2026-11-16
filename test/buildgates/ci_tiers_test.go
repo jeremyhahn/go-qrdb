@@ -117,6 +117,10 @@ const (
 	// ciGateJob is the one required check.
 	ciGateJob = "ci-gate"
 
+	// depsBumpDispatchIf keeps ci.yml's deps-bump-dispatch job to the
+	// nightly schedule run on main (ruling 640).
+	depsBumpDispatchIf = "${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && !github.event.pull_request.draft }}"
+
 	// refKeyedGroup is devops.md §9b's concurrency group: per workflow and
 	// per ref, so a branch supersedes only itself.
 	refKeyedGroup = "${{ github.workflow }}-${{ github.ref }}"
@@ -144,6 +148,16 @@ const (
 	// expression, so no expression reaches it.
 	cancelLiteral = "true"
 )
+
+// outsideGate names the ci.yml jobs ci-gate does not require, each with
+// the exact `if:` that confines it. deps-bump-dispatch (ruling 640) checks
+// nothing: it dispatches deps-bump.yml from the nightly schedule run on
+// main. It cannot be a nightly-tier job: that tier also runs on
+// workflow_dispatch, and deps-bump.yml dispatches ci.yml on ci/deps-bump,
+// so the two would dispatch each other.
+var outsideGate = map[string]string{
+	"deps-bump-dispatch": depsBumpDispatchIf,
+}
 
 // scheduleAllowed names the workflows allowed a `schedule:`. ci.yml carries
 // ci-template v1.27.0's cron, nightly here (ciSchedule), the one scheduler under ruling 135,
@@ -384,6 +398,13 @@ func ciTierProblems(wf ciWorkflow) []string {
 			continue
 		}
 		job := wf.Jobs[name]
+		if want, outside := outsideGate[name]; outside {
+			if job.If != want {
+				problems = append(problems, "job "+name+" is outside "+ciGateJob+" but its `if:` is "+
+					strconv.Quote(job.If)+", not "+strconv.Quote(want))
+			}
+			continue
+		}
 		if !slices.Contains(gateNeeds, name) {
 			problems = append(problems, ciGateJob+" does not list "+name+
 				" in needs: a job that can pass and is not required is a fail-open gate")
@@ -691,6 +712,21 @@ func TestCITierProblems_CanFail(t *testing.T) {
 	want := "job " + fipsJob + " is tagged pr but belongs to the full tier"
 	if p := ciTierProblems(parseWorkflow(t, fipsOnPR)); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
 		t.Fatalf("fips job on the PR tier: want a problem containing %q, got %q", want, p)
+	}
+
+	// deps-bump-dispatch (ruling 640) stays outside ci-gate only under its
+	// schedule-on-main `if:`; on the nightly tier's `if:` a workflow_dispatch
+	// run would dispatch deps-bump.yml, which dispatches ci.yml again.
+	dispatchJob := func(cond string) string {
+		return replace("  build:\n    steps:", "  deps-bump-dispatch:\n    if: "+cond+
+			"\n    steps:\n      - run: gh workflow run deps-bump.yml\n  build:\n    steps:")
+	}
+	if p := ciTierProblems(parseWorkflow(t, dispatchJob(depsBumpDispatchIf))); len(p) != 0 {
+		t.Fatalf("deps-bump-dispatch on its own `if:` must have no problems, got %v", p)
+	}
+	want = "job deps-bump-dispatch is outside " + ciGateJob + " but its `if:`"
+	if p := ciTierProblems(parseWorkflow(t, dispatchJob(nightlyIf))); !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, want) }) {
+		t.Fatalf("deps-bump-dispatch on the nightly `if:`: want a problem containing %q, got %q", want, p)
 	}
 }
 
