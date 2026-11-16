@@ -121,6 +121,8 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/api/unix | TestWithEmbedding_Nil, TestWithRAGService_Nil, TestWithBackupService_Nil, TestWithRebalanceService_Nil | tautology (nil option on a nil default) | the matching TestWithXxx_Applied |
 | pkg/api/unix | TestWithAllNewOptions_StartStop | Start with only nil options, duplicate of the plain Start path | TestStartRegistersEveryWiredService |
 | pkg/api/unix | TestStart_WithTenantBarrierService_Registered | duplicate (same option in the every-service Start) | TestStartRegistersEveryWiredService |
+| pkg/api/unix | TestWithUserService_Applied, TestWithRoleService_Applied, TestWithCertProvider_Applied, TestWithCertEnrollment_NilIsNil, TestWithAuthMiddleware_Applied | tautology (nil option on a nil default) | TestStart_WithAllOptionalServices, TestWithCertEnrollment_Applied, TestStartInstallsTheAuthMiddlewareAndAuditService |
+| pkg/api/unix | TestWithBarrierService_Applied, TestWithCeremonyService_Applied, TestWithCredentialService_Applied, TestWithCollectionService_Applied, TestWithMVCC_Applied, TestWithTransaction_Applied, TestWithBatch_Applied, TestWithWatch_Applied, TestWithLease_Applied, TestWithIndex_Applied, TestWithTimeSeries_Applied, TestWithVector_Applied, TestWithDatabaseService_Applied | tautology (nil option on a nil default) | TestStart_WithNonNilOptionalServices, TestStartRegistersEveryWiredService |
 
 ## Trimmed tests
 
