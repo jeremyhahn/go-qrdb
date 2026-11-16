@@ -4208,8 +4208,10 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	n.authMethods.Bind(authMW)
 	n.authMiddleware.Store(authMW)
 	// An operator's access to a tenant's identity records is recorded in
-	// that tenant's own replicated trail, as on the daemon.
-	authMW.BindOperatorAccessTenantTrail(svcNode.TenantTrail)
+	// that tenant's own replicated trail and, as on the daemon, in the
+	// node-local trail: a tenant without the replicated-audit entitlement
+	// reads only the node-local trail, so OperatorAccessTrail joins both.
+	authMW.BindOperatorAccessTenantTrail(svcNode.OperatorAccessTrail)
 
 	// featureClient (built below) is node machinery, not a caller surface --
 	// its own field doc says as much, and it is already exempted from the
