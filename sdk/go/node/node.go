@@ -126,6 +126,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterseal"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
+	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/dek"
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -3818,6 +3819,38 @@ func (n *Node) bootPendingRecordStore(svcNode *lifecycle.Node) firstboot.Pending
 	return PendingAdminCertStore(service.NewKVService(boot, shard.ShardKV))
 }
 
+// bootIdentityServices are the user and role stores the strict startup
+// holder check reads through: the system shard's KV with SyncRead
+// redirected to a local StaleRead (raftbackend.BootstrapAdapter), as
+// cmd/qrdbd's bootUserSvc/bootRoleSvc. The runtime services read
+// linearizably, which blocks a clustered node's startup until it has a
+// quorum, although a strict node without a conflicting holder has nothing
+// to refuse; request-time strict RBAC still refuses a combined principal
+// once the cluster serves. A node with no Raft host (standalone) reads its
+// local backend through the runtime services.
+func (n *Node) bootIdentityServices(svcNode *lifecycle.Node) (user.UserServicer, role.RoleServicer, error) {
+	host, ok := n.host.(*quicraft.Host)
+	if !ok || host == nil {
+		return svcNode.User, svcNode.Role, nil
+	}
+	boot := raftbackend.NewBootstrapAdapter(raftbackend.New(host, raftbackend.WithFeatureGate(n.featureGate)))
+	store := lifecycle.NewKVStoreAdapter(service.NewKVService(boot, shard.ShardKV))
+	// The check only reads: the generator never issues an identifier.
+	idgen, err := dao.NewSnowflakeGenerator(0)
+	if err != nil {
+		return nil, nil, err
+	}
+	users, err := user.NewStore(store, idgen)
+	if err != nil {
+		return nil, nil, err
+	}
+	roles, err := role.NewStore(store)
+	if err != nil {
+		return nil, nil, err
+	}
+	return users, roles, nil
+}
+
 func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCfg qrdbconfig.SealConfig, passphrase []byte, log *slog.Logger) bool {
 	strategyID := seal.StrategyID(sealCfg.Strategy)
 	if strategyID == "" {
@@ -4017,7 +4050,13 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 	// published or any listener starts. A sealed barrier holds no readable
 	// user store; its wiring pass after unseal runs the check.
 	if strictSoD && (barrier == nil || !barrier.IsSealed()) && svcNode.User != nil && svcNode.Role != nil {
-		if err := firstboot.CheckStrictSeparationHolders(ctx, svcNode.User, svcNode.Role); err != nil {
+		// Local reads, as the daemon's boot stores: the check must not make
+		// startup wait for a quorum (see bootIdentityServices).
+		bootUsers, bootRoles, err := n.bootIdentityServices(svcNode)
+		if err != nil {
+			return err
+		}
+		if err := firstboot.CheckStrictSeparationHolders(ctx, bootUsers, bootRoles); err != nil {
 			return err
 		}
 	}
