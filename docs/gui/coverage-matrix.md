@@ -198,8 +198,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | User | `list` | views/admin/UserManager.svelte | admin-users.spec.ts | *verified* |
 | User | `removeCertBinding` | views/admin/UserDetail.svelte | admin-users.spec.ts dom/user-detail-roundtrip.spec.ts | *verified* |
 | User | `update` | views/admin/UserDetail.svelte (username, email, display name) | dom/user-detail-roundtrip.spec.ts | *verified* |
-| Vector | `batchDeleteVectors` | none | none | not in UI; *verified* |
-| Vector | `batchUpsert` | none | none | not in UI; *verified* |
+| Vector | `batchDeleteVectors` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `batchUpsert` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `compactNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `createNamespace` | views/user/VectorView.svelte  | vector.spec.ts vector-namespace-fix.spec.ts  |  |
 | Vector | `deleteNamespace` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
@@ -208,15 +208,15 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Vector | `getIndexStats` | views/user/VectorView.svelte | vector.spec.ts (load stats) | *verified* |
 | Vector | `getNamespaceInfo` | views/user/VectorView.svelte | vector.spec.ts (info stat cards) | *verified* |
 | Vector | `getRebuildProgress` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
-| Vector | `getVector` | none | none | not in UI; *verified* |
-| Vector | `hybridSearch` | none | none | not in UI; *verified* |
+| Vector | `getVector` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
+| Vector | `hybridSearch` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `listNamespaces` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `listVectors` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `rebuildIndex` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByID` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchByMetadata` | views/user/VectorView.svelte | vector.spec.ts | *verified* |
 | Vector | `searchSimilar` | views/user/VectorView.svelte | vector.spec.ts (search form, input validation) | *verified* |
-| Vector | `updateMetadata` | none | none | not in UI; *verified* |
+| Vector | `updateMetadata` | views/user/VectorView.svelte | vector-advanced.spec.ts, dom/vector-advanced-roundtrip.spec.ts | *verified* |
 | Vector | `upsertVector` | views/user/VectorView.svelte  | vector.spec.ts  |  |
 | VolumePool | `create` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
 | VolumePool | `delete` | views/admin/VolumePoolManager.svelte | admin-volume-pools.spec.ts | *verified* |
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 177 | 164 |
+| operations | 218 | 182 | 169 |
 | displays | 12 | 10 | 9 |
 
-Operations not in UI: 41. In UI without e2e: 13. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 36. In UI without e2e: 13. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
