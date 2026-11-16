@@ -104,7 +104,7 @@ type imageFamily struct {
 	// lan is the producer output carrying the image's tag in the LAN CI
 	// registry (#1593), empty when the image was not pushed there.
 	lan string
-	// lanOut is the output of the producer's push step (id lan) that
+	// lanOut is the output of the producer's push step (id registry) that
 	// carries that tag.
 	lanOut string
 	stage  *regexp.Regexp
@@ -338,7 +338,7 @@ const (
 	lanRegistrySecret = "${{ secrets.CI_IMAGE_REGISTRY }}"
 	lanRegistryCond   = "env.CI_REGISTRY != ''"
 	lanSelfHosted     = "runner.environment != 'github-hosted'"
-	lanPushID         = "lan"
+	lanPushID         = "registry"
 	lanPushTag        = "${{ github.run_id }}-${{ github.run_attempt }}"
 	// lanPushRun pushes each family and records its tag output on success
 	// alone; a refused push is a warning, so its consumers take the artifact.
@@ -436,7 +436,7 @@ func lanLeakProblems(name string, job digestJob) []string {
 }
 
 // lanRegistryProblems checks a step that reaches the LAN CI registry: the
-// producer's push (id lan) or a consumer's pull (a run naming $CI_REGISTRY).
+// producer's push (id registry) or a consumer's pull (a run naming $CI_REGISTRY).
 // ok is false for any other step, which the GHCR rules check instead.
 func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []string, ok bool) {
 	isPush := name == digestProducer && s.ID == lanPushID
@@ -794,8 +794,8 @@ jobs:
       it_id: ${{ steps.save.outputs.it_id }}
       toolchain_ref: ${{ steps.push.outputs.toolchain_ref }}
       it_ref: ${{ steps.push.outputs.it_ref }}
-      registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}
-      registry_it_tag: ${{ steps.lan.outputs.it_tag }}
+      registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
+      registry_it_tag: ${{ steps.registry.outputs.it_tag }}
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
@@ -828,7 +828,7 @@ jobs:
           CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain)
       - name: Push to the LAN CI registry
-        id: lan
+        id: registry
         if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
         env:
           TAG: ${{ github.run_id }}-${{ github.run_attempt }}
@@ -1040,11 +1040,11 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "          TAG: ${{ github.run_id }}-${{ github.run_attempt }}\n          CI_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n"},
 		{name: "the workflow env holds the token", old: "env:\n  CI_PUBLISH:", new: "env:\n  GH: ${{ secrets.GITHUB_TOKEN }}\n  CI_PUBLISH:"},
 		// #1595 Codex round 1: the producer's tag outputs and push step.
-		{name: "no toolchain tag output", old: "      registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}\n", new: ""},
-		{name: "no integration tag output", old: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n", new: ""},
-		{name: "a tag output from another step", old: "registry_it_tag: ${{ steps.lan.outputs.it_tag }}",
+		{name: "no toolchain tag output", old: "      registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}\n", new: ""},
+		{name: "no integration tag output", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n", new: ""},
+		{name: "a tag output from another step", old: "registry_it_tag: ${{ steps.registry.outputs.it_tag }}",
 			new: "registry_it_tag: ${{ steps.push.outputs.it_tag }}"},
-		{name: "a LAN push without its id", old: "        id: lan\n", new: ""},
+		{name: "a LAN push without its id", old: "        id: registry\n", new: ""},
 		{name: "a LAN push that fails the job",
 			old: `echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"`,
 			new: `exit 1`},
@@ -1085,8 +1085,8 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Build the images\n",
 			new: "    steps:\n      - name: Build the images\n"},
 		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
-		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n",
-			new: "      registry_it_tag: ${{ steps.lan.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
+		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n",
+			new: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.Contains(digestFixture, tc.old) {

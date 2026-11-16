@@ -287,8 +287,8 @@ jobs:
       # registry (secrets.CI_IMAGE_REGISTRY), empty when it was not pushed there.
       # The tag alone crosses jobs: an output naming the masked registry would
       # be dropped.
-      registry_toolchain_tag: ${{ steps.lan.outputs.toolchain_tag }}
-      registry_it_tag: ${{ steps.lan.outputs.it_tag }}
+      registry_toolchain_tag: ${{ steps.registry.outputs.toolchain_tag }}
+      registry_it_tag: ${{ steps.registry.outputs.it_tag }}
     env:
       # #1593: the LAN CI registry, a repository secret so every log line
       # masks it; secrets cannot gate a step's if:, the job's env can.
@@ -406,7 +406,7 @@ jobs:
       # line; no run: script names it with ${{ }}. A refused
       # push is a warning: its consumers take the artifact.
       - name: Push the devcontainer images to the LAN CI registry
-        id: lan
+        id: registry
         if: ${{ env.CI_REGISTRY != '' && runner.environment != 'github-hosted' }}
         env:
           TAG: ${{ github.run_id }}-${{ github.run_attempt }}
