@@ -77,7 +77,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Daemon | `restartDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `startDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
 | Daemon | `stopDaemon` | components/admin/DaemonPanel.svelte | admin-daemon.spec.ts | *verified* |
-| Database | `barrierStatus` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Database | `barrierStatus` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Database | `create` | views/admin/DatabaseDetail.svelte components/wizard/database/StepDatabaseCreating.svelte | admin-databases.spec.ts database-wizard-full-flow.spec.ts | *verified* |
 | Database | `drop` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
 | Database | `get` | views/admin/DatabaseDetail.svelte | admin-databases.spec.ts | *verified* |
@@ -100,12 +100,12 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Index | `list` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
 | Index | `query` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
 | Index | `scan` | views/user/IndexManager.svelte views/user/CollectionView.svelte | index.spec.ts | *verified* |
-| Invitation | `invite` | components/admin/InviteUserModal.svelte | none (admin-users.spec.ts never opens the invite modal) | no e2e; *verified* |
-| Invitation | `redeem` | none | none | not in UI; *verified* |
+| Invitation | `invite` | components/admin/InviteUserModal.svelte | admin-invitations.spec.ts dom/invitation-redeem-roundtrip.spec.ts | *verified* |
+| Invitation | `redeem` | components/RedeemInvitationModal.svelte (from components/ConnectionManager.svelte) | admin-invitations.spec.ts dom/invitation-redeem-roundtrip.spec.ts | *verified* |
 | KV | `delete` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
-| KV | `exists` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| KV | `get` | none (KVExplorer reads through `kv.scan`; other hits are other clients' `get`) | none | not in UI; *verified* |
-| KV | `list` | none (other hits are other clients' `list`) | none | not in UI; *verified* |
+| KV | `exists` | views/user/KVExplorer.svelte (Go to key) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
+| KV | `get` | views/user/KVExplorer.svelte (Go to key, keys-only open) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
+| KV | `list` | views/user/KVExplorer.svelte (Keys only toggle) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
 | KV | `put` | views/user/KVExplorer.svelte | kv-crud.spec.ts kv-explorer-restore.spec.ts | *verified* |
 | KV | `scan` | views/user/KVExplorer.svelte | kv-crud.spec.ts dom/kv-explorer-roundtrip.spec.ts | *verified* |
 | Lease | `grant` | views/user/LeaseManager.svelte  | lease-advanced.spec.ts lease-grant-fix.spec.ts  |  |
@@ -119,28 +119,28 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Lock | `release` | views/user/LockManager.svelte  | lock.spec.ts  |  |
 | Lock | `status` | views/user/LockManager.svelte | lock.spec.ts | *verified* |
 | Lock | `tryLock` | views/user/LockManager.svelte  | lock.spec.ts  |  |
-| MVCC | `compact` | none | none (spec hits are false name matches) | not in UI; *verified* |
-| MVCC | `currentRevision` | none | real-backend/kv-restore-mvcc-real.spec.ts (REST only, no UI) | not in UI; *verified* |
-| MVCC | `getAtRevision` | none | none | not in UI; *verified* |
-| MVCC | `getRevision` | none | none | not in UI; *verified* |
-| MVCC | `putWithLease` | none | none | not in UI; *verified* |
+| MVCC | `compact` | views/user/KVExplorer.svelte (Compact to revision) | kv-mvcc.spec.ts dom/mvcc-compact-roundtrip.spec.ts | *verified* |
+| MVCC | `currentRevision` | views/user/KVExplorer.svelte (header revision) | kv-mvcc.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
+| MVCC | `getAtRevision` | views/user/KVExplorer.svelte (Value at revision) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
+| MVCC | `getRevision` | views/user/KVExplorer.svelte (entry panel) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
+| MVCC | `putWithLease` | views/user/KVExplorer.svelte (lease id on save) | kv-mvcc.spec.ts dom/kv-mvcc-advanced-roundtrip.spec.ts | *verified* |
 | MVCC | `range` | views/user/KVExplorer.svelte (as-of revision browse) | kv-explorer-restore.spec.ts | *verified* |
 | MVCC | `restoreToRevision` | views/user/KVExplorer.svelte | kv-explorer-restore.spec.ts real-backend/kv-restore-mvcc-real.spec.ts | *verified* |
-| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
-| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `initializeDatabaseShamir` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
+| Officer | `listDatabaseOfficers` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `listOfficers` | views/admin/SealManager.svelte components/ServerInitWizard.svelte | admin-seal-officers.spec.ts dom/barrier-shamir.spec.ts | *verified* |
 | Officer | `listTenantOfficers` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
+| Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
 | Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
-| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `startDatabaseRekey` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Officer | `startRekey` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `startTenantRekey` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
-| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
+| Officer | `unenrolDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | database-holders.spec.ts dom/database-holders-roundtrip.spec.ts | *verified* |
 | Rebalance | `createPlan` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `execute` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts | *verified* |
 | Rebalance | `getImbalanceReport` | views/admin/RebalancePanel.svelte | rebalance-panel.spec.ts rebalance-panel-web.spec.ts | *verified* |
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 170 | 154 |
+| operations | 218 | 179 | 171 |
 | displays | 12 | 10 | 9 |
 
-Operations not in UI: 48. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 39. In UI without e2e: 8. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
