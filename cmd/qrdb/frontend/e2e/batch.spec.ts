@@ -5,6 +5,7 @@ import {
   test,
   expect,
   secondLaunchEmbeddedState,
+  injectError,
 } from "./fixtures/wails-mock.ts";
 
 const LOAD_TIMEOUT = 10_000;
@@ -155,5 +156,36 @@ test.describe("Batch View", () => {
 
     // Range End field should appear
     await expect(page.locator("input[placeholder='End key (exclusive)']")).toBeVisible();
+  });
+
+  test("lists the server's value codecs from batch.availableCodecs", async ({ page }) => {
+    await navigateToBatch(page);
+
+    const codecs = page.getByTestId("batch-codecs");
+    await expect(codecs).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(codecs.getByTestId("batch-codec")).toHaveText([
+      "avro",
+      "bson",
+      "json",
+      "msgpack",
+      "protobuf",
+      "yaml",
+    ]);
+    await expect(codecs.getByTestId("batch-codecs-fallback")).toHaveCount(0);
+  });
+
+  test("falls back to the default codec when availableCodecs fails", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("aside").getByText("batch-db").click();
+    await expect(page.locator(".breadcrumbs").getByText("batch-db", { exact: false })).toBeVisible({
+      timeout: LOAD_TIMEOUT,
+    });
+    await injectError(page, "BatchBinding.AvailableCodecs", "codec registry unavailable");
+    await page.locator("main nav").getByText("Batch", { exact: true }).click();
+
+    const codecs = page.getByTestId("batch-codecs");
+    await expect(codecs.getByTestId("batch-codecs-fallback")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    await expect(codecs.getByTestId("batch-codec")).toHaveText(["json"]);
+    await expect(page.getByText("codec registry unavailable")).toBeVisible();
   });
 });

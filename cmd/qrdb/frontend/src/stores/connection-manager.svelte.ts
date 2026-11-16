@@ -534,6 +534,17 @@ export async function connectProfile(
         connManagerStore.states = new Map(connManagerStore.states).set(profileId, errState);
         return errState;
     }
+    // A transport closed by connection.disconnect() (Settings' Disconnect)
+    // is reopened here: the REST client always targets the page origin, as
+    // App.svelte's initialize does. Without this the probe below fails with
+    // "not connected" and the profile can only recover by a page reload.
+    if (!client.connection.isConnected()) {
+        try {
+            await client.connection.connect(window.location.origin);
+        } catch {
+            // Unreachable: resolveWebConnectionState reports the error state.
+        }
+    }
     const state = await resolveWebConnectionState(client, profile);
     connManagerStore.states = new Map(connManagerStore.states).set(profileId, state);
 
@@ -569,6 +580,32 @@ export async function disconnectProfile(
         profileId,
         disconnected,
     );
+}
+
+/**
+ * Saves a profile (insert or replace by id) and adds it to the store.
+ *
+ * Desktop mode delegates to the Wails ConnectionManagerBinding; web mode
+ * persists the updated list to localStorage, since the REST client has no
+ * connection-manager backend.
+ *
+ * @param client  - The SDK client singleton.
+ * @param profile - The profile to save.
+ */
+export async function saveProfile(
+    client: Client,
+    profile: ConnectionProfile,
+): Promise<void> {
+    const updated = [
+        ...connManagerStore.profiles.filter((p) => p.id !== profile.id),
+        profile,
+    ];
+    if (isDesktop()) {
+        await client.connectionManager.saveProfile(profile as never);
+    } else {
+        await persistence.save(client, updated);
+    }
+    connManagerStore.profiles = updated;
 }
 
 /**

@@ -19,7 +19,7 @@
   import type { Client } from "@qrdb/sdk";
   import { Sun, Moon } from "lucide-svelte";
   import { themeStore, toggleTheme } from "$stores/theme.svelte.ts";
-  import { connManagerStore } from "$stores/connection-manager.svelte.ts";
+  import { connManagerStore, disconnectProfile } from "$stores/connection-manager.svelte.ts";
   import PageHeader from "../../components/PageHeader.svelte";
 
   let { client }: { client: Client } = $props();
@@ -32,13 +32,27 @@
   let versionLoading: boolean = $state(true);
 
   /**
-   * Single source of truth for connection status.
-   * Reads from the connection manager's per-profile state, matching the value
-   * used by the MainApp header so both always agree.
+   * Transport status as reported by the SDK client (ConnectionClient.isConnected),
+   * re-read after every action that can change it.
+   */
+  let clientConnected: boolean = $state(false);
+
+  /**
+   * Connected when the client transport is up and the active profile has not
+   * been disconnected through the connection manager.
    */
   const isConnected = $derived(
-    connManagerStore.states.get(connManagerStore.activeProfileId)?.status === 'connected',
+    clientConnected &&
+      connManagerStore.states.get(connManagerStore.activeProfileId)?.status !== 'disconnected',
   );
+  let disconnecting: boolean = $state(false);
+  let disconnectError: string | null = $state(null);
+
+  /** Server configuration (ServerConfigClient.initialized / isEmbeddedAvailable). */
+  let serverInitialized: boolean | null = $state(null);
+  let embeddedAvailable: boolean | null = $state(null);
+  let serverLoading: boolean = $state(true);
+  let serverError: string | null = $state(null);
 
   /**
    * Transport label derived from the active profile's external connection config,
@@ -83,12 +97,72 @@
     }
   }
 
+  /**
+   * Re-reads the client's transport status whenever the active profile's
+   * connection state (or the client itself) changes, so a reconnect from the
+   * header or connection manager while Settings is open shows Connected again.
+   */
+  $effect(() => {
+    void client;
+    void connManagerStore.states.get(connManagerStore.activeProfileId)?.status;
+    refreshConnected();
+  });
+
+  /** Reads the live connection status from the SDK client. */
+  function refreshConnected(): void {
+    try {
+      clientConnected = client.connection.isConnected();
+    } catch {
+      clientConnected = false;
+    }
+  }
+
+  /** Loads the server configuration state. */
+  async function loadServerInfo(): Promise<void> {
+    serverLoading = true;
+    serverError = null;
+    try {
+      const [init, embedded] = await Promise.all([
+        client.config.initialized(),
+        client.config.isEmbeddedAvailable(),
+      ]);
+      serverInitialized = init.initialized;
+      embeddedAvailable = embedded;
+    } catch (err: unknown) {
+      serverError = err instanceof Error ? err.message : String(err);
+    } finally {
+      serverLoading = false;
+    }
+  }
+
+  /**
+   * Closes the client connection, then disconnects the active profile through
+   * the connection manager (disconnectProfile), which returns the app to the
+   * connection manager.
+   */
+  async function handleDisconnect(): Promise<void> {
+    disconnecting = true;
+    disconnectError = null;
+    try {
+      await client.connection.disconnect();
+      await disconnectProfile(client, connManagerStore.activeProfileId);
+      refreshConnected();
+    } catch (err: unknown) {
+      disconnectError = err instanceof Error ? err.message : String(err);
+      refreshConnected();
+    } finally {
+      disconnecting = false;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
   onMount(() => {
+    refreshConnected();
     loadVersionInfo();
+    loadServerInfo();
   });
 </script>
 
@@ -106,6 +180,7 @@
           <div class="stat-value text-xl">
             <span
               class="badge badge-lg"
+              data-testid="settings-connection-status"
               class:badge-success={isConnected}
               class:badge-error={!isConnected}
             >
@@ -128,6 +203,59 @@
       {#if connManagerStore.states.get(connManagerStore.activeProfileId)?.error !== undefined}
         <div class="alert alert-error mt-3">
           <span>{connManagerStore.states.get(connManagerStore.activeProfileId)?.error}</span>
+        </div>
+      {/if}
+
+      {#if disconnectError !== null}
+        <div class="alert alert-error mt-3" data-testid="settings-disconnect-error">
+          <span>{disconnectError}</span>
+        </div>
+      {/if}
+
+      <div class="card-actions mt-3 justify-end">
+        <button
+          type="button"
+          class="btn btn-sm btn-outline btn-error"
+          data-testid="settings-disconnect"
+          disabled={!isConnected || disconnecting}
+          onclick={handleDisconnect}
+        >
+          {#if disconnecting}
+            <span class="loading loading-spinner loading-xs"></span>
+          {/if}
+          Disconnect
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server section -->
+  <div class="card bg-base-200 shadow" data-testid="settings-server">
+    <div class="card-body">
+      <h2 class="card-title text-lg">Server</h2>
+
+      {#if serverLoading}
+        <div class="flex justify-center py-4">
+          <span class="loading loading-spinner loading-sm text-primary"></span>
+        </div>
+      {:else if serverError !== null}
+        <div class="alert alert-error" data-testid="settings-server-error">
+          <span>{serverError}</span>
+        </div>
+      {:else}
+        <div class="stats bg-base-300 shadow-sm">
+          <div class="stat">
+            <div class="stat-title">Initialized</div>
+            <div class="stat-value text-xl" data-testid="settings-server-initialized">
+              {serverInitialized ? "Yes" : "No"}
+            </div>
+          </div>
+          <div class="stat">
+            <div class="stat-title">Embedded server available</div>
+            <div class="stat-value text-xl" data-testid="settings-server-embedded">
+              {embeddedAvailable ? "Yes" : "No"}
+            </div>
+          </div>
         </div>
       {/if}
     </div>
