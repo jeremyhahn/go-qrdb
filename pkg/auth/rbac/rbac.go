@@ -300,6 +300,28 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 	return a.roleIDsHoldSystemRole(ctx, identity.Roles, identity.TenantID, roleName)
 }
 
+// holdsSOWithAdmin reports whether identity holds the SO role and the Admin
+// role together, counting both its home-tenant Roles and the RoleBindings
+// (bound) scoped to the call's target tenant. Strict separation of duties
+// (docs/SPEC.md, separation-of-duties) forbids such a combined principal in
+// every tenant, so Authorize refuses it outright: an account a standard
+// posture named both SO and Admin stays unusable after a strict restart
+// whichever tenant it lives in, without a boot-time scan of every tenant.
+func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, error) {
+	holds := func(name string) (bool, error) {
+		ok, err := a.holdsSystemRole(ctx, identity, name)
+		if err != nil || ok || len(bound) == 0 {
+			return ok, err
+		}
+		return a.roleIDsHoldSystemRole(ctx, bound, target, name)
+	}
+	isSO, err := holds(role.RoleNameSO)
+	if err != nil || !isSO {
+		return false, err
+	}
+	return holds(role.RoleNameAdmin)
+}
+
 // roleIDsHoldSystemRole reports whether roleIDs — all belonging to tenantID —
 // includes the named system role of tenantID, by role name or by the
 // canonical identifier. It is holdsSystemRole's tenant-parameterized core,
@@ -585,6 +607,24 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// tenant, and every entry boundRoleIDs returns belongs to it.
 	target := tenant.FromContext(ctx)
 	bound := boundRoleIDs(ctx, identity)
+
+	// Strict separation of duties: a principal holding SO together with
+	// Admin is refused every permission, in every tenant, before any grant
+	// is considered (see holdsSOWithAdmin).
+	if a.strictSoD {
+		combined, err := a.holdsSOWithAdmin(ctx, identity, bound, target)
+		if err != nil {
+			return err
+		}
+		if combined {
+			return &PermissionDeniedError{
+				Resource: resource,
+				Action:   action,
+				Subject:  identity.Subject,
+				Reason:   "strict separation of duties: a principal holding the SO role together with Admin is refused",
+			}
+		}
+	}
 
 	// SO deny-list check (FIPS 140-3 AS10.03): must precede any other
 	// admission so that a malicious or erroneous grant cannot override it.

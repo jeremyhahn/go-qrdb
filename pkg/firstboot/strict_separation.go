@@ -53,7 +53,10 @@ func (e *StrictSeparationSOAdminError) Error() string {
 // and refuses with *StrictSeparationSOAdminError if any of them also holds
 // Admin, in the system tenant or in any tenant one of its role bindings
 // names. A system tenant without an SO role yet (a first boot) has nothing
-// to check.
+// to check. A tenant-local account holding both roles in its own tenant is
+// refused on every request by the strict authorizer (rbac.WithStrictSeparation),
+// whichever tenant store it lives in, so this boot check need not open every
+// tenant's store.
 func CheckStrictSeparationHolders(ctx context.Context, userSvc user.UserServicer, roleSvc role.NameResolver) error {
 	sysCtx := tenant.WithTenantID(ctx, tenantid.System)
 	so, err := roleSvc.GetRoleByName(sysCtx, tenantid.System, role.RoleNameSO)
