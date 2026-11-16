@@ -40,7 +40,16 @@ case $1 in
   load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
+  pull)
+    # STUB_PULL: hit pulls the image, hang never answers (a registry that
+    # accepts the connection and stalls), anything else is a miss.
+    case ${STUB_PULL:-miss} in
+      hit) echo 'Status: Downloaded newer image'; echo "Digest: sha256:$(printf 'd%.0s' $(seq 64))" ;;
+      hang) exec sleep 30 ;;
+      *) echo 'manifest unknown' >&2; exit 1 ;;
+    esac ;;
   push)
+    [ -z "${STUB_PUSH_HANG:-}" ] || exec sleep 30
     n=$(($(cat "$s/push-tries" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" > "$s/push-tries"
     if [ "$n" -le "${STUB_PUSH_FAILS:-0}" ]; then
@@ -192,6 +201,74 @@ run check-ref "ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main"
 if [ "$rc" = 1 ] && grep -q 'is not a digest reference' "$D/err"; then
   ok "check-ref refuses a tag reference"
 else bad "check-ref refuses a tag reference (rc=$rc)"; fi
+
+# 16-21. registry-pull and registry-push, the CI image registry path (#1609):
+# docker-build-toolchain and docker-build-it try `registry-pull` before they
+# build and `registry-push` after. The registry is a fake value; a real one is
+# never written into a file.
+reg=registry.test:5000
+it=qrdb-ci-it:fedcba9876543210
+dig="sha256:$(printf 'd%.0s' $(seq 64))"
+
+# 16. Unset: no docker call, no output; a pull is a miss and a push a no-op.
+reset
+run registry-pull "$it"
+pull_rc=$rc
+run registry-push "$it"
+if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ ! -e "$D/state/calls" ] && [ ! -s "$D/out" ] && [ ! -s "$D/err" ]; then
+  ok "registry: unset makes no docker call and logs nothing"
+else bad "registry: unset makes no docker call and logs nothing (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 17. Hit: pulled by the content-hash tag, tagged to the local name, one line.
+reset
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
+if [ "$rc" = 0 ] && called "^pull $reg/$it$" && called "^tag $reg/$it $it$" &&
+  [ "$(cat "$D/err")" = "pulled $reg/$it $dig" ] && ! called '^push ' && ! called '^login '; then
+  ok "registry: a hit pulls and tags the image and logs one pulled line"
+else bad "registry: a hit pulls and tags the image and logs one pulled line (rc=$rc)"; cat "$D/err"; fi
+
+# 18. Miss: the pull fails silently (the caller builds), the push tags and
+# pushes the build and logs one line.
+reset
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=miss
+pull_rc=$rc pull_err=$(cat "$D/err")
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg"
+if [ "$pull_rc" = 1 ] && [ -z "$pull_err" ] && [ "$rc" = 0 ] && called "^tag $it $reg/$it$" &&
+  called "^push $reg/$it$" && [ "$(cat "$D/err")" = "miss, built and pushed $reg/$it" ] && ! called '^login '; then
+  ok "registry: a miss pushes the build and logs one line"
+else bad "registry: a miss pushes the build and logs one line (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 19. Unreachable: a pull and a push that hang are cut off by the timeout; the
+# pull is a miss, the push failure is logged and neither fails.
+reset
+start=$SECONDS
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
+pull_rc=$rc
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=1
+if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] &&
+  [ "$(cat "$D/err")" = "miss, built, push failed" ]; then
+  ok "registry: a hung registry times out, falls back and logs the push failure"
+else bad "registry: a hung registry times out, falls back and logs the push failure (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 20. Unreachable: a refused push (closed port) is logged, never retried, never fatal.
+reset
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_FAILS=9
+if [ "$rc" = 0 ] && [ "$(grep -c '^push ' "$D/state/calls")" = 1 ] && [ "$(cat "$D/err")" = "miss, built, push failed" ]; then
+  ok "registry: a refused push is logged once and does not fail"
+else bad "registry: a refused push is logged once and does not fail (rc=$rc)"; cat "$D/err"; fi
+
+# 21. The registry path takes only the CI content-hash tags (another tag is
+# skipped, and its push never fails the build), and a value that is not
+# host[:port] is never handed to docker.
+reset
+run registry-pull qrdb-toolchain:latest -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
+bad_tag_rc=$rc bad_tag_err=$(cat "$D/err")
+run registry-push qrdb-toolchain:latest -- CI_IMAGE_REGISTRY="$reg"
+[ "$rc" = 0 ] || bad_tag_rc="push rc=$rc"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY='registry.test:5000/x y' STUB_PULL=hit
+if [ "$bad_tag_rc" = 1 ] && [[ $bad_tag_err == *'is not a content-hash tag'* ]] && [ "$rc" = 1 ] && ! called '^pull '; then
+  ok "registry: a non-CI tag or a malformed registry value is refused before docker"
+else bad "registry: a non-CI tag or a malformed registry value is refused before docker (rc=$bad_tag_rc/$rc)"; cat "$D/err"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -4202,12 +4202,17 @@ docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
-	@# image this tree would build.
+	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
+	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, and a
+	@# build is pushed to it; unset, both ci-image.sh calls do nothing.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . && \
+		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
@@ -4223,6 +4228,8 @@ docker-build-it:
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
 	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
@@ -4231,6 +4238,7 @@ docker-build-it:
 			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
 			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
 		}; \
+		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
 # docker-down-it removes an integration-test run's compose project, never its

@@ -59,6 +59,16 @@ case $1 in
     shift
     for c in "$@"; do case $c in -*) ;; *) echo "$c" >> "$s/removed" ;; esac; done
     if [ -f "$s/logs-pid" ]; then kill "$(cat "$s/logs-pid")" 2>/dev/null || true; fi ;;
+  # The registry path (#1609): no image is on the stub's daemon; STUB_PULL=hit
+  # pulls one, hang stalls, anything else is a miss.
+  image) exit 1 ;;
+  pull)
+    case ${STUB_PULL:-miss} in
+      hit) echo "Digest: sha256:$(printf 'd%.0s' $(seq 64))" ;;
+      hang) exec sleep 30 ;;
+      *) echo 'manifest unknown' >&2; exit 1 ;;
+    esac ;;
+  tag) ;;
   *) exit 1 ;;
 esac
 STUB
@@ -74,7 +84,7 @@ run() {
   rc=0
   (cd "$D/src" && env PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_CACHE=off \
     IN_IMAGE_CPUS=2 CI_STACK_PREFIX=p- GITHUB_RUN_ID=77 GITHUB_JOB=image "$@" \
-    "$here/in-toolchain-image.sh" img make test) > "$D/out" 2>&1 || rc=$?
+    "$here/in-toolchain-image.sh" "${img:-img}" make test) > "$D/out" 2>&1 || rc=$?
 }
 # signalled <block> <signal>: the script stopped at <block> and sent <signal>;
 # its status in $rc. Job control keeps SIGINT deliverable to a background job.
@@ -415,6 +425,43 @@ cpus_are "docker info fails with no output" 128 IN_IMAGE_CPUS=128 STUB_NCPU= STU
 cpus_are "docker info fails printing 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0 STUB_NCPU_RC=1
 # A failed lookup that still prints a positive count must not cap: only a zero exit counts.
 cpus_are "docker info fails printing 80" 128 IN_IMAGE_CPUS=128 STUB_NCPU=80 STUB_NCPU_RC=1
+
+# The CI image registry (#1609): an image not on the daemon is pulled from
+# CI_IMAGE_REGISTRY before the stage starts. The registry is a fake value.
+reg=registry.test:5000
+tcimg=qrdb-toolchain:0123456789abcdef
+dig="sha256:$(printf 'd%.0s' $(seq 64))"
+
+# Unset: today's path, no image, pull or tag call.
+reset
+img=$tcimg run
+if [ "$rc" = 0 ] && ! called '^image ' && ! called '^pull ' && ! called '^tag ' && ! grep -q 'pulled ' "$D/out"; then
+  ok "registry: unset makes no registry call"
+else bad "registry: unset makes no registry call (rc=$rc)"; cat "$D/out"; fi
+
+# Hit: pulled and tagged to the local name, one line, then the stage runs.
+reset
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
+if [ "$rc" = 0 ] && called "^pull $reg/$tcimg$" && called "^tag $reg/$tcimg $tcimg$" &&
+  [ "$(grep -c "^pulled $reg/$tcimg $dig$" "$D/out")" = 1 ] && called '^create ' && ! called '^push '; then
+  ok "registry: a hit pulls the image before the stage"
+else bad "registry: a hit pulls the image before the stage (rc=$rc)"; cat "$D/out"; fi
+
+# Miss: the pull fails silently and the stage runs as without a registry.
+reset
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=miss
+if [ "$rc" = 0 ] && called "^pull $reg/$tcimg$" && ! called '^tag ' && called '^create ' &&
+  ! grep -q 'pulled \|manifest unknown' "$D/out"; then
+  ok "registry: a miss falls back to today's path"
+else bad "registry: a miss falls back to today's path (rc=$rc)"; cat "$D/out"; fi
+
+# Unreachable: a hung registry is cut off by the timeout and the stage runs.
+reset
+start=$SECONDS
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
+if [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && ! called '^tag ' && called '^create '; then
+  ok "registry: a hung registry times out and the stage runs"
+else bad "registry: a hung registry times out and the stage runs (rc=$rc)"; cat "$D/out"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

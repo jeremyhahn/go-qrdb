@@ -144,6 +144,7 @@ at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
 the Docker `test/integration/api` stack, and runs none of these stages.
 `make docker-build-toolchain` builds the toolchain image alone, under its
 content-hash tag, and skips the build when that tag is already on the daemon.
+When the runner's environment sets `CI_IMAGE_REGISTRY` (host:port, plain HTTP, no login), `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` first pull that tag from it, and push a build to it (`scripts/image-registry.sh`, #1609); a failed or hung pull or push, each bounded by `CI_IMAGE_REGISTRY_TIMEOUT` seconds, falls back to the build and never fails the job, and each image logs one line: `pulled <ref> <digest>`, `miss, built and pushed <ref>` or `miss, built, push failed`.
 `make gosec` is the gosec scan
 alone, with no network, which the PR tier's `lint` job runs and
 `make security` calls.
