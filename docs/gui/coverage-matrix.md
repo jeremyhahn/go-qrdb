@@ -133,7 +133,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Officer | `registerDatabaseOfficer` | components/DatabaseHoldersPanel.svelte components/wizard/database/StepDatabaseHolders.svelte | none | no e2e; *verified* |
 | Officer | `registerOfficer` | views/admin/SealManager.svelte components/wizard/HolderEnrolmentForms.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `registerRecoveryOfficer` | views/admin/SealManager.svelte | admin-seal-recovery-officers.spec.ts | *verified* |
-| Officer | `registerTenantOfficer` | none | none | not in UI; *verified* |
+| Officer | `registerTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
 | Officer | `revokeDatabaseOfficer` | components/DatabaseHoldersPanel.svelte | none | no e2e; *verified* |
 | Officer | `revokeOfficer` | views/admin/SealManager.svelte | admin-seal-officers.spec.ts | *verified* |
 | Officer | `revokeTenantOfficer` | views/admin/TenantManager.svelte | tenant-holders.spec.ts | *verified* |
@@ -164,7 +164,7 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Seal | `unseal` | App.svelte views/admin/SealManager.svelte | unseal.spec.ts admin-seal.spec.ts | *verified* |
 | ServerConfig | `initialized` | none | none (spec hits are false name matches) | not in UI; *verified* |
 | ServerConfig | `isEmbeddedAvailable` | none (hit is `connectionManager.isEmbeddedAvailable`) | none | not in UI; *verified* |
-| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `addTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `barrierInit` | views/admin/TenantManager.svelte  | real-backend/per-tenant-barrier.spec.ts  |  |
 | Tenant | `barrierStatus` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
 | Tenant | `barrierUnseal` | views/admin/TenantManager.svelte | tenant-barrier-unseal.spec.ts | *verified* |
@@ -172,8 +172,8 @@ The UI reaches the backend only through the TypeScript SDK (`@qrdb/sdk`, `sdk/ty
 | Tenant | `delete` | views/admin/TenantManager.svelte | tenant-crud.spec.ts | *verified* |
 | Tenant | `get` | views/admin/TenantDetail.svelte | tenant-crud.spec.ts tenant-quotas.spec.ts | *verified* |
 | Tenant | `list` | views/admin/TenantManager.svelte components/admin/TenantSelect.svelte | tenant-crud.spec.ts | *verified* |
-| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
-| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | none | no e2e; *verified* |
+| Tenant | `listTrustAnchors` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts, dom/tenant-trust-roundtrip.spec.ts | *verified* |
+| Tenant | `removeTrustAnchor` | views/admin/TenantDetail.svelte | tenant-trust-anchors.spec.ts | *verified* |
 | Tenant | `update` | views/admin/TenantDetail.svelte | dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateEntitlements` | views/admin/TenantDetail.svelte | tenant-multitenancy-web.spec.ts dom/tenant-management.spec.ts | *verified* |
 | Tenant | `updateQuotas` | views/admin/TenantDetail.svelte | tenant-quotas.spec.ts tenant-multitenancy-web.spec.ts | *verified* |
@@ -271,7 +271,7 @@ One group = one implementation lane, one view or area. Ordered by user value. Ti
 
 | | total | in UI | with e2e |
 |---|---|---|---|
-| operations | 218 | 176 | 160 |
+| operations | 218 | 177 | 164 |
 | displays | 12 | 10 | 9 |
 
-Operations not in UI: 42. In UI without e2e: 16. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).
+Operations not in UI: 41. In UI without e2e: 13. Displays with a partial field gap: 3 (`/status`, `/capabilities`, cluster seal).

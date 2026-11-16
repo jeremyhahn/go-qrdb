@@ -27,6 +27,7 @@ import type { MockState } from "./fixtures/wails-mock.ts";
 import type { Page } from "@playwright/test";
 
 const LOAD_TIMEOUT = 10_000;
+const CSR = "-----BEGIN CERTIFICATE REQUEST-----\nmock-csr\n-----END CERTIFICATE REQUEST-----";
 
 const holdersState: MockState = {
   ...secondLaunchEmbeddedState,
@@ -111,5 +112,29 @@ test.describe("Admin - Tenant share holders", () => {
     await expect(page.locator('[role="alert"]').filter({ hasText: "fewer holders than the threshold" })).toBeVisible({ timeout: LOAD_TIMEOUT });
     await expect(page.getByTestId("open-round")).toHaveCount(0);
     await clearError(page, "OfficerBinding.StartRekey");
+  });
+
+  test("enrolling a holder registers it and lists it in the holder table", async ({ page }) => {
+    await openHolders(page);
+    await page.getByTestId("tenant-holder-enrol-toggle").click();
+    await page.getByTestId("officer-username-0").fill("tara");
+    await page.getByTestId("officer-role-0").selectOption("custodian");
+    await page.getByTestId("officer-csr-0").fill(CSR);
+    await page.getByTestId("register-officer-btn-0").click();
+    await expect(page.getByTestId("officer-cert-0")).toBeVisible({ timeout: LOAD_TIMEOUT });
+    const row = page.getByTestId("tenant-holders-table").locator("tr").filter({ hasText: "tara" });
+    await expect(row).toContainText("custodian", { timeout: LOAD_TIMEOUT });
+  });
+
+  test("a failing enrolment shows the error and lists no new holder", async ({ page }) => {
+    await openHolders(page);
+    await injectError(page, "OfficerBinding.RegisterHolder", "ceremony: certificate request signature is invalid");
+    await page.getByTestId("tenant-holder-enrol-toggle").click();
+    await page.getByTestId("officer-username-0").fill("tara");
+    await page.getByTestId("officer-csr-0").fill(CSR);
+    await page.getByTestId("register-officer-btn-0").click();
+    await expect(page.getByTestId("officer-error-0")).toContainText("signature is invalid", { timeout: LOAD_TIMEOUT });
+    await expect(page.getByTestId("tenant-holders-table").locator("tr").filter({ hasText: "tara" })).toHaveCount(0);
+    await clearError(page, "OfficerBinding.RegisterHolder");
   });
 });
