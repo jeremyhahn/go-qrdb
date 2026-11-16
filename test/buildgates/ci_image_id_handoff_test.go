@@ -132,3 +132,127 @@ func TestCIImageID_CanFail(t *testing.T) {
 		})
 	}
 }
+
+// pushCall is a scripts/ci-image.sh push in a run script; group 1 is the
+// image variable, group 2 the repository name, group 3 the ID variable.
+var pushCall = regexp.MustCompile(`scripts/ci-image\.sh push "\$(\w+)" (\S+)(?: "\$(\w+)")?`)
+
+// producerIDFamilies maps the producer's image variable to the save step's
+// ID output of that family.
+var producerIDFamilies = map[string]string{
+	"TOOLCHAIN_IMAGE": "toolchain_id",
+	"IT_IMAGE":        "it_id",
+}
+
+// producerIDProblems lists every way docker-build publishes an image by its
+// mutable content-hash tag rather than by the ID it resolved once (#1597): on
+// a shared daemon another run can retag between the save and the push. Each
+// push names its family's ID from the save step; no step saves or pushes
+// with docker directly (scripts/ci-image.sh save and push archive and push a
+// per-run tag created from the ID); an always() step removes the per-run tags.
+func producerIDProblems(body []byte) ([]string, error) {
+	var wf digestWorkflow
+	if err := yaml.Unmarshal(body, &wf); err != nil {
+		return nil, err
+	}
+	job, ok := wf.Jobs[digestProducer]
+	if !ok {
+		return []string{"ci.yml has no " + digestProducer + " job"}, nil
+	}
+	var problems []string
+	pushes, untags := 0, false
+	for _, s := range job.Steps {
+		where := digestProducer + "'s step " + strconv.Quote(s.Name)
+		if strings.Contains(s.Run, "docker push") || dockerSave.MatchString(s.Run) {
+			problems = append(problems, where+" saves or pushes with docker directly: that names the shared content-hash tag, "+
+				"which another run can move; use scripts/ci-image.sh save and push")
+		}
+		for _, m := range pushCall.FindAllStringSubmatch(s.Run, -1) {
+			pushes++
+			out, known := producerIDFamilies[m[1]]
+			switch {
+			case !known:
+				problems = append(problems, where+" pushes $"+m[1]+", not a CI image family's tag")
+			case m[3] == "":
+				problems = append(problems, where+" pushes $"+m[1]+" with no image ID: the push would follow the mutable tag")
+			case s.Env[m[3]] != "${{ steps.save.outputs."+out+" }}":
+				problems = append(problems, where+" pushes $"+m[1]+" as $"+m[3]+" bound to "+strconv.Quote(s.Env[m[3]])+
+					"; want the save step's "+out+", the ID the archive holds")
+			}
+		}
+		if strings.Contains(s.If, "always()") && strings.Contains(s.Run, "scripts/ci-image.sh untag") {
+			untags = true
+		}
+	}
+	if pushes == 0 {
+		problems = append(problems, digestProducer+" has no scripts/ci-image.sh push")
+	}
+	if !untags {
+		problems = append(problems, digestProducer+" has no always() step running scripts/ci-image.sh untag: the per-run tags would stay")
+	}
+	return problems, nil
+}
+
+func TestCIImageID_ProducerPublishesTheResolvedID(t *testing.T) {
+	problems, err := producerIDProblems(readCIWorkflowBytes(t))
+	if err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	for _, p := range problems {
+		t.Error(p)
+	}
+}
+
+const producerIDFixture = `on: [push]
+jobs:
+  docker-build:
+    steps:
+      - name: Save the devcontainer images
+        id: save
+        run: |
+          id=$(scripts/ci-image.sh save "$TOOLCHAIN_IMAGE" "$RUNNER_TEMP/toolchain-image")
+      - name: Push the devcontainer images to GHCR
+        id: push
+        env:
+          TOOLCHAIN_ID: ${{ steps.save.outputs.toolchain_id }}
+          IT_ID: ${{ steps.save.outputs.it_id }}
+        run: |
+          toolchain_ref=$(scripts/ci-image.sh push "$TOOLCHAIN_IMAGE" go-qrdb-toolchain "$TOOLCHAIN_ID")
+          it_ref=$(scripts/ci-image.sh push "$IT_IMAGE" go-qrdb-ci-it "$IT_ID")
+      - name: Tear down
+        if: always()
+        run: scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" $IT_IMAGE
+`
+
+func TestCIImageID_ProducerFixtureIsValid(t *testing.T) {
+	problems, err := producerIDProblems([]byte(producerIDFixture))
+	if err != nil || len(problems) != 0 {
+		t.Fatalf("fixture: err=%v problems=%v", err, problems)
+	}
+}
+
+// TestCIImageID_ProducerCanFail: each retag-exposed producer form must redden
+// the gate.
+func TestCIImageID_ProducerCanFail(t *testing.T) {
+	for _, tc := range []struct{ name, old, new string }{
+		{name: "a push by the tag alone", old: ` go-qrdb-ci-it "$IT_ID")`, new: ` go-qrdb-ci-it)`},
+		{name: "a push of another family's ID", old: "IT_ID: ${{ steps.save.outputs.it_id }}", new: "IT_ID: ${{ steps.save.outputs.toolchain_id }}"},
+		{name: "a docker push of the shared tag", old: "      - name: Tear down\n", new: "      - name: Publish\n        run: docker push \"$TOOLCHAIN_IMAGE\"\n      - name: Tear down\n"},
+		{name: "a docker save of the shared tag", old: `id=$(scripts/ci-image.sh save "$TOOLCHAIN_IMAGE" "$RUNNER_TEMP/toolchain-image")`, new: `docker save -o t.tar "$TOOLCHAIN_IMAGE"`},
+		{name: "no untag", old: `run: scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" $IT_IMAGE`, new: "run: true"},
+		{name: "an untag that a failure skips", old: "        if: always()\n", new: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(producerIDFixture, tc.old) {
+				t.Fatalf("the fixture has no %q: the case tests nothing", tc.old)
+			}
+			problems, err := producerIDProblems([]byte(strings.Replace(producerIDFixture, tc.old, tc.new, 1)))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(problems) == 0 {
+				t.Fatalf("%s passed the gate", tc.name)
+			}
+		})
+	}
+}

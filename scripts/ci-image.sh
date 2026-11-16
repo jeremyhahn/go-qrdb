@@ -21,23 +21,34 @@
 # still take the artifact, so one code path is exercised on every event.
 #
 #   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
-#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <image> is <id>
-#   ci-image.sh push <local-image> <name>          prints ghcr.io/<owner>/<name>@sha256:<hex>
+#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks it is <id>, tags <image>
+#   ci-image.sh push <local-image> <name> <id>     prints ghcr.io/<owner>/<name>@sha256:<hex>
+#   ci-image.sh untag <image>...                   removes save's per-run tags
+#   ci-image.sh prune [hours]                      self-hosted retention of the CI images
 #   ci-image.sh check-ref <ref>...                 validates digest references
 #
-# save prints the image ID, the content address of the image's config; load
-# fails unless the tag it loaded names that same ID, so a truncated or
+# save resolves the content-hash tag to its image ID once and archives that
+# ID under a per-run tag (<image>-run-<run id>-<attempt>) created from it, so
+# another run that moves the shared tag on a shared daemon between the
+# resolve and the save cannot change what is archived; it prints the ID only
+# after checking the per-run tag still names it. load fails unless the
+# archive's per-run tag names the ID docker-build recorded, so a truncated or
 # substituted artifact is refused rather than run.
 #
 # push logs in to GHCR with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, which the
 # workflow step supplies from the run's actor and GITHUB_TOKEN (packages:
 # write). The login lives in a private DOCKER_CONFIG deleted on exit, and no
 # credential value is ever printed: an empty name fails naming the variable.
-# A pushed image is tagged <content-hash>-main, one tag per content hash.
+# push takes the ID save recorded, never the shared tag: it pushes a per-run
+# tag, <content-hash>-main-<run id>-<attempt>, created from that ID, and checks
+# the pushed tag still names it before printing the digest.
 # A refused push is tried again, up to CI_REGISTRY_ATTEMPTS times in all
 # (default 3), waiting CI_REGISTRY_BACKOFF seconds (default 10) times the
 # number of the failed attempt, so one registry 5xx on one blob upload does
 # not fail the job; a push refused every time does. The login is not retried.
+#
+# prune runs in the always() teardown of every self-hosted job that builds or
+# loads a CI image (a pool daemon outlives the job): see prune below.
 set -euo pipefail
 
 readonly registry=ghcr.io
@@ -64,27 +75,65 @@ image_id() {
 	printf '%s\n' "$id"
 }
 
+# run_suffix prints this run's own tag suffix, <run id>-<run attempt>: no
+# other run on a shared daemon writes a tag that carries it.
+run_suffix() {
+	local s=${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}
+	[[ $s =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,63}$ ]] || die "GITHUB_RUN_ID/GITHUB_RUN_ATTEMPT do not form a tag suffix"
+	printf '%s\n' "$s"
+}
+
+# run_tag prints the per-run tag of the content-hash tag $1.
+run_tag() { printf '%s-run-%s\n' "$1" "$(run_suffix)"; }
+
+# save resolves the content-hash tag to its image ID once, then archives that
+# ID and nothing else: the tag is shared by every run with the same build
+# inputs, so on a shared daemon another run can move it to other bytes at any
+# moment. The archive carries a per-run tag created from the ID; the ID behind
+# it is checked again after the save, and only then is the ID printed.
 save() {
 	[ $# -eq 2 ] || die "usage: save <image> <dir>"
-	local image=$1 dir=$2 id
+	local image=$1 dir=$2 id rtag got
 	check_image "$image"
 	id=$(image_id "$image")
+	rtag=$(run_tag "$image")
+	docker tag "$id" "$rtag" || die "cannot tag $id as $rtag"
 	mkdir -p "$dir"
-	docker save -o "$dir/image.tar" "$image" || die "cannot save $image"
+	docker save -o "$dir/image.tar" "$rtag" || die "cannot save $rtag"
+	got=$(image_id "$rtag")
+	[ "$got" = "$id" ] || die "$rtag names $got after the save, not $id, the image $image resolved to: the archive is refused"
 	printf '%s\n' "$id" >"$dir/image.id"
-	echo "==> saved $image ($id), $(du -h "$dir/image.tar" | cut -f1)" >&2
+	echo "==> saved $image ($id) as $rtag, $(du -h "$dir/image.tar" | cut -f1)" >&2
 	printf '%s\n' "$id"
+}
+
+# untag removes the per-run tags save created, at the producer's teardown.
+untag() {
+	local image
+	for image in "$@"; do
+		[ -n "$image" ] || continue
+		check_image "$image"
+		docker rmi "$(run_tag "$image")" >/dev/null 2>&1 || true
+	done
 }
 
 load() {
 	[ $# -eq 3 ] || die "usage: load <dir> <image> <id>"
-	local dir=$1 image=$2 want=$3 got
+	local dir=$1 image=$2 want=$3 got out loaded="" l
 	check_image "$image"
 	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
 	[ -s "$dir/image.tar" ] || die "$dir/image.tar is missing or empty: the docker-build artifact did not download"
-	docker load -i "$dir/image.tar" >&2 || die "cannot load $dir/image.tar"
-	got=$(image_id "$image")
+	out=$(docker load -i "$dir/image.tar") || die "cannot load $dir/image.tar"
+	printf '%s\n' "$out" >&2
+	# The archive carries the producer's per-run tag, which no other run
+	# writes, so the ID it names is the archive's own.
+	while IFS= read -r l; do
+		case $l in "Loaded image: $image-run-"*) loaded=${l#Loaded image: } ;; esac
+	done <<<"$out"
+	[ -n "$loaded" ] || die "$dir/image.tar carries no per-run tag of $image"
+	got=$(image_id "$loaded")
 	[ "$got" = "$want" ] || die "$image loaded as $got, not $want, the image docker-build built"
+	docker tag "$want" "$image" || die "cannot tag $want as $image"
 	rm -f "$dir/image.tar"
 	echo "==> $image is $want, the image docker-build built" >&2
 	# The verified ID, never the tag, is what the stages run: the tag is
@@ -147,18 +196,22 @@ login() {
 }
 
 push() {
-	[ $# -eq 2 ] || die "usage: push <local-image> <name>"
-	local image=$1 name=$2 owner
+	[ $# -eq 3 ] || die "usage: push <local-image> <name> <id>"
+	local image=$1 name=$2 id=$3 owner got
 	check_image "$image"
+	[[ $id =~ $id_re ]] || die "'$id' is not an image ID"
 	[[ $name =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "image name '$name' is not a registry repository name"
 	owner=$(registry_owner)
 	local repo=$registry/$owner/$name
-	local target=$repo:${image##*:}-main
+	local target=$repo:${image##*:}-main-$(run_suffix)
 	local attempts=${CI_REGISTRY_ATTEMPTS:-3} backoff=${CI_REGISTRY_BACKOFF:-10} n=1
 	[[ $attempts =~ ^[1-9][0-9]{0,2}$ ]] || die "CI_REGISTRY_ATTEMPTS must be a positive integer (at most 999), the number of push attempts"
 	[[ $backoff =~ ^(0|[1-9][0-9]{0,3})$ ]] || die "CI_REGISTRY_BACKOFF must be a non-negative integer of seconds (at most 9999)"
 	login "$owner"
-	docker tag "$image" "$target" || die "cannot tag $image as $target"
+	# The pushed tag is created from the ID save recorded and is this run's
+	# own: the shared content-hash tag is never pushed, since another run
+	# can move it between the save and the push.
+	docker tag "$id" "$target" || die "cannot tag $id as $target"
 	# Only the push is retried: a refused login is a credential fault.
 	until docker push "$target" >&2; do
 		[ "$n" -lt "$attempts" ] || die "GHCR refused the push of $target after $attempts attempts"
@@ -166,23 +219,84 @@ push() {
 		sleep $((n * backoff))
 		n=$((n + 1))
 	done
+	got=$(image_id "$target")
+	[ "$got" = "$id" ] || die "$target names $got after the push, not $id, the image docker-build saved"
 	local digest="" d
 	while IFS= read -r d; do
 		case $d in "$repo@"*) digest=$d ;; esac
 	done < <(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' "$target")
 	[ -n "$digest" ] || die "the push of $target reported no digest"
 	check_ref "$digest"
+	docker rmi "$target" >/dev/null 2>&1 || true
 	printf '%s\n' "$digest"
 }
 
+# ci_ref reports whether the reference $1 is one of the CI images: a local
+# qrdb-toolchain or qrdb-ci-it tag (content-hash or per-run), or a pushed
+# go-qrdb-toolchain or go-qrdb-ci-it tag.
+ci_ref() {
+	case ${1%:*} in
+	qrdb-toolchain | qrdb-ci-it | */go-qrdb-toolchain | */go-qrdb-ci-it) return 0 ;;
+	esac
+	return 1
+}
+
+# epoch prints the seconds since the epoch of the RFC 3339 time $1, 0 when
+# docker reports none (the zero time) or it does not parse.
+epoch() {
+	local t
+	t=$(date -d "$1" +%s 2>/dev/null) || t=0
+	[ "$t" -gt 0 ] 2>/dev/null || t=0
+	printf '%s\n' "$t"
+}
+
+# prune is the self-hosted retention of the CI images. A pool daemon outlives
+# every job, and each commit's integration image has its own tag, so without
+# it the images accumulate. It removes each CI image tag whose image was
+# neither built nor tagged (a build, a load or a save tags it) in the last
+# <hours> (default 24), skipping every image a running container uses; the
+# daemon deletes an image with its last tag, and refuses one a stopped
+# container holds, which is left. No other image is touched.
+prune() {
+	[ $# -le 1 ] || die "usage: prune [hours]"
+	local hours=${1:-24} now cutoff running="" c id ref t created tagged newest
+	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
+	now=$(date +%s)
+	cutoff=$((now - hours * 3600))
+	while IFS= read -r c; do
+		[ -n "$c" ] || continue
+		running+=" $(docker inspect -f '{{.Image}}' "$c" 2>/dev/null || true)"
+	done < <(docker ps -q --no-trunc)
+	while read -r id ref; do
+		case $ref in *:'<none>') continue ;; esac
+		ci_ref "$ref" || continue
+		case " $running " in *" $id "*)
+			echo "==> prune: kept $ref, a running container uses it" >&2
+			continue ;;
+		esac
+		t=$(docker image inspect -f '{{.Created}} {{.Metadata.LastTagTime}}' "$id" 2>/dev/null) || continue
+		created=$(epoch "${t%% *}")
+		tagged=$(epoch "${t#* }")
+		newest=$((created > tagged ? created : tagged))
+		[ "$newest" -lt "$cutoff" ] || continue
+		if docker rmi "$ref" >/dev/null 2>&1; then
+			echo "==> prune: removed $ref ($id)" >&2
+		else
+			echo "==> prune: kept $ref, the daemon refused its removal" >&2
+		fi
+	done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}')
+}
+
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh save|load|push|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh save|load|push|untag|prune|check-ref ..."
 	local cmd=$1
 	shift
 	case $cmd in
 	save) save "$@" ;;
 	load) load "$@" ;;
 	push) push "$@" ;;
+	untag) untag "$@" ;;
+	prune) prune "$@" ;;
 	check-ref)
 		[ $# -ge 1 ] || die "usage: check-ref <ref>..."
 		local r

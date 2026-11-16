@@ -17,29 +17,63 @@ D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
 mkdir -p "$D/bin"
 
-# The stub's daemon: $s/id is the ID the image under test has once loaded or
-# built ($STUB_ID), and $s/loaded-id the ID `docker load` gives it
-# ($STUB_LOAD_ID, default the saved one). STUB_NO_DIGEST makes a push report
-# no repo digest. STUB_PUSH_FAILS makes the first that many pushes fail with a
-# registry 500, counted in $s/push-tries. The login's password is read from stdin and recorded apart
+# The stub's daemon: $s/tags/<tag> holds the ID a tag names (line 1) and the
+# tag (line 2); $s/ids/<hex> marks an image present; $s/created/<hex> and
+# $s/tagtime/<hex> its build and last-tag times (RFC 3339); $s/running lists
+# "<container> <ID>" of running containers. `docker save` writes the saved
+# ref's ID and the ref into the "tar"; `docker load` puts them back
+# (STUB_LOAD_ID overrides the ID). STUB_RETAG_ON=save|push moves the tag
+# STUB_RETAG_TAG to STUB_RETAG_ID just before that command runs: another run
+# retagging on a shared daemon. STUB_NO_DIGEST makes a push report no repo
+# digest. STUB_PUSH_FAILS makes the first that many pushes fail with a
+# registry 500, counted in $s/push-tries. A push records the pushed repo and
+# the ID it pushed. The login's password is read from stdin and recorded apart
 # from the argv log, so a test can tell it never reached a command line.
 cat > "$D/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 set -eu
 s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
+key() { printf '%s' "${1//[^A-Za-z0-9._-]/_}"; }
+resolve() {
+  case $1 in
+    sha256:*) [ -e "$s/ids/${1#sha256:}" ] && printf '%s\n' "$1" ;;
+    *) [ -f "$s/tags/$(key "$1")" ] && sed -n 1p "$s/tags/$(key "$1")" ;;
+  esac
+}
+settag() {
+  mkdir -p "$s/tags" "$s/ids"
+  printf '%s\n%s\n' "$2" "$1" > "$s/tags/$(key "$1")"
+  : > "$s/ids/${2#sha256:}"
+}
+retag() { [ "${STUB_RETAG_ON:-}" != "$1" ] || settag "$STUB_RETAG_TAG" "$STUB_RETAG_ID"; }
 case $1 in
   image)
-    [ -f "$s/id" ] || exit 1
+    case $2 in
+      ls) for f in "$s"/tags/*; do [ -f "$f" ] && printf '%s %s\n' "$(sed -n 1p "$f")" "$(sed -n 2p "$f")"; done; exit 0 ;;
+    esac
+    ref=${*: -1}
+    id=$(resolve "$ref") || exit 1
     case $* in
       *RepoDigests*)
         [ -n "${STUB_NO_DIGEST:-}" ] || printf '%s\n' "other.example/x@sha256:$(printf 'a%.0s' $(seq 64))" "$(cat "$s/pushed")@sha256:$(printf 'b%.0s' $(seq 64))" ;;
-      *) cat "$s/id" ;;
+      *Created*)
+        printf '%s %s\n' "$(cat "$s/created/${id#sha256:}" 2>/dev/null || echo 2000-01-01T00:00:00Z)" \
+          "$(cat "$s/tagtime/${id#sha256:}" 2>/dev/null || echo 0001-01-01T00:00:00Z)" ;;
+      *) printf '%s\n' "$id" ;;
     esac ;;
-  save) printf 'tar-of-%s' "$(cat "$s/id")" > "$3" ;;
-  load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
+  ps) [ -f "$s/running" ] && cut -d' ' -f1 "$s/running"; exit 0 ;;
+  inspect) while read -r c i; do [ "$c" != "${*: -1}" ] || echo "$i"; done < "$s/running" ;;
+  save) retag save; id=$(resolve "$4") || exit 1; printf '%s\n%s\n' "$id" "$4" > "$3" ;;
+  load)
+    id=${STUB_LOAD_ID:-$(sed -n 1p "$3")}; ref=$(sed -n 2p "$3")
+    settag "$ref" "$id"; echo "Loaded image: $ref" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
-  tag) ;;
+  tag) id=$(resolve "$2") || exit 1; settag "$3" "$id" ;;
+  rmi)
+    f="$s/tags/$(key "$2")"; [ -f "$f" ] || exit 1
+    if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$(sed -n 1p "$f")"; then exit 1; fi
+    rm -f "$f" ;;
   push)
     n=$(($(cat "$s/push-tries" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" > "$s/push-tries"
@@ -47,6 +81,8 @@ case $1 in
       echo 'received unexpected HTTP status: 500 Internal Server Error' >&2
       exit 1
     fi
+    retag push
+    resolve "$2" > "$s/pushed-id"
     printf '%s\n' "${2%:*}" > "$s/pushed" ;;
   *) exit 1 ;;
 esac
@@ -56,11 +92,20 @@ chmod +x "$D/bin/docker"
 id_a="sha256:$(printf '1%.0s' $(seq 64))"
 id_b="sha256:$(printf '2%.0s' $(seq 64))"
 tc=qrdb-toolchain:0123456789abcdef
+# The per-run tags of run 77, attempt 2 (run() sets both).
+rtc=$tc-run-77-2
+ptc=ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main-77-2
 
+# reset: a daemon holding $tc as $id_a.
 reset() {
   rm -rf "$D/state" "$D/art"
   mkdir -p "$D/state"
-  printf '%s\n' "$id_a" > "$D/state/id"
+  tagimg "$tc" "$id_a"
+}
+tagimg() {
+  mkdir -p "$D/state/tags" "$D/state/ids"
+  printf '%s\n%s\n' "$2" "$1" > "$D/state/tags/${1//[^A-Za-z0-9._-]/_}"
+  : > "$D/state/ids/${2#sha256:}"
 }
 # run <args...> [-- env...]: the script, its status in $rc, stdout in $D/out,
 # stderr in $D/err.
@@ -69,7 +114,8 @@ run() {
   while [ $# -gt 0 ] && [ "$1" != -- ]; do args+=("$1"); shift; done
   [ $# -eq 0 ] || shift
   rc=0
-  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org CI_IMAGE_IDS="$D/no-ids" "$@" \
+  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org CI_IMAGE_IDS="$D/no-ids" \
+    GITHUB_RUN_ID=77 GITHUB_RUN_ATTEMPT=2 "$@" \
     "$here/ci-image.sh" "${args[@]}" > "$D/out" 2> "$D/err" || rc=$?
 }
 called() { grep -q -- "$1" "$D/state/calls" 2>/dev/null; }
@@ -78,9 +124,26 @@ called() { grep -q -- "$1" "$D/state/calls" 2>/dev/null; }
 reset
 run save "$tc" "$D/art"
 if [ "$rc" = 0 ] && [ -s "$D/art/image.tar" ] && [ "$(cat "$D/art/image.id")" = "$id_a" ] &&
-  [ "$(cat "$D/out")" = "$id_a" ] && called "^save -o $D/art/image.tar $tc$"; then
+  [ "$(cat "$D/out")" = "$id_a" ] && called "^tag $id_a $rtc$" && called "^save -o $D/art/image.tar $rtc$" &&
+  [ "$(sed -n 1p "$D/art/image.tar")" = "$id_a" ]; then
   ok "save writes the image and its ID"
 else bad "save writes the image and its ID (rc=$rc)"; cat "$D/err"; fi
+
+# 1a. #1597: another run moves the shared tag between save's resolve and its
+# `docker save`: the archive still holds the ID save resolved and recorded.
+reset
+run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$tc" STUB_RETAG_ID="$id_b"
+if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/art/image.tar")" = "$id_a" ] && [ "$(cat "$D/art/image.id")" = "$id_a" ] &&
+  ! called "^save -o $D/art/image.tar $tc$"; then
+  ok "a tag moved during the save leaves the archive the recorded ID"
+else bad "a tag moved during the save leaves the archive the recorded ID (rc=$rc)"; cat "$D/err"; fi
+# 1b. The archive is checked: a per-run tag that no longer names the resolved
+# ID after the save refuses the archive and records no ID.
+reset
+run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$rtc" STUB_RETAG_ID="$id_b"
+if [ "$rc" = 1 ] && grep -q "after the save, not $id_a" "$D/err" && [ ! -e "$D/art/image.id" ] && [ ! -s "$D/out" ]; then
+  ok "save refuses an archive whose ID is not the resolved one"
+else bad "save refuses an archive whose ID is not the resolved one (rc=$rc)"; cat "$D/err"; fi
 
 # 2. save refuses an image that is not a content-hash tag of the CI families.
 reset
@@ -92,7 +155,7 @@ else bad "save refuses an image that is not a content-hash tag (rc=$rc)"; fi
 # 3. load accepts the image docker-build built and removes the tar.
 reset
 run save "$tc" "$D/art"
-rm -f "$D/state/id"
+rm -rf "$D/state/tags" "$D/state/ids"
 run load "$D/art" "$tc" "$id_a"
 if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err"; then
   ok "load accepts the image docker-build built"
@@ -149,29 +212,51 @@ if [ "$rc" = 1 ] && grep -q "'latest' is not an image ID" "$D/err"; then
   ok "load refuses a malformed ID"
 else bad "load refuses a malformed ID (rc=$rc)"; fi
 
-# 7. push logs in on stdin into a private DOCKER_CONFIG, pushes
-# ghcr.io/<owner, lowercased>/<name>:<hash>-main and prints its digest.
+# 7. push logs in on stdin into a private DOCKER_CONFIG, pushes the per-run
+# tag ghcr.io/<owner, lowercased>/<name>:<hash>-main-<run>-<attempt> created
+# from the recorded ID and prints its digest.
 reset
-run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=s3cr3t-token
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=s3cr3t-token
 want="ghcr.io/example-org/go-qrdb-toolchain@sha256:$(printf 'b%.0s' $(seq 64))"
 if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$want" ] &&
-  called "^tag $tc ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main$" &&
+  called "^tag $id_a $ptc$" && called "^push $ptc$" && ! called '^push .*-main$' &&
+  [ "$(cat "$D/state/pushed-id")" = "$id_a" ] &&
   called '^login ghcr.io -u bot --password-stdin$' && [ "$(cat "$D/state/password")" = s3cr3t-token ] &&
   ! grep -q s3cr3t-token "$D/state/calls" "$D/out" "$D/err" &&
   [ -n "$(cat "$D/state/config")" ] && [ ! -e "$(cat "$D/state/config")" ]; then
   ok "push logs in on stdin, pushes by content hash and prints the digest"
 else bad "push logs in on stdin, pushes by content hash and prints the digest (rc=$rc)"; cat "$D/err" "$D/out"; fi
 
+# 7a. #1597: another run moves the shared content-hash tag between the save
+# and the push: the push still publishes the recorded ID.
+reset
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_RETAG_ON=push STUB_RETAG_TAG="$tc" STUB_RETAG_ID="$id_b"
+if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$want" ] && [ "$(cat "$D/state/pushed-id")" = "$id_a" ]; then
+  ok "a tag moved between the save and the push leaves the push the recorded ID"
+else bad "a tag moved between the save and the push leaves the push the recorded ID (rc=$rc)"; cat "$D/err"; fi
+# 7b. A pushed tag that no longer names the recorded ID is refused: no digest.
+reset
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_RETAG_ON=push STUB_RETAG_TAG="$ptc" STUB_RETAG_ID="$id_b"
+if [ "$rc" = 1 ] && grep -q "after the push, not $id_a" "$D/err" && [ ! -s "$D/out" ]; then
+  ok "push refuses a pushed image whose ID is not the recorded one"
+else bad "push refuses a pushed image whose ID is not the recorded one (rc=$rc)"; cat "$D/err"; fi
+# 7c. push refuses an operand that is not an image ID before the login.
+reset
+run push "$tc" go-qrdb-toolchain "$tc" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t
+if [ "$rc" = 1 ] && grep -q "is not an image ID" "$D/err" && ! called '^login '; then
+  ok "push refuses a malformed ID"
+else bad "push refuses a malformed ID (rc=$rc)"; cat "$D/err"; fi
+
 # 8. push without the run's token fails naming the variable, not a value.
 reset
-run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot
 if [ "$rc" = 1 ] && grep -q 'CI_REGISTRY_TOKEN is empty' "$D/err" && ! called '^push '; then
   ok "push refuses an empty token"
 else bad "push refuses an empty token (rc=$rc)"; cat "$D/err"; fi
 
 # 9. A push the registry reports no digest for fails.
 reset
-run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_NO_DIGEST=1
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_NO_DIGEST=1
 if [ "$rc" = 1 ] && grep -q 'reported no digest' "$D/err" && [ ! -s "$D/out" ]; then
   ok "a push with no digest fails"
 else bad "a push with no digest fails (rc=$rc)"; cat "$D/err"; fi
@@ -179,7 +264,7 @@ else bad "a push with no digest fails (rc=$rc)"; cat "$D/err"; fi
 # 10. A push the registry refuses once succeeds on the next attempt. No retry
 # test sleeps: each sets CI_REGISTRY_BACKOFF=0.
 reset
-run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=1 CI_REGISTRY_BACKOFF=0
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=1 CI_REGISTRY_BACKOFF=0
 if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$want" ] &&
   [ "$(grep -c '^push ' "$D/state/calls")" = 2 ] && grep -q 'attempt 1 of 3' "$D/err"; then
   ok "a push the registry refuses once succeeds on the next attempt"
@@ -187,7 +272,7 @@ else bad "a push the registry refuses once succeeds on the next attempt (rc=$rc)
 
 # 11. A push refused on every attempt fails after the last.
 reset
-run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=9 CI_REGISTRY_BACKOFF=0
+run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t STUB_PUSH_FAILS=9 CI_REGISTRY_BACKOFF=0
 if [ "$rc" = 1 ] && grep -q 'GHCR refused the push of' "$D/err" &&
   [ "$(grep -c '^push ' "$D/state/calls")" = 3 ] && [ ! -s "$D/out" ]; then
   ok "a push refused on every attempt fails after the last"
@@ -198,7 +283,7 @@ else bad "a push refused on every attempt fails after the last (rc=$rc)"; cat "$
 knobs=ok
 for kv in CI_REGISTRY_ATTEMPTS=0 CI_REGISTRY_BACKOFF=soon; do
   reset
-  run push "$tc" go-qrdb-toolchain -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t "$kv"
+  run push "$tc" go-qrdb-toolchain "$id_a" -- CI_REGISTRY_USER=bot CI_REGISTRY_TOKEN=t "$kv"
   if [ "$rc" != 1 ] || ! grep -q "${kv%%=*}" "$D/err" || called '^push ' || called '^login '; then
     knobs="$kv rc=$rc"
     cat "$D/err"
