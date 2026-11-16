@@ -292,6 +292,51 @@ done
 if [ "$knobs" = ok ]; then ok "a malformed attempt count or backoff is refused before the push"
 else bad "a malformed attempt count or backoff is refused before the push ($knobs)"; fi
 
+# 12a. #1597: prune, the self-hosted retention. Old CI images go; a recent
+# one, one tagged recently, one a running container uses and any image that
+# is not a CI image stay.
+id_c="sha256:$(printf '3%.0s' $(seq 64))"
+id_d="sha256:$(printf '4%.0s' $(seq 64))"
+id_e="sha256:$(printf '5%.0s' $(seq 64))"
+id_f="sha256:$(printf '6%.0s' $(seq 64))"
+old=$(date -u -d '-3 days' +%Y-%m-%dT%H:%M:%S.000000000Z)
+new=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
+reset
+mkdir -p "$D/state/created" "$D/state/tagtime"
+tagimg qrdb-ci-it:1111111111111111 "$id_b"            # old: removed
+tagimg ghcr.io/example-org/go-qrdb-ci-it:1111111111111111-main-1-1 "$id_b" # old, pushed: removed
+tagimg qrdb-ci-it:2222222222222222 "$id_c"            # built an hour ago: kept
+tagimg qrdb-ci-it:3333333333333333 "$id_d"            # old, tagged an hour ago: kept
+tagimg qrdb-ci-it:4444444444444444 "$id_e"            # old, running: kept
+tagimg alpine:3.20 "$id_f"                            # old, not a CI image: kept
+for i in "$id_a" "$id_b" "$id_d" "$id_e" "$id_f"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+echo "$new" > "$D/state/created/${id_c#sha256:}"
+echo "$new" > "$D/state/tagtime/${id_d#sha256:}"
+echo "c0ffee $id_e" > "$D/state/running"
+run prune 24
+tags=$(ls "$D/state/tags" | tr '\n' ' ')
+if [ "$rc" = 0 ] && [ ! -e "$D/state/tags/qrdb-ci-it_1111111111111111" ] &&
+  [ ! -e "$D/state/tags/ghcr.io_example-org_go-qrdb-ci-it_1111111111111111-main-1-1" ] &&
+  [ ! -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ] &&
+  [ -e "$D/state/tags/qrdb-ci-it_2222222222222222" ] && [ -e "$D/state/tags/qrdb-ci-it_3333333333333333" ] &&
+  [ -e "$D/state/tags/qrdb-ci-it_4444444444444444" ] && [ -e "$D/state/tags/alpine_3.20" ] &&
+  grep -q 'kept qrdb-ci-it:4444444444444444, a running container uses it' "$D/err"; then
+  ok "prune removes old CI images and keeps recent, running and foreign ones"
+else bad "prune removes old CI images and keeps recent, running and foreign ones (rc=$rc, left: $tags)"; cat "$D/err"; fi
+# 12b. A malformed bound is refused before any removal.
+reset
+run prune 0
+if [ "$rc" = 1 ] && grep -q 'is not a whole number of hours' "$D/err" && ! called '^rmi '; then
+  ok "prune refuses a malformed bound"
+else bad "prune refuses a malformed bound (rc=$rc)"; cat "$D/err"; fi
+# 12c. untag removes save's per-run tags, and nothing else.
+reset
+run save "$tc" "$D/art"
+run untag "$tc"
+if [ "$rc" = 0 ] && [ ! -e "$D/state/tags/${rtc//[^A-Za-z0-9._-]/_}" ] && [ -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ]; then
+  ok "untag removes the per-run tag only"
+else bad "untag removes the per-run tag only (rc=$rc)"; cat "$D/err"; fi
+
 # 13-15. check-ref accepts a digest reference under the owner in GHCR only.
 hex=$(printf 'c%.0s' $(seq 64))
 reset

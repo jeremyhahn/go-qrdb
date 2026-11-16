@@ -256,3 +256,101 @@ func TestCIImageID_ProducerCanFail(t *testing.T) {
 		})
 	}
 }
+
+// pruneIf is the condition of the self-hosted CI image retention step.
+const pruneIf = "${{ always() && runner.environment != 'github-hosted' }}"
+
+// pruneRun matches the retention step's command; group 1 is its bound in hours.
+var pruneRun = regexp.MustCompile(`^scripts/ci-image\.sh prune ([1-9][0-9]*)$`)
+
+// pruneProblems lists every ci.yml job that builds or loads a CI image
+// (scripts/ci-image.sh save or load) on a self-hosted runner without the self-hosted retention step
+// after it (#1597): a pool daemon outlives the job, and each commit's
+// integration image has its own tag, so without it the images accumulate.
+// The step runs `scripts/ci-image.sh prune <hours>`, at most 72, under
+// always() on self-hosted runners, after the job's last save or load.
+func pruneProblems(body []byte) ([]string, error) {
+	var wf digestWorkflow
+	if err := yaml.Unmarshal(body, &wf); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(wf.Jobs))
+	for name := range wf.Jobs {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	var problems []string
+	jobs := 0
+	for _, name := range names {
+		last, pruned := -1, -1
+		for i, s := range wf.Jobs[name].Steps {
+			// A load only a hosted runner runs (a job on the Docker-free
+			// pool) leaves nothing on a pool daemon.
+			if (strings.Contains(s.Run, "scripts/ci-image.sh save ") || strings.Contains(s.Run, "scripts/ci-image.sh load ")) &&
+				!strings.Contains(s.If, "runner.environment == 'github-hosted'") {
+				last = i
+			}
+			m := pruneRun.FindStringSubmatch(strings.TrimSpace(s.Run))
+			if m == nil {
+				continue
+			}
+			where := name + "'s step " + strconv.Quote(s.Name)
+			if h, err := strconv.Atoi(m[1]); err != nil || h > 72 {
+				problems = append(problems, where+" prunes at "+m[1]+" h; want a bound of at most 72 h")
+			}
+			if s.If != pruneIf {
+				problems = append(problems, where+" runs under "+strconv.Quote(s.If)+"; want "+pruneIf+
+					": a failed job must prune too, and a hosted VM is discarded")
+				continue
+			}
+			pruned = i
+		}
+		if last < 0 {
+			continue
+		}
+		jobs++
+		if pruned < last {
+			problems = append(problems, name+" builds or loads a CI image with no self-hosted `scripts/ci-image.sh prune` step after it: "+
+				"the pool daemon keeps every image")
+		}
+	}
+	if jobs == 0 {
+		problems = append(problems, "no job saves or loads a CI image: the gate checks nothing")
+	}
+	return problems, nil
+}
+
+func TestCIImageID_SelfHostedJobsPruneCIImages(t *testing.T) {
+	problems, err := pruneProblems(readCIWorkflowBytes(t))
+	if err != nil {
+		t.Fatalf("parse ci.yml: %v", err)
+	}
+	for _, p := range problems {
+		t.Error(p)
+	}
+}
+
+func TestCIImageID_PruneFixture(t *testing.T) {
+	step := "      - name: Prune old CI images\n        if: " + pruneIf + "\n        run: scripts/ci-image.sh prune 24\n"
+	good := imageIDFixture + step
+	if problems, err := pruneProblems([]byte(good)); err != nil || len(problems) != 0 {
+		t.Fatalf("fixture: err=%v problems=%v", err, problems)
+	}
+	load := "      - name: Load the integration image\n"
+	for name, bad := range map[string]string{
+		"no prune":                     imageIDFixture,
+		"a prune that a failure skips": strings.Replace(good, pruneIf, "${{ runner.environment != 'github-hosted' }}", 1),
+		"a prune before the load":      strings.Replace(imageIDFixture, load, step+load, 1),
+		"an unbounded prune":           strings.Replace(good, "prune 24", "prune 9999", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			problems, err := pruneProblems([]byte(bad))
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(problems) == 0 {
+				t.Fatalf("%s passed the gate", name)
+			}
+		})
+	}
+}

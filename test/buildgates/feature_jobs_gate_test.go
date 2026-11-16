@@ -216,6 +216,11 @@ func featureJobProblems(body []byte, want []string) []string {
 		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
+		// The self-hosted image prune trails the teardown; its shape and
+		// place are ci_image_id_handoff_test.go's pruneProblems to check.
+		if len(runs) == 3 && pruneRun.MatchString(strings.TrimSpace(s.Run)) && strings.TrimSpace(s.If) == pruneIf {
+			continue
+		}
 		if strings.HasPrefix(s.Uses, downloadArtifactAction) && len(runs) == 0 {
 			downloaded = s.With["name"] == "it-image"
 		}

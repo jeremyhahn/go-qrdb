@@ -437,6 +437,13 @@ jobs:
           rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image"
           if [ -n "$TOOLCHAIN_IMAGE" ]; then scripts/ci-image.sh untag "$TOOLCHAIN_IMAGE" $IT_IMAGE; fi
 
+      # #1597: a pool daemon outlives the job, and each commit's integration
+      # image has its own tag; drop the CI images neither built nor tagged in
+      # the last 24 h, never one a running container uses.
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # Every stage below runs its `make` target in the toolchain image as its own
   # step, through scripts/in-toolchain-image.sh, which copies the checkout
   # into the container. A failed step names its stage; `if: !cancelled()` runs
@@ -551,6 +558,10 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # v1.27.0 (ruling 211): `make lint-gates` beside `make lint`, on the PR tier.
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
@@ -641,6 +652,10 @@ jobs:
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   image:
     name: Devcontainer image [build, security, trivy image]
@@ -775,6 +790,10 @@ jobs:
         if: always()
         run: rm -f it-image.tar
 
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # CUSTOMIZE (go-qrdb, ruling 211, DS-7377): `make coverage` is ONE
   # repo-wide gate, measured in legs. Each leg is
   # `make coverage-leg COVER_LEG=<leg>` on a runner of its own, which writes
@@ -889,6 +908,10 @@ jobs:
       - name: Remove the temp Go caches
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb, DS-7377): the one coverage gate over every leg's
   # profile. It needs coverage, so a failed leg skips it and CI Gate fails on
@@ -1186,6 +1209,10 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # CUSTOMIZE (go-qrdb, DS-7377): `make test-sdk` in legs, the Makefile's
   # TEST_SDK_LEGS, each `make test-sdk-leg SDK_LEG=<leg>`; together they are
   # exactly `make test-sdk`. The whole measured 29.8 minutes (run 76127),
@@ -1273,6 +1300,10 @@ jobs:
         if: ${{ always() && runner.environment != 'github-hosted' }}
         run: bash scripts/ci-cache-clean.sh "$RUNNER_TEMP/ci-cache"
 
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # CUSTOMIZE (go-qrdb, #674): the self-spawned integration suites, one
   # feature list per shard; `make -s print-integration-features` is every
   # feature, each in exactly one shard (test/buildgates/feature_jobs_gate_test.go).
@@ -1349,6 +1380,10 @@ jobs:
       - name: Tear down (shard ${{ matrix.shard }})
         if: always()
         run: make docker-down-it IT_PROJECT="$IT_PROJECT"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   # CUSTOMIZE (go-qrdb): the multi-protocol CLI suites against two real qrdbd
   # servers in the Docker stack under test/integration/api, which builds its
@@ -1563,6 +1598,10 @@ jobs:
             echo "(no completed top-level tests parsed)"
           fi
 
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
+
   # CUSTOMIZE (go-qrdb): the TypeScript SDK and the desktop frontend, which
   # rotted unseen while they had no CI. `make test-typescript` runs the SDK's
   # npm ci, tsc, npm test (vitest, and the wire contract test pinning the
@@ -1687,6 +1726,10 @@ jobs:
           if [ -s "$RUNNER_TEMP/soak-project" ]; then read -r p < "$RUNNER_TEMP/soak-project"; fi
           make docker-down-it IT_PROJECT="$p"
           rm -f "$RUNNER_TEMP/soak-project"
+
+      - name: Prune old CI images
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: scripts/ci-image.sh prune 24
 
   signatures:
     name: Signatures
