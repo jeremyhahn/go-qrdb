@@ -385,6 +385,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
     // every write, KV or MVCC. Each key's history is an ordered list of
     // (revision, value) entries; value === null marks a delete.
     let mvccRevision = 0;
+    // Highest revision MVCCBinding.Compact has discarded history up to; a
+    // GetAtRevision below it fails as a compacted read does on a real daemon.
+    let compactedRevision = 0;
     const revisionHistory = new Map<string, Array<{ revision: number; value: string | null }>>();
 
     /** Records a write (value !== null) or delete (value === null) for key, bumping the shared revision counter, and returns the new revision. */
@@ -962,6 +965,56 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             return result;
           },
         },
+        // InvitationBinding mirrors cmd/qrdb/bindings_invitations.go. Invite
+        // issues a single-use token; Redeem (unauthenticated, dials its own
+        // server) exchanges an issued token plus a CSR for a certificate and
+        // consumes the token, so an unknown or reused token rejects.
+        InvitationBinding: (() => {
+          const issued = new Map<
+            string,
+            { userID: string; username: string; tenantID: string }
+          >();
+          let seq = 0;
+          return {
+            Invite: async (req: { username: string; email?: string; name?: string; roleIDs?: string[] }) => {
+              maybeReject("InvitationBinding.Invite");
+              if (!req || !req.username) throw new Error("username is required");
+              seq += 1;
+              const token = `inv-token-${seq}-${req.username}`;
+              const userID = `user-inv-${seq}`;
+              issued.set(token, { userID, username: req.username, tenantID: "default" });
+              return {
+                id: `invitation-${seq}`,
+                token,
+                userID,
+                username: req.username,
+                expiresAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+              };
+            },
+            Redeem: async (req: {
+              server?: string;
+              transport?: string;
+              caFile?: string;
+              tenantID: string;
+              token: string;
+              csrPEM: string;
+            }) => {
+              maybeReject("InvitationBinding.Redeem");
+              const inv = issued.get(req.token);
+              if (!inv) throw new Error("invitation token is invalid or expired");
+              if (!req.csrPEM || !req.csrPEM.includes("CERTIFICATE REQUEST")) {
+                throw new Error("csrPEM must be a PEM certificate request");
+              }
+              issued.delete(req.token);
+              return {
+                userID: inv.userID,
+                username: inv.username,
+                tenantID: req.tenantID || inv.tenantID,
+                certPEM: `-----BEGIN CERTIFICATE-----\nMOCK-${inv.username}\n-----END CERTIFICATE-----\n`,
+              };
+            },
+          };
+        })(),
         AdminBinding: {
           Health: async () => {
             maybeReject("AdminBinding.Health");
@@ -1043,6 +1096,9 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
           },
           GetAtRevision: async (key: string, revision: number) => {
             maybeReject("MVCCBinding.GetAtRevision");
+            if (revision < compactedRevision) {
+              throw new Error(`mvcc: required revision ${revision} has been compacted (compacted to ${compactedRevision})`);
+            }
             const val = valueAtRevision(key, revision);
             if (val === null) throw new Error(`key "${key}" not found at revision ${revision}`);
             return { key: encodeB64(key), value: encodeB64(val), revision };
@@ -1074,8 +1130,13 @@ async function injectWailsMock(page: Page, state: MockState): Promise<void> {
             }
             return { kvs: kvs.map((kv) => ({ key: encodeB64(kv.key), value: encodeB64(kv.value) })), count: kvs.length };
           },
-          Compact: async (_revision: number) => {
+          Compact: async (revision: number) => {
             maybeReject("MVCCBinding.Compact");
+            if (revision > mvccRevision) {
+              throw new Error(`mvcc: required revision ${revision} is a future revision`);
+            }
+            if (revision > compactedRevision) compactedRevision = revision;
+            (window as unknown as { __mvccCompactedRevision?: number }).__mvccCompactedRevision = compactedRevision;
           },
           CurrentRevision: async () => {
             maybeReject("MVCCBinding.CurrentRevision");
