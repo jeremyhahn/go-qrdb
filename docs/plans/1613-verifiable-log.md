@@ -13,7 +13,7 @@ the row shipped only when every line HOLDS.
 | 3 | Served on gRPC, QUIC, Unix, REST, MCP (and embedded) | HOLDS | `test/integration/vlog_cli_test.go:TestVlog_CLI_PerProtocol` (every verb over `multiProtocols`); `pkg/api/{grpc,quic,rest,mcp,unix}/*vlog*_test.go` |
 | 4 | sdk/go | HOLDS | `sdk/go/transport/*/transport_vlog_test.go` over `sdk/go/transport/internal/vlogtest` round trip; `sdk/go/types_vlog.go` |
 | 5 | TypeScript SDK | HOLDS | `sdk/typescript/test/vlog-contract.test.ts` (REST and Wails clients) |
-| 6 | Tenant isolation | HOLDS (unit) / GAP (CLI E2E) | `pkg/service/vlog_log_service_test.go:TestLogService_CreateLog_Refusals` (cross-tenant); no CLI E2E of a second tenant refused, as the architecture test plan requires — closed by step 2a |
+| 6 | Tenant isolation | HOLDS | `pkg/service/vlog_log_service_test.go:TestLogService_CreateLog_Refusals` (cross-tenant); `test/integration/vlog_tenant_confinement_cli_test.go:TestVlog_CLI_TenantConfinement_PerProtocol` (closed by step 2a) |
 | 7 | DEK | HOLDS (by design) | `docs/databases/architecture.md` §8: no second key layer; a caller encrypts entries with `DEKService` before appending, the leaf commits to the ciphertext |
 | 8 | Barrier | GAP | The log registry sits in the system shard, under the system barrier; a barrier-isolated tenant (`BarrierTenantLogNotSupportedError`) and a barrier-enabled database (`BarrierDatabaseLogNotSupportedError`) are refused (`pkg/server/lifecycle/seams_vlog_test.go:TestBuildServices_LogServiceRefusesBarrierTenants`, `...BarrierDatabases`). §8 of the architecture says the tenant's or database's barrier encrypts the records; the code does not serve such tenants at all. |
 | 9 | Replication | HOLDS | `sdk/go/node/clustered_vlog_test.go:TestClusteredCreateFunc_AppliesVerifiableLog`, `...LogRegistryPerReplica`; `pkg/store/vlog_apply_test.go:TestStoreVerifiableLog_SnapshotMidLogMatchesAPeer` |
@@ -28,9 +28,11 @@ the row shipped only when every line HOLDS.
 
 ## Slices (step 2)
 
-a. Row 6: `test/integration/vlog_tenant_confinement_cli_test.go`, every
-   transport: a tenant identity's `qrdb vlog` call naming a foreign tenant is
-   refused; its own tenant succeeds. Listed in `INTTEST_databases`.
+a. Row 6 (done): `test/integration/vlog_tenant_confinement_cli_test.go`,
+   every transport: two prefix tenants' identities; the same log name in each
+   is two logs with their own heads; a log one tenant created is neither
+   listed, read nor appended to by the other (the CLI carries no tenant flag:
+   the caller's certificate names the tenant). Listed in `INTTEST_databases`.
 b. Row 8 (barrier): not closed in this lane. Serving a barrier tenant or a
    barrier database needs the log registry and its sealed signing keys moved
    from the system shard into the tenant's (or database's) own barrier-sealed
