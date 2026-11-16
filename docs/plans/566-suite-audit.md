@@ -133,6 +133,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | pkg/sql/provider | TestQRDBSession_ImplementsTransactionSession | duplicate of the guard in session.go | the compile-time guard |
 | pkg/sql/provider | TestMetricsTable_ImplementsTable, TestNamespacesTable_ImplementsTable, TestDatapointsTable_ImplementsTable, TestVectorsTable_ImplementsTable | duplicate of the guards in metrics_table.go, namespaces_table.go, timeseries_table.go, vector_table.go | the compile-time guards |
 | sdk/go/transport/quic | TestTransport_Implements{Transport,KVClient,AdminClient,MVCCClient,TransactionClient,BatchClient,LeaseClient,UserClient,RoleClient,CertClient}Interface | duplicate of the package-level guards in transport.go, transport_auth.go, transport_mvcc.go | the compile-time guards |
+| pkg/database | TestBarrierBackend_InterfaceCompliance, TestStandaloneBackend_InterfaceCompliance, TestBackendStorageAdapter_InterfaceCompliance | duplicate of the package-level guards in backend_barrier.go, backend_standalone.go, backend_storage_adapter.go | the compile-time guards |
+| pkg/engine | TestKVEngine_ImplementsEngine, TestMVCCEngine_ImplementsEngine | duplicate of the package-level guards in kv_engine.go, mvcc_engine.go | the compile-time guards |
+| pkg/index | TestMemoryIndex_ImplementsIndex, TestMemoryIndex_ImplementsIndex_ViaNewMemoryIndex, TestStoragePebbleIndex_ImplementsIndex, TestStoragePebbleIndex_ImplementsIndexWithContext | duplicate of the package-level guards in memory_index.go, storage_pebble_index.go | the compile-time guards |
+| pkg/index/pebbleindex | TestIndex_ImplementsIndex, TestIndex_ImplementsIndex_ViaConstructor | duplicate of the package-level guard in index.go | the compile-time guard |
+| pkg/store | TestMVCCStateMachine_Implements{DiskStateMachine,Hasher}, TestPebbleStateMachine_Implements{DiskStateMachine,Hasher,NALookup} | duplicate of the package-level guards in mvcc.go, pebble.go | the compile-time guards |
 
 ## Trimmed tests
 

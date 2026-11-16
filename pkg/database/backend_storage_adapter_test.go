@@ -34,10 +34,6 @@ func newTestAdapter(t *testing.T) (*BackendStorageAdapter, *StandaloneBackend) {
 	return NewBackendStorageAdapter(inner), inner
 }
 
-func TestBackendStorageAdapter_InterfaceCompliance(t *testing.T) {
-	var _ seal.StorageBackend = (*BackendStorageAdapter)(nil)
-}
-
 func TestBackendStorageAdapter_PutGet(t *testing.T) {
 	a, _ := newTestAdapter(t)
 	ctx := context.Background()

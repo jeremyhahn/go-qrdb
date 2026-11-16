@@ -1981,10 +1981,6 @@ func TestIsInternalKey_BoundaryPrefixes(t *testing.T) {
 // Engine interface compliance
 // ---------------------------------------------------------------------------
 
-func TestMVCCEngine_ImplementsEngine(t *testing.T) {
-	var _ Engine = (*MVCCEngine)(nil)
-}
-
 // ---------------------------------------------------------------------------
 // Lookup: LeaseTimeToLive not found
 // ---------------------------------------------------------------------------
