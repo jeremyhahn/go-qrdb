@@ -15,7 +15,10 @@
 #     (blobs, a tree on the base commit's tree, a commit), so GitHub signs it
 #     and the Signatures check reads it as a `web-flow` commit.
 #   - With an open PR on the branch, the job first calls
-#     PUT pulls/N/update-branch and builds on the PR's new tip. It never
+#     PUT pulls/N/update-branch and builds on the PR's new tip; only a 422
+#     "already up to date" counts as current, any other failure or a head
+#     that never moves fails the job, and the tip must contain main
+#     (git merge-base --is-ancestor) before anything is built. It never
 #     force-updates a ref: a ref update is a fast-forward, and a branch left
 #     behind by an unmerged closed PR fails the job, for a person to close.
 #     The branch of a merged PR is deleted and re-created from main, which
@@ -77,21 +80,42 @@ jobs:
           set -euo pipefail
           owner=${REPO%%/*}
           pr=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$BRANCH&base=main" --jq '.[0].number // empty')
+          # main as the branch is brought up to it: the next step proves
+          # the commit it builds on contains it.
+          main=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
           if [ -n "$pr" ]; then
             head=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
-            # 202 starts the merge of main into the branch; 422 means there
-            # is nothing to merge. Either way read the tip it leaves.
-            if gh api -X PUT "repos/$REPO/pulls/$pr/update-branch" -f expected_head_sha="$head" >/dev/null 2>&1; then
+            # 202 starts the merge of main into the branch: wait for the
+            # head to move. A 422 saying the branch is already up to date
+            # leaves it as it is. Anything else, or a head that never
+            # moves, stops the job rather than bump a stale branch.
+            if out=$(gh api -X PUT "repos/$REPO/pulls/$pr/update-branch" -f expected_head_sha="$head" 2>&1); then
+              moved=
               for _ in $(seq 1 24); do
                 read -r -t 5 < /dev/zero || true
                 now=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
-                [ "$now" != "$head" ] && break
+                if [ "$now" != "$head" ]; then moved=1; break; fi
               done
+              if [ -z "$moved" ]; then
+                echo "::error::update-branch on #$pr was accepted but its head is still $head after 120 s"
+                exit 1
+              fi
+            else
+              case $out in
+                *"HTTP 422"*) up=$(grep -ci 'already up.to.date' <<<"$out" || true) ;;
+                *) up=0 ;;
+              esac
+              if [ "$up" = 0 ]; then
+                printf '%s\n' "$out" >&2
+                echo "::error::update-branch on #$pr failed; the branch cannot be brought up to main"
+                exit 1
+              fi
+              echo "#$pr is already up to date with main"
             fi
             sha=$(gh api "repos/$REPO/pulls/$pr" --jq .head.sha)
             echo "open PR #$pr on $BRANCH; building on its tip $sha"
           else
-            sha=$(gh api "repos/$REPO/git/ref/heads/main" --jq .object.sha)
+            sha=$main
             if gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
               merged=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$BRANCH&base=main&sort=updated&direction=desc" --jq '.[0].merged_at // empty')
               if [ -z "$merged" ]; then
@@ -105,10 +129,26 @@ jobs:
           fi
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "main=$main" >> "$GITHUB_OUTPUT"
 
+      # Full history, so the next step can test ancestry.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ steps.base.outputs.sha }}
+          fetch-depth: 0
+
+      # The bump must build on main: an update-branch that silently left
+      # the branch behind would land stale requirements over newer ones.
+      - name: Verify the base contains main
+        env:
+          MAIN_SHA: ${{ steps.base.outputs.main }}
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor "$MAIN_SHA" HEAD; then
+            echo "::error::$(git rev-parse HEAD) does not contain origin/main $MAIN_SHA; the branch was not brought up to main"
+            exit 1
+          fi
+          echo "base $(git rev-parse HEAD) contains origin/main $MAIN_SHA"
 
       - name: Mask the forge credentials
         run: |
