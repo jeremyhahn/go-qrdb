@@ -83,8 +83,10 @@ die() { printf '%s\n' "$@" >&2; exit 1; }
 #
 # Each stage's status is checked. A pipeline's exit status is its LAST stage's,
 # so `find | sed | sort` reports success when find fails part-way — defect (6).
+# vendor/, .git/ and testdata/ are skipped: the go tool ignores testdata, so a
+# fixture module there is not a module of this repository.
 discover_modules() {
-	_raw=$(find "$ROOT" -name go.mod -not -path '*/vendor/*' -not -path '*/.git/*' -print) || \
+	_raw=$(find "$ROOT" -name go.mod -not -path '*/vendor/*' -not -path '*/.git/*' -not -path '*/testdata/*' -print) || \
 		die "vet-modules: module discovery FAILED while traversing the tree." \
 		    "  Refusing to vet a partial list: a subset swept silently is the" \
 		    "  failure this script exists to prevent."
