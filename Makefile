@@ -2969,10 +2969,13 @@ test-ci-image: ## Test the CI image hand-off (save, load, GHCR push)
 # script's EXIT trap removed it, so every job killed first left one running
 # (#1264). scripts/in-toolchain-image.sh now configures the stage's own
 # namespace from a one-shot --rm container and traps INT, TERM and HUP. Tested
-# on a stub docker: a real run needs the runner's daemon.
+# on a stub docker: a real run needs the runner's daemon. The same target
+# proves scripts/ci-cache-dir.sh, which picks the stage's CI_CACHE_DIR per
+# runner kind (#1596), on a temp cache root.
 .PHONY: test-in-toolchain-image
 test-in-toolchain-image: ## Test that no stage container outlives its script
 	@./scripts/in-toolchain-image_test.sh
+	@./scripts/ci-cache-dir_test.sh
 
 .PHONY: check-tool-versions
 check-tool-versions:

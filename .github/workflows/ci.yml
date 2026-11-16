@@ -37,10 +37,17 @@
 #   - nothing a job builds survives into another job: docker-build saves each
 #     image it builds and uploads it as an artifact, and every consumer
 #     downloads and loads it, checking its image ID (scripts/ci-image.sh);
-#   - the Go build and golangci-lint caches are actions/cache entries under
-#     $RUNNER_TEMP/ci-cache, which scripts/in-toolchain-image.sh bind-mounts
-#     (CI_CACHE_DIR). A job restores main's newest entry; only a push to main
-#     saves one (CI_PUBLISH), so a pull request never writes main's cache;
+#   - the Go build and golangci-lint caches live where the scripts/ci-cache-dir
+#     step ("Point the stages at the Go caches") puts them (CI_CACHE_DIR, which
+#     scripts/in-toolchain-image.sh bind-mounts; #1596). On a hosted runner
+#     they are actions/cache entries under $RUNNER_TEMP/ci-cache: a job
+#     restores main's newest entry, and only a push to main saves one
+#     (CI_PUBLISH), so a pull request never writes main's cache. On a
+#     self-hosted pool host, whose temp dir is on the root filesystem and
+#     outlives the job, they are a persistent directory on /mnt/raid0, cleared
+#     past CI_CACHE_MAX_GB (40 GB), or the stage's named Docker volumes when
+#     /mnt/raid0 is not writable; actions/cache is skipped there, and every
+#     job removes $RUNNER_TEMP/ci-cache at its end;
 #   - every job that loads an image first frees a hosted runner's disk (the
 #     preinstalled SDKs it never uses); the step runs on the hosted runner
 #     alone (runner.environment == 'github-hosted'), never on a pool host,
@@ -475,6 +482,7 @@ jobs:
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
       # restored from main's newest entry and saved on a push to main alone.
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -484,7 +492,7 @@ jobs:
             go-lint-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -513,11 +521,17 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-lint-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
   # v1.27.0 (ruling 211): `make lint-gates` beside `make lint`, on the PR tier.
   lint-gates:
@@ -576,7 +590,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
-        if: ${{ steps.probe.outputs.has_target == 'true' }}
+        if: ${{ steps.probe.outputs.has_target == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -587,7 +601,7 @@ jobs:
 
       - name: Point the stages at the Go caches
         if: ${{ steps.probe.outputs.has_target == 'true' }}
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make lint-gates
         if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.TOOLCHAIN_IMAGE != '' }}
@@ -596,11 +610,17 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-lint-gates-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
   image:
     name: Devcontainer image [build, security, trivy image]
@@ -662,6 +682,7 @@ jobs:
           echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -671,7 +692,7 @@ jobs:
             go-image-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       # v1.9.2: a tag that selects no code is a typo that silently analyses
       # nothing.
@@ -713,11 +734,17 @@ jobs:
             make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-image-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
       - name: Tear down
         if: always()
@@ -792,6 +819,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -801,7 +829,7 @@ jobs:
             go-coverage-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       # GOTEST_TIMEOUT is go test's per-package budget, the job's limit less 5
       # minutes, so a hung package reports its goroutines before the runner
@@ -823,11 +851,17 @@ jobs:
           if-no-files-found: error
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-coverage-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, DS-7377): the one coverage gate over every leg's
   # profile. It needs coverage, so a failed leg skips it and CI Gate fails on
@@ -1094,6 +1128,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1103,18 +1138,24 @@ jobs:
             go-test-tags-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make test-tags
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-tags GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-test-tags-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, DS-7377): `make test-sdk` in legs, the Makefile's
   # TEST_SDK_LEGS, each `make test-sdk-leg SDK_LEG=<leg>`; together they are
@@ -1170,6 +1211,7 @@ jobs:
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1179,7 +1221,7 @@ jobs:
             go-test-sdk-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
-        run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
+        run: bash scripts/ci-cache-dir.sh >> "$GITHUB_ENV"
 
       - name: make test-sdk-leg ${{ matrix.leg }}
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1188,11 +1230,17 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
           key: go-test-sdk-${{ matrix.leg }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+
+      # CUSTOMIZE (go-qrdb, #1596): a pool host's temp dir outlives the job;
+      # remove any cache an older run left there.
+      - name: Remove the temp Go caches
+        if: ${{ always() && runner.environment != 'github-hosted' }}
+        run: rm -rf "$RUNNER_TEMP/ci-cache"
 
   # CUSTOMIZE (go-qrdb, #674): the self-spawned integration suites, one
   # feature list per shard; `make -s print-integration-features` is every
