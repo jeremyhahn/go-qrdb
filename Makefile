@@ -4229,16 +4229,27 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
 
+# TOOLCHAIN_IIDFILE and IT_IIDFILE, when set, name the file each build writes
+# its own image ID to (`docker build --iidfile`). CI's docker-build job pins
+# that ID (scripts/ci-image.sh pin), never a later lookup of the shared
+# content-hash tag, which another job on the daemon can retag in between
+# (#1597). A build the daemon already holds writes the ID its one check saw.
+TOOLCHAIN_IIDFILE ?=
+IT_IIDFILE ?=
+
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
 	@# image this tree would build.
-	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
+	@$(if $(TOOLCHAIN_IIDFILE),rm -f '$(TOOLCHAIN_IIDFILE)';) \
+	if id=$$(docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' 2>/dev/null); then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		$(if $(TOOLCHAIN_IIDFILE),printf '%s\n' "$$id" > '$(TOOLCHAIN_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+		$(DEVCONTAINER_BUILD) $(if $(TOOLCHAIN_IIDFILE),--iidfile '$(TOOLCHAIN_IIDFILE)') \
+			--target toolchain -t $(TOOLCHAIN_IMAGE) .; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
@@ -4252,15 +4263,19 @@ docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): an image ID names a loaded image" >&2; exit 1 ;; esac
-	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
+	@$(if $(IT_IIDFILE),rm -f '$(IT_IIDFILE)';) \
+	if id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null); then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
+		$(DEVCONTAINER_BUILD) $(if $(IT_IIDFILE),--iidfile '$(IT_IIDFILE)') \
+			--build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
 			--target integration -t $(IT_IMAGE) . || { \
 			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
+			id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null) || exit $$status; \
 			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
+			$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
 		}; \
 	fi
 

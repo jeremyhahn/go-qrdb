@@ -92,14 +92,19 @@ run_tag() { printf '%s-run-%s\n' "$1" "$(run_suffix)"; }
 # moment. The archive carries a per-run tag created from the ID; the ID behind
 # it is checked again after the save, and only then is the ID printed.
 pin() {
-	[ $# -eq 1 ] || die "usage: pin <image>"
-	local image=$1 id rtag got
+	[ $# -eq 2 ] || die "usage: pin <image> <iidfile>"
+	local image=$1 iidfile=$2 id rtag got
 	check_image "$image"
-	id=$(image_id "$image")
+	# The ID is the one the build itself wrote (docker build --iidfile), never
+	# a lookup of the shared tag: another job on this daemon can retag that
+	# between the build and this pin.
+	[ -f "$iidfile" ] || die "$iidfile does not exist: pin $image with the ID file its build wrote"
+	id=$(tr -d '[:space:]' < "$iidfile")
+	[[ $id =~ $id_re ]] || die "$iidfile holds '$id', not an image ID"
 	rtag=$(run_tag "$image")
 	docker tag "$id" "$rtag" || die "cannot tag $id as $rtag"
 	got=$(image_id "$rtag")
-	[ "$got" = "$id" ] || die "$rtag names $got after the tag, not $id, the image $image resolved to at the build"
+	[ "$got" = "$id" ] || die "$rtag names $got after the tag, not $id, the image $image's build wrote"
 	echo "==> pinned $image ($id) as $rtag" >&2
 	printf '%s\n' "$id"
 }

@@ -361,18 +361,23 @@ jobs:
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
             done )
+          # Each build writes its own image ID to a file of this job's
+          # (--iidfile), and pin tags that ID under a per-run tag: never a
+          # lookup of the shared content-hash tag, which another job on the
+          # daemon can retag between the build and the pin. save archives
+          # the pin.
+          iids=$(mktemp -d "$RUNNER_TEMP/iid.XXXXXX")
           if [ "$DOCS_ONLY" = true ]; then
-            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build-toolchain MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IIDFILE="$iids/toolchain"
             it_image=
           else
-            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+            make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" TOOLCHAIN_IIDFILE="$iids/toolchain" IT_IIDFILE="$iids/it"
             it_image=$(make -s it-image)
           fi
           rm -f "$RUNNER_TEMP/gomodauth.env"
-          # Pin each image's ID under a per-run tag at the build boundary;
-          # save archives the pin, never the shared tag another run can move.
-          scripts/ci-image.sh pin "$(make -s toolchain-image)" >/dev/null
-          if [ -n "$it_image" ]; then scripts/ci-image.sh pin "$it_image" >/dev/null; fi
+          scripts/ci-image.sh pin "$(make -s toolchain-image)" "$iids/toolchain" >/dev/null
+          if [ -n "$it_image" ]; then scripts/ci-image.sh pin "$it_image" "$iids/it" >/dev/null; fi
+          rm -rf "$iids"
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
 

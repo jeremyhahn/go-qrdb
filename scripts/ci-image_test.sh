@@ -96,11 +96,12 @@ tc=qrdb-toolchain:0123456789abcdef
 rtc=$tc-run-77-2
 ptc=ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main-77-2
 
-# reset: a daemon holding $tc as $id_a.
+# reset: a daemon holding $tc as $id_a, which its build wrote to $D/iid.
 reset() {
   rm -rf "$D/state" "$D/art"
   mkdir -p "$D/state"
   tagimg "$tc" "$id_a"
+  printf '%s\n' "$id_a" > "$D/iid"
 }
 tagimg() {
   mkdir -p "$D/state/tags" "$D/state/ids"
@@ -122,7 +123,7 @@ called() { grep -q -- "$1" "$D/state/calls" 2>/dev/null; }
 
 # 1. save writes the tar and the ID beside it and prints the ID.
 reset
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 if [ "$rc" = 0 ] && [ -s "$D/art/image.tar" ] && [ "$(cat "$D/art/image.id")" = "$id_a" ] &&
   [ "$(cat "$D/out")" = "$id_a" ] && called "^tag $id_a $rtc$" && called "^save -o $D/art/image.tar $rtc$" &&
   [ "$(sed -n 1p "$D/art/image.tar")" = "$id_a" ]; then
@@ -132,7 +133,7 @@ else bad "save writes the image and its ID (rc=$rc)"; cat "$D/err"; fi
 # 1a. #1597: another run moves the shared tag between save's resolve and its
 # `docker save`: the archive still holds the ID save resolved and recorded.
 reset
-run pin "$tc"; run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$tc" STUB_RETAG_ID="$id_b"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$tc" STUB_RETAG_ID="$id_b"
 if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/art/image.tar")" = "$id_a" ] && [ "$(cat "$D/art/image.id")" = "$id_a" ] &&
   ! called "^save -o $D/art/image.tar $tc$"; then
   ok "a tag moved during the save leaves the archive the recorded ID"
@@ -140,14 +141,14 @@ else bad "a tag moved during the save leaves the archive the recorded ID (rc=$rc
 # 1b. The archive is checked: a per-run tag that no longer names the resolved
 # ID after the save refuses the archive and records no ID.
 reset
-run pin "$tc"; run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$rtc" STUB_RETAG_ID="$id_b"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art" -- STUB_RETAG_ON=save STUB_RETAG_TAG="$rtc" STUB_RETAG_ID="$id_b"
 if [ "$rc" = 1 ] && grep -q "after the save, not $id_a" "$D/err" && [ ! -e "$D/art/image.id" ] && [ ! -s "$D/out" ]; then
   ok "save refuses an archive whose ID is not the resolved one"
 else bad "save refuses an archive whose ID is not the resolved one (rc=$rc)"; cat "$D/err"; fi
 # 1c. Codex P1: another run retags the shared name between the build (pin)
 # and the save: the archive and the recorded ID stay the build's.
 reset
-run pin "$tc"
+run pin "$tc" "$D/iid"
 pinned=$(cat "$D/out")
 tagimg "$tc" "$id_b"
 run save "$tc" "$D/art"
@@ -155,6 +156,24 @@ if [ "$pinned" = "$id_a" ] && [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/art/image.tar"
   [ "$(cat "$D/art/image.id")" = "$id_a" ] && [ "$(cat "$D/out")" = "$id_a" ]; then
   ok "a retag between the build and the save leaves the archive the build's ID"
 else bad "a retag between the build and the save leaves the archive the build's ID (rc=$rc)"; cat "$D/err"; fi
+# 1c2. Codex P1 (lane-verify): another job retags the shared name between the
+# build and the pin: pin records the ID the build wrote, not the tag's.
+reset
+tagimg "$tc" "$id_b"
+run pin "$tc" "$D/iid"
+if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$id_a" ] &&
+  [ "$(sed -n 1p "$D/state/tags/${rtc//[^A-Za-z0-9._-]/_}")" = "$id_a" ]; then
+  ok "a retag between the build and the pin pins the build's own ID"
+else bad "a retag between the build and the pin pins the build's own ID (rc=$rc, out=$(cat "$D/out"))"; cat "$D/err"; fi
+# 1c3. pin refuses a missing or malformed ID file rather than resolve the tag.
+reset
+run pin "$tc" "$D/no-iid"
+rc_missing=$rc
+echo 'not-an-id' > "$D/iid"
+run pin "$tc" "$D/iid"
+if [ "$rc_missing" = 1 ] && [ "$rc" = 1 ] && grep -q 'not an image ID' "$D/err" && ! called '^tag '; then
+  ok "pin refuses a missing or malformed build ID file"
+else bad "pin refuses a missing or malformed build ID file (rc=$rc_missing/$rc)"; cat "$D/err"; fi
 # 1d. save without a pin refuses rather than resolve the shared tag.
 reset
 run save "$tc" "$D/art"
@@ -171,7 +190,7 @@ else bad "save refuses an image that is not a content-hash tag (rc=$rc)"; fi
 
 # 3. load accepts the image docker-build built and removes the tar.
 reset
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 rm -rf "$D/state/tags" "$D/state/ids"
 run load "$D/art" "$tc" "$id_a"
 if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err"; then
@@ -182,7 +201,7 @@ else bad "load accepts the image docker-build built (rc=$rc)"; cat "$D/err"; fi
 # scripts/in-toolchain-image.sh runs the ID instead of the shared tag.
 reset
 rm -rf "$D/ids"
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids"
 if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$id_a" ] &&
   [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
@@ -191,7 +210,7 @@ else bad "load prints and records the verified ID (rc=$rc)"; cat "$D/err"; ls "$
 # A refused image records nothing.
 reset
 rm -rf "$D/ids"
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && [ ! -e "$D/ids" ]; then
   ok "a refused image records no ID"
@@ -200,7 +219,7 @@ else bad "a refused image records no ID (rc=$rc)"; fi
 # shared daemon) leaves the verified record as it was: consumers read the ID.
 reset
 rm -rf "$D/ids"
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids"
 run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
@@ -209,7 +228,7 @@ else bad "a replaced tag leaves the verified ID record (rc=$rc)"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 run load "$D/art" "$tc" "$id_a" -- STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && grep -q "loaded as $id_b, not $id_a" "$D/err"; then
   ok "load refuses a substituted image"
@@ -348,7 +367,7 @@ if [ "$rc" = 1 ] && grep -q 'is not a whole number of hours' "$D/err" && ! calle
 else bad "prune refuses a malformed bound (rc=$rc)"; cat "$D/err"; fi
 # 12c. untag removes save's per-run tags, and nothing else.
 reset
-run pin "$tc"; run save "$tc" "$D/art"
+run pin "$tc" "$D/iid"; run save "$tc" "$D/art"
 run untag "$tc"
 if [ "$rc" = 0 ] && [ ! -e "$D/state/tags/${rtc//[^A-Za-z0-9._-]/_}" ] && [ -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ]; then
   ok "untag removes the per-run tag only"
