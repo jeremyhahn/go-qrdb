@@ -24,8 +24,8 @@
 #   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <image> is <id>
 #   ci-image.sh push <local-image> <name>          prints ghcr.io/<owner>/<name>@sha256:<hex>
 #   ci-image.sh check-ref <ref>...                 validates digest references
-#   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY (status 1 on a miss)
-#   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY (never fails)
+#   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
+#   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
 #
 # registry-pull and registry-push are the pull-or-build path through the CI
 # image registry the runner's environment names in CI_IMAGE_REGISTRY (#1609,

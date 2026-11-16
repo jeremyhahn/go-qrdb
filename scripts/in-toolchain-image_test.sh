@@ -59,12 +59,21 @@ case $1 in
     shift
     for c in "$@"; do case $c in -*) ;; *) echo "$c" >> "$s/removed" ;; esac; done
     if [ -f "$s/logs-pid" ]; then kill "$(cat "$s/logs-pid")" 2>/dev/null || true; fi ;;
-  # The registry path (#1609): no image is on the stub's daemon; STUB_PULL=hit
-  # pulls one, hang stalls, anything else is a miss.
-  image) exit 1 ;;
+  # The registry path (#1609): no image is on the stub's daemon until a pull.
+  # STUB_PULL=hit pulls the digest asked for (STUB_PULL_SERVES: another one),
+  # whose repo digest `image inspect` then reports; hang stalls, anything
+  # else is a miss.
+  image)
+    case $* in
+      *RepoDigests*) [ -f "$s/pulled" ] || exit 1; cat "$s/pulled" ;;
+      *) exit 1 ;;
+    esac ;;
   pull)
     case ${STUB_PULL:-miss} in
-      hit) echo "Digest: sha256:$(printf 'd%.0s' $(seq 64))" ;;
+      hit)
+        d=${STUB_PULL_SERVES:-${2#*@}}
+        printf '%s@%s\n' "${2%@*}" "$d" > "$s/pulled"
+        echo "Digest: $d" ;;
       hang) exec sleep 30 ;;
       *) echo 'manifest unknown' >&2; exit 1 ;;
     esac ;;
@@ -427,10 +436,15 @@ cpus_are "docker info fails printing 0" 128 IN_IMAGE_CPUS=128 STUB_NCPU=0 STUB_N
 cpus_are "docker info fails printing 80" 128 IN_IMAGE_CPUS=128 STUB_NCPU=80 STUB_NCPU_RC=1
 
 # The CI image registry (#1609): an image not on the daemon is pulled from
-# CI_IMAGE_REGISTRY before the stage starts. The registry is a fake value.
+# CI_IMAGE_REGISTRY before the stage starts, by the digest its record in
+# CI_IMAGE_DIGEST_DIR names, never by tag alone. The registry is a fake value.
 reg=registry.test:5000
 tcimg=qrdb-toolchain:0123456789abcdef
 dig="sha256:$(printf 'd%.0s' $(seq 64))"
+rec="$D/records"
+rm -rf "$rec"
+mkdir -p "$rec"
+printf '%s\n' "$dig" > "$rec/qrdb-toolchain_0123456789abcdef"
 
 # Unset: today's path, no image, pull or tag call.
 reset
@@ -439,18 +453,37 @@ if [ "$rc" = 0 ] && ! called '^image ' && ! called '^pull ' && ! called '^tag ' 
   ok "registry: unset makes no registry call"
 else bad "registry: unset makes no registry call (rc=$rc)"; cat "$D/out"; fi
 
-# Hit: pulled and tagged to the local name, one line, then the stage runs.
+# Hit with a record: pulled by digest, checked, tagged to the local name, one
+# line, then the stage runs.
 reset
-img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
-if [ "$rc" = 0 ] && called "^pull $reg/$tcimg$" && called "^tag $reg/$tcimg $tcimg$" &&
-  [ "$(grep -c "^pulled $reg/$tcimg $dig$" "$D/out")" = 1 ] && called '^create ' && ! called '^push '; then
-  ok "registry: a hit pulls the image before the stage"
-else bad "registry: a hit pulls the image before the stage (rc=$rc)"; cat "$D/out"; fi
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$rc" = 0 ] && called "^pull $reg/qrdb-toolchain@$dig$" && ! called "^pull $reg/$tcimg$" &&
+  called "^tag $reg/qrdb-toolchain@$dig $tcimg$" &&
+  [ "$(grep -c "^pulled $reg/qrdb-toolchain@$dig$" "$D/out")" = 1 ] && called '^create ' && ! called '^push '; then
+  ok "registry: a hit with a record pulls the image by digest before the stage"
+else bad "registry: a hit with a record pulls the image by digest before the stage (rc=$rc)"; cat "$D/out"; fi
+
+# Hit without a record: the tag is never trusted; no pull, the stage runs.
+reset
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$D/no-records" STUB_PULL=hit
+if [ "$rc" = 0 ] && ! called '^pull ' && ! called '^tag ' && called '^create ' && ! grep -q 'pulled ' "$D/out"; then
+  ok "registry: a hit without a record is not pulled"
+else bad "registry: a hit without a record is not pulled (rc=$rc)"; cat "$D/out"; fi
+
+# Digest mismatch: the registry serves another digest; it is not tagged, one
+# line says so, and the stage runs.
+reset
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit \
+  STUB_PULL_SERVES="sha256:$(printf 'e%.0s' $(seq 64))"
+if [ "$rc" = 0 ] && ! called '^tag ' && called '^create ' && ! grep -q '^pulled ' "$D/out" &&
+  [ "$(grep -c 'does not match its record' "$D/out")" = 1 ]; then
+  ok "registry: a digest mismatch is a miss"
+else bad "registry: a digest mismatch is a miss (rc=$rc)"; cat "$D/out"; fi
 
 # Miss: the pull fails silently and the stage runs as without a registry.
 reset
-img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=miss
-if [ "$rc" = 0 ] && called "^pull $reg/$tcimg$" && ! called '^tag ' && called '^create ' &&
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=miss
+if [ "$rc" = 0 ] && called "^pull $reg/qrdb-toolchain@$dig$" && ! called '^tag ' && called '^create ' &&
   ! grep -q 'pulled \|manifest unknown' "$D/out"; then
   ok "registry: a miss falls back to today's path"
 else bad "registry: a miss falls back to today's path (rc=$rc)"; cat "$D/out"; fi
@@ -458,7 +491,7 @@ else bad "registry: a miss falls back to today's path (rc=$rc)"; cat "$D/out"; f
 # Unreachable: a hung registry is cut off by the timeout and the stage runs.
 reset
 start=$SECONDS
-img=$tcimg run CI_IMAGE_REGISTRY="$reg" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
 if [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && ! called '^tag ' && called '^create '; then
   ok "registry: a hung registry times out and the stage runs"
 else bad "registry: a hung registry times out and the stage runs (rc=$rc)"; cat "$D/out"; fi

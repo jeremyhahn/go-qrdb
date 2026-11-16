@@ -4203,8 +4203,9 @@ docker-build-toolchain:
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
 	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
-	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, and a
-	@# build is pushed to it; unset, both ci-image.sh calls do nothing.
+	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, by
+	@# the digest recorded in CI_IMAGE_DIGEST_DIR only, and a build is pushed
+	@# to it and its digest recorded; unset, both ci-image.sh calls do nothing.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
 	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \

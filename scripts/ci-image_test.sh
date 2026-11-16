@@ -33,7 +33,11 @@ case $1 in
     [ -f "$s/id" ] || exit 1
     case $* in
       *RepoDigests*)
-        [ -n "${STUB_NO_DIGEST:-}" ] || printf '%s\n' "other.example/x@sha256:$(printf 'a%.0s' $(seq 64))" "$(cat "$s/pushed")@sha256:$(printf 'b%.0s' $(seq 64))" ;;
+        if [ -z "${STUB_NO_DIGEST:-}" ]; then
+          printf '%s\n' "other.example/x@sha256:$(printf 'a%.0s' $(seq 64))"
+          [ ! -f "$s/pushed" ] || printf '%s@sha256:%s\n' "$(cat "$s/pushed")" "$(printf 'b%.0s' $(seq 64))"
+          [ ! -f "$s/pulled" ] || cat "$s/pulled"
+        fi ;;
       *) cat "$s/id" ;;
     esac ;;
   save) printf 'tar-of-%s' "$(cat "$s/id")" > "$3" ;;
@@ -41,10 +45,15 @@ case $1 in
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
   pull)
-    # STUB_PULL: hit pulls the image, hang never answers (a registry that
-    # accepts the connection and stalls), anything else is a miss.
+    # STUB_PULL: hit pulls the digest asked for (STUB_PULL_SERVES: another
+    # one), whose repo digest `image inspect` then reports; hang never answers
+    # (a registry that accepts the connection and stalls); anything else is a
+    # miss.
     case ${STUB_PULL:-miss} in
-      hit) echo 'Status: Downloaded newer image'; echo "Digest: sha256:$(printf 'd%.0s' $(seq 64))" ;;
+      hit)
+        d=${STUB_PULL_SERVES:-${2#*@}}
+        printf '%s@%s\n' "${2%@*}" "$d" > "$s/pulled"
+        echo 'Status: Downloaded newer image'; echo "Digest: $d" ;;
       hang) exec sleep 30 ;;
       *) echo 'manifest unknown' >&2; exit 1 ;;
     esac ;;
@@ -219,36 +228,93 @@ if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ ! -e "$D/state/calls" ] && [ ! -s "$
   ok "registry: unset makes no docker call and logs nothing"
 else bad "registry: unset makes no docker call and logs nothing (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
 
-# 17. Hit: pulled by the content-hash tag, tagged to the local name, one line.
+# The digest records (P1, Codex): a registry pull is trusted only by the digest
+# the producer's push recorded under CI_IMAGE_DIGEST_DIR (a GitHub cache entry
+# in CI), one file per content-hash tag, never by the tag alone.
+itrepo=$reg/qrdb-ci-it
+pushdig="sha256:$(printf 'b%.0s' $(seq 64))"
+rec="$D/records"
+records() { rm -rf "$rec"; mkdir -p "$rec"; [ $# -eq 0 ] || printf '%s\n' "$1" > "$rec/qrdb-ci-it_fedcba9876543210"; }
+
+# 17. Hit with a record: pulled by digest, the pulled image's digest checked,
+# tagged to the local name, one line.
 reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$rc" = 0 ] && called "^pull $itrepo@$dig$" && ! called "^pull $reg/$it$" &&
+  called "^image inspect .*RepoDigests.* $itrepo@$dig$" && called "^tag $itrepo@$dig $it$" &&
+  [ "$(cat "$D/err")" = "pulled $itrepo@$dig" ] && ! called '^push ' && ! called '^login '; then
+  ok "registry: a hit with a record is pulled by digest, checked and tagged"
+else bad "registry: a hit with a record is pulled by digest, checked and tagged (rc=$rc)"; cat "$D/err"; fi
+
+# 17a. Hit without a record (no file, or no record directory at all): no pull,
+# a silent miss, so the caller builds.
+reset
+records
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+norec_rc=$rc norec_err=$(cat "$D/err")
 run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
-if [ "$rc" = 0 ] && called "^pull $reg/$it$" && called "^tag $reg/$it $it$" &&
-  [ "$(cat "$D/err")" = "pulled $reg/$it $dig" ] && ! called '^push ' && ! called '^login '; then
-  ok "registry: a hit pulls and tags the image and logs one pulled line"
-else bad "registry: a hit pulls and tags the image and logs one pulled line (rc=$rc)"; cat "$D/err"; fi
+if [ "$norec_rc" = 1 ] && [ -z "$norec_err" ] && [ "$rc" = 1 ] && [ ! -s "$D/err" ] &&
+  ! called '^pull ' && ! called '^tag '; then
+  ok "registry: a hit without a record is not pulled"
+else bad "registry: a hit without a record is not pulled (rc=$norec_rc/$rc)"; cat "$D/err"; fi
+
+# 17b. A record that is not a sha256 digest is no record.
+reset
+records latest
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$rc" = 1 ] && ! called '^pull ' && [ ! -s "$D/err" ]; then
+  ok "registry: a malformed record is not pulled"
+else bad "registry: a malformed record is not pulled (rc=$rc)"; cat "$D/err"; fi
+
+# 17c. Digest mismatch: the registry serves another digest; it is not tagged,
+# one line says so, and the caller builds.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit \
+  STUB_PULL_SERVES="sha256:$(printf 'e%.0s' $(seq 64))"
+if [ "$rc" = 1 ] && ! called "^tag .* $it$" &&
+  [ "$(cat "$D/err")" = "miss, $itrepo@$dig does not match its record" ]; then
+  ok "registry: a digest mismatch is a miss"
+else bad "registry: a digest mismatch is a miss (rc=$rc)"; cat "$D/err"; fi
 
 # 18. Miss: the pull fails silently (the caller builds), the push tags and
-# pushes the build and logs one line.
+# pushes the build, records its repo digest and logs one line.
 reset
-run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=miss
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=miss
 pull_rc=$rc pull_err=$(cat "$D/err")
-run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg"
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec"
 if [ "$pull_rc" = 1 ] && [ -z "$pull_err" ] && [ "$rc" = 0 ] && called "^tag $it $reg/$it$" &&
-  called "^push $reg/$it$" && [ "$(cat "$D/err")" = "miss, built and pushed $reg/$it" ] && ! called '^login '; then
-  ok "registry: a miss pushes the build and logs one line"
-else bad "registry: a miss pushes the build and logs one line (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+  called "^push $reg/$it$" && [ "$(cat "$D/err")" = "miss, built and pushed $itrepo@$pushdig" ] &&
+  [ "$(cat "$rec/qrdb-ci-it_fedcba9876543210")" = "$pushdig" ] && ! called '^login '; then
+  ok "registry: a miss pushes the build, records its digest and logs one line"
+else bad "registry: a miss pushes the build, records its digest and logs one line (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
 
-# 19. Unreachable: a pull and a push that hang are cut off by the timeout; the
-# pull is a miss, the push failure is logged and neither fails.
+# 18a. A push the registry reports no digest for records nothing.
 reset
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_NO_DIGEST=1
+if [ "$rc" = 0 ] && [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ] &&
+  [ "$(cat "$D/err")" = "miss, built and pushed $reg/$it, no digest to record" ]; then
+  ok "registry: a push with no digest records nothing"
+else bad "registry: a push with no digest records nothing (rc=$rc)"; cat "$D/err"; fi
+
+# 19. Unreachable: a pull and a push that stall are cut off by the timeout;
+# the pull is a miss, the push failure is logged, nothing is recorded and
+# neither fails.
+reset
+records "$dig"
 start=$SECONDS
-run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
 pull_rc=$rc
-run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=1
-if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] &&
-  [ "$(cat "$D/err")" = "miss, built, push failed" ]; then
-  ok "registry: a hung registry times out, falls back and logs the push failure"
-else bad "registry: a hung registry times out, falls back and logs the push failure (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=1
+if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && called "^pull $itrepo@$dig$" &&
+  [ "$(cat "$D/err")" = "miss, built, push failed" ] && [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ]; then
+  ok "registry: a stalled pull and push time out, fall back and log the push failure"
+else bad "registry: a stalled pull and push time out, fall back and log the push failure (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
 
 # 20. Unreachable: a refused push (closed port) is logged, never retried, never fatal.
 reset

@@ -415,7 +415,7 @@ jobs:
         run: |
           lan_push() {
             ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
+            if docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker push -q "$ref" >/dev/null 2>&1; then
               echo "$3=$TAG" >> "$GITHUB_OUTPUT"
             else
               echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
@@ -509,7 +509,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -632,7 +632,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -723,7 +723,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -759,7 +759,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -912,7 +912,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -1236,7 +1236,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -1334,7 +1334,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -1450,7 +1450,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -1625,7 +1625,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
@@ -1812,7 +1812,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"

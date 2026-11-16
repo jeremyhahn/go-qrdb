@@ -144,7 +144,8 @@ at the commit under test (handbook `ci-standard.md` §2, `devcontainer.md` §1).
 the Docker `test/integration/api` stack, and runs none of these stages.
 `make docker-build-toolchain` builds the toolchain image alone, under its
 content-hash tag, and skips the build when that tag is already on the daemon.
-When the runner's environment sets `CI_IMAGE_REGISTRY` (host:port, plain HTTP, no login), `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` first pull that tag from it, and push a build to it (`scripts/image-registry.sh`, #1609); a failed or hung pull or push, each bounded by `CI_IMAGE_REGISTRY_TIMEOUT` seconds, falls back to the build and never fails the job, and each image logs one line: `pulled <ref> <digest>`, `miss, built and pushed <ref>` or `miss, built, push failed`.
+When the runner's environment sets `CI_IMAGE_REGISTRY` (host:port, plain HTTP, no login), `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` first pull the image from it, and push a build to it (`scripts/image-registry.sh`, #1609); a failed or hung pull or push, each bounded by `CI_IMAGE_REGISTRY_TIMEOUT` seconds (default 900), falls back to the build and never fails the job, and each image logs one line: `pulled <repo>@<digest>`, `miss, built and pushed <repo>@<digest>` or `miss, built, push failed`.
+Digest pinning: the plain-HTTP registry is never trusted by tag. The push records the pushed image's repo digest in `CI_IMAGE_DIGEST_DIR` (one `<name>_<tag>` file per content-hash tag), which `docker-build` keeps in a GitHub Actions cache entry keyed by that tag, never in the repository; a pull asks for `<repo>@sha256:<digest>` only when that record exists and checks the pulled image carries it, and no record or a mismatch is a miss that builds.
 `make gosec` is the gosec scan
 alone, with no network, which the PR tier's `lint` job runs and
 `make security` calls.

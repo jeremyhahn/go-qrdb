@@ -254,8 +254,9 @@ esac
 #
 # CUSTOMIZE (go-qrdb): an image not on the daemon is first pulled from the CI
 # image registry the runner names in CI_IMAGE_REGISTRY (#1609,
-# scripts/image-registry.sh). A miss or a hung registry falls through to the run
-# as before; unset, there is no extra docker call.
+# scripts/image-registry.sh), by the digest recorded in CI_IMAGE_DIGEST_DIR only.
+# No record, a mismatch, a miss or a hung registry falls through to the run as
+# before; unset, there is no extra docker call.
 if [ -n "${CI_IMAGE_REGISTRY:-}" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
   # shellcheck source=scripts/image-registry.sh
   . "$(dirname "${BASH_SOURCE[0]}")/image-registry.sh"
