@@ -3878,6 +3878,19 @@ func attemptAutoUnseal(ctx context.Context, barrier *seal.StorageBarrier, sealCf
 			log.Warn("node: barrier initialize failed", "error", initErr)
 			return false
 		}
+		// A single-admin initialization that requested a system SO and
+		// never made its record durable (a failed write, or a crash
+		// between the barrier's initialization and the write) leaves its
+		// intent standing. Auto-unsealing here would boot without that SO
+		// and skip the sealed window whose initialization retry completes
+		// the handoff, so the barrier stays sealed, as the daemon's
+		// unsealNoneBarrier keeps it. An unreadable intent is treated as
+		// standing (fail closed).
+		if pending, intentErr := barrier.SystemSOIntent(ctx); intentErr != nil || pending {
+			log.Warn("node: barrier kept sealed: a requested system SO was never recorded; retry the initialization",
+				"intent_read_error", intentErr)
+			return false
+		}
 		// Already initialized: unseal.
 		if unsealErr := barrier.Unseal(ctx, creds); unsealErr != nil {
 			if errors.Is(unsealErr, seal.ErrAlreadyUnsealed) {
