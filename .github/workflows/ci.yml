@@ -519,7 +519,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -642,7 +651,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -733,7 +751,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -769,7 +796,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -922,7 +958,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1019,7 +1064,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1097,7 +1151,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1168,7 +1231,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1246,7 +1318,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1344,7 +1425,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1460,7 +1550,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1635,7 +1734,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1822,7 +1930,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
