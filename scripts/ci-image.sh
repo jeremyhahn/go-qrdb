@@ -272,14 +272,19 @@ epoch() {
 
 # prune is the self-hosted retention of the CI images. A pool daemon outlives
 # every job, and each commit's integration image has its own tag, so without
-# it the images accumulate. It removes each CI image tag whose image was
-# neither built nor tagged (a build, a load or a save tags it) in the last
-# <hours> (default 24), skipping every image a running container uses; the
-# daemon deletes an image with its last tag, and refuses one a stopped
-# container holds, which is left. No other image is touched.
+# it the images accumulate. It removes each image whose every tag is a CI
+# image tag and which was neither built nor tagged (a build, a load or a save
+# tags it) in the last <hours> (default 24), skipping every image a running
+# container uses. It removes the image by the immutable ID it checked, never
+# by a tag: another job can move a shared content-hash tag to a fresh image
+# between the check and the removal, and that image must survive. There is
+# no --force, so the daemon refuses an image a container holds or one tagged
+# into more than one repository, and prune leaves it. An image that also
+# carries a tag of any other image family is not touched.
 prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
 	local hours=${1:-24} now cutoff running="" c id ref t created tagged newest
+	local -A refs=() foreign=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
 	now=$(date +%s)
 	cutoff=$((now - hours * 3600))
@@ -288,8 +293,20 @@ prune() {
 		running+=" $(docker inspect -f '{{.Image}}' "$c" 2>/dev/null || true)"
 	done < <(docker ps -q --no-trunc)
 	while read -r id ref; do
+		[[ $id =~ $id_re ]] || continue
 		case $ref in *:'<none>') continue ;; esac
-		ci_ref "$ref" || continue
+		if ci_ref "$ref"; then
+			refs[$id]+=" $ref"
+		else
+			foreign[$id]=1
+		fi
+	done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}')
+	for id in "${!refs[@]}"; do
+		ref=${refs[$id]# }
+		if [ -n "${foreign[$id]:-}" ]; then
+			echo "==> prune: kept $ref ($id), it also carries a tag that is not a CI image's" >&2
+			continue
+		fi
 		case " $running " in *" $id "*)
 			echo "==> prune: kept $ref, a running container uses it" >&2
 			continue ;;
@@ -299,12 +316,12 @@ prune() {
 		tagged=$(epoch "${t#* }")
 		newest=$((created > tagged ? created : tagged))
 		[ "$newest" -lt "$cutoff" ] || continue
-		if docker rmi "$ref" >/dev/null 2>&1; then
+		if docker image rm "$id" >/dev/null 2>&1; then
 			echo "==> prune: removed $ref ($id)" >&2
 		else
-			echo "==> prune: kept $ref, the daemon refused its removal" >&2
+			echo "==> prune: kept $ref ($id), the daemon refused its removal" >&2
 		fi
-	done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}')
+	done
 }
 
 main() {

@@ -22,7 +22,7 @@ mkdir -p "$D/bin"
 # $s/tagtime/<hex> its build and last-tag times (RFC 3339); $s/running lists
 # "<container> <ID>" of running containers. `docker save` writes the saved
 # ref's ID and the ref into the "tar"; `docker load` puts them back
-# (STUB_LOAD_ID overrides the ID). STUB_RETAG_ON=save|push moves the tag
+# (STUB_LOAD_ID overrides the ID). STUB_RETAG_ON=save|push|rm moves the tag
 # STUB_RETAG_TAG to STUB_RETAG_ID just before that command runs: another run
 # retagging on a shared daemon. STUB_NO_DIGEST makes a push report no repo
 # digest. STUB_PUSH_FAILS makes the first that many pushes fail with a
@@ -51,6 +51,20 @@ case $1 in
   image)
     case $2 in
       ls) for f in "$s"/tags/*; do [ -f "$f" ] && printf '%s %s\n' "$(sed -n 1p "$f")" "$(sed -n 2p "$f")"; done; exit 0 ;;
+      rm)
+        # As the daemon without --force: an ID in use by a running container
+        # or tagged into more than one repository is refused; otherwise the
+        # image goes with every tag that still names it.
+        retag rm
+        id=${*: -1}; [ -e "$s/ids/${id#sha256:}" ] || exit 1
+        if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$id"; then exit 1; fi
+        files=(); repos=""
+        for f in "$s"/tags/*; do
+          [ -f "$f" ] && [ "$(sed -n 1p "$f")" = "$id" ] || continue
+          files+=("$f"); r=$(sed -n 2p "$f"); repos+="${r%:*}"$'\n'
+        done
+        [ "$(printf '%s' "$repos" | sort -u | wc -l)" -le 1 ] || exit 1
+        rm -f "${files[@]}" "$s/ids/${id#sha256:}"; exit 0 ;;
     esac
     ref=${*: -1}
     id=$(resolve "$ref") || exit 1
@@ -71,6 +85,7 @@ case $1 in
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) id=$(resolve "$2") || exit 1; settag "$3" "$id" ;;
   rmi)
+    retag rm
     f="$s/tags/$(key "$2")"; [ -f "$f" ] || exit 1
     if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$(sed -n 1p "$f")"; then exit 1; fi
     rm -f "$f" ;;
@@ -340,12 +355,13 @@ new=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
 reset
 mkdir -p "$D/state/created" "$D/state/tagtime"
 tagimg qrdb-ci-it:1111111111111111 "$id_b"            # old: removed
-tagimg ghcr.io/example-org/go-qrdb-ci-it:1111111111111111-main-1-1 "$id_b" # old, pushed: removed
+id_g="sha256:$(printf '7%.0s' $(seq 64))"
+tagimg ghcr.io/example-org/go-qrdb-ci-it:1111111111111111-main-1-1 "$id_g" # old, pushed: removed
 tagimg qrdb-ci-it:2222222222222222 "$id_c"            # built an hour ago: kept
 tagimg qrdb-ci-it:3333333333333333 "$id_d"            # old, tagged an hour ago: kept
 tagimg qrdb-ci-it:4444444444444444 "$id_e"            # old, running: kept
 tagimg alpine:3.20 "$id_f"                            # old, not a CI image: kept
-for i in "$id_a" "$id_b" "$id_d" "$id_e" "$id_f"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+for i in "$id_a" "$id_b" "$id_d" "$id_e" "$id_f" "$id_g"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
 echo "$new" > "$D/state/created/${id_c#sha256:}"
 echo "$new" > "$D/state/tagtime/${id_d#sha256:}"
 echo "c0ffee $id_e" > "$D/state/running"
@@ -359,10 +375,39 @@ if [ "$rc" = 0 ] && [ ! -e "$D/state/tags/qrdb-ci-it_1111111111111111" ] &&
   grep -q 'kept qrdb-ci-it:4444444444444444, a running container uses it' "$D/err"; then
   ok "prune removes old CI images and keeps recent, running and foreign ones"
 else bad "prune removes old CI images and keeps recent, running and foreign ones (rc=$rc, left: $tags)"; cat "$D/err"; fi
+# 12a2. Codex P1 (lane-verify): another job moves a shared tag to a fresh
+# image between prune's check and its removal. prune removes the old image
+# by its checked ID; the fresh image and the tag that now names it survive.
+reset
+rm -f "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}"
+mkdir -p "$D/state/created"
+tagimg qrdb-ci-it:1111111111111111 "$id_b"
+echo "$old" > "$D/state/created/${id_b#sha256:}"
+echo "$new" > "$D/state/created/${id_c#sha256:}"
+run prune 24 -- STUB_RETAG_ON=rm STUB_RETAG_TAG=qrdb-ci-it:1111111111111111 STUB_RETAG_ID="$id_c"
+if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/qrdb-ci-it_1111111111111111" 2>/dev/null)" = "$id_c" ] &&
+  [ -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] && ! called '^rmi '; then
+  ok "prune removes the checked ID, not a tag another job moved to a fresh image"
+else bad "prune removes the checked ID, not a tag another job moved to a fresh image (rc=$rc)"; cat "$D/err"; fi
+# 12a3. An old CI image that also carries a foreign tag, or tags in two
+# repositories, is left: prune never forces a removal.
+reset
+mkdir -p "$D/state/created"
+tagimg qrdb-ci-it:5555555555555555 "$id_b"
+tagimg mytool:keep "$id_b"
+tagimg qrdb-ci-it:6666666666666666 "$id_c"
+tagimg ghcr.io/example-org/go-qrdb-ci-it:6666666666666666-main-2-1 "$id_c"
+for i in "$id_a" "$id_b" "$id_c"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+run prune 24
+if [ "$rc" = 0 ] && [ -e "$D/state/tags/mytool_keep" ] && [ -e "$D/state/tags/qrdb-ci-it_5555555555555555" ] &&
+  [ -e "$D/state/tags/qrdb-ci-it_6666666666666666" ] && [ ! -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ] &&
+  grep -q 'kept qrdb-ci-it:5555555555555555 .*not a CI image' "$D/err" && grep -q 'the daemon refused its removal' "$D/err"; then
+  ok "prune leaves an image with a foreign tag or tags in two repositories"
+else bad "prune leaves an image with a foreign tag or tags in two repositories (rc=$rc)"; cat "$D/err"; fi
 # 12b. A malformed bound is refused before any removal.
 reset
 run prune 0
-if [ "$rc" = 1 ] && grep -q 'is not a whole number of hours' "$D/err" && ! called '^rmi '; then
+if [ "$rc" = 1 ] && grep -q 'is not a whole number of hours' "$D/err" && ! called '^rmi ' && ! called '^image rm '; then
   ok "prune refuses a malformed bound"
 else bad "prune refuses a malformed bound (rc=$rc)"; cat "$D/err"; fi
 # 12c. untag removes save's per-run tags, and nothing else.
