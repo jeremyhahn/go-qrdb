@@ -904,7 +904,7 @@ func TestRunFirstBoot_StrictRestartRefusesAdminHoldingSO(t *testing.T) {
 
 	// Boot 2, strict: refused, naming the account.
 	err := runFirstBoot(ctx, node, testLeaderWait, 1, userSvc, roleSvc, &mockTenantServicer{}, true, nil, "", auth.MTLSBindingRequired, pendingStore, nil, certPEM, nil, soTrustSeams{})
-	var conflict *StrictSeparationSOAdminError
+	var conflict *firstboot.StrictSeparationSOAdminError
 	require.ErrorAs(t, err, &conflict)
 	require.Equal(t, admin.ID, conflict.UserID)
 	require.Equal(t, tenantid.System, conflict.AdminTenantID)

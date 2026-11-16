@@ -55,6 +55,9 @@ func (n *Node) FirstBoot(ctx context.Context, deps firstboot.Dependencies) (*fir
 	}
 	// The node's strict posture always wins: a caller can never relax it.
 	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
+	if err := n.checkStrictSeparationHolders(ctx, deps.SeparationOfDuties); err != nil {
+		return nil, err
+	}
 	n.defaultSOPINs(&deps)
 	result, err := firstBootUnderPolicy(ctx, deps, auth.MTLSBindingPolicy(n.bindingPolicy.Load()), users)
 	if err != nil {
@@ -93,6 +96,9 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	users := n.UserService()
 	// The node's strict posture always wins: a caller can never relax it.
 	deps.SeparationOfDuties = deps.SeparationOfDuties || n.StrictSeparation()
+	if err := n.checkStrictSeparationHolders(ctx, deps.SeparationOfDuties); err != nil {
+		return nil, err
+	}
 
 	adminCertPEM, err := firstboot.ResolveAdminCertForFirstBoot(ctx, store, users, policy, timeout)
 	if err != nil {
@@ -169,6 +175,23 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 // one event in the node's audit log on a first recording or a change from
 // the recorded posture (go-qrdb#1128). A node with no services yet has no
 // store to record into.
+// checkStrictSeparationHolders refuses a strict first boot, before any
+// write, while an account of this node's store holds the system SO role
+// together with Admin: the same fail-closed check cmd/qrdbd runs at the
+// standard-to-strict posture change (SPEC row 124). Initialize alone does
+// not catch it: with no SO to enrol its pre-flight returns early, and an
+// existing admin is accepted without looking at its SO role.
+func (n *Node) checkStrictSeparationHolders(ctx context.Context, strict bool) error {
+	if !strict {
+		return nil
+	}
+	svcNode := n.svcNode.Load()
+	if svcNode == nil || svcNode.User == nil || svcNode.Role == nil {
+		return nil
+	}
+	return firstboot.CheckStrictSeparationHolders(ctx, svcNode.User, svcNode.Role)
+}
+
 func (n *Node) recordSeparationPosture(ctx context.Context) error {
 	svcNode := n.svcNode.Load()
 	if svcNode == nil || svcNode.KV == nil {
