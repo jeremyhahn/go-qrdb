@@ -22,9 +22,12 @@ import (
 )
 
 // TenantDatabaseLister is the part of database.Manager a NodeKeyLogProbe
-// needs: the catalog's databases of the tenant in the context.
+// needs: the catalog's records of a tenant's databases, read without
+// opening any of them. ListForTenant is not enough: it leaves out a
+// database that does not open, which still writes the node-keyed log once
+// it opens again.
 type TenantDatabaseLister interface {
-	ListForTenant(ctx context.Context) ([]database.DatabaseInfo, error)
+	TenantRecords(ctx context.Context, tenantID string) ([]database.DatabaseMeta, error)
 }
 
 // NodeKeyLogProbe lists a tenant's databases whose data is on a log under
@@ -43,16 +46,17 @@ func NewNodeKeyLogProbe(lister TenantDatabaseLister) *NodeKeyLogProbe {
 }
 
 // NodeKeyLogDatabases implements tenant.NodeKeyLogProbe. It reads the
-// replicated catalog, so a database created through another node counts.
+// replicated catalog's records, so a database created through another node
+// counts, and so does one that does not open on this node.
 func (p *NodeKeyLogProbe) NodeKeyLogDatabases(ctx context.Context, tenantID string) ([]string, error) {
-	infos, err := p.lister.ListForTenant(tenant.WithTenantID(ctx, tenantID))
+	metas, err := p.lister.TenantRecords(tenant.WithTenantID(ctx, tenantID), tenantID)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for i := range infos {
-		if infos[i].TenantID == tenantID && onNodeKeyLog(infos[i].Backend, infos[i].DataDir, infos[i].Barrier, infos[i].DedicatedWAL) {
-			out = append(out, infos[i].Name)
+	for i := range metas {
+		if metas[i].TenantID == tenantID && onNodeKeyLog(metas[i].Backend, metas[i].DataDir, metas[i].Barrier, metas[i].DedicatedWAL) {
+			out = append(out, metas[i].Name)
 		}
 	}
 	return out, nil

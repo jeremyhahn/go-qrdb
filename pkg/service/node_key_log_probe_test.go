@@ -12,9 +12,9 @@ import (
 )
 
 // listedDatabases is a TenantDatabaseLister over a fixed catalog.
-type listedDatabases []database.DatabaseInfo
+type listedDatabases []database.DatabaseMeta
 
-func (l listedDatabases) ListForTenant(context.Context) ([]database.DatabaseInfo, error) {
+func (l listedDatabases) TenantRecords(context.Context, string) ([]database.DatabaseMeta, error) {
 	return l, nil
 }
 
@@ -41,6 +41,45 @@ func TestNodeKeyLogDatabases_JudgedByDataRoute(t *testing.T) {
 	want := []string{"raft-shared", "pebble-shared", "memory-shared", "pebble-dir-no-barrier", "pebble-barrier-shared"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("NodeKeyLogDatabases = %v, want %v", got, want)
+	}
+}
+
+// unopenableCatalog mirrors database.Manager for a tenant whose shared-WAL
+// database is recorded in the catalog but does not open on this node:
+// ListForTenant logs the open failure and leaves the database out, while
+// TenantRecords reports the catalog record as written.
+type unopenableCatalog struct{ records []database.DatabaseMeta }
+
+func (c unopenableCatalog) ListForTenant(context.Context) ([]database.DatabaseInfo, error) {
+	return nil, nil
+}
+
+func (c unopenableCatalog) TenantRecords(_ context.Context, tenantID string) ([]database.DatabaseMeta, error) {
+	var out []database.DatabaseMeta
+	for _, r := range c.records {
+		if r.TenantID == tenantID {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// TestNodeKeyLogDatabases_CountsUnopenableRecords pins the strict-isolation
+// probe to the catalog: a database that cannot open (a transient failure or
+// an unreleased stale entry) still writes the node-keyed log once it opens
+// again, so it must still refuse a tightening to strict.
+func TestNodeKeyLogDatabases_CountsUnopenableRecords(t *testing.T) {
+	c := unopenableCatalog{records: []database.DatabaseMeta{
+		{TenantID: "bt", Name: "broken", Backend: database.BackendRaft},
+		{TenantID: "bt", Name: "own-wal", Backend: database.BackendRaft, DedicatedWAL: true},
+		{TenantID: "other", Name: "foreign", Backend: database.BackendRaft},
+	}}
+	got, err := NewNodeKeyLogProbe(c).NodeKeyLogDatabases(context.Background(), "bt")
+	if err != nil {
+		t.Fatalf("NodeKeyLogDatabases: %v", err)
+	}
+	if want := []string{"broken"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("NodeKeyLogDatabases = %v, want %v: an unopenable shared-WAL database must still refuse strict", got, want)
 	}
 }
 
