@@ -20,7 +20,6 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
