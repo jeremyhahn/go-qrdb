@@ -41,8 +41,9 @@
 #     step ("Point the stages at the Go caches") puts them (CI_CACHE_DIR, which
 #     scripts/in-toolchain-image.sh bind-mounts; #1596). On a hosted runner
 #     they are actions/cache entries under $RUNNER_TEMP/ci-cache: a job
-#     restores main's newest entry, and only a push to main saves one
-#     (CI_PUBLISH), so a pull request never writes main's cache. On a
+#     restores main's newest entry, and only the nightly schedule on main
+#     saves one (CI_CACHE_SAVE; a push to main runs on the pool), so a pull
+#     request never writes main's cache. On a
 #     self-hosted pool host, whose temp dir is on the root filesystem and
 #     outlives the job, they are a generation directory on /mnt/raid0 that
 #     every job shares: past CI_CACHE_MAX_GB (40 GB) a new generation becomes
@@ -136,10 +137,15 @@ env:
   # (test/buildgates/ci_tiers_test.go).
   CI_FULL_TIER: ${{ (github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
   # CUSTOMIZE (go-qrdb): the one event that publishes, a push to main. It
-  # alone pushes the CI images to GHCR and saves the Go caches; every other
-  # event, a fork's pull request included, writes neither
-  # (test/buildgates/ci_image_digest_test.go, ci_runners_test.go).
+  # alone pushes the CI images to GHCR; every other event, a fork's pull
+  # request included, pushes none (test/buildgates/ci_image_digest_test.go).
   CI_PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+  # The one event that saves the hosted Go caches (#1597): the nightly
+  # schedule on main. A push to main runs on the self-hosted pool, whose
+  # caches live on /mnt/raid0, so the schedule is the one main run on a
+  # hosted runner; a pull request reads its entries and never writes one
+  # (test/buildgates/ci_runners_test.go).
+  CI_CACHE_SAVE: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
   # v1.24 (CA m749, m751 (a)): the files a docs-only PR may touch. Nothing
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
@@ -544,7 +550,7 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k lint-sweeps GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -639,7 +645,7 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint-gates GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && steps.probe.outputs.has_target == 'true' && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -772,7 +778,7 @@ jobs:
             make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -895,7 +901,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1195,7 +1201,7 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-tags GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1286,7 +1292,7 @@ jobs:
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make -k test-sdk-leg SDK_LEG='$SDK_LEG' GOTEST_TIMEOUT=145m GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
+        if: ${{ !cancelled() && env.CI_CACHE_SAVE == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
