@@ -579,6 +579,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -716,6 +717,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -818,6 +820,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -855,6 +858,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
@@ -1023,6 +1027,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -1360,6 +1365,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -1471,6 +1477,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -1600,6 +1607,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
@@ -1781,6 +1789,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
@@ -1972,6 +1981,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 

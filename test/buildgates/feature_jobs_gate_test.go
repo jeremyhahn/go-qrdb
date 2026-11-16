@@ -106,7 +106,7 @@ const (
 	// (another job can retag it on a shared daemon), to the tests as IT_IMAGE.
 	// A LAN registry pull (#1593) that already verified and tagged the ID
 	// skips the artifact load.
-	featureLoad = "[ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
+	featureLoad = "[ \"$PULLED\" != true ] || scripts/ci-image.sh adopt \"$IMAGE\" \"$ID\"\n[ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\" \"$IMAGE\" \"$ID\"\necho \"IT_IMAGE=$ID\" >> \"$GITHUB_ENV\""
 
 	// featureStep is the one test command each shard runs: every feature in
 	// its list, each the feature's features.mk selection in the integration
@@ -570,6 +570,7 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
           echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
       - name: Integration tests (shard ${{ matrix.shard }})

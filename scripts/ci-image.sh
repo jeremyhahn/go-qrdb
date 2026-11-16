@@ -22,6 +22,7 @@
 #
 #   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
 #   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks it is <id>, tags <image>
+#   ci-image.sh adopt <image> <id>                 after a LAN pull: checks <image> is <id>, records it
 #   ci-image.sh push <local-image> <name> <id>     prints ghcr.io/<owner>/<name>@sha256:<hex>
 #   ci-image.sh untag <image>...                   removes save's per-run tags
 #   ci-image.sh prune [hours]                      self-hosted retention of the CI images
@@ -166,6 +167,22 @@ load() {
 	echo "$want"
 }
 
+# adopt is load for a job that pulled the image from the LAN CI registry, so
+# downloaded no artifact: it checks the pulled tag names docker-build's ID and
+# records that ID as load does, so the stages run the verified ID and never
+# the tag, which another job on the shared daemon can move after the pull.
+adopt() {
+	[ $# -eq 2 ] || die "usage: adopt <image> <id>"
+	local image=$1 want=$2 got
+	check_image "$image"
+	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
+	got=$(image_id "$image")
+	[ "$got" = "$want" ] || die "$image names $got, not $want, the image docker-build built"
+	echo "==> $image is $want, the image docker-build built (pulled)" >&2
+	record_id "$image" "$want"
+	echo "$want"
+}
+
 # The job's record of verified image IDs, one file per tag: CI_IMAGE_IDS, else
 # RUNNER_TEMP/ci-image-ids (a runner's own, emptied at each job's start). No
 # directory (a local run) records nothing. scripts/in-toolchain-image.sh reads it.
@@ -278,13 +295,15 @@ epoch() {
 # container uses. It removes the image by the immutable ID it checked, never
 # by a tag: another job can move a shared content-hash tag to a fresh image
 # between the check and the removal, and that image must survive. There is
-# no --force, so the daemon refuses an image a container holds or one still
-# named by more than one tag once its run-unique tags (per-run, pushed) are
-# untagged, and prune leaves it. An image that also
+# no --force, so the daemon refuses an image a container holds, and prune
+# leaves it. Run-unique tags (per-run, pushed) and all but one content-hash
+# tag are untagged by name first, each checked to still name the image, so
+# a tag the daemon counts never keeps an expired image. An image that also
 # carries a tag of any other image family is not touched.
 prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
 	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest
+	local -a hashed=()
 	local -A refs=() foreign=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
 	now=$(date +%s)
@@ -321,12 +340,25 @@ prune() {
 		# the image, and load leaves the archive's per-run tag beside the
 		# content-hash tag. Every reference but a content-hash tag carries
 		# its run's suffix, so no other run moves it: each is untagged by
-		# name once it is checked to still name this image. A content-hash
-		# tag is shared and never untagged by name: the removal by ID takes
-		# it, and a tag another job moved meanwhile names a fresh image the
-		# removal does not touch.
+		# name once it is checked to still name this image.
+		hashed=()
 		for r in $ref; do
-			[[ $r =~ $image_re ]] && continue
+			if [[ $r =~ $image_re ]]; then
+				hashed+=("$r")
+				continue
+			fi
+			[ "$(docker image inspect -f '{{.Id}}' "$r" 2>/dev/null)" = "$id" ] || continue
+			docker rmi "$r" >/dev/null 2>&1 || true
+		done
+		# A content-hash tag is shared: another job can move it to a fresh
+		# image at any moment. One of them is never untagged by name, the
+		# removal by ID takes it. Several name one image when TOOLCHAIN_TAG
+		# changes but Docker reuses the ID, and the daemon would refuse the
+		# removal for them, so each but the first is untagged by name once it
+		# is checked, just before, to still name this image; a tag that names
+		# another image now is left alone, and the removal by ID never
+		# touches the fresh image a moved tag names.
+		for r in "${hashed[@]:1}"; do
 			[ "$(docker image inspect -f '{{.Id}}' "$r" 2>/dev/null)" = "$id" ] || continue
 			docker rmi "$r" >/dev/null 2>&1 || true
 		done
@@ -339,13 +371,14 @@ prune() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|push|untag|prune|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|adopt|push|untag|prune|check-ref ..."
 	local cmd=$1
 	shift
 	case $cmd in
 	pin) pin "$@" ;;
 	save) save "$@" ;;
 	load) load "$@" ;;
+	adopt) adopt "$@" ;;
 	push) push "$@" ;;
 	untag) untag "$@" ;;
 	prune) prune "$@" ;;

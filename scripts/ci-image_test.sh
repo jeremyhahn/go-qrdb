@@ -245,6 +245,34 @@ run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
   ok "a replaced tag leaves the verified ID record"
 else bad "a replaced tag leaves the verified ID record (rc=$rc)"; fi
+# 3e. Codex P1 (mm1597): a job that pulled the image from the LAN CI registry
+# loads no artifact, so adopt checks the pulled tag names docker-build's ID
+# and records that ID as load does: the stages run the ID, never the tag.
+reset
+rm -rf "$D/ids"
+run adopt "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids"
+if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$id_a" ] &&
+  [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
+  ok "adopt prints and records a pulled image's verified ID"
+else bad "adopt prints and records a pulled image's verified ID (rc=$rc)"; cat "$D/err"; ls "$D/ids" 2>&1; fi
+# A pulled tag naming another ID (moved by another job, or not docker-build's
+# image) fails the step and records nothing.
+reset
+rm -rf "$D/ids"
+run adopt "$tc" "$id_b" -- CI_IMAGE_IDS="$D/ids"
+if [ "$rc" = 1 ] && [ ! -e "$D/ids" ] && grep -q "$tc names $id_a, not $id_b" "$D/err"; then
+  ok "adopt refuses a pulled image whose ID is not docker-build's and records nothing"
+else bad "adopt refuses a pulled image whose ID is not docker-build's and records nothing (rc=$rc)"; cat "$D/err"; fi
+# A tag that is not a CI image's, a malformed ID or an absent tag is refused.
+reset
+rm -rf "$D/ids"
+run adopt alpine:3.20 "$id_a" -- CI_IMAGE_IDS="$D/ids"; rc_tag=$rc
+run adopt "$tc" not-an-id -- CI_IMAGE_IDS="$D/ids"; rc_id=$rc
+run adopt qrdb-toolchain:fedcba9876543210 "$id_a" -- CI_IMAGE_IDS="$D/ids"; rc_absent=$rc
+run adopt "$tc" -- CI_IMAGE_IDS="$D/ids"
+if [ "$rc_tag" = 1 ] && [ "$rc_id" = 1 ] && [ "$rc_absent" = 1 ] && [ "$rc" = 1 ] && [ ! -e "$D/ids" ]; then
+  ok "adopt refuses a foreign tag, a malformed ID, an absent tag and a short argument list"
+else bad "adopt refuses a foreign tag, a malformed ID, an absent tag and a short argument list ($rc_tag $rc_id $rc_absent $rc)"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
@@ -394,9 +422,11 @@ if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/qrdb-ci-it_1111111111111111" 2
   [ -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] && ! called '^rmi '; then
   ok "prune removes the checked ID, not a tag another job moved to a fresh image"
 else bad "prune removes the checked ID, not a tag another job moved to a fresh image (rc=$rc)"; cat "$D/err"; fi
-# 12a3. An old CI image that also carries a foreign tag, or two shared
-# content-hash tags, is left: prune never forces a removal, and never
-# untags a shared tag by name (another job can move it at any moment).
+# 12a3. An old CI image that also carries a foreign tag is left: prune never
+# forces a removal. Codex P1 (mm1597): an old image two content-hash tags name
+# (TOOLCHAIN_TAG changed, Docker reused the ID) is reclaimed: the daemon
+# refuses a removal by ID while both name it, so prune untags all but one by
+# name, each checked to still name the image, and removes it by ID.
 reset
 mkdir -p "$D/state/created"
 tagimg qrdb-ci-it:5555555555555555 "$id_b"
@@ -406,10 +436,29 @@ tagimg qrdb-toolchain:6666666666666666 "$id_c"
 for i in "$id_a" "$id_b" "$id_c"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
 run prune 24
 if [ "$rc" = 0 ] && [ -e "$D/state/tags/mytool_keep" ] && [ -e "$D/state/tags/qrdb-ci-it_5555555555555555" ] &&
-  [ -e "$D/state/tags/qrdb-ci-it_6666666666666666" ] && [ ! -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ] &&
-  grep -q 'kept qrdb-ci-it:5555555555555555 .*not a CI image' "$D/err" && grep -q 'the daemon refused its removal' "$D/err"; then
-  ok "prune leaves an image with a foreign tag or two shared tags"
-else bad "prune leaves an image with a foreign tag or two shared tags (rc=$rc)"; cat "$D/err"; fi
+  [ ! -e "$D/state/tags/qrdb-ci-it_6666666666666666" ] && [ ! -e "$D/state/tags/qrdb-toolchain_6666666666666666" ] &&
+  [ ! -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ] &&
+  grep -q 'kept qrdb-ci-it:5555555555555555 .*not a CI image' "$D/err" && ! grep -q 'refused' "$D/err"; then
+  ok "prune leaves an image with a foreign tag and reclaims one two content-hash tags name"
+else bad "prune leaves an image with a foreign tag and reclaims one two content-hash tags name (rc=$rc)"; cat "$D/err"; fi
+# 12a5. A content-hash tag another job moves to a fresh image while prune
+# reclaims the old one is left alone, whichever of the old image's tags it
+# is: the fresh image and the moved tag survive, the old image goes.
+for moved in qrdb-ci-it:aaaaaaaaaaaaaaaa qrdb-toolchain:aaaaaaaaaaaaaaaa; do
+  reset
+  mkdir -p "$D/state/created"
+  tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa "$id_b"
+  tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa-run-1-1 "$id_b"
+  tagimg qrdb-toolchain:aaaaaaaaaaaaaaaa "$id_b"
+  for i in "$id_a" "$id_b"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+  echo "$new" > "$D/state/created/${id_c#sha256:}"
+  run prune 24 -- STUB_RETAG_ON=rm STUB_RETAG_TAG="$moved" STUB_RETAG_ID="$id_c"
+  if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/${moved//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_c" ] &&
+    [ -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] &&
+    ! called "^rmi $moved\$" && [ "$(ls "$D/state/tags" | tr '\n' ' ')" = "${moved//[^A-Za-z0-9._-]/_} " ]; then
+    ok "prune keeps the moved content-hash tag $moved and reclaims the old image"
+  else bad "prune keeps the moved content-hash tag $moved and reclaims the old image (rc=$rc, left: $(ls "$D/state/tags" | tr '\n' ' '))"; cat "$D/err"; fi
+done
 # 12a4. Codex P1 (fx1597g): load leaves the archive's per-run tag beside the
 # content-hash tag, and a push can leave its run's pushed tag. Two tag
 # references make the daemon refuse a removal by ID, so prune untags the

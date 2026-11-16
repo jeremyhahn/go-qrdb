@@ -365,6 +365,10 @@ fi
 docker rmi "$REF" >/dev/null 2>&1 || true`
 	// lanLoadGuard skips the artifact load when the pull took the image.
 	lanLoadGuard = `[ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/`
+	// lanAdopt checks, after a pull, that the pulled tag names docker-build's
+	// ID and records that ID as load does, so the stages run the ID and never
+	// the tag another job on the shared daemon can move.
+	lanAdopt = `[ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"`
 )
 
 // lanLogin is a step reaching for a credential: the LAN CI registry takes none.
@@ -716,6 +720,10 @@ func loadProblems(name string, job digestJob, s digestStep, i int, m []string,
 			problems = append(problems, where+" loads the "+family+" artifact without `"+lanLoadGuard+f.artifact+
 				"\"`: after a pull it would load an artifact never downloaded")
 		}
+		if !strings.Contains(s.Run, lanAdopt) {
+			problems = append(problems, where+" does not run `"+lanAdopt+"`: after a pull nothing checks the "+
+				family+" image is docker-build's or records its ID, and the stages would run a mutable tag")
+		}
 	}
 	if _, seen := loaded[family]; !seen && len(problems) == 0 {
 		loaded[family] = i
@@ -922,6 +930,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
       - name: make lint
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make lint
@@ -961,6 +970,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.it_id }}
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
+          [ "$PULLED" != true ] || scripts/ci-image.sh adopt "$IMAGE" "$ID"
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
       - name: Integration tests
         run: make integration-test IT_FEATURE=audit IT_PREBUILT=1
@@ -1112,6 +1122,11 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "no integration PULLED binding", old: "          PULLED: ${{ steps.pull_it.outputs.pulled }}\n", new: ""},
 		{name: "PULLED bound to the other pull", old: "PULLED: ${{ steps.pull_toolchain.outputs.pulled }}",
 			new: "PULLED: ${{ steps.pull_it.outputs.pulled }}"},
+		{name: "no adopt after a toolchain pull", old: "          [ \"$PULLED\" != true ] || scripts/ci-image.sh adopt \"$IMAGE\" \"$ID\"\n          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/toolchain-image\"",
+			new: "          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/toolchain-image\""},
+		{name: "no adopt after an integration pull", old: "          [ \"$PULLED\" != true ] || scripts/ci-image.sh adopt \"$IMAGE\" \"$ID\"\n          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\"",
+			new: "          [ \"$PULLED\" = true ] || scripts/ci-image.sh load \"$RUNNER_TEMP/it-image\""},
+		{name: "adopt run whatever the pull did", old: `[ "$PULLED" != true ] || scripts/ci-image.sh adopt`, new: `scripts/ci-image.sh adopt`},
 		{name: "a load without the PULLED guard", old: `[ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image"`,
 			new: `scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image"`},
 		// Codex round 1 P1: the address never reaches a log.
