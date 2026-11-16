@@ -20,6 +20,23 @@
 set -uo pipefail
 
 image=${CI_CACHE_CLEAN_IMAGE:-${TOOLCHAIN_IMAGE:-}}
+# A tag is mutable: on a shared daemon another job can load other bytes under
+# it after scripts/ci-image.sh load verified it. The helper runs the ID that
+# load recorded for the tag (CI_IMAGE_IDS, else RUNNER_TEMP/ci-image-ids, as
+# scripts/in-toolchain-image.sh reads it), never the tag; a record that is not
+# an image ID disables the helper. A tag with no record (a local run) runs as
+# given.
+ids=${CI_IMAGE_IDS:-${RUNNER_TEMP:+$RUNNER_TEMP/ci-image-ids}}
+if [ -n "$image" ] && [ -n "$ids" ] && [ -s "$ids/${image//[^A-Za-z0-9._-]/_}" ]; then
+  verified=$(<"$ids/${image//[^A-Za-z0-9._-]/_}")
+  case $verified in
+    sha256:*) image=$verified ;;
+    *)
+      echo "::warning::ci-cache-clean: $ids records '$verified' for $image, not an image ID; no root helper" >&2
+      image=
+      ;;
+  esac
+fi
 use_docker=
 if [ -n "$image" ] && command -v docker >/dev/null 2>&1; then
   use_docker=1

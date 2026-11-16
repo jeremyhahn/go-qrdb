@@ -29,7 +29,7 @@ run() {
   shift
   out=$(env -u RUNNER_ENVIRONMENT -u RUNNER_TEMP -u CI_CACHE_ROOT \
     -u CI_CACHE_MAX_GB -u CI_CACHE_RECLAIM_HOURS -u TOOLCHAIN_IMAGE \
-    -u CI_CACHE_CLEAN_IMAGE "${envs[@]}" "$@" 2>"$tmp/err")
+    -u CI_CACHE_CLEAN_IMAGE -u CI_IMAGE_IDS "${envs[@]}" "$@" 2>"$tmp/err")
   rc=$?
   err=$(cat "$tmp/err")
 }
@@ -50,13 +50,17 @@ mkdir -p "$fake"
 cat >"$fake/docker" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${FAKE_DOCKER_FAIL:-}" ] || exit 1
-src=
+src= image=
 while [ $# -gt 0 ]; do
-  case $1 in -v) src=${2%%:*}; shift ;; esac
+  case $1 in
+    -v) src=${2%%:*}; shift ;;
+    --entrypoint) image=${3:-}; shift ;;
+  esac
   shift
 done
 [ -n "$src" ] || exit 2
 echo "$src" >>"${FAKE_DOCKER_LOG:-/dev/null}"
+echo "$image" >>"${FAKE_DOCKER_IMAGE_LOG:-/dev/null}"
 chmod -R u+w "$src" && find "$src" -mindepth 1 -delete
 EOF
 chmod +x "$fake/docker"
@@ -158,6 +162,33 @@ else
   run TOOLCHAIN_IMAGE=img PATH="$fake:$PATH" FAKE_DOCKER_FAIL=1 -- bash "$CLEAN" "$d"
   check "clean: helper failure warns, exit 0" '[ $rc = 0 ] && [ -e "$d" ] && [[ $err == *"::warning::"* ]]'
 fi
+
+# --- the helper runs the verified image ID, never the tag ----------------------
+# scripts/ci-image.sh load records the ID it verified for each tag; another job
+# on a shared daemon can retag the tag afterwards. The helper must run the
+# recorded ID, so a retag (here: anything the tag now names) changes nothing.
+id_rec=sha256:$(printf '%064d' 7)
+ids=$tmp/ids
+mkdir -p "$ids"
+printf '%s\n' "$id_rec" >"$ids/img"
+d=$tmp/clean-id
+mkdir -p "$d/sub"
+: >"$tmp/ilog"
+run TOOLCHAIN_IMAGE=img CI_IMAGE_IDS="$ids" PATH="$fake:$PATH" FAKE_DOCKER_IMAGE_LOG="$tmp/ilog" -- bash "$CLEAN" "$d"
+check "clean: a retagged tag is not run, the recorded ID is" \
+  '[ $rc = 0 ] && [ ! -e "$d" ] && [ "$(cat "$tmp/ilog")" = "$id_rec" ]'
+mkdir -p "$d/sub" "$tmp/rt3/ci-image-ids"
+printf '%s\n' "$id_rec" >"$tmp/rt3/ci-image-ids/img"
+: >"$tmp/ilog"
+run CI_CACHE_CLEAN_IMAGE=img RUNNER_TEMP="$tmp/rt3" PATH="$fake:$PATH" FAKE_DOCKER_IMAGE_LOG="$tmp/ilog" -- bash "$CLEAN" "$d"
+check "clean: RUNNER_TEMP/ci-image-ids record runs the ID" \
+  '[ $rc = 0 ] && [ ! -e "$d" ] && [ "$(cat "$tmp/ilog")" = "$id_rec" ]'
+mkdir -p "$d/sub"
+printf 'img\n' >"$ids/img"
+: >"$tmp/ilog"
+run TOOLCHAIN_IMAGE=img CI_IMAGE_IDS="$ids" PATH="$fake:$PATH" FAKE_DOCKER_IMAGE_LOG="$tmp/ilog" -- bash "$CLEAN" "$d"
+check "clean: a record that is not an image ID is refused, no helper, exit 0" \
+  '[ $rc = 0 ] && [ ! -s "$tmp/ilog" ] && [[ $err == *"not an image ID"* ]]'
 
 # --- the real helper on a root-owned fixture ----------------------------------
 img=${CI_CACHE_TEST_IMAGE:-${TOOLCHAIN_IMAGE:-}}

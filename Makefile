@@ -4198,13 +4198,16 @@ IT_PROJECT ?= qrdb-it-$(DOCKER_TAG)
 # the stage runs `apk upgrade`, so a rebuild of the same tree can differ. A
 # digest reference, an image pulled from a registry, is held to the same
 # rule. A tag reference, the developer-host default, still builds through
-# docker-build-it.
+# docker-build-it. An image ID (sha256:<hex>), which CI's load step hands on
+# as IT_IMAGE once scripts/ci-image.sh load has verified it (a tag on a shared
+# daemon can be retagged after the check), names exactly one image and is
+# never built either.
 IT_PREBUILT ?=
 it-require-prebuilt = docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || { echo "ERROR: $(IT_IMAGE) is not on this daemon: a prebuilt image is loaded from docker-build's artifact (scripts/ci-image.sh load), never built" >&2; exit 1; }
 # it-image-step is integration-test's image step. It sits in a variable, not in
 # the recipe text, so `make -n` prints the prebuilt path instead of running it:
 # make runs any recipe line that names $(MAKE) directly, even under -n.
-it-image-step = $(if $(filter 1,$(IT_PREBUILT))$(findstring @sha256:,$(IT_IMAGE)),$(it-require-prebuilt),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
+it-image-step = $(if $(filter 1,$(IT_PREBUILT))$(findstring @sha256:,$(IT_IMAGE))$(filter sha256:%,$(IT_IMAGE)),$(it-require-prebuilt),$(MAKE) -s -C $(CURDIR) docker-build-it || exit $$?)
 
 REQUIRE_BUILDX = @docker buildx version >/dev/null 2>&1 || { echo "docker buildx is required (the Dockerfile mounts the gomodauth BuildKit secret)" >&2; exit 1; }
 
@@ -4248,7 +4251,7 @@ docker-build-toolchain:
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
-	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
+	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): an image ID names a loaded image" >&2; exit 1 ;; esac
 	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
 	else \

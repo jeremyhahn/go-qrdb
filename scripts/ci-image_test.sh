@@ -116,6 +116,16 @@ run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && [ ! -e "$D/ids" ]; then
   ok "a refused image records no ID"
 else bad "a refused image records no ID (rc=$rc)"; fi
+# A tag replaced after a load (another job's image under the same tag on a
+# shared daemon) leaves the verified record as it was: consumers read the ID.
+reset
+rm -rf "$D/ids"
+run save "$tc" "$D/art"
+run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids"
+run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_IDS="$D/ids" STUB_LOAD_ID="$id_b"
+if [ "$rc" = 1 ] && [ "$(cat "$D/ids/${tc//[^A-Za-z0-9._-]/_}" 2>/dev/null)" = "$id_a" ]; then
+  ok "a replaced tag leaves the verified ID record"
+else bad "a replaced tag leaves the verified ID record (rc=$rc)"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
