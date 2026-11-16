@@ -15,6 +15,8 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
+
 - **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
 - **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
 
@@ -897,6 +899,10 @@ are not reconstructed here — their history is in the git log.
   (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
   only `so_pin` from a passphrase-change payload, so the current and next
   passphrases are never decoded a second time.
+
+### Removed
+
+- The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
 
 ## [0.58.0-alpha] - 2026-10-27
 
