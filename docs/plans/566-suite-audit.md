@@ -144,3 +144,11 @@ No behaviour loses its only test; the coverage gate stays met.
 | Package | Test | Change | Test that pins the path |
 |---|---|---|---|
 | pkg/tenant | TestCreateTenant_ConcurrentCreateAndDeleteNeverResurrect | 50 to 10 iterations; stays for the race detector | TestCreateTenant_RefusedWhenADeleteRetiresTheIdMidCreate (deterministic interleave) |
+
+## Folded refs
+
+| Ref | Fold | Result |
+|---|---|---|
+| fold-src/sealed-ceremony-ca-row-1 | merged (--no-ff) | adds sdk/go/node/sealed_ceremony_ca_test.go and docs/plans/1.md, updates sealed_window_mount_test.go; merged cleanly against current main, Sealed tests in sdk/go/node pass |
+| fold-src/sealed-ceremony-ca-wip | merged with -s ours | superseded by the sealed-ceremony-ca row-1 ref (same test file; its go.sum change is noise) |
+| fold-src/ci-bigdisk-docker | merged with -s ours | superseded by ruling 617 (#1582, ci.yml jobs on the self-hosted pools) |
