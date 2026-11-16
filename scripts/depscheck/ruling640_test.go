@@ -196,7 +196,7 @@ func TestGitBase(t *testing.T) {
 	repo := t.TempDir()
 	gitRun := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.CommandContext(t.Context(), git, append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-C", dir}, args...)...)
+		cmd := exec.CommandContext(t.Context(), git, append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-C", dir}, args...)...) // #nosec G204 -- git from LookPath; dir and args are this test's own literals and temp repo
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, string(out))
@@ -461,7 +461,7 @@ func TestScanDir(t *testing.T) {
 		t.Helper()
 		for f, body := range files {
 			p := filepath.Join(root, f)
-			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o750))
 			require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
 		}
 	}
