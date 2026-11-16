@@ -52,18 +52,19 @@ case $1 in
     case $2 in
       ls) for f in "$s"/tags/*; do [ -f "$f" ] && printf '%s %s\n' "$(sed -n 1p "$f")" "$(sed -n 2p "$f")"; done; exit 0 ;;
       rm)
-        # As the daemon without --force: an ID in use by a running container
-        # or tagged into more than one repository is refused; otherwise the
-        # image goes with every tag that still names it.
+        # As the daemon without --force (daemon/images/image_delete.go,
+        # isSingleReference): an ID in use by a running container, or named
+        # by more than one tag reference (two tags of one repository count
+        # as two), is refused; otherwise the image goes with its one tag.
         retag rm
         id=${*: -1}; [ -e "$s/ids/${id#sha256:}" ] || exit 1
         if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$id"; then exit 1; fi
-        files=(); repos=""
+        files=()
         for f in "$s"/tags/*; do
           [ -f "$f" ] && [ "$(sed -n 1p "$f")" = "$id" ] || continue
-          files+=("$f"); r=$(sed -n 2p "$f"); repos+="${r%:*}"$'\n'
+          files+=("$f")
         done
-        [ "$(printf '%s' "$repos" | sort -u | wc -l)" -le 1 ] || exit 1
+        [ "${#files[@]}" -le 1 ] || exit 1
         rm -f "${files[@]}" "$s/ids/${id#sha256:}"; exit 0 ;;
     esac
     ref=${*: -1}
@@ -86,9 +87,13 @@ case $1 in
   tag) id=$(resolve "$2") || exit 1; settag "$3" "$id" ;;
   rmi)
     retag rm
+    # By name the daemon untags; the image goes with its last tag.
     f="$s/tags/$(key "$2")"; [ -f "$f" ] || exit 1
-    if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$(sed -n 1p "$f")"; then exit 1; fi
-    rm -f "$f" ;;
+    id=$(sed -n 1p "$f")
+    if [ -f "$s/running" ] && cut -d' ' -f2 "$s/running" | grep -qx "$id"; then exit 1; fi
+    rm -f "$f"
+    for f in "$s"/tags/*; do [ -f "$f" ] && [ "$(sed -n 1p "$f")" = "$id" ] && exit 0; done
+    rm -f "$s/ids/${id#sha256:}" ;;
   push)
     n=$(($(cat "$s/push-tries" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" > "$s/push-tries"
@@ -389,21 +394,46 @@ if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/qrdb-ci-it_1111111111111111" 2
   [ -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] && ! called '^rmi '; then
   ok "prune removes the checked ID, not a tag another job moved to a fresh image"
 else bad "prune removes the checked ID, not a tag another job moved to a fresh image (rc=$rc)"; cat "$D/err"; fi
-# 12a3. An old CI image that also carries a foreign tag, or tags in two
-# repositories, is left: prune never forces a removal.
+# 12a3. An old CI image that also carries a foreign tag, or two shared
+# content-hash tags, is left: prune never forces a removal, and never
+# untags a shared tag by name (another job can move it at any moment).
 reset
 mkdir -p "$D/state/created"
 tagimg qrdb-ci-it:5555555555555555 "$id_b"
 tagimg mytool:keep "$id_b"
 tagimg qrdb-ci-it:6666666666666666 "$id_c"
-tagimg ghcr.io/example-org/go-qrdb-ci-it:6666666666666666-main-2-1 "$id_c"
+tagimg qrdb-toolchain:6666666666666666 "$id_c"
 for i in "$id_a" "$id_b" "$id_c"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
 run prune 24
 if [ "$rc" = 0 ] && [ -e "$D/state/tags/mytool_keep" ] && [ -e "$D/state/tags/qrdb-ci-it_5555555555555555" ] &&
   [ -e "$D/state/tags/qrdb-ci-it_6666666666666666" ] && [ ! -e "$D/state/tags/${tc//[^A-Za-z0-9._-]/_}" ] &&
   grep -q 'kept qrdb-ci-it:5555555555555555 .*not a CI image' "$D/err" && grep -q 'the daemon refused its removal' "$D/err"; then
-  ok "prune leaves an image with a foreign tag or tags in two repositories"
-else bad "prune leaves an image with a foreign tag or tags in two repositories (rc=$rc)"; cat "$D/err"; fi
+  ok "prune leaves an image with a foreign tag or two shared tags"
+else bad "prune leaves an image with a foreign tag or two shared tags (rc=$rc)"; cat "$D/err"; fi
+# 12a4. Codex P1 (fx1597g): load leaves the archive's per-run tag beside the
+# content-hash tag, and a push can leave its run's pushed tag. Two tag
+# references make the daemon refuse a removal by ID, so prune untags the
+# run-unique references (each checked to still name the image) first, then
+# removes the image by ID: no old image is kept for its per-run tags. An
+# image whose only references are run-unique goes with its last untag.
+reset
+mkdir -p "$D/state/created"
+tagimg qrdb-ci-it:7777777777777777 "$id_b"
+tagimg qrdb-ci-it:7777777777777777-run-5-1 "$id_b"
+tagimg qrdb-toolchain:8888888888888888 "$id_c"
+tagimg qrdb-toolchain:8888888888888888-run-6-1 "$id_c"
+tagimg ghcr.io/example-org/go-qrdb-toolchain:8888888888888888-main-6-1 "$id_c"
+tagimg qrdb-ci-it:9999999999999999-run-8-1 "$id_d"
+tagimg qrdb-ci-it:9999999999999999-run-9-1 "$id_d"
+for i in "$id_a" "$id_b" "$id_c" "$id_d"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+run prune 24
+tags=$(ls "$D/state/tags" 2>/dev/null | tr '\n' ' ')
+if [ "$rc" = 0 ] && [ -z "$tags" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] &&
+  [ ! -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_d#sha256:}" ] &&
+  ! called '^rmi qrdb-ci-it:7777777777777777$' && ! called '^rmi qrdb-toolchain:8888888888888888$' &&
+  ! grep -q 'refused' "$D/err"; then
+  ok "prune reclaims an old image that also carries its per-run or pushed tags"
+else bad "prune reclaims an old image that also carries its per-run or pushed tags (rc=$rc, left: $tags)"; cat "$D/err"; fi
 # 12b. A malformed bound is refused before any removal.
 reset
 run prune 0

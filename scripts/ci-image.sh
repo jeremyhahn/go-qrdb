@@ -278,12 +278,13 @@ epoch() {
 # container uses. It removes the image by the immutable ID it checked, never
 # by a tag: another job can move a shared content-hash tag to a fresh image
 # between the check and the removal, and that image must survive. There is
-# no --force, so the daemon refuses an image a container holds or one tagged
-# into more than one repository, and prune leaves it. An image that also
+# no --force, so the daemon refuses an image a container holds or one still
+# named by more than one tag once its run-unique tags (per-run, pushed) are
+# untagged, and prune leaves it. An image that also
 # carries a tag of any other image family is not touched.
 prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
-	local hours=${1:-24} now cutoff running="" c id ref t created tagged newest
+	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest
 	local -A refs=() foreign=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
 	now=$(date +%s)
@@ -316,7 +317,20 @@ prune() {
 		tagged=$(epoch "${t#* }")
 		newest=$((created > tagged ? created : tagged))
 		[ "$newest" -lt "$cutoff" ] || continue
-		if docker image rm "$id" >/dev/null 2>&1; then
+		# The daemon refuses a removal by ID while more than one tag names
+		# the image, and load leaves the archive's per-run tag beside the
+		# content-hash tag. Every reference but a content-hash tag carries
+		# its run's suffix, so no other run moves it: each is untagged by
+		# name once it is checked to still name this image. A content-hash
+		# tag is shared and never untagged by name: the removal by ID takes
+		# it, and a tag another job moved meanwhile names a fresh image the
+		# removal does not touch.
+		for r in $ref; do
+			[[ $r =~ $image_re ]] && continue
+			[ "$(docker image inspect -f '{{.Id}}' "$r" 2>/dev/null)" = "$id" ] || continue
+			docker rmi "$r" >/dev/null 2>&1 || true
+		done
+		if docker image rm "$id" >/dev/null 2>&1 || ! docker image inspect "$id" >/dev/null 2>&1; then
 			echo "==> prune: removed $ref ($id)" >&2
 		else
 			echo "==> prune: kept $ref ($id), the daemon refused its removal" >&2
