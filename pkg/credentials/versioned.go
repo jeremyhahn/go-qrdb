@@ -618,7 +618,7 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		if sched != nil && (!prevExists || meta.Claim == nil || meta.Claim.ID != sched.claim.ID ||
 			meta.Staged != sched.staged || newVersion != sched.staged) {
 			secure.Wipe(prevValue)
-			s.abandonScheduled(ctx, name, sched.staged, meta.Staged == sched.staged)
+			s.abandonScheduled(ctx, name, sched.staged)
 			return nil, &OperationError{Op: "commit rotation", Cause: ErrRotationClaimLost}
 		}
 
@@ -657,9 +657,14 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 			secure.Wipe(prevValue)
 			return nil, &OperationError{Op: "encode meta", Cause: err}
 		}
+		// newVersion becomes current, so a value staged for it is spent,
+		// whichever rotation staged it. It is deleted in the guarded batch:
+		// a delete after the commit could remove a value a recreated
+		// credential has since staged under the same version.
 		writes = append(writes,
 			kvstore.KV{Key: credentialPrefix + name, Value: opts.NewValue},
-			kvstore.KV{Key: metaKey(name), Value: nextMeta})
+			kvstore.KV{Key: metaKey(name), Value: nextMeta},
+			kvstore.KV{Key: stagedKey(name, newVersion), Delete: true})
 		applied, err := s.store.PutAllIfAllUnchanged(ctx, guards, writes)
 		// The in-memory copy of the previous value is wiped once it is on
 		// disk, or once this attempt is over.
@@ -670,16 +675,6 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		if !applied {
 			continue
 		}
-		// newVersion is current, so a value staged for it is spent,
-		// whichever rotation staged it. One left by a failed delete is
-		// reaped by the scheduled rotation's cleanup.
-		if err := s.store.Delete(ctx, stagedKey(name, newVersion)); err != nil {
-			s.logger.Warn("staged rotation value left for cleanup",
-				slog.String("name", name),
-				slog.Uint64("version", newVersion),
-				slog.String("error", err.Error()))
-		}
-
 		s.logger.Debug("credential rotated",
 			slog.String("name", name),
 			slog.String("strategy", StrategyBarrier),
@@ -778,16 +773,40 @@ func (s *CredentialService) storeBarrier(ctx context.Context, name string, value
 // it. A staged value the record does not name is never resumed; one left by
 // a failed delete is reaped by the scheduled cleanup or the credential's
 // delete.
-func (s *CredentialService) abandonScheduled(ctx context.Context, name string, version uint64, named bool) {
-	if named {
-		return
+func (s *CredentialService) abandonScheduled(ctx context.Context, name string, version uint64) {
+	// The delete is guarded on the metadata read that found the version
+	// unnamed: a credential deleted and recreated since may have staged
+	// the same version, and its staged value must survive.
+	for range rotationMetaRetries {
+		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
+		if err != nil {
+			s.logger.Warn("abandoned staged rotation value left behind",
+				slog.String("name", name),
+				slog.Uint64("version", version),
+				slog.String("error", err.Error()))
+			return
+		}
+		if meta.Staged == version {
+			return
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: metaKey(name), Value: rawMeta}},
+			[]kvstore.KV{{Key: stagedKey(name, version), Delete: true}})
+		if err != nil {
+			s.logger.Warn("abandoned staged rotation value left behind",
+				slog.String("name", name),
+				slog.Uint64("version", version),
+				slog.String("error", err.Error()))
+			return
+		}
+		if applied {
+			return
+		}
 	}
-	if err := s.store.Delete(ctx, stagedKey(name, version)); err != nil {
-		s.logger.Warn("abandoned staged rotation value left behind",
-			slog.String("name", name),
-			slog.Uint64("version", version),
-			slog.String("error", err.Error()))
-	}
+	s.logger.Warn("abandoned staged rotation value left behind",
+		slog.String("name", name),
+		slog.Uint64("version", version),
+		slog.String("error", ErrRotationMetaContended.Error()))
 }
 
 // rotationVersions returns the version a rotation retires and the one it

@@ -204,7 +204,7 @@ func TestRotateDue_SpentStagedValueReapedByCleanup(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 	due := rotationEpoch.Add(time.Hour)
 
-	arm(&backend.failDelete, stagedKey("k", next))
+	leaveSpentStaged(t, svc, backend, next)
 	_, err = svc.RotateDue(t.Context(), due)
 	requireOperationError(t, err, "delete staged rotation")
 	if meta, err := svc.loadBarrierMeta(t.Context(), "k"); err != nil || meta.CurrentVersion != next || meta.PendingCleanup == "" {
@@ -268,7 +268,7 @@ func TestDeleteCredential_RemovesASpentStagedValue(t *testing.T) {
 	_, next := rotationVersions(before.CurrentVersion, true)
 	due := rotationEpoch.Add(time.Hour)
 
-	arm(&backend.failDelete, stagedKey("k", next))
+	leaveSpentStaged(t, svc, backend, next)
 	_, err = svc.RotateDue(t.Context(), due)
 	requireOperationError(t, err, "delete staged rotation")
 	backend.failDelete.Store(nil)
