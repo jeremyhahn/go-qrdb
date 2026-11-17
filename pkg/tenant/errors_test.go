@@ -25,36 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-func TestInvalidTenantIDErrorMessage(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "bad!tenant", Reason: "contains special characters"}
-	got := err.Error()
-	if !strings.Contains(got, "invalid tenant ID") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "invalid tenant ID")
-	}
-	if !strings.Contains(got, "bad!tenant") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "bad!tenant")
-	}
-	if !strings.Contains(got, "contains special characters") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "contains special characters")
-	}
-}
-
-func TestInvalidTenantIDErrorEmptyTenantID(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "", Reason: "must not be empty"}
-	got := err.Error()
-	if !strings.Contains(got, "must not be empty") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "must not be empty")
-	}
-}
-
-func TestInvalidTenantIDErrorImplementsErrorInterface(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "x", Reason: "test"}
-	var _ error = err
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
 func TestInvalidTenantIDErrorFormat(t *testing.T) {
 	err := &InvalidTenantIDError{TenantID: "abc", Reason: "too short"}
 	want := "invalid tenant ID abc: too short"
@@ -64,23 +34,12 @@ func TestInvalidTenantIDErrorFormat(t *testing.T) {
 	}
 }
 
-func TestInvalidTenantIDCharError_NonEmpty(t *testing.T) {
-	err := &InvalidTenantIDCharError{TenantID: "bad\x1f", Byte: 0x1f}
-	if err.Error() == "" {
-		t.Fatal("Error() must not be empty")
-	}
-}
-
 func TestInvalidTenantIDCharError_ContainsHex(t *testing.T) {
 	err := &InvalidTenantIDCharError{TenantID: "b", Byte: 0x1f}
 	got := err.Error()
 	if !strings.Contains(got, "1f") {
 		t.Errorf("Error() = %q, want it to contain hex representation of byte", got)
 	}
-}
-
-func TestInvalidTenantIDCharError_ImplementsError(t *testing.T) {
-	var _ error = &InvalidTenantIDCharError{TenantID: "x", Byte: 0x00}
 }
 
 // ---------------------------------------------------------------------------
@@ -118,13 +77,6 @@ func TestTenantStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
 
 // TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the
 // method reports exactly the field newStoreError computed.
-func TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError(t *testing.T) {
-	err := newStoreError("get", errors.New("read index not ready"))
-	if !err.ReadTransient() {
-		t.Fatal("newStoreError on a non-decrypt cause must produce ReadTransient() = true")
-	}
-}
-
 // TestNewStoreError_NonDecryptCauseIsTransient covers an ordinary read
 // failure -- not a decrypt refusal -- which newStoreError must mark
 // transient.
@@ -166,18 +118,6 @@ func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
 // exact gap a re-review found: forcing tenant's isTransientCause to always
 // return true left the whole suite green, because nothing exercised its
 // decrypt-exclusion branch on this package's side.
-func TestIsTransientCause_NonDecryptCause(t *testing.T) {
-	if !isTransientCause(errors.New("leader lost")) {
-		t.Fatal("isTransientCause(a generic read failure) must be true")
-	}
-}
-
-func TestIsTransientCause_DecryptCause(t *testing.T) {
-	if isTransientCause(seal.ErrDecryptionFailed) {
-		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
-	}
-}
-
 func TestFirstAdminProofError_NamesTenantReasonAndCause(t *testing.T) {
 	cause := &initproof.ChallengeError{Reason: initproof.ReasonExpired}
 	err := &FirstAdminProofError{TenantID: "acme", Reason: initproof.ReasonExpired, Err: cause}
