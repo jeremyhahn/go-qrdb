@@ -86,6 +86,76 @@ func TestProvisionTenantHome_Idempotent(t *testing.T) {
 	}
 }
 
+// homeOnTopology provisions tenant rt's home group over a topology the test
+// can change afterwards, as nodes join or replace one another.
+func homeOnTopology(t *testing.T, nodes []placement.NodeLoad) (*DatabaseService, *placement.Store, *staticTopology) {
+	t.Helper()
+	svc, store := newHomeDatabaseService(t, nodes)
+	topo := &staticTopology{nodes: nodes}
+	sched, err := placement.NewScheduler(topo)
+	if err != nil {
+		t.Fatalf("placement.NewScheduler: %v", err)
+	}
+	svc.placementScheduler = sched
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome: %v", err)
+	}
+	return svc, store, topo
+}
+
+// homeReplicaOn returns the home group's replica on addr, or nil.
+func homeReplicaOn(t *testing.T, store *placement.Store, addr string) *placement.Replica {
+	t.Helper()
+	home, err := store.Get(context.Background(), "rt", database.TenantHomeID)
+	if err != nil {
+		t.Fatalf("Get home: %v", err)
+	}
+	for i := range home.Replicas {
+		if home.Replicas[i].RaftAddr == addr {
+			return &home.Replicas[i]
+		}
+	}
+	return nil
+}
+
+// A node that joins after the tenant's home group was placed joins the home
+// group observer-first when the home is next ensured, so an isolated
+// tenant's serving set covers it (engineering.md, home-group membership).
+func TestProvisionTenantHome_GrowsOntoLateJoiningNode(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	if homeReplicaOn(t, store, "n4:1") != nil {
+		t.Fatal("home group already on n4 before it joined")
+	}
+	topo.nodes = healthyNodes("n1", "n2", "n3", "n4")
+
+	if _, err := svc.ProvisionTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("ProvisionTenantHome after join: %v", err)
+	}
+	r := homeReplicaOn(t, store, "n4:1")
+	if r == nil {
+		t.Fatal("home group did not grow onto the late-joining node n4")
+	}
+	if r.State != placement.ReplicaStateObserver {
+		t.Fatalf("n4 joined the home group as %v, want an observer first", r.State)
+	}
+}
+
+// A node that replaces an original home node joins the home group too.
+func TestGrowTenantHome_CoversReplacementNode(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	topo.nodes = healthyNodes("n1", "n2", "n5")
+
+	if _, err := svc.GrowTenantHome(context.Background(), "rt"); err != nil {
+		t.Fatalf("GrowTenantHome: %v", err)
+	}
+	if homeReplicaOn(t, store, "n5:1") == nil {
+		t.Fatal("home group did not grow onto the replacement node n5")
+	}
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes with nothing to grow: %v", err)
+	}
+}
+
 // rendezvousPlacementKV holds the first parties reads of key, each made,
 // until all of them have arrived: every one of that many concurrent creates
 // reads the entry as absent before any of them writes it.

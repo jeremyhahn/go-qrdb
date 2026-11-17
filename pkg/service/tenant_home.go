@@ -61,7 +61,15 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 	}
 	existing, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeID)
 	if err == nil {
-		return existing, nil
+		// The group was placed on the cluster as it stood then: nodes that
+		// joined since gain their replica now. A failed growth leaves the
+		// group serving where it is, so it does not fail the provision.
+		grown, gerr := s.growHome(ctx, existing)
+		if gerr != nil {
+			s.logger.Warn("tenant home group growth failed; it keeps its current nodes",
+				slog.String("tenant", tenantID), slog.Any("error", gerr))
+		}
+		return grown, nil
 	}
 	if !errors.Is(err, placement.ErrPlacementNotFound) {
 		return nil, err
@@ -106,6 +114,92 @@ func (s *DatabaseService) ProvisionTenantHome(ctx context.Context, tenantID stri
 		slog.Int("rf", plan.RF))
 	s.inviteReplicas(ctx, tenantID, database.TenantHomeName, plan)
 	return plan, nil
+}
+
+// GrowTenantHome reconciles tenantID's home group membership with the
+// cluster: every healthy node the scheduler admits that holds no home
+// replica -- a node that joined after the tenant was created, or one that
+// replaced an original node -- gains one, observer-first (the reconciler
+// promotes it once it has caught up), so the group's voting quorum never
+// breaks while it grows. An isolated tenant's databases are confined to its
+// home group's nodes (PlacementServingSet), so this is what lets them scale
+// onto, or move to, such a node (docs/multi-tenancy/engineering.md,
+// late-joining nodes). It returns the placement as it stands after the
+// replicas it added; a tenant with no home group returns
+// placement.ErrPlacementNotFound.
+func (s *DatabaseService) GrowTenantHome(ctx context.Context, tenantID string) (*placement.Placement, error) {
+	if s.placementStore == nil || s.placementScheduler == nil {
+		return nil, &TenantHomeUnplaceableError{TenantID: tenantID}
+	}
+	home, err := s.placementStore.Get(ctx, tenantID, database.TenantHomeID)
+	if err != nil {
+		return nil, err
+	}
+	return s.growHome(ctx, home)
+}
+
+// growHome adds an observer replica of home on every eligible node holding
+// none. The scheduler sizes the additions: it is asked for one per cluster
+// node, and an *InsufficientNodesError reports how many it could place.
+func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placement) (*placement.Placement, error) {
+	plan, err := s.placementScheduler.PlaceAdditional(ctx, home, max(s.placementScheduler.ClusterSize(), 1))
+	var short *placement.InsufficientNodesError
+	if errors.As(err, &short) {
+		if short.Have < 1 {
+			return home, nil
+		}
+		plan, err = s.placementScheduler.PlaceAdditional(ctx, home, short.Have)
+	}
+	if err != nil {
+		return home, err
+	}
+	if s.raftHost != nil {
+		if err := waitForShardLeaderKnown(ctx, s.raftHost, home.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+			return home, err
+		}
+	}
+	base := placement.MaxReplicaID(home)
+	current := home
+	for _, r := range plan.Replicas {
+		if r.ReplicaID <= base {
+			continue
+		}
+		updated, _, aerr := addObserverReplica(ctx, s.raftHost, s.placementStore, current, r)
+		current = updated
+		if aerr != nil {
+			return current, aerr
+		}
+		s.logger.Info("grew tenant home group onto a node",
+			slog.String("tenant", home.TenantID),
+			slog.Uint64("shard_id", home.ShardID),
+			slog.Uint64("replica_id", r.ReplicaID),
+			slog.String("node", r.NodeID))
+	}
+	return current, nil
+}
+
+// ReconcileTenantHomes grows every tenant's home group onto the healthy
+// nodes it does not yet span (GrowTenantHome). It is what a node join or
+// replacement runs; one tenant's failure does not stop the others, and the
+// errors are returned joined.
+func (s *DatabaseService) ReconcileTenantHomes(ctx context.Context) error {
+	if s.placementStore == nil || s.placementScheduler == nil {
+		return nil
+	}
+	all, err := s.placementStore.List(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, p := range all {
+		if p == nil || p.DatabaseID != database.TenantHomeID {
+			continue
+		}
+		if _, gerr := s.growHome(ctx, p); gerr != nil {
+			errs = append(errs, gerr)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RetireTenantHome implements tenant.HomeRetirer: it deletes tenantID's

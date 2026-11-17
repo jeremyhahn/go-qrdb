@@ -2767,6 +2767,14 @@ func (s *DatabaseService) scaleUp(ctx context.Context, tenantID, name string, db
 		}
 	}
 
+	// An isolated tenant's replicas are confined to its home group's nodes
+	// (PlacementServingSet): grow the home group observer-first onto nodes
+	// that joined, or replaced an original node, since it was placed, so the
+	// scale can use them. A tenant with no home group is unconfined.
+	if _, gerr := s.GrowTenantHome(ctx, tenantID); gerr != nil && !errors.Is(gerr, placement.ErrPlacementNotFound) {
+		return nil, gerr
+	}
+
 	reserved := false
 	if s.quotaUsage != nil {
 		if _, err := s.quotaUsage.IncrementQuotaUsage(ctx, tenantID, quota.ResourceTotalReplicas, int64(delta)); err != nil {
