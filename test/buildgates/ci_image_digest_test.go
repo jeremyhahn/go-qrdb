@@ -400,15 +400,22 @@ const (
 	// that accepts the connection and stalls is cut off after
 	// CI_IMAGE_REGISTRY_TIMEOUT seconds, the default scripts/image-registry.sh
 	// uses, and the expiry is a miss like any other failure.
-	lanTimeout = `timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" `
+	// Every LAN step sources scripts/image-registry.sh: a transfer that
+	// times out leaves the job's outage marker (ci_registry_outage) and every
+	// later one in the job skips at once (ci_registry_skip), so a stalled
+	// registry costs one bound per job, not one per image.
+	lanTimeout = `timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" `
 	// lanPushRun pushes each family and records its tag output on success
 	// alone; a refused or stalled push is a warning, so its consumers take
 	// the artifact.
-	lanPushRun = `lan_push() {
+	lanPushRun = `. scripts/image-registry.sh
+lan_push() {
   ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-  if docker tag "$1" "$ref" >/dev/null 2>&1 && ` + lanTimeout + `docker push -q "$ref" >/dev/null 2>&1; then
+  if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+     docker tag "$1" "$ref" >/dev/null 2>&1 && ` + lanTimeout + `docker push -q "$ref" >/dev/null 2>&1; then
     echo "$3=$TAG" >> "$GITHUB_OUTPUT"
   else
+    ci_registry_outage "$CI_REGISTRY" "$?"
     echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
   fi
   docker rmi "$ref" >/dev/null 2>&1 || true
@@ -417,11 +424,13 @@ lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
 if [ -n "$IT_IMAGE" ]; then
   lan_push "$IT_IMAGE" it-image it_tag
 fi`
-	lanPullRun = `if ` + lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 &&
+	lanPullRun = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+   ` + lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 &&
    [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
    docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
   echo "pulled=true" >> "$GITHUB_OUTPUT"
 else
+  ci_registry_outage "$CI_REGISTRY" "$?"
   echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
 fi
 docker rmi "$REF" >/dev/null 2>&1 || true`
@@ -442,7 +451,7 @@ var lanInterpolated = regexp.MustCompile(`\$\{\{[^}]*\b(secrets\.CI_IMAGE_REGIST
 
 // lanPullRunFor is the canonical pull step script of family f.
 func lanPullRunFor(f imageFamily) string {
-	return `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n" + lanPullRun
+	return ". scripts/image-registry.sh\n" + `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n" + lanPullRun
 }
 
 // producerOut is the expression a consumer reads the producer's output o by.
@@ -980,11 +989,14 @@ jobs:
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
+          . scripts/image-registry.sh
           lan_push() {
             ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker push -q "$ref" >/dev/null 2>&1; then
+            if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+               docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker push -q "$ref" >/dev/null 2>&1; then
               echo "$3=$TAG" >> "$GITHUB_OUTPUT"
             else
+              ci_registry_outage "$CI_REGISTRY" "$?"
               echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
             fi
             docker rmi "$ref" >/dev/null 2>&1 || true
@@ -1007,12 +1019,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1046,12 +1061,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1280,20 +1298,21 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 		t.Fatalf("the canonical push fails its own gate: %s", strings.Join(p, "; "))
 	}
 	const (
-		pull    = `if timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-900}" docker pull -q "$REF" >/dev/null 2>&1 &&`
+		skip    = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&`
+		pull    = `timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&`
 		inspect = `[ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&`
 		tagID   = `docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then`
 	)
 	regressions := []struct{ name, old, new string }{
 		{name: "the pre-#1595 tag-then-check pull", old: pull + "\n             " + inspect + "\n             " + tagID,
-			new: `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
+			new: `docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
 				`[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then`},
 		{name: "a tag of the registry ref", old: tagID, new: `docker tag "$REF" "$IMAGE" >/dev/null 2>&1; then`},
 		{name: "a tag before the check", old: pull, new: pull + ` docker tag "$ID" "$IMAGE" >/dev/null 2>&1 &&`},
 		{name: "a check of the tagged image", old: inspect, new: `[ "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" = "$ID" ] &&`},
-		{name: "a pull printing its stderr", old: pull, new: `if ` + lanTimeout + `docker pull -q "$REF" >/dev/null &&`},
-		{name: "a pull with no timeout", old: pull, new: `if docker pull -q "$REF" >/dev/null 2>&1 &&`},
-		{name: "a pull bounded by a timeout of its own", old: pull, new: `if timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&`},
+		{name: "a pull printing its stderr", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null &&`},
+		{name: "a pull with no timeout", old: pull, new: `docker pull -q "$REF" >/dev/null 2>&1 &&`},
+		{name: "a pull bounded by a timeout of its own", old: pull, new: `timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&`},
 		{name: "a tag printing its stderr", old: tagID, new: `docker tag "$ID" "$IMAGE"; then`},
 		{name: "an rmi printing its stderr", old: `docker rmi "$REF" >/dev/null 2>&1`, new: `docker rmi "$REF" >/dev/null`},
 	}
@@ -1306,7 +1325,7 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 		head := `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n          "
 		for _, tc := range regressions {
 			t.Run(family+"/"+tc.name, func(t *testing.T) {
-				if !strings.Contains(digestFixture, head+pull) {
+				if !strings.Contains(digestFixture, head+skip+"\n             "+pull) {
 					t.Fatalf("the fixture has no %s pull: the case tests nothing", family)
 				}
 				i := strings.Index(digestFixture, head)
