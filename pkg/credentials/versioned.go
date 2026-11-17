@@ -746,11 +746,13 @@ func (s *CredentialService) stageScheduled(ctx context.Context, name string, sch
 }
 
 // storeBarrier writes the credential's current value in one batch guarded
-// on the metadata record as read. A record naming a staged rotation value
-// is written in the same batch with that name cleared, and the staged value
-// is deleted by it: the stored value replaces what the rotation staged, so
-// the next scheduled rotation invokes its value source again and retains
-// the stored value. The current version is not advanced.
+// on the metadata record as read. A record naming a pending scheduled
+// rotation, by its operation ID or by a staged value, is written in the same
+// batch with both cleared, and the staged value is deleted by it: the stored
+// value supersedes that rotation, so the next scheduled rotation starts a
+// new operation, invokes its value source again and retains the stored
+// value, and an idempotent source cannot replay the superseded operation's
+// value over it. The current version is not advanced.
 func (s *CredentialService) storeBarrier(ctx context.Context, name string, value []byte) error {
 	for range rotationMetaRetries {
 		meta, rawMeta, err := s.readBarrierMeta(ctx, name)
@@ -758,15 +760,17 @@ func (s *CredentialService) storeBarrier(ctx context.Context, name string, value
 			return err
 		}
 		writes := []kvstore.KV{{Key: credentialPrefix + name, Value: value}}
-		if staged := meta.Staged; staged != 0 {
+		if staged := meta.Staged; staged != 0 || meta.RotationOp != "" {
 			meta.Staged = 0
+			meta.RotationOp = ""
 			nextMeta, err := json.Marshal(meta)
 			if err != nil {
 				return &OperationError{Op: "encode meta", Cause: err}
 			}
-			writes = append(writes,
-				kvstore.KV{Key: metaKey(name), Value: nextMeta},
-				kvstore.KV{Key: stagedKey(name, staged), Delete: true})
+			writes = append(writes, kvstore.KV{Key: metaKey(name), Value: nextMeta})
+			if staged != 0 {
+				writes = append(writes, kvstore.KV{Key: stagedKey(name, staged), Delete: true})
+			}
 		}
 		applied, err := s.store.PutAllIfAllUnchanged(ctx, []kvstore.Guard{{Key: metaKey(name), Value: rawMeta}}, writes)
 		if err != nil {

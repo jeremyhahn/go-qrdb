@@ -1,13 +1,16 @@
 package credentials
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // A manual rotation that lands between a scheduled rotation's read and its
@@ -135,6 +138,90 @@ func TestRotateDue_StoreAfterAFailedScheduledWriteIsNotOverwrittenByTheStagedVal
 			if got, err := svc.loadBarrierMeta(t.Context(), "k"); err != nil || got.CurrentVersion != next {
 				t.Fatalf("meta after the rotation = %+v, %v; want version %d", got, err, next)
 			}
+		})
+	}
+}
+
+// idempotentSource makes the service's value source honour the idempotency
+// contract: a retry of an operation gets the value the operation already
+// issued, and the underlying source runs once per operation. It records
+// every operation it is asked for.
+func idempotentSource(svc *CredentialService, calls *atomic.Int32, ops *[]string) {
+	source := svc.rotationSource
+	var mu sync.Mutex
+	issued := map[string][]byte{}
+	svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		*ops = append(*ops, op)
+		if value, ok := issued[op]; ok {
+			return secure.NewBufferFromBytes(bytes.Clone(value))
+		}
+		calls.Add(1)
+		buf, err := source(ctx, name, op)
+		if err != nil {
+			return nil, err
+		}
+		if err := buf.WithBytes(func(p []byte) error {
+			issued[op] = bytes.Clone(p)
+			return nil
+		}); err != nil {
+			buf.Destroy()
+			return nil, err
+		}
+		return buf, nil
+	}
+}
+
+func TestRotateDue_StoreEndsTheSupersededRotationOperation(t *testing.T) {
+	cases := []struct {
+		name  string
+		fault func(b *faultBackend, next uint64)
+	}{
+		{"commit fails after staging", func(b *faultBackend, _ uint64) { arm(&b.failCAS, credentialPrefix+"k") }},
+		{"staging fails", func(b *faultBackend, next uint64) { arm(&b.failCAS, stagedKey("k", next)) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, backend := newFaultRotationService(t)
+			setFaultPolicy(t, svc, "k", 5)
+			var calls atomic.Int32
+			var ops []string
+			idempotentSource(svc, &calls, &ops)
+			before, err := svc.loadBarrierMeta(t.Context(), "k")
+			if err != nil {
+				t.Fatalf("loadBarrierMeta: %v", err)
+			}
+			prev, next := rotationVersions(before.CurrentVersion, true)
+			due := rotationEpoch.Add(time.Hour)
+
+			tc.fault(backend, next)
+			if n, err := svc.RotateDue(t.Context(), due); n != 0 || !errors.Is(err, errInjectedFault) {
+				t.Fatalf("RotateDue under the fault = %d, %v; want 0, the injected fault", n, err)
+			}
+			backend.failCAS.Store(nil)
+			requireCurrentValue(t, svc, "k-initial")
+
+			if err := svc.StoreCredential(t.Context(), "k", []byte("k-replacement")); err != nil {
+				t.Fatalf("StoreCredential: %v", err)
+			}
+			requireCurrentValue(t, svc, "k-replacement")
+			if got, err := svc.loadBarrierMeta(t.Context(), "k"); err != nil || got.RotationOp != "" || got.Staged != 0 {
+				t.Fatalf("meta after the store = %+v, %v; want no pending rotation operation or staged value", got, err)
+			}
+
+			if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+				t.Fatalf("RotateDue after the store = %d, %v; want 1, nil", n, err)
+			}
+			if len(ops) != 2 || ops[0] == ops[1] {
+				t.Fatalf("value source operations = %q; want two distinct operations", ops)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Fatalf("value source issued %d values, want 2: the superseded operation's value is not replayed", got)
+			}
+			requireCurrentValue(t, svc, "k-rotated-2")
+			requireVersionValue(t, svc, prev, "k-replacement")
+			requireVersionValue(t, svc, next, "k-rotated-2")
 		})
 	}
 }
