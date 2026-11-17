@@ -17,6 +17,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -356,12 +357,28 @@ func TestRebalanceService_CreateRebalancePlan_HonoursServingSet(t *testing.T) {
 		t.Fatalf("plan skipped = %+v, want one skipped move", plan.Skipped)
 	}
 	sk := plan.Skipped[0]
-	var sse *placement.ServingSetError
-	if sk.ShardID != 101 || sk.FromNode != "n1" || sk.ToNode != "n3" || !errors.As(sk.Err, &sse) || sk.Reason == "" {
-		t.Fatalf("skipped = %+v, want shard 101 n1->n3 refused with *placement.ServingSetError", sk)
+	var sme *ServingSetMoveError
+	if sk.ShardID != 101 || sk.FromNode != "n1" || sk.ToNode != "n3" || !errors.As(sk.Err, &sme) || sk.Reason == "" {
+		t.Fatalf("skipped = %+v, want shard 101 n1->n3 refused with *ServingSetMoveError", sk)
 	}
-	if sse.TenantID != "iso" || sse.Database != "orders" || sse.Node != "n3" {
-		t.Fatalf("ServingSetError = %+v", sse)
+	if sme.TenantID != "iso" || sme.ShardID != 101 || sme.DatabaseID == "" || sme.Node != "n3" {
+		t.Fatalf("ServingSetMoveError = %+v", sme)
+	}
+	// The plan is platform-scoped: neither the reason, the error text every
+	// transport encodes, nor the JSON MCP marshals carries the tenant's
+	// database name.
+	wire, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatalf("marshal plan: %v", err)
+	}
+	for what, text := range map[string]string{"reason": sk.Reason, "error": sk.Err.Error(), "json": string(wire)} {
+		// The fixture's opaque id ("orders-id") embeds the name; strip it.
+		if strings.Contains(strings.ReplaceAll(text, sme.DatabaseID, ""), "orders") {
+			t.Fatalf("skipped move %s %q names the tenant's database", what, text)
+		}
+	}
+	if !strings.Contains(sk.Reason, sme.DatabaseID) {
+		t.Fatalf("reason %q does not carry the opaque database id %q", sk.Reason, sme.DatabaseID)
 	}
 }
 

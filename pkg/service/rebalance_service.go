@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"math"
 	"sort"
+	"strconv"
 	"time"
 
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
@@ -124,6 +125,33 @@ type RebalanceSkippedMove struct {
 	ToNode   string
 	Reason   string
 	Err      error `json:"-"`
+}
+
+// ServingSetMoveError is the platform-facing refusal of a planned move whose
+// destination lies outside an isolated tenant's serving set. A rebalance plan
+// is platform-scoped (rebalance:plan grants no access to any tenant's
+// catalog), so it names the shard and the database's opaque id, never the
+// database name the tenant's catalog holds (docs/SPEC.md strict tenant
+// isolation; docs/multi-tenancy/architecture.md, catalog boundary).
+type ServingSetMoveError struct {
+	// TenantID owns the database.
+	TenantID string
+
+	// DatabaseID is the database's opaque, never-reused id.
+	DatabaseID string
+
+	// ShardID is the database's Raft shard.
+	ShardID uint64
+
+	// Node is the refused destination's Raft address.
+	Node string
+}
+
+// Error returns a description carrying no database name.
+func (e *ServingSetMoveError) Error() string {
+	return "rebalance: node " + strconv.Quote(e.Node) + " is outside the serving set of tenant " +
+		strconv.Quote(e.TenantID) + "; shard " + strconv.FormatUint(e.ShardID, 10) +
+		" (database id " + strconv.Quote(e.DatabaseID) + ") is confined to it"
 }
 
 // RebalanceExecutionResult contains the outcome of an executed rebalance.
@@ -426,12 +454,17 @@ func (s *RebalanceService) CreateRebalancePlan(ctx context.Context, opts *Rebala
 					serr := checkReplicaInServingSet(ctx, s.placementStore, current, balances[j].node.Address)
 					var sse *placement.ServingSetError
 					if errors.As(serr, &sse) {
+						// The plan is platform-scoped (rebalance:plan grants no
+						// tenant catalog access): the refusal names the shard
+						// and the opaque database id, never the database name.
+						merr := &ServingSetMoveError{TenantID: current.TenantID, DatabaseID: current.DatabaseID,
+							ShardID: si.ShardID, Node: balances[j].node.Address}
 						skipped = append(skipped, RebalanceSkippedMove{
 							ShardID:  si.ShardID,
 							FromNode: balances[i].node.Address,
 							ToNode:   balances[j].node.Address,
-							Reason:   serr.Error(),
-							Err:      serr,
+							Reason:   merr.Error(),
+							Err:      merr,
 						})
 						continue
 					}
