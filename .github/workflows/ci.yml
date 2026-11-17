@@ -488,7 +488,7 @@ jobs:
   # image is the code tier (DS-3160).
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer image [lint, gosec]
+    name: Devcontainer image [lint, gosec, gosec-sdk]
     runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
     needs: [preflight, docker-build]
     timeout-minutes: 120
@@ -573,11 +573,13 @@ jobs:
       # scans.yml runs it on dispatch on main. The Makefile keeps the target.
 
       # ci-template v1.30: gosec on the PR tier. v1.42 (ruling 742 (1)):
-      # `make security` left the image job, so gosec runs here on every event
-      # but a docs-only PR. It reads only the tree, so the gate stays hermetic.
-      - name: make gosec
+      # `make security` left the image job, so its gosec half runs here on
+      # every event but a docs-only PR: `make gosec` for the root module and
+      # `make gosec-sdk` for sdk/go, which the root's ./... does not reach.
+      # Both read only the tree, so the gate stays hermetic.
+      - name: make gosec gosec-sdk
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec gosec-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # ci-template v1.30: vet-tags and the secure analyzer, on the nightly
       # schedule alone.

@@ -35,8 +35,10 @@ const scansWorkflowName = "scans.yml"
 // v1.42 (owner ruling 742 (1)) runs them in scans.yml only.
 var advisoryRuns = []string{"make deps-check", "make security", "make trivy-image"}
 
-// gosecRun is the tree-only static analysis that stays in the CI Gate.
-const gosecRun = "make gosec"
+// gosecRun is the tree-only static analysis that stays in the CI Gate: the
+// gosec half of `make security`, for the root module and for sdk/go, which
+// the root module's ./... does not reach.
+const gosecRun = "make gosec gosec-sdk"
 
 // hermeticGateProblems checks ci-template v1.42's hermetic gate (ruling 742
 // (1)): no ci.yml job runs an advisory check, so the CI Gate's outcome
@@ -117,9 +119,9 @@ jobs:
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-      - name: make gosec
+      - name: make gosec gosec-sdk
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec gosec-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
   image:
     if: ${{ (needs.preflight.outputs.docs_only != 'true') && !github.event.pull_request.draft }}
     steps:
@@ -150,7 +152,7 @@ func TestHermeticGateProblems_CanFail(t *testing.T) {
 		}
 		return strings.Replace(fixture, old, new, 1)
 	}
-	gosecIf := "        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" \"make gosec"
+	gosecIf := "        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" \"make gosec gosec-sdk"
 	depsStep := "      - name: make deps-check\n        env:\n          IN_IMAGE_NETWORK: bridge\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make deps-check\n"
 	securityStep := "      - name: make security\n        if: ${{ env.CI_FULL_TIER == 'true' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make security\n"
 	cases := map[string]struct{ ci, scans, want string }{
@@ -164,7 +166,9 @@ func TestHermeticGateProblems_CanFail(t *testing.T) {
 		"no lint job": {edit(hermeticCIFixture, "  lint:\n", "  lint-x:\n"), hermeticScansFixture, "has no lint job"},
 		"lint skips docs-only": {edit(hermeticCIFixture, "    if: ${{ !github.event.pull_request.draft }}", "    if: ${{ needs.preflight.outputs.docs_only != 'true' }}"),
 			hermeticScansFixture, "skips a docs-only pull request"},
-		"no gosec step": {edit(hermeticCIFixture, "make gosec GO_BUILD_TAGS", "make vet GO_BUILD_TAGS"), hermeticScansFixture, "has no make gosec step"},
+		"no gosec step": {edit(hermeticCIFixture, "make gosec gosec-sdk GO_BUILD_TAGS", "make vet GO_BUILD_TAGS"), hermeticScansFixture, "has no make gosec gosec-sdk step"},
+		// make security ran gosec-sdk too; the root's ./... does not reach sdk/go.
+		"gosec without gosec-sdk": {edit(hermeticCIFixture, "make gosec gosec-sdk GO_BUILD_TAGS", "make gosec GO_BUILD_TAGS"), hermeticScansFixture, "has no make gosec gosec-sdk step"},
 		"gosec on the PR tier only": {edit(hermeticCIFixture, gosecIf, strings.Replace(gosecIf, "&& needs.", "&& env.CI_FULL_TIER != 'true' && needs.", 1)),
 			hermeticScansFixture, "depends on the tier"},
 		"scans on pull_request": {hermeticCIFixture, edit(hermeticScansFixture, "  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"),
