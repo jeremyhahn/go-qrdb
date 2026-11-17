@@ -258,18 +258,24 @@ func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del
 	if req == nil || u == nil || u.PendingExpiresAt != "" {
 		return u, nil
 	}
-	if d, err := req.PendingTTLDuration(); err != nil || d <= 0 {
+	d, err := req.PendingTTLDuration()
+	if err == nil && d <= 0 {
 		return u, nil
 	}
-	unsupported := &CapabilityUnsupportedError{
+	// An unparseable TTL never reports success: the transports refuse it
+	// before sending, and a create that got through anyway is undone.
+	var refusal error = &CapabilityUnsupportedError{
 		Message: "server ignored pending_ttl " + strconv.Quote(req.PendingTTL) +
 			": it cannot expire pending users; upgrade the server",
 	}
+	if err != nil {
+		refusal = &RequestError{Method: "CreateUser", Err: err}
+	}
 	if delErr := del(context.WithoutCancel(ctx), u.ID); delErr != nil {
-		return nil, errors.Join(unsupported,
+		return nil, errors.Join(refusal,
 			fmt.Errorf("delete of the unexpiring pending user %d: %w", u.ID, delErr))
 	}
-	return nil, unsupported
+	return nil, refusal
 }
 
 // UpdateUserRequest holds parameters for updating a user.

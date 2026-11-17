@@ -122,6 +122,11 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
+	// Refuse a negative or malformed TTL before sending: an older server
+	// ignores pending_ttl and would create a pending user that never expires.
+	if _, err := req.PendingTTLDuration(); err != nil {
+		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+	}
 
 	var user transport.User
 	if err := t.postJSONDecode(ctx, "CreateUser", "/users", req, &user); err != nil {

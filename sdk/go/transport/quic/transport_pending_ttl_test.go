@@ -81,3 +81,35 @@ func TestE2E_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		t.Fatalf("CreateUser without a TTL on an older server: %v", err)
 	}
 }
+
+// A negative or malformed TTL is refused before the request leaves the
+// client: an older server ignores pendingTtl, so sending it would create a
+// pending account that never expires while EnforcePendingTTL, unable to
+// parse the TTL, reported success.
+func TestE2E_CreateUser_InvalidPendingTTLNeverSent(t *testing.T) {
+	srv, tr := startE2EServer(t)
+	var mu sync.Mutex
+	creates := 0
+	srv.SetResponder("user.Create", func(payload []byte) (uint16, []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		creates++
+		return wire.StatusOK, userJSON(&userWireResponse{ID: 1, Username: "ttl", Lifecycle: "pending"})
+	})
+
+	for _, ttl := range []string{"-1h", "-500ms", "soon"} {
+		u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+			WithoutEmailLoginKey: true, Username: "ttl", Pending: true, PendingTTL: ttl,
+		})
+		var reqErr *transport.RequestError
+		if !errors.As(err, &reqErr) || u != nil {
+			t.Fatalf("CreateUser(pending_ttl=%q) = %+v, %v; want a RequestError", ttl, u, err)
+		}
+	}
+	mu.Lock()
+	n := creates
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d create request(s) reached the older server; want 0", n)
+	}
+}

@@ -88,3 +88,32 @@ func TestTransport_CreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		t.Fatalf("CreateUser without a TTL on an older server: %v", err)
 	}
 }
+
+// A negative or malformed TTL is refused before the tool call leaves the
+// client: an older server ignores pending_ttl, so sending it would create a
+// pending account that never expires while EnforcePendingTTL, unable to
+// parse the TTL, reported success.
+func TestTransport_CreateUser_InvalidPendingTTLNeverSent(t *testing.T) {
+	older := &olderUserSvc{mockUserSvc: newMockUserSvc(), live: map[uint64]bool{}}
+	roles := newMockRoleSvc()
+	roles.getResp.TenantID = "system"
+	tr, cleanup := connectAuthInProcess(t, older, roles, nil)
+	defer cleanup()
+
+	for _, ttl := range []string{"-1h", "-500ms", "soon"} {
+		u, err := tr.CreateUser(context.Background(), &transport.CreateUserRequest{
+			WithoutEmailLoginKey: true, Username: "ttl", TenantID: "system",
+			Pending: true, PendingTTL: ttl,
+		})
+		var reqErr *transport.RequestError
+		if !errors.As(err, &reqErr) || u != nil {
+			t.Fatalf("CreateUser(pending_ttl=%q) = %+v, %v; want a RequestError", ttl, u, err)
+		}
+	}
+	older.liveMu.Lock()
+	n := len(older.live)
+	older.liveMu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d pending account(s) created on the older server; want 0", n)
+	}
+}

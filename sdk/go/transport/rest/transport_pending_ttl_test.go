@@ -85,3 +85,35 @@ func TestRESTCreateUser_OlderServerRefusesPendingTTL(t *testing.T) {
 		t.Fatalf("CreateUser without a TTL on an older server: %v", err)
 	}
 }
+
+// A negative or malformed TTL is refused before the request leaves the
+// client: an older server ignores pending_ttl, so sending it would create a
+// pending account that never expires while EnforcePendingTTL, unable to
+// parse the TTL, reported success.
+func TestRESTCreateUser_InvalidPendingTTLNeverSent(t *testing.T) {
+	rt, rs, _ := newExtTransport(t)
+	var mu sync.Mutex
+	posts := 0
+	rs.handle(exactPath(http.MethodPost, "/users"), func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		posts++
+		mu.Unlock()
+		writeJSON(w, &transport.User{ID: 1, Username: "ttl", Lifecycle: "pending"})
+	})
+
+	for _, ttl := range []string{"-1h", "-500ms", "soon"} {
+		u, err := rt.CreateUser(context.Background(), &transport.CreateUserRequest{
+			WithoutEmailLoginKey: true, Username: "ttl", Pending: true, PendingTTL: ttl,
+		})
+		var reqErr *transport.RequestError
+		if !errors.As(err, &reqErr) || u != nil {
+			t.Fatalf("CreateUser(pending_ttl=%q) = %+v, %v; want a RequestError", ttl, u, err)
+		}
+	}
+	mu.Lock()
+	n := posts
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d create request(s) reached the older server; want 0", n)
+	}
+}
