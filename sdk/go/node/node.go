@@ -86,7 +86,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -5141,9 +5140,9 @@ func buildClusteredRaftConfigs(
 		DeploymentID:          deploymentID,
 		MaxTotalInMemLogSize:  cfg.Raft.MaxTotalInMemLogSize,
 		AllowZeroDeploymentID: deploymentID == 0,
-		// Disable WAL fdatasync when QRDB_NOSYNC_WRITES=1 to avoid
-		// Docker overlay2 fsync latency issues in integration tests.
-		NoSyncWAL: os.Getenv("QRDB_NOSYNC_WRITES") == "1",
+		// The Raft WAL skips fdatasync only in a qrdb_testonly build with
+		// QRDB_NOSYNC_WRITES=1 (nosync_testbuild.go); production syncs it.
+		NoSyncWAL: noSyncWAL(),
 	}
 
 	// The Raft log's at-rest options are not decided here: buildClusteredHost
