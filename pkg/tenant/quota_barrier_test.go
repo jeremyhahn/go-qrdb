@@ -45,10 +45,6 @@ func TestQuotaExceededError_Error(t *testing.T) {
 	}
 }
 
-func TestQuotaExceededError_ImplementsError(t *testing.T) {
-	var _ error = &QuotaExceededError{}
-}
-
 func TestInvalidStrategyError_Error_NoAvailable(t *testing.T) {
 	err := &InvalidStrategyError{Strategy: "tpm2"}
 	got := err.Error()
