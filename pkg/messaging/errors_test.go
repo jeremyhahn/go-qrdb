@@ -73,12 +73,6 @@ func TestDeltaNilInputError_Error_DifferentParameters(t *testing.T) {
 	}
 }
 
-func TestDeltaNilInputError_ImplementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	var err error = &DeltaNilInputError{Parameter: "test"}
-	require.NotEmpty(t, err.Error())
-}
-
 func TestDeltaNilInputError_ErrorsAs(t *testing.T) {
 	t.Parallel()
 	err := &DeltaNilInputError{Parameter: "new entity"}
@@ -112,12 +106,6 @@ func TestDeltaTypeMismatchError_Error_WithPath(t *testing.T) {
 	assert.Equal(t, "type mismatch at entityType: non-pointer vs pointer", got)
 }
 
-func TestDeltaTypeMismatchError_ImplementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	var err error = &DeltaTypeMismatchError{OldType: "a", NewType: "b"}
-	require.NotEmpty(t, err.Error())
-}
-
 func TestDeltaTypeMismatchError_ErrorsAs(t *testing.T) {
 	t.Parallel()
 	err := &DeltaTypeMismatchError{OldType: "string", NewType: "int", Path: "field"}
@@ -145,12 +133,6 @@ func TestDeltaMaxDepthExceededError_Error_EmptyPath(t *testing.T) {
 	err := &DeltaMaxDepthExceededError{MaxDepth: 5, Path: ""}
 	got := err.Error()
 	assert.Equal(t, "max recursion depth exceeded at ", got)
-}
-
-func TestDeltaMaxDepthExceededError_ImplementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	var err error = &DeltaMaxDepthExceededError{MaxDepth: 3, Path: "root"}
-	require.NotEmpty(t, err.Error())
 }
 
 func TestDeltaMaxDepthExceededError_ErrorsAs(t *testing.T) {
@@ -201,12 +183,6 @@ func TestDeltaDeserializationError_Error_DifferentCauses(t *testing.T) {
 	}
 }
 
-func TestDeltaDeserializationError_ImplementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	var err error = &DeltaDeserializationError{Cause: "test"}
-	require.NotEmpty(t, err.Error())
-}
-
 func TestDeltaDeserializationError_ErrorsAs(t *testing.T) {
 	t.Parallel()
 	err := &DeltaDeserializationError{Cause: "bad data"}
@@ -231,12 +207,6 @@ func TestDeltaDiffError_Error_FormatsCorrectly(t *testing.T) {
 	t.Parallel()
 	err := &DeltaDiffError{Cause: "version conflict"}
 	assert.Equal(t, "diffable interface failed: version conflict", err.Error())
-}
-
-func TestDeltaDiffError_ImplementsErrorInterface(t *testing.T) {
-	t.Parallel()
-	var err error = &DeltaDiffError{Cause: "test"}
-	require.NotEmpty(t, err.Error())
 }
 
 func TestDeltaDiffError_ErrorsAs(t *testing.T) {
