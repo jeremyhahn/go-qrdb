@@ -1081,14 +1081,10 @@ func (s *Server) Start() error {
 		mux.HandleFunc(ProtectedResourceMetadataPath, s.protectedResourceMetadataHandler)
 	}
 
-	s.httpSrv = &http.Server{
-		// The client-address limiter (go-qrdb#1197) admits every request --
-		// JSON-RPC, enrollment and discovery alike -- before routing,
-		// authentication or the sealed window does work on its behalf.
-		Handler:      s.clientLimit.HTTP(mux),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
+	// The client-address limiter (go-qrdb#1197) admits every request --
+	// JSON-RPC, enrollment and discovery alike -- before routing,
+	// authentication or the sealed window does work on its behalf.
+	s.httpSrv = newHTTPServer(s.clientLimit.HTTP(mux))
 
 	proto := "HTTP"
 	if s.tlsConfig != nil {
@@ -1103,6 +1099,28 @@ func (s *Server) Start() error {
 	}()
 
 	return nil
+}
+
+// serverIdleTimeout is the http.Server IdleTimeout: how long a keep-alive
+// connection may sit idle before the server closes it. It is set
+// explicitly because net/http falls back to ReadTimeout (5 s) when it is
+// zero, and a server that closes an idle connection the client is reusing
+// at that moment fails the client's request: net/http never resends a
+// non-idempotent POST, and every MCP tool call is one. Clients keep idle
+// connections for less than this (the Go SDK's MCP transport keeps them
+// 90 s, net/http's DefaultTransport value), so the client always retires an
+// idle connection before the server does. The REST server uses the same
+// value.
+const serverIdleTimeout = 120 * time.Second
+
+// newHTTPServer is the MCP listener's http.Server around handler.
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  serverIdleTimeout,
+	}
 }
 
 // endpoint is the /mcp handler. While the node barrier is sealed it is the

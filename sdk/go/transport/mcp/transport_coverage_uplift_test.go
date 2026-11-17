@@ -282,7 +282,7 @@ func TestBuildTLSConfig_BadCertFile(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestNew_HTTPRoundTrip exercises the network Connect path (buildTLSConfig +
-// NewStreamableHttpClient + Initialize) against a real mcpapi.Server running
+// mcphttp client + Initialize) against a real mcpapi.Server running
 // over HTTPS on an ephemeral port. The custom TLS config branch ensures the
 // connection succeeds without trusting the system root pool.
 func TestNew_HTTPRoundTrip_TLS(t *testing.T) {
