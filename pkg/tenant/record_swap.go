@@ -140,6 +140,9 @@ func updateTenantRecord(ctx context.Context, u tenantRecordUpdater, swapper tena
 		if err := u.checkTenantUpdate(ctx, info, patch); err != nil {
 			return nil, err
 		}
+		if err := requireTighteningFence(ctx, info, patch); err != nil {
+			return nil, err
+		}
 		fromStatus := info.Status
 		if err := applyStatus(info, patch); err != nil {
 			return nil, err

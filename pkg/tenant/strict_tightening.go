@@ -360,13 +360,44 @@ func (s *kvTenantService) IsolationTightening(ctx context.Context, tenantID stri
 // guardedUpdate runs update, UpdateTenant's commit, under tightenToStrict
 // when patch tightens tenantID's own policy to strict.
 func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerStore, info *TenantInfo, patch TenantPatch, update func(context.Context) error) error {
-	if info == nil || !tightensToStrict(info, patch) {
+	if info == nil {
 		return update(ctx)
 	}
 	id := info.ID
-	return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", true, func(context.Context) ([]string, error) {
-		return []string{id}, nil
-	}, update)
+	tighten := func() error {
+		return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", true, func(context.Context) ([]string, error) {
+			return []string{id}, nil
+		}, update)
+	}
+	if tightensToStrict(info, patch) {
+		return tighten()
+	}
+	// The initial record looked exempt, but the swap rereads the record and
+	// commits over that version: when the record it commits over tightens to
+	// strict, requireTighteningFence refuses the unfenced attempt and the
+	// update runs again under the marker and probe.
+	if err := update(ctx); !errors.Is(err, errTighteningRecheck) {
+		return err
+	}
+	return tighten()
+}
+
+// errTighteningRecheck refuses an unfenced tenant swap whose current record
+// tightens to strict; guardedUpdate retries it under the tightening marker.
+var errTighteningRecheck = errors.New("tenant: strict tightening must be rechecked under its marker")
+
+// requireTighteningFence is the swap-time half of the strict-tightening
+// guard: it judges the record the compare-and-swap commits over (reread on
+// every conflict retry), so a stale exempt read cannot skip the marker and
+// node-keyed-log probe.
+func requireTighteningFence(ctx context.Context, current *TenantInfo, patch TenantPatch) error {
+	if !tightensToStrict(current, patch) {
+		return nil
+	}
+	if _, ok := ctx.Value(tighteningFenceKey{}).(kvstore.Guard); ok {
+		return nil
+	}
+	return errTighteningRecheck
 }
 
 // guardedFloor runs set, the cluster floor's tightening, under

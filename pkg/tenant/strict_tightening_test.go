@@ -249,6 +249,44 @@ func TestTightenToStrict_RefusedWhileABarrierTenantHasNodeKeyedLogs(t *testing.T
 	}
 }
 
+// TestTightenToStrict_GuardJudgesTheRecordTheSwapCommits pins G1 under the
+// interleaving where a strict update reads an exempt volume record, the tenant
+// is then changed to barrier and gains a shared-WAL database, and the update
+// resumes: the guard must judge (and fence) the record the swap commits over,
+// not the stale one it was handed.
+func TestTightenToStrict_GuardJudgesTheRecordTheSwapCommits(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestService(t)
+	if _, err := svc.CreateTenant(ctx, "secure", "Secure", IsolationBarrier); err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
+	svc.SetNodeKeyLogProbe(probe)
+
+	// The update's initial read saw the tenant while it was still volume.
+	stale := &TenantInfo{ID: "secure", IsolationType: IsolationVolume}
+	patch := TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict}
+	swapper, _ := svc.store.(tenantRecordSwapper)
+	err := svc.guardedUpdate(ctx, svc.store, stale, patch, func(ctx context.Context) error {
+		_, uerr := updateTenantRecord(ctx, svc, swapper, "secure", patch)
+		return uerr
+	})
+	var nk *NodeKeyLogsError
+	if !errors.As(err, &nk) || nk.TenantID != "secure" {
+		t.Fatalf("strict update over a now-barrier tenant with shared-WAL databases = %v, want *NodeKeyLogsError", err)
+	}
+	if !probe.sawMarker["secure"] {
+		t.Fatal("the recheck tightened without its marker standing")
+	}
+	got, err := svc.GetTenant(ctx, "secure")
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	if got.IsolationPolicy == TenantIsolationPolicyStrict {
+		t.Fatal("strict committed over a barrier tenant with node-keyed data")
+	}
+}
+
 // TestGuardedFloor_MarksBeforeListingTenants: the cluster marker is in place
 // before the floor lists tenants -- even when none exist -- so a tenant
 // created while the list is taken has its creates refused.
