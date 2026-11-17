@@ -21,6 +21,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // markerSeeingProbe lists dbs for every tenant and records whether the
@@ -52,7 +55,7 @@ func newRaftTenantForTightening(t *testing.T, id string) *TenantService {
 }
 
 func TestTightenToStrict_RefusedWhileDatabasesAreOnTheNodeKeyedWAL(t *testing.T) {
-	ctx := context.Background()
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Subject: "acme-admin", TenantID: "acme"})
 	svc := newRaftTenantForTightening(t, "acme")
 	probe := &markerSeeingProbe{svc: svc, dbs: []string{"orders"}, sawMarker: map[string]bool{}}
 	svc.SetNodeKeyLogProbe(probe)
@@ -70,6 +73,37 @@ func TestTightenToStrict_RefusedWhileDatabasesAreOnTheNodeKeyedWAL(t *testing.T)
 	}
 	if on, err := svc.IsolationTightening(ctx, "acme"); err != nil || on {
 		t.Fatalf("IsolationTightening after the refusal = (%v, %v), want the marker removed", on, err)
+	}
+}
+
+// A platform operator tightening another tenant (tenants:update:cross) holds
+// no access to that tenant's catalog: its refusal carries the count only, as
+// the cluster-floor refusal does. So does a caller with no identity.
+func TestTightenToStrict_CrossTenantRefusalDisclosesNoDatabaseNames(t *testing.T) {
+	for name, ctx := range map[string]context.Context{
+		"system operator": auth.WithIdentity(context.Background(), &auth.Identity{
+			Subject: "platform-admin", TenantID: tenantid.System, ScopePermissions: []string{"tenants:update:cross"},
+		}),
+		"other tenant": auth.WithIdentity(context.Background(), &auth.Identity{Subject: "g", TenantID: "globex"}),
+		"no identity":  context.Background(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newRaftTenantForTightening(t, "acme")
+			svc.SetNodeKeyLogProbe(&fixedProbe{dbs: map[string][]string{"acme": {"orders", "ledger"}}})
+			_, err := svc.UpdateTenant(ctx, "acme", TenantPatch{IsolationPolicy: TenantIsolationPolicyStrict})
+			var nk *NodeKeyLogsError
+			if !errors.As(err, &nk) || nk.TenantID != "acme" {
+				t.Fatalf("UpdateTenant(strict) = %v, want *NodeKeyLogsError", err)
+			}
+			if len(nk.Databases) != 0 || nk.Count != 2 {
+				t.Fatalf("cross-tenant refusal = databases %v count %d, want no names and count 2", nk.Databases, nk.Count)
+			}
+			for _, db := range []string{"orders", "ledger"} {
+				if strings.Contains(err.Error(), db) {
+					t.Fatalf("refusal text %q names database %s", err.Error(), db)
+				}
+			}
+		})
 	}
 }
 

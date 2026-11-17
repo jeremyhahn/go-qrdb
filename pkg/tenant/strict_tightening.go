@@ -24,8 +24,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // ---------------------------------------------------------------------------
@@ -364,8 +366,13 @@ func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerSt
 		return update(ctx)
 	}
 	id := info.ID
+	// Only an authenticated member of the target tenant may read its
+	// database names in the refusal. A cross-tenant caller (a platform
+	// operator holding tenants:update:cross) changes the registry, not the
+	// tenant's catalog, so it gets the count-only refusal guardedFloor uses.
+	disclose := callerBelongsTo(ctx, id)
 	tighten := func() error {
-		return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", true, func(context.Context) ([]string, error) {
+		return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", disclose, func(context.Context) ([]string, error) {
 			return []string{id}, nil
 		}, update)
 	}
@@ -380,6 +387,14 @@ func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerSt
 		return err
 	}
 	return tighten()
+}
+
+// callerBelongsTo reports whether ctx carries an authenticated identity of
+// tenantID. A context with no identity, or one of another tenant (the system
+// tenant included), does not.
+func callerBelongsTo(ctx context.Context, tenantID string) bool {
+	id := auth.IdentityFromContext(ctx)
+	return id != nil && tenantid.Normalize(id.TenantID) == tenantid.Normalize(tenantID)
 }
 
 // errTighteningRecheck refuses an unfenced tenant swap whose current record
