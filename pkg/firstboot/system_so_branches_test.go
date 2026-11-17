@@ -123,13 +123,6 @@ func TestGrantAdminSORole_ErrorBranches(t *testing.T) {
 	assert.Equal(t, []string{"admin"}, admin.RoleIDs, "the grant must not mutate the caller's account")
 }
 
-func TestCertBound(t *testing.T) {
-	u := &user.User{CertBindings: []user.CertBinding{{Thumbprint: "a"}, {Thumbprint: "b"}}}
-	assert.True(t, certBound(u, "b"))
-	assert.False(t, certBound(u, "c"))
-	assert.False(t, certBound(&user.User{}, "a"))
-}
-
 // creatorOnlyRoles creates roles but does not resolve names.
 type creatorOnlyRoles struct{ RoleCreator }
 

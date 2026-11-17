@@ -114,7 +114,9 @@ func (b *soBinder) BindAdminCert(_ context.Context, _ string, userID uint64, thu
 	if u == nil {
 		return errors.New("no such user")
 	}
-	u.CertBindings = append(u.CertBindings, user.CertBinding{Thumbprint: thumbprint, Kind: user.CertBindingSPKIThumbprint})
+	// As the user store does: a binding for a thumbprint already bound
+	// replaces it, so rebinding an expired key renews it.
+	u.AddCertBinding(user.CertBinding{Thumbprint: thumbprint, Kind: user.CertBindingSPKIThumbprint})
 	return nil
 }
 

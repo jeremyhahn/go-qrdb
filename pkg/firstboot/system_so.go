@@ -282,16 +282,6 @@ func grantAdminSORole(ctx context.Context, deps Dependencies, admin *user.User, 
 	return updated, nil
 }
 
-// certBound reports whether u holds a binding for thumbprint.
-func certBound(u *user.User, thumbprint string) bool {
-	for _, b := range u.CertBindings {
-		if b.Thumbprint == thumbprint {
-			return true
-		}
-	}
-	return false
-}
-
 func implementsPINRecordSetter(pins SOPINSetter) bool {
 	_, ok := pins.(SOPINRecordSetter)
 	return ok
@@ -385,7 +375,10 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			return &SystemSOEnrollmentError{Op: "PIN commit", Cause: errors.Join(err, ownErr)}
 		}
 	}
-	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil || !certBound(soUser, soKey) {
+	// A live binding for the SO's own key is required: another key's live
+	// binding does not enrol it, and an expired one for its key would leave
+	// its certificate failing User.MatchesCert. Rebinding renews it.
+	if created || verifyAdminBindings(soUser, time.Now().UTC()) != nil || !soUser.HasCertBinding(soKey) {
 		certPEM, err := issueSOCert(ctx, deps, tenantID)
 		if err != nil {
 			return &SystemSOEnrollmentError{Op: "certificate", Cause: err}

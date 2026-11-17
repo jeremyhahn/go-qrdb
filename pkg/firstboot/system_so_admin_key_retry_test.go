@@ -72,7 +72,7 @@ func TestInitialize_SOFailureKeepsGeneratedAdminKeyRecoverable(t *testing.T) {
 	if len(result.AdminKeyPEM) == 0 || len(result.AdminCertPEM) == 0 {
 		t.Fatal("the retry returned no generated admin credential")
 	}
-	if !certBound(h.users.byName[adminUsername], result.AdminCertThumbprint) {
+	if !h.users.byName[adminUsername].HasCertBinding(result.AdminCertThumbprint) {
 		t.Fatal("the retry's admin credential is not bound to the admin")
 	}
 }
