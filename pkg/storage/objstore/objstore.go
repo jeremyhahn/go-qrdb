@@ -282,7 +282,11 @@ func (e *Engine) ensureFormatMarker() error {
 	if err != nil {
 		return err
 	}
-	if len(names) > 0 {
+	// A namespace holding only the owner marker is one whose reclamation
+	// stopped between the format-marker and owner-marker deletes (Reclaim
+	// deletes the owner marker last). It is treated as empty, so its owner
+	// can reopen it and reclaim it again; claimOwner still refuses any other.
+	if len(names) > 0 && (len(names) != 1 || names[0] != ownerMarkerName) {
 		return &FormatMarkerMissingError{Provider: e.provider}
 	}
 	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
@@ -750,7 +754,8 @@ func (e *Engine) Reclaim() error {
 		return err
 	}
 	// The owner record goes last, so a reclamation that fails part-way
-	// leaves the namespace its owner's to retry.
+	// leaves the namespace its owner's to retry: a namespace holding only
+	// the owner marker reopens for that owner (ensureFormatMarker).
 	if err := e.store.Delete(ownerMarkerName); err != nil && !notFound(err) {
 		return err
 	}

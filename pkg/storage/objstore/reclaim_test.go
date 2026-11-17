@@ -16,11 +16,13 @@ package objstore
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 	objfactory "github.com/jeremyhahn/go-objstore/pkg/factory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
@@ -186,6 +188,46 @@ func TestReclaim_ProviderFaults(t *testing.T) {
 			clear(store.deleteFails)
 			clear(journal.deleteFails)
 			require.NoError(t, e.Reclaim())
+			require.Empty(t, names(t, store))
+			require.Empty(t, names(t, journal))
+		})
+	}
+}
+
+// TestReclaim_InterruptedReopensForCleanup covers a reclamation that stops
+// after the format marker is gone but before the owner marker is: by a failed
+// owner-marker delete, or by a crash between the two deletes, which leaves a
+// namespace holding only the owner marker. Its owner reopens it and reclaims
+// the rest; another owner is still refused.
+func TestReclaim_InterruptedReopensForCleanup(t *testing.T) {
+	cases := map[string]func(t *testing.T) (*reclaimStore, *reclaimStore){
+		"owner marker delete fails": func(t *testing.T) (*reclaimStore, *reclaimStore) {
+			e, store, journal := newReclaimEngine(t)
+			require.NoError(t, e.claimOwner("db-a"))
+			store.deleteFails[ownerMarkerName] = true
+			require.ErrorIs(t, e.Reclaim(), errProvider)
+			clear(store.deleteFails)
+			return store, journal
+		},
+		"crash between the marker deletes": func(t *testing.T) (*reclaimStore, *reclaimStore) {
+			store, journal := newReclaimStore(t), newReclaimStore(t)
+			require.NoError(t, store.Storage.Put(ownerMarkerName, strings.NewReader("db-a")))
+			return store, journal
+		},
+	}
+	for name, interrupt := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, journal := interrupt(t)
+			require.Equal(t, []string{ownerMarkerName}, names(t, store))
+
+			other := &Engine{store: store, journal: journal, provider: "memory"}
+			var owned *NamespaceOwnedError
+			require.True(t, errors.As(other.claimNamespace("db-b"), &owned))
+			assert.Equal(t, "db-a", owned.Owner)
+
+			reopened := &Engine{store: store, journal: journal, provider: "memory"}
+			require.NoError(t, reopened.claimNamespace("db-a"))
+			require.NoError(t, reopened.Reclaim())
 			require.Empty(t, names(t, store))
 			require.Empty(t, names(t, journal))
 		})
