@@ -1021,8 +1021,10 @@ cluster-proof-check: cluster-proof-bin
 # BOOT-01 in container mode: start the inventory's nodes from the release
 # image, take them through first boot and check the admin surface on every
 # transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
-# inventory; the test fails without one rather than skipping.
+# inventory; the test fails without one rather than skipping. PROOF_KEEP=1
+# leaves the cluster running after a pass, for a soak against it.
 export PROOF_INVENTORY
+export PROOF_KEEP
 
 .PHONY: cluster-proof-boot
 cluster-proof-boot:
