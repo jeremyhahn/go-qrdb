@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,11 @@ type Engine struct {
 	journal  objcommon.Storage
 	provider string
 	closed   atomic.Bool
+
+	// namespace identifies the bucket or prefix the engine opened: the
+	// provider and the settings that select it (namespaceKey). Engines in
+	// this process that open one namespace share its owner-claim lock.
+	namespace string
 
 	// journalMu serializes batch commits: the commit journal is a single
 	// object per engine, so two concurrent commits must not interleave
@@ -231,11 +237,8 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err := closeStores(unkept...); err != nil {
 		return nil, err
 	}
-	e := &Engine{store: store, journal: journal, provider: provider}
-	if err := e.ensureFormatMarker(); err != nil {
-		return nil, err
-	}
-	if err := e.claimOwner(o.owner); err != nil {
+	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, settings)}
+	if err := e.claimNamespace(o.owner); err != nil {
 		return nil, err
 	}
 	// An interrupted batch commit from a previous process is completed here;
@@ -285,10 +288,69 @@ func (e *Engine) ensureFormatMarker() error {
 	return e.store.Put(formatMarkerName, strings.NewReader(formatVersion))
 }
 
+// ownerLocks holds one lock per namespace identity (namespaceKey), so two
+// engines in this process that open one namespace claim it one at a time.
+var ownerLocks = struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}{locks: make(map[string]*sync.Mutex)}
+
+// lockNamespace locks the owner-claim lock of namespace and returns its
+// unlock. A lock, once made, is kept: an entry per namespace this process
+// has opened.
+func lockNamespace(namespace string) func() {
+	ownerLocks.mu.Lock()
+	l, ok := ownerLocks.locks[namespace]
+	if !ok {
+		l = new(sync.Mutex)
+		ownerLocks.locks[namespace] = l
+	}
+	ownerLocks.mu.Unlock()
+	l.Lock()
+	return l.Unlock
+}
+
+// namespaceKey is the identity of the namespace provider and settings
+// select: the provider and every setting, sorted by name. Inline credentials
+// are refused before it is taken (RejectCredentialSettings), so the settings
+// carry only what locates the bucket or prefix.
+func namespaceKey(provider string, settings map[string]string) string {
+	names := make([]string, 0, len(settings))
+	for name := range settings {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString(provider)
+	for _, name := range names {
+		b.WriteByte(0)
+		b.WriteString(name)
+		b.WriteByte('=')
+		b.WriteString(settings[name])
+	}
+	return b.String()
+}
+
+// claimNamespace checks or writes the format marker (ensureFormatMarker) and
+// then claims the namespace for owner (claimOwner), under the namespace's
+// in-process lock (lockNamespace). Two engines in this process opening one
+// namespace therefore run the check-then-write of each marker one at a time:
+// neither finds the other's half-written markers, and only one claims an
+// unowned namespace. Like CompareAndSwap it does not guard against a second
+// process opening the namespace at once: the provider offers no conditional
+// put through this interface.
+func (e *Engine) claimNamespace(owner string) error {
+	defer lockNamespace(e.namespace)()
+	if err := e.ensureFormatMarker(); err != nil {
+		return err
+	}
+	return e.claimOwner(owner)
+}
+
 // claimOwner records owner as the namespace's owner when none is recorded,
-// and refuses the open when another is (WithOwner). Like CompareAndSwap it
-// does not guard against a second process claiming the namespace at once:
-// the provider offers no conditional put through this interface.
+// and refuses the open when another is (WithOwner). The caller holds the
+// namespace's lock (claimNamespace), which closes the in-process race between
+// the read and the write; a second process claiming at once is not guarded.
 func (e *Engine) claimOwner(owner string) error {
 	if owner == "" {
 		return nil
