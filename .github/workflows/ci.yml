@@ -343,11 +343,57 @@ jobs:
           sum=$(make -s apk-index-sum)
           echo "APK_INDEX_SUM=$sum" >> "$GITHUB_ENV"
 
+      # #1609 (P1): scripts/image-registry.sh pulls an image from the runner's
+      # CI_IMAGE_REGISTRY only by the repo digest a push recorded in
+      # CI_IMAGE_DIGEST_DIR, one file per content-hash name (':' as '_'). The
+      # record lives in the GitHub cache, never in the repository or the
+      # registry: each self-hosted build restores the newest record for its
+      # name, and a push to main alone (CI_PUBLISH) saves one, when its own
+      # push wrote a new digest, so a pull request never writes a record. No
+      # record is a miss, and the image is built.
+      - name: Name the devcontainer images
+        id: names
+        if: ${{ runner.environment != 'github-hosted' }}
+        env:
+          DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+        run: |
+          t=$(make -s toolchain-image)
+          echo "toolchain_record=${t//:/_}" >> "$GITHUB_OUTPUT"
+          if [ "$DOCS_ONLY" != true ]; then
+            i=$(make -s it-image)
+            echo "it_record=${i//:/_}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore the toolchain image's digest record
+        if: ${{ steps.names.outputs.toolchain_record != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-
+
+      - name: Restore the integration image's digest record
+        if: ${{ steps.names.outputs.it_record != '' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.it_record }}-
+
       - name: Build the devcontainer images
         id: build
         env:
           DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+          # #1609: set on a self-hosted runner alone; unset, no pull is tried.
+          CI_IMAGE_DIGEST_DIR: ${{ runner.environment != 'github-hosted' && format('{0}/ci-image-digests', runner.temp) || '' }}
+          TOOLCHAIN_RECORD: ${{ steps.names.outputs.toolchain_record }}
+          IT_RECORD: ${{ steps.names.outputs.it_record }}
         run: |
+          # The digest each record holds before the build; a record the build's
+          # push changed is saved to the cache below.
+          record() { [ -n "$CI_IMAGE_DIGEST_DIR" ] && [ -n "$1" ] && cat "$CI_IMAGE_DIGEST_DIR/$1" 2>/dev/null || true; }
+          toolchain_was=$(record "$TOOLCHAIN_RECORD")
+          it_was=$(record "$IT_RECORD")
           ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
             for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
               if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
@@ -362,6 +408,24 @@ jobs:
           rm -f "$RUNNER_TEMP/gomodauth.env"
           echo "toolchain_image=$(make -s toolchain-image)" >> "$GITHUB_OUTPUT"
           echo "it_image=$it_image" >> "$GITHUB_OUTPUT"
+          now=$(record "$TOOLCHAIN_RECORD")
+          if [ -n "$now" ] && [ "$now" != "$toolchain_was" ]; then echo "toolchain_recorded=true" >> "$GITHUB_OUTPUT"; fi
+          now=$(record "$IT_RECORD")
+          if [ -n "$now" ] && [ "$now" != "$it_was" ]; then echo "it_recorded=true" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Save the toolchain image's digest record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.toolchain_recorded == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save the integration image's digest record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.it_recorded == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Save the devcontainer images
         id: save
@@ -413,11 +477,14 @@ jobs:
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
+          . scripts/image-registry.sh
           lan_push() {
             ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
+            if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+               docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker push -q "$ref" >/dev/null 2>&1; then
               echo "$3=$TAG" >> "$GITHUB_OUTPUT"
             else
+              ci_registry_outage "$CI_REGISTRY" "$?"
               echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
             fi
             docker rmi "$ref" >/dev/null 2>&1 || true
@@ -452,7 +519,7 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image"
+        run: rm -rf "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/toolchain-image" "$RUNNER_TEMP/it-image" "$RUNNER_TEMP/ci-image-digests"
 
   # Every stage below runs its `make` target in the toolchain image as its own
   # step, through scripts/in-toolchain-image.sh, which copies the checkout
@@ -508,12 +575,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -631,12 +701,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -722,12 +795,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -758,12 +834,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -911,12 +990,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1235,12 +1317,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1333,12 +1418,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1449,12 +1537,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1624,12 +1715,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
@@ -1811,12 +1905,15 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
