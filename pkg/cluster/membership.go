@@ -236,6 +236,21 @@ func WithMembershipSettler(s Settler) MembershipOption {
 	}
 }
 
+// MemberChangeHook is called when a peer joins or leaves the cluster.
+// joined is true for a join (a replacement node arrives as a join), false
+// for a leave. ctx is the manager's run context, cancelled on Close.
+type MemberChangeHook func(ctx context.Context, m Member, joined bool)
+
+// WithMemberChangeHook registers a hook fired once per new peer join and
+// once per peer leave; never for the local node or a re-registration of a
+// known member. The hook runs on its own goroutine so it never blocks the
+// membership event loop; Close waits for running hooks to return.
+func WithMemberChangeHook(h MemberChangeHook) MembershipOption {
+	return func(m *MembershipManager) {
+		m.onChange = h
+	}
+}
+
 // MembershipManager maintains a node's cluster membership registration and,
 // when a Reconfigurer is supplied and the local node is the leader, reconciles
 // the Raft group as members join and leave. It is built on a MembershipStore
@@ -254,6 +269,7 @@ type MembershipManager struct {
 	logger   *slog.Logger
 	seal     SealProbe
 	settle   Settler
+	onChange MemberChangeHook
 
 	// advertiser owns the local node's registration: writing the Member
 	// descriptor (Raft address + advertised API endpoints) and refreshing its
@@ -511,6 +527,27 @@ func (m *MembershipManager) handleJoin(member Member) {
 	if m.reconfig != nil {
 		m.enqueueReconfig(reconfigIntent{member: member, remove: false})
 	}
+	m.fireChange(member, true)
+}
+
+// fireChange runs the member-change hook on its own goroutine, bounded by
+// the manager's run context and tracked by its WaitGroup.
+func (m *MembershipManager) fireChange(member Member, joined bool) {
+	if m.onChange == nil {
+		return
+	}
+	m.mu.Lock()
+	ctx := m.runCtx
+	if m.closed || ctx == nil || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		m.onChange(ctx, member, joined)
+	}()
 }
 
 // handleLeave records a departing member and enqueues a removal intent.
@@ -526,6 +563,7 @@ func (m *MembershipManager) handleLeave(member Member) {
 	if m.reconfig != nil {
 		m.enqueueReconfig(reconfigIntent{member: member, remove: true})
 	}
+	m.fireChange(member, false)
 }
 
 // enqueueReconfig records the latest desired reconfiguration for a replica and
