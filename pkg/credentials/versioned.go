@@ -136,6 +136,16 @@ type scheduledRotation struct {
 	next time.Time
 }
 
+// holds reports that meta still records this rotation: its claim, and
+// the operation the claim ran the value source for. Every landing write
+// clears RotationOp, so a replacement that lands while the claim is held
+// fences the claim's value out; a retried claim of the same rotation
+// keeps the operation and passes.
+func (r *scheduledRotation) holds(meta *credentialMeta) bool {
+	return meta.Claim != nil && meta.Claim.ID == r.claim.ID &&
+		meta.RotationOp != "" && meta.RotationOp == r.claim.Op
+}
+
 // RotateResult describes the rotation outcome.
 type RotateResult struct {
 	// Name is the credential rotated.
@@ -621,8 +631,9 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		// version: when the claim is gone (the credential was deleted) or
 		// replaced, or a rotation or a stored value since took the staged
 		// version's place, nothing is written, so a deleted credential's
-		// records are never recreated.
-		if sched != nil && (!prevExists || meta.Claim == nil || meta.Claim.ID != sched.claim.ID ||
+		// records are never recreated. Any landing write since also ended
+		// the claim's operation, which the fence checks too.
+		if sched != nil && (!prevExists || !sched.holds(meta) ||
 			meta.Staged != sched.staged || newVersion != sched.staged) {
 			secure.Wipe(prevValue)
 			s.abandonScheduled(ctx, name, sched.staged)
@@ -717,7 +728,10 @@ func (s *CredentialService) stageScheduled(ctx context.Context, name string, sch
 		if err != nil {
 			return err
 		}
-		if meta.Claim == nil || meta.Claim.ID != sched.claim.ID {
+		// The claim alone does not fence a replacement: a stored value or
+		// manual rotation that landed while the source ran keeps the claim
+		// but ends the operation the source ran for, so its value is stale.
+		if !sched.holds(meta) {
 			return &OperationError{Op: "stage rotation", Cause: ErrRotationClaimLost}
 		}
 		current, exists, err := s.loadBarrierCurrent(ctx, name)

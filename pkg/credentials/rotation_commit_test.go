@@ -225,3 +225,78 @@ func TestRotateDue_StoreEndsTheSupersededRotationOperation(t *testing.T) {
 		})
 	}
 }
+
+// A replacement that lands while the scheduled rotation is inside its
+// value source ends that rotation's operation: the value the source then
+// returns is never staged or committed over the replacement.
+func TestRotateDue_ReplacementDuringTheValueSourceFencesTheClaim(t *testing.T) {
+	cases := []struct {
+		name    string
+		replace func(ctx context.Context, svc *CredentialService) error
+	}{
+		{"StoreCredential", func(ctx context.Context, svc *CredentialService) error {
+			return svc.StoreCredential(ctx, "k", []byte("k-replacement"))
+		}},
+		{"SubmitCredential", func(ctx context.Context, svc *CredentialService) error {
+			return svc.SubmitCredential(ctx, "k", []byte("k-replacement"))
+		}},
+		{"RotateCredential", func(ctx context.Context, svc *CredentialService) error {
+			_, err := svc.RotateCredential(ctx, "k", RotateOptions{NewValue: []byte("k-replacement"), GracePeriod: time.Hour})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newFaultRotationService(t)
+			setFaultPolicy(t, svc, "k", 5)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			source := svc.rotationSource
+			var once sync.Once
+			svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
+				blocked := false
+				once.Do(func() { blocked = true })
+				if blocked {
+					close(entered)
+					<-release
+				}
+				return source(ctx, name, op)
+			}
+			type result struct {
+				n   int
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))
+				done <- result{n, err}
+			}()
+			<-entered
+			if err := tc.replace(t.Context(), svc); err != nil {
+				close(release)
+				<-done
+				t.Fatalf("replacement: %v", err)
+			}
+			replaced, err := svc.loadBarrierMeta(t.Context(), "k")
+			if err != nil {
+				close(release)
+				<-done
+				t.Fatalf("loadBarrierMeta: %v", err)
+			}
+			close(release)
+			got := <-done
+			if got.n != 0 || !errors.Is(got.err, ErrRotationClaimLost) {
+				t.Fatalf("RotateDue across the replacement = %d, %v; want 0, ErrRotationClaimLost", got.n, got.err)
+			}
+			requireCurrentValue(t, svc, "k-replacement")
+			after, err := svc.loadBarrierMeta(t.Context(), "k")
+			if err != nil {
+				t.Fatalf("loadBarrierMeta: %v", err)
+			}
+			if after.CurrentVersion != replaced.CurrentVersion || after.Staged != 0 {
+				t.Fatalf("meta after the fenced rotation = version %d, staged %d; want version %d, nothing staged",
+					after.CurrentVersion, after.Staged, replaced.CurrentVersion)
+			}
+		})
+	}
+}
