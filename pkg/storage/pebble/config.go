@@ -76,7 +76,8 @@ type Config struct {
 	DisableWAL bool
 
 	// SyncWrites ensures writes are synced to disk before returning.
-	// Default: false (Raft WAL provides durability).
+	// DefaultConfig sets it true. Set it false only when another log
+	// already fsyncs the write before it is acknowledged.
 	SyncWrites bool
 
 	// BytesPerSync controls how often file writes are synced to disk.
@@ -237,14 +238,20 @@ func (c *Config) WithDefaults() *Config {
 }
 
 // DefaultConfig returns a Config with production-ready defaults.
-// SyncWrites is false because Raft WAL provides durability guarantees.
+//
+// The store is durable by default: SyncWrites is true, so every write is
+// fsynced to the Pebble WAL before it is acknowledged. A store may set
+// SyncWrites to false only when another log already fsyncs the write before
+// it is acknowledged (for example a Raft log that is synced before the entry
+// is applied). A standalone or non-Raft store has no such log and must keep
+// SyncWrites true, or an acknowledged write can be lost on a crash.
 func DefaultConfig(dataDir string) *Config {
 	return &Config{
 		DataDir:                     dataDir,
 		CacheSize:                   512 * 1024 * 1024, // 512 MB
 		MaxOpenFiles:                2000,
 		MaxConcurrentCompactions:    2,
-		SyncWrites:                  false,
+		SyncWrites:                  true,
 		BytesPerSync:                1024 * 1024,       // 1 MB
 		MemTableSize:                128 * 1024 * 1024, // 128 MB
 		MemTableStopWritesThreshold: 4,

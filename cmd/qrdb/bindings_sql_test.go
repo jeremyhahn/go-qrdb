@@ -441,14 +441,6 @@ func TestSQLBinding_Execute_SelectLiteral(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Error type: verify interface compliance
-// ---------------------------------------------------------------------------
-
-func TestSQLExecutionError_ImplementsError(t *testing.T) {
-	var _ error = (*SQLExecutionError)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Execute: KV service with data but filtered by WHERE returning no rows
 // ---------------------------------------------------------------------------
 

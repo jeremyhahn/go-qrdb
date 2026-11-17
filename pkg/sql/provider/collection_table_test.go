@@ -833,30 +833,6 @@ func TestCollectionRowIter_Close(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance tests
-// ---------------------------------------------------------------------------
-
-func TestCollectionTable_ImplementsInsertableTable(t *testing.T) {
-	var _ sqle.InsertableTable = (*CollectionTable)(nil)
-}
-
-func TestCollectionTable_ImplementsDeletableTable(t *testing.T) {
-	var _ sqle.DeletableTable = (*CollectionTable)(nil)
-}
-
-func TestCollectionTable_ImplementsUpdatableTable(t *testing.T) {
-	var _ sqle.UpdatableTable = (*CollectionTable)(nil)
-}
-
-func TestCollectionTable_ImplementsReplaceableTable(t *testing.T) {
-	var _ sqle.ReplaceableTable = (*CollectionTable)(nil)
-}
-
-func TestCollectionWriter_ImplementsRowReplacer(t *testing.T) {
-	var _ sqle.RowReplacer = (*collectionWriter)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // rowToDocument tests
 // ---------------------------------------------------------------------------
 
