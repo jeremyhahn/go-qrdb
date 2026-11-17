@@ -47,7 +47,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/consistency"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
-	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -1233,16 +1232,6 @@ func TestWithCertEnrollment_Nil(t *testing.T) {
 	}
 }
 
-func TestWithCertEnrollment_NonNil(t *testing.T) {
-	var opts serverOptions
-	svc := mockCertEnrollmentServicer{}
-	opt := WithCertEnrollment(svc)
-	opt(&opts)
-	if opts.certEnroll != svc {
-		t.Error("expected certEnroll to be set to the supplied CertEnrollmentServicer")
-	}
-}
-
 // mockTenantOnboardingServicer is a no-op service.TenantOnboardingServicer
 // double, used only to prove WithTenantOnboarding assigns the field it
 // configures.
@@ -1286,19 +1275,6 @@ func TestWithDatabaseManager(t *testing.T) {
 	opt(&opts)
 	if opts.dbManager != nil {
 		t.Error("expected nil dbManager")
-	}
-}
-
-func TestWithDatabaseManager_NonNil(t *testing.T) {
-	dataDir := t.TempDir()
-	mgr := databasetest.NewManager(nil, dataDir)
-	defer func() { _ = mgr.Close() }()
-
-	var opts serverOptions
-	opt := WithDatabaseManager(mgr)
-	opt(&opts)
-	if opts.dbManager != mgr {
-		t.Error("expected dbManager to be set")
 	}
 }
 

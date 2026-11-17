@@ -1,19 +1,24 @@
-// ci_runners_test.go is the gate over where the workflows run (DS-7377,
-// CA ruling 617).
+// ci_runners_test.go is the gate over where the workflows run (DS-7377;
+// Tenant Agent rulings 833 and 834, which supersede ruling 617's two-pool
+// rule; ci-template v1.43).
 //
-// ci.yml's jobs run on the self-hosted pools for a push to main and a
-// same-repository pull request, and on a GitHub-hosted ubuntu-latest runner
-// otherwise: a fork's pull request never reaches a pool host. A job that
-// needs Docker goes to the bigdisk-docker pool, a Docker-free job to the
-// bigdisk pool, which has no Docker daemon. Every other workflow runs on
-// ubuntu-latest. The self-hosted machinery the forge's runners needed -- the
+// GitHub-hosted first: every ci.yml job runs on the standard GitHub-hosted
+// ubuntu-latest runner, free on this public repository, unless it cannot fit
+// one. A job that cannot names one of the two pool expressions and states why
+// on its runs-on line, `# self-hosted: <reason>`; such a job runs on the
+// self-hosted pools for a push to main and a same-repository pull request,
+// and on ubuntu-latest otherwise, so a fork's pull request never reaches a
+// pool host. A pool job that needs Docker goes to the bigdisk-docker pool, a
+// Docker-free one to the bigdisk pool, which has no Docker daemon. Every
+// other workflow runs on ubuntu-latest. The self-hosted machinery the forge's runners needed -- the
 // batch and ci-gate labels, the forge registry and its RELEASE_REGISTRY
 // credential, the named cache volumes and their trim, the stale-stack reaper
 // and the schedule guard -- is gone, and this gate keeps each piece from
 // coming back. It fails when:
 //
-//   - a ci.yml job's runs-on is not exactly dockerRunner or bigdiskRunner
-//     (poolRunners), or another workflow's is not the literal
+//   - a ci.yml job's runs-on is neither the literal `ubuntu-latest` nor, with
+//     a `# self-hosted: <reason>` line comment, exactly dockerRunner or
+//     bigdiskRunner (poolRunners); or another workflow's is not the literal
 //     `ubuntu-latest`, outside code-review.yml, whose review jobs keep their
 //     self-hosted hosts;
 //   - a job on bigdiskRunner has a container, a service or a Docker step the
@@ -58,8 +63,8 @@ const (
 	// hostedRunner is the one runs-on a job outside poolWorkflow may name,
 	// and every pool expression's fallback.
 	hostedRunner = "ubuntu-latest"
-	// poolWorkflow is the workflow whose jobs run on the self-hosted pools
-	// (CA ruling 617); every one of its jobs carries a poolRunners expression.
+	// poolWorkflow is the workflow whose jobs may run on the self-hosted pools,
+	// each with a stated reason (rulings 833 and 834; ruling 617 before them).
 	poolWorkflow = "ci.yml"
 	// bigdiskLabel is the Docker-free pool's label (DS-8233): no Docker
 	// daemon, so only a job that needs none may reach it. Its Docker pool's
@@ -94,9 +99,11 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// Pool floors, under ci.yml's counts (7 Docker-free jobs, 11 Docker jobs).
-	bigdiskJobFloor = 5
-	dockerJobFloor  = 8
+	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
+	// a regression of the whole workflow to the pools fails here.
+	hostedJobFloor = 15
+	// selfHostedReason is the line comment a pool job's runs-on carries.
+	selfHostedReason = "self-hosted:"
 )
 
 // poolRunners are poolWorkflow's two runs-on expressions.
@@ -237,7 +244,12 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		if job.RunsOn.Kind == yaml.ScalarNode {
 			runsOn = job.RunsOn.Value
 		}
+		reason := poolReason(job.RunsOn.LineComment)
 		switch {
+		case pool && runsOn == hostedRunner:
+			// Rulings 833 and 834: the default.
+		case pool && (runsOn == bigdiskRunner || runsOn == dockerRunner) && reason == "":
+			add("job " + name + " runs on a self-hosted pool with no `# self-hosted: <reason>` on its runs-on line; every job that fits a standard runner runs on " + hostedRunner + " (rulings 833 and 834, which supersede ruling 617)")
 		case pool && runsOn == bigdiskRunner:
 			for _, p := range dockerNeeds(job) {
 				add("job " + name + " runs on the Docker-free bigdisk pool (bigdiskRunner), and " + p + "; a job that needs Docker carries dockerRunner")
@@ -247,7 +259,7 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 				add("job " + name + " runs on the bigdisk-docker pool (dockerRunner) but needs no Docker; a Docker-free job carries bigdiskRunner")
 			}
 		case pool:
-			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not exactly bigdiskRunner (Docker-free) or dockerRunner (Docker), the pool for a push to main and a same-repository pull request and "+hostedRunner+" for a fork (ruling 617)")
+			add("job "+name+" runs on ", nodeText(job.RunsOn), ", neither "+hostedRunner+" nor, with a stated reason, exactly bigdiskRunner (Docker-free) or dockerRunner (Docker) (rulings 833 and 834)")
 		case runsOn == hostedRunner:
 		default:
 			add("job "+name+" runs on ", nodeText(job.RunsOn), ", not the literal "+hostedRunner)
@@ -299,6 +311,15 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		add("env.CI_PUBLISH is ", strconv.Quote(wf.Env["CI_PUBLISH"]), ", not ", ciPublishExpr)
 	}
 	return problems, jobs
+}
+
+// poolReason is the reason a runs-on line comment gives for a pool job, or "".
+func poolReason(comment string) string {
+	c := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(comment), "#"))
+	if !strings.HasPrefix(c, selfHostedReason) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(c, selfHostedReason))
 }
 
 // dockerNeeds is every way a job needs Docker on a pool host: a container,
@@ -412,8 +433,8 @@ func nodeText(n yaml.Node) string {
 }
 
 // TestCIRunners runs runnerProblems over every workflow, and holds ci.yml to
-// using both pools (ruling 617): a floor of jobs on each expression, so that
-// a regression to ubuntu-latest everywhere or to one pool fails here too.
+// running on ubuntu-latest (rulings 833 and 834): a floor of hosted jobs, so
+// that a regression of the workflow to the pools fails here too.
 
 func TestCIRunners(t *testing.T) {
 	files := workflowFiles(t)
@@ -441,17 +462,14 @@ func TestCIRunners(t *testing.T) {
 	if err := yaml.Unmarshal(files[poolWorkflow], &wf); err != nil {
 		t.Fatalf("parse %s: %v", poolWorkflow, err)
 	}
-	bigdisk, docker := 0, 0
+	hosted := 0
 	for _, job := range wf.Jobs {
-		switch job.RunsOn.Value {
-		case bigdiskRunner:
-			bigdisk++
-		case dockerRunner:
-			docker++
+		if job.RunsOn.Value == hostedRunner {
+			hosted++
 		}
 	}
-	if bigdisk < bigdiskJobFloor || docker < dockerJobFloor {
-		t.Errorf("%s has %d jobs on bigdiskRunner and %d on dockerRunner, under the floors of %d and %d", poolWorkflow, bigdisk, docker, bigdiskJobFloor, dockerJobFloor)
+	if hosted < hostedJobFloor {
+		t.Errorf("%s has %d jobs on %s, under the floor of %d (rulings 833 and 834)", poolWorkflow, hosted, hostedRunner, hostedJobFloor)
 	}
 }
 
@@ -532,7 +550,7 @@ func TestRunnerProblems_CanFail(t *testing.T) {
 		"a written GOMAXPROCS":          {hostedFile, "make leg", "GOMAXPROCS=4 make leg", "GOMAXPROCS or -p count"},
 		"a written -p":                  {hostedFile, "make leg", "go test -p 4 ./...", "GOMAXPROCS or -p count"},
 		"a GOMAXPROCS step env":         {hostedFile, "      - run: make leg", "      - run: make leg\n        env:\n          GOMAXPROCS: \"8\"", "sets GOMAXPROCS in a step's env"},
-		"the hosted runner in ci.yml":   {poolWorkflow, "", "", "not exactly bigdiskRunner (Docker-free) or dockerRunner (Docker)"},
+		"a self-hosted label in ci.yml": {poolWorkflow, "  build:\n    runs-on: ubuntu-latest", "  build:\n    runs-on: [self-hosted, linux]", "neither ubuntu-latest nor"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -709,17 +727,18 @@ func TestBigdiskStepProblems_CanFail(t *testing.T) {
 	}
 }
 
-// poolFixture is ci.yml as ruling 617 shapes it: a Docker-free job on
-// bigdiskRunner, its Docker step gated to the hosted runner and its native
-// step to the pool, beside a Docker job on dockerRunner whose disk wipe runs
-// on the hosted runner alone.
+// poolFixture is a ci.yml with two jobs that stay on the pools, each with a
+// stated reason (rulings 833 and 834): a Docker-free job on bigdiskRunner,
+// its Docker step gated to the hosted runner and its native step to the pool,
+// beside a Docker job on dockerRunner whose disk wipe runs on the hosted
+// runner alone.
 const poolFixture = `on:
   push:
     branches: [main]
   pull_request:
 jobs:
   coverage-fts:
-    runs-on: ` + bigdiskRunner + `
+    runs-on: ` + bigdiskRunner + `  # self-hosted: a fixture reason
     timeout-minutes: 20
     steps:
       - if: runner.environment == 'github-hosted'
@@ -727,7 +746,7 @@ jobs:
       - if: runner.environment == 'self-hosted'
         run: make coverage-fts
   build:
-    runs-on: ` + dockerRunner + `
+    runs-on: ` + dockerRunner + `  # self-hosted: a fixture reason
     timeout-minutes: 30
     steps:
       - name: Free the runner's disk
@@ -738,16 +757,23 @@ jobs:
       - run: scripts/in-toolchain-image.sh "$IMAGE" "make build"
 `
 
-// TestRunnerProblems_Pools is ruling 617's two-pool rule and its edges: a
-// ci.yml job carries exactly bigdiskRunner when it needs no Docker and
-// exactly dockerRunner when it does, and every other shape (the hosted
-// runner, another workflow, another expression, a fork or any push on a
-// pool, a label, a Docker step on the Docker-free pool, a Docker-free job on
-// the Docker pool, a disk wipe a pool host could run, pull_request_target)
-// fails.
+// TestRunnerProblems_Pools holds a ci.yml job that stays on the pools to its
+// stated reason and to the two-pool rule's edges: it carries exactly
+// bigdiskRunner when it needs no Docker and exactly dockerRunner when it
+// does, and every other shape (no reason, another workflow, another
+// expression, a fork or any push on a pool, a label, a Docker step on the
+// Docker-free pool, a Docker-free job on the Docker pool, a disk wipe a pool
+// host could run, pull_request_target) fails. A hosted job needs no reason.
 func TestRunnerProblems_Pools(t *testing.T) {
 	if p, jobs := runnerProblems(poolWorkflow, []byte(poolFixture)); len(p) != 0 || jobs != 2 {
 		t.Fatalf("the fixture must pass with 2 jobs, got %d jobs: %v", jobs, p)
+	}
+	// Rulings 833 and 834: a job on the hosted runner needs no reason.
+	const bigdiskWaived = "    runs-on: " + bigdiskRunner + "  # self-hosted: a fixture reason"
+	const dockerWaived = "    runs-on: " + dockerRunner + "  # self-hosted: a fixture reason"
+	hostedAll := strings.Replace(strings.Replace(poolFixture, bigdiskWaived, "    runs-on: ubuntu-latest", 1), dockerWaived, "    runs-on: ubuntu-latest", 1)
+	if p, _ := runnerProblems(poolWorkflow, []byte(hostedAll)); len(p) != 0 {
+		t.Errorf("ci.yml jobs on ubuntu-latest must pass (rulings 833 and 834), got %v", p)
 	}
 	// ci-gate on the pool (m2479) names docker-build as a job whose result it
 	// reads; that is not a Docker use.
@@ -767,8 +793,9 @@ func TestRunnerProblems_Pools(t *testing.T) {
 		"another workflow's job":              {hostedFile, "", "", "job coverage-fts runs on"},
 		"another workflow's Docker job":       {hostedFile, "", "", "job build runs on"},
 		"another workflow's label":            {hostedFile, "", "", "names `bigdisk`"},
-		"a hosted Docker-free job":            {poolWorkflow, bigdiskOn, "    runs-on: ubuntu-latest", "job coverage-fts runs on"},
-		"a hosted Docker job":                 {poolWorkflow, dockerOn, "    runs-on: ubuntu-latest", "job build runs on"},
+		"a pool job with no reason":           {poolWorkflow, bigdiskOn + "  # self-hosted: a fixture reason", bigdiskOn, "with no `# self-hosted: <reason>`"},
+		"a Docker pool job with no reason":    {poolWorkflow, dockerOn + "  # self-hosted: a fixture reason", dockerOn, "with no `# self-hosted: <reason>`"},
+		"a pool job with a bare marker":       {poolWorkflow, bigdiskOn + "  # self-hosted: a fixture reason", bigdiskOn + "  # self-hosted:", "with no `# self-hosted: <reason>`"},
 		"any push":                            {poolWorkflow, "github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "job coverage-fts runs on"},
 		"a fork's pull request":               {poolWorkflow, sameRepo, "", "job coverage-fts runs on"},
 		"a fork's pull request, Docker pool":  {poolWorkflow, dockerOn, strings.Replace(dockerOn, sameRepo, "", 1), "job build runs on"},
