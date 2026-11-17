@@ -16,6 +16,8 @@ package database
 
 import (
 	"context"
+	"errors"
+	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -43,7 +45,9 @@ func DropRecordKey(tenantID, name string) string {
 // reaches it through its catalog.
 type DropRecorder interface {
 	// PutDropRecord records that tenantID's database name, of databaseID,
-	// is being dropped.
+	// is being dropped. It writes only while the catalog record of name
+	// carries databaseID (or the record already does, for a resumed drop);
+	// any other incarnation is a *DropRecordSupersededError.
 	PutDropRecord(ctx context.Context, tenantID, name, databaseID string) error
 	// DropRecord returns the id the drop record of tenantID's database name
 	// carries, or "" when there is none.
@@ -62,10 +66,70 @@ func (c *KVCatalog) PutDropRecord(ctx context.Context, tenantID, name, databaseI
 	if err != nil {
 		return err
 	}
-	if err := store.Put(ctx, key, []byte(databaseID)); err != nil {
-		return &CatalogWriteError{Key: key, Err: err}
+	catalogKey := CatalogKey(tenantID, name)
+	for range maxDropRecordAttempts {
+		// The drop record is read BEFORE the catalog: a record of a later
+		// incarnation exists only once the catalog named that incarnation,
+		// and ids are never reused, so a catalog read after it can never
+		// name this (earlier) id again.
+		cur, err := store.Get(ctx, key)
+		if err != nil {
+			return &CatalogReadError{Key: key, Err: err}
+		}
+		if string(cur) == databaseID {
+			return nil // a resumed drop of this incarnation
+		}
+		data, err := store.Get(ctx, catalogKey)
+		if err != nil {
+			return &CatalogReadError{Key: catalogKey, Err: err}
+		}
+		if data == nil {
+			return &DropRecordSupersededError{TenantID: tenantID, Name: name, DatabaseID: databaseID}
+		}
+		meta, err := decodeCatalogRecord(catalogKey, data)
+		if err != nil {
+			return err
+		}
+		if meta.ID != databaseID {
+			return &DropRecordSupersededError{TenantID: tenantID, Name: name, DatabaseID: databaseID}
+		}
+		var written bool
+		if cur == nil {
+			written, err = store.PutIfAbsent(ctx, key, []byte(databaseID))
+		} else {
+			// A stale record of an earlier incarnation, whose teardown
+			// finished without clearing it.
+			written, err = store.CompareAndSwap(ctx, key, cur, []byte(databaseID))
+		}
+		if err != nil {
+			return &CatalogWriteError{Key: key, Err: err}
+		}
+		if written {
+			return nil
+		}
 	}
-	return nil
+	return &CatalogWriteError{Key: key, Err: errDropRecordContended}
+}
+
+// maxDropRecordAttempts bounds PutDropRecord's compare-and-set retries under
+// concurrent drops of the same name.
+const maxDropRecordAttempts = 8
+
+var errDropRecordContended = errors.New("database: drop record contended")
+
+// DropRecordSupersededError refuses a drop record for an incarnation of
+// TenantID's database Name that the catalog no longer names: a delayed drop
+// of a predecessor, whose drop another call completed, must not overwrite
+// the recovery record of a successor created under the name since.
+type DropRecordSupersededError struct {
+	TenantID   string
+	Name       string
+	DatabaseID string
+}
+
+func (e *DropRecordSupersededError) Error() string {
+	return "database: drop of " + strconv.Quote(e.Name) + " (id " + e.DatabaseID +
+		") in tenant " + strconv.Quote(e.TenantID) + " is superseded: the catalog no longer names that incarnation"
 }
 
 // DropRecord implements DropRecorder.
