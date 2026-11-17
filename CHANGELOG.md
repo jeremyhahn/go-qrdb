@@ -370,6 +370,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A standalone node no longer acknowledges writes that a crash can lose
+  (#1617). `pkg/storage/pebble.DefaultConfig` set `SyncWrites: false` on the
+  premise that the Raft WAL provides durability, so every write went through
+  `pebble.NoSync`; a standalone node has no Raft WAL, and a Put acknowledged
+  just before a SIGKILL was gone after the restart. `DefaultConfig` now sets
+  `SyncWrites: true`: a store may turn it off only when another log already
+  fsyncs the write before it is acknowledged. The `sdk/go/node` SIGKILL test
+  now asserts that every acknowledged key reads back after the restart.
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The

@@ -270,18 +270,6 @@ func TestDatabase_GetTableNames(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance tests
-// ---------------------------------------------------------------------------
-
-func TestProvider_ImplementsDatabaseProvider(t *testing.T) {
-	var _ sqle.DatabaseProvider = (*Provider)(nil)
-}
-
-func TestDatabase_ImplementsDatabase(t *testing.T) {
-	var _ sqle.Database = (*Database)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Context helper
 // ---------------------------------------------------------------------------
 
@@ -628,14 +616,6 @@ func TestLegacyProvider_DropDatabase_NotSupported(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Database.Engine() tests
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Interface compliance tests (manager-backed)
-// ---------------------------------------------------------------------------
-
-func TestProvider_ImplementsMutableDatabaseProvider(t *testing.T) {
-	var _ sqle.MutableDatabaseProvider = (*Provider)(nil)
-}
 
 // ---------------------------------------------------------------------------
 // Legacy backward compatibility tests

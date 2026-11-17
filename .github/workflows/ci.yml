@@ -1,4 +1,28 @@
-# ci-template: v1.35.1 — canonical CI for all first-party Go repos.
+# ci-template: v1.35.1 + v1.42 hermetic gate + v1.43 hosted first — canonical CI for all first-party Go repos.
+# v1.43 hosted first (Tenant Agent rulings 833 and 834, which supersede ruling
+# 617's two-pool rule; the owner's 11-07 ruling that GitHub-hosted runners are
+# the default): every job runs on the standard GitHub-hosted ubuntu-latest
+# runner, free on this public repository. Each job fit one before (fork pull
+# requests and dispatches ran every one there); the pool routing had about
+# 160 of this repository's jobs queued on the fleet while the hosted slots sat
+# idle. A job that cannot fit a standard runner names a pool expression with a
+# `# self-hosted: <reason>` line comment; none does today
+# (test/buildgates/ci_runners_test.go). The steps that test
+# runner.environment (the disk cleanup, the LAN CI registry) keep their
+# conditions, so a waived pool job still takes them.
+# v1.42 hermetic gate only (owner ruling 742 (1), Tenant Agent rulings 754 and
+# 794): the CI Gate's outcome depends only on the tree under test. `make
+# deps-check`, `make security` (gosec, govulncheck, go mod verify, trivy fs)
+# and `make trivy-image` read the module proxy and advisory databases, so
+# they failed PRs and could turn main red with no change to the tree. They
+# leave this workflow on every event and run in .github/workflows/scans.yml,
+# on workflow_dispatch on main (no schedule: test/buildgates allows only this
+# file's nightly to schedule, rulings 135, 216(1) and 633). `make gosec` reads
+# only the tree and now runs in the lint job on every event but a docs-only
+# PR. Nothing else of v1.36 to v1.42 is taken yet: v1.36 host-local caches
+# and in-toolchain-image.sh v6, v1.37 timeouts, v1.38 release label, v1.39/
+# v1.40 scoped deps-check and deps-bump, v1.41 PR/main parity and v1.35.2/
+# v1.35.3's signatures.yml move are the full catch-up, still to come.
 # go-qrdb deviations from v1.35.1, one line each (the CUSTOMIZE blocks below
 # give each one's reason):
 #   - every job runs on a self-hosted pool for a push to main and a
@@ -164,7 +188,7 @@ jobs:
     # no Go, no Docker (the compose-target check, which runs the docker CLI,
     # is a docker-build step). On the self-hosted bigdisk pool for a push to
     # main and a same-repository PR; hosted otherwise, a fork's PR included.
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
@@ -266,7 +290,7 @@ jobs:
   docker-build:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Devcontainer images
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: [preflight]
     timeout-minutes: 90
     # CUSTOMIZE (go-qrdb): on a push to main this job alone pushes the images
@@ -530,18 +554,20 @@ jobs:
   # (scripts/tool-pins.sh) decides every version, and the Makefile carries
   # every flag set. GO_BUILD_TAGS reaches every target as a make variable.
   # build, test and lint run with no network, on the image's module cache;
-  # security and deps-check get one (IN_IMAGE_NETWORK=bridge).
+  # security and deps-check got one (IN_IMAGE_NETWORK=bridge) until v1.42
+  # moved them to scans.yml (ruling 742 (1)).
   #
   # CUSTOMIZE (go-qrdb, #1046, Company Agent m1001): the stages run in jobs
-  # side by side, lint (make lint, make gosec on the PR tier, make
-  # deps-check), lint-gates, and image (the tag assertion, build, the release
-  # cross-build, security, trivy image), each with its own limit. lint and
+  # side by side, lint (make lint, make gosec), lint-gates, and image (the
+  # tag assertion, build, the release cross-build), each with its own limit.
+  # v1.42 (ruling 742 (1)): deps-check, security and trivy image left them
+  # for scans.yml. lint and
   # lint-gates are the PR tier and are all a docs-only PR runs of the stages;
   # image is the code tier (DS-3160).
   lint:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
-    name: Devcontainer image [lint, gosec, deps-check]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    name: Devcontainer image [lint, gosec, gosec-sdk]
+    runs-on: ubuntu-latest
     needs: [preflight, docker-build]
     timeout-minutes: 120
     env:
@@ -622,19 +648,19 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
-      # v1.28 (ruling 219(3)): a lint-class gate on the PR tier, on every
-      # event, a docs-only PR included; bridge for the module proxy.
-      - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
+      # v1.42 (ruling 742 (1)): `make deps-check` (v1.28, ruling 219(3))
+      # left this job. It reads the module proxy and the vulnerability
+      # database, so its answer changes with no change to the tree;
+      # scans.yml runs it on dispatch on main. The Makefile keeps the target.
 
-      # ci-template v1.30: gosec on the PR tier; the full tier runs it inside
-      # `make security` in the image job.
-      - name: make gosec (PR tier)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER != 'true' && needs.preflight.outputs.docs_only != 'true' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+      # ci-template v1.30: gosec on the PR tier. v1.42 (ruling 742 (1)):
+      # `make security` left the image job, so its gosec half runs here on
+      # every event but a docs-only PR: `make gosec` for the root module and
+      # `make gosec-sdk` for sdk/go, which the root's ./... does not reach.
+      # Both read only the tree, so the gate stays hermetic.
+      - name: make gosec gosec-sdk
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec gosec-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
       # ci-template v1.30: vet-tags and the secure analyzer, on the nightly
       # schedule alone.
@@ -655,7 +681,7 @@ jobs:
   lint-gates:
     if: ${{ !github.event.pull_request.draft }}   # ruling 214: a draft PR runs no CI
     name: Lint Gates [toolchain image]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: [preflight, docker-build]
     timeout-minutes: 90
     env:
@@ -759,8 +785,8 @@ jobs:
           key: go-lint-gates-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
 
   image:
-    name: Devcontainer image [build, security, trivy image]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    name: Devcontainer image [build]
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -892,28 +918,12 @@ jobs:
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make release-cross PLATFORM=linux/arm64 GO_BUILD_TAGS='$GO_BUILD_TAGS'"
 
-      - name: make security
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-
-      # The integration image is gated before any push to either registry
-      # (devops.md §8): --ignore-unfixed (v1.19) and --skip-dirs /opt/go/mod
-      # (v1.20). trivy fs and make security never take --ignore-unfixed.
-      # CUSTOMIZE (go-qrdb): `make trivy-image` carries both flags, skips
-      # this image's module cache (/gomodcache, not the template's
-      # /opt/go/mod), and certifies the database's age before it scans with
-      # --skip-db-update, so a stale database fails rather than passes. The
-      # scan is full tier (v1.23), of the image every integration leg loads.
-      - name: trivy image (integration image)
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: |
-          docker save -o it-image.tar "$IT_IMAGE"
-          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
-            make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
+      # v1.42 (ruling 742 (1)): `make security` (gosec, govulncheck, go mod
+      # verify, trivy fs) and `trivy image (integration image)` (`make
+      # trivy-image`, CUSTOMIZE go-qrdb) left this job. Both read an advisory
+      # database that changes with no change to the tree. scans.yml runs them
+      # on dispatch on main and opens or updates ONE issue on a finding;
+      # gosec runs in the lint job on every event.
 
       - name: Save the Go caches (main)
         if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
@@ -939,7 +949,7 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -1066,7 +1076,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build, coverage]
     timeout-minutes: 30
@@ -1144,7 +1154,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -1215,7 +1225,7 @@ jobs:
     # On the self-hosted bigdisk pool (no Docker daemon) for a push to main
     # and a same-repository PR; hosted otherwise. Hosted steps keep the
     # toolchain image; the pool runs the same target natively.
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 20
@@ -1282,7 +1292,7 @@ jobs:
 
   test-tags:
     name: Unit [make test-tags]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 90
@@ -1377,7 +1387,7 @@ jobs:
   # TEST_SDK_LEGS or a leg's budget is not the limit less 5 minutes.
   test-sdk:
     name: Unit [make test-sdk-leg ${{ matrix.leg }}]
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 150
@@ -1482,7 +1492,7 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1582,7 +1592,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1645,7 +1655,7 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
     strategy:
@@ -1821,7 +1831,7 @@ jobs:
   # (DS-3160). It needs docker-build only for the code-tier `if:` (v1.29.2).
   test-typescript:
     name: Test (TypeScript SDK + desktop frontend)
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 30
@@ -1869,7 +1879,7 @@ jobs:
   soak:
     name: Soak [integration image]
     if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     needs: [docker-build]
     timeout-minutes: 90
     env:
@@ -1964,7 +1974,7 @@ jobs:
 
   signatures:
     name: Signatures
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     if: ${{ !github.event.pull_request.draft }}
     timeout-minutes: 5
     permissions:
@@ -2068,7 +2078,7 @@ jobs:
     # Go, no Docker. On the self-hosted bigdisk pool for a push to main and a
     # same-repository PR, so it never waits in the hosted queue; hosted
     # otherwise.
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     if: ${{ always() }}
     # CUSTOMIZE: the repo's job list. Add every CUSTOMIZE job here AND as a

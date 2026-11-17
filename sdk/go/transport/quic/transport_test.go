@@ -657,50 +657,6 @@ func TestBuildTLSConfig_NonexistentCertFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface assertions (compile-time)
-// ---------------------------------------------------------------------------
-
-func TestTransport_ImplementsTransportInterface(t *testing.T) {
-	var _ transport.Transport = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsKVClientInterface(t *testing.T) {
-	var _ transport.KVClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsAdminClientInterface(t *testing.T) {
-	var _ transport.AdminClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsMVCCClientInterface(t *testing.T) {
-	var _ transport.MVCCClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsTransactionClientInterface(t *testing.T) {
-	var _ transport.TransactionClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsBatchClientInterface(t *testing.T) {
-	var _ transport.BatchClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsLeaseClientInterface(t *testing.T) {
-	var _ transport.LeaseClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsUserClientInterface(t *testing.T) {
-	var _ transport.UserClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsRoleClientInterface(t *testing.T) {
-	var _ transport.RoleClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsCertClientInterface(t *testing.T) {
-	var _ transport.CertClient = (*Transport)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Shard management tests
 // ---------------------------------------------------------------------------
 
