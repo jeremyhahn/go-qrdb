@@ -247,6 +247,13 @@ func (e *FractionalPendingTTLError) Error() string {
 	return "pending_ttl " + strconv.Quote(e.Value) + " is not a whole number of seconds"
 }
 
+// pendingTTLCleanupTimeout bounds the rollback delete EnforcePendingTTL
+// issues. The delete runs detached from the caller's context, so a cancelled
+// caller still undoes the unexpiring account; this deadline keeps a stalled
+// delete (a transport with no timeout of its own) from blocking the create
+// indefinitely. A variable so tests can shorten it.
+var pendingTTLCleanupTimeout = 30 * time.Second
+
 // EnforcePendingTTL refuses a create whose pending-user TTL the server did
 // not honour. An older server drops the unknown TTL field and creates a
 // pending account that never expires while reporting success; a current one
@@ -271,7 +278,11 @@ func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del
 	if err != nil {
 		refusal = &RequestError{Method: "CreateUser", Err: err}
 	}
-	if delErr := del(context.WithoutCancel(ctx), u.ID); delErr != nil {
+	// Detached so a cancelled caller still rolls back, bounded so a stalled
+	// delete cannot hold the create open.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pendingTTLCleanupTimeout)
+	defer cancel()
+	if delErr := del(cleanupCtx, u.ID); delErr != nil {
 		return nil, errors.Join(refusal,
 			fmt.Errorf("delete of the unexpiring pending user %d: %w", u.ID, delErr))
 	}
