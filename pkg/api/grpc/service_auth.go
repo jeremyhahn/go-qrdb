@@ -751,7 +751,7 @@ func (s *qrdbServiceServer) ReconcileBuiltInRolesAllTenants(ctx context.Context,
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
-	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

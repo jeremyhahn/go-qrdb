@@ -41,6 +41,11 @@ const (
 	// volume pool or catalog assignment does not resolve here), whose data
 	// is therefore never opened. See tenant.TenantInfo.Refusal.
 	SkipReasonRefused = "refused"
+	// SkipReasonOperatorAccessRefused: the tenant's isolation policy refuses
+	// the platform operator's access to its identity records (a strict
+	// tenant), so its built-in roles are neither read nor rewritten. The
+	// decision is recorded in both audit trails by the TenantGate.
+	SkipReasonOperatorAccessRefused = "operator_access_refused"
 )
 
 // SkippedTenant names a tenant ReconcileAllTenants did not open, and why.
@@ -48,7 +53,8 @@ type SkippedTenant struct {
 	// TenantID is the skipped tenant.
 	TenantID string `json:"tenantID"`
 
-	// Reason is SkipReasonSealed or SkipReasonRefused.
+	// Reason is SkipReasonSealed, SkipReasonRefused or
+	// SkipReasonOperatorAccessRefused.
 	Reason string `json:"reason"`
 
 	// Detail is the human-readable cause, when there is one.
@@ -94,6 +100,13 @@ func (r *AllTenantsReconcileReport) Changed() bool {
 	return false
 }
 
+// TenantGate decides the platform operator's access to one target tenant's
+// identity records before ReconcileAllTenants reads or rewrites them: the
+// transports pass the auth middleware's AuthorizeOperatorIdentityAccess for
+// permission.RolesReconcileAll. It returns the context bound to the tenant,
+// or the refusal.
+type TenantGate func(ctx context.Context, tenantID string) (context.Context, error)
+
 // ReconcileAllTenants converges the stored built-in roles of EVERY tenant the
 // node knows onto BuiltInRoles, through roles' per-tenant
 // ReconcileBuiltInRoles: the same semantics, tenant by tenant, so custom roles
@@ -117,10 +130,20 @@ func (r *AllTenantsReconcileReport) Changed() bool {
 // the caller is not the platform operator, or the tenants could not be
 // listed.
 //
+// Every target tenant first passes gate: the operator-access decision the
+// transports make for any cross-tenant identity access (the tenant's
+// isolation policy, recorded in both audit trails). A tenant the gate refuses
+// is reported in Skipped (SkipReasonOperatorAccessRefused) and its roles are
+// not read; the gate's context, bound to the tenant, carries the reconcile.
+// A nil gate is refused: the pass never reaches a tenant ungated.
+//
 // TIMING: as for ReconcileBuiltInRoles, call it after module permission
 // registration. A system tenant whose built-ins predate RolesReconcileAll
 // must have its own roles reconciled first (roles:create), which grants it.
-func ReconcileAllTenants(ctx context.Context, roles RoleServicer, tenants TenantLister) (*AllTenantsReconcileReport, error) {
+func ReconcileAllTenants(ctx context.Context, roles RoleServicer, tenants TenantLister, gate TenantGate) (*AllTenantsReconcileReport, error) {
+	if gate == nil {
+		return nil, &StoreError{Op: "reconcile_all", Detail: "operator-access gate must not be nil"}
+	}
 	if roles == nil {
 		return nil, &StoreError{Op: "reconcile_all", Detail: "role service must not be nil"}
 	}
@@ -147,7 +170,14 @@ func ReconcileAllTenants(ctx context.Context, roles RoleServicer, tenants Tenant
 			})
 			continue
 		}
-		tr, rerr := roles.ReconcileBuiltInRoles(tenant.WithTenantID(ctx, info.ID), info.ID)
+		tctx, gerr := gate(ctx, info.ID)
+		if gerr != nil {
+			report.Skipped = append(report.Skipped, SkippedTenant{
+				TenantID: info.ID, Reason: SkipReasonOperatorAccessRefused, Detail: gerr.Error(),
+			})
+			continue
+		}
+		tr, rerr := roles.ReconcileBuiltInRoles(tenant.WithTenantID(tctx, info.ID), info.ID)
 		switch {
 		case errors.Is(rerr, tenant.ErrTenantSealed):
 			report.Skipped = append(report.Skipped, SkippedTenant{

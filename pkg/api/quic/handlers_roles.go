@@ -413,7 +413,7 @@ func (s *Server) handleReconcileRolesAllTenants(ctx context.Context, _ []byte) (
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
 
-	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, err
 	}

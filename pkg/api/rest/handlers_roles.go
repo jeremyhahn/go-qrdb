@@ -692,7 +692,7 @@ func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc, s.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

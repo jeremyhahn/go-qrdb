@@ -175,6 +175,16 @@ func (m *AuthMiddleware) AuthorizeOperatorIdentityAccess(ctx context.Context, te
 	return tenant.WithTenantID(ctx, target), nil
 }
 
+// OperatorAccessGate returns AuthorizeOperatorIdentityAccess for perm as a
+// per-target-tenant gate (role.TenantGate): a pass over every tenant, such as
+// role.ReconcileAllTenants, decides and records the operator access to each
+// target before touching its identity records.
+func (m *AuthMiddleware) OperatorAccessGate(perm permission.Permission) func(context.Context, string) (context.Context, error) {
+	return func(ctx context.Context, tenantID string) (context.Context, error) {
+		return m.AuthorizeOperatorIdentityAccess(ctx, tenantID, perm)
+	}
+}
+
 // operatorAdmittedKey carries the operator access AuthorizeOperatorIdentityAccess
 // admitted (and recorded) for the request, so the secondary checks of the
 // same write (roles:assign in the target tenant) honour the admitted

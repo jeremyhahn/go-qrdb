@@ -74,7 +74,7 @@ func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*trans
 		return nil, err
 	}
 
-	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc)
+	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc, t.authMW.OperatorAccessGate(permission.RolesReconcileAll))
 	if err != nil {
 		return nil, err
 	}

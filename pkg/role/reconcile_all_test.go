@@ -103,7 +103,7 @@ func TestReconcileAllTenants_ConvergesEveryTenantsStrandedBuiltIns(t *testing.T)
 	}
 
 	lister := listedTenants{infos: []tenant.TenantInfo{{ID: "vault"}, {ID: "acme"}, {ID: "acme"}, {ID: ""}}}
-	report, err := ReconcileAllTenants(context.Background(), svc, lister)
+	report, err := ReconcileAllTenants(context.Background(), svc, lister, allowAllGate)
 	if err != nil {
 		t.Fatalf("ReconcileAllTenants: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestReconcileAllTenants_ConvergesEveryTenantsStrandedBuiltIns(t *testing.T)
 	}
 
 	// Idempotent: a second pass writes nothing.
-	again, err := ReconcileAllTenants(context.Background(), svc, lister)
+	again, err := ReconcileAllTenants(context.Background(), svc, lister, allowAllGate)
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestReconcileAllTenants_RefusesANonSystemCaller(t *testing.T) {
 	}
 	lister := listedTenants{infos: []tenant.TenantInfo{{ID: "acme"}, {ID: "other"}}}
 	for _, caller := range []string{"acme", "other"} {
-		_, err := ReconcileAllTenants(tenant.WithTenantID(context.Background(), caller), svc, lister)
+		_, err := ReconcileAllTenants(tenant.WithTenantID(context.Background(), caller), svc, lister, allowAllGate)
 		var denied *tenant.PlatformOperatorRequiredError
 		if !errors.As(err, &denied) || denied.IdentityTenantID != caller {
 			t.Fatalf("caller %s: err = %v, want *tenant.PlatformOperatorRequiredError", caller, err)
@@ -182,7 +182,7 @@ func TestReconcileAllTenants_SkipsSealedAndRefusedTenants(t *testing.T) {
 		{ID: "vault"},
 		{ID: "remote", Refusal: errors.New("volume pool fast does not resolve")},
 	}}
-	report, err := ReconcileAllTenants(context.Background(), svc, lister)
+	report, err := ReconcileAllTenants(context.Background(), svc, lister, allowAllGate)
 	if err != nil {
 		t.Fatalf("ReconcileAllTenants: %v", err)
 	}
@@ -201,11 +201,59 @@ func TestReconcileAllTenants_SkipsSealedAndRefusedTenants(t *testing.T) {
 	}
 }
 
+// allowAllGate admits every target tenant, binding the context to it.
+func allowAllGate(ctx context.Context, tenantID string) (context.Context, error) {
+	return tenant.WithTenantID(ctx, tenantID), nil
+}
+
+// TestReconcileAllTenants_GatesEveryTargetTenant pins that each tenant passes
+// the operator-access gate before its roles are read: a refused (strict)
+// tenant is skipped, unreconciled, and a nil gate refuses the pass.
+func TestReconcileAllTenants_GatesEveryTargetTenant(t *testing.T) {
+	resolver := &fakeResolver{shared: newFakeKVStore(), tenants: map[string]kvstore.KVStore{}}
+	svc, err := NewRoutingService(resolver)
+	if err != nil {
+		t.Fatalf("NewRoutingService: %v", err)
+	}
+	lister := listedTenants{infos: []tenant.TenantInfo{{ID: "strict"}, {ID: "acme"}}}
+	refusal := errors.New("operator access refused by strict policy")
+	var gated []string
+	gate := func(ctx context.Context, id string) (context.Context, error) {
+		gated = append(gated, id)
+		if id == "strict" {
+			return nil, refusal
+		}
+		return tenant.WithTenantID(ctx, id), nil
+	}
+	report, err := ReconcileAllTenants(context.Background(), svc, lister, gate)
+	if err != nil {
+		t.Fatalf("ReconcileAllTenants: %v", err)
+	}
+	if len(gated) != 3 {
+		t.Fatalf("gated = %v, want every target tenant (system, acme, strict)", gated)
+	}
+	if len(report.Skipped) != 1 || report.Skipped[0].TenantID != "strict" ||
+		report.Skipped[0].Reason != SkipReasonOperatorAccessRefused {
+		t.Fatalf("skipped = %v, want strict refused by operator access", report.Skipped)
+	}
+	for _, tr := range report.Tenants {
+		if tr.TenantID == "strict" {
+			t.Fatal("a refused strict tenant's roles were reconciled")
+		}
+	}
+	if len(report.Tenants) != 2 {
+		t.Fatalf("tenants = %v, want system and acme reconciled", report.Tenants)
+	}
+	if _, err := ReconcileAllTenants(context.Background(), svc, lister, nil); err == nil {
+		t.Fatal("nil gate: want error")
+	}
+}
+
 func TestReconcileAllTenants_OneTenantsFailureDoesNotStopThePass(t *testing.T) {
 	boom := errors.New("store unavailable")
 	svc := failingReconciler{failFor: "bad", err: boom}
 	lister := listedTenants{infos: []tenant.TenantInfo{{ID: "bad"}, {ID: "good"}, {ID: "nilreport"}}}
-	report, err := ReconcileAllTenants(context.Background(), svc, lister)
+	report, err := ReconcileAllTenants(context.Background(), svc, lister, allowAllGate)
 	if err != nil {
 		t.Fatalf("ReconcileAllTenants: %v", err)
 	}
@@ -219,14 +267,14 @@ func TestReconcileAllTenants_OneTenantsFailureDoesNotStopThePass(t *testing.T) {
 
 func TestReconcileAllTenants_ArgumentAndListErrors(t *testing.T) {
 	svc := failingReconciler{}
-	if _, err := ReconcileAllTenants(context.Background(), nil, listedTenants{}); err == nil {
+	if _, err := ReconcileAllTenants(context.Background(), nil, listedTenants{}, allowAllGate); err == nil {
 		t.Fatal("nil role service: want error")
 	}
-	if _, err := ReconcileAllTenants(context.Background(), svc, nil); err == nil {
+	if _, err := ReconcileAllTenants(context.Background(), svc, nil, allowAllGate); err == nil {
 		t.Fatal("nil tenant lister: want error")
 	}
 	boom := errors.New("list failed")
-	_, err := ReconcileAllTenants(context.Background(), svc, listedTenants{err: boom})
+	_, err := ReconcileAllTenants(context.Background(), svc, listedTenants{err: boom}, allowAllGate)
 	var se *StoreError
 	if !errors.As(err, &se) || !errors.Is(err, boom) {
 		t.Fatalf("list failure: err = %v, want *StoreError wrapping it", err)
