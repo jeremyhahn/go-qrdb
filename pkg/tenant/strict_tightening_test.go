@@ -126,6 +126,30 @@ func TestTightenFloorToStrict_RefusedWhileARaftTenantHasNodeKeyedLogs(t *testing
 	}
 }
 
+// TestTightenFloorToStrict_RefusalDisclosesNoDatabaseNames pins that the
+// cluster-floor refusal, returned to a platform caller with no cross-tenant
+// database-read right, carries the tenant ID and a count, never the tenant's
+// database names.
+func TestTightenFloorToStrict_RefusalDisclosesNoDatabaseNames(t *testing.T) {
+	ctx := context.Background()
+	svc := newRaftTenantForTightening(t, "acme")
+	svc.SetNodeKeyLogProbe(&markerSeeingProbe{svc: svc, dbs: []string{"orders", "ledger"}, sawMarker: map[string]bool{}})
+
+	err := svc.SetClusterIsolationPolicy(ctx, ClusterIsolationPolicyStrict)
+	var nk *NodeKeyLogsError
+	if !errors.As(err, &nk) || nk.TenantID != "acme" {
+		t.Fatalf("SetClusterIsolationPolicy(strict) = %v, want *NodeKeyLogsError for acme", err)
+	}
+	if len(nk.Databases) != 0 || nk.Count != 2 {
+		t.Fatalf("floor refusal = databases %v count %d, want no names and count 2", nk.Databases, nk.Count)
+	}
+	for _, name := range []string{"orders", "ledger"} {
+		if strings.Contains(err.Error(), name) {
+			t.Fatalf("floor refusal %q discloses database name %q", err.Error(), name)
+		}
+	}
+}
+
 // memMarkerStore is an in-memory markerStore: List returns the full keys
 // under a prefix, Get of an absent key is (nil, nil), and Delete fails with
 // deleteErr when armed.

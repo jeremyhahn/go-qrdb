@@ -94,14 +94,24 @@ var ErrNodeKeyLogsUnverifiable = errors.New("tenant: the databases on the node-k
 
 // NodeKeyLogsError refuses tightening a tenant to strict while some of its
 // raft databases have their log on the shared, node-keyed WAL.
+//
+// Databases names them only on a refusal returned inside the owning tenant's
+// scope (a tenant policy update). A refusal returned to the platform caller
+// (the cluster floor) carries the tenant ID and Count alone: the caller has no
+// right to read another tenant's catalog.
 type NodeKeyLogsError struct {
 	TenantID  string
 	Databases []string
+	Count     int
 }
 
 func (e *NodeKeyLogsError) Error() string {
+	held := strconv.Itoa(e.Count) + " database(s)"
+	if len(e.Databases) > 0 {
+		held = strings.Join(e.Databases, ", ")
+	}
 	return "tenant: tenant " + strconv.Quote(e.TenantID) + " has databases on the node-keyed WAL (" +
-		strings.Join(e.Databases, ", ") + "); a strict tenant's every log is under its own key, so tightening to strict is refused"
+		held + "); a strict tenant's every log is under its own key, so tightening to strict is refused"
 }
 
 // nodeKeyProbeRef boxes a NodeKeyLogProbe for atomic storage.
@@ -226,7 +236,7 @@ func markerLive(value []byte, now time.Time) bool {
 // a database on the node-keyed WAL. tenants is called after the marker is
 // written, so a tenant or database created concurrently is either listed or
 // sees the marker.
-func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, tenants func(context.Context) ([]string, error), commit func(context.Context) error) error {
+func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store markerStore, markerPrefix string, discloseNames bool, tenants func(context.Context) ([]string, error), commit func(context.Context) error) error {
 	var nonce [8]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return &StoreError{Op: "isolation-tightening-mark", Err: err}
@@ -252,7 +262,11 @@ func (g *isolationChangeGuard) tightenToStrict(ctx context.Context, store marker
 				return &TenantDataProbeError{TenantID: id, Err: err}
 			}
 			if len(dbs) > 0 {
-				return &NodeKeyLogsError{TenantID: id, Databases: dbs}
+				nk := &NodeKeyLogsError{TenantID: id, Count: len(dbs)}
+				if discloseNames {
+					nk.Databases = dbs
+				}
+				return nk
 			}
 		}
 	}
@@ -350,7 +364,7 @@ func (g *isolationChangeGuard) guardedUpdate(ctx context.Context, store markerSt
 		return update(ctx)
 	}
 	id := info.ID
-	return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", func(context.Context) ([]string, error) {
+	return g.tightenToStrict(ctx, store, tighteningPrefix+id+"/", true, func(context.Context) ([]string, error) {
 		return []string{id}, nil
 	}, update)
 }
@@ -364,7 +378,7 @@ func (g *isolationChangeGuard) guardedFloor(ctx context.Context, store markerSto
 	if next != ClusterIsolationPolicyStrict {
 		return set(ctx)
 	}
-	return g.tightenToStrict(ctx, store, clusterTighteningPrefix, func(ctx context.Context) ([]string, error) {
+	return g.tightenToStrict(ctx, store, clusterTighteningPrefix, false, func(ctx context.Context) ([]string, error) {
 		tenants, err := list(ctx)
 		if err != nil {
 			return nil, err
