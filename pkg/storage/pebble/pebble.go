@@ -29,7 +29,10 @@ import (
 )
 
 // Compile-time interface assertion.
-var _ storage.Storage = (*PebbleStorage)(nil)
+var (
+	_ storage.Storage = (*PebbleStorage)(nil)
+	_ storage.Syncer  = (*PebbleStorage)(nil)
+)
 
 // PebbleStorage implements storage.Storage backed by PebbleDB.
 // It provides persistent key-value storage with batch writes, iterators,
@@ -75,7 +78,17 @@ type PebbleStorage struct {
 	// seals makes a sealed at-rest barrier under the store a typed error;
 	// nil for a store over a database opened elsewhere (NewFromDB).
 	seals *SealWatch
+	// walOff records that the database refused a synced write because its
+	// WAL is disabled. A store over a database opened elsewhere (NewFromDB)
+	// has no Config.DisableWAL to read, so Sync learns the mode from the
+	// database itself on first use.
+	walOff atomic.Bool
 }
+
+// errWALDisabled is the message Pebble's commit path returns, before it
+// touches the WAL or the memtable, for a synced write on a database opened
+// with DisableWAL. Pebble does not export it as a sentinel.
+const errWALDisabled = "pebble: WAL disabled"
 
 // Option configures a PebbleStorage built by New or NewFromDB.
 type Option func(*PebbleStorage)
@@ -541,6 +554,41 @@ func (s *PebbleStorage) Flush() error {
 	}
 	if err := flush(); err != nil {
 		return &storage.OpError{Op: "flush", Err: err}
+	}
+	return nil
+}
+
+// Sync implements storage.Syncer: every write committed before it is on
+// stable storage when it returns, whatever SyncWrites says. With the WAL on
+// it syncs the WAL (an empty synced LogData record); with the WAL off there
+// is no log to sync, so it flushes the memtables to sstables instead. The
+// mode is the database's own: Config.DisableWAL for a store opened by New,
+// and for a store over a database opened elsewhere, the database's refusal
+// of the synced record.
+func (s *PebbleStorage) Sync() error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if !s.config.DisableWAL && !s.walOff.Load() {
+		err := s.durably(true, func(o *pebble.WriteOptions) error {
+			return s.db.LogData(nil, o)
+		})
+		if err == nil {
+			return nil
+		}
+		if err.Error() != errWALDisabled {
+			return &storage.OpError{Op: "sync", Err: err}
+		}
+		s.walOff.Store(true)
+	}
+	flush := s.db.Flush
+	if s.seals != nil {
+		flush = func() error { return s.seals.Flush(s.db) }
+	}
+	if err := flush(); err != nil {
+		return &storage.OpError{Op: "sync", Err: err}
 	}
 	return nil
 }

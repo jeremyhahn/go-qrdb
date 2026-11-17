@@ -60,7 +60,9 @@
 # own pushes and PRs. So:
 #   - nothing a job builds survives into another job: docker-build saves each
 #     image it builds and uploads it as an artifact, and every consumer
-#     downloads and loads it, checking its image ID (scripts/ci-image.sh);
+#     downloads and loads it, checking its image ID (scripts/ci-image.sh),
+#     and launches every stage by that ID, never by the content-hash tag,
+#     which another run on a shared daemon can move;
 #   - the Go build and golangci-lint caches are actions/cache entries under
 #     $RUNNER_TEMP/ci-cache, which scripts/in-toolchain-image.sh bind-mounts
 #     (CI_CACHE_DIR). A job restores main's newest entry; only a push to main
@@ -615,7 +617,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -628,7 +639,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
       # restored from main's newest entry and saved on a push to main alone.
@@ -741,7 +752,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -755,7 +775,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         if: ${{ steps.probe.outputs.has_target == 'true' }}
@@ -835,7 +855,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -848,7 +877,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # The full tier's trivy step scans the integration image docker-build
       # built, so the full tier loads it too.
@@ -874,7 +903,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -888,7 +926,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -949,7 +987,13 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    runs-on: ubuntu-latest
+    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
+    # while the Docker pool had room, so this matrix splits by leg: the six
+    # even-index legs run on the bigdisk-docker pool for a push to main and a
+    # same-repository pull request, the other six (and every leg of a fork's
+    # pull request) on ubuntu-latest. Tuned from measured queues; coverage
+    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
+    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","auth","api-keys","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -1014,7 +1058,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1027,7 +1080,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1111,7 +1164,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1124,7 +1186,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Download the legs' profiles
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -1189,7 +1251,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1202,7 +1273,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: make test-clusterproof
         if: ${{ runner.environment == 'github-hosted' && !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1260,7 +1331,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1273,7 +1353,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: make coverage-fts
         if: ${{ runner.environment == 'github-hosted' && !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1341,7 +1421,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1354,7 +1443,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1442,7 +1531,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1455,7 +1553,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1561,7 +1659,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1574,7 +1681,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Integration tests (shard ${{ matrix.shard }})
         run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
@@ -1655,7 +1762,13 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    runs-on: ubuntu-latest
+    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
+    # while the Docker pool had room, so this matrix splits by leg: the six
+    # even-index legs run on the bigdisk-docker pool for a push to main and a
+    # same-repository pull request, the other six (and every leg of a fork's
+    # pull request) on ubuntu-latest. Tuned from measured queues; coverage
+    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
+    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","auth","api-keys","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
     strategy:
@@ -1739,7 +1852,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1752,7 +1874,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
       # against the module first keeps a genuine build break from being
@@ -1929,7 +2051,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1942,7 +2073,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Soak (integration suite, looped)
         run: |
