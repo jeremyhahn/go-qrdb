@@ -4205,9 +4205,13 @@ docker-build-toolchain:
 	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
 	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, by
 	@# the digest recorded in CI_IMAGE_DIGEST_DIR only, and a build is pushed
-	@# to it and its digest recorded; unset, both ci-image.sh calls do nothing.
+	@# to it and its digest recorded. An image already held with no usable
+	@# record (an earlier push failed) is pushed again (registry-push
+	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
+	@# call does nothing.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
 		:; \
 	else \
@@ -4229,6 +4233,7 @@ docker-build-it:
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
 	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
 		:; \
 	else \

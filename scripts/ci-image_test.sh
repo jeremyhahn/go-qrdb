@@ -30,7 +30,8 @@ s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
 case $1 in
   image)
-    [ -f "$s/id" ] || exit 1
+    # A pulled image is on the daemon too.
+    [ -f "$s/id" ] || [ -f "$s/pulled" ] || exit 1
     case $* in
       *RepoDigests*)
         if [ -z "${STUB_NO_DIGEST:-}" ]; then
@@ -66,6 +67,18 @@ case $1 in
       exit 1
     fi
     printf '%s\n' "${2%:*}" > "$s/pushed" ;;
+  buildx)
+    # The make targets' build (DEVCONTAINER_BUILD): it loads the image, or
+    # with STUB_BUILD_FAILS fails; STUB_BUILD_RACE loads it first, as a
+    # concurrent build on the same daemon does.
+    case $2 in
+      version) ;;
+      build)
+        [ -z "${STUB_BUILD_RACE:-}" ] || printf 'sha256:raced\n' > "$s/id"
+        [ -z "${STUB_BUILD_FAILS:-}" ] || exit 7
+        printf 'sha256:built\n' > "$s/id" ;;
+      *) exit 1 ;;
+    esac ;;
   *) exit 1 ;;
 esac
 STUB
@@ -335,6 +348,123 @@ run registry-pull "$it" -- CI_IMAGE_REGISTRY='registry.test:5000/x y' STUB_PULL=
 if [ "$bad_tag_rc" = 1 ] && [[ $bad_tag_err == *'is not a content-hash tag'* ]] && [ "$rc" = 1 ] && ! called '^pull '; then
   ok "registry: a non-CI tag or a malformed registry value is refused before docker"
 else bad "registry: a non-CI tag or a malformed registry value is refused before docker (rc=$bad_tag_rc/$rc)"; cat "$D/err"; fi
+
+# 21a. registry-push --unrecorded without CI_IMAGE_DIGEST_DIR pushes nothing
+# (nothing could be recorded), and with the registry unset does nothing.
+reset
+run registry-push --unrecorded "$it" -- CI_IMAGE_REGISTRY="$reg"
+nodir_rc=$rc
+run registry-push --unrecorded "$it"
+if [ "$nodir_rc" = 0 ] && [ "$rc" = 0 ] && [ ! -e "$D/state/calls" ] && [ ! -s "$D/err" ]; then
+  ok "registry: --unrecorded with no record directory or no registry pushes nothing"
+else bad "registry: --unrecorded with no record directory or no registry pushes nothing (rc=$nodir_rc/$rc)"; cat "$D/err"; fi
+
+# 22-28. The Make targets themselves (P1, Codex): make docker-build-toolchain
+# and docker-build-it run on the stub docker, whose buildx stands in for the
+# build, through the real scripts/ci-image.sh. A target that stopped calling
+# the registry fails these, where the cases above would still pass.
+# mk <target> [env...]: the target, its status in $rc, stdout in $D/out,
+# stderr in $D/err.
+mk() {
+  local target=$1
+  shift
+  rc=0
+  env -u GIT_CONFIG_KEY_0 -u MODULE_ENV_FILE -u CI_IMAGE_REGISTRY -u CI_IMAGE_DIGEST_DIR -u MAKEFLAGS -u MAKELEVEL \
+    PATH="$D/bin:$PATH" STUB_STATE="$D/state" "$@" \
+    make -s --no-print-directory -C "$here/.." "$target" TOOLCHAIN_IMAGE="$tc" IT_IMAGE="$it" \
+    > "$D/out" 2> "$D/err" || rc=$?
+}
+# before <a> <b>: the first call matching <a> precedes the first matching <b>.
+before() {
+  local a b
+  a=$(grep -n -m1 -- "$1" "$D/state/calls" | cut -d: -f1)
+  b=$(grep -n -m1 -- "$2" "$D/state/calls" | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+# rec_for <image> [digest]: an empty record directory, or one holding <digest>
+# for <image>.
+rec_for() { rm -rf "$rec"; mkdir -p "$rec"; [ $# -lt 2 ] || printf '%s\n' "$2" > "$rec/${1//:/_}"; }
+
+for target in docker-build-toolchain docker-build-it; do
+  case $target in
+  docker-build-toolchain) img=$tc stage=toolchain ;;
+  *) img=$it stage=integration ;;
+  esac
+  repo=$reg/${img%:*}
+  r=(CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec")
+
+  # 22. A registry hit skips the build.
+  reset; rm -f "$D/state/id"; rec_for "$img" "$dig"
+  mk "$target" "${r[@]}" STUB_PULL=hit
+  if [ "$rc" = 0 ] && called "^pull $repo@$dig$" && ! called '^buildx build ' && ! called '^push '; then
+    ok "$target: a registry hit skips the build"
+  else bad "$target: a registry hit skips the build (rc=$rc)"; cat "$D/err"; fi
+
+  # 23. A miss builds, then pushes and records the digest.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PULL=miss
+  if [ "$rc" = 0 ] && called "^buildx build .*--target $stage -t $img " && before '^buildx build ' "^push $reg/$img$" &&
+    [ "$(cat "$rec/${img//:/_}")" = "$pushdig" ] && grep -qx "miss, built and pushed $repo@$pushdig" "$D/err"; then
+    ok "$target: a miss builds, then pushes"
+  else bad "$target: a miss builds, then pushes (rc=$rc)"; cat "$D/err"; fi
+
+  # 24. A failed push still exits 0.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PUSH_FAILS=9
+  if [ "$rc" = 0 ] && called '^buildx build ' && called "^push $reg/$img$" && grep -qx 'miss, built, push failed' "$D/err"; then
+    ok "$target: a failed push still exits 0"
+  else bad "$target: a failed push still exits 0 (rc=$rc)"; cat "$D/err"; fi
+
+  # 25. A failed build exits non-zero and pushes nothing.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_BUILD_FAILS=1
+  if [ "$rc" != 0 ] && called '^buildx build ' && ! called '^push '; then
+    ok "$target: a failed build exits non-zero"
+  else bad "$target: a failed build exits non-zero (rc=$rc)"; cat "$D/err"; fi
+
+  # 26. P2: a held image with no usable record is published again, and the
+  # record written; a failed retry still exits 0.
+  reset; rec_for "$img"
+  mk "$target" "${r[@]}"
+  held_rc=$rc held_err=$(cat "$D/err")
+  held_rec=$(cat "$rec/${img//:/_}" 2>/dev/null || :)
+  held_build=$(grep -c '^buildx build ' "$D/state/calls" || :)
+  reset; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PUSH_FAILS=9
+  if [ "$held_rc" = 0 ] && [ "$held_err" = "held, unrecorded and pushed $repo@$pushdig" ] &&
+    [ "$held_rec" = "$pushdig" ] && [ "$held_build" = 0 ] &&
+    [ "$rc" = 0 ] && called "^push $reg/$img$" && [ "$(cat "$D/err")" = "held, unrecorded, push failed" ]; then
+    ok "$target: a held image with no record is published again"
+  else bad "$target: a held image with no record is published again (rc=$held_rc/$rc)"; printf '%s\n' "$held_err"; cat "$D/err"; fi
+
+  # 27. A held image with a record is not pushed (nor pulled, nor built).
+  reset; rec_for "$img" "$dig"
+  mk "$target" "${r[@]}"
+  if [ "$rc" = 0 ] && ! called '^push ' && ! called '^pull ' && ! called '^tag ' && ! called '^buildx build ' && [ ! -s "$D/err" ]; then
+    ok "$target: a held image with a record is not pushed"
+  else bad "$target: a held image with a record is not pushed (rc=$rc)"; cat "$D/err"; fi
+
+  # 28. Registry unset: a held image is today's one inspect and one line; a
+  # missing one is built with no registry call.
+  reset; rec_for "$img"
+  mk "$target" CI_IMAGE_DIGEST_DIR="$rec"
+  unset_out=$(cat "$D/out") unset_err=$(cat "$D/err") unset_calls=$(cat "$D/state/calls")
+  reset; rm -f "$D/state/id"
+  mk "$target"
+  if [ "$unset_out" = "==> $img is already built on this daemon" ] && [ -z "$unset_err" ] &&
+    [ "$unset_calls" = "$(printf 'buildx version\nimage inspect %s' "$img")" ] &&
+    [ "$rc" = 0 ] && called '^buildx build ' && ! called '^pull ' && ! called '^push ' && ! called '^tag '; then
+    ok "$target: an unset registry changes nothing"
+  else bad "$target: an unset registry changes nothing (rc=$rc)"; printf '%s\n%s\n' "$unset_out" "$unset_calls"; cat "$D/err"; fi
+done
+
+# 29. docker-build-it: a build that fails because a concurrent build loaded
+# the image first succeeds, and the image is pushed.
+reset; rm -f "$D/state/id"; rec_for "$it"
+mk docker-build-it CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_BUILD_FAILS=1 STUB_BUILD_RACE=1
+if [ "$rc" = 0 ] && grep -q "a concurrent build loaded $it first" "$D/out" && called "^push $reg/$it$"; then
+  ok "docker-build-it: a build a concurrent build beat still succeeds"
+else bad "docker-build-it: a build a concurrent build beat still succeeds (rc=$rc)"; cat "$D/err"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

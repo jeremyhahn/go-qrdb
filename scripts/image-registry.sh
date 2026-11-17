@@ -65,18 +65,29 @@ ci_registry_digest() {
 	return 1
 }
 
+# ci_registry_recorded <image> prints the sha256 digest CI_IMAGE_DIGEST_DIR
+# records for <image>, or fails when there is no usable record: the directory
+# unset, no file, or a file that does not hold sha256:<64 hex>. The pull trusts
+# only this digest; a held image without it is published again
+# (ci-image.sh registry-push --unrecorded).
+ci_registry_recorded() {
+	local record digest=""
+	record=$(ci_registry_record "$1") || return 1
+	[ -f "$record" ] || return 1
+	IFS= read -r digest <"$record" || true
+	[[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+	printf '%s\n' "$digest"
+}
+
 # ci_registry_pull <image> pulls <registry>/<name>@<recorded digest>, checks
 # it and tags it <image>. Status 0 when the image is now on the daemon; 1
 # otherwise.
 ci_registry_pull() {
-	local image=$1 ref repo record digest="" got
+	local image=$1 ref repo digest got
 	[ -n "${CI_IMAGE_REGISTRY:-}" ] || return 1
 	ref=$(ci_registry_ref "$image") || return 1
 	repo=${ref%:*}
-	record=$(ci_registry_record "$image") || return 1
-	[ -f "$record" ] || return 1
-	IFS= read -r digest <"$record" || true
-	[[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+	digest=$(ci_registry_recorded "$image") || return 1
 	timeout -k 10 "$(ci_registry_timeout)" docker pull "$repo@$digest" >/dev/null 2>&1 || return 1
 	if ! got=$(ci_registry_digest "$repo" "$repo@$digest") || [ "$got" != "$digest" ]; then
 		echo "miss, $repo@$digest does not match its record" >&2
@@ -87,28 +98,29 @@ ci_registry_pull() {
 	echo "pulled $repo@$digest" >&2
 }
 
-# ci_registry_push <image> pushes the image just built as <registry>/<image>
-# and records its repo digest. Status 0 always; a no-op when
-# CI_IMAGE_REGISTRY is unset.
+# ci_registry_push <image> [<how>] pushes the image just built as
+# <registry>/<image> and records its repo digest. <how> opens its log line
+# (default "miss, built"; a held image published again passes "held,
+# unrecorded"). Status 0 always; a no-op when CI_IMAGE_REGISTRY is unset.
 ci_registry_push() {
-	local image=$1 ref repo record digest
+	local image=$1 how=${2:-miss, built} ref repo record digest
 	[ -n "${CI_IMAGE_REGISTRY:-}" ] || return 0
 	if ! { ref=$(ci_registry_ref "$image") &&
 		docker tag "$image" "$ref" >/dev/null 2>&1 &&
 		timeout -k 10 "$(ci_registry_timeout)" docker push "$ref" >/dev/null 2>&1; }; then
-		echo "miss, built, push failed" >&2
+		echo "$how, push failed" >&2
 		return 0
 	fi
 	repo=${ref%:*}
 	if ! digest=$(ci_registry_digest "$repo" "$image"); then
-		echo "miss, built and pushed $ref, no digest to record" >&2
+		echo "$how and pushed $ref, no digest to record" >&2
 		return 0
 	fi
 	if record=$(ci_registry_record "$image") &&
 		! { mkdir -p "${record%/*}" && printf '%s\n' "$digest" >"$record"; } 2>/dev/null; then
-		echo "miss, built and pushed $repo@$digest, record not written" >&2
+		echo "$how and pushed $repo@$digest, record not written" >&2
 		return 0
 	fi
-	echo "miss, built and pushed $repo@$digest" >&2
+	echo "$how and pushed $repo@$digest" >&2
 	return 0
 }

@@ -26,6 +26,7 @@
 #   ci-image.sh check-ref <ref>...                 validates digest references
 #   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
 #   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
+#   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
 #
 # registry-pull and registry-push are the pull-or-build path through the CI
 # image registry the runner's environment names in CI_IMAGE_REGISTRY (#1609,
@@ -172,7 +173,16 @@ main() {
 	load) load "$@" ;;
 	push) push "$@" ;;
 	registry-pull | registry-push)
-		[ $# -eq 1 ] || die "usage: $cmd <image>"
+		# registry-push --unrecorded <image>: the image is already held (built
+		# or pulled earlier), so it is published again only when no usable
+		# digest record names it -- an earlier push that failed is retried
+		# and its record written. Never fails the caller either.
+		local unrecorded=""
+		if [ "$cmd" = registry-push ] && [ "${1:-}" = --unrecorded ]; then
+			unrecorded=1
+			shift
+		fi
+		[ $# -eq 1 ] || die "usage: $cmd [--unrecorded] <image>"
 		# Unset, nothing at all: the caller builds as it always has. An
 		# image that is not a CI content-hash tag (a developer's own tag) is
 		# never pulled or pushed, and a push never fails the build.
@@ -182,7 +192,15 @@ main() {
 			[ "$cmd" = registry-push ]
 			return
 		fi
-		if [ "$cmd" = registry-pull ]; then ci_registry_pull "$1"; else ci_registry_push "$1"; fi
+		if [ "$cmd" = registry-pull ]; then
+			ci_registry_pull "$1"
+		elif [ -z "$unrecorded" ]; then
+			ci_registry_push "$1"
+		elif [ -n "${CI_IMAGE_DIGEST_DIR:-}" ] && ! ci_registry_recorded "$1" >/dev/null; then
+			# Without CI_IMAGE_DIGEST_DIR nothing could be recorded, and no
+			# pull trusts an unrecorded image: a retry would only push again.
+			ci_registry_push "$1" "held, unrecorded"
+		fi
 		;;
 	check-ref)
 		[ $# -ge 1 ] || die "usage: check-ref <ref>..."
