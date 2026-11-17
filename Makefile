@@ -1047,6 +1047,13 @@ CLUSTERPROOF_CI_PROOF = PROOF_NODES=$(CLUSTERPROOF_CI_NODES) \
 	PROOF_DURATION=$(or $(PROOF_DURATION),30m) \
 	PROOF_NEMESIS=$(or $(PROOF_NEMESIS),$(CLUSTERPROOF_CI_NEMESIS))
 
+# The image the CI cluster's faults run in (`scripts/cluster-proof-ci.sh render
+# DIR IMAGE FAULT_IMAGE`): debian with the tools the default partition and
+# disk-full commands run, which the release image does not carry.
+.PHONY: cluster-proof-fault-image
+cluster-proof-fault-image:
+	docker build -f test/clusterproof/fault.Dockerfile -t clusterproof-fault:$(BUILD_VERSION) test/clusterproof
+
 .PHONY: cluster-proof-ci
 cluster-proof-ci:
 	scripts/cluster-proof-ci.sh up $(CLUSTERPROOF_CI_DIR)

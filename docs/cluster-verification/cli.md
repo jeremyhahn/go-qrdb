@@ -64,7 +64,10 @@ runs it. It boots the three nodes `scripts/cluster-proof-ci.sh render` wrote
 (`scripts/cluster-proof-ci.sh up`, which runs `cluster-proof-boot` with
 `PROOF_KEEP=1`), runs `cluster-proof` against them under `PROOF_SEAL=none`,
 then `cluster-proof-check` on the bundle. It leaves the cluster running;
-`scripts/cluster-proof-ci.sh down` removes it.
+`scripts/cluster-proof-ci.sh down` removes it. The faults run in the image
+`render`'s third argument names: `make cluster-proof-fault-image` builds
+`clusterproof-fault:$(BUILD_VERSION)` from `test/clusterproof/fault.Dockerfile`
+with the iptables, coreutils and util-linux tools the default faults run.
 
 | Variable | Type | Default | Required | Meaning |
 |---|---|---|---|---|
@@ -76,7 +79,8 @@ Exit codes: those of the step that failed; `0` when BOOT-01 passed and the
 bundle checks proven.
 
 ```sh
-scripts/cluster-proof-ci.sh render build/clusterproof-ci qrdbd:$(cat VERSION)
+make cluster-proof-fault-image
+scripts/cluster-proof-ci.sh render build/clusterproof-ci qrdbd:$(cat VERSION) clusterproof-fault:$(cat VERSION)
 make cluster-proof-ci PROOF_DURATION=15m
 scripts/cluster-proof-ci.sh down build/clusterproof-ci
 ```

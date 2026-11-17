@@ -207,14 +207,19 @@ through the local docker, with no ssh and no unseal step:
 
 ```sh
 make docker-build-release
-scripts/cluster-proof-ci.sh render build/clusterproof-ci qrdbd:$(cat VERSION)
+make cluster-proof-fault-image
+scripts/cluster-proof-ci.sh render build/clusterproof-ci qrdbd:$(cat VERSION) clusterproof-fault:$(cat VERSION)
 make cluster-proof-ci PROOF_DURATION=15m
 scripts/cluster-proof-ci.sh down build/clusterproof-ci
 ```
 
-- `render DIR IMAGE` writes a throwaway test CA, the node and admin
-  certificates, the PINs and the inventory, targets and workload files into
-  `DIR`. Its last line is the `PROOF_NODES` value.
+- `render DIR IMAGE [FAULT_IMAGE]` writes a throwaway test CA, the node and
+  admin certificates, the PINs and the inventory, targets and workload files
+  into `DIR`. Its last line is the `PROOF_NODES` value. The faults run in
+  `FAULT_IMAGE` (default `IMAGE`): the release image has no iptables, so
+  pass the image `make cluster-proof-fault-image` builds from
+  `test/clusterproof/fault.Dockerfile`, which carries the tools the default
+  partition and disk-full commands run.
 - `up DIR` creates the network and runs `cluster-proof-boot` with
   `PROOF_KEEP=1`.
 - `down DIR` removes the containers and the network.

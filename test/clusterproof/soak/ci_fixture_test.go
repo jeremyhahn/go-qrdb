@@ -15,6 +15,7 @@
 package soak_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,9 @@ import (
 // relative to this package.
 const ciScript = "../../../scripts/cluster-proof-ci.sh"
 
+// ciFaultImage is the fault image renderCI passes as render's third argument.
+const ciFaultImage = "clusterproof-fault:test"
+
 // ciNemesis is the Makefile's CLUSTERPROOF_CI_NEMESIS default: every fault
 // but clock-rate and slow-disk, which need a second kernel and a known block
 // device the hosted runner does not have.
@@ -48,7 +52,7 @@ func renderCI(t *testing.T) (string, string) {
 		t.Skip("openssl is not on PATH")
 	}
 	dir := t.TempDir()
-	out, err := exec.Command("bash", ciScript, "render", dir, "qrdbd:test").Output()
+	out, err := exec.Command("bash", ciScript, "render", dir, "qrdbd:test", ciFaultImage).Output()
 	if err != nil {
 		t.Fatalf("%s render: %v", ciScript, err)
 	}
@@ -104,5 +108,24 @@ func TestCIFixtureLoads(t *testing.T) {
 	}
 	if len(o.Targets) != 3 {
 		t.Fatalf("targets = %d, want 3", len(o.Targets))
+	}
+
+	// The faults run in the fault image, not the release image: the
+	// release image has no iptables for the partitions.
+	var targets struct {
+		Nodes map[string]struct {
+			Vars map[string]string `json:"vars"`
+		} `json:"nodes"`
+	}
+	if err := json.NewDecoder(openFile(t, filepath.Join(dir, "targets.json"))).Decode(&targets); err != nil {
+		t.Fatalf("decode targets.json: %v", err)
+	}
+	if len(targets.Nodes) != 3 {
+		t.Fatalf("targets.json nodes = %d, want 3", len(targets.Nodes))
+	}
+	for name, n := range targets.Nodes {
+		if got := n.Vars["fault_image"]; got != ciFaultImage {
+			t.Fatalf("%s fault_image = %q, want %q", name, got, ciFaultImage)
+		}
 	}
 }

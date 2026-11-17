@@ -16,11 +16,15 @@
 # cluster-proof-ci.sh: the cluster proof on one machine, as the nightly
 # `clusterproof-soak` job runs it (docs/cluster-verification/user.md).
 #
-#   render DIR IMAGE  write a throwaway test CA, node and admin certificates,
+#   render DIR IMAGE [FAULT_IMAGE]
+#                     write a throwaway test CA, node and admin certificates,
 #                     PINs and the inventory, targets and workload files for a
 #                     three-node cluster of IMAGE on the docker network
-#                     "proof" (192.0.2.0/24, RFC 5737). The last line on
-#                     stdout is the PROOF_NODES value.
+#                     "proof" (192.0.2.0/24, RFC 5737). Faults run in
+#                     FAULT_IMAGE (default IMAGE), which must carry the tools
+#                     the fault commands run: `make cluster-proof-fault-image`
+#                     builds one (test/clusterproof/fault.Dockerfile). The
+#                     last line on stdout is the PROOF_NODES value.
 #   up DIR            create the network and boot the cluster with BOOT-01,
 #                     leaving it running (PROOF_KEEP=1).
 #   down DIR          remove the containers and the network.
@@ -34,7 +38,7 @@ readonly nodes=(1 2 3)
 readonly quic_port=63004
 
 usage() {
-	echo "usage: $0 render DIR IMAGE | up DIR | down DIR" >&2
+	echo "usage: $0 render DIR IMAGE [FAULT_IMAGE] | up DIR | down DIR" >&2
 	exit 2
 }
 
@@ -70,9 +74,10 @@ sign() {
 pin() { printf '%s' "$(openssl rand -hex 8)" >"$1"; }
 
 render() {
-	local dir image n addr tls
+	local dir image fault_image n addr tls
 	dir=$(absdir "$1")
 	image=$2
+	fault_image=${3:-$image}
 	command -v openssl >/dev/null || {
 		echo "$0: openssl is required" >&2
 		exit 1
@@ -111,7 +116,7 @@ render() {
 	pin "$dir/user.pin"
 
 	write_inventory "$dir" "$image"
-	write_targets "$dir" "$image"
+	write_targets "$dir" "$fault_image"
 	write_workload "$dir"
 
 	local list=()
@@ -150,7 +155,7 @@ write_inventory() {
 }
 
 write_targets() {
-	local dir=$1 image=$2 n sep=""
+	local dir=$1 fault_image=$2 n sep=""
 	{
 		printf '{\n'
 		printf '  "exec": ["docker", "run", "--rm", "--privileged",\n'
@@ -163,7 +168,7 @@ write_targets() {
 		for n in "${nodes[@]}"; do
 			printf '%s    "node-%s": {\n' "$sep" "$n"
 			printf '      "vars": {"container": "clusterproof-node-%s", "data_dir": "%s/node-%s/data",\n' "$n" "$dir" "$n"
-			printf '               "fault_image": "%s"},\n' "$image"
+			printf '               "fault_image": "%s"},\n' "$fault_image"
 			printf '      "addresses": ["%s"]\n' "$(address "$n")"
 			printf '    }'
 			sep=$',\n'
@@ -221,8 +226,8 @@ down() {
 
 case ${1:-} in
 render)
-	[[ $# -eq 3 ]] || usage
-	render "$2" "$3"
+	[[ $# -eq 3 || $# -eq 4 ]] || usage
+	render "$2" "$3" "${4:-}"
 	;;
 up)
 	[[ $# -eq 2 ]] || usage

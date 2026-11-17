@@ -2021,8 +2021,11 @@ jobs:
           rm -f "$RUNNER_TEMP/gomodauth.env"
           exit "$rc"
 
+      - name: Build the fault image
+        run: make cluster-proof-fault-image
+
       - name: Render the cluster's configuration
-        run: scripts/cluster-proof-ci.sh render "$CLUSTERPROOF_CI_DIR" "qrdbd:$(cat VERSION)"
+        run: scripts/cluster-proof-ci.sh render "$CLUSTERPROOF_CI_DIR" "qrdbd:$(cat VERSION)" "clusterproof-fault:$(cat VERSION)"
 
       - name: Boot, soak and check (make cluster-proof-ci)
         run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
