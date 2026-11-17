@@ -17,6 +17,7 @@ package statemachine
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-quicraft/pkg/sm"
@@ -146,5 +147,91 @@ func TestNewKVDiskCreateFunc_ShardIdentityReachesFactory(t *testing.T) {
 	_ = factory(42, 7)
 	if len(got) != 1 || got[0] != (pair{42, 7}) {
 		t.Fatalf("factory saw %v, want [{42 7}]", got)
+	}
+}
+
+// syncCountingStore is a storage.Storage that also implements
+// storage.Syncer, counting Sync calls and returning err from each.
+type syncCountingStore struct {
+	storage.Storage
+	calls int
+	err   error
+}
+
+func (s *syncCountingStore) Sync() error {
+	s.calls++
+	return s.err
+}
+
+// TestDiskAdapter_SyncSyncsStore: DiskAdapter.Sync is the point go-quicraft
+// relies on for the state machine's durability, so it must reach the store's
+// Syncer and report its failure (#1618).
+func TestDiskAdapter_SyncSyncsStore(t *testing.T) {
+	st := &syncCountingStore{}
+	a := &DiskAdapter{store: st}
+	if err := a.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if st.calls != 1 {
+		t.Fatalf("store Sync calls = %d, want 1", st.calls)
+	}
+
+	boom := errors.New("fsync failed")
+	failing := &syncCountingStore{err: boom}
+	a = &DiskAdapter{store: failing}
+	err := a.Sync()
+	if !errors.Is(err, boom) {
+		t.Fatalf("Sync with failing store = %v, want it to wrap %v", err, boom)
+	}
+	if failing.calls != 1 {
+		t.Fatalf("failing store Sync calls = %d, want 1", failing.calls)
+	}
+}
+
+// TestDiskAdapter_SyncWithoutSyncer: a store with nothing to sync (no
+// storage.Syncer) makes Sync a no-op.
+func TestDiskAdapter_SyncWithoutSyncer(t *testing.T) {
+	a := &DiskAdapter{store: struct{ storage.Storage }{}}
+	if err := a.Sync(); err != nil {
+		t.Fatalf("Sync without Syncer = %v, want nil", err)
+	}
+}
+
+// TestDiskAdapter_SyncPersistsAppliedIndex: over a Pebble store with
+// SyncWrites off, the applied index survives Sync, Close and reopen.
+func TestDiskAdapter_SyncPersistsAppliedIndex(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	cfg := pebblestore.TestConfig(dir)
+	cfg.SyncWrites = false
+
+	st, err := pebblestore.New(cfg)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	a := &DiskAdapter{KVStateMachine: NewKVStateMachine(NewDiskBackend(st)), store: st}
+	entries := []sm.Entry{kvPutEntry(5, "k", "v")}
+	if err := a.Update(ctx, entries, make([]sm.Result, 1)); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if err := a.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	st2, err := pebblestore.New(cfg)
+	if err != nil {
+		t.Fatalf("reopen storage: %v", err)
+	}
+	defer func() { _ = st2.Close() }()
+	a2 := &DiskAdapter{KVStateMachine: NewKVStateMachine(NewDiskBackend(st2)), store: st2}
+	idx, err := a2.Open(ctx, "", nil)
+	if err != nil {
+		t.Fatalf("Open after reopen: %v", err)
+	}
+	if idx != 5 {
+		t.Fatalf("applied index after reopen = %d, want 5", idx)
 	}
 }

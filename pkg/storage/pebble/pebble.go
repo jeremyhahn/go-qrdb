@@ -29,7 +29,10 @@ import (
 )
 
 // Compile-time interface assertion.
-var _ storage.Storage = (*PebbleStorage)(nil)
+var (
+	_ storage.Storage = (*PebbleStorage)(nil)
+	_ storage.Syncer  = (*PebbleStorage)(nil)
+)
 
 // PebbleStorage implements storage.Storage backed by PebbleDB.
 // It provides persistent key-value storage with batch writes, iterators,
@@ -541,6 +544,34 @@ func (s *PebbleStorage) Flush() error {
 	}
 	if err := flush(); err != nil {
 		return &storage.OpError{Op: "flush", Err: err}
+	}
+	return nil
+}
+
+// Sync implements storage.Syncer: every write committed before it is on
+// stable storage when it returns, whatever SyncWrites says. With the WAL on
+// it syncs the WAL (an empty synced LogData record); with the WAL off there
+// is no log to sync, so it flushes the memtables to sstables instead.
+func (s *PebbleStorage) Sync() error {
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if s.closed.Load() {
+		return &storage.ClosedError{}
+	}
+	if s.config.DisableWAL {
+		flush := s.db.Flush
+		if s.seals != nil {
+			flush = func() error { return s.seals.Flush(s.db) }
+		}
+		if err := flush(); err != nil {
+			return &storage.OpError{Op: "sync", Err: err}
+		}
+		return nil
+	}
+	if err := s.durably(true, func(o *pebble.WriteOptions) error {
+		return s.db.LogData(nil, o)
+	}); err != nil {
+		return &storage.OpError{Op: "sync", Err: err}
 	}
 	return nil
 }
