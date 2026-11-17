@@ -118,6 +118,45 @@ func TestChain_AppendToInstance_ContinuesTheChain(t *testing.T) {
 	}
 }
 
+// An onboarding emitter whose append outlived its timeout retries it; the
+// delayed first proposal and the retry both apply. The trail holds one
+// event, on a restored replica too.
+func TestChain_OnboardEventAppliedOnceAcrossRetry(t *testing.T) {
+	const tenantID = "acme"
+	c := NewChain()
+	store := memory.NewStorage()
+	ev := fixedEvent(0, tenantID)
+	ev.Action = ActionTenantOnboard
+	ev.RequestID = "req-1"
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The retry and the delayed first proposal, applied in one batch and
+	// then once more through the other opcode.
+	if _, err := c.AppendToInstance(store, tenantID, [][]byte{raw, raw}); err != nil {
+		t.Fatalf("AppendToInstance: %v", err)
+	}
+	if _, err := c.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, seq, _ := c.log.Head(tenantID); seq != 1 {
+		t.Fatalf("head seq = %d after three applies of one event, want 1", seq)
+	}
+
+	restored := NewChain()
+	if err := restored.Restore(store); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := restored.Append(store, tenantID, ev); err != nil {
+		t.Fatalf("Append after restore: %v", err)
+	}
+	if _, seq, _ := restored.log.Head(tenantID); seq != 1 {
+		t.Fatalf("head seq = %d after restore and a repeat, want 1", seq)
+	}
+}
+
 func TestChain_AppendToInstance_Refusals(t *testing.T) {
 	const tenantID = "acme"
 	zero := fixedEvent(0, tenantID)

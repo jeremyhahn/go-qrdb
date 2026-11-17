@@ -38,7 +38,7 @@ import (
 
 // ActionTenantOnboard records OnboardTenant: a tenant created with its
 // first admin.
-const ActionTenantOnboard = "tenant.onboard"
+const ActionTenantOnboard = audit.ActionTenantOnboard
 
 // tenantOnboardingAuditComponent labels an onboarding record that could not
 // be written, on qrdb_audit_write_failures_total{component=...}.

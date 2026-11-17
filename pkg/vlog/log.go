@@ -97,6 +97,10 @@ type Chain struct {
 	heads map[string]headState
 	logs  map[LogID]logState
 
+	// requests holds the marker key of every event identity appended once
+	// (AppendOnce), restored from the table's request records.
+	requests map[string]struct{}
+
 	// staged holds every tree node and checkpoint record staged since
 	// BeginUpdate, by key. Apply reads it before storage.
 	staged map[string][]byte
@@ -107,9 +111,10 @@ type Chain struct {
 // restored before Grant.
 func NewChain() *Chain {
 	return &Chain{
-		heads:  make(map[string]headState),
-		logs:   make(map[LogID]logState),
-		staged: make(map[string][]byte),
+		heads:    make(map[string]headState),
+		logs:     make(map[LogID]logState),
+		requests: make(map[string]struct{}),
+		staged:   make(map[string][]byte),
 	}
 }
 
@@ -150,9 +155,14 @@ func (c *Chain) Restore(r storage.Reader) error {
 	if err != nil {
 		return err
 	}
+	requests, err := restoreRequests(r)
+	if err != nil {
+		return err
+	}
 	c.mu.Lock()
 	c.heads = heads
 	c.logs = logs
+	c.requests = requests
 	c.staged = make(map[string][]byte)
 	c.mu.Unlock()
 	return nil
@@ -191,6 +201,59 @@ func (c *Chain) Append(w Writer, tenantID string, encode Encoder) (seq uint64, e
 	// Once the tenant's audit instance exists, an event this opcode carries
 	// is its next leaf too; before, Append writes no tree node.
 	return c.appendEvent(w, tenantID, encode, false)
+}
+
+// AppendOnce appends like AppendAudit (audit set) or Append unless
+// tenantID's chain already took an event of identity token, in which case it
+// writes nothing and returns the head's sequence with appended false. The
+// identity is recorded in the replicated table beside the event, so every
+// replica, and one restored from a snapshot, refuses the same repeat: an
+// emitter that timed out waiting on a proposal and proposed the event again
+// gets one event once both proposals apply. The check is in memory, as the
+// head is, so a repeat staged in the same batch is caught too.
+func (c *Chain) AppendOnce(w Writer, tenantID, token string, encode Encoder, audit bool) (seq uint64, appended bool, err error) {
+	if err := ValidateTenantID(tenantID); err != nil {
+		return 0, false, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	key := requestKey(tenantID, token)
+	if _, ok := c.requests[string(key)]; ok {
+		return c.heads[tenantID].seq, false, nil
+	}
+	if seq, err = c.appendEvent(w, tenantID, encode, audit); err != nil {
+		return 0, false, err
+	}
+	if err := w.Set(key, []byte{1}); err != nil {
+		return 0, false, &TableWriteError{Err: err}
+	}
+	if c.requests == nil {
+		c.requests = make(map[string]struct{})
+	}
+	c.requests[string(key)] = struct{}{}
+	return seq, true, nil
+}
+
+// restoreRequests reads every event identity recorded by AppendOnce.
+func restoreRequests(r storage.Reader) (map[string]struct{}, error) {
+	requests := make(map[string]struct{})
+	it := r.NewIterator(&storage.IteratorOptions{
+		LowerBound: []byte(requestPrefix),
+		UpperBound: prefixEnd([]byte(requestPrefix)),
+	})
+	for ok := it.SeekToFirst(); ok && it.Valid(); ok = it.Next() {
+		requests[string(it.Key())] = struct{}{}
+	}
+	if err := it.Error(); err != nil {
+		_ = it.Close()
+		return nil, &TableReadError{Err: err}
+	}
+	if err := it.Close(); err != nil {
+		return nil, &TableReadError{Err: err}
+	}
+	return requests, nil
 }
 
 // appendLinear stages the next record of tenantID's linear chain and its new
