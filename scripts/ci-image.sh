@@ -21,7 +21,7 @@
 # still take the artifact, so one code path is exercised on every event.
 #
 #   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
-#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <image> is <id>
+#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <id> is held, prints <id>
 #   ci-image.sh push <local-image> <name>          prints ghcr.io/<owner>/<name>@sha256:<hex>
 #   ci-image.sh check-ref <ref>...                 validates digest references
 #   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
@@ -35,8 +35,11 @@
 # call; a failed or hung pull or push never fails the job.
 #
 # save prints the image ID, the content address of the image's config; load
-# fails unless the tag it loaded names that same ID, so a truncated or
-# substituted artifact is refused rather than run.
+# fails unless the daemon holds that same ID once the artifact is loaded, so a
+# truncated or substituted artifact is refused rather than run, and prints the
+# ID: the consumer launches its stages by that ID, never by the tag. The tag
+# names the build's inputs, and self-hosted runs share a daemon, so another
+# run's load, pull or tag can move it between the check and a stage's start.
 #
 # push logs in to GHCR with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, which the
 # workflow step supplies from the run's actor and GITHUB_TOKEN (packages:
@@ -95,15 +98,17 @@ load() {
 	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
 	[ -s "$dir/image.tar" ] || die "$dir/image.tar is missing or empty: the docker-build artifact did not download"
 	docker load -i "$dir/image.tar" >&2 || die "cannot load $dir/image.tar"
-	# The check is by ID, never through the tag: on a shared daemon another
-	# run's load of the same tag can move it at any moment, and an image ID
-	# names the content itself. Callers then run the image by that ID.
-	if ! got=$(docker image inspect -f '{{.Id}}' "$want" 2>/dev/null) || [ "$got" != "$want" ]; then
-		got=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null) || got="nothing"
+	# The check and the hand-off go by the ID, never the tag: on a shared
+	# daemon another run's load, pull or tag can move the content-hash tag
+	# (its inputs, not its image, are what the tag names) at any moment, so
+	# the tag may name another run's image by the time a stage starts.
+	if [ "$(image_id "$want" 2>/dev/null)" != "$want" ]; then
+		got=$(image_id "$image" 2>/dev/null) || got="nothing"
 		die "$image loaded as $got, not $want, the image docker-build built"
 	fi
 	rm -f "$dir/image.tar"
 	echo "==> $image is $want, the image docker-build built" >&2
+	printf '%s\n' "$want"
 }
 
 # registry_owner prints the repository owner, lowercased, the namespace the
