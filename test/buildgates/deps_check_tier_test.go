@@ -16,6 +16,8 @@ package buildgates
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -25,70 +27,91 @@ import (
 // request included (#1046 splits it out of the template's image job).
 const lintJob = "lint"
 
-// depsCheckRun is the command ci-template v1.28.0's deps-check step runs.
-const depsCheckRun = "make deps-check"
+// scansWorkflowName is the workflow that runs the advisory checks on main.
+const scansWorkflowName = "scans.yml"
 
-// depsCheckProblems checks ci-template v1.28.0 (ruling 219(3)): `make
-// deps-check` is a lint-class gate that runs wherever `make lint` runs. Here
-// that is exactly one step of the lint job, after `make lint`, with no
-// full-tier condition and the bridge network for the module proxy; no other
-// job runs it, so the code-tier image job cannot hide it from a docs-only
-// pull request.
-func depsCheckProblems(w ciWorkflow) []string {
+// advisoryRuns are the commands whose answer changes with no change to the
+// tree: they read the module proxy or an advisory database. ci-template
+// v1.42 (owner ruling 742 (1)) runs them in scans.yml only.
+var advisoryRuns = []string{"make deps-check", "make security", "make trivy-image"}
+
+// gosecRun is the tree-only static analysis that stays in the CI Gate: the
+// gosec half of `make security`, for the root module and for sdk/go, which
+// the root module's ./... does not reach.
+const gosecRun = "make gosec gosec-sdk"
+
+// hermeticGateProblems checks ci-template v1.42's hermetic gate (ruling 742
+// (1)): no ci.yml job runs an advisory check, so the CI Gate's outcome
+// depends only on the tree under test; the lint job runs `make gosec` on
+// every tier and does not skip a docs-only pull request; and scans.yml runs
+// every advisory check, on no pull_request or push trigger.
+func hermeticGateProblems(ci, scans ciWorkflow) []string {
 	var problems []string
-	for name, job := range w.Jobs {
-		if name == lintJob {
-			continue
-		}
+	for name, job := range ci.Jobs {
 		for _, s := range job.Steps {
-			if strings.Contains(s.Run, depsCheckRun) {
-				problems = append(problems, fmt.Sprintf("job %s runs %s; it belongs to the %s job, which a docs-only pull request runs", name, depsCheckRun, lintJob))
+			for _, cmd := range advisoryRuns {
+				if strings.Contains(s.Run, cmd) {
+					problems = append(problems, fmt.Sprintf("ci.yml job %s runs %s; ci-template v1.42 runs it in %s only", name, cmd, scansWorkflowName))
+				}
 			}
 		}
 	}
-	lint, ok := w.Jobs[lintJob]
+	lint, ok := ci.Jobs[lintJob]
 	if !ok {
-		return append(problems, "ci.yml has no "+lintJob+" job")
-	}
-	if strings.Contains(lint.If, "docs_only") {
-		problems = append(problems, fmt.Sprintf("job %s's `if:` %q skips a docs-only pull request", lintJob, lint.If))
-	}
-	lintAt, depsAt := -1, -1
-	for i, s := range lint.Steps {
+		problems = append(problems, "ci.yml has no "+lintJob+" job")
+	} else {
+		if strings.Contains(lint.If, "docs_only") {
+			problems = append(problems, fmt.Sprintf("job %s's `if:` %q skips a docs-only pull request", lintJob, lint.If))
+		}
+		gosecAt := -1
+		for i, s := range lint.Steps {
+			if strings.Contains(s.Run, gosecRun) {
+				gosecAt = i
+				break
+			}
+		}
 		switch {
-		case strings.Contains(s.Run, depsCheckRun):
-			if depsAt >= 0 {
-				problems = append(problems, fmt.Sprintf("job %s runs %s twice", lintJob, depsCheckRun))
-			}
-			depsAt = i
-			if strings.Contains(s.If, "CI_FULL_TIER") {
-				problems = append(problems, fmt.Sprintf("job %s's %s step is full tier only (`if:` %q); v1.28.0 runs it on every event", lintJob, depsCheckRun, s.If))
-			}
-			if s.Env["IN_IMAGE_NETWORK"] != "bridge" {
-				problems = append(problems, fmt.Sprintf("job %s's %s step has IN_IMAGE_NETWORK %q, want bridge for the module proxy", lintJob, depsCheckRun, s.Env["IN_IMAGE_NETWORK"]))
-			}
-		case strings.Contains(s.Run, "make lint ") || strings.Contains(s.Run, "make lint\""):
-			lintAt = i
+		case gosecAt < 0:
+			problems = append(problems, fmt.Sprintf("job %s has no %s step", lintJob, gosecRun))
+		case strings.Contains(lint.Steps[gosecAt].If, "CI_FULL_TIER"):
+			problems = append(problems, fmt.Sprintf("job %s's %s step depends on the tier (`if:` %q); v1.42 runs it on every event", lintJob, gosecRun, lint.Steps[gosecAt].If))
 		}
 	}
-	switch {
-	case depsAt < 0:
-		problems = append(problems, fmt.Sprintf("job %s has no %s step", lintJob, depsCheckRun))
-	case lintAt < 0:
-		problems = append(problems, fmt.Sprintf("job %s has no make lint step", lintJob))
-	case depsAt < lintAt:
-		problems = append(problems, fmt.Sprintf("job %s runs %s before make lint", lintJob, depsCheckRun))
+	for _, trigger := range onTriggers(scans.On) {
+		if trigger == "pull_request" || trigger == "pull_request_target" || trigger == "push" {
+			problems = append(problems, fmt.Sprintf("%s runs on %s; its findings must never gate a change", scansWorkflowName, trigger))
+		}
+	}
+	for _, cmd := range advisoryRuns {
+		found := false
+		for _, job := range scans.Jobs {
+			for _, s := range job.Steps {
+				found = found || strings.Contains(s.Run, cmd)
+			}
+		}
+		if !found {
+			problems = append(problems, fmt.Sprintf("%s does not run %s; nothing would run it", scansWorkflowName, cmd))
+		}
 	}
 	return problems
 }
 
-func TestDepsCheckRunsWhereLintRuns(t *testing.T) {
-	if p := depsCheckProblems(readCIWorkflow(t)); len(p) != 0 {
-		t.Fatalf("ci.yml's deps-check step departs from ci-template v1.28.0:\n  %s", strings.Join(p, "\n  "))
+func readScansWorkflow(t *testing.T) ciWorkflow {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", scansWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", scansWorkflowName, err)
+	}
+	return parseWorkflow(t, string(b))
+}
+
+func TestCIGateIsHermetic(t *testing.T) {
+	if p := hermeticGateProblems(readCIWorkflow(t), readScansWorkflow(t)); len(p) != 0 {
+		t.Fatalf("ci.yml and scans.yml depart from ci-template v1.42's hermetic gate:\n  %s", strings.Join(p, "\n  "))
 	}
 }
 
-const depsCheckFixture = `
+const hermeticCIFixture = `
 jobs:
   lint:
     if: ${{ !github.event.pull_request.draft }}
@@ -96,52 +119,70 @@ jobs:
       - name: make lint
         if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
         run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'"
-      - name: make deps-check
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
-        env:
-          IN_IMAGE_NETWORK: bridge
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
+      - name: make gosec gosec-sdk
+        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make gosec gosec-sdk GO_BUILD_TAGS='$GO_BUILD_TAGS'"
   image:
     if: ${{ (needs.preflight.outputs.docs_only != 'true') && !github.event.pull_request.draft }}
     steps:
-      - name: make security
-        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}
-        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make security
+      - name: make build-server build-cli-headless
+        run: scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make build-server"
 `
 
-func TestDepsCheckProblems_CanFail(t *testing.T) {
-	if p := depsCheckProblems(parseWorkflow(t, depsCheckFixture)); len(p) != 0 {
-		t.Fatalf("the valid fixture must have no problems, got %v", p)
+const hermeticScansFixture = `
+on:
+  workflow_dispatch:
+jobs:
+  scans:
+    steps:
+      - name: Scans
+        run: |
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make deps-check
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" "make security GO_BUILD_TAGS='$GO_BUILD_TAGS'"
+          scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" make trivy-image TRIVY_IMAGE_INPUT=it-image.tar
+`
+
+func TestHermeticGateProblems_CanFail(t *testing.T) {
+	if p := hermeticGateProblems(parseWorkflow(t, hermeticCIFixture), parseWorkflow(t, hermeticScansFixture)); len(p) != 0 {
+		t.Fatalf("the valid fixtures must have no problems, got %v", p)
 	}
-	replace := func(old, new string) string {
-		if !strings.Contains(depsCheckFixture, old) {
+	edit := func(fixture, old, new string) string {
+		if !strings.Contains(fixture, old) {
 			t.Fatalf("fixture has no %q; the case would test nothing", old)
 		}
-		return strings.Replace(depsCheckFixture, old, new, 1)
+		return strings.Replace(fixture, old, new, 1)
 	}
-	lintStep := "      - name: make lint\n        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" \"make lint GO_BUILD_TAGS='$GO_BUILD_TAGS'\"\n"
-	depsStep := "      - name: make deps-check\n        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}\n        env:\n          IN_IMAGE_NETWORK: bridge\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make deps-check\n"
-	imageSecurity := "        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make security\n"
-	cases := map[string]struct{ body, want string }{
-		// v1.27.0's placement: full tier only, in the code-tier image job.
-		"v1.27.0 image step": {strings.Replace(replace(depsStep, ""), imageSecurity,
-			imageSecurity+strings.Replace(depsStep, "env.TOOLCHAIN_IMAGE != '' }}", "env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}", 1), 1),
-			"job image runs make deps-check"},
-		"no deps-check step": {replace(depsStep, ""), "job lint has no make deps-check step"},
-		"full tier only": {replace("        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' }}\n        env:",
-			"        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && env.CI_FULL_TIER == 'true' }}\n        env:"),
-			"is full tier only"},
-		"no network":  {replace("        env:\n          IN_IMAGE_NETWORK: bridge\n", ""), "want bridge"},
-		"before lint": {replace(lintStep+depsStep, depsStep+lintStep), "before make lint"},
-		"twice":       {replace(depsStep, depsStep+depsStep), "twice"},
-		"lint skips docs-only": {replace("    if: ${{ !github.event.pull_request.draft }}",
-			"    if: ${{ needs.preflight.outputs.docs_only != 'true' }}"), "skips a docs-only pull request"},
-		"no lint job":       {replace("  lint:\n", "  lint-x:\n"), "has no lint job"},
-		"no make lint step": {replace(lintStep, ""), "has no make lint step"},
+	gosecIf := "        if: ${{ !cancelled() && env.TOOLCHAIN_IMAGE != '' && needs.preflight.outputs.docs_only != 'true' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" \"make gosec gosec-sdk"
+	depsStep := "      - name: make deps-check\n        env:\n          IN_IMAGE_NETWORK: bridge\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make deps-check\n"
+	securityStep := "      - name: make security\n        if: ${{ env.CI_FULL_TIER == 'true' }}\n        run: scripts/in-toolchain-image.sh \"$TOOLCHAIN_IMAGE\" make security\n"
+	cases := map[string]struct{ ci, scans, want string }{
+		// v1.28.0's placement, which failed pull requests on a new advisory.
+		"deps-check in lint": {edit(hermeticCIFixture, "  image:\n", depsStep+"  image:\n"), hermeticScansFixture,
+			"ci.yml job lint runs make deps-check"},
+		"security in image, full tier": {hermeticCIFixture + securityStep, hermeticScansFixture,
+			"ci.yml job image runs make security"},
+		"trivy-image in image": {hermeticCIFixture + "      - name: trivy image\n        run: make trivy-image TRIVY_IMAGE_INPUT=it-image.tar\n", hermeticScansFixture,
+			"ci.yml job image runs make trivy-image"},
+		"no lint job": {edit(hermeticCIFixture, "  lint:\n", "  lint-x:\n"), hermeticScansFixture, "has no lint job"},
+		"lint skips docs-only": {edit(hermeticCIFixture, "    if: ${{ !github.event.pull_request.draft }}", "    if: ${{ needs.preflight.outputs.docs_only != 'true' }}"),
+			hermeticScansFixture, "skips a docs-only pull request"},
+		"no gosec step": {edit(hermeticCIFixture, "make gosec gosec-sdk GO_BUILD_TAGS", "make vet GO_BUILD_TAGS"), hermeticScansFixture, "has no make gosec gosec-sdk step"},
+		// make security ran gosec-sdk too; the root's ./... does not reach sdk/go.
+		"gosec without gosec-sdk": {edit(hermeticCIFixture, "make gosec gosec-sdk GO_BUILD_TAGS", "make gosec GO_BUILD_TAGS"), hermeticScansFixture, "has no make gosec gosec-sdk step"},
+		"gosec on the PR tier only": {edit(hermeticCIFixture, gosecIf, strings.Replace(gosecIf, "&& needs.", "&& env.CI_FULL_TIER != 'true' && needs.", 1)),
+			hermeticScansFixture, "depends on the tier"},
+		"scans on pull_request": {hermeticCIFixture, edit(hermeticScansFixture, "  workflow_dispatch:\n", "  workflow_dispatch:\n  pull_request:\n"),
+			"scans.yml runs on pull_request"},
+		"scans on push": {hermeticCIFixture, edit(hermeticScansFixture, "  workflow_dispatch:\n", "  workflow_dispatch:\n  push:\n"),
+			"scans.yml runs on push"},
+		"scans without deps-check": {hermeticCIFixture, edit(hermeticScansFixture, "make deps-check\n", "make build\n"),
+			"scans.yml does not run make deps-check"},
+		"scans without trivy-image": {hermeticCIFixture, edit(hermeticScansFixture, "make trivy-image", "make build"),
+			"scans.yml does not run make trivy-image"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			p := depsCheckProblems(parseWorkflow(t, tc.body))
+			p := hermeticGateProblems(parseWorkflow(t, tc.ci), parseWorkflow(t, tc.scans))
 			if !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, tc.want) }) {
 				t.Fatalf("want a problem containing %q, got %q", tc.want, p)
 			}
