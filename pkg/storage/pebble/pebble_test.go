@@ -189,6 +189,15 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_SyncWritesDurable pins that the default store fsyncs a
+// write before acknowledging it (#1617): a standalone node has no Raft WAL,
+// so an unsynced default loses acknowledged writes on a crash.
+func TestDefaultConfig_SyncWritesDurable(t *testing.T) {
+	if !DefaultConfig(t.TempDir()).SyncWrites {
+		t.Fatal("DefaultConfig SyncWrites must be true: writes are durable by default")
+	}
+}
+
 func TestTestConfig(t *testing.T) {
 	cfg := TestConfig("/tmp/test")
 	if err := cfg.Validate(); err != nil {

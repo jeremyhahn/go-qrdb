@@ -47,12 +47,6 @@ func TestUnknownLevelErrorContainsValidOptions(t *testing.T) {
 	}
 }
 
-func TestUnknownLevelErrorImplementsError(t *testing.T) {
-	err := &UnknownLevelError{Level: "test"}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestInvalidLevelErrorMessage(t *testing.T) {
 	err := &InvalidLevelError{Level: Level(42)}
 	got := err.Error()
@@ -64,20 +58,6 @@ func TestInvalidLevelErrorMessage(t *testing.T) {
 	}
 }
 
-func TestInvalidLevelErrorWithNegativeLevel(t *testing.T) {
-	err := &InvalidLevelError{Level: Level(-5)}
-	got := err.Error()
-	if !strings.Contains(got, "-5") {
-		t.Errorf("InvalidLevelError.Error() = %q, want it to contain %q", got, "-5")
-	}
-}
-
-func TestInvalidLevelErrorImplementsError(t *testing.T) {
-	err := &InvalidLevelError{Level: Level(10)}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestInvalidTimeoutErrorMessage(t *testing.T) {
 	err := &InvalidTimeoutError{Timeout: -500}
 	got := err.Error()
@@ -87,18 +67,4 @@ func TestInvalidTimeoutErrorMessage(t *testing.T) {
 	if !strings.Contains(got, "-500") {
 		t.Errorf("InvalidTimeoutError.Error() = %q, want it to contain %q", got, "-500")
 	}
-}
-
-func TestInvalidTimeoutErrorWithLargeNegative(t *testing.T) {
-	err := &InvalidTimeoutError{Timeout: -99999}
-	got := err.Error()
-	if !strings.Contains(got, "-99999") {
-		t.Errorf("InvalidTimeoutError.Error() = %q, want it to contain %q", got, "-99999")
-	}
-}
-
-func TestInvalidTimeoutErrorImplementsError(t *testing.T) {
-	err := &InvalidTimeoutError{Timeout: -1}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }

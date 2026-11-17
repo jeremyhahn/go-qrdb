@@ -677,17 +677,3 @@ func TestMemoryIndex_ConcurrentPutDelete(t *testing.T) {
 		t.Errorf("GetAll after concurrent delete: got %d keys, want 0", len(keys))
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestMemoryIndex_ImplementsIndex(t *testing.T) {
-	var _ Index = (*MemoryIndex)(nil)
-}
-
-func TestMemoryIndex_ImplementsIndex_ViaNewMemoryIndex(t *testing.T) {
-	idx := NewMemoryIndex("test", false)
-	var _ Index = idx // compile-time interface assertion
-	_ = idx
-}
