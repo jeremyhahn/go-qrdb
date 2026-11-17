@@ -313,24 +313,23 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 // call's target tenant whose binding supplied one of them.
 func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, string, error) {
 	viaBinding := false
-	holds := func(name string) (bool, error) {
-		ok, err := a.holdsSystemRole(ctx, identity, name)
-		if err != nil || ok || len(bound) == 0 {
-			return ok, err
-		}
-		ok, err = a.roleIDsHoldSystemRole(ctx, bound, target, name)
-		if ok {
-			viaBinding = true
-		}
-		return ok, err
+	isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
+	if err == nil && !isSO && len(bound) > 0 {
+		isSO, err = a.roleIDsHoldSystemRole(ctx, bound, target, role.RoleNameSO)
+		viaBinding = isSO
 	}
-	isSO, err := holds(role.RoleNameSO)
 	if err != nil || !isSO {
 		return false, "", err
 	}
-	isAdmin, err := holds(role.RoleNameAdmin)
-	if err != nil || !isAdmin {
-		return false, "", err
+	// Admin is the built-in role, matched by its canonical (persisted) ID
+	// only: a tenant may give a custom role the caller-supplied ID "admin",
+	// and a separate SO holding it holds no Admin role.
+	isAdmin := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameAdmin)
+	if !isAdmin && len(bound) > 0 && hasCanonicalSystemRole(bound, target, role.RoleNameAdmin) {
+		isAdmin, viaBinding = true, true
+	}
+	if !isAdmin {
+		return false, "", nil
 	}
 	if viaBinding {
 		return true, target, nil
@@ -356,6 +355,20 @@ func (a *RBACAuthorizer) roleIDsHoldSystemRole(_ context.Context, roleIDs []stri
 		}
 	}
 	return false, nil
+}
+
+// hasCanonicalSystemRole reports whether roleIDs, all belonging to tenantID,
+// include the named built-in role of tenantID by its canonical identifier,
+// the ID the role store persists it under. Unlike roleIDsHoldSystemRole it
+// never matches the bare role name, which a custom role may carry as its ID.
+func hasCanonicalSystemRole(roleIDs []string, tenantID, roleName string) bool {
+	canonical := role.SystemRoleID(tenantID, roleName)
+	for _, r := range roleIDs {
+		if r == canonical {
+			return true
+		}
+	}
+	return false
 }
 
 // boundRoleIDs returns the RoleID of every identity.RoleBindings entry whose
