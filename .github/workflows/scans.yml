@@ -43,7 +43,7 @@ env:
 jobs:
   scans:
     name: Scans
-    if: ${{ github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.server_url == 'https://github.com' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -78,9 +78,11 @@ jobs:
             done )
           make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
           rm -f "$RUNNER_TEMP/gomodauth.env"
-          echo "APK_INDEX_SUM=$APK_INDEX_SUM" >> "$GITHUB_ENV"
-          echo "IT_IMAGE=$(make -s it-image)" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)" >> "$GITHUB_ENV"
+          {
+            echo "APK_INDEX_SUM=$APK_INDEX_SUM"
+            echo "IT_IMAGE=$(make -s it-image)"
+            echo "TOOLCHAIN_IMAGE=$(make -s toolchain-image)"
+          } >> "$GITHUB_ENV"
 
       # The checks that left ci.yml (ruling 742 (1)). Each runs to the end;
       # FIRED lists the ones that fail, and the step's own log keeps their
