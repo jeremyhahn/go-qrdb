@@ -25,16 +25,18 @@ gRPC wire over a UDS, so its methods match the gRPC column.
 | List migration conflicts | `GET /v1/credentials/migration-conflicts` | `CredentialMigrationConflicts` | `credential.MigrationConflicts` | `qrdb_credential_migration_conflicts` | `CredentialMigrationConflicts` | `credentials:list` |
 | Resolve a migration conflict | `POST /v1/credentials/{name}/migration-resolve` | `CredentialResolveMigrationConflict` | `credential.ResolveMigrationConflict` | `qrdb_credential_resolve_migration_conflict` | `CredentialResolveMigrationConflict` | `credentials:rotate` |
 
-**A `{name}` holding `/` or `%` is escaped twice in a REST path.** The server
-routes and authorizes on the once-decoded path, so `{name}` must still be one
-segment after that decode: escape `%` as `%25` and `/` as `%2F`, then
-percent-encode the result as a path segment. `db/main` travels as
-`db%252Fmain` and `a%b` as `a%2525b`. After the decode the server turns only
-`%25` back into `%` and `%2F` back into `/`; any other `%` is part of the name,
-so a name without `/` escaped once, as the route always took it (`a%b` as
-`a%25b`), still reaches the service unchanged. A name holding the text `%25`
-or `%2F` itself must take the double escape. The Go SDK's REST transport does
-this for you; the other transports carry the name unchanged.
+**A REST `{name}` is one path segment, escaped once by default.** The
+server routes and authorizes on the once-decoded path, and by default the
+decoded segment is the name itself: percent-encode the name as a path segment
+(`a%b` as `a%25b`, `a%2Fb` as `a%252Fb`) and the service receives exactly
+that name. A name holding `/` cannot stay one segment that way, so a client
+opts in to the escaped encoding with the query parameter
+`?name_encoding=escaped`: escape `%` as `%25` and `/` as `%2F`, then
+percent-encode the result as a path segment (`db/main` travels as
+`db%252Fmain?name_encoding=escaped`), and the server unescapes the decoded
+segment once more. Under the opt-in a segment that does not unescape is a
+400, and so is any other `name_encoding` value. The Go SDK's REST transport
+always uses the opt-in; the other transports carry the name unchanged.
 
 **Every transport handler routes through the same
 `service.CredentialServicer`**, so behaviour cannot diverge between them.

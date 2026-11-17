@@ -17,6 +17,7 @@ package rest
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -103,7 +104,7 @@ func (s *Server) handleCredentialDelete(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
 		return
 	}
-	name, err := credentialNameFromSegment(segment)
+	name, err := credentialNameFromSegment(r, segment)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -420,7 +421,7 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 		writeErrorJSON(w, http.StatusBadRequest, &MissingParameterError{Param: "name"})
 		return
 	}
-	name, err := credentialNameFromSegment(parts[0])
+	name, err := credentialNameFromSegment(r, parts[0])
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return
@@ -503,39 +504,55 @@ func (s *Server) handleCredentialByPath(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// credentialNameEncodingParam names the query parameter by which a client
+// opts in to the escaped name encoding, and credentialNameEncodingEscaped
+// is its one accepted value.
+const (
+	credentialNameEncodingParam   = "name_encoding"
+	credentialNameEncodingEscaped = "escaped"
+)
+
+// UnknownNameEncodingError is returned for a name_encoding value other than
+// "escaped".
+type UnknownNameEncodingError struct {
+	Value string
+}
+
+func (e *UnknownNameEncodingError) Error() string {
+	return "unknown credential name encoding " + strconv.Quote(e.Value) + ` (want "escaped")`
+}
+
 // credentialNameFromSegment returns the credential name a /v1/credentials/
-// path segment carries. canonicalPathMiddleware routes on the once-decoded
-// path, so a client escapes "%" and "/" in a name before path-escaping it
-// (db/main travels as db%252Fmain and arrives here as db%2Fmain); this
-// undoes that inner escape. A segment that does not unescape is refused.
-func credentialNameFromSegment(segment string) (string, error) {
+// path segment of r carries. canonicalPathMiddleware routes on the
+// once-decoded path, so the segment is already decoded once, and by default
+// it is the name itself: a client that path-escapes a name once (the route's
+// original encoding) keeps the name it always meant, a%2Fb and a%25b
+// included.
+//
+// A name with a "/" cannot keep to one segment that way, so a client opts in
+// with ?name_encoding=escaped: it path-escapes the name twice (db/main
+// travels as db%252Fmain and arrives here as db%2Fmain), and the segment is
+// unescaped once more. Under the opt-in a segment that does not unescape is
+// refused, as is any other name_encoding value.
+func credentialNameFromSegment(r *http.Request, segment string) (string, error) {
 	if segment == "" {
 		return "", &InvalidParameterError{Param: "name", Err: &MissingParameterError{Param: "name"}}
 	}
-	// The segment is already decoded once. A client that escapes the name
-	// with url.PathEscape alone (the encoding the route always took) sends
-	// the name itself; the Go SDK escapes "%" and "/" once more so a name
-	// with a slash keeps to one segment. Only those two inner escapes are
-	// decoded: any other "%" is part of the name, so a name encoded the
-	// old way (a%b, a%41) reaches the service unchanged.
-	var b strings.Builder
-	b.Grow(len(segment))
-	for i := 0; i < len(segment); i++ {
-		if segment[i] == '%' && i+2 < len(segment) {
-			switch strings.ToUpper(segment[i+1 : i+3]) {
-			case "25":
-				b.WriteByte('%')
-				i += 2
-				continue
-			case "2F":
-				b.WriteByte('/')
-				i += 2
-				continue
-			}
-		}
-		b.WriteByte(segment[i])
+	query := r.URL.Query()
+	if !query.Has(credentialNameEncodingParam) {
+		return segment, nil
 	}
-	return b.String(), nil
+	if enc := query.Get(credentialNameEncodingParam); enc != credentialNameEncodingEscaped {
+		return "", &InvalidParameterError{Param: credentialNameEncodingParam, Err: &UnknownNameEncodingError{Value: enc}}
+	}
+	name, err := url.PathUnescape(segment)
+	if err != nil {
+		return "", &InvalidParameterError{Param: "name", Err: err}
+	}
+	if name == "" {
+		return "", &InvalidParameterError{Param: "name", Err: &MissingParameterError{Param: "name"}}
+	}
+	return name, nil
 }
 
 // ---------------------------------------------------------------------------

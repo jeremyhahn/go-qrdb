@@ -81,7 +81,7 @@ func (t *Transport) CredentialDelete(ctx context.Context, name string) error {
 		return &transport.ClosedError{}
 	}
 
-	reqURL := t.baseURL + "/v1/credentials/" + credentialPathSegment(name)
+	reqURL := t.baseURL + credentialPath(name, "")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 	if err != nil {
 		return &transport.RequestError{Method: "CredentialDelete", Err: err}
@@ -150,7 +150,7 @@ func (t *Transport) CredentialRotate(ctx context.Context, req *transport.Credent
 		return nil, &transport.RequestError{Method: "CredentialRotate", Err: &emptyCredentialNameError{}}
 	}
 
-	path := "/v1/credentials/" + credentialPathSegment(req.Name) + "/rotate"
+	path := credentialPath(req.Name, "/rotate")
 	var resp transport.CredentialRotateResponse
 	if err := t.postJSONDecode(ctx, "CredentialRotate", path, req, &resp); err != nil {
 		return nil, err
@@ -171,7 +171,7 @@ func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transp
 		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: &emptyCredentialNameError{}}
 	}
 
-	path := "/v1/credentials/" + credentialPathSegment(req.Name) + "/rotation-policy"
+	path := credentialPath(req.Name, "/rotation-policy")
 	return t.putJSONDecode(ctx, "CredentialSetRotationPolicy", path, req, nil)
 }
 
@@ -185,7 +185,7 @@ func (t *Transport) CredentialRotationPolicy(ctx context.Context, name string) (
 		return nil, &transport.RequestError{Method: "CredentialRotationPolicy", Err: &emptyCredentialNameError{}}
 	}
 
-	path := "/v1/credentials/" + credentialPathSegment(name) + "/rotation-policy"
+	path := credentialPath(name, "/rotation-policy")
 	var resp transport.CredentialRotationPolicyResponse
 	if err := t.getJSONDecode(ctx, "CredentialRotationPolicy", path, &resp); err != nil {
 		return nil, err
@@ -220,7 +220,7 @@ func (t *Transport) CredentialResolveMigrationConflict(ctx context.Context, req 
 		return &transport.RequestError{Method: "CredentialResolveMigrationConflict", Err: &emptyCredentialNameError{}}
 	}
 
-	path := "/v1/credentials/" + credentialPathSegment(req.Name) + "/migration-resolve"
+	path := credentialPath(req.Name, "/migration-resolve")
 	return t.postJSONDecode(ctx, "CredentialResolveMigrationConflict", path, req, nil)
 }
 
@@ -238,7 +238,7 @@ func (t *Transport) CredentialListVersions(ctx context.Context, req *transport.C
 		return nil, &transport.RequestError{Method: "CredentialListVersions", Err: &emptyCredentialNameError{}}
 	}
 
-	reqURL := t.baseURL + "/v1/credentials/" + credentialPathSegment(req.Name) + "/versions"
+	reqURL := t.baseURL + credentialPath(req.Name, "/versions")
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, &transport.RequestError{Method: "CredentialListVersions", Err: err}
@@ -275,7 +275,7 @@ func (t *Transport) CredentialGCExpired(ctx context.Context, req *transport.Cred
 		return nil, &transport.RequestError{Method: "CredentialGCExpired", Err: &emptyCredentialNameError{}}
 	}
 
-	path := "/v1/credentials/" + credentialPathSegment(req.Name) + "/gc"
+	path := credentialPath(req.Name, "/gc")
 	var resp transport.CredentialGCResponse
 	if err := t.postJSONDecode(ctx, "CredentialGCExpired", path, req, &resp); err != nil {
 		return nil, err
@@ -307,7 +307,7 @@ func (t *Transport) CredentialRetrieveBuffer(ctx context.Context, name string) (
 	var resp struct {
 		Value transport.WireValue `json:"value"`
 	}
-	path := "/v1/credentials/" + credentialPathSegment(name) + "/value"
+	path := credentialPath(name, "/value")
 	if err := t.getJSONDecode(ctx, "CredentialRetrieve", path, &resp); err != nil {
 		resp.Value.Buffer.Destroy()
 		return nil, err
@@ -331,7 +331,7 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 	var resp struct {
 		Value transport.WireValue `json:"value"`
 	}
-	path := "/v1/credentials/" + credentialPathSegment(req.Name) + "/versions/" + strconv.FormatUint(req.Version, 10)
+	path := credentialPath(req.Name, "/versions/"+strconv.FormatUint(req.Version, 10))
 	if err := t.getJSONDecode(ctx, "CredentialRetrieveVersion", path, &resp); err != nil {
 		resp.Value.Buffer.Destroy()
 		return nil, err
@@ -340,11 +340,20 @@ func (t *Transport) CredentialRetrieveVersionBuffer(ctx context.Context, req *tr
 }
 
 // credentialPathSegment encodes a credential name as one /v1/credentials/
-// path segment. The server routes and authorizes on the once-decoded path,
-// so "%" and "/" are escaped before url.PathEscape: db/main travels as
-// db%252Fmain, the decoded path carries db%2Fmain, and the server unescapes
+// path segment in the escaped name encoding. The server routes and
+// authorizes on the once-decoded path, so "%" and "/" are escaped before
+// url.PathEscape: db/main travels as db%252Fmain, the decoded path carries
+// db%2Fmain, and the server, told so by ?name_encoding=escaped, unescapes
 // that segment back to db/main.
 func credentialPathSegment(name string) string {
 	inner := strings.NewReplacer("%", "%25", "/", "%2F").Replace(name)
 	return url.PathEscape(inner)
+}
+
+// credentialPath returns the /v1/credentials/{name}{suffix} path for name,
+// with the name_encoding=escaped opt-in its segment needs. A segment without
+// the opt-in is the name itself, the encoding a client that path-escapes a
+// name once keeps.
+func credentialPath(name, suffix string) string {
+	return "/v1/credentials/" + credentialPathSegment(name) + suffix + "?name_encoding=escaped"
 }

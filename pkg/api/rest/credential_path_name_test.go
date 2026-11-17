@@ -176,19 +176,47 @@ func TestCredentialNameWithSlashOrPercent_ReachesEveryRoute(t *testing.T) {
 func TestCredentialNameSegment_OldEncodingRoundTrips(t *testing.T) {
 	svc := newNamedCredentialService()
 	srv := NewServer(&mockKVService{}, newDefaultAdminSvc(), "127.0.0.1:0", WithCredentialService(svc))
-	names := []string{"a%zz", "a%41", "100%", "plain"}
+	// A client that path-escapes the name once (the route's encoding before
+	// the name_encoding opt-in) means the literal name, including names
+	// that look like the SDK's inner escapes: a%2Fb is not a/b and a%25b is
+	// not a%b.
+	names := []string{"a%zz", "a%41", "100%", "plain", "a%2Fb", "a%2fb", "a%25b", "%25"}
 	svc.mu.Lock()
 	for _, name := range names {
 		svc.policies[name] = credentials.RotationPolicy{}
 	}
 	svc.mu.Unlock()
-	// The double finds a policy only under the exact name, so a 200 proves
-	// the name the handler passed on.
+	// The double finds a policy only under the exact name, and none of the
+	// decoded forms is stored, so a 200 proves the name the handler passed on.
 	for _, name := range names {
 		path := "/v1/credentials/" + url.PathEscape(name) + "/rotation-policy"
 		rec := serveRaw(srv, "GET", path)
 		if rec.Code != 200 {
 			t.Fatalf("%s: status = %d, want 200 (body %s)", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestCredentialNameSegment_EscapedOptIn: name_encoding=escaped says the
+// segment carries one more path escape (the Go SDK's, so a "/" keeps to one
+// segment); a segment that does not unescape, and an unknown encoding, are
+// refused with 400.
+func TestCredentialNameSegment_EscapedOptIn(t *testing.T) {
+	svc := newNamedCredentialService()
+	srv := NewServer(&mockKVService{}, newDefaultAdminSvc(), "127.0.0.1:0", WithCredentialService(svc))
+	svc.mu.Lock()
+	svc.policies["db/main"] = credentials.RotationPolicy{}
+	svc.mu.Unlock()
+
+	for path, want := range map[string]int{
+		"/v1/credentials/db%252Fmain/rotation-policy?name_encoding=escaped": 200,
+		"/v1/credentials/db%252Fmain/rotation-policy":                       404,
+		"/v1/credentials/a%25zz/rotation-policy?name_encoding=escaped":      400,
+		"/v1/credentials/db%252Fmain/rotation-policy?name_encoding=base64":  400,
+	} {
+		rec := serveRaw(srv, "GET", path)
+		if rec.Code != want {
+			t.Errorf("%s: status = %d, want %d (body %s)", path, rec.Code, want, rec.Body.String())
 		}
 	}
 }
