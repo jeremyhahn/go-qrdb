@@ -220,9 +220,13 @@ scripts/cluster-proof-ci.sh down build/clusterproof-ci
   pass the image `make cluster-proof-fault-image` builds from
   `test/clusterproof/fault.Dockerfile`, which carries the tools the default
   partition and disk-full commands run.
-- `up DIR` creates the network and runs `cluster-proof-boot` with
-  `PROOF_KEEP=1`.
-- `down DIR` removes the containers and the network.
+- `up DIR` gives each node its own loop-mounted ext4 filesystem of
+  `CLUSTERPROOF_DISK_MB` (default 1024, so 1 GiB) on `DIR/node-N/data`, so
+  disk-full fills only that node and never the runner's disk, then creates
+  the network and runs `cluster-proof-boot` with `PROOF_KEEP=1`. The loop
+  mounts use `sudo` unless you run as root.
+- `down DIR` removes the containers and the network, then unmounts and
+  deletes the node filesystems.
 
 `make cluster-proof-ci` runs `up`, then the soak under `PROOF_SEAL=none`,
 then `cluster-proof-check` on `build/clusterproof-ci/bundle`. Its default

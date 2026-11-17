@@ -25,11 +25,19 @@
 #                     the fault commands run: `make cluster-proof-fault-image`
 #                     builds one (test/clusterproof/fault.Dockerfile). The
 #                     last line on stdout is the PROOF_NODES value.
-#   up DIR            create the network and boot the cluster with BOOT-01,
+#   up DIR            give each node its own CLUSTERPROOF_DISK_MB (default
+#                     1024) ext4 filesystem, loop-mounted on DIR/node-N/data,
+#                     create the network and boot the cluster with BOOT-01,
 #                     leaving it running (PROOF_KEEP=1).
-#   down DIR          remove the containers and the network.
+#   down DIR          remove the containers and the network, then unmount
+#                     and delete the node filesystems.
 #
 # Every fault runs locally through docker: no ssh, no unseal (PROOF_SEAL=none).
+# The fault container shares the node's network namespace and binds the
+# node's own filesystem at /data, so disk-full fills only that node; the
+# fault's argv reaches it word by word ("$@", no shell in between). up and
+# down use sudo for the loop mounts unless run as root; render writes files
+# only.
 set -euo pipefail
 
 readonly network=proof
@@ -161,7 +169,10 @@ write_targets() {
 		printf '  "exec": ["docker", "run", "--rm", "--privileged",\n'
 		printf '           "--net=container:{{.Vars.container}}",\n'
 		printf '           "-v", "{{.Vars.data_dir}}:/data", "-v", "/sys/fs/cgroup:/sys/fs/cgroup",\n'
-		printf '           "{{.Vars.fault_image}}", "{{shquote .Argv}}"],\n'
+		# "$@" (nemesis.ArgvElement) expands to the fault's argv word by
+		# word: the wrapper runs without a shell, so one quoted string
+		# would reach docker as a single executable name.
+		printf '           "{{.Vars.fault_image}}", "$@"],\n'
 		printf '  "signal": ["docker", "kill", "--signal={{.Signal}}", "{{.Vars.container}}"],\n'
 		printf '  "restart": ["docker", "start", "{{.Vars.container}}"],\n'
 		printf '  "nodes": {\n'
@@ -210,18 +221,59 @@ write_workload() {
 up() {
 	local dir
 	dir=$(absdir "$1")
+	mount_data "$dir"
 	if ! docker network inspect "$network" >/dev/null 2>&1; then
 		docker network create --subnet "$subnet" "$network" >/dev/null
 	fi
 	PROOF_INVENTORY=$dir/inventory.json PROOF_KEEP=1 make cluster-proof-boot
 }
 
+# mount_data DIR gives each node its own filesystem: a CLUSTERPROOF_DISK_MB
+# (default 1024) ext4 image, loop-mounted on DIR/node-N/data. The node and
+# its fault container both bind that mountpoint at /data, so disk-full fills
+# only that node's filesystem, not the runner's disk.
+mount_data() {
+	local dir=$1 n data img mb=${CLUSTERPROOF_DISK_MB:-1024} SUDO=""
+	[ "$(id -u)" = 0 ] || SUDO=sudo
+	for n in "${nodes[@]}"; do
+		data=$dir/node-$n/data
+		img=$dir/node-$n/data.img
+		mkdir -p "$data"
+		if mountpoint -q "$data"; then
+			continue
+		fi
+		rm -f "$img"
+		truncate -s "${mb}M" "$img"
+		mkfs.ext4 -q -F "$img"
+		$SUDO mount -o loop "$img" "$data"
+		# The release image declares no USER, so the node runs as root;
+		# open the mount to any uid so a later non-root image still
+		# writes, and leave the data directory empty for first boot.
+		$SUDO rmdir "$data/lost+found"
+		$SUDO chmod 0777 "$data"
+	done
+}
+
+# umount_data DIR releases the loop mounts mount_data made.
+umount_data() {
+	local dir=$1 n data SUDO=""
+	[ "$(id -u)" = 0 ] || SUDO=sudo
+	for n in "${nodes[@]}"; do
+		data=$dir/node-$n/data
+		if mountpoint -q "$data" 2>/dev/null; then
+			$SUDO umount "$data" || true
+		fi
+		rm -f "$dir/node-$n/data.img"
+	done
+}
+
 down() {
-	local n
+	local n dir=$1
 	for n in "${nodes[@]}"; do
 		docker rm -f "clusterproof-node-$n" >/dev/null 2>&1 || true
 	done
 	docker network rm "$network" >/dev/null 2>&1 || true
+	umount_data "$dir"
 }
 
 case ${1:-} in
@@ -235,7 +287,7 @@ up)
 	;;
 down)
 	[[ $# -eq 2 ]] || usage
-	down
+	down "$2"
 	;;
 *) usage ;;
 esac

@@ -15,6 +15,7 @@
 package soak_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/container"
+	"github.com/jeremyhahn/go-qrdb/test/clusterproof/nemesis"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/soak"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/workload"
 )
@@ -127,5 +129,62 @@ func TestCIFixtureLoads(t *testing.T) {
 		if got := n.Vars["fault_image"]; got != ciFaultImage {
 			t.Fatalf("%s fault_image = %q, want %q", name, got, ciFaultImage)
 		}
+	}
+}
+
+// recordRunner records the argv a remote target would run.
+type recordRunner struct{ argv []string }
+
+func (r *recordRunner) Run(_ context.Context, argv []string) ([]byte, error) {
+	r.argv = argv
+	return nil, nil
+}
+
+// TestCIFaultArgvWordByWord pins the Codex P1 on #1625: the exec wrapper
+// runs without a shell, so the fault's argv must reach docker word by word
+// ("$@"), not as one shell-quoted string docker takes for an executable.
+func TestCIFaultArgvWordByWord(t *testing.T) {
+	dir, _ := renderCI(t)
+	var targets struct {
+		Exec  []string `json:"exec"`
+		Nodes map[string]struct {
+			Vars map[string]string `json:"vars"`
+		} `json:"nodes"`
+	}
+	if err := json.NewDecoder(openFile(t, filepath.Join(dir, "targets.json"))).Decode(&targets); err != nil {
+		t.Fatalf("decode targets.json: %v", err)
+	}
+	if len(targets.Exec) == 0 || targets.Exec[len(targets.Exec)-1] != nemesis.ArgvElement {
+		t.Fatalf("exec = %q, want last element %q", targets.Exec, nemesis.ArgvElement)
+	}
+	for _, e := range targets.Exec {
+		if strings.Contains(e, "shquote") {
+			t.Fatalf("exec element %q joins the argv into one word", e)
+		}
+	}
+
+	node := targets.Nodes["node-1"]
+	rec := &recordRunner{}
+	target, err := nemesis.NewRemoteTarget(nemesis.RemoteConfig{
+		Node:    "node-1",
+		Vars:    node.Vars,
+		Exec:    targets.Exec,
+		Signal:  []string{"true"},
+		Restart: []string{"true"},
+		Runner:  rec,
+	})
+	if err != nil {
+		t.Fatalf("NewRemoteTarget: %v", err)
+	}
+	fault := slices.Clone(nemesis.DefaultDiskFill)
+	fault[len(fault)-1] = "/data"
+	if _, err := target.Exec(context.Background(), fault); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if len(rec.argv) < len(fault) || !slices.Equal(rec.argv[len(rec.argv)-len(fault):], fault) {
+		t.Fatalf("rendered argv = %q, want it to end with the separate words %q", rec.argv, fault)
+	}
+	if want := node.Vars["data_dir"] + ":/data"; !slices.Contains(rec.argv, want) {
+		t.Fatalf("rendered argv = %q, want the node's own filesystem bound as %q", rec.argv, want)
 	}
 }
