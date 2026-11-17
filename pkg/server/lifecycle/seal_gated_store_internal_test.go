@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -86,18 +87,30 @@ func TestSealGatedStore_ServesOnlyWhileTheSystemBarrierIsUnsealed(t *testing.T) 
 }
 
 // TestCredentialStoreOnDataPlane_OnlyEncryptingDurableBackends: the
-// credential records go to the data plane only where it encrypts at rest
-// and survives a restart.
+// credential records go to the data plane only where the caller names an
+// engine that survives a restart and passes an enabled at-rest Encryptor.
+// A caller naming no backend (the desktop embedded binding) or passing no
+// Encryptor, or a no-op one, keeps the barrier store.
 func TestCredentialStoreOnDataPlane_OnlyEncryptingDurableBackends(t *testing.T) {
-	for backend, want := range map[database.BackendType]bool{
-		database.BackendPebble:   true,
-		database.BackendFile:     true,
-		database.BackendRaft:     true,
-		database.BackendMemory:   false,
-		database.BackendObjstore: false,
-	} {
-		if got := credentialStoreOnDataPlane(backend); got != want {
-			t.Errorf("credentialStoreOnDataPlane(%s) = %v, want %v", backend, got, want)
+	enc := atrest.New(&seal.StorageBarrier{})
+	cases := []struct {
+		infra Infra
+		want  bool
+	}{
+		{Infra{Backend: database.BackendPebble, Encryptor: enc}, true},
+		{Infra{Backend: database.BackendFile, Encryptor: enc}, true},
+		{Infra{Backend: database.BackendRaft, Encryptor: enc}, true},
+		{Infra{Backend: database.BackendMemory, Encryptor: enc}, false},
+		{Infra{Backend: database.BackendObjstore, Encryptor: enc}, false},
+		{Infra{Backend: "", Encryptor: enc}, false},
+		{Infra{Backend: database.BackendPebble}, false},
+		{Infra{Backend: database.BackendRaft, Encryptor: atrest.New(nil)}, false},
+		{Infra{}, false},
+	}
+	for _, c := range cases {
+		if got := credentialStoreOnDataPlane(c.infra); got != c.want {
+			t.Errorf("credentialStoreOnDataPlane(backend=%q, encryptor enabled=%v) = %v, want %v",
+				c.infra.Backend, c.infra.Encryptor.Enabled(), got, c.want)
 		}
 	}
 }

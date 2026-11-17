@@ -1636,16 +1636,27 @@ func credentialServiceOptions(infra Infra) []service.CredentialServiceOption {
 	return []service.CredentialServiceOption{service.WithCredentialTenantBarriers(infra.BarrierRegistry)}
 }
 
-// credentialStoreOnDataPlane reports whether the data plane of a node whose
-// primary engine is backend can hold the credential records: it must keep
-// them encrypted at rest and across a restart. Pebble and file write through
-// the barrier's at-rest Encryptor to disk. An objstore backend writes the
-// bytes it is given to its bucket unencrypted, and a memory backend keeps
-// nothing across a restart, so binding either would lose a credential's
-// confidentiality or the credential itself (legacy migration deletes the
-// barrier originals once copied).
-func credentialStoreOnDataPlane(backend database.BackendType) bool {
-	return backend != database.BackendObjstore && backend != database.BackendMemory
+// credentialStoreOnDataPlane reports whether the data plane infra describes
+// can hold the credential records: it must keep them encrypted at rest and
+// across a restart. Only a caller that names a persistent engine (pebble,
+// file or raft) and passes an enabled at-rest Encryptor (one bound to a
+// barrier) for those engines to write through proves both. An objstore backend writes the bytes it is given to its bucket
+// unencrypted, a memory backend keeps nothing across a restart, and a caller
+// that names no backend or passes no Encryptor (the desktop embedded binding
+// opens plaintext Pebble or file storage and an unencrypted Raft node) proves
+// neither, so binding any of them would lose a credential's confidentiality
+// or the credential itself (legacy migration deletes the barrier originals
+// once copied).
+func credentialStoreOnDataPlane(infra Infra) bool {
+	if !infra.Encryptor.Enabled() {
+		return false
+	}
+	switch infra.Backend {
+	case database.BackendPebble, database.BackendFile, database.BackendRaft:
+		return true
+	default:
+		return false
+	}
 }
 
 // sealGatedStore is the credential store bound on a data plane that
@@ -1731,8 +1742,10 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		//
 		// The records are written to the data plane as they are, so the
 		// data plane must encrypt at rest and survive a restart. A
-		// standalone objstore backend does not encrypt and a memory backend
-		// does not persist, so on either the system seal barrier, which
+		// standalone objstore backend does not encrypt, a memory backend
+		// does not persist, and a caller that names no backend or passes no
+		// Encryptor proves neither (credentialStoreOnDataPlane), so on any
+		// of them the system seal barrier, which
 		// encrypts every record it stores on its own durable store, is
 		// bound as the credential store instead. On a data plane that does
 		// encrypt at rest, the KV store is gated on the system barrier
@@ -1744,7 +1757,7 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 		if infra.CredentialCoreSvc.Strategy() == credentials.StrategyBarrier {
 			var credStore credentials.Store = kvSealBackend{KVStore: newKVStoreAdapter(n.KV, n.Index), tx: n.Transaction}
 			switch {
-			case !credentialStoreOnDataPlane(infra.Backend):
+			case !credentialStoreOnDataPlane(infra):
 				if infra.SealBarrier == nil {
 					return &NilSealBarrierError{}
 				}

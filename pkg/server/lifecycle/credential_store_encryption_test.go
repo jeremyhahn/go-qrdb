@@ -156,6 +156,69 @@ func TestBuildServices_MemoryBackendKeepsCredentialsAcrossARestart(t *testing.T)
 	}
 }
 
+// TestBuildServices_UnverifiedDataPlaneKeepsTheBarrierStore covers a caller
+// that does not prove an encrypted, persistent data plane: the desktop
+// embedded binding names no backend and passes no Encryptor, and a Pebble
+// node built without an Encryptor writes its records in plaintext. On each
+// the seal barrier stays the credential store, so a credential stored and
+// rotated before a restart is still there, with both versions, after it.
+func TestBuildServices_UnverifiedDataPlaneKeepsTheBarrierStore(t *testing.T) {
+	for _, backend := range []database.BackendType{"", database.BackendPebble} {
+		t.Run("backend="+string(backend), func(t *testing.T) {
+			ctx := context.Background()
+			barrier, registry, credSvc := newTestBarrier(t)
+
+			build := func(svc *credentials.CredentialService) *lifecycle.Node {
+				t.Helper()
+				host := newLocalHost()
+				t.Cleanup(func() { _ = host.Close() })
+				hub := watch.NewHub()
+				t.Cleanup(hub.Close)
+				node, err := lifecycle.BuildServices(ctx, lifecycle.Infra{
+					Host:              host,
+					WatchHub:          hub,
+					DataDir:           t.TempDir(),
+					Backend:           backend,
+					SealBarrier:       barrier,
+					BarrierRegistry:   registry,
+					CredentialCoreSvc: svc,
+				})
+				if err != nil {
+					t.Fatalf("BuildServices: %v", err)
+				}
+				return node
+			}
+
+			node := build(credSvc)
+			if err := credSvc.StoreCredential(ctx, "db-password", []byte("v1-secret")); err != nil {
+				t.Fatalf("StoreCredential: %v", err)
+			}
+			if _, err := credSvc.RotateCredential(ctx, "db-password", credentials.RotateOptions{NewValue: []byte("v2-secret"), GracePeriod: time.Hour}); err != nil {
+				t.Fatalf("RotateCredential: %v", err)
+			}
+			if err := node.Stop(ctx); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+
+			restarted, err := credentials.NewCredentialService(
+				&credentials.Config{Strategy: credentials.StrategyBarrier}, barrier, slog.Default())
+			if err != nil {
+				t.Fatalf("NewCredentialService: %v", err)
+			}
+			node = build(restarted)
+			defer func() { _ = node.Stop(ctx) }()
+
+			versions, err := restarted.ListCredentialVersions(ctx, "db-password")
+			if err != nil {
+				t.Fatalf("ListCredentialVersions after the restart: %v", err)
+			}
+			if len(versions) != 2 {
+				t.Fatalf("versions after the restart = %d, want 2 (%+v)", len(versions), versions)
+			}
+		})
+	}
+}
+
 // TestBuildServices_ManualStrategyStartsOnObjstore proves the refusal is the
 // barrier strategy's: manual credentials stay in protected memory and write
 // nothing to the data plane, so a seal-enabled objstore node configured with
