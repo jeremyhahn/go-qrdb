@@ -258,7 +258,11 @@ func initSealSubsystem(f *startFlags, sigCtx context.Context, complianceAudit au
 	}
 	credCoreSvc, credErr := credentials.NewCredentialService(
 		&credentials.Config{Strategy: credStrategy}, nil, slog.Default(),
-		credentials.WithLegacyStore(sealBarrier))
+		credentials.WithLegacyStore(sealBarrier),
+		// The boot migration runs when BuildServices binds the replicated
+		// store, before runStart reaches its own SetAuditLogger: the trail
+		// is attached here so the migration's events are recorded.
+		credentials.WithAuditLogger(complianceAudit))
 	if credErr != nil {
 		_ = sealStore.Close()
 		return nil, &CredentialServiceError{Err: credErr}
