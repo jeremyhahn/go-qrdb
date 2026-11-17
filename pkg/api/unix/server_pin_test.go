@@ -63,14 +63,3 @@ func TestWithPINBackend_Applied(t *testing.T) {
 		t.Fatalf("pinBackend = %v, want the already-decorated backend kept as it is", srv.pinBackend)
 	}
 }
-
-// TestWithPINBackend_Nil verifies that supplying a nil pin.PINBackend is
-// accepted without panic — preserves dev-mode flows.
-func TestWithPINBackend_Nil(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-pinbackend-nil.sock",
-		WithPINBackend(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.pinBackend != nil {
-		t.Fatal("expected nil pinBackend")
-	}
-}

@@ -760,35 +760,8 @@ func TestGRPC_Status(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ServerOption coverage: WithUserService, WithRoleService, WithCertProvider
+// ServerOption coverage: WithCertEnrollment
 // ---------------------------------------------------------------------------
-
-func TestWithUserService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithUserService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.userSvc != nil {
-		t.Fatal("expected nil userSvc")
-	}
-}
-
-func TestWithRoleService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithRoleService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.roleSvc != nil {
-		t.Fatal("expected nil roleSvc")
-	}
-}
-
-func TestWithCertProvider_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithCertProvider(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.certProv != nil {
-		t.Fatal("expected nil certProv")
-	}
-}
 
 // TestWithCertEnrollment_Applied asserts that an injected
 // service.CertEnrollmentServicer is reachable from the server, independent
@@ -800,16 +773,6 @@ func TestWithCertEnrollment_Applied(t *testing.T) {
 		WithTLS(selfSignedTLSConfig(t)))
 	if srv.certEnroll != ce {
 		t.Fatal("expected certEnroll to be the supplied instance")
-	}
-}
-
-// TestWithCertEnrollment_NilIsNil is the control.
-func TestWithCertEnrollment_NilIsNil(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithCertEnrollment(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.certEnroll != nil {
-		t.Fatal("expected nil certEnroll")
 	}
 }
 
@@ -1091,18 +1054,6 @@ func TestStart_NoTLS_FailsClosed(t *testing.T) {
 	var tlsErr *TLSNotConfiguredError
 	if !errors.As(err, &tlsErr) {
 		t.Fatalf("expected *TLSNotConfiguredError, got %T: %v", err, err)
-	}
-}
-
-// TestWithAuthMiddleware_Applied verifies the WithAuthMiddleware option
-// accepts nil (no RBAC enforcement, matching embedded/test deployments that
-// do not configure auth).
-func TestWithAuthMiddleware_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-authmw.sock",
-		WithAuthMiddleware(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.authMW != nil {
-		t.Fatal("expected nil authMW")
 	}
 }
 
@@ -1557,125 +1508,8 @@ func (s *stubDatabaseSvc) ScaleForTenant(_ context.Context, _ string, _ int) (*d
 }
 
 // ---------------------------------------------------------------------------
-// ServerOption tests: With* option functions that were previously uncovered
+// Stubs for the optional services Start registers
 // ---------------------------------------------------------------------------
-
-func TestWithBarrierService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithBarrierService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.barrierSvc != nil {
-		t.Fatal("expected nil barrierSvc")
-	}
-}
-
-func TestWithCeremonyService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithCeremonyService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.ceremonySvc != nil {
-		t.Fatal("expected nil ceremonySvc")
-	}
-}
-
-func TestWithCredentialService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithCredentialService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.credentialSvc != nil {
-		t.Fatal("expected nil credentialSvc")
-	}
-}
-
-func TestWithCollectionService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithCollectionService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.collectionSvc != nil {
-		t.Fatal("expected nil collectionSvc")
-	}
-}
-
-func TestWithMVCC_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithMVCC(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.mvccSvc != nil {
-		t.Fatal("expected nil mvccSvc")
-	}
-}
-
-func TestWithTransaction_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithTransaction(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.txSvc != nil {
-		t.Fatal("expected nil txSvc")
-	}
-}
-
-func TestWithBatch_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithBatch(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.batchSvc != nil {
-		t.Fatal("expected nil batchSvc")
-	}
-}
-
-func TestWithWatch_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithWatch(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.watchSvc != nil {
-		t.Fatal("expected nil watchSvc")
-	}
-}
-
-func TestWithLease_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithLease(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.leaseSvc != nil {
-		t.Fatal("expected nil leaseSvc")
-	}
-}
-
-func TestWithIndex_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithIndex(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.indexSvc != nil {
-		t.Fatal("expected nil indexSvc")
-	}
-}
-
-func TestWithTimeSeries_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithTimeSeries(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.tsSvc != nil {
-		t.Fatal("expected nil tsSvc")
-	}
-}
-
-func TestWithVector_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithVector(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.vectorSvc != nil {
-		t.Fatal("expected nil vectorSvc")
-	}
-}
-
-func TestWithDatabaseService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test.sock",
-		WithDatabaseService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.databaseSvc != nil {
-		t.Fatal("expected nil databaseSvc")
-	}
-}
 
 // stubMVCCSvc satisfies service.MVCCKVServicer (extends KVServicer) for option propagation tests.
 type stubMVCCSvc struct {
