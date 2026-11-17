@@ -107,6 +107,15 @@ type CeremonyService struct {
 	// commit can leave an initialized barrier with neither the SO record
 	// nor its marker.
 	systemSOInitInFlight bool
+	// mofnInitInFlight is set while any M-of-N Initialize runs the
+	// barrier's Shamir initialization. Distribute then settles the SO
+	// write-ahead marker in the freshly unsealed barrier: written when
+	// systemSOInitInFlight, otherwise removed. A failed initialization rolls
+	// the barrier back to sealed with its marker still in storage, where no
+	// barrier can delete it; the next initialization's Distribute is the
+	// first point the marker is reachable, and an SO-less ceremony must not
+	// inherit it and stay enrolling on a write it never owed.
+	mofnInitInFlight bool
 
 	// strictSoD is the node's resolved strict separation-of-duties posture
 	// (SetSeparationOfDuties): under it Initialize refuses a ceremony that
@@ -818,6 +827,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		result.Holders = append(result.Holders, reg)
 	}
 	s.systemSOInitInFlight = systemSO != nil
+	s.mofnInitInFlight = true
 	s.mu.Unlock()
 
 	// InitializeShamir calls back into this service (the distributor), so
@@ -835,8 +845,12 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// Without this, a retry after this specific failure could never
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
+		// The barrier rolled back to sealed, so a marker Distribute wrote
+		// stays in storage: the next initialization's Distribute removes
+		// it (mofnInitInFlight).
 		s.mu.Lock()
 		s.systemSOInitInFlight = false
+		s.mofnInitInFlight = false
 		s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 		s.mu.Unlock()
 		return nil, err
@@ -844,6 +858,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 
 	s.mu.Lock()
 	s.systemSOInitInFlight = false
+	s.mofnInitInFlight = false
 	// InitializeShamir left the barrier unsealed; record the issued system
 	// SO in it before reporting success, as the single-admin path does.
 	//
@@ -1299,11 +1314,16 @@ func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer,
 	if err != nil {
 		return 0, err
 	}
-	if s.systemSOInitInFlight && roster.Domain == seal.DomainUnseal {
+	if s.mofnInitInFlight && roster.Domain == seal.DomainUnseal {
 		// The initialization this distribution belongs to commits only
-		// after Distribute returns: the marker is durable before it.
-		if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
-			return 0, err
+		// after Distribute returns: the marker is settled before it.
+		if s.systemSOInitInFlight {
+			if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
+				return 0, err
+			}
+		} else if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+			// A marker an earlier, rolled-back initialization left behind.
+			return 0, &SystemSOPersistError{Op: "remove", Cause: err}
 		}
 	}
 	return h.distribute(ctx, secret, roster, digest)
