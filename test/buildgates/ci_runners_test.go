@@ -44,6 +44,7 @@
 package buildgates
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -104,6 +105,15 @@ const (
 	hostedJobFloor = 15
 	// selfHostedReason is the line comment a pool job's runs-on carries.
 	selfHostedReason = "self-hosted:"
+	// overflowReason is the reason a split matrix job states (ruling 834,
+	// phase 2 option C, ruling 841): some of its legs overflow to the pool.
+	overflowReason = "overflow split, ruling 834"
+	// splitRunnerHead and splitRunnerTail bracket a split matrix job's
+	// runs-on: the legs the JSON list between them names run where
+	// dockerRunner sends them (the Docker pool for a push to main and a
+	// same-repository pull request), every other leg on ubuntu-latest.
+	splitRunnerHead = `${{ contains(fromJSON('`
+	splitRunnerTail = `'), matrix.leg) && ` + poolSplit + ` && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}`
 )
 
 // poolRunners are poolWorkflow's two runs-on expressions.
@@ -248,6 +258,26 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		switch {
 		case pool && runsOn == hostedRunner:
 			// Rulings 833 and 834: the default.
+		case pool && splitLegs(runsOn) != nil:
+			// Ruling 841: a matrix split between the hosted runners and the
+			// Docker pool by leg, with the overflow reason; the pool legs must
+			// be a strict, non-empty subset of the job's own legs, and the job
+			// must need Docker, as any dockerRunner job does.
+			legs, all := splitLegs(runsOn), matrixLegs(job)
+			if reason != overflowReason {
+				add("job " + name + " splits its legs onto the pool without `# self-hosted: " + overflowReason + "` on its runs-on line")
+			}
+			if len(legs) == 0 || len(legs) >= len(all) {
+				add("job "+name+" sends ", strconv.Itoa(len(legs)), " of its ", strconv.Itoa(len(all)), " legs to the pool; a split sends some and not all (ruling 841)")
+			}
+			for _, l := range legs {
+				if !slices.Contains(all, l) {
+					add("job " + name + "'s split names leg " + strconv.Quote(l) + ", which its matrix does not have")
+				}
+			}
+			if len(dockerNeeds(job)) == 0 {
+				add("job " + name + " splits onto the bigdisk-docker pool but needs no Docker")
+			}
 		case pool && (runsOn == bigdiskRunner || runsOn == dockerRunner) && reason == "":
 			add("job " + name + " runs on a self-hosted pool with no `# self-hosted: <reason>` on its runs-on line; every job that fits a standard runner runs on " + hostedRunner + " (rulings 833 and 834, which supersede ruling 617)")
 		case pool && runsOn == bigdiskRunner:
@@ -311,6 +341,25 @@ func runnerProblems(file string, body []byte) (problems []string, jobs int) {
 		add("env.CI_PUBLISH is ", strconv.Quote(wf.Env["CI_PUBLISH"]), ", not ", ciPublishExpr)
 	}
 	return problems, jobs
+}
+
+// splitLegs is the leg list of a split matrix job's runs-on, or nil when
+// runsOn is not that exact form.
+func splitLegs(runsOn string) []string {
+	if !strings.HasPrefix(runsOn, splitRunnerHead) || !strings.HasSuffix(runsOn, splitRunnerTail) {
+		return nil
+	}
+	var legs []string
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(runsOn, splitRunnerHead), splitRunnerTail)), &legs); err != nil {
+		return nil
+	}
+	return legs
+}
+
+// matrixLegs is every value a matrix gives `leg`: its list, or each include
+// entry's.
+func matrixLegs(job runnerJob) []string {
+	return matrixValues(job.Strategy.Matrix, "leg")
 }
 
 // poolReason is the reason a runs-on line comment gives for a pool job, or "".
@@ -847,6 +896,83 @@ func TestRunnerProblems_Pools(t *testing.T) {
 			if p, _ := runnerProblems(poolWorkflow, []byte(body)); len(p) == 0 {
 				t.Errorf("a runs-on %q, one character off a pool expression, passed", changed)
 			}
+		}
+	}
+}
+
+// splitFixture is a Docker matrix job split by leg between ubuntu-latest and
+// the Docker pool (ruling 841).
+const splitFixture = `jobs:
+  coverage:
+    runs-on: ` + splitRunnerHead + `["a","c"]` + splitRunnerTail + `  # self-hosted: overflow split, ruling 834
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        leg:
+          - a
+          - b
+          - c
+          - d
+    steps:
+      - run: scripts/in-toolchain-image.sh "$IMAGE" "make coverage-leg COVER_LEG=${{ matrix.leg }}"
+`
+
+// TestRunnerProblems_Split is ruling 841's overflow split: the exact
+// expression with the overflow reason passes; no reason, another reason, every
+// leg or none on the pool, a leg the matrix lacks, a Docker-free job, and any
+// change to the expression fail.
+func TestRunnerProblems_Split(t *testing.T) {
+	if p, _ := runnerProblems(poolWorkflow, []byte(splitFixture)); len(p) != 0 {
+		t.Fatalf("the split fixture must pass, got %v", p)
+	}
+	cases := map[string]struct{ old, new, want string }{
+		"no reason":            {"  # self-hosted: overflow split, ruling 834", "", "without `# self-hosted: overflow split, ruling 834`"},
+		"another reason":       {"overflow split, ruling 834", "it is faster", "without `# self-hosted: overflow split, ruling 834`"},
+		"every leg":            {`["a","c"]`, `["a","b","c","d"]`, "sends 4 of its 4 legs"},
+		"no leg":               {`["a","c"]`, `[]`, "sends 0 of its 4 legs"},
+		"a leg it lacks":       {`["a","c"]`, `["a","z"]`, `names leg "z"`},
+		"a Docker-free job":    {`scripts/in-toolchain-image.sh "$IMAGE" "make coverage-leg COVER_LEG=${{ matrix.leg }}"`, "make coverage-leg", "needs no Docker"},
+		"the Docker-free pool": {`"bigdisk-docker"]`, `"bigdisk"]`, "neither ubuntu-latest nor"},
+		"any push":             {"github.event_name == 'push' && github.ref == 'refs/heads/main'", "github.event_name == 'push'", "neither ubuntu-latest nor"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !strings.Contains(splitFixture, c.old) {
+				t.Fatalf("the fixture lacks %q", c.old)
+			}
+			p, _ := runnerProblems(poolWorkflow, []byte(strings.Replace(splitFixture, c.old, c.new, 1)))
+			if !slices.ContainsFunc(p, func(s string) bool { return strings.Contains(s, c.want) }) {
+				t.Fatalf("want a problem containing %q, got %v", c.want, p)
+			}
+		})
+	}
+}
+
+// TestCISplitsTheLargeMatrices: ruling 841. coverage and fips, the two
+// largest matrices, split their legs between the hosted runners and the
+// Docker pool, with the same pool legs, so neither runner kind queues while
+// the other has room.
+func TestCISplitsTheLargeMatrices(t *testing.T) {
+	var wf runnerWorkflow
+	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
+		t.Fatalf("parse %s: %v", poolWorkflow, err)
+	}
+	var first []string
+	for _, name := range []string{"coverage", "fips"} {
+		job, ok := wf.Jobs[name]
+		if !ok {
+			t.Fatalf("%s has no job %s", poolWorkflow, name)
+		}
+		legs := splitLegs(job.RunsOn.Value)
+		if legs == nil {
+			t.Errorf("job %s does not split its legs between ubuntu-latest and the Docker pool (ruling 841)", name)
+			continue
+		}
+		if first == nil {
+			first = legs
+		} else if !slices.Equal(first, legs) {
+			t.Errorf("job %s sends legs %v to the pool, coverage %v; keep one split", name, legs, first)
 		}
 	}
 }
