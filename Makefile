@@ -275,26 +275,9 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # ---------------------------------------------------------------------------
 # Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
-# The forge's address, GITEA_HOST (host:port), in ONE place -- and that place
-# is NOT a tracked file. Everything tracked publishes, so the internal forge's
-# address lives in the gitignored .devcontainer/.env beside the token that
-# already lives there (.devcontainer/.env.example documents both), or in the
-# environment, which wins over the file. `make check-public-releasable` rejects
-# the literal anywhere in the tree.
-#
-# It is one name for every consumer: stage-gomodauth below sources the .env
-# file, and docker compose reads the same file for .devcontainer/docker-compose.yml.
-# It used to be a Makefile default, and before that the same URL was written
-# out three times; the forge moved once (2026-09-07) and broke every
-# devcontainer target that resolves a first-party module.
-#
-# There is deliberately no default. A .env that carries a token and no host is
-# an error that names the variable, not a silent fall-through to the public
-# proxy, because that combination is a half-configured forge rather than a
-# machine without one.
-
-# go.mod pins first-party modules published only to the internal Gitea, and a
-# docker build inherits nothing from its caller's environment. The four
+# First-party github.com/jeremyhahn/* modules resolve from the public proxy
+# by default. A docker build inherits nothing from its caller's environment,
+# so when a caller does supply module credentials, the four
 # variables from dependency-resolution.md section 6 therefore reach the single
 # `go mod download` as a BuildKit secret.
 #
@@ -370,16 +353,8 @@ if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
   GOMODAUTH="export GOPRIVATE='$${GOPRIVATE:-}'; export GIT_CONFIG_COUNT='$${GIT_CONFIG_COUNT:-}'; export GIT_CONFIG_KEY_0='$${GIT_CONFIG_KEY_0}'; export GIT_CONFIG_VALUE_0='$${GIT_CONFIG_VALUE_0:-}'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $$gomodauth_src"; \
-elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
-  gitea_host_env="$${GITEA_HOST:-}"; \
-  . $(CURDIR)/.devcontainer/.env; \
-  GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
-  [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${MODULE_FORGE_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
-  export GOMODAUTH; \
-  echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
-  echo "==> no Gitea credentials here; resolving from the public proxy"; \
+  echo "==> no module credentials set; resolving from the public proxy"; \
 fi;
 endef
 
@@ -2004,7 +1979,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/pkg/database/databasetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/pkg/database/databasetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/closedidletest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -4242,12 +4217,22 @@ docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
-	@# image this tree would build.
+	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
+	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, by
+	@# the digest recorded in CI_IMAGE_DIGEST_DIR only, and a build is pushed
+	@# to it and its digest recorded. An image already held with no usable
+	@# record (an earlier push failed) is pushed again (registry-push
+	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
+	@# call does nothing.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . && \
+		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
@@ -4263,6 +4248,9 @@ docker-build-it:
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
 	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
@@ -4271,6 +4259,7 @@ docker-build-it:
 			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
 			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
 		}; \
+		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
 # docker-down-it removes an integration-test run's compose project, never its

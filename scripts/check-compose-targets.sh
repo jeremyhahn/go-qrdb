@@ -99,6 +99,22 @@ stages_of() {
         | tr '[:upper:]' '[:lower:]'
 }
 
+# Ask once whether docker compose works at all (#1609). A runner whose docker
+# has no compose plugin, or whose daemon is unreachable, otherwise fails every
+# set with "config failed", which blames the compose files for a host fault
+# and names no cause. This stays a FAILURE: a scanner that cannot ask compose
+# has checked nothing.
+if ! compose_err=$(docker compose version 2>&1 >/dev/null); then
+    first=$(printf '%s\n' "$compose_err" | sed -n '/[^[:space:]]/{p;q;}')
+    echo "FAIL: docker compose is not usable on this host: ${first:-it printed no error}" >&2
+    exit 1
+fi
+
+# compose's stderr for the set being rendered: shown under its FAIL line, so a
+# red run names the cause instead of discarding it.
+compose_stderr=$(mktemp)
+trap 'rm -f "$compose_stderr"' EXIT
+
 for set in $COMPOSE_SETS; do
     [ -n "$set" ] || continue
     sets_checked=$((sets_checked + 1))
@@ -124,8 +140,13 @@ for set in $COMPOSE_SETS; do
     # --format json, NOT the default YAML: PyYAML is absent from the CI runner
     # image, and a scanner that needs a pip install to run is a scanner that
     # gets switched off. json is in the standard library everywhere.
-    rendered=$( (cd "$dir" && docker compose $args config --format json 2>/dev/null) ) || {
+    rendered=$( (cd "$dir" && docker compose $args config --format json 2>"$compose_stderr") ) || {
         echo "FAIL: docker compose config failed for [$set]" >&2
+        if [ -s "$compose_stderr" ]; then
+            sed -n '1,20s/^/      /p' "$compose_stderr" >&2
+        else
+            echo "      (docker compose printed nothing on stderr)" >&2
+        fi
         fail=1
         continue
     }
