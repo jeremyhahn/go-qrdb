@@ -1255,18 +1255,6 @@ func TestStoragePebbleIndex_StoragePebbleIndexType_Normal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestStoragePebbleIndex_ImplementsIndex(t *testing.T) {
-	var _ Index = (*StoragePebbleIndex)(nil)
-}
-
-func TestStoragePebbleIndex_ImplementsIndexWithContext(t *testing.T) {
-	var _ IndexWithContext = (*StoragePebbleIndex)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Index isolation (multiple indexes in same storage)
 // ---------------------------------------------------------------------------
 

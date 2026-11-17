@@ -43,6 +43,17 @@ const nodeSigkillRootEnvVar = "QRDB_NODE_SIGKILL_ROOT"
 // SIGKILL with zero cleanup — no n.Close(), no graceful barrier.Seal() — to
 // reproduce a `docker kill` on an embedded qrdb node with process-boundary
 // fidelity.
+// sigkillAckedKVs are the Puts the helper process sees acknowledged before
+// it SIGKILLs itself. The last ones are written immediately before the
+// kill, so nothing but an fsync before the acknowledgement keeps them.
+var sigkillAckedKVs = []struct{ key, value string }{
+	{"alpha", "first boot value"},
+	{"bravo", "acked before kill 1"},
+	{"charlie", "acked before kill 2"},
+	{"delta", "acked before kill 3"},
+	{"echo", "acked immediately before kill"},
+}
+
 func TestHelperProcess_StandaloneNodeBoot1Kill(t *testing.T) {
 	if os.Getenv(nodeSigkillHelperEnvVar) != "1" {
 		t.Skip("helper process; only runs when re-exec'd by TestNewStandaloneNode_SurvivesSIGKILLRestart")
@@ -64,8 +75,10 @@ func TestHelperProcess_StandaloneNodeBoot1Kill(t *testing.T) {
 		t.Fatal("helper: node must be unsealed after WithSealPassphrase")
 	}
 
-	if err := n.KVService().Put(context.Background(), "alpha", []byte("first boot value")); err != nil {
-		t.Fatalf("helper: KVService().Put: %v", err)
+	for _, kv := range sigkillAckedKVs {
+		if err := n.KVService().Put(context.Background(), kv.key, []byte(kv.value)); err != nil {
+			t.Fatalf("helper: KVService().Put(%s): %v", kv.key, err)
+		}
 	}
 
 	// Deliberately no n.Close(). SIGKILL cannot be caught or deferred
@@ -124,18 +137,13 @@ func TestNewStandaloneNode_SurvivesSIGKILLRestart(t *testing.T) {
 
 	require.False(t, n2.IsSealed(), "restart: node must unseal with the original passphrase")
 
-	// NOTE: this test intentionally does not assert that "alpha" round-trips.
-	// The standalone (non-Raft) data-plane Pebble store is opened with
-	// SyncWrites: false on the premise that "Raft WAL provides durability" —
-	// a premise that does not hold for a standalone node, so an unsynced
-	// in-flight Put can legitimately be lost across a SIGKILL independent of
-	// the seal/root-key defect this test targets. That is a separate,
-	// pre-existing durability trade-off (see the reported findings) and is
-	// out of scope for this regression test, which exists to pin down that
-	// the barrier itself survives a crash and NewStandaloneNode does not
-	// fail with "quicraft/seal: decryption failed".
-	_, err = n2.KVService().Get(context.Background(), "alpha")
-	if err != nil {
-		t.Logf("restart: KVService().Get(alpha) = %v (informational only, see NOTE above)", err)
+	// Every Put the helper saw acknowledged before it SIGKILLed itself must
+	// survive: an acknowledged write is durable (#1617). A standalone node
+	// has no Raft WAL, so the Pebble store itself must fsync each write
+	// before acknowledging it.
+	for _, kv := range sigkillAckedKVs {
+		got, err := n2.KVService().Get(context.Background(), kv.key)
+		require.NoError(t, err, "restart: acknowledged key %q lost across SIGKILL", kv.key)
+		require.Equal(t, kv.value, string(got), "restart: acknowledged key %q value", kv.key)
 	}
 }
