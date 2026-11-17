@@ -181,6 +181,13 @@ type credentialMeta struct {
 	// none is. Only its holder invokes the rotation value source.
 	Claim *rotationClaim `json:"rotation_claim,omitempty"`
 
+	// RotationOp identifies the pending scheduled rotation's value-source
+	// operation, empty when none is pending. The first claim of the
+	// rotation writes it before the source runs, every later claim of the
+	// same rotation keeps it, and any version's landing write clears it,
+	// so a retry passes the source the operation it already performed.
+	RotationOp string `json:"rotation_op,omitempty"`
+
 	// PendingCleanup is the claim ID of a completed scheduled rotation
 	// whose retention cleanup (expired-version GC and the trim to
 	// RetainVersions) has not yet succeeded, empty when none is pending.
@@ -646,6 +653,10 @@ func (s *CredentialService) rotateBarrier(ctx context.Context, name string, opts
 		// and schedule in the same write.
 		meta.CurrentVersion = newVersion
 		meta.Staged = 0
+		// Any landed version ends the pending scheduled rotation's
+		// operation: the next one must not recover a value issued for a
+		// rotation this version superseded.
+		meta.RotationOp = ""
 		if opts.importDigest != "" {
 			meta.Imported = append(meta.Imported, opts.importDigest)
 		}

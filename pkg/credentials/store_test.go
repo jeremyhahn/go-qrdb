@@ -119,7 +119,7 @@ func TestBindStore_SharedStoreIsOneStore(t *testing.T) {
 	ctx := context.Background()
 	shared := seal.NewMemoryBackend()
 	var calls atomic.Int32
-	source := WithRotationValueSource(func(_ context.Context, name string) (*secure.Buffer, error) {
+	source := WithRotationValueSource(func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		calls.Add(1)
 		return secure.NewBufferFromBytes([]byte(name + "-rotated"))
 	})

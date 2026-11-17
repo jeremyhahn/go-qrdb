@@ -65,6 +65,10 @@ type rotationClaim struct {
 
 	// Until is when the claim lapses and another caller may take it.
 	Until time.Time `json:"until"`
+
+	// Op is the rotation's operation (credentialMeta.RotationOp) the
+	// holder passes the value source.
+	Op string `json:"op,omitempty"`
 }
 
 // RotationPolicy is a named credential's scheduled-rotation policy. It is
@@ -101,7 +105,17 @@ func (p RotationPolicy) validate() error {
 // the named credential. go-qrdb generates no credential values: the
 // composer that owns value generation (go-quicbaas) supplies the source.
 // The service destroys the returned Buffer once the rotation is written.
-type RotationValueSource func(ctx context.Context, name string) (*secure.Buffer, error)
+//
+// operation identifies the pending rotation. The service persists it with
+// the rotation's claim before it calls the source, and passes the same
+// operation to every call for that rotation until the rotation lands: a
+// retry after a failed staging write, or a later claimant after a crash.
+// A source with an external side effect (changing an upstream password,
+// issuing an API key) must be idempotent and recoverable per operation: a
+// repeat call with an operation it has seen returns the value that
+// operation produced, without repeating the side effect. A rotation that
+// lands ends its operation; the next rotation carries a new one.
+type RotationValueSource func(ctx context.Context, name, operation string) (*secure.Buffer, error)
 
 // WithRotationValueSource sets the source RotateDue draws new values from.
 // Without it RotateDue rotates nothing and reports ErrNoRotationValueSource
@@ -482,7 +496,12 @@ func (s *CredentialService) claimRotation(ctx context.Context, name string, now 
 			noSource = true
 			return false
 		}
-		claim = &rotationClaim{ID: rand.Text(), Due: meta.NextRotation, Until: acquired.Add(rotationClaimLease)}
+		// The rotation's operation is written with its first claim, before
+		// the source runs, and kept by every later claim until it lands.
+		if meta.RotationOp == "" {
+			meta.RotationOp = rand.Text()
+		}
+		claim = &rotationClaim{ID: rand.Text(), Due: meta.NextRotation, Until: acquired.Add(rotationClaimLease), Op: meta.RotationOp}
 		cleanup = ""
 		meta.Claim = claim
 		return true
@@ -516,7 +535,7 @@ func (s *CredentialService) rotateClaimed(ctx context.Context, name string, clai
 		_, err := s.RotateCredential(ctx, name, RotateOptions{NewValue: staged, retainPrevious: true, schedule: sched})
 		return sched.next, err
 	}
-	value, err := s.rotationSource(ctx, name)
+	value, err := s.rotationSource(ctx, name, claim.Op)
 	if err != nil {
 		return time.Time{}, err
 	}

@@ -64,7 +64,7 @@ func newRotationService(t *testing.T, opts ...Option) *CredentialService {
 // countingSource is a RotationValueSource that hands out a fresh value per
 // call and counts the calls.
 func countingSource(calls *atomic.Int32) RotationValueSource {
-	return func(_ context.Context, name string) (*secure.Buffer, error) {
+	return func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		n := calls.Add(1)
 		return secure.NewBufferFromBytes([]byte(name + "-rotated-" + string(rune('0'+n))))
 	}
@@ -352,7 +352,7 @@ func TestRotateDue_NoValueSourceTypedErrorPerCredential(t *testing.T) {
 
 func TestRotateDue_ValueSourceErrorReported(t *testing.T) {
 	boom := errors.New("source down")
-	svc := newRotationService(t, WithRotationValueSource(func(context.Context, string) (*secure.Buffer, error) {
+	svc := newRotationService(t, WithRotationValueSource(func(context.Context, string, string) (*secure.Buffer, error) {
 		return nil, boom
 	}))
 	ctx := t.Context()
@@ -378,7 +378,7 @@ func TestRotateDue_RacingCallsRotateOnce(t *testing.T) {
 	var calls atomic.Int32
 	inSource := make(chan struct{})
 	release := make(chan struct{})
-	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name string) (*secure.Buffer, error) {
+	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		if calls.Add(1) == 1 {
 			close(inSource)
 			<-release
@@ -463,7 +463,7 @@ func TestRotateDue_ExpiredClaimIsRetaken(t *testing.T) {
 func TestRotateDue_PolicyChangedDuringRotationKeepsItsSchedule(t *testing.T) {
 	var svc *CredentialService
 	changed := RotationPolicy{Enabled: true, Interval: 3 * time.Hour, RetainVersions: 5}
-	svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		if err := svc.SetRotationPolicy(ctx, name, changed); err != nil {
 			return nil, err
 		}
@@ -501,7 +501,7 @@ func TestRotateDue_CleanupAppliesThePolicyChangedDuringRotation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var svc *CredentialService
-			svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+			svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 				if err := svc.SetRotationPolicy(ctx, name, tc.changed); err != nil {
 					return nil, err
 				}
@@ -536,7 +536,7 @@ func TestRotateDue_CleanupAppliesThePolicyChangedDuringRotation(t *testing.T) {
 // staged or retained key behind, and reports ErrRotationClaimLost.
 func TestRotateDue_DeleteDuringSourceStaysDeleted(t *testing.T) {
 	var svc *CredentialService
-	svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc = newRotationService(t, WithRotationValueSource(func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		if err := svc.DeleteCredential(ctx, name); err != nil {
 			return nil, err
 		}
@@ -568,7 +568,7 @@ func TestRotateDue_DeleteDuringSourceStaysDeleted(t *testing.T) {
 // fails the guard and SetRotationPolicy reports ErrCredentialNotFound. A later
 // store under the same name then starts without a schedule.
 func TestSetRotationPolicy_DeleteBetweenCheckAndWrite(t *testing.T) {
-	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name string) (*secure.Buffer, error) {
+	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		return secure.NewBufferFromBytes([]byte(name + "-rotated"))
 	}))
 	ctx := t.Context()
@@ -747,7 +747,7 @@ func TestRotateDue_ExpiredSchedulerContextReleasesClaim(t *testing.T) {
 	cctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var calls atomic.Int32
-	svc := newRotationService(t, WithRotationValueSource(func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc := newRotationService(t, WithRotationValueSource(func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		if calls.Add(1) == 1 {
 			cancel()
 			return nil, ctx.Err()
@@ -777,9 +777,9 @@ func TestRotateDue_UnreleasedClaimLapses(t *testing.T) {
 	setFaultPolicy(t, svc, "k", 5)
 	due := rotationEpoch.Add(time.Hour)
 	source := svc.rotationSource
-	svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		arm(&backend.failCAS, metaKey("k"))
-		return source(ctx, name)
+		return source(ctx, name, op)
 	}
 
 	// The metadata is written with the staged value, so the fault armed by
@@ -909,7 +909,7 @@ func TestRotation_CorruptMetaReported(t *testing.T) {
 }
 
 func TestRotateDue_NilValueReported(t *testing.T) {
-	nilSource := func(context.Context, string) (*secure.Buffer, error) { return nil, nil }
+	nilSource := func(context.Context, string, string) (*secure.Buffer, error) { return nil, nil }
 	svc := newRotationService(t, WithRotationValueSource(nilSource))
 	ctx := t.Context()
 	storeRotationCredential(t, svc, "k")
@@ -947,9 +947,9 @@ func setFaultPolicy(t *testing.T, svc *CredentialService, name string, retain in
 // countSource wraps svc's rotation source so calls counts its invocations.
 func countSource(svc *CredentialService, calls *atomic.Int32) {
 	source := svc.rotationSource
-	svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		calls.Add(1)
-		return source(ctx, name)
+		return source(ctx, name, op)
 	}
 }
 
@@ -968,13 +968,13 @@ func TestRotateDue_SettlementTimedFromRotationEnd(t *testing.T) {
 			setFaultPolicy(t, svc, "k", 5)
 			source := svc.rotationSource
 			var returned, attempt time.Time
-			svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+			svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 				attempt, _ = ctx.Deadline()
 				defer func() { returned = time.Now() }()
 				if tc.fail {
 					return nil, errInjectedFault
 				}
-				return source(ctx, name)
+				return source(ctx, name, op)
 			}
 			var (
 				deadlines []time.Time
@@ -1034,13 +1034,13 @@ func TestRotateDue_LeaseTimedFromAcquisition(t *testing.T) {
 	svc.now = func() time.Time { return acquired }
 	source := svc.rotationSource
 	var claim *rotationClaim
-	svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+	svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 		meta, err := svc.loadBarrierMeta(ctx, name)
 		if err != nil {
 			return nil, err
 		}
 		claim = meta.Claim
-		return source(ctx, name)
+		return source(ctx, name, op)
 	}
 
 	if n, err := svc.RotateDue(t.Context(), due); err != nil || n != 1 {
@@ -1069,7 +1069,7 @@ func TestRotateDue_SourceBoundByLeaseExpiry(t *testing.T) {
 		return acquired.Add(rotationClaimLease)
 	}
 	var sourceErr error
-	svc.rotationSource = func(ctx context.Context, _ string) (*secure.Buffer, error) {
+	svc.rotationSource = func(ctx context.Context, _, _ string) (*secure.Buffer, error) {
 		sourceErr = ctx.Err()
 		return nil, sourceErr
 	}
@@ -1269,9 +1269,9 @@ func TestRotateDue_MetaReadFailureAfterTheClaimWritesNothing(t *testing.T) {
 		// The value source runs after the staged lookup and before the
 		// rotation reads the record to number the new version.
 		source := svc.rotationSource
-		svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+		svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 			arm(&backend.failGet, metaKey("k"))
-			return source(ctx, name)
+			return source(ctx, name, op)
 		}
 
 		n, err := svc.RotateDue(t.Context(), rotationEpoch.Add(time.Hour))

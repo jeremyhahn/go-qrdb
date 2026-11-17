@@ -24,9 +24,9 @@ func TestRotateDue_SlowSourceDoesNotStarveTheNextCredential(t *testing.T) {
 		setFaultPolicy(t, svc, "b", 5)
 		source := svc.rotationSource
 		var stalled atomic.Int32
-		svc.rotationSource = func(ctx context.Context, name string) (*secure.Buffer, error) {
+		svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
 			if name != "a" {
-				return source(ctx, name)
+				return source(ctx, name, op)
 			}
 			stalled.Add(1)
 			<-ctx.Done()

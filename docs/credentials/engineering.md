@@ -74,7 +74,7 @@ type RotationPolicy struct {
     RetainVersions int // versions kept after a scheduled rotation, the current one included
 }
 
-type RotationValueSource func(ctx context.Context, name string) (*secure.Buffer, error)
+type RotationValueSource func(ctx context.Context, name, operation string) (*secure.Buffer, error)
 
 func WithRotationValueSource(src RotationValueSource) Option
 ```
@@ -244,6 +244,14 @@ than change the interface.
   `RotationValueSource`, so a source with effects outside the store runs once
   per rotation; the others see the claim and do nothing.
   See [Scheduled rotation](#scheduled-rotation).
+- **A retried rotation recovers its value, not a second side effect.** The
+  first claim of a rotation persists an operation identity
+  (`credentialMeta.RotationOp`) in the same metadata write, before the source
+  runs. Every call of the source for that rotation, the retry after a failed
+  staging write and a later claimant after a crash, passes that operation;
+  the source must be idempotent per operation, returning the value the
+  operation already produced without repeating the external change. Any
+  landed version clears the operation, so the next rotation carries a new one.
 - **A rotation that does not complete leaves the credential due.**
   `NextRotation` moves one interval past now only when the claimed rotation
   lands. A failed rotation releases its claim, so the next check retries it; a

@@ -18,11 +18,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
+	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 )
 
 // A scheduled rotation that fails after it staged the new value, in the one
@@ -187,6 +189,67 @@ func TestRotateDue_StagingWriteFailureRotatesNothing(t *testing.T) {
 		t.Fatalf("value source called %d times, want 2: nothing was staged to resume from", got)
 	}
 	requireVersionValue(t, svc, next, "k-rotated-2")
+}
+
+// TestRotateDue_RetryCarriesThePersistedOperation: the value source may have
+// changed an upstream password before the staging write failed (or the
+// process died). Every call for the same pending rotation -- the retry, and a
+// later claimant once the claim lapsed -- carries the operation persisted
+// before the first call, so an idempotent source recovers its value instead
+// of repeating the side effect. The landed rotation ends the operation.
+func TestRotateDue_RetryCarriesThePersistedOperation(t *testing.T) {
+	svc, backend := newFaultRotationService(t)
+	setFaultPolicy(t, svc, "k", 5)
+	var (
+		mu  sync.Mutex
+		ops []string
+	)
+	source := svc.rotationSource
+	svc.rotationSource = func(ctx context.Context, name, op string) (*secure.Buffer, error) {
+		mu.Lock()
+		ops = append(ops, op)
+		mu.Unlock()
+		return source(ctx, name, op)
+	}
+	before, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	_, next := rotationVersions(before.CurrentVersion, true)
+	due := rotationEpoch.Add(time.Hour)
+
+	arm(&backend.failPut, stagedKey("k", next))
+	_, err = svc.RotateDue(t.Context(), due)
+	requireOperationError(t, err, "stage rotation")
+	backend.failPut.Store(nil)
+	meta, err := svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	if len(ops) != 1 || ops[0] == "" || meta.RotationOp != ops[0] {
+		t.Fatalf("after the failed stage: source ops %q, persisted %q; want one non-empty op, persisted", ops, meta.RotationOp)
+	}
+
+	if n, err := svc.RotateDue(t.Context(), due); n != 1 || err != nil {
+		t.Fatalf("RotateDue after the fault = %d, %v; want 1, nil", n, err)
+	}
+	if len(ops) != 2 || ops[1] != ops[0] {
+		t.Fatalf("source ops %q: the retry must carry the first call's operation", ops)
+	}
+	meta, err = svc.loadBarrierMeta(t.Context(), "k")
+	if err != nil {
+		t.Fatalf("loadBarrierMeta: %v", err)
+	}
+	if meta.RotationOp != "" {
+		t.Fatalf("landed rotation left operation %q pending", meta.RotationOp)
+	}
+
+	if n, err := svc.RotateDue(t.Context(), meta.NextRotation); n != 1 || err != nil {
+		t.Fatalf("next RotateDue = %d, %v; want 1, nil", n, err)
+	}
+	if len(ops) != 3 || ops[2] == "" || ops[2] == ops[0] {
+		t.Fatalf("source ops %q: the next rotation must carry a new operation", ops)
+	}
 }
 
 // A spent staged value whose delete fails after the version write is left

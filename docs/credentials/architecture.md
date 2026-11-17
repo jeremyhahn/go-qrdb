@@ -422,6 +422,10 @@ injects a `RotationValueSource`, which returns the next value as a
 `*secure.Buffer`. Minting a credential means acting where the credential is
 used: changing a database password at the database, or issuing a key at its
 provider. That knowledge belongs to whoever embeds qrdb, not to the engine.
+Each call carries the rotation's operation identity, persisted before the
+first call and the same on every retry of that rotation: the source must be
+idempotent per operation, so a retry after a failed write or a crash recovers
+the value already minted instead of minting another.
 `qrdbd` ships no source. Without one, a due rotation fails with
 `ErrNoRotationValueSource` and the credential stays due. A failing source
 releases the claim, so it never uses up an interval.

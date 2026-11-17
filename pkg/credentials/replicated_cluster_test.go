@@ -75,7 +75,7 @@ func startReplicatedCluster(t *testing.T) *replicatedCluster {
 	raft.WaitReadable(t, tenantHomeShard, raft.Hosts...)
 
 	c := &replicatedCluster{}
-	source := credentials.WithRotationValueSource(func(_ context.Context, name string) (*secure.Buffer, error) {
+	source := credentials.WithRotationValueSource(func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		n, _ := c.rotations.LoadOrStore(name, new(atomic.Int32))
 		n.(*atomic.Int32).Add(1)
 		return secure.NewBufferFromBytes([]byte(name + "-rotated"))

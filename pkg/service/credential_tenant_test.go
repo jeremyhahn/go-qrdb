@@ -393,7 +393,7 @@ func (h *memoryHomes) HomeStore(_ context.Context, tenantID string) (kvstore.KVS
 func TestCredentialService_RotateDueRotatesATenantsCredential(t *testing.T) {
 	var sources []string
 	f := newTenantCredentialFixture(t, credentials.WithRotationValueSource(
-		func(ctx context.Context, name string) (*secure.Buffer, error) {
+		func(ctx context.Context, name, _ string) (*secure.Buffer, error) {
 			id := tenant.FromContext(ctx)
 			sources = append(sources, id+"/"+name)
 			return secure.NewBufferFromBytes([]byte(id + "-rotated"))
@@ -426,7 +426,7 @@ func TestCredentialService_RotateDueRotatesATenantsCredential(t *testing.T) {
 func TestCredentialService_RotateDueAuditsTheTenant(t *testing.T) {
 	trail := audit.NewRingBuffer(0)
 	f := newTenantCredentialFixture(t, credentials.WithAuditLogger(trail), credentials.WithRotationValueSource(
-		func(ctx context.Context, _ string) (*secure.Buffer, error) {
+		func(ctx context.Context, _, _ string) (*secure.Buffer, error) {
 			return secure.NewBufferFromBytes([]byte(tenant.FromContext(ctx) + "-rotated"))
 		}))
 	require.NoError(t, f.svc.CredentialStore(f.acme, "db-pass", []byte("acme-secret")))
@@ -449,7 +449,7 @@ func TestCredentialService_RotateDueAuditsTheTenant(t *testing.T) {
 func TestCredentialService_RotateDueSkipsASealedTenant(t *testing.T) {
 	var calls int
 	f := newTenantCredentialFixture(t, credentials.WithRotationValueSource(
-		func(context.Context, string) (*secure.Buffer, error) {
+		func(context.Context, string, string) (*secure.Buffer, error) {
 			calls++
 			return secure.NewBufferFromBytes([]byte("rotated"))
 		}))

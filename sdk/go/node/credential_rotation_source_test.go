@@ -38,7 +38,7 @@ type credentialRotator interface {
 func TestWithCredentialRotationValueSource_RotatesADuePolicy(t *testing.T) {
 	ctx := context.Background()
 	var drawn []string
-	src := func(_ context.Context, name string) (*secure.Buffer, error) {
+	src := func(_ context.Context, name, _ string) (*secure.Buffer, error) {
 		drawn = append(drawn, name)
 		return secure.NewBufferFromBytes([]byte("rotated-value"))
 	}
