@@ -17,9 +17,11 @@ package lifecycle_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/atrest"
 	"github.com/jeremyhahn/go-qrdb/pkg/backend"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/credentials"
@@ -41,7 +43,10 @@ func TestBuildServices_StandalonePebbleRefusesCredentialReadsWhenSealed(t *testi
 	barrier, registry, credSvc := newTestBarrier(t)
 
 	dataDir := t.TempDir()
-	stg, _, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, nil, qrdbconfig.StorageConfig{})
+	// Encrypted Pebble with an enabled Encryptor in Infra: the composition
+	// that puts the credential records on the data plane behind the gate.
+	enc := atrest.New(barrier)
+	stg, _, err := lifecycle.NewLocalStorage(database.BackendPebble, dataDir, enc, qrdbconfig.StorageConfig{})
 	if err != nil {
 		t.Fatalf("NewLocalStorage(pebble): %v", err)
 	}
@@ -55,6 +60,7 @@ func TestBuildServices_StandalonePebbleRefusesCredentialReadsWhenSealed(t *testi
 		WatchHub:          hub,
 		DataDir:           dataDir,
 		Backend:           database.BackendPebble,
+		Encryptor:         enc,
 		SealBarrier:       barrier,
 		BarrierRegistry:   registry,
 		CredentialCoreSvc: credSvc,
@@ -69,6 +75,17 @@ func TestBuildServices_StandalonePebbleRefusesCredentialReadsWhenSealed(t *testi
 	}
 	if _, err := credSvc.RotateCredential(ctx, "db-password", credentials.RotateOptions{NewValue: []byte("v2-secret"), GracePeriod: time.Hour}); err != nil {
 		t.Fatalf("RotateCredential: %v", err)
+	}
+	// The records went to the data plane, not the seal barrier: otherwise the
+	// assertions below would test the barrier's own seal, not the gate.
+	barrierKeys, err := barrier.List(ctx, "")
+	if err != nil {
+		t.Fatalf("barrier.List: %v", err)
+	}
+	for _, k := range barrierKeys {
+		if strings.Contains(k, "db-password") {
+			t.Fatalf("credential record %q is in the seal barrier, want it on the data plane", k)
+		}
 	}
 
 	// Unsealed, both the current value and the retained first version read.
