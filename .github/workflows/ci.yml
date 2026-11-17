@@ -1033,7 +1033,9 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # By ID, not the tag: this job shares a pool daemon (ruling 841),
+          # where another run's load can move the tag.
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1764,7 +1766,9 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          # By ID, not the tag: this job shares a pool daemon (ruling 841),
+          # where another run's load can move the tag.
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
       # against the module first keeps a genuine build break from being

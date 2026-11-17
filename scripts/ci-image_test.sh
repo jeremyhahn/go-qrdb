@@ -22,7 +22,8 @@ mkdir -p "$D/bin"
 
 # The stub's daemon: $s/id is the ID the image under test has once loaded or
 # built ($STUB_ID), and $s/loaded-id the ID `docker load` gives it
-# ($STUB_LOAD_ID, default the saved one). STUB_NO_DIGEST makes a push report
+# ($STUB_LOAD_ID, default the saved one); $s/held lists every ID a load gave,
+# and an image ID is inspected there, not through the tag. STUB_NO_DIGEST makes a push report
 # no repo digest. STUB_PUSH_FAILS makes the first that many pushes fail with a
 # registry 500, counted in $s/push-tries. The login's password is read from stdin and recorded apart
 # from the argv log, so a test can tell it never reached a command line.
@@ -35,6 +36,15 @@ case $1 in
   image)
     # A pulled image is on the daemon too.
     [ -f "$s/id" ] || [ -f "$s/pulled" ] || exit 1
+    # An image ID names the image itself: it is on the daemon if any load
+    # gave it, whatever the tag now holds.
+    ref=${!#}
+    case $ref in
+      sha256:*)
+        { [ "$ref" = "$(cat "$s/id" 2>/dev/null)" ] || grep -qx -- "$ref" "$s/held" 2>/dev/null; } || exit 1
+        printf '%s\n' "$ref"
+        exit 0 ;;
+    esac
     case $* in
       *RepoDigests*)
         if [ -z "${STUB_NO_DIGEST:-}" ]; then
@@ -45,7 +55,11 @@ case $1 in
       *) cat "$s/id" ;;
     esac ;;
   save) printf 'tar-of-%s' "$(cat "$s/id")" > "$3" ;;
-  load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
+  load)
+    printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" | tee -a "$s/held" > "$s/id"
+    # STUB_LOAD_RACE: another run's load of the same tag lands right after.
+    [ -z "${STUB_LOAD_RACE:-}" ] || printf '%s\n' "$STUB_LOAD_RACE" | tee -a "$s/held" > "$s/id"
+    echo "Loaded image" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
   pull)
@@ -140,6 +154,17 @@ run load "$D/art" "$tc" "$id_a" -- STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && grep -q "loaded as $id_b, not $id_a" "$D/err"; then
   ok "load refuses a substituted image"
 else bad "load refuses a substituted image (rc=$rc)"; cat "$D/err"; fi
+
+# 4a. load accepts its image when another run's load on the same daemon moves
+# the tag to a different ID between this load and the check: the image is
+# checked, and later run, by its ID.
+reset
+run save "$tc" "$D/art"
+rm -f "$D/state/id"
+run load "$D/art" "$tc" "$id_a" -- STUB_LOAD_RACE="$id_b"
+if [ "$rc" = 0 ] && [ "$(cat "$D/state/id")" = "$id_b" ] && called "^image inspect -f {{.Id}} $id_a$"; then
+  ok "load checks the image by its ID when a concurrent load moves the tag"
+else bad "load checks the image by its ID when a concurrent load moves the tag (rc=$rc)"; cat "$D/err"; fi
 
 # 5. load refuses a missing artifact before calling docker.
 reset

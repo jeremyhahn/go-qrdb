@@ -952,7 +952,9 @@ func TestRunnerProblems_Split(t *testing.T) {
 // TestCISplitsTheLargeMatrices: ruling 841. coverage and fips, the two
 // largest matrices, split their legs between the hosted runners and the
 // Docker pool, with the same pool legs, so neither runner kind queues while
-// the other has room.
+// the other has room. A split job shares a pool daemon with other runs, whose
+// loads can move the toolchain tag, so it runs the toolchain by the image ID
+// docker-build recorded, never by the tag.
 func TestCISplitsTheLargeMatrices(t *testing.T) {
 	var wf runnerWorkflow
 	if err := yaml.Unmarshal([]byte(readCIBody(t)), &wf); err != nil {
@@ -968,6 +970,14 @@ func TestCISplitsTheLargeMatrices(t *testing.T) {
 		if legs == nil {
 			t.Errorf("job %s does not split its legs between ubuntu-latest and the Docker pool (ruling 841)", name)
 			continue
+		}
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, `TOOLCHAIN_IMAGE=$IMAGE`) {
+				t.Errorf("job %s hands on the toolchain by its tag; a split job shares a pool daemon, so it hands on TOOLCHAIN_IMAGE=$ID", name)
+			}
+		}
+		if !slices.ContainsFunc(job.Steps, func(s runnerStep) bool { return strings.Contains(s.Run, `echo "TOOLCHAIN_IMAGE=$ID"`) }) {
+			t.Errorf("job %s does not hand on the toolchain by the image ID docker-build recorded", name)
 		}
 		if first == nil {
 			first = legs

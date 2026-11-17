@@ -95,8 +95,13 @@ load() {
 	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
 	[ -s "$dir/image.tar" ] || die "$dir/image.tar is missing or empty: the docker-build artifact did not download"
 	docker load -i "$dir/image.tar" >&2 || die "cannot load $dir/image.tar"
-	got=$(image_id "$image")
-	[ "$got" = "$want" ] || die "$image loaded as $got, not $want, the image docker-build built"
+	# The check is by ID, never through the tag: on a shared daemon another
+	# run's load of the same tag can move it at any moment, and an image ID
+	# names the content itself. Callers then run the image by that ID.
+	if ! got=$(docker image inspect -f '{{.Id}}' "$want" 2>/dev/null) || [ "$got" != "$want" ]; then
+		got=$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null) || got="nothing"
+		die "$image loaded as $got, not $want, the image docker-build built"
+	fi
 	rm -f "$dir/image.tar"
 	echo "==> $image is $want, the image docker-build built" >&2
 }
