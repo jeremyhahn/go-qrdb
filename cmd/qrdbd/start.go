@@ -3150,7 +3150,8 @@ func runStart(f *startFlags) (err error) {
 			}
 			switch {
 			case f.dynamicMembership && !standalone:
-				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal)
+				membershipMgr, mErr := startDynamicMembership(bootCtx, f, kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc, rnode, nodeSeal,
+					cluster.WithMemberChangeHook(tenantHomeHook(tenantHomesOf(dbSvc))))
 				if mErr != nil {
 					srv.Stop()
 					_ = shutdownNode(nodeCloser)
@@ -3674,6 +3675,7 @@ func startDynamicMembership(
 	watchSvc service.WatchServicer,
 	leaders server.LeaderSource,
 	nodeSeal cluster.SealProbe,
+	opts ...cluster.MembershipOption,
 ) (*cluster.MembershipManager, error) {
 	client, err := newEmbeddedClient(kvSvc, adminSvc, mvccSvc, leaseSvc, watchSvc)
 	if err != nil {
@@ -3696,7 +3698,7 @@ func startDynamicMembership(
 		cluster.Member{NodeID: f.replicaID, Address: f.raftAddress, APIEndpoints: endpoints, Features: featuregate.SupportedNames()},
 		f.shardID,
 		cluster.MembershipConfig{MinQuorum: cluster.QuorumSize(minPeers)},
-		cluster.WithMembershipSealProbe(nodeSeal),
+		append([]cluster.MembershipOption{cluster.WithMembershipSealProbe(nodeSeal)}, opts...)...,
 	)
 	if err != nil {
 		return nil, err
@@ -3708,6 +3710,44 @@ func startDynamicMembership(
 		return nil, err
 	}
 	return mgr, nil
+}
+
+// tenantHomeReconcileTimeout bounds one tenant-home reconcile run after a
+// node joins.
+const tenantHomeReconcileTimeout = 2 * time.Minute
+
+// tenantHomeReconciler grows tenant home groups onto nodes they do not yet
+// span (service.DatabaseService.ReconcileTenantHomes).
+type tenantHomeReconciler interface {
+	ReconcileTenantHomes(ctx context.Context) error
+}
+
+// tenantHomesOf returns the database service's tenant-home reconciler, or
+// nil (with a warning) when the service does not reconcile tenant homes.
+func tenantHomesOf(db service.DatabaseServicer) tenantHomeReconciler {
+	r, ok := db.(tenantHomeReconciler)
+	if !ok {
+		slog.Warn("database service does not reconcile tenant homes; node joins will not grow them")
+		return nil
+	}
+	return r
+}
+
+// tenantHomeHook returns the member-change hook that, when a node joins (a
+// replacement node arrives as a join), grows every tenant's home group onto
+// it. A failure is logged, not fatal: the next join retries.
+func tenantHomeHook(r tenantHomeReconciler) cluster.MemberChangeHook {
+	return func(ctx context.Context, m cluster.Member, joined bool) {
+		if !joined || r == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, tenantHomeReconcileTimeout)
+		defer cancel()
+		if err := r.ReconcileTenantHomes(ctx); err != nil {
+			slog.Warn("tenant home reconcile after node join failed",
+				"node_id", m.NodeID, "error", err)
+		}
+	}
 }
 
 // memberRecordCloser is what keeps this node's member record published: the
