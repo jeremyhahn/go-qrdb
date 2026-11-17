@@ -142,21 +142,35 @@ func (s *DatabaseService) GrowTenantHome(ctx context.Context, tenantID string) (
 // none. The scheduler sizes the additions: it is asked for one per cluster
 // node, and an *InsufficientNodesError reports how many it could place.
 func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placement) (*placement.Placement, error) {
+	if s.raftHost != nil {
+		if err := waitForShardLeaderKnown(ctx, s.raftHost, home.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
+			return home, err
+		}
+	}
+	// Only the home group's leader changes its placement: Raft admits a
+	// configuration change on the leader alone, so a follower that won the
+	// placement CAS would record a replica Raft never admits. Every node runs
+	// this reconcile on a join, so the leader's node does the work.
+	view, hasView := s.raftHost.(HomeGroupView)
+	if hasView {
+		lead, err := view.IsLocalShardLeader(home.ShardID)
+		if err != nil || !lead {
+			return home, nil
+		}
+		if err := s.readmitHomeReplicas(ctx, view, home); err != nil {
+			return home, err
+		}
+	}
 	plan, err := s.placementScheduler.PlaceAdditional(ctx, home, max(s.placementScheduler.ClusterSize(), 1))
 	var short *placement.InsufficientNodesError
 	if errors.As(err, &short) {
 		if short.Have < 1 {
-			return home, nil
+			return s.shedDepartedHomeReplicas(ctx, home)
 		}
 		plan, err = s.placementScheduler.PlaceAdditional(ctx, home, short.Have)
 	}
 	if err != nil {
 		return home, err
-	}
-	if s.raftHost != nil {
-		if err := waitForShardLeaderKnown(ctx, s.raftHost, home.ShardID, s.scaleLeaderWaitTimeout, s.scaleLeaderWaitInterval); err != nil {
-			return home, err
-		}
 	}
 	base := placement.MaxReplicaID(home)
 	current := home
@@ -174,6 +188,75 @@ func (s *DatabaseService) growHome(ctx context.Context, home *placement.Placemen
 			slog.Uint64("shard_id", home.ShardID),
 			slog.Uint64("replica_id", r.ReplicaID),
 			slog.String("node", r.NodeID))
+	}
+	return s.shedDepartedHomeReplicas(ctx, current)
+}
+
+// HomeGroupView is the local Raft view home reconciliation needs beyond
+// RaftHost: whether this node leads a shard, and the shard's committed
+// members (voters, observers and witnesses by replica id).
+type HomeGroupView interface {
+	IsLocalShardLeader(shardID uint64) (bool, error)
+	ShardMembers(ctx context.Context, shardID uint64) (map[uint64]string, error)
+}
+
+// readmitHomeReplicas re-requests Raft admission for every placed home
+// replica the group's committed membership lacks: a placement recorded
+// before its AddObserver failed (or before a leader change) is otherwise
+// never admitted, and the node never serves the tenant's identity records.
+func (s *DatabaseService) readmitHomeReplicas(ctx context.Context, view HomeGroupView, home *placement.Placement) error {
+	members, err := view.ShardMembers(ctx, home.ShardID)
+	if err != nil {
+		return err
+	}
+	for _, r := range home.Replicas {
+		if _, ok := members[r.ReplicaID]; ok {
+			continue
+		}
+		if err := s.raftHost.AddObserver(ctx, home.ShardID, r.ReplicaID, r.RaftAddr); err != nil {
+			return err
+		}
+		s.logger.Info("re-admitted a placed tenant home replica",
+			slog.String("tenant", home.TenantID),
+			slog.Uint64("shard_id", home.ShardID),
+			slog.Uint64("replica_id", r.ReplicaID))
+	}
+	return nil
+}
+
+// shedDepartedHomeReplicas removes home replicas whose node has left the
+// cluster (absent from the topology, not merely unhealthy). A grown home
+// that keeps departed voters loses quorum once enough of them retire, so
+// each is removed while the replicas on known nodes are still a majority
+// of the group: only then can the removal commit.
+func (s *DatabaseService) shedDepartedHomeReplicas(ctx context.Context, home *placement.Placement) (*placement.Placement, error) {
+	known := s.placementScheduler.KnownRaftAddrs()
+	if len(known) == 0 {
+		return home, nil
+	}
+	current := home
+	for _, r := range home.Replicas {
+		if known[r.RaftAddr] {
+			continue
+		}
+		live := 0
+		for _, c := range current.Replicas {
+			if known[c.RaftAddr] {
+				live++
+			}
+		}
+		if live == 0 || live*2 <= len(current.Replicas) {
+			return current, nil
+		}
+		updated, _, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, current, r.ReplicaID)
+		if err != nil {
+			return updated, err
+		}
+		current = updated
+		s.logger.Info("removed a departed node from a tenant home group",
+			slog.String("tenant", home.TenantID),
+			slog.Uint64("shard_id", home.ShardID),
+			slog.Uint64("replica_id", r.ReplicaID))
 	}
 	return current, nil
 }

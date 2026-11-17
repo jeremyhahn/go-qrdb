@@ -157,6 +157,18 @@ func (s *Scheduler) ClusterSize() int {
 	return len(s.topo.Nodes())
 }
 
+// KnownRaftAddrs returns the Raft addresses of every node in the current
+// topology, healthy or not. A replica on an address outside it is on a node
+// that has left the cluster.
+func (s *Scheduler) KnownRaftAddrs() map[string]bool {
+	nodes := s.topo.Nodes()
+	known := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		known[n.RaftAddr] = true
+	}
+	return known
+}
+
 // Place computes a placement for req. It selects RF distinct, healthy,
 // least-loaded nodes (anti-affinity: at most one voting replica per node),
 // assigns replica IDs 1..RF in increasing load order, and chooses the

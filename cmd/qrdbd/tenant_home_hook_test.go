@@ -20,23 +20,24 @@ func (c *countingReconciler) ReconcileTenantHomes(ctx context.Context) error {
 	return c.err
 }
 
-// TestTenantHomeHook_ReconcilesOnJoinOnly checks a join runs one bounded
-// reconcile, a leave none, and a reconcile error does not panic.
-func TestTenantHomeHook_ReconcilesOnJoinOnly(t *testing.T) {
+// TestTenantHomeHook_ReconcilesOnJoinAndLeave checks a join and a leave
+// each run one bounded reconcile (a join grows the homes, a leave sheds the
+// departed node), and a reconcile error does not panic.
+func TestTenantHomeHook_ReconcilesOnJoinAndLeave(t *testing.T) {
 	r := &countingReconciler{err: errors.New("boom")}
 	hook := tenantHomeHook(r)
 	m := cluster.Member{NodeID: 4}
 
-	hook(context.Background(), m, false)
-	if r.calls != 0 {
-		t.Fatalf("leave ran %d reconciles, want 0", r.calls)
-	}
 	hook(context.Background(), m, true)
 	if r.calls != 1 {
 		t.Fatalf("join ran %d reconciles, want 1", r.calls)
 	}
 	if !r.ctxOK {
 		t.Fatal("reconcile context has no deadline")
+	}
+	hook(context.Background(), m, false)
+	if r.calls != 2 {
+		t.Fatalf("join then leave ran %d reconciles, want 2", r.calls)
 	}
 	tenantHomeHook(nil)(context.Background(), m, true) // no reconciler: no-op
 }

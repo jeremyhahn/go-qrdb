@@ -3727,25 +3727,27 @@ type tenantHomeReconciler interface {
 func tenantHomesOf(db service.DatabaseServicer) tenantHomeReconciler {
 	r, ok := db.(tenantHomeReconciler)
 	if !ok {
-		slog.Warn("database service does not reconcile tenant homes; node joins will not grow them")
+		slog.Warn("database service does not reconcile tenant homes; membership changes will not reconcile them")
 		return nil
 	}
 	return r
 }
 
-// tenantHomeHook returns the member-change hook that, when a node joins (a
-// replacement node arrives as a join), grows every tenant's home group onto
-// it. A failure is logged, not fatal: the next join retries.
+// tenantHomeHook returns the member-change hook that reconciles every
+// tenant's home group on a topology change: a join (a replacement node
+// arrives as a join) grows the homes onto the new node, a leave removes the
+// departed node from them while quorum holds. A failure is logged, not
+// fatal: the next change retries.
 func tenantHomeHook(r tenantHomeReconciler) cluster.MemberChangeHook {
 	return func(ctx context.Context, m cluster.Member, joined bool) {
-		if !joined || r == nil {
+		if r == nil {
 			return
 		}
 		ctx, cancel := context.WithTimeout(ctx, tenantHomeReconcileTimeout)
 		defer cancel()
 		if err := r.ReconcileTenantHomes(ctx); err != nil {
-			slog.Warn("tenant home reconcile after node join failed",
-				"node_id", m.NodeID, "error", err)
+			slog.Warn("tenant home reconcile after a membership change failed",
+				"node_id", m.NodeID, "joined", joined, "error", err)
 		}
 	}
 }
