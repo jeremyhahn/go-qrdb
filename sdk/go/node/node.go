@@ -2431,6 +2431,10 @@ func (n *Node) completeClusteredBoot(ctx context.Context, pending *pendingCluste
 		NoRevisionHistory: !clusteredKeepsRevisionHistory(pending.cfg),
 		WatchHub:          watchHub,
 		DataDir:           pending.cfg.Raft.DataDir,
+		// The clustered data plane is Raft: naming it lets an encrypted
+		// node put its credential records there, replicated to its peers,
+		// rather than in the node-local seal barrier.
+		Backend:           database.BackendRaft,
 		ReplicaID:         pending.cfg.Raft.ReplicaID,
 		Index:             pending.cfg.Index,
 		TimeSeries:        pending.cfg.TimeSeries,
