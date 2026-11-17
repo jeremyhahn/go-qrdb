@@ -348,7 +348,8 @@ func checkSOCertLogsInAsUsername(so *SOConfig) error {
 // enrollSystemSO enrols Dependencies.SO in tenantID, after the admin: the
 // account with the so role alone, its certificate bound, its PIN
 // committed. Idempotent: a re-run finds this SO, binds it only when it
-// holds no live binding, and accepts a PIN an earlier run already set.
+// holds no live binding, accepts a PIN an earlier run already set, and
+// returns a CSR-signed SO's certificate again, reissued for its bound key.
 func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, result *Result) error {
 	so := deps.SO
 	if so == nil {
@@ -407,7 +408,30 @@ func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, res
 			slog.String("tenant", tenantID),
 			slog.Uint64("user_id", soUser.ID),
 		)
+		return nil
 	}
+	// The SO is already bound to its key. Its certificate was returned
+	// only by the run that bound it, and that run may have failed after
+	// the binding (the admin binding is the last write), so the embedder
+	// may hold the SO's key with no login certificate. A CSR is signed
+	// again for the same key, which the standing binding already covers,
+	// and returned; a presented certificate is the embedder's own.
+	if len(so.CertPEM) > 0 {
+		return nil
+	}
+	certPEM, err := issueSOCert(ctx, deps, tenantID)
+	if err != nil {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	}
+	thumbprint, err := spkiThumbprintFromCertPEM(certPEM)
+	if err != nil {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: err}
+	}
+	if thumbprint != soKey {
+		return &SystemSOEnrollmentError{Op: "certificate", Cause: errors.New("the reissued certificate does not carry the SO's bound key")}
+	}
+	result.SOCertPEM = certPEM
+	result.SOCertThumbprint = thumbprint
 	return nil
 }
 

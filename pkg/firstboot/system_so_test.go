@@ -350,8 +350,13 @@ func TestInitialize_SystemSOReRunIsIdempotent(t *testing.T) {
 		t.Fatalf("re-run Initialize: %v", err)
 	}
 	so := h.users.byName["officer"]
-	if result.SOCreated || result.SOUserID != so.ID || result.SOCertPEM != nil {
+	if result.SOCreated || result.SOUserID != so.ID {
 		t.Fatalf("re-run result = %+v, want the existing, bound SO", result)
+	}
+	// The re-run returns the SO's certificate again, reissued for the key
+	// the standing binding covers.
+	if len(result.SOCertPEM) == 0 || result.SOCertThumbprint != so.CertBindings[0].Thumbprint {
+		t.Fatalf("re-run returned SO certificate %q, want one for the bound key %q", result.SOCertThumbprint, so.CertBindings[0].Thumbprint)
 	}
 	if h.binder.calls[so.ID] != 1 || len(so.CertBindings) != 1 {
 		t.Fatalf("SO bound %d times, %d bindings; a re-run must not rebind a bound SO", h.binder.calls[so.ID], len(so.CertBindings))
