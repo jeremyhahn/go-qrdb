@@ -4,10 +4,16 @@ package node
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
+	"github.com/jeremyhahn/go-qrdb/pkg/user"
 )
 
 // A strict clustered node restarting while its peers are down must not
@@ -52,5 +58,75 @@ func TestBootIdentityServices_StrictHolderCheckNeedsNoQuorum(t *testing.T) {
 	}
 	if err := firstboot.CheckStrictSeparationHolders(ctx, users, roles); err != nil {
 		t.Fatalf("strict startup holder check without a quorum: %v", err)
+	}
+}
+
+// A clustered node's boot stores must read the system identities where the
+// runtime IAM persists them, under tenant.IdentityNamespace(tenantid.System):
+// a persisted account holding both the system SO and Admin roles must make
+// the strict startup holder check refuse, not pass over an empty raw keyspace
+// (SPEC row 124).
+func TestBootIdentityServices_StrictHolderCheckSeesPersistedConflict(t *testing.T) {
+	ca, replicas := newFormationReplicas(t, 3)
+	nodes, err := bootFormationCluster(t, ca, replicas, func(self uint64) string {
+		return peerIdentitySpecs(t, self, replicas)
+	})
+	if err != nil {
+		t.Fatalf("NewClusteredNode: %v", err)
+	}
+	n := nodes[0]
+	svcNode := n.Services()
+	if svcNode == nil {
+		t.Fatal("node has no services")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sysCtx := tenant.WithTenantID(ctx, tenantid.System)
+
+	var roleIDs []string
+	for _, name := range []string{role.RoleNameSO, role.RoleNameAdmin} {
+		r, err := svcNode.Role.GetRoleByName(sysCtx, tenantid.System, name)
+		if err != nil {
+			var notFound *role.RoleNotFoundError
+			if !errors.As(err, &notFound) {
+				t.Fatalf("GetRoleByName(%s): %v", name, err)
+			}
+			var perms []permission.Permission
+			for _, b := range role.BuiltInRoles(tenantid.System) {
+				if b.Name == name {
+					perms = b.Permissions
+				}
+			}
+			r, err = svcNode.Role.CreateRole(sysCtx, &role.CreateRoleRequest{
+				ID: role.SystemRoleID(tenantid.System, name), Name: name,
+				TenantID: tenantid.System, Permissions: perms,
+			})
+			if err != nil {
+				t.Fatalf("CreateRole(%s): %v", name, err)
+			}
+		}
+		roleIDs = append(roleIDs, r.ID)
+	}
+	combined, err := svcNode.User.CreateUser(sysCtx, &user.CreateUserRequest{
+		WithoutEmailLoginKey: true,
+		Username:             "combined-so-admin",
+		TenantID:             tenantid.System,
+		RoleIDs:              roleIDs,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(combined SO/Admin): %v", err)
+	}
+
+	users, roles, err := n.bootIdentityServices(svcNode)
+	if err != nil {
+		t.Fatalf("bootIdentityServices: %v", err)
+	}
+	err = firstboot.CheckStrictSeparationHolders(ctx, users, roles)
+	var conflict *firstboot.StrictSeparationSOAdminError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("strict startup holder check over the boot stores: %v, want *firstboot.StrictSeparationSOAdminError", err)
+	}
+	if conflict.UserID != combined.ID {
+		t.Fatalf("conflict = %+v, want user %d", conflict, combined.ID)
 	}
 }

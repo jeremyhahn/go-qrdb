@@ -132,6 +132,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
+	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
@@ -146,6 +147,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	pebbleStorage "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/user"
 	"github.com/jeremyhahn/go-qrdb/pkg/vlog"
@@ -3834,7 +3836,17 @@ func (n *Node) bootIdentityServices(svcNode *lifecycle.Node) (user.UserServicer,
 		return svcNode.User, svcNode.Role, nil
 	}
 	boot := raftbackend.NewBootstrapAdapter(raftbackend.New(host, raftbackend.WithFeatureGate(n.featureGate)))
-	store := lifecycle.NewKVStoreAdapter(service.NewKVService(boot, shard.ShardKV))
+	// The runtime IAM and the daemon's bootstrap keep the system identities
+	// under the system identity namespace; the boot stores must read the
+	// same keys, or the SO name index is never found and the check passes
+	// over an empty keyspace.
+	store, err := kvstore.NewNamespacedKVStore(
+		lifecycle.NewKVStoreAdapter(service.NewKVService(boot, shard.ShardKV)),
+		tenant.IdentityNamespace(tenantid.System),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
 	// The check only reads: the generator never issues an identifier.
 	idgen, err := dao.NewSnowflakeGenerator(0)
 	if err != nil {
