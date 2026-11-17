@@ -22,7 +22,13 @@
 #
 # Neither function fails its caller's job: a pull or a push that fails is a
 # miss, and each is bounded by `timeout` (CI_IMAGE_REGISTRY_TIMEOUT seconds,
-# default 900), so a hung registry falls back to the build. Each image logs
+# default 300), so a hung registry falls back to the build. One outage budget
+# serves the whole job: the first transfer that times out or cannot connect
+# leaves a marker under ${RUNNER_TEMP:-${TMPDIR:-/tmp}} (named by a hash of
+# the registry value, never the value), and every later pull or push in the
+# job that finds it skips at once, logging only `registry unavailable,
+# skipped <ref>`, with the status a failed transfer has. A registry that
+# answers, even "not found", leaves no marker. Otherwise each image logs
 # exactly one line on stderr: `pulled <repo>@<digest>` from ci_registry_pull,
 # else `miss, built and pushed <repo>@<digest>` or `miss, built, push failed`
 # from ci_registry_push; a mismatch logs `miss, <repo>@<digest> does not match
@@ -38,9 +44,58 @@ ci_registry_ref() {
 
 # ci_registry_timeout prints the per-call bound in seconds.
 ci_registry_timeout() {
-	local t=${CI_IMAGE_REGISTRY_TIMEOUT:-900}
-	[[ $t =~ ^[1-9][0-9]{0,4}$ ]] || t=900
+	local t=${CI_IMAGE_REGISTRY_TIMEOUT:-300}
+	[[ $t =~ ^[1-9][0-9]{0,4}$ ]] || t=300
 	printf '%s\n' "$t"
+}
+
+# ci_registry_outage_marker <registry> prints the path of this job's outage
+# marker for <registry>: a file in the job's temporary directory named by the
+# value's sha256, so the address never reaches a file name.
+ci_registry_outage_marker() {
+	local sum
+	sum=$(printf '%s' "$1" | sha256sum 2>/dev/null) && [ -n "$sum" ] || return 1
+	printf '%s/ci-image-registry-outage-%s\n' "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" "${sum:0:16}"
+}
+
+# ci_registry_skip <registry> <ref> succeeds, logging `registry unavailable,
+# skipped <ref>`, when an earlier transfer in this job left the outage marker
+# for <registry>; it fails, silently, otherwise.
+ci_registry_skip() {
+	local marker
+	marker=$(ci_registry_outage_marker "$1") && [ -e "$marker" ] || return 1
+	echo "registry unavailable, skipped $2" >&2
+}
+
+# ci_registry_outage <registry> <status> [<stderr>] leaves the outage marker
+# for <registry> when a transfer's <status> is timeout's expiry (124, or 137
+# after -k) or its <stderr> says the registry could not be reached. Any other
+# failure, a "manifest unknown" or an HTTP error, is the registry answering.
+ci_registry_outage() {
+	local marker
+	case $2 in
+	124 | 137) ;;
+	*)
+		case ${3:-} in
+		*"connection refused"* | *"no such host"* | *"i/o timeout"* | *"no route to host"* | \
+			*"network is unreachable"* | *"connection reset"* | *"TLS handshake timeout"* | \
+			*"Client.Timeout exceeded"*) ;;
+		*) return 0 ;;
+		esac
+		;;
+	esac
+	marker=$(ci_registry_outage_marker "$1") || return 0
+	: >"$marker" 2>/dev/null || true
+}
+
+# ci_registry_transfer <docker args...> runs one bounded registry pull or push
+# for CI_IMAGE_REGISTRY, output discarded, and leaves the outage marker when
+# it timed out or could not connect. Its status is docker's (or timeout's).
+ci_registry_transfer() {
+	local err rc=0
+	err=$(timeout -k 10 "$(ci_registry_timeout)" docker "$@" 2>&1 >/dev/null) || rc=$?
+	[ "$rc" = 0 ] || ci_registry_outage "$CI_IMAGE_REGISTRY" "$rc" "$err"
+	return "$rc"
 }
 
 # ci_registry_record <image> prints the path of the image's digest record, or
@@ -88,7 +143,8 @@ ci_registry_pull() {
 	ref=$(ci_registry_ref "$image") || return 1
 	repo=${ref%:*}
 	digest=$(ci_registry_recorded "$image") || return 1
-	timeout -k 10 "$(ci_registry_timeout)" docker pull "$repo@$digest" >/dev/null 2>&1 || return 1
+	! ci_registry_skip "$CI_IMAGE_REGISTRY" "$repo@$digest" || return 1
+	ci_registry_transfer pull "$repo@$digest" || return 1
 	if ! got=$(ci_registry_digest "$repo" "$repo@$digest") || [ "$got" != "$digest" ]; then
 		echo "miss, $repo@$digest does not match its record" >&2
 		docker rmi "$repo@$digest" >/dev/null 2>&1 || true
@@ -105,9 +161,12 @@ ci_registry_pull() {
 ci_registry_push() {
 	local image=$1 how=${2:-miss, built} ref repo record digest
 	[ -n "${CI_IMAGE_REGISTRY:-}" ] || return 0
-	if ! { ref=$(ci_registry_ref "$image") &&
+	if ref=$(ci_registry_ref "$image") && ci_registry_skip "$CI_IMAGE_REGISTRY" "$ref"; then
+		return 0
+	fi
+	if ! { [ -n "$ref" ] &&
 		docker tag "$image" "$ref" >/dev/null 2>&1 &&
-		timeout -k 10 "$(ci_registry_timeout)" docker push "$ref" >/dev/null 2>&1; }; then
+		ci_registry_transfer push "$ref"; }; then
 		echo "$how, push failed" >&2
 		return 0
 	fi

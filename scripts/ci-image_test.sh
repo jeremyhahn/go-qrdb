@@ -15,6 +15,9 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 
 D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
+# The registry's outage marker goes to the job's temporary directory: here
+# the stub's state, so reset clears it between cases.
+export RUNNER_TEMP="$D/state"
 mkdir -p "$D/bin"
 
 # The stub's daemon: $s/id is the ID the image under test has once loaded or
@@ -56,6 +59,7 @@ case $1 in
         printf '%s@%s\n' "${2%@*}" "$d" > "$s/pulled"
         echo 'Status: Downloaded newer image'; echo "Digest: $d" ;;
       hang) exec sleep 30 ;;
+      refused) echo "dial tcp registry.test:5000: connect: connection refused" >&2; exit 1 ;;
       *) echo 'manifest unknown' >&2; exit 1 ;;
     esac ;;
   push)
@@ -325,9 +329,63 @@ pull_rc=$rc
 records
 run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=1
 if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && called "^pull $itrepo@$dig$" &&
-  [ "$(cat "$D/err")" = "miss, built, push failed" ] && [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ]; then
-  ok "registry: a stalled pull and push time out, fall back and log the push failure"
-else bad "registry: a stalled pull and push time out, fall back and log the push failure (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+  ! called '^push ' && [ "$(cat "$D/err")" = "registry unavailable, skipped $reg/$it" ] &&
+  [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ]; then
+  ok "registry: a stalled pull times out, falls back and the push skips"
+else bad "registry: a stalled pull times out, falls back and the push skips (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 19a. One outage budget per job: the first stalled pull leaves one marker,
+# named by the registry's hash, and the second pull and both pushes skip at
+# once without calling docker, each with the status a failed transfer has.
+reset
+records "$dig"
+start=$SECONDS
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=2
+r1=$rc
+markers=$(cd "$D/state" && echo ci-image-registry-outage-*)
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=2
+r2=$rc e2=$(cat "$D/err")
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=2
+r3=$rc e3=$(cat "$D/err")
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=2
+if [ "$r1" = 1 ] && [ "$r2" = 1 ] && [ "$r3" = 0 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 10 ] &&
+  [ "$(grep -c '^pull ' "$D/state/calls")" = 1 ] && ! called '^push ' && ! called '^tag ' &&
+  [ "$e2" = "registry unavailable, skipped $itrepo@$dig" ] &&
+  [ "$e3" = "registry unavailable, skipped $reg/$it" ] && [ "$(cat "$D/err")" = "$e3" ] &&
+  [[ $markers =~ ^ci-image-registry-outage-[0-9a-f]{16}$ ]] && [[ $markers != *registry.test* ]]; then
+  ok "registry: the first stalled transfer spends the job's outage budget, the rest skip"
+else bad "registry: the first stalled transfer spends the job's outage budget, the rest skip ($r1 $r2 $r3 $rc, $markers)"; printf '%s\n%s\n' "$e2" "$e3"; fi
+
+# 19b. A registry that cannot be reached at all spends the budget too; a fast
+# not-found (test 18) and an HTTP error (test 20) do not.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=refused
+r1=$rc
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$r1" = 1 ] && [ "$rc" = 1 ] && [ "$(grep -c '^pull ' "$D/state/calls")" = 1 ] &&
+  [ "$(cat "$D/err")" = "registry unavailable, skipped $itrepo@$dig" ]; then
+  ok "registry: a refused connection spends the job's outage budget"
+else bad "registry: a refused connection spends the job's outage budget (rc=$r1/$rc)"; cat "$D/err"; fi
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=miss
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_FAILS=1
+miss_left=$(cd "$D/state" && echo ci-image-registry-outage-*)
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$miss_left" = 'ci-image-registry-outage-*' ] && [ "$rc" = 0 ] && [ "$(grep -c '^pull ' "$D/state/calls")" = 2 ]; then
+  ok "registry: a not-found pull and an HTTP error leave no outage marker"
+else bad "registry: a not-found pull and an HTTP error leave no outage marker (rc=$rc, $miss_left)"; cat "$D/err"; fi
+
+# 19c. The per-call bound defaults to 300 s; a value that is not a count of
+# seconds falls back to it.
+t_default=$(unset CI_IMAGE_REGISTRY_TIMEOUT; . "$here/image-registry.sh"; ci_registry_timeout)
+t_bad=$(CI_IMAGE_REGISTRY_TIMEOUT=abc; . "$here/image-registry.sh"; ci_registry_timeout)
+t_set=$(CI_IMAGE_REGISTRY_TIMEOUT=42; . "$here/image-registry.sh"; ci_registry_timeout)
+if [ "$t_default" = 300 ] && [ "$t_bad" = 300 ] && [ "$t_set" = 42 ]; then
+  ok "registry: the per-call bound defaults to 300 s"
+else bad "registry: the per-call bound defaults to 300 s (got $t_default, $t_bad, $t_set)"; fi
 
 # 20. Unreachable: a refused push (closed port) is logged, never retried, never fatal.
 reset

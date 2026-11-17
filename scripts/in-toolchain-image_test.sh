@@ -18,6 +18,9 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 
 D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
+# The registry's outage marker goes to the job's temporary directory: here
+# the stub's state, so reset clears it between cases.
+export RUNNER_TEMP="$D/state"
 mkdir -p "$D/bin" "$D/src"
 echo x > "$D/src/file"
 
@@ -495,6 +498,15 @@ img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=han
 if [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && ! called '^tag ' && called '^create '; then
   ok "registry: a hung registry times out and the stage runs"
 else bad "registry: a hung registry times out and the stage runs (rc=$rc)"; cat "$D/out"; fi
+
+# The hung pull spent the job's outage budget: a later call in the same job
+# skips the registry at once, never calling docker pull, and the stage runs.
+start=$SECONDS
+img=$tcimg run CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=5
+if [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 5 ] && [ "$(grep -c '^pull ' "$D/state/calls")" = 1 ] &&
+  grep -q "registry unavailable, skipped $reg/" "$D/out"; then
+  ok "registry: after a timeout the job's later pulls skip the registry"
+else bad "registry: after a timeout the job's later pulls skip the registry (rc=$rc)"; cat "$D/out"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
