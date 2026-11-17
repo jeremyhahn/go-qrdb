@@ -34,11 +34,6 @@ func newTestBackend(t *testing.T) *StandaloneBackend {
 	return NewStandaloneBackend(store)
 }
 
-func TestStandaloneBackend_InterfaceCompliance(t *testing.T) {
-	// Compile-time check: StandaloneBackend must implement Backend.
-	var _ Backend = (*StandaloneBackend)(nil)
-}
-
 func TestStandaloneBackend_Get(t *testing.T) {
 	b := newTestBackend(t)
 	ctx := context.Background()

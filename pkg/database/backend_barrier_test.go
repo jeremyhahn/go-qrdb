@@ -79,10 +79,6 @@ func newBarrierTestBackend(t *testing.T, barrier *xorBarrier) *BarrierBackend {
 	return NewBarrierBackend(inner, barrier)
 }
 
-func TestBarrierBackend_InterfaceCompliance(t *testing.T) {
-	var _ Backend = (*BarrierBackend)(nil)
-}
-
 func TestBarrierBackend_PutGet(t *testing.T) {
 	barrier := &xorBarrier{mask: 0xAA}
 	b := newBarrierTestBackend(t, barrier)

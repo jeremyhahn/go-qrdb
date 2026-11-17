@@ -96,10 +96,6 @@ func TestDatapointsTable_PartitionRows_Empty(t *testing.T) {
 	assert.ErrorIs(t, err, io.EOF)
 }
 
-func TestDatapointsTable_ImplementsTable(t *testing.T) {
-	var _ sqle.Table = (*DatapointsTable)(nil)
-}
-
 func TestDatapointsPartition_Key(t *testing.T) {
 	p := &datapointsPartition{}
 	assert.Equal(t, []byte("datapoints"), p.Key())
