@@ -215,7 +215,11 @@ scripts/cluster-proof-ci.sh down build/clusterproof-ci
 
 - `render DIR IMAGE [FAULT_IMAGE]` writes a throwaway test CA, the node and
   admin certificates, the PINs and the inventory, targets and workload files
-  into `DIR`. Its last line is the `PROOF_NODES` value. The faults run in
+  into `DIR`. Each node certificate names the node by its Raft address,
+  `spiffe://qrdb.cluster/node/<ip>:63001`, and the admin certificate is
+  `OU=system, CN=admin` with `spiffe://system/user/admin`, the identity the
+  first-boot ceremony adopts as the cluster admin. Its last line is the
+  `PROOF_NODES` value. The faults run in
   `FAULT_IMAGE` (default `IMAGE`): the release image has no iptables, so
   pass the image `make cluster-proof-fault-image` builds from
   `test/clusterproof/fault.Dockerfile`, which carries the tools the default

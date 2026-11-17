@@ -16,7 +16,11 @@ package soak_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +29,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/forward"
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/spiffe"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/container"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/nemesis"
 	"github.com/jeremyhahn/go-qrdb/test/clusterproof/soak"
@@ -130,6 +137,78 @@ func TestCIFixtureLoads(t *testing.T) {
 			t.Fatalf("%s fault_image = %q, want %q", name, got, ciFaultImage)
 		}
 	}
+}
+
+// TestCIFixtureCertificates proves the rendered certificates carry the
+// identities the cluster accepts: the admin certificate passes the
+// ceremony's adoption checks and each node certificate names the node by
+// its Raft address in the cluster trust domain. adoptAdminCert is
+// unexported, so the test runs its parts.
+func TestCIFixtureCertificates(t *testing.T) {
+	const trustDomain = "qrdb.cluster"
+	dir, _ := renderCI(t)
+
+	pool := x509.NewCertPool()
+	pool.AddCert(readCert(t, filepath.Join(dir, "tls", "ca.pem")))
+
+	admin := readCert(t, filepath.Join(dir, "admin.pem"))
+	if _, err := admin.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Fatalf("admin certificate does not verify for clientAuth: %v", err)
+	}
+	if admin.Subject.CommonName != "admin" {
+		t.Fatalf("admin CN = %q, want admin", admin.Subject.CommonName)
+	}
+	if ou := admin.Subject.OrganizationalUnit; len(ou) != 1 || ou[0] != "system" {
+		t.Fatalf("admin OU = %v, want [system]", ou)
+	}
+	if admin.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		t.Fatal("admin certificate lacks digitalSignature")
+	}
+	tenant, err := auth.TenantFromClientCert(admin, trustDomain)
+	if err != nil || tenant != "system" {
+		t.Fatalf("TenantFromClientCert(admin) = %q, %v, want system, nil", tenant, err)
+	}
+
+	inv, err := container.ParseInventory(openFile(t, filepath.Join(dir, "inventory.json")))
+	if err != nil {
+		t.Fatalf("ParseInventory: %v", err)
+	}
+	for _, n := range inv.Nodes {
+		want := net.JoinHostPort(n.Address, "63001")
+		if got := n.RaftAddress(); got != want {
+			t.Fatalf("%s RaftAddress = %q, want %q", n.Name, got, want)
+		}
+		certFile := filepath.Join(n.TLSDir, "node.pem")
+		id, err := spiffe.NodeFromCert(readCert(t, certFile), trustDomain)
+		if err != nil || id.NodeID != want {
+			t.Fatalf("%s NodeFromCert = %q, %v, want %q", n.Name, id.NodeID, err, want)
+		}
+		pair, err := tls.LoadX509KeyPair(certFile, filepath.Join(n.TLSDir, "node-key.pem"))
+		if err != nil {
+			t.Fatalf("%s LoadX509KeyPair: %v", n.Name, err)
+		}
+		if _, got := forward.NodeIdentity(&tls.Config{Certificates: []tls.Certificate{pair}}); got != want {
+			t.Fatalf("%s forward.NodeIdentity = %q, want %q", n.Name, got, want)
+		}
+	}
+}
+
+// readCert parses the PEM certificate in file.
+func readCert(t *testing.T, file string) *x509.Certificate {
+	t.Helper()
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("read %s: %v", file, err)
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		t.Fatalf("%s: no PEM block", file)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse %s: %v", file, err)
+	}
+	return cert
 }
 
 // recordRunner records the argv a remote target would run.

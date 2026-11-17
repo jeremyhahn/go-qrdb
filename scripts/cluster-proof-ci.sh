@@ -24,7 +24,10 @@
 #                     FAULT_IMAGE (default IMAGE), which must carry the tools
 #                     the fault commands run: `make cluster-proof-fault-image`
 #                     builds one (test/clusterproof/fault.Dockerfile). The
-#                     last line on stdout is the PROOF_NODES value.
+#                     last line on stdout is the PROOF_NODES value. Node
+#                     certificates carry spiffe://qrdb.cluster/node/<ip>:63001,
+#                     the admin certificate OU=system, CN=admin and
+#                     spiffe://system/user/admin, as the ceremony adopts it.
 #   up DIR            give each node its own CLUSTERPROOF_DISK_MB (default
 #                     1024) ext4 filesystem, loop-mounted on DIR/node-N/data,
 #                     create the network and boot the cluster with BOOT-01,
@@ -44,6 +47,11 @@ readonly network=proof
 readonly subnet=192.0.2.0/24
 readonly nodes=(1 2 3)
 readonly quic_port=63004
+# The node certificates name each node by its Raft address in the cluster
+# trust domain (the config default; BOOT-01 sets none), as cluster
+# enrolment does: test/clusterproof/container/inventory.go RaftPort.
+readonly trust_domain=qrdb.cluster
+readonly raft_port=63001
 
 usage() {
 	echo "usage: $0 render DIR IMAGE [FAULT_IMAGE] | up DIR | down DIR" >&2
@@ -109,15 +117,18 @@ render() {
 		genkey "$tls/node-key.pem"
 		sign "$dir/tls" "$tls/node-key.pem" "$tls/node.pem" "/CN=node-$n" \
 			"$(printf '%s\n' \
-				"subjectAltName=IP:$addr" \
+				"subjectAltName=IP:$addr,URI:spiffe://$trust_domain/node/$addr:$raft_port" \
 				"keyUsage=critical,digitalSignature" \
 				"extendedKeyUsage=serverAuth,clientAuth")"
 		chmod 0644 "$tls/node-key.pem"
 	done
 
 	genkey "$dir/admin-key.pem"
-	sign "$dir/tls" "$dir/admin-key.pem" "$dir/admin.pem" "/CN=clusterproof-admin" \
+	# The ceremony adopts this as the cluster admin: CN admin, Subject OU[0]
+	# the system tenant, and the SPIFFE user SAN the ceremony itself issues.
+	sign "$dir/tls" "$dir/admin-key.pem" "$dir/admin.pem" "/OU=system/CN=admin" \
 		"$(printf '%s\n' \
+			"subjectAltName=URI:spiffe://system/user/admin" \
 			"keyUsage=critical,digitalSignature" \
 			"extendedKeyUsage=clientAuth")"
 	pin "$dir/so.pin"
