@@ -552,7 +552,7 @@ func addObserverReplica(
 	// Refuse a replica on a node that cannot apply what the group uses
 	// before anything is persisted: a refused add leaves the placement as
 	// it was, so no reconciler starts a shard there.
-	if aerr := admitReplica(raftHost, current.ShardID, r.RaftAddr); aerr != nil {
+	if _, aerr := admitReplica(raftHost, current.ShardID, r.RaftAddr); aerr != nil {
 		return current, nil, false, aerr
 	}
 	updated = clonePlacementWithReplica(current, r)

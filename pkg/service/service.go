@@ -1233,7 +1233,15 @@ func (s *AdminService) Peers(_ context.Context) (*PeersInfo, error) {
 // by replaying the group's log, so a node whose binary cannot apply
 // something already active in the log must never be added to it.
 func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+	// configChangeID binds the add to the system-shard membership release
+	// admission compared against: go-quicraft refuses it with
+	// ErrStaleConfigChange when another membership change committed in
+	// between, so two concurrent adds of non-adjacent releases cannot both
+	// land. It is 0 (no ordering check) for any other shard: release
+	// admission is about system-shard membership, and another shard's
+	// configuration change index is a different counter.
+	configChangeID, err := admitReplica(s.host, shardID, raftAddr)
+	if err != nil {
 		return err
 	}
 	if err := s.awaitShardLeader(ctx, "add", shardID); err != nil {
@@ -1243,15 +1251,29 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 	if err != nil {
 		return err
 	}
-	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
+	err = s.requestAdd(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+	if configChangeID == 0 || !errors.Is(err, quicraft.ErrStaleConfigChange) {
+		return err
+	}
+	// The membership changed after admission: admit once more against the
+	// new configuration (a refusal now is the release gap) and retry once.
+	if configChangeID, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
+	return s.requestAdd(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+}
+
+// requestAdd proposes adding replicaID with its identity, ordered after the
+// configuration change configChangeID (0 skips the ordering check), and
+// waits for the result.
+func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+	rs, err := s.host.RequestAddNodeWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
 		return s.translateMembershipError("add", err)
 	}
-
 	if _, err := rs.Result(); err != nil {
 		return s.translateMembershipError("add", err)
 	}
-
 	return nil
 }
 
@@ -1264,7 +1286,7 @@ func (s *AdminService) AddMember(ctx context.Context, shardID, replicaID uint64,
 // log exactly as a voter is, so the same feature-advertisement admission
 // check (admitReplica) applies.
 func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	if err := admitReplica(s.host, shardID, raftAddr); err != nil {
+	if _, err := admitReplica(s.host, shardID, raftAddr); err != nil {
 		return err
 	}
 	if err := s.awaitShardLeader(ctx, "add-observer", shardID); err != nil {

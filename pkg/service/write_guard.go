@@ -78,11 +78,24 @@ type ReplicaAdmitter interface {
 
 // admitReplica asks h, when it gates features, whether a replica of shardID
 // may be added on raftAddr.
-func admitReplica(h any, shardID uint64, raftAddr string) error {
-	if a, ok := h.(ReplicaAdmitter); ok {
-		return a.AdmitReplica(shardID, raftAddr)
+func admitReplica(h any, shardID uint64, raftAddr string) (uint64, error) {
+	if a, ok := h.(configBoundAdmitter); ok {
+		return a.AdmitReplicaAt(shardID, raftAddr)
 	}
-	return nil
+	if a, ok := h.(ReplicaAdmitter); ok {
+		return 0, a.AdmitReplica(shardID, raftAddr)
+	}
+	return 0, nil
+}
+
+// configBoundAdmitter is a ReplicaAdmitter that also returns the
+// configuration change ID of the system-shard membership its release check
+// compared against (0 when none binds: another shard, or no membership was
+// compared). AddMember passes it as the add's configChangeIndex, so
+// go-quicraft refuses the add as stale when the membership changed after
+// admission (featuregate.Gate.AdmitReplicaAt).
+type configBoundAdmitter interface {
+	AdmitReplicaAt(shardID uint64, raftAddr string) (uint64, error)
 }
 
 // WriteGuard is a precondition carried by every write proposed under a

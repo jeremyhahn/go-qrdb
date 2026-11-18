@@ -568,18 +568,40 @@ func (g *Gate) Supports(raftAddr string, feature feature.Feature) bool {
 // membership change could undo it, and admission on the join path is where
 // that undoing is refused, not discovered later at apply time.
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
-	if err := g.admitRelease(raftAddr); err != nil {
-		return err
+	_, err := g.AdmitReplicaAt(shardID, raftAddr)
+	return err
+}
+
+// AdmitReplicaAt is AdmitReplica that also returns the configuration change
+// ID of the system-shard membership the release check compared against, for
+// the caller to pass as the add's configChangeIndex: go-quicraft then refuses
+// the add with ErrStaleConfigChange when another membership change committed
+// after admission, and the caller admits again against the new membership.
+// Without that binding two concurrent adds of non-adjacent releases (0.58 and
+// 0.60 into an all-0.59 cluster) both pass, since neither is yet a committed
+// member the other must stay adjacent to.
+//
+// The ID is 0 -- no binding -- when shardID is not the system shard (release
+// admission is about system-shard membership; another group's configuration
+// change index is a different counter) or when no membership was compared
+// (the node itself, or a candidate that advertises no release).
+func (g *Gate) AdmitReplicaAt(shardID uint64, raftAddr string) (uint64, error) {
+	configChangeID, err := g.admitRelease(raftAddr)
+	if err != nil {
+		return 0, err
 	}
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
 		}
 		if !g.Supports(raftAddr, f) {
-			return &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
+			return 0, &UnsupportedReplicaError{ShardID: shardID, Address: raftAddr, Feature: f}
 		}
 	}
-	return nil
+	if shardID != g.systemShard {
+		return 0, nil
+	}
+	return configChangeID, nil
 }
 
 // admitRelease refuses the node at raftAddr when its live advertisement
@@ -593,10 +615,10 @@ func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 // release announcement and is judged by its features alone, both as the
 // candidate and as a member compared against; this node itself is never
 // refused.
-func (g *Gate) admitRelease(raftAddr string) error {
+func (g *Gate) admitRelease(raftAddr string) (uint64, error) {
 	self, selfErr := g.AdvertisedSelf()
 	if selfErr == nil && self.Address == raftAddr {
-		return nil
+		return 0, nil
 	}
 	view := *g.view.Load()
 	candidate := ""
@@ -607,15 +629,15 @@ func (g *Gate) admitRelease(raftAddr string) error {
 		}
 	}
 	if candidate == "" {
-		return nil
+		return 0, nil
 	}
-	refuse := func(err error, member, memberRelease string) error {
+	refuse := func(err error, member, memberRelease string) (uint64, error) {
 		g.logger.Warn("feature gate: refusing replica on a release gap",
 			"address", raftAddr,
 			"peer_release", candidate,
 			"member", member,
 			"member_release", memberRelease)
-		return err
+		return 0, err
 	}
 	if err := release.Check(releaseChannel, candidate); err != nil {
 		return refuse(err, "self", release.Version())
@@ -625,9 +647,11 @@ func (g *Gate) admitRelease(raftAddr string) error {
 	// adjacent to. A member's release is its live advertisement's; one
 	// that predates announcement is skipped; an offline member's is the
 	// release it recorded, and with neither the candidate is refused.
+	// The verdict holds only for this configuration, so its change ID is
+	// returned to bind the add to it (see AdmitReplicaAt).
 	system, err := g.members.GroupMembership(g.systemShard)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	recorded := *g.releases.Load()
 	for _, m := range committedMembers(system) {
@@ -651,7 +675,7 @@ func (g *Gate) admitRelease(raftAddr string) error {
 			}
 		}
 	}
-	return nil
+	return system.ConfigChangeID, nil
 }
 
 // committedMember is one replica or witness of a committed membership.
