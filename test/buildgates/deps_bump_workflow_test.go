@@ -73,3 +73,99 @@ gh api "repos/$REPO/commits/$c" --jq .commit.verification.verified
 		})
 	}
 }
+
+// depsBumpPRStep is the name of deps-bump.yml's PR-opening step.
+const depsBumpPRStep = "- name: Open the PR and label it"
+
+// depsBumpRecoveryProblems lists where deps-bump.yml can strand
+// ci/deps-bump: a failed PR create leaves a branch with no open PR, which
+// the base step refuses on every later run. The commit step records a branch
+// it created in GITHUB_ENV; the PR step catches a failed create, looks up an
+// open PR for the branch, and only when there is none and this run created
+// the branch deletes it. No step force-updates a ref.
+func depsBumpRecoveryProblems(src string) []string {
+	var p []string
+	if !strings.Contains(src, `echo "BUMP_BRANCH_CREATED=1" >> "$GITHUB_ENV"`) {
+		p = append(p, "the commit step does not write BUMP_BRANCH_CREATED=1 to GITHUB_ENV when it creates the branch")
+	}
+	if strings.Contains(src, "force=true") || strings.Contains(src, "push --force") || strings.Contains(src, "push -f") {
+		p = append(p, "force-updates a ref")
+	}
+	i := strings.Index(src, depsBumpPRStep)
+	if i < 0 {
+		return append(p, "has no step "+depsBumpPRStep)
+	}
+	step := src[i+len(depsBumpPRStep):]
+	if j := strings.Index(step, "\n      - name:"); j >= 0 {
+		step = step[:j]
+	}
+	order := []struct{ text, what string }{
+		{`if PR=$(`, "catches a failed PR create (if PR=$(...))"},
+		{`"repos/$REPO/pulls?state=open&head=$owner:$BRANCH`, "looks up an open PR for the branch after a failed create"},
+		{`"${BUMP_BRANCH_CREATED:-}" = 1`, "guards the delete with BUMP_BRANCH_CREATED"},
+		{`gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH"`, "deletes the branch it created"},
+	}
+	at := 0
+	for _, o := range order {
+		k := strings.Index(step[at:], o.text)
+		if k < 0 {
+			p = append(p, "the PR step never, in order, "+o.what)
+			return p
+		}
+		at += k + len(o.text)
+	}
+	del := order[len(order)-1].text
+	if strings.Index(step, del) < strings.Index(step, order[2].text) {
+		p = append(p, "the PR step deletes the branch before the open-PR lookup and the BUMP_BRANCH_CREATED guard")
+	}
+	return p
+}
+
+func TestDepsBumpWorkflowRecoversFailedPRCreate(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", depsBumpWorkflowName, err)
+	}
+	if p := depsBumpRecoveryProblems(string(b)); len(p) != 0 {
+		t.Fatalf("%s:\n  %s", depsBumpWorkflowName, strings.Join(p, "\n  "))
+	}
+}
+
+func TestDepsBumpRecoveryProblems_CanFail(t *testing.T) {
+	good := `            created=1
+            echo "BUMP_BRANCH_CREATED=1" >> "$GITHUB_ENV"
+      - name: Open the PR and label it
+        run: |
+            if PR=$(jq -n '{}' | gh api "repos/$REPO/pulls" --input - --jq .number); then
+              echo "opened #$PR"
+            else
+              PR=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$BRANCH&base=main" --jq '.[0].number // empty' || true)
+              if [ -z "$PR" ]; then
+                if [ "${BUMP_BRANCH_CREATED:-}" = 1 ]; then
+                  gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
+                fi
+                exit 1
+              fi
+            fi
+      - name: Next
+`
+	if p := depsBumpRecoveryProblems(good); len(p) != 0 {
+		t.Fatalf("good workflow flagged: %v", p)
+	}
+	for name, tc := range map[string]struct{ from, to, want string }{
+		"no env record":    {`echo "BUMP_BRANCH_CREATED=1" >> "$GITHUB_ENV"`, "", "GITHUB_ENV"},
+		"create exits":     {"if PR=$(", "PR=$(", "catches a failed PR create"},
+		"no lookup":        {"pulls?state=open&head=$owner:$BRANCH", "pulls", "looks up an open PR"},
+		"unguarded delete": {`if [ "${BUMP_BRANCH_CREATED:-}" = 1 ]; then`, "if true; then", "BUMP_BRANCH_CREATED"},
+		"delete before lookup": {`              PR=$(gh api "repos/$REPO/pulls?state=open`,
+			`              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH"` + "\n" + `              PR=$(gh api "repos/$REPO/pulls?state=open`, "deletes the branch before"},
+		"force push": {"exit 1", "git push --force origin HEAD; exit 1", "force-updates"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := depsBumpRecoveryProblems(strings.Replace(good, tc.from, tc.to, 1))
+			if len(p) == 0 || !strings.Contains(strings.Join(p, "\n"), tc.want) {
+				t.Fatalf("want a problem naming %q, got %v", tc.want, p)
+			}
+		})
+	}
+}

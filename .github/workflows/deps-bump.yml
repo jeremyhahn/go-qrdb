@@ -227,6 +227,9 @@ jobs:
           if ! gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
             created=1
+            # The PR step deletes a branch only this run created, should its
+            # PR create fail.
+            echo "BUMP_BRANCH_CREATED=1" >> "$GITHUB_ENV"
           fi
           stat=$(git diff --cached --stat)
           # shellcheck disable=SC2016 # $in is a GraphQL variable
@@ -263,8 +266,25 @@ jobs:
             body=$(printf '%s\n\n%s\n' \
               'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest, then `make deps-check` and `make build-server build-cli-headless` passed.' \
               "Changed: $CHANGED")
-            PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number)
-            echo "opened #$PR"
+            if PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number); then
+              echo "opened #$PR"
+            else
+              # A failed PR create would leave a branch with no open PR, which
+              # the base step refuses on every later run. Take a PR that does
+              # exist for the branch; else delete the branch only if this run
+              # created it, so the next daily run starts from main. Never
+              # delete a branch this run did not create, never force a ref.
+              owner=${REPO%%/*}
+              PR=$(gh api "repos/$REPO/pulls?state=open&head=$owner:$BRANCH&base=main" --jq '.[0].number // empty' || true)
+              if [ -z "$PR" ]; then
+                if [ "${BUMP_BRANCH_CREATED:-}" = 1 ]; then
+                  gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
+                fi
+                echo "::error::opening the PR for $BRANCH failed and no open PR has it as head"
+                exit 1
+              fi
+              echo "found #$PR"
+            fi
           fi
           gh api "repos/$REPO/issues/$PR/labels" -f 'labels[]=code-review' -f 'labels[]=task:ready' >/dev/null
           echo "number=$PR" >> "$GITHUB_OUTPUT"
