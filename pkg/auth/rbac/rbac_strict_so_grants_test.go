@@ -16,10 +16,12 @@ package rbac
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -76,6 +78,52 @@ func TestAuthorize_RolesReconcileAll_PerPosture(t *testing.T) {
 			}
 			if !tc.allowed && err == nil {
 				t.Fatal("roles:reconcile_all allowed, want denied")
+			}
+		})
+	}
+}
+
+// TestAuthorize_RolesReconcileAll_CustomRoleWithSOIDIsNotSO pins Codex r2
+// P1 on #1129: a custom system-tenant role a caller created with the ID
+// "so" is not the built-in SO, so in the strict posture holding it — in
+// identity.Roles or through a RoleBinding — earns no SO-exclusive grant,
+// neither from Authorize nor from the grant guard's ValidateGrantable.
+func TestAuthorize_RolesReconcileAll_CustomRoleWithSOIDIsNotSO(t *testing.T) {
+	ctx := context.Background()
+	roles := authtest.BuiltInRoles(t, tenantid.System)
+	custom, err := roles.CreateRole(ctx, &role.CreateRoleRequest{
+		ID:          role.RoleNameSO,
+		Name:        "reviewer",
+		TenantID:    tenantid.System,
+		Permissions: []permission.Permission{"kv:get"},
+	})
+	if err != nil {
+		t.Fatalf("create the custom role: %v", err)
+	}
+	if custom.ID != role.RoleNameSO {
+		t.Fatalf("custom role ID = %q, want %q", custom.ID, role.RoleNameSO)
+	}
+	authz := New(roles, WithStrictSeparation(true))
+	reconcileAll := permission.Permission("roles:reconcile_all")
+
+	for _, tc := range []struct {
+		name     string
+		identity *auth.Identity
+	}{
+		{"home roles", &auth.Identity{Subject: "custom-so", TenantID: tenantid.System,
+			Roles: []string{custom.ID}}},
+		{"via binding", &auth.Identity{Subject: "bound-custom-so", TenantID: tenantid.System,
+			RoleBindings: []auth.RoleBinding{{RoleID: custom.ID, TenantID: tenantid.System}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := authz.Authorize(ctxFor(tenantid.System), tc.identity, "roles", "reconcile_all"); err == nil {
+				t.Fatal("roles:reconcile_all allowed to a custom role with ID \"so\", want denied")
+			}
+			gctx := auth.WithIdentity(ctxFor(tenantid.System), tc.identity)
+			err := role.ValidateGrantable(gctx, authz, tenantid.System, []permission.Permission{reconcileAll})
+			var exceeds *role.GrantExceedsHolderError
+			if !errors.As(err, &exceeds) {
+				t.Fatalf("ValidateGrantable(roles:reconcile_all) = %v, want *role.GrantExceedsHolderError", err)
 			}
 		})
 	}

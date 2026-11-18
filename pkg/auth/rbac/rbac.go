@@ -750,18 +750,17 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// reconcile across every tenant), which are the Admin's in the standard
 	// posture. Additive, and only for the exact permission requested; the
 	// scope gate below still confines a cross-scope one to the system SO.
+	//
+	// A positive grant matches the built-in SO by its persisted (canonical)
+	// ID only, held directly or through a RoleBinding: a tenant may give a
+	// custom role the caller-supplied ID "so", and holding it is not
+	// holding the SO, so it must not earn an SO-exclusive grant (Codex r2
+	// P1 on #1129). The deny-list above keeps the alias: denying more is
+	// safe, granting more is not.
 	if a.strictSoD && slices.Contains(permission.StrictSOGrants, required) {
-		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
-		if err != nil {
-			return err
-		}
-		// An SO held only through a RoleBinding is the SO as much as one
-		// in identity.Roles, exactly as the SO deny-list above counts it.
+		isSO := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameSO)
 		if !isSO && len(bound) > 0 {
-			isSO, err = a.roleIDsHoldSystemRole(ctx, bound, target, role.RoleNameSO)
-			if err != nil {
-				return err
-			}
+			isSO = hasCanonicalSystemRole(bound, target, role.RoleNameSO)
 		}
 		if isSO {
 			merged := make(map[permission.Permission]struct{}, len(permSet)+1)
