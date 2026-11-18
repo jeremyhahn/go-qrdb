@@ -19,6 +19,8 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,47 @@ func TestConnect_RefusesAServerThatDoesNotSelectProtocolV3(t *testing.T) {
 				t.Fatalf("errors.As(alpnMismatchError) = %v, want %v (err = %v)", got, tt.wantMismatch, err)
 			}
 		})
+	}
+}
+
+// TestConnect_GapProtocolIsTypedRefusal: a server two releases ahead speaks
+// only a frame protocol this client does not offer, so it ends the
+// handshake with no_application_protocol (alert 120). Connect reports that
+// as a typed *protocolRefusedError naming what it offered, inside a
+// transport.ConnectionError, and does not retry it.
+func TestConnect_GapProtocolIsTypedRefusal(t *testing.T) {
+	serverCfg, clientCfg := e2eTLS(t)
+	serverCfg.NextProtos = []string{"qrdb-quic/5"}
+	clientCfg.NextProtos = nil
+	addr := streamServer(t, serverCfg, func(stream *quicgo.Stream) { _ = stream.Close() })
+
+	tr, err := New(transport.WithAddress(addr), transport.WithTLSConfig(clientCfg), transport.WithTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("New transport: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = tr.Connect(ctx)
+	if err == nil {
+		_ = tr.Close()
+		t.Fatal("Connect succeeded against a server speaking only qrdb-quic/5")
+	}
+	var connErr *transport.ConnectionError
+	if !errors.As(err, &connErr) {
+		t.Fatalf("Connect error = %T %v, want *transport.ConnectionError", err, err)
+	}
+	var refused *protocolRefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("Connect error = %v, want *protocolRefusedError", err)
+	}
+	if !slices.Equal(refused.Offered, wire.Protocols) {
+		t.Fatalf("Offered = %q, want %q", refused.Offered, wire.Protocols)
+	}
+	if !strings.Contains(refused.Error(), wire.ProtocolV3) {
+		t.Fatalf("%q does not name the offered protocol", refused.Error())
+	}
+	if retryableConnect(err) {
+		t.Fatal("a protocol refusal is retried")
 	}
 }
 
