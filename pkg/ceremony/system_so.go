@@ -317,6 +317,13 @@ const systemSOWriteOutstandingKey = "ceremony/system-so-write-outstanding"
 // its hash, and the barrier encrypts it. Callers hold s.mu.
 func (s *CeremonyService) persistIssuedSystemSOLocked(ctx context.Context, so *IssuedSystemSO) error {
 	if so == nil {
+		// An Initialize that issues no SO must not leave behind the record
+		// an earlier, abandoned attempt wrote (its SO record landed but
+		// the intent clear after it failed): first boot would otherwise
+		// enrol an SO this initialization never issued.
+		if err := s.barrier.Delete(ctx, pendingSystemSOKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+			return &SystemSOPersistError{Op: "remove", Cause: err}
+		}
 		return nil
 	}
 	blob, err := json.Marshal(so)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -239,4 +240,54 @@ func TestInitialize_SingleAdminRetryVerifiesPINsBeforeSigning(t *testing.T) {
 		require.ErrorIs(t, err, pin.ErrPINLocked, "a locked-out counter refuses even the right PIN")
 		assert.Zero(t, ca.signs.Load(), "a locked-out SO PIN must not cost a CA signing")
 	})
+}
+
+var errSystemSOIntentClear = errors.New("simulated system SO intent clear fault")
+
+// intentClearFailBackend fails the first removal of the barrier's system SO
+// intent marker, after the SO record itself has been written.
+type intentClearFailBackend struct {
+	seal.StorageBackend
+	armed bool
+}
+
+func (b *intentClearFailBackend) Delete(ctx context.Context, key string) error {
+	if b.armed && strings.HasSuffix(key, ".system-so-intent") {
+		b.armed = false
+		return errSystemSOIntentClear
+	}
+	return b.StorageBackend.Delete(ctx, key)
+}
+
+// TestInitialize_SingleAdminSOLessRetryDropsTheAbandonedSORecord pins
+// go-qrdb#1129's Codex r1 P1: an attempt whose SO record write landed but
+// whose intent clear failed leaves that record behind; a retry that names no
+// SO must remove it, so first boot is handed no SO this initialization never
+// issued.
+func TestInitialize_SingleAdminSOLessRetryDropsTheAbandonedSORecord(t *testing.T) {
+	ctx := context.Background()
+	backend := &intentClearFailBackend{StorageBackend: seal.NewMemoryBackend(), armed: true}
+	e := newSingleAdminSOFaultEnv(t)
+	e.backend.StorageBackend = backend
+	e.backend.armed = false
+	b, svc := e.boot()
+
+	_, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.ErrorIs(t, err, errSystemSOIntentClear)
+	require.False(t, backend.armed, "the fault hit the intent clear")
+
+	soLess := e.opts()
+	soLess.SOUsername, soLess.SOCSRPEM = "", nil
+	result, err := svc.Initialize(ctx, e.ca, soLess)
+	require.NoError(t, err, "an SO-less retry completes the ceremony")
+	assert.Equal(t, StateOperational, result.State)
+	assert.Empty(t, result.SOCertPEM)
+	assert.False(t, b.IsSealed())
+	assert.Nil(t, svc.LastIssuedSystemSO())
+	pending, err := svc.PendingSystemSO(ctx)
+	require.NoError(t, err)
+	assert.Nil(t, pending, "first boot must enrol no SO the retry did not issue")
+	intent, err := b.SystemSOIntent(ctx)
+	require.NoError(t, err)
+	assert.False(t, intent)
 }
