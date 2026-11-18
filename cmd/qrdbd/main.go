@@ -21,13 +21,15 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
-// version, gitCommit, and buildDate are set at build time via ldflags:
+// gitCommit and buildDate are set at build time via ldflags; the release
+// version is pkg/release's, which the node also announces to its peers:
 //
-//	go build -ldflags "-X main.version=... -X main.gitCommit=... -X main.buildDate=..."
+//	go build -ldflags "-X github.com/jeremyhahn/go-qrdb/pkg/release.version=... -X main.gitCommit=... -X main.buildDate=..."
 var (
-	version   = "dev"
 	gitCommit = "unknown"
 	buildDate = "unknown"
 )
@@ -77,7 +79,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(_ *cobra.Command, _ []string) {
-			fmt.Printf("QuicRaft DB v%s\n", version)
+			fmt.Printf("QuicRaft DB v%s\n", release.Version())
 			fmt.Printf("  commit: %s\n", gitCommit)
 			fmt.Printf("  built:  %s\n", buildDate)
 		},

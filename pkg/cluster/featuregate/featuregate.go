@@ -70,6 +70,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/feature"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // GuardedWrites is protocol.OpGuarded: a write carried with compares the
@@ -550,6 +551,9 @@ func (g *Gate) Supports(raftAddr string, feature feature.Feature) bool {
 // membership change could undo it, and admission on the join path is where
 // that undoing is refused, not discovered later at apply time.
 func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
+	if err := g.admitRelease(raftAddr); err != nil {
+		return err
+	}
 	for _, f := range supported {
 		if !g.Activated(f) && !g.decide(shardID, f, false) {
 			continue
@@ -560,6 +564,34 @@ func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 	}
 	return nil
 }
+
+// admitRelease refuses the node at raftAddr when its live advertisement
+// announces a release this binary does not accept (pkg/release.Check),
+// returning the *release.GapError with Channel "raft-membership". A record
+// with an empty ReleaseVersion predates release announcement and is judged
+// by its features alone; this node itself is never refused.
+func (g *Gate) admitRelease(raftAddr string) error {
+	if self, err := g.AdvertisedSelf(); err == nil && self.Address == raftAddr {
+		return nil
+	}
+	for _, rec := range *g.view.Load() {
+		if rec.Address != raftAddr || rec.ReleaseVersion == "" {
+			continue
+		}
+		if err := release.Check(releaseChannel, rec.ReleaseVersion); err != nil {
+			g.logger.Warn("feature gate: refusing replica on a release gap",
+				"address", raftAddr,
+				"local_release", release.Version(),
+				"peer_release", rec.ReleaseVersion)
+			return err
+		}
+	}
+	return nil
+}
+
+// releaseChannel names the cluster-membership channel in a
+// *release.GapError.
+const releaseChannel = "raft-membership"
 
 // AdvertisedSelf returns what the local node advertises: its system-shard
 // replica ID and the raft address the system shard has committed for it --

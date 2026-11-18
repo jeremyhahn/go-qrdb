@@ -33,7 +33,7 @@ COVER_DIR     := coverage
 BUILD_VERSION := $(shell cat VERSION 2>/dev/null || echo "0.0.1-alpha")
 GIT_COMMIT    := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE    := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS       := -X main.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
+LDFLAGS       := -X main.version=$(BUILD_VERSION) -X github.com/jeremyhahn/go-qrdb/pkg/release.version=$(BUILD_VERSION) -X main.gitCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_DATE)
 
 # Every pinned tool version (handbook devcontainer.md section 2): the same file
 # the CI image's toolchain stage sources, so make and CI use one set of pins.
