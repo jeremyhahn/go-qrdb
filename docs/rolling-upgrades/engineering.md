@@ -110,10 +110,15 @@ them. Each test states which pair of builds it runs on:
   support yet: v0.58.5-alpha and earlier lack the pending-user TTL (feature
   `pending-user-ttl`, #1587), and #1587 is on main but unreleased. Once the
   first release that carries #1587 is tagged, T1-T4, T6 and T7 also run on the
-  released pair. That pair is always the newest release and the release
-  before it, so both sides advance together and stay adjacent (Q1). T8 keeps
-  v0.58.5-alpha as a fixed pre-TTL server, separate from the pair, because the
-  TTL case needs a server without the field.
+  released pair. The released pair is the newest release of the newest minor
+  and the newest release of the previous minor, so the pair is always one minor
+  apart, as Q1 defines adjacency. Two patch releases of one minor are never the
+  pair; a patch-pair run may be added separately and is not required by the
+  row. T8 keeps v0.58.5-alpha as a fixed pre-TTL server, separate from the
+  pair, because the TTL case needs a server without the field. In the same way,
+  the T4 `pending-user-ttl` activation case runs on a fixed historical pair,
+  the first release that carries #1587 against v0.58.5-alpha, separate from the
+  advancing pair.
 - **Synthetic N+1.** Until that release exists, every test runs on the
   synthetic pair. Until two releases carry the version announcement, T5
   (gap refusal) and the negotiation parts of T2 always do. It builds N+1 from the same tree
@@ -128,7 +133,7 @@ them. Each test states which pair of builds it runs on:
 | T1 | Roll a three-node cluster N → N+1 one node at a time under the clusterproof workload. The linearizability check passes, and no write is lost. |
 | T2 | Mid-upgrade clusters, 2×N + 1×(N+1) and 1×N + 2×(N+1). Every transport (gRPC, REST, QUIC, MCP, SQL wires) serves through the CLI on every node, and forwarding works in both directions (N → N+1 leader and N+1 → N leader). |
 | T3 | Roll back N+1 → N before activation. Data written during the mixed phase reads back. |
-| T4 | After activation, an N binary refuses to start, with the typed error naming the feature: on the synthetic pair, the test-only feature; on the released pair, `pending-user-ttl` activated by the first release with #1587 refuses v0.58.5-alpha. |
+| T4 | After activation, an N binary refuses to start, with the typed error naming the feature: on the synthetic pair, the test-only feature. On the advancing released pair, when the older member already supports every feature the newer one activates, T4 uses only the test-only feature of the synthetic build. The `pending-user-ttl` case runs on a fixed historical pair, kept separate from the advancing pair the way T8 keeps v0.58.5-alpha fixed: the first release with #1587 activates `pending-user-ttl`, and v0.58.5-alpha then refuses to start. |
 | T5 | Version-gap refusal (N and N+2) on every channel: enrolment returns the typed refusal, ALPN ends in alert 120, the Raft `WireWindow` refuses. The node logs both versions, and the cluster does not diverge. |
 | T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. |
 | T7 | Key delivery across versions, in both directions. |
