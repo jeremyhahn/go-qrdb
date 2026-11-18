@@ -102,7 +102,7 @@ func runMirrorProbe(t *testing.T, mirror, cdnIndex, mirrorIndex string) (string,
 }
 
 func TestApkIndexSum_ReadsTheMirrorTheBuildReads(t *testing.T) {
-	const mirror = "http://192.168.101.12:3143/alpine"
+	const mirror = "http://192.168.77.7:3143/alpine"
 	hosted, _ := runMirrorProbe(t, "", "index-v2", "unused")
 	if len(hosted) != 64 || strings.Trim(hosted, "0123456789abcdef") != "" {
 		t.Fatalf("the hosted sum is %q; want a sha256", hosted)

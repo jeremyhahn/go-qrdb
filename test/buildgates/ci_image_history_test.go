@@ -80,12 +80,12 @@ func TestCIImageHistoryScript(t *testing.T) {
 	for _, tc := range []struct {
 		name, history, config, want string
 	}{
-		{name: "an apk mirror build argument", history: "RUN |1 APK_MIRROR=http://192.168.101.12:3143/alpine /bin/sh -c apk-mirror add git", config: cleanConfig, want: "history entry 1"},
+		{name: "an apk mirror build argument", history: "RUN |1 APK_MIRROR=http://192.168.77.7:3143/alpine /bin/sh -c apk-mirror add git", config: cleanConfig, want: "history entry 1"},
 		{name: "an apt proxy in a later entry", history: cleanHistory + "\nRUN |1 APT_PROXY=http://10.20.30.40:3142 /bin/sh -c apt-get update", config: cleanConfig, want: "history entry 5"},
 		{name: "a 172.16/12 address", history: "ENV REG=172.20.0.5:5005", config: cleanConfig, want: "history entry 1"},
 		{name: "an address at the start of an entry", history: "192.168.1.1", config: cleanConfig, want: "history entry 1"},
 		{name: "an address in the config", history: cleanHistory, config: `{"Env":["GOPROXY=http://10.0.0.7:3000|https://proxy.golang.org"]}`, want: "config"},
-		{name: "an address in a label", history: cleanHistory, config: `{"Labels":{"cache":"192.168.101.12"}}`, want: "config"},
+		{name: "an address in a label", history: cleanHistory, config: `{"Labels":{"cache":"192.168.77.7"}}`, want: "config"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := runImageHistory(t, map[string]string{"a_1.history": tc.history, "a_1.config": tc.config}, "a:1")
@@ -104,7 +104,7 @@ func TestCIImageHistoryScript(t *testing.T) {
 	}
 	t.Run("every image is read", func(t *testing.T) {
 		files := map[string]string{"a_1.history": cleanHistory, "a_1.config": cleanConfig,
-			"b_2.history": "RUN |1 APK_MIRROR=http://192.168.101.12:3143/alpine x", "b_2.config": cleanConfig}
+			"b_2.history": "RUN |1 APK_MIRROR=http://192.168.77.7:3143/alpine x", "b_2.config": cleanConfig}
 		if out, err := runImageHistory(t, files, "a:1", "b:2"); err == nil || !strings.Contains(out, "b:2") {
 			t.Fatalf("a private address in the second image passes (%v):\n%s", err, out)
 		}

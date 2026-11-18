@@ -119,8 +119,8 @@ func TestCIMaskLANScript(t *testing.T) {
 	cmd := exec.Command("bash", script) // #nosec G204 -- the repository's own script
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
-		"DEVCACHE_APT_PROXY=http://192.168.101.12:3142",
-		"DEVCACHE_APK_MIRROR=http://192.168.101.12:3143/alpine",
+		"DEVCACHE_APT_PROXY=http://192.168.77.7:3142",
+		"DEVCACHE_APK_MIRROR=http://192.168.77.7:3143/alpine",
 		"GOPROXY=http://10.1.2.3:3300|https://proxy.golang.org,direct",
 		"CI_REGISTRY=172.20.0.5:5005",
 		"OTHER=http://192.168.9.9:1",
@@ -131,8 +131,8 @@ func TestCIMaskLANScript(t *testing.T) {
 	}
 	got := strings.Split(strings.TrimSpace(string(out)), "\n")
 	for _, want := range []string{
-		"::add-mask::http://192.168.101.12:3142", "::add-mask::192.168.101.12:3142", "::add-mask::192.168.101.12",
-		"::add-mask::http://192.168.101.12:3143/alpine", "::add-mask::192.168.101.12:3143",
+		"::add-mask::http://192.168.77.7:3142", "::add-mask::192.168.77.7:3142", "::add-mask::192.168.77.7",
+		"::add-mask::http://192.168.77.7:3143/alpine", "::add-mask::192.168.77.7:3143",
 		"::add-mask::http://10.1.2.3:3300", "::add-mask::10.1.2.3",
 		"::add-mask::172.20.0.5:5005", "::add-mask::172.20.0.5",
 	} {
