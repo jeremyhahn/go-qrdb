@@ -755,6 +755,14 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 		if err != nil {
 			return err
 		}
+		// An SO held only through a RoleBinding is the SO as much as one
+		// in identity.Roles, exactly as the SO deny-list above counts it.
+		if !isSO && len(bound) > 0 {
+			isSO, err = a.roleIDsHoldSystemRole(ctx, bound, target, role.RoleNameSO)
+			if err != nil {
+				return err
+			}
+		}
 		if isSO {
 			merged := make(map[permission.Permission]struct{}, len(permSet)+1)
 			for p := range permSet {

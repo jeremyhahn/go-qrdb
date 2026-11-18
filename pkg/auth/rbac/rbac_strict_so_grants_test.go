@@ -48,6 +48,10 @@ func TestAuthorize_RolesReconcileAll_PerPosture(t *testing.T) {
 	so := &auth.Identity{Subject: "so", TenantID: tenantid.System, Roles: []string{sysSO.ID}}
 	admin := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{sysAdmin.ID}}
 	tenantSO := &auth.Identity{Subject: "tenant-so", TenantID: "acme", Roles: []string{acmeSO.ID}}
+	// The system SO held only through a RoleBinding, as the SO deny-list
+	// already counts it (Codex r1 P1 on #1129).
+	boundSO := &auth.Identity{Subject: "bound-so", TenantID: tenantid.System,
+		RoleBindings: []auth.RoleBinding{{RoleID: sysSO.ID, TenantID: tenantid.System}}}
 
 	for _, tc := range []struct {
 		name     string
@@ -59,6 +63,8 @@ func TestAuthorize_RolesReconcileAll_PerPosture(t *testing.T) {
 		{"standard: system Admin", sysRoles, admin, false, true},
 		{"standard: system SO", sysRoles, so, false, false},
 		{"strict: system SO", sysRoles, so, true, true},
+		{"standard: system SO by binding", sysRoles, boundSO, false, false},
+		{"strict: system SO by binding", sysRoles, boundSO, true, true},
 		{"standard: tenant SO", acmeRoles, tenantSO, false, false},
 		{"strict: tenant SO", acmeRoles, tenantSO, true, false},
 	} {
