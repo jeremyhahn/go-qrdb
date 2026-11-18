@@ -3,13 +3,88 @@
 package integration_test
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	quicgo "github.com/quic-go/quic-go"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 )
+
+// upgradeProbeALPN is the identifier the upgrade-probe (N+1) build prefers
+// (wire.ProtocolV4Probe, declared only under the qrdb_upgrade_probe tag this
+// test binary is not built with).
+const upgradeProbeALPN = "qrdb-quic/4-probe"
+
+// requireStampedReleases asserts every node's binary announces the release
+// the upgrade matrix stamped on it: upgradeReleaseN on N, upgradeReleaseNext
+// on N+1 (the release each node advertises to the cluster).
+func requireStampedReleases(t *testing.T, bins upgradeBinaries, nodeBins []string) {
+	t.Helper()
+	for i, bin := range nodeBins {
+		want := upgradeReleaseN
+		if bin == bins.next {
+			want = upgradeReleaseNext
+		}
+		out, err := exec.Command(bin, "version").CombinedOutput()
+		if err != nil {
+			t.Fatalf("node %d: %s version: %v\n%s", i+1, bin, err, out)
+		}
+		if !strings.Contains(string(out), "QuicRaft DB v"+want+"\n") {
+			t.Fatalf("node %d: version output %q does not announce release %s", i+1, out, want)
+		}
+	}
+}
+
+// negotiatedALPN completes a QUIC handshake with node as a client offering
+// offer, in order, and returns the ALPN identifier the node selected.
+func negotiatedALPN(t *testing.T, node *multiProtoNode, offer []string) string {
+	t.Helper()
+	cert, err := tls.LoadX509KeyPair(node.clientCert, node.clientKey)
+	if err != nil {
+		t.Fatalf("load client certificate: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn, err := quicgo.DialAddr(ctx, fmt.Sprintf("127.0.0.1:%d", node.quicPort), &tls.Config{
+		RootCAs: node.ca.Pool, Certificates: []tls.Certificate{cert}, NextProtos: offer, MinVersion: tls.VersionTLS13,
+	}, &quicgo.Config{})
+	if err != nil {
+		t.Fatalf("QUIC handshake offering %v: %v", offer, err)
+	}
+	defer func() { _ = conn.CloseWithError(0, "") }()
+	return conn.ConnectionState().TLS.NegotiatedProtocol
+}
+
+// requireALPNNegotiation asserts the QUIC version negotiation of a mixed
+// cluster: an N+1 peer reaching an N node and an N peer reaching an N+1
+// node both fall back to wire.ProtocolV3, and two N+1 peers agree on the
+// newer identifier.
+func requireALPNNegotiation(t *testing.T, c *upgradeCluster, nIdx, nextIdx int) {
+	t.Helper()
+	offerNext := []string{upgradeProbeALPN, wire.ProtocolV3}
+	offerN := []string{wire.ProtocolV3}
+	for _, tc := range []struct {
+		name  string
+		node  int
+		offer []string
+		want  string
+	}{
+		{name: "N+1 view of an N node", node: nIdx, offer: offerNext, want: wire.ProtocolV3},
+		{name: "N view of an N+1 node", node: nextIdx, offer: offerN, want: wire.ProtocolV3},
+		{name: "N+1 view of an N+1 node", node: nextIdx, offer: offerNext, want: upgradeProbeALPN},
+	} {
+		if got := negotiatedALPN(t, c.nodes[tc.node], tc.offer); got != tc.want {
+			t.Fatalf("%s (node %d): negotiated %q, want %q", tc.name, tc.node+1, got, tc.want)
+		}
+	}
+}
 
 // mixedShapes are the two mixed-version clusters a rolling upgrade passes
 // through: true marks a node on N+1.
@@ -60,6 +135,10 @@ func TestRollingUpgrade_MixedCluster_CLI(t *testing.T) {
 		t.Run(shape.name, func(t *testing.T) {
 			nodeBins, nIdx, nextIdx := shapeBinaries(bins, shape.next)
 			c := startUpgradeCluster(t, nodeBins)
+			requireStampedReleases(t, bins, nodeBins)
+			// The CLI is an N build: its QUIC puts below reach the N+1
+			// nodes over the fallback the negotiation asserts here.
+			requireALPNNegotiation(t, c, nIdx, nextIdx)
 
 			want := make(map[string]string, 2*3*len(multiProtocols))
 			for i, node := range c.nodes {

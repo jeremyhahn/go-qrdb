@@ -25,6 +25,14 @@ const upgradeProbeFeature feature.Feature = "upgrade-probe"
 // proposes as protocol.OpUpgradeProbe once upgradeProbeFeature is active.
 const upgradeProbeKeyPrefix = "upgrade-probe/"
 
+// The upgrade matrix stamps two adjacent releases (pkg/release.Adjacent):
+// the N build announces upgradeReleaseN, the N+1 build upgradeReleaseNext,
+// so a mixed cluster exercises the release check on every channel.
+const (
+	upgradeReleaseN    = "0.90.0-alpha"
+	upgradeReleaseNext = "0.91.0-alpha"
+)
+
 // upgradeBinaries are the rolling-upgrade matrix's two daemon builds: n,
 // today's qrdbd, and next, the synthetic N+1 -- the same tree built with the
 // qrdb_upgrade_probe tag, which adds upgradeProbeFeature and its opcode.
@@ -36,13 +44,15 @@ type upgradeBinaries struct {
 // buildUpgradeBinaries builds the N and N+1 daemons.
 func buildUpgradeBinaries(t *testing.T) upgradeBinaries {
 	t.Helper()
-	n, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage)
+	n, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage,
+		qrdbdharness.WithReleaseVersion(upgradeReleaseN))
 	if err != nil {
 		t.Fatalf("build qrdbd (N): %v", err)
 	}
 	next, err := qrdbdharness.BuildBinary(qrdbdharness.DaemonPackage,
 		qrdbdharness.WithBuildTags(qrdbdharness.DefaultBuildTags+" qrdb_upgrade_probe"),
-		qrdbdharness.WithBinaryName("qrdbd-next"))
+		qrdbdharness.WithBinaryName("qrdbd-next"),
+		qrdbdharness.WithReleaseVersion(upgradeReleaseNext))
 	if err != nil {
 		t.Fatalf("build qrdbd-next (N+1): %v", err)
 	}
