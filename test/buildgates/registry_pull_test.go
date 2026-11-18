@@ -140,7 +140,7 @@ func TestRegistryPullID_CatchesRegressions(t *testing.T) {
 				t.Fatalf("image-registry.sh has no %q: the case tests nothing", m.old)
 			}
 			mutated := filepath.Join(t.TempDir(), "image-registry.sh")
-			if err := os.WriteFile(mutated, []byte(strings.Replace(string(src), m.old, m.new, 1)), 0o600); err != nil {
+			if err := os.WriteFile(mutated, []byte(strings.Replace(string(src), m.old, m.new, 1)), 0o600); err != nil { // #nosec G703 -- a file in the test's own temporary directory
 				t.Fatal(err)
 			}
 			if len(pullProblems(t, mutated)) == 0 {
