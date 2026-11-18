@@ -141,6 +141,16 @@ list. Importing carries over only the current value; the node's old version
 history and policy are dropped, and the audit event names what was dropped.
 Listing needs `credentials:list`; resolving needs `credentials:rotate`.
 
+**A node whose credential store moves to the data plane.** A standalone node
+first run on an unencrypted or in-memory backend keeps its credentials in the
+seal barrier's store; once it runs on an encrypting persistent backend they
+move into the data plane at start-up, one credential at a time, each with its
+whole history and policy. If the data plane already holds a credential of the
+same name, that credential is not moved: the data plane's copy is the one the
+node serves, the earlier copy stays untouched in the barrier store, and the
+node logs a warning naming the credentials (never their values). Decide which
+value is right and, if it is the earlier one, rotate the credential to it.
+
 ## Credentials in a tenant
 
 Every tenant has its own credential store. Sign in as a principal of the tenant

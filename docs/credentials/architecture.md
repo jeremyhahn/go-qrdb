@@ -69,6 +69,19 @@ embedded mode, which opens plaintext storage and names no backend, bind the
 system seal barrier itself, which encrypts every record it stores on its own
 durable store, as the credential store instead.
 
+**Moving from the barrier store to the data plane.** A node built once on the
+barrier store and then on an encrypting data plane moves its records across
+before its first credential operation (`BindStoreFrom`). The move goes one
+credential name at a time: the current value, metadata (with the rotation
+policy and history), versions, staged rotations and migration claim of a name
+form one set, written in one guarded batch that requires every destination
+key absent; the source records are deleted only once that batch applied, so
+a move cut short copies again on the next operation. A name the data plane
+already holds any record of is not moved: neither copy changes, the data
+plane's records stay authoritative, and the move reports the names (never
+values) in a `LayoutConflictError`, logged once as a warning. Every value the
+move decrypted is wiped after its write attempt.
+
 **The prefixes are reached only through the credential verbs.** Every record
 under the four prefixes above is a secret or governs one, so the embedded
 transport's KV, MVCC, batch, transaction and watch services confine each

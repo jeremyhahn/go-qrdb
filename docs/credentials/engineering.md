@@ -296,6 +296,8 @@ than change the interface.
 | Resolved value cannot be sealed (`NewSecretValue`) | `*secret.SealFailedError`, resolution fails | **yes** |
 | `ListCredentials` on a backend that cannot enumerate | `ErrEnumerationNotSupported` | n/a — explicit, not an empty list |
 | Missing `credentials:*` permission | permission denied | **yes** |
+| Store move (`BindStoreFrom`) finds a name the new store already holds any record of (current, metadata, version, staged or claim), or its guarded batch (every destination key of the name absent) does not apply | `moveLayout` returns `*credentials.LayoutConflictError` naming the names (never values) after moving every other name; the bind logs it once as a warning and the move ends | **yes** — neither store's records of the name change; no partial set is written or deleted |
+| Store move cut short (list, read, write or delete error) | the bind logs it; the move runs again before the next credential operation | **yes** — a set's source records go only after its batch applied |
 | Rotation policy refused: an enabled policy with a non-positive or unparsable interval or `RetainVersions` below 1, or any policy under `manual` | `*credentials.InvalidRotationPolicyError` | **yes** — nothing is stored |
 | Rotation policy set or read for an unknown name | `ErrCredentialNotFound` | n/a |
 | Due rotation with no `RotationValueSource` configured | `*credentials.RotationError` wrapping `ErrNoRotationValueSource`; `RotateDue` returns it and the credential stays due | **yes** — no rotation, no claim |
