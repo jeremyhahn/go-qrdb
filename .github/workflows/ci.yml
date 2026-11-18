@@ -63,7 +63,9 @@
 # own pushes and PRs. So:
 #   - nothing a job builds survives into another job: docker-build saves each
 #     image it builds and uploads it as an artifact, and every consumer
-#     downloads and loads it, checking its image ID (scripts/ci-image.sh);
+#     downloads and loads it, checking its image ID (scripts/ci-image.sh),
+#     and launches every stage by that ID, never by the content-hash tag,
+#     which another run on a shared daemon can move;
 #   - the Go build and golangci-lint caches are actions/cache entries under
 #     $RUNNER_TEMP/ci-cache, which scripts/in-toolchain-image.sh bind-mounts
 #     (CI_CACHE_DIR). A job restores main's newest entry; only a push to main
@@ -618,7 +620,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -631,7 +642,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # CUSTOMIZE (go-qrdb, DS-7377): the build and golangci-lint caches,
       # restored from main's newest entry and saved on a push to main alone.
@@ -744,7 +755,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.probe.outputs.has_target == 'true' && steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -758,7 +778,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         if: ${{ steps.probe.outputs.has_target == 'true' }}
@@ -838,7 +858,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -851,7 +880,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # The full tier's trivy step scans the integration image docker-build
       # built, so the full tier loads it too.
@@ -877,7 +906,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ env.CI_FULL_TIER == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -891,7 +929,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1017,7 +1055,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1030,7 +1077,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1114,7 +1161,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1127,7 +1183,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Download the legs' profiles
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -1192,7 +1248,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1205,7 +1270,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: make test-clusterproof
         if: ${{ runner.environment == 'github-hosted' && !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1263,7 +1328,16 @@ jobs:
           df -h /
 
       - name: Download the toolchain image
-        if: runner.environment == 'github-hosted'
+        id: download_toolchain
+        if: ${{ runner.environment == 'github-hosted' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ runner.environment == 'github-hosted' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1276,7 +1350,7 @@ jobs:
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: make coverage-fts
         if: ${{ runner.environment == 'github-hosted' && !cancelled() && env.TOOLCHAIN_IMAGE != '' }}
@@ -1344,7 +1418,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1357,7 +1440,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1445,7 +1528,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1458,7 +1550,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Restore the Go caches
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -1564,7 +1656,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1577,7 +1678,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Integration tests (shard ${{ matrix.shard }})
         run: make integration-test-features IT_FEATURES="$IT_FEATURES" IT_FEATURES_IN=image IT_PROJECT="$IT_PROJECT" IT_PREBUILT=1
@@ -1742,7 +1843,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1755,7 +1865,7 @@ jobs:
           PULLED: ${{ steps.pull_toolchain.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
-          echo "TOOLCHAIN_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
       # GODEBUG is a runtime setting and cannot fail a compile, but building
       # against the module first keeps a genuine build break from being
@@ -1932,7 +2042,16 @@ jobs:
           docker rmi "$REF" >/dev/null 2>&1 || true
 
       - name: Download the integration image
+        id: download_it
         if: ${{ steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+
+      - name: Download the integration image (retry)
+        if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1945,7 +2064,7 @@ jobs:
           PULLED: ${{ steps.pull_it.outputs.pulled }}
         run: |
           [ "$PULLED" = true ] || scripts/ci-image.sh load "$RUNNER_TEMP/it-image" "$IMAGE" "$ID"
-          echo "IT_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "IT_IMAGE=$ID" >> "$GITHUB_ENV"
 
       - name: Soak (integration suite, looped)
         run: |
@@ -1996,6 +2115,83 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: gh workflow run deps-bump.yml --repo "$REPO" --ref main
+
+  # #1619 (rulings 819, 841): the cluster proof itself, nightly. The per-PR
+  # test-clusterproof job tests only the harness; this job builds the release
+  # image, boots three nodes from it on the runner's docker network proof
+  # (scripts/cluster-proof-ci.sh), soaks them under the nemesis for 30 min
+  # and checks the evidence bundle, which it keeps as an artifact.
+  clusterproof-soak:
+    name: Soak [clusterproof nemesis]
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CLUSTERPROOF_CI_DIR: ${{ github.workspace }}/build/clusterproof-ci
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Mask the forge credentials
+        run: |
+          for v in GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+            val=${!v:-}
+            [ -n "$val" ] || continue
+            echo "::add-mask::$val"
+            case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
+          done
+
+      - name: Free the runner's disk
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af >/dev/null
+          df -h /
+
+      # The soak runner and BOOT-01 run on the runner beside the containers
+      # (make cluster-proof-bin, cluster-proof-boot): the toolchain's Go.
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          cache: ${{ runner.environment != 'self-hosted' }}
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Build the release image
+        run: |
+          ( umask 077; : > "$RUNNER_TEMP/gomodauth.env"
+            for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+              if [ -n "${!v:-}" ]; then printf '%s=%s\n' "$v" "${!v}" >> "$RUNNER_TEMP/gomodauth.env"; fi
+            done )
+          rc=0
+          make docker-build-release MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env" || rc=$?
+          rm -f "$RUNNER_TEMP/gomodauth.env"
+          exit "$rc"
+
+      - name: Build the fault image
+        run: make cluster-proof-fault-image
+
+      - name: Render the cluster's configuration
+        run: scripts/cluster-proof-ci.sh render "$CLUSTERPROOF_CI_DIR" "qrdbd:$(cat VERSION)" "clusterproof-fault:$(cat VERSION)"
+
+      - name: Boot, soak and check (make cluster-proof-ci)
+        run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
+
+      - name: Upload the evidence bundle
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: clusterproof-bundle
+          # The bundle and the configuration a replay needs; no key or PIN.
+          path: |
+            build/clusterproof-ci/bundle
+            build/clusterproof-ci/inventory.json
+            build/clusterproof-ci/targets.json
+            build/clusterproof-ci/workload.json
+          if-no-files-found: warn
+
+      - name: Tear down
+        if: always()
+        run: |
+          scripts/cluster-proof-ci.sh down "$CLUSTERPROOF_CI_DIR"
+          rm -f "$RUNNER_TEMP/gomodauth.env"
 
   signatures:
     name: Signatures
@@ -2114,7 +2310,7 @@ jobs:
     # (RESULT_*: ${{ needs.<job>.result }}), tagged to match its tier: pr,
     # code (every event but a docs-only PR, DS-3160), full or nightly. A matrix
     # job is ONE entry: needs.<job>.result is the aggregate over its legs.
-    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, signatures]
+    needs: [preflight, docker-build, lint, lint-gates, image, coverage, coverage-merge, test-clusterproof, coverage-fts, test-tags, test-sdk, test-typescript, integration-standalone, integration-features, fips, soak, clusterproof-soak, signatures]
     steps:
       - name: Fail closed on any non-success
         env:
@@ -2136,6 +2332,7 @@ jobs:
           RESULT_INTEGRATION_FEATURES: ${{ needs.integration-features.result }}
           RESULT_FIPS: ${{ needs.fips.result }}
           RESULT_SOAK: ${{ needs.soak.result }}
+          RESULT_CLUSTERPROOF_SOAK: ${{ needs.clusterproof-soak.result }}
           RESULT_SIGNATURES: ${{ needs.signatures.result }}
           # The full tier is CI_FULL_TIER (v1.23): every event but a PR, and a
           # PR labelled ci:full. A job marked `full` may be skipped below only
@@ -2206,5 +2403,6 @@ jobs:
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full
           check soak "$RESULT_SOAK" nightly
+          check clusterproof-soak "$RESULT_CLUSTERPROOF_SOAK" nightly
           check signatures "$RESULT_SIGNATURES" pr
           exit $BAD

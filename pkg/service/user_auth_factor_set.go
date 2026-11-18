@@ -140,7 +140,36 @@ type factorSet struct {
 	Version uint64 `json:"version"`
 	// Active maps each active factor id to its type.
 	Active map[string]auth.AuthFactorType `json:"active,omitempty"`
+	// Sealed marks a set Purge has closed: the user's account is being
+	// deleted, and no factor may be enrolled or rotated in for it again.
+	Sealed bool `json:"sealed,omitempty"`
 }
+
+// UserAuthFactorPurger removes every factor of a user whose account is being
+// deleted, revoked ones included, and seals the user's factor set against
+// further enrollment. The factor service and its tenant router implement it.
+type UserAuthFactorPurger interface {
+	Purge(ctx context.Context, userID uint64) (int, error)
+}
+
+// ErrFactorSetSealed is the sentinel *FactorSetSealedError unwraps to.
+var ErrFactorSetSealed = errors.New("service: factor set sealed")
+
+// FactorSetSealedError refuses a change to the factor set of a user whose
+// factors have been purged because the account is being deleted. Nothing was
+// written.
+type FactorSetSealedError struct {
+	// UserID is the user whose factor set is sealed.
+	UserID uint64
+}
+
+// Error implements error.
+func (e *FactorSetSealedError) Error() string {
+	return "service: factor set of user " + strconv.FormatUint(e.UserID, 10) + " is sealed: the account is being deleted"
+}
+
+// Unwrap returns the sentinel error so errors.Is succeeds.
+func (e *FactorSetSealedError) Unwrap() error { return ErrFactorSetSealed }
 
 // factorSetKey is the factor-set record key of userID.
 func factorSetKey(userID uint64) string {
@@ -295,6 +324,9 @@ func (s *userAuthFactorService) commitFactorSet(ctx context.Context, store facto
 		if err != nil {
 			return 0, err
 		}
+		if set.Sealed {
+			return 0, &FactorSetSealedError{UserID: userID}
+		}
 		if err := s.liveFactorSet(ctx, userID, set); err != nil {
 			return 0, err
 		}
@@ -360,6 +392,9 @@ func (s *userAuthFactorService) commitEnrollment(ctx context.Context, store fact
 		set, setRaw, err := s.readFactorSet(ctx, factor.UserID)
 		if err != nil {
 			return 0, err
+		}
+		if set.Sealed {
+			return 0, &FactorSetSealedError{UserID: factor.UserID}
 		}
 		if err := s.liveFactorSet(ctx, factor.UserID, set); err != nil {
 			return 0, err

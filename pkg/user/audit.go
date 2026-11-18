@@ -40,13 +40,24 @@ func WithAuditLogger(logger audit.AuditLogger) Option {
 // when no audit logger is configured. Emission is best-effort per the
 // AuditLogger contract and never affects the mutation outcome.
 func (s *kvUserStore) emitAudit(ctx context.Context, action string, userID uint64, attrs map[string]any) {
+	s.emitAuditForTenant(ctx, "", action, userID, attrs)
+}
+
+// emitAuditForTenant is emitAudit with the affected tenant named by the
+// caller. A non-empty tenantID wins over the caller identity's tenant: a
+// system-driven change (the pending-user reaper) runs with no identity, and
+// without the explicit tenant its event would carry none and drop out of
+// every tenant-filtered audit query.
+func (s *kvUserStore) emitAuditForTenant(ctx context.Context, tenantID, action string, userID uint64, attrs map[string]any) {
 	if s.audit == nil {
 		return
 	}
-	var actor, tenantID string
+	var actor string
 	if id := auth.IdentityFromContext(ctx); id != nil {
 		actor = id.Subject
-		tenantID = id.TenantID
+		if tenantID == "" {
+			tenantID = id.TenantID
+		}
 	}
 	audit.EmitBestEffort(ctx, s.audit, "user", audit.AuditEvent{
 		Actor:      actor,
