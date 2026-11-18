@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
@@ -191,6 +192,40 @@ func TestInitialize_SingleAdminStandingSOIntentHoldsSealedWindowAfterUnseal(t *t
 	requireSOHandedOff(t, b, svc, result)
 	assert.False(t, svc.HoldsSealedWindow(ctx), "a durable SO closes the sealed window")
 	assert.False(t, svc.SystemSOHandoffPending(ctx), "a durable SO ends the handoff")
+}
+
+// The boot listener's gate answers sealed while HoldsSealedWindow holds, so
+// after an explicit unseal between the failed SO persist and the retry, the
+// Initialize retry must still pass sealedwindow.Decide as the listener
+// builds the request; once the SO is durable the gate refuses it again.
+func TestInitialize_SingleAdminStandingSOIntentRetryPassesListenerGateAfterUnseal(t *testing.T) {
+	ctx := context.Background()
+	e := newSingleAdminSOFaultEnv(t)
+	b, svc := e.boot()
+
+	_, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.ErrorIs(t, err, errSystemSOWrite)
+	require.NoError(t, b.Unseal(ctx, seal.Credentials{}))
+	require.False(t, b.IsSealed())
+
+	gate := func() sealedwindow.Request {
+		return sealedwindow.Request{
+			Sealed:             svc.HoldsSealedWindow(ctx), // the listener probe's IsSealed
+			Listener:           true,
+			Allowlisted:        true,
+			PreOperationalOnly: sealedwindow.PreOperationalOnly(sealedwindow.VerbCeremonyInitialize),
+			EnrollmentOpen:     svc.EnrollmentOpen(ctx),
+		}
+	}
+	require.Equal(t, sealedwindow.Serve, sealedwindow.Decide(gate()), "the listener gate admits the retry")
+
+	result, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.NoError(t, err, "the retry persists the SO")
+	requireSOHandedOff(t, b, svc, result)
+
+	assert.False(t, b.IsSealed())
+	assert.False(t, svc.EnrollmentOpen(ctx), "an unsealed barrier without the SO intent closes enrollment")
+	assert.NotEqual(t, sealedwindow.Serve, sealedwindow.Decide(gate()), "a durable SO closes the listener gate")
 }
 
 // signCountingCA counts every certificate the ceremony asks the CA to sign.
