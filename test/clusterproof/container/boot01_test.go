@@ -20,10 +20,6 @@ const (
 	logTail = 200
 )
 
-// EnvKeep names the variable that, set to 1, leaves the booted cluster
-// running after a passing BOOT-01 so a soak can run against it.
-const EnvKeep = "PROOF_KEEP"
-
 // TestBOOT01 is BOOT-01 against real containers: a static bootstrap of the
 // inventory's founders from the release image, first boot on each, then
 // health, status, peers and topology on every node over every transport,
@@ -32,7 +28,6 @@ const EnvKeep = "PROOF_KEEP"
 // failure, not a skip.
 func TestBOOT01(t *testing.T) {
 	path := os.Getenv("PROOF_INVENTORY")
-	keep := os.Getenv(EnvKeep) == "1"
 	if path == "" {
 		t.Fatal("PROOF_INVENTORY must name a container inventory (docs/cluster-verification/user.md)")
 	}
@@ -71,10 +66,6 @@ func TestBOOT01(t *testing.T) {
 				logs, err := c.Logs(ctx, n, logTail)
 				t.Logf("--- %s log (last %d lines, err %v) ---\n%s", n.Name, logTail, err, logs)
 			}
-		}
-		if keep && !t.Failed() {
-			t.Logf("%s=1: leaving the cluster running for the soak", EnvKeep)
-			return
 		}
 		if err := c.Remove(ctx); err != nil {
 			t.Errorf("remove containers: %v", err)
