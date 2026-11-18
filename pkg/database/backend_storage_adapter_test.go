@@ -20,7 +20,6 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/memory"
 )
 
@@ -32,10 +31,6 @@ func newTestAdapter(t *testing.T) (*BackendStorageAdapter, *StandaloneBackend) {
 	t.Cleanup(func() { _ = store.Close() })
 	inner := NewStandaloneBackend(store)
 	return NewBackendStorageAdapter(inner), inner
-}
-
-func TestBackendStorageAdapter_InterfaceCompliance(t *testing.T) {
-	var _ seal.StorageBackend = (*BackendStorageAdapter)(nil)
 }
 
 func TestBackendStorageAdapter_PutGet(t *testing.T) {

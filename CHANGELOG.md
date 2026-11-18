@@ -16,12 +16,18 @@ are not reconstructed here — their history is in the git log.
 ### Changed
 
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
+- `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
 
 - **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
 - **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
 
+### Fixed
+
+- **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
+
 ### Added
 
+- **Pending users with a TTL (#1583).** A pending create may carry a time-to-live: REST `pending_ttl`, gRPC and Unix `CreateUserRequest.pending_ttl_seconds`, QUIC `pendingTTL`, MCP `qrdb_user_create` `pending_ttl`, sdk/go `CreateUserRequest.PendingTTL`, and `qrdb users create --pending --pending-ttl`. User reads carry the expiry (`pending_expires_at`, `pending_expires_at_unix`, `pendingExpiresAt`, `User.PendingExpiresAt`). Activation (`EnableUser`) clears it. A leader-only reaper deletes pending users past their TTL, with their role assignments and factors, and audits `pending_reaped`; it never touches an active user. `auth.pending_user_sweep_interval` sets the sweep period (default `1m`; `off` disables). On a cluster, TTLs need the `pending-user-ttl` cluster feature: until every member advertises it a TTL-bearing create is refused as not active and the reaper does not sweep.
 - **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
 - **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
 - **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
@@ -365,6 +371,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A standalone node no longer acknowledges writes that a crash can lose
+  (#1617). `pkg/storage/pebble.DefaultConfig` set `SyncWrites: false` on the
+  premise that the Raft WAL provides durability, so every write went through
+  `pebble.NoSync`; a standalone node has no Raft WAL, and a Put acknowledged
+  just before a SIGKILL was gone after the restart. `DefaultConfig` now sets
+  `SyncWrites: true`: a store may turn it off only when another log already
+  fsyncs the write before it is acknowledged. The `sdk/go/node` SIGKILL test
+  now asserts that every acknowledged key reads back after the restart.
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The

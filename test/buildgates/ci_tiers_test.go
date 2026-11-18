@@ -169,7 +169,7 @@ var (
 	prTierJobs      = []string{changesJob, "lint", "lint-gates"}
 	codeTierJobs    = []string{"test-typescript", "image", "coverage", "coverage-merge", "test-clusterproof", "coverage-fts", "test-tags", "test-sdk"}
 	fullTierJobs    = []string{"integration-standalone", featureJob, fipsJob}
-	nightlyTierJobs = []string{"soak"}
+	nightlyTierJobs = []string{"soak", "clusterproof-soak"}
 )
 
 // fipsJob runs the unit suites under GODEBUG=fips140=only (#20,

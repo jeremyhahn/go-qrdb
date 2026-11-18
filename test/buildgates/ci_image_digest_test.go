@@ -148,6 +148,8 @@ type digestStep struct {
 	Run  string            `yaml:"run"`
 	With map[string]string `yaml:"with"`
 	Env  map[string]string `yaml:"env"`
+	// ContinueOnError is a string: the key takes a boolean or an expression.
+	ContinueOnError string `yaml:"continue-on-error"`
 }
 
 type digestJob struct {
@@ -262,6 +264,7 @@ func producerProblems(job digestJob) []string {
 	if !pushed {
 		problems = append(problems, digestProducer+" does not push with scripts/ci-image.sh push: main publishes no image")
 	}
+	problems = append(problems, digestRecordProblems(job)...)
 	if !slices.ContainsFunc(job.Steps, func(s digestStep) bool { return s.ID == lanPushID }) {
 		problems = append(problems, digestProducer+" has no step with id "+lanPushID+
 			": nothing pushes to the LAN CI registry, or its tag outputs read a step that does not exist")
@@ -287,6 +290,61 @@ func producerProblems(job digestJob) []string {
 		if !uploaded[f.artifact] {
 			problems = append(problems, digestProducer+" does not upload the artifact "+strconv.Quote(f.artifact)+
 				": no consumer could load the "+family+" image")
+		}
+	}
+	return problems
+}
+
+// digestRecordProblems holds the producer to the #1609 digest records:
+// scripts/image-registry.sh pulls from the LAN registry only by the repo
+// digest recorded in CI_IMAGE_DIGEST_DIR, so the build step names that
+// directory, each image's record, keyed by its content-hash name, is restored
+// from the GitHub cache before the build, and saved after it only on a push to
+// main and only when the build's own push wrote a new digest.
+func digestRecordProblems(job digestJob) []string {
+	var problems []string
+	build := slices.IndexFunc(job.Steps, func(s digestStep) bool { return s.ID == "build" })
+	names := slices.IndexFunc(job.Steps, func(s digestStep) bool { return s.ID == "names" })
+	if build < 0 {
+		return []string{digestProducer + " has no step with id build"}
+	}
+	if !strings.Contains(job.Steps[build].Env["CI_IMAGE_DIGEST_DIR"], "/ci-image-digests") {
+		problems = append(problems, digestProducer+"'s build step sets no CI_IMAGE_DIGEST_DIR under <temp>/ci-image-digests: "+
+			"no registry pull could find its record")
+	}
+	if names < 0 || names > build {
+		problems = append(problems, digestProducer+" has no step with id names before its build step: no record has a name")
+	}
+	for _, f := range []string{"toolchain", "it"} {
+		record := "${{ steps.names.outputs." + f + "_record }}"
+		path := "${{ runner.temp }}/ci-image-digests/" + record
+		key := "ci-image-digest-" + record + "-${{ github.run_id }}-${{ github.run_attempt }}"
+		if names >= 0 && !strings.Contains(job.Steps[names].Run, f+"_record=") {
+			problems = append(problems, digestProducer+"'s names step outputs no "+f+"_record")
+		}
+		if !strings.Contains(job.Steps[build].Run, f+"_recorded=true") {
+			problems = append(problems, digestProducer+"'s build step outputs no "+f+"_recorded: its record is never saved")
+		}
+		restored := slices.ContainsFunc(job.Steps[:build], func(s digestStep) bool {
+			return strings.HasPrefix(s.Uses, "actions/cache/restore@") && s.With["path"] == path &&
+				s.With["key"] == key && s.With["restore-keys"] == "ci-image-digest-"+record+"-"
+		})
+		if !restored {
+			problems = append(problems, digestProducer+" restores no "+f+" record before its build: want actions/cache/restore of "+
+				path+", key "+key+", restore-keys ci-image-digest-"+record+"-")
+		}
+		saved := slices.ContainsFunc(job.Steps[build+1:], func(s digestStep) bool {
+			return strings.HasPrefix(s.Uses, "actions/cache/save@") && s.With["path"] == path && s.With["key"] == key
+		})
+		if !saved {
+			problems = append(problems, digestProducer+" saves no "+f+" record after its build: want actions/cache/save of "+path+", key "+key)
+		}
+		for _, s := range job.Steps {
+			if strings.HasPrefix(s.Uses, "actions/cache/save@") && s.With["path"] == path &&
+				(!strings.Contains(s.If, ciPublishTerm) || !strings.Contains(s.If, "steps.build.outputs."+f+"_recorded == 'true'")) {
+				problems = append(problems, digestProducer+" saves the "+f+" record under if: "+strconv.Quote(s.If)+
+					"; want "+ciPublishTerm+" and steps.build.outputs."+f+"_recorded == 'true': only main's own push writes a record")
+			}
 		}
 	}
 	return problems
@@ -340,13 +398,26 @@ const (
 	lanSelfHosted     = "runner.environment != 'github-hosted'"
 	lanPushID         = "registry"
 	lanPushTag        = "${{ github.run_id }}-${{ github.run_attempt }}"
+	// lanTimeout bounds every LAN docker push and pull (#1609): a registry
+	// that accepts the connection and stalls is cut off after
+	// CI_IMAGE_REGISTRY_TIMEOUT seconds, the default scripts/image-registry.sh
+	// uses, and the expiry is a miss like any other failure.
+	// Every LAN step sources scripts/image-registry.sh: a transfer that
+	// times out leaves the job's outage marker (ci_registry_outage) and every
+	// later one in the job skips at once (ci_registry_skip), so a stalled
+	// registry costs one bound per job, not one per image.
+	lanTimeout = `timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" `
 	// lanPushRun pushes each family and records its tag output on success
-	// alone; a refused push is a warning, so its consumers take the artifact.
-	lanPushRun = `lan_push() {
+	// alone; a refused or stalled push is a warning, so its consumers take
+	// the artifact.
+	lanPushRun = `. scripts/image-registry.sh
+lan_push() {
   ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-  if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
+  if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+     docker tag "$1" "$ref" >/dev/null 2>&1 && ` + lanTimeout + `docker push -q "$ref" >/dev/null 2>&1; then
     echo "$3=$TAG" >> "$GITHUB_OUTPUT"
   else
+    ci_registry_outage "$CI_REGISTRY" "$?"
     echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
   fi
   docker rmi "$ref" >/dev/null 2>&1 || true
@@ -355,11 +426,13 @@ lan_push "$TOOLCHAIN_IMAGE" toolchain-image toolchain_tag
 if [ -n "$IT_IMAGE" ]; then
   lan_push "$IT_IMAGE" it-image it_tag
 fi`
-	lanPullRun = `if docker pull -q "$REF" >/dev/null 2>&1 &&
+	lanPullRun = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+   ` + lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 &&
    [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
    docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
   echo "pulled=true" >> "$GITHUB_OUTPUT"
 else
+  ci_registry_outage "$CI_REGISTRY" "$?"
   echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
 fi
 docker rmi "$REF" >/dev/null 2>&1 || true`
@@ -380,7 +453,7 @@ var lanInterpolated = regexp.MustCompile(`\$\{\{[^}]*\b(secrets\.CI_IMAGE_REGIST
 
 // lanPullRunFor is the canonical pull step script of family f.
 func lanPullRunFor(f imageFamily) string {
-	return `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n" + lanPullRun
+	return ". scripts/image-registry.sh\n" + `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n" + lanPullRun
 }
 
 // producerOut is the expression a consumer reads the producer's output o by.
@@ -505,6 +578,10 @@ func lanRegistryProblems(name string, job digestJob, s digestStep) (problems []s
 // || or ; (#1595).
 var lanDockerCmd = regexp.MustCompile(`docker (pull|push|tag|rmi)\s[^&|;]*`)
 
+// lanTransfer is a registry docker pull or push with whatever precedes it on
+// its line (#1609): each must be bounded by lanTimeout.
+var lanTransfer = regexp.MustCompile(`(?m)^.*?docker (pull|push)\s`)
+
 // lanScriptProblems names every way a registry script lets a rejected image
 // move a tag or prints the registry's error output (#1595). A runner's docker
 // daemon may be shared, so a pull checks the pulled "$REF" against "$ID"
@@ -532,6 +609,12 @@ func lanScriptProblems(where, run string, pull bool) (problems []string) {
 				" without discarding its stderr, which names the registry address")
 		}
 	}
+	for _, m := range lanTransfer.FindAllStringSubmatch(run, -1) {
+		if !strings.HasSuffix(m[0], lanTimeout+"docker "+m[1]+" ") {
+			problems = append(problems, where+" runs docker "+m[1]+" without "+strconv.Quote(strings.TrimSpace(lanTimeout))+
+				": a stalled registry hangs the job instead of falling back to the artifact")
+		}
+	}
 	return problems
 }
 
@@ -544,7 +627,7 @@ func producerOutTerm(o string) string {
 // with the step pull: it must run exactly when the pull did not succeed, so
 // its if: requires the pull's output not true and narrows by nothing the
 // pull's own if: does not also require.
-func lanDownloadProblems(name string, s, pull digestStep, f imageFamily) []string {
+func lanDownloadProblems(name string, s, pull digestStep, f imageFamily, retry string) []string {
 	where := name + "'s download of " + strconv.Quote(f.artifact)
 	want := "steps." + pull.ID + ".outputs.pulled != 'true'"
 	terms, ok := condTerms(s.If)
@@ -555,13 +638,65 @@ func lanDownloadProblems(name string, s, pull digestStep, f imageFamily) []strin
 	pullTerms, _ := condTerms(pull.If)
 	var problems []string
 	for _, t := range terms {
-		if t == want {
+		if t == want || (retry != "" && t == retry) {
 			continue
 		}
 		if t == lanRegistryCond || t == producerOutTerm(f.lan) || !slices.Contains(pullTerms, t) {
 			problems = append(problems, where+" also requires "+strconv.Quote(t)+
 				", which a skipped or failed pull does not imply: the job would load no image")
 		}
+	}
+	return problems
+}
+
+// retryTerm is the && term that runs the second attempt of an image
+// download: exactly when its first attempt, step id, failed (#1593: one
+// self-hosted leg lost its artifact download while five others took it).
+func retryTerm(id string) string { return "steps." + id + ".outcome == 'failure'" }
+
+// isDownloadRetry reports whether s is the second attempt of the artifact
+// download prev: the same artifact, run on prev's failure.
+func isDownloadRetry(prev, s digestStep) bool {
+	if prev.ID == "" || !strings.HasPrefix(prev.Uses, downloadArtifactAction) ||
+		!strings.HasPrefix(s.Uses, downloadArtifactAction) || s.With["name"] != prev.With["name"] {
+		return false
+	}
+	terms, _ := condTerms(s.If)
+	return slices.Contains(terms, retryTerm(prev.ID))
+}
+
+// downloadRetryProblems checks that the image download steps[i] is a first
+// attempt that tolerates its failure (an id, continue-on-error: true) and is
+// followed by exactly one retry: the same action and inputs, under the first
+// attempt's condition plus its failure, failing the job if it fails too.
+func downloadRetryProblems(name string, steps []digestStep, i int) []string {
+	s := steps[i]
+	where := name + "'s download of " + strconv.Quote(s.With["name"])
+	const why = ": one failed artifact download would fail the job (#1593)"
+	if s.ID == "" || strings.TrimSpace(s.ContinueOnError) != "true" {
+		return []string{where + " has no id or no continue-on-error: true" + why}
+	}
+	if i+1 >= len(steps) || !isDownloadRetry(s, steps[i+1]) {
+		return []string{where + " is not followed by a retry of it under " + strconv.Quote(retryTerm(s.ID)) + why}
+	}
+	r := steps[i+1]
+	var problems []string
+	if r.Uses != s.Uses || !maps.Equal(r.With, s.With) {
+		problems = append(problems, where+"'s retry runs "+strconv.Quote(r.Uses)+" with other inputs; "+
+			"want the first attempt's pinned action, name and path")
+	}
+	if strings.TrimSpace(r.ContinueOnError) != "" {
+		problems = append(problems, where+"'s retry sets continue-on-error: a second failure must fail the job")
+	}
+	first, _ := condTerms(s.If)
+	got, _ := condTerms(r.If)
+	want := append(slices.Clone(first), retryTerm(s.ID))
+	slices.Sort(want)
+	got = slices.Clone(got)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		problems = append(problems, where+"'s retry runs under if: "+strconv.Quote(r.If)+"; want the && terms "+
+			strconv.Quote(strings.Join(want, " && "))+": the first attempt's condition and its failure")
 	}
 	return problems
 }
@@ -654,9 +789,16 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 			if _, seen := downloaded[art]; !seen {
 				downloaded[art] = i
 			}
+			retry := ""
+			if i > 0 && isDownloadRetry(job.Steps[i-1], s) {
+				// The second attempt: checked with its first attempt.
+				retry = retryTerm(job.Steps[i-1].ID)
+			} else {
+				problems = append(problems, downloadRetryProblems(name, job.Steps, i)...)
+			}
 			for fam, f := range imageFamilies {
 				if pull, ok := pulls[fam]; ok && f.artifact == art {
-					problems = append(problems, lanDownloadProblems(name, s, pull, f)...)
+					problems = append(problems, lanDownloadProblems(name, s, pull, f, retry)...)
 				}
 			}
 		}
@@ -836,9 +978,45 @@ jobs:
     env:
       CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}
     steps:
+      - name: Name the images
+        id: names
+        run: |
+          t=$(make -s toolchain-image)
+          echo "toolchain_record=${t//:/_}" >> "$GITHUB_OUTPUT"
+          i=$(make -s it-image)
+          echo "it_record=${i//:/_}" >> "$GITHUB_OUTPUT"
+      - name: Restore the toolchain record
+        uses: actions/cache/restore@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-
+      - name: Restore the integration record
+        uses: actions/cache/restore@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: ci-image-digest-${{ steps.names.outputs.it_record }}-
       - name: Build the images
         id: build
-        run: make docker-build
+        env:
+          CI_IMAGE_DIGEST_DIR: ${{ format('{0}/ci-image-digests', runner.temp) }}
+        run: |
+          make docker-build
+          echo "toolchain_recorded=true" >> "$GITHUB_OUTPUT"
+          echo "it_recorded=true" >> "$GITHUB_OUTPUT"
+      - name: Save the toolchain record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.toolchain_recorded == 'true' }}
+        uses: actions/cache/save@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.toolchain_record }}
+          key: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Save the integration record
+        if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.it_recorded == 'true' }}
+        uses: actions/cache/save@0000000000000000000000000000000000000000 # v0
+        with:
+          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}
+          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Save
         id: save
         run: |
@@ -872,11 +1050,14 @@ jobs:
           TOOLCHAIN_IMAGE: ${{ steps.build.outputs.toolchain_image }}
           IT_IMAGE: ${{ steps.build.outputs.it_image }}
         run: |
+          . scripts/image-registry.sh
           lan_push() {
             ref="$CI_REGISTRY/go-qrdb/$2:$TAG"
-            if docker tag "$1" "$ref" >/dev/null 2>&1 && docker push -q "$ref" >/dev/null 2>&1; then
+            if ! ci_registry_skip "$CI_REGISTRY" "${ref#"$CI_REGISTRY"/}" &&
+               docker tag "$1" "$ref" >/dev/null 2>&1 && timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker push -q "$ref" >/dev/null 2>&1; then
               echo "$3=$TAG" >> "$GITHUB_OUTPUT"
             else
+              ci_registry_outage "$CI_REGISTRY" "$?"
               echo "::warning::the push of $2 to the LAN CI registry failed; its consumers take the artifact"
             fi
             docker rmi "$ref" >/dev/null 2>&1 || true
@@ -899,17 +1080,28 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.toolchain_image }}
           ID: ${{ needs.docker-build.outputs.toolchain_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -938,17 +1130,28 @@ jobs:
           IMAGE: ${{ needs.docker-build.outputs.it_image }}
           ID: ${{ needs.docker-build.outputs.it_id }}
         run: |
+          . scripts/image-registry.sh
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
-          if docker pull -q "$REF" >/dev/null 2>&1 &&
+          if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
+             timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
             echo "pulled=true" >> "$GITHUB_OUTPUT"
           else
+            ci_registry_outage "$CI_REGISTRY" "$?"
             echo "::warning::the pull of $IMAGE from the LAN CI registry failed; loading it from the artifact"
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the integration image
+        id: download_it
         if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Download the integration image (retry)
+        if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -971,6 +1174,14 @@ jobs:
       ID: ${{ needs.docker-build.outputs.it_id }}
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        id: download_it
+        continue-on-error: true
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Retry the download
+        if: ${{ steps.download_it.outcome == 'failure' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
           path: ${{ runner.temp }}/it-image
@@ -1003,6 +1214,22 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		legsTest = "        run: make integration-test IT_FEATURE=audit IT_PREBUILT=1\n"
 	)
 	for _, tc := range []struct{ name, old, new string }{
+		{name: "no digest record directory", old: "          CI_IMAGE_DIGEST_DIR: ${{ format('{0}/ci-image-digests', runner.temp) }}\n",
+			new: "          DOCS_ONLY: x\n"},
+		{name: "a record saved by a pull request", old: "if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.it_recorded == 'true' }}",
+			new: "if: ${{ steps.build.outputs.it_recorded == 'true' }}"},
+		{name: "a record saved when no push wrote one", old: "if: ${{ env.CI_PUBLISH == 'true' && steps.build.outputs.toolchain_recorded == 'true' }}",
+			new: "if: ${{ env.CI_PUBLISH == 'true' }}"},
+		{name: "no restore of a record", old: "      - name: Restore the integration record\n        uses: actions/cache/restore@",
+			new: "      - name: Restore the integration record\n        uses: actions/upload-artifact@"},
+		{name: "a record keyed by something else", old: "restore-keys: ci-image-digest-${{ steps.names.outputs.toolchain_record }}-",
+			new: "restore-keys: ci-image-digest-"},
+		{name: "a record path off its name", old: "          path: ${{ runner.temp }}/ci-image-digests/${{ steps.names.outputs.it_record }}\n          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}\n          restore",
+			new: "          path: ${{ runner.temp }}/ci-image-digests\n          key: ci-image-digest-${{ steps.names.outputs.it_record }}-${{ github.run_id }}-${{ github.run_attempt }}\n          restore"},
+		{name: "no record names", old: `echo "it_record=${i//:/_}" >> "$GITHUB_OUTPUT"`,
+			new: `echo "it_name=$i" >> "$GITHUB_OUTPUT"`},
+		{name: "no recorded output", old: `echo "toolchain_recorded=true" >> "$GITHUB_OUTPUT"`,
+			new: `echo "toolchain_saved=true" >> "$GITHUB_OUTPUT"`},
 		{name: "the probe-and-rebuild form", old: lintLoad,
 			new: `docker image inspect "$IMAGE" || make docker-build-toolchain`},
 		{name: "a rebuild beside the load", old: legsTest,
@@ -1063,6 +1290,10 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "a LAN pull without the ID check", old: `[ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ]`, new: `true`},
 		{name: "a LAN push printing the registry's stderr", old: `docker push -q "$ref" >/dev/null 2>&1;`, new: `docker push -q "$ref" >/dev/null;`},
 		{name: "a LAN push tag printing the registry's stderr", old: `docker tag "$1" "$ref" >/dev/null 2>&1 &&`, new: `docker tag "$1" "$ref" &&`},
+		// #1609: a stalled registry is cut off, never waited on.
+		{name: "a LAN push with no timeout", old: lanTimeout + `docker push -q "$ref"`, new: `docker push -q "$ref"`},
+		{name: "a LAN pull with no timeout", old: lanTimeout + `docker pull -q "$REF"`, new: `docker pull -q "$REF"`},
+		{name: "a LAN pull with a bound of its own", old: lanTimeout + `docker pull -q "$REF"`, new: `timeout 99999 docker pull -q "$REF"`},
 		{name: "a LAN pull without the registry check",
 			old: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' && env.CI_REGISTRY != '' }}",
 			new: "if: ${{ needs.docker-build.outputs.registry_toolchain_tag != '' }}"},
@@ -1123,11 +1354,32 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 			new: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ vars.CI_IMAGE_REGISTRY }}\n"},
 		{name: "a pull job without the registry env", old: "    needs: [preflight, docker-build]\n    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n",
 			new: "    needs: [preflight, docker-build]\n"},
-		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Build the images\n",
-			new: "    steps:\n      - name: Build the images\n"},
+		{name: "a producer without the registry env", old: "    env:\n      CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n    steps:\n      - name: Name the images\n",
+			new: "    steps:\n      - name: Name the images\n"},
 		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
 		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n",
 			new: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
+		// #1593: every image download is retried once.
+		{name: "a download without its retry",
+			old: "      - name: Retry the download\n        if: ${{ steps.download_it.outcome == 'failure' }}\n",
+			new: "      - name: Something else\n        if: ${{ always() }}\n"},
+		{name: "a first attempt that fails the job",
+			old: "        id: download_toolchain\n        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n        continue-on-error: true\n",
+			new: "        id: download_toolchain\n        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n"},
+		{name: "a first attempt without an id", old: "        id: download_it\n        continue-on-error: true\n",
+			new: "        continue-on-error: true\n"},
+		{name: "a retry that drops the fallback term",
+			old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}",
+			new: "if: ${{ steps.download_toolchain.outcome == 'failure' }}"},
+		{name: "a retry that drops the first attempt's term",
+			old: "if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}",
+			new: "if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}"},
+		{name: "a retry that tolerates its failure",
+			old: "        if: ${{ steps.download_it.outcome == 'failure' }}\n",
+			new: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        continue-on-error: true\n"},
+		{name: "a retry with other inputs",
+			old: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n",
+			new: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n          github-token: x\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.Contains(digestFixture, tc.old) {
@@ -1152,18 +1404,21 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 		t.Fatalf("the canonical push fails its own gate: %s", strings.Join(p, "; "))
 	}
 	const (
-		pull    = `if docker pull -q "$REF" >/dev/null 2>&1 &&`
+		skip    = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&`
+		pull    = `timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&`
 		inspect = `[ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&`
 		tagID   = `docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then`
 	)
 	regressions := []struct{ name, old, new string }{
 		{name: "the pre-#1595 tag-then-check pull", old: pull + "\n             " + inspect + "\n             " + tagID,
-			new: `if docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
+			new: `docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
 				`[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then`},
 		{name: "a tag of the registry ref", old: tagID, new: `docker tag "$REF" "$IMAGE" >/dev/null 2>&1; then`},
 		{name: "a tag before the check", old: pull, new: pull + ` docker tag "$ID" "$IMAGE" >/dev/null 2>&1 &&`},
 		{name: "a check of the tagged image", old: inspect, new: `[ "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" = "$ID" ] &&`},
-		{name: "a pull printing its stderr", old: pull, new: `if docker pull -q "$REF" >/dev/null &&`},
+		{name: "a pull printing its stderr", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null &&`},
+		{name: "a pull with no timeout", old: pull, new: `docker pull -q "$REF" >/dev/null 2>&1 &&`},
+		{name: "a pull bounded by a timeout of its own", old: pull, new: `timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&`},
 		{name: "a tag printing its stderr", old: tagID, new: `docker tag "$ID" "$IMAGE"; then`},
 		{name: "an rmi printing its stderr", old: `docker rmi "$REF" >/dev/null 2>&1`, new: `docker rmi "$REF" >/dev/null`},
 	}
@@ -1176,7 +1431,7 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 		head := `REF="$CI_REGISTRY/go-qrdb/` + f.artifact + `:$TAG"` + "\n          "
 		for _, tc := range regressions {
 			t.Run(family+"/"+tc.name, func(t *testing.T) {
-				if !strings.Contains(digestFixture, head+pull) {
+				if !strings.Contains(digestFixture, head+skip+"\n             "+pull) {
 					t.Fatalf("the fixture has no %s pull: the case tests nothing", family)
 				}
 				i := strings.Index(digestFixture, head)
