@@ -33,6 +33,10 @@ import (
 // pool-images therefore builds with CI_IMAGE_REGISTRY cleared for make alone;
 // its own push step, after the check, is the only publication.
 
+// clearedRegistry empties CI_IMAGE_REGISTRY for one command, in the form
+// shellcheck accepts (SC1007 flags a bare VAR= before a command).
+const clearedRegistry = "CI_IMAGE_REGISTRY=''"
+
 // poolMake is a make invocation that builds the devcontainer images, with the
 // environment assignments before it.
 var poolMake = regexp.MustCompile(`(?m)^\s*((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*)make docker-build\b`)
@@ -55,8 +59,8 @@ func poolBuildPublishProblems(body []byte) ([]string, []string) {
 	for _, s := range wf.Jobs["pool-images"].Steps {
 		for _, m := range poolMake.FindAllStringSubmatch(s.Run, -1) {
 			prefixes = append(prefixes, strings.TrimSpace(m[1]))
-			if !strings.Contains(" "+m[1], " CI_IMAGE_REGISTRY= ") {
-				problems = append(problems, "pool-images's step "+s.Name+" runs make docker-build with the runner's CI_IMAGE_REGISTRY: it publishes before the image history check; want CI_IMAGE_REGISTRY= make docker-build")
+			if !strings.Contains(" "+m[1], " "+clearedRegistry+" ") {
+				problems = append(problems, "pool-images's step "+s.Name+" runs make docker-build with the runner's CI_IMAGE_REGISTRY: it publishes before the image history check; want "+clearedRegistry+" make docker-build")
 			}
 		}
 	}
@@ -77,13 +81,14 @@ func TestPoolImagesPublishOnlyAfterTheCheck(t *testing.T) {
 		t.Error(p)
 	}
 	const job = "jobs:\n  pool-images:\n    steps:\n      - name: Build\n        run: |\n          "
-	if p, _ := poolBuildPublishProblems([]byte(job + `CI_IMAGE_REGISTRY= make docker-build MODULE_ENV_FILE="$F"` + "\n")); len(p) != 0 {
+	if p, _ := poolBuildPublishProblems([]byte(job + clearedRegistry + ` make docker-build MODULE_ENV_FILE="$F"` + "\n")); len(p) != 0 {
 		t.Fatalf("a cleared registry fails: %v", p)
 	}
 	for name, bad := range map[string]string{
 		"the runner's registry":    `make docker-build MODULE_ENV_FILE="$F"`,
 		"the registry set again":   `CI_IMAGE_REGISTRY="$CI_REGISTRY" make docker-build`,
-		"another variable cleared": `CI_REGISTRY= make docker-build`,
+		"another variable cleared": `CI_REGISTRY='' make docker-build`,
+		"a bare empty assignment":  `CI_IMAGE_REGISTRY= make docker-build`,
 		"no build in pool-images":  `echo nothing`,
 	} {
 		if p, _ := poolBuildPublishProblems([]byte(job + bad + "\n")); len(p) == 0 {
@@ -100,7 +105,11 @@ func TestPoolImagesPublishOnlyAfterTheCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, prefix := range prefixes {
-		args := append(strings.Fields(prefix), filepath.Join(root, "scripts", "ci-image.sh"), "registry-push", "qrdb-toolchain:0123456789abcdef")
+		var args []string
+		for _, a := range strings.Fields(prefix) {
+			args = append(args, strings.ReplaceAll(a, "''", "")) // the shell's empty quotes
+		}
+		args = append(args, filepath.Join(root, "scripts", "ci-image.sh"), "registry-push", "qrdb-toolchain:0123456789abcdef")
 		cmd := exec.Command("env", args...) // #nosec G204 -- the workflow's own assignments and the repository's own script
 		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_DIR="+stub,

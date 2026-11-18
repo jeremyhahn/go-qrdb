@@ -609,7 +609,7 @@ jobs:
           # Codex P1 on #1631: make publishes what it builds to the runner's
           # CI_IMAGE_REGISTRY; here only the push step below, after the image
           # history check, publishes (ruling 888).
-          CI_IMAGE_REGISTRY= make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
+          CI_IMAGE_REGISTRY='' make docker-build MODULE_ENV_FILE="$RUNNER_TEMP/gomodauth.env"
           rm -f "$RUNNER_TEMP/gomodauth.env"
           toolchain_image=$(make -s toolchain-image)
           it_image=$(make -s it-image)
