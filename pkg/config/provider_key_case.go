@@ -35,6 +35,11 @@ type providerMapsFile struct {
 			Options map[string]any `yaml:"options"`
 		} `yaml:"volume_pools"`
 	} `yaml:"storage"`
+	Databases []struct {
+		Objstore struct {
+			Settings map[string]any `yaml:"settings"`
+		} `yaml:"objstore"`
+	} `yaml:"databases"`
 }
 
 // restoreProviderKeyCase gives storage.objstore.settings and each
@@ -61,6 +66,17 @@ func restoreProviderKeyCase(cfg *Config, data []byte) error {
 			return err
 		}
 		cfg.Storage.VolumePools[i].Options = options
+	}
+	for i, db := range file.Databases {
+		if i >= len(cfg.Databases) || cfg.Databases[i].Objstore == nil {
+			continue
+		}
+		field := "databases[" + strconv.Itoa(i) + "].objstore.settings"
+		settings, err := restoreKeyCase(field, db.Objstore.Settings, cfg.Databases[i].Objstore.Settings)
+		if err != nil {
+			return err
+		}
+		cfg.Databases[i].Objstore.Settings = settings
 	}
 	return nil
 }

@@ -19,11 +19,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"strconv"
 
+	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
+	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -141,7 +145,8 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 				MySQL:      dbCfg.MySQL,
 				PostgreSQL: dbCfg.PostgreSQL,
 			},
-			SQL: databaseSQLConfig(dbCfg.SQL),
+			SQL:      databaseSQLConfig(dbCfg.SQL),
+			Objstore: databaseObjstoreConfig(dbCfg.Objstore),
 		}
 		if dbCfg.Etcd != nil {
 			cfg.Protocol.Etcd = &database.EtcdConfig{
@@ -153,6 +158,52 @@ func configuredDatabases(f *startFlags) []database.DatabaseConfig {
 		cfgs = append(cfgs, cfg)
 	}
 	return cfgs
+}
+
+// databaseObjstoreConfig carries a configured database's objstore block to
+// the database record: the provider, its non-secret settings and the files
+// naming its credential, never a credential value. A nil block stays nil.
+func databaseObjstoreConfig(c *qrdbconfig.ObjstoreConfig) *database.DatabaseObjstoreConfig {
+	if c == nil {
+		return nil
+	}
+	return &database.DatabaseObjstoreConfig{
+		Provider:   c.Provider,
+		Settings:   maps.Clone(c.Settings),
+		KeyFile:    c.Credentials.KeyFile,
+		SecretFile: c.Credentials.SecretFile,
+	}
+}
+
+// rejectInlineObjstoreCredentials refuses, at config load, a credential
+// written into the settings of the node's storage.objstore block or of any
+// database's objstore block: a credential is referenced by file under the
+// block's credentials. pkg/config does not import go-objstore, so its owner
+// of the credential setting names is consulted here. The error names the
+// field, never the value.
+func rejectInlineObjstoreCredentials(cfg *qrdbconfig.Config) error {
+	reject := func(field string, settings map[string]string) error {
+		if err := objstore.RejectCredentialSettings(settings); err != nil {
+			return &qrdbconfig.ValidationError{
+				Field:  field + ".settings",
+				Reason: "carries a credential inline; reference it by file under " + field + ".credentials",
+				Err:    err,
+			}
+		}
+		return nil
+	}
+	if err := reject("storage.objstore", cfg.Storage.Objstore.Settings); err != nil {
+		return err
+	}
+	for i, db := range cfg.Databases {
+		if db.Objstore == nil {
+			continue
+		}
+		if err := reject("databases["+strconv.Itoa(i)+"].objstore", db.Objstore.Settings); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sqlDatabaseConfig returns the configuration --sql-database is provisioned

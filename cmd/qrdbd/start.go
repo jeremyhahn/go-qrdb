@@ -80,7 +80,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/statemachine"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage"
 	"github.com/jeremyhahn/go-qrdb/pkg/storage/file"
-	"github.com/jeremyhahn/go-qrdb/pkg/storage/objstore"
 	pebblestore "github.com/jeremyhahn/go-qrdb/pkg/storage/pebble"
 	"github.com/jeremyhahn/go-qrdb/pkg/store"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
@@ -495,12 +494,8 @@ func resolveStartFlags(cmd *cobra.Command, f *startFlags) error {
 		if err := cfg.ValidateCapabilities(); err != nil {
 			return err
 		}
-		if err := objstore.RejectCredentialSettings(cfg.Storage.Objstore.Settings); err != nil {
-			return &qrdbconfig.ValidationError{
-				Field:  "storage.objstore.settings",
-				Reason: "carries a credential inline; reference it by file under storage.objstore.credentials",
-				Err:    err,
-			}
+		if err := rejectInlineObjstoreCredentials(cfg); err != nil {
+			return err
 		}
 		applyConfigToFlags(cmd, f, cfg)
 	} else if f.authEnabled {
