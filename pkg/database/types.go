@@ -15,10 +15,13 @@
 package database
 
 import (
+	"errors"
 	"maps"
 	"regexp"
 	"slices"
 	"strings"
+
+	objcommon "github.com/jeremyhahn/go-objstore/pkg/common"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/codec"
 	"github.com/jeremyhahn/go-qrdb/pkg/compaction"
@@ -548,6 +551,25 @@ type DatabaseObjstoreConfig struct {
 	SecretFile string `yaml:"secret_file,omitempty" json:"secret_file,omitempty"`
 }
 
+// Validate refuses an inline credential among the provider settings: a
+// secret is named by KeyFile and SecretFile, never carried in the settings,
+// which the catalog record replicates to every node. A nil block is valid.
+func (c *DatabaseObjstoreConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	err := objcommon.RejectCredentialSettings(c.Settings)
+	if err == nil {
+		return nil
+	}
+	settingErr := &ObjstoreCredentialSettingError{Err: err}
+	var cause *objcommon.CredentialSettingError
+	if errors.As(err, &cause) {
+		settingErr.Setting = cause.Setting
+	}
+	return settingErr
+}
+
 // Directory names a volume-isolated tenant's own Raft host keeps under
 // {DataRoot}/databases, beside that tenant's per-database directories
 // ({DataRoot}/databases/<name>). They are the single source for both the host
@@ -645,6 +667,12 @@ func (c *DatabaseConfig) Validate() error {
 	}
 
 	if err := c.Barrier.Validate(); err != nil {
+		return err
+	}
+
+	// Whatever the backend, an Objstore block is recorded in the catalog,
+	// so an inline credential is refused here, before any catalog write.
+	if err := c.Objstore.Validate(); err != nil {
 		return err
 	}
 

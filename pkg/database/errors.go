@@ -55,6 +55,23 @@ func (e *InvalidBackendError) Error() string {
 	return "database: invalid backend type: " + strconv.Quote(e.Backend)
 }
 
+// ObjstoreCredentialSettingError is returned when a database's Objstore
+// settings carry a credential inline (DatabaseObjstoreConfig.Validate). It
+// names the offending setting, never its value; the credential is named by
+// key_file and secret_file instead.
+type ObjstoreCredentialSettingError struct {
+	Setting string
+	Err     error
+}
+
+// Error returns a human-readable description naming the setting.
+func (e *ObjstoreCredentialSettingError) Error() string {
+	return "database: objstore setting " + strconv.Quote(e.Setting) + " carries a credential inline; reference it by key_file and secret_file"
+}
+
+// Unwrap returns go-objstore's refusal.
+func (e *ObjstoreCredentialSettingError) Unwrap() error { return e.Err }
+
 // SealedNodeBackendError is returned when a node running under the seal
 // barrier is asked to create a database whose store lies outside the
 // barrier (backend objstore): the barrier's encrypting file system never
