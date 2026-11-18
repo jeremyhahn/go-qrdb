@@ -168,7 +168,18 @@ type dependency struct {
 	Module  string
 	Path    string
 	Version string
-	Reason  string
+	// Replaces is a replace's left-hand version: the one version of Module
+	// it applies to. Empty, it applies to every version.
+	Replaces string
+	Reason   string
+}
+
+// applies reports whether dep is in effect when the build selects version
+// selected of its module: a require always is; a replace with no left-hand
+// version is too, and a version-specific replace only when its version is
+// the one selected.
+func applies(dep dependency, selected string) bool {
+	return dep.Kind != kindReplace || dep.Replaces == "" || dep.Replaces == selected
 }
 
 // dependencies selects what deps-check compares: every direct require that
@@ -184,7 +195,7 @@ func dependencies(file string, directives []directive) []dependency {
 		}
 		replaced[d.Path+"@"+d.Version] = true
 		if d.NewVersion != "" {
-			deps = append(deps, dependency{File: file, Kind: kindReplace, Line: d.Line, Module: d.Path, Path: d.NewPath, Version: d.NewVersion, Reason: d.Comment})
+			deps = append(deps, dependency{File: file, Kind: kindReplace, Line: d.Line, Module: d.Path, Path: d.NewPath, Version: d.NewVersion, Replaces: d.Version, Reason: d.Comment})
 		}
 	}
 	for _, d := range directives {

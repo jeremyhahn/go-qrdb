@@ -149,6 +149,54 @@ func TestDependenciesSkipsReplacedRequires(t *testing.T) {
 	assert.Equal(t, "example.com/one", again[1].Path)
 }
 
+// listingSource lists fixed modules for any directory.
+type listingSource map[string]listedModule
+
+func (s listingSource) GoProxy(string) (string, error) { return "direct", nil }
+
+func (s listingSource) List(string, []string) (map[string]listedModule, error) { return s, nil }
+
+func (s listingSource) Released(string, string, string) (time.Time, error) { return time.Time{}, nil }
+
+// TestCheckModuleVersionSpecificReplace: a replace whose left-hand version
+// is not the version the build selects is inactive and yields no finding;
+// one naming the selected version, or no version, is assessed.
+func TestCheckModuleVersionSpecificReplace(t *testing.T) {
+	src := listingSource{"example.com/m": {Path: "example.com/m", Version: "v1.5.0", Versions: []string{"v1.0.0", "v1.1.0", "v1.5.0"}}}
+	cases := map[string]struct {
+		replace string
+		lag     bool
+	}{
+		"replace of a version not selected":    {"example.com/m v1.0.0 => example.com/m v1.1.0", false},
+		"replace of the version selected":      {"example.com/m v1.5.0 => example.com/m v1.1.0", true},
+		"replace of every version of the path": {"example.com/m => example.com/m v1.1.0", true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			gomod := "module example.com/app\n\ngo 1.21\n\nrequire example.com/m v1.5.0\n\nreplace " + tc.replace + "\n"
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+
+			findings, err := checkModule(src, dir, firstParty, testNow)
+			require.NoError(t, err)
+
+			lag := false
+			for _, f := range findings {
+				require.Nil(t, f.Lookup)
+				if f.Dep.Version == "v1.1.0" {
+					assert.Equal(t, kindReplace, f.Dep.Kind)
+					assert.True(t, f.Behind)
+					assert.Equal(t, "v1.5.0", f.Latest)
+					lag = true
+				} else {
+					assert.False(t, f.Behind, "the require of the selected v1.5.0 is current")
+				}
+			}
+			assert.Equal(t, tc.lag, lag)
+		})
+	}
+}
+
 // TestParsesThisRepository parses the go.mod of the repository the tool is
 // copied into (scripts/depscheck, so ../../go.mod), so a form the parser
 // rejects fails here, not in the CI stage. In the handbook template there

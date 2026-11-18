@@ -217,6 +217,11 @@ func checkModule(src moduleSource, dir, firstParty string, now time.Time) ([]fin
 	findings := make([]finding, 0, len(deps))
 	for _, dep := range deps {
 		mod, listed := listing[dep.Module]
+		if listed && mod.Version != "" && !applies(dep, mod.Version) {
+			// A version-specific replace of a version the build does
+			// not select is inactive: it puts nothing in the build.
+			continue
+		}
 		f := assess(dep, mod, listed, firstParty, now)
 		if needsReleaseTime(f, mod) {
 			released, err := src.Released(dir, dep.Path, f.Latest)
