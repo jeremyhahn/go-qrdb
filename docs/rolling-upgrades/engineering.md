@@ -109,9 +109,11 @@ them. Each test states which pair of builds it runs on:
 - **Released pair.** No release differs from the one before it in feature
   support yet: v0.58.5-alpha and earlier lack the pending-user TTL (feature
   `pending-user-ttl`, #1587), and #1587 is on main but unreleased. Once the
-  first release that carries #1587 is tagged, T1-T4 and T6-T8 also run on the
-  pair v0.58.5-alpha → that release. After that, each later release replaces
-  the newer side.
+  first release that carries #1587 is tagged, T1-T4, T6 and T7 also run on the
+  released pair. That pair is always the newest release and the release
+  before it, so both sides advance together and stay adjacent (Q1). T8 keeps
+  v0.58.5-alpha as a fixed pre-TTL server, separate from the pair, because the
+  TTL case needs a server without the field.
 - **Synthetic N+1.** Until that release exists, every test runs on the
   synthetic pair. Until two releases carry the version announcement, T5
   (gap refusal) and the negotiation parts of T2 always do. It builds N+1 from the same tree
@@ -130,7 +132,7 @@ them. Each test states which pair of builds it runs on:
 | T5 | Version-gap refusal (N and N+2) on every channel: enrolment returns the typed refusal, ALPN ends in alert 120, the Raft `WireWindow` refuses. The node logs both versions, and the cluster does not diverge. |
 | T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. |
 | T7 | Key delivery across versions, in both directions. |
-| T8 | An SDK with the TTL field → a v0.58.5-alpha server (released pair): TTL user create is refused before any user exists, with a typed error. Today it is created and then deleted (#1601), which this test must reject. SDK → server on the same or a newer release works. The synthetic pair repeats this with the test-only field. This is the first case (#1601). |
+| T8 | An SDK with the TTL field → the fixed pre-TTL v0.58.5-alpha server: TTL user create is refused before any user exists, with a typed error. Today it is created and then deleted (#1601), which this test must reject. SDK → server on the same or a newer release works. The synthetic pair repeats this with the test-only field. This is the first case (#1601). |
 
 ## Delivery
 
