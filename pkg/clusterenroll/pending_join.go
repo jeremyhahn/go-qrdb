@@ -91,12 +91,16 @@ const (
 
 // pendingJoinRecord is the JSON envelope stored under pendingJoinPrefix+ID.
 type pendingJoinRecord struct {
-	ID        string            `json:"id"`
-	CSRDER    []byte            `json:"csr_der"`
-	NodeURI   string            `json:"node_uri,omitempty"`
-	ReplicaID uint64            `json:"replica_id,omitempty"`
-	Features  []string          `json:"features,omitempty"`
-	Status    pendingJoinStatus `json:"status"`
+	ID        string   `json:"id"`
+	CSRDER    []byte   `json:"csr_der"`
+	NodeURI   string   `json:"node_uri,omitempty"`
+	ReplicaID uint64   `json:"replica_id,omitempty"`
+	Features  []string `json:"features,omitempty"`
+	// ReleaseVersion is the joiner's announced release, already checked by
+	// checkJoinerRelease, carried to the pre-membership record an approval
+	// advertises so the feature gate judges the joiner's release.
+	ReleaseVersion string            `json:"release_version,omitempty"`
+	Status         pendingJoinStatus `json:"status"`
 
 	SubmittedAt time.Time `json:"submitted_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
@@ -132,12 +136,13 @@ func (r *pendingJoinRecord) expired(now time.Time) bool {
 // never the CSR's raw DER or a delivered leaf's certificate, neither of
 // which bears on the decision.
 type PendingJoinRequest struct {
-	ID          string
-	NodeURI     string
-	ReplicaID   uint64
-	Features    []string
-	SubmittedAt time.Time
-	ExpiresAt   time.Time
+	ID             string
+	NodeURI        string
+	ReplicaID      uint64
+	Features       []string
+	ReleaseVersion string
+	SubmittedAt    time.Time
+	ExpiresAt      time.Time
 }
 
 // csrDigestHex is the pending-queue entry ID for csrDER: a stable key the
@@ -182,14 +187,15 @@ func SubmitPendingJoinRequest(ctx context.Context, store kvstore.AtomicKVStore, 
 	key := pendingJoinKey(id)
 	now := time.Now().UTC()
 	fresh := &pendingJoinRecord{
-		ID:          id,
-		CSRDER:      req.CSRDER,
-		NodeURI:     req.NodeURI,
-		ReplicaID:   req.ReplicaID,
-		Features:    req.Features,
-		Status:      pendingStatusPending,
-		SubmittedAt: now,
-		ExpiresAt:   now.Add(ttl),
+		ID:             id,
+		CSRDER:         req.CSRDER,
+		NodeURI:        req.NodeURI,
+		ReplicaID:      req.ReplicaID,
+		Features:       req.Features,
+		ReleaseVersion: req.ReleaseVersion,
+		Status:         pendingStatusPending,
+		SubmittedAt:    now,
+		ExpiresAt:      now.Add(ttl),
 	}
 	freshData, err := marshalPendingJoin(fresh)
 	if err != nil {
@@ -270,12 +276,13 @@ func ListPendingJoinRequests(ctx context.Context, store kvstore.AtomicKVStore) (
 			return nil
 		}
 		out = append(out, &PendingJoinRequest{
-			ID:          r.ID,
-			NodeURI:     r.NodeURI,
-			ReplicaID:   r.ReplicaID,
-			Features:    r.Features,
-			SubmittedAt: r.SubmittedAt,
-			ExpiresAt:   r.ExpiresAt,
+			ID:             r.ID,
+			NodeURI:        r.NodeURI,
+			ReplicaID:      r.ReplicaID,
+			Features:       r.Features,
+			ReleaseVersion: r.ReleaseVersion,
+			SubmittedAt:    r.SubmittedAt,
+			ExpiresAt:      r.ExpiresAt,
 		})
 		return nil
 	})
@@ -433,7 +440,7 @@ func handleTokenlessJoin(ctx context.Context, provider cakey.Provider, store kvs
 // record, and a sibling poll that already delivered it is reported as a
 // cached success instead.
 func deliverApprovedJoin(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, record *pendingJoinRecord, csr *x509.CertificateRequest, advertiser FeatureAdvertiser) *JoinResponse {
-	resp := issueAndAdmit(ctx, provider, store, record.BoundNodeURI, csr, record.ReplicaID, record.Features, advertiser)
+	resp := issueAndAdmit(ctx, provider, store, record.BoundNodeURI, csr, record.ReplicaID, record.Features, record.ReleaseVersion, advertiser)
 	key := pendingJoinKey(record.ID)
 	if resp.Error != "" {
 		if data, gerr := store.Get(ctx, key); gerr == nil {

@@ -275,7 +275,7 @@ type FeatureAdvertiser interface {
 	// Implementations filter features to names they know before writing
 	// anything -- an unknown name is never trusted onto the wire of the
 	// advertisement record -- and bound how many they accept.
-	AdvertiseJoiner(ctx context.Context, replicaID uint64, raftAddress string, features []string) error
+	AdvertiseJoiner(ctx context.Context, replicaID uint64, raftAddress string, features []string, releaseVersion string) error
 }
 
 // HandleJoinRequest is the transport-agnostic core of member-side CSR
@@ -404,7 +404,7 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 		return &JoinResponse{Error: "join request could not be processed"}
 	}
 
-	return issueAndAdmit(ctx, provider, store, boundNodeURI, csr, req.ReplicaID, req.Features, advertiser)
+	return issueAndAdmit(ctx, provider, store, boundNodeURI, csr, req.ReplicaID, req.Features, req.ReleaseVersion, advertiser)
 }
 
 // issueAndAdmit runs the reserve -> sign -> promote -> advertise sequence
@@ -414,7 +414,7 @@ func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvsto
 // See ReserveJoinIdentity, PromoteJoinIdentityAdmitted and
 // ReleaseJoinIdentityReservation's own doc comments for why each step runs
 // in this exact order.
-func issueAndAdmit(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, boundNodeURI string, csr *x509.CertificateRequest, replicaID uint64, features []string, advertiser FeatureAdvertiser) *JoinResponse {
+func issueAndAdmit(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, boundNodeURI string, csr *x509.CertificateRequest, replicaID uint64, features []string, releaseVersion string, advertiser FeatureAdvertiser) *JoinResponse {
 	reserved, pending, err := ReserveJoinIdentity(ctx, store, boundNodeURI, 0)
 	if err != nil {
 		return &JoinResponse{Error: "join request could not be processed"}
@@ -470,7 +470,7 @@ func issueAndAdmit(ctx context.Context, provider cakey.Provider, store kvstore.A
 				raftAddress = identity.NodeID
 			}
 		}
-		if aerr := advertiser.AdvertiseJoiner(ctx, replicaID, raftAddress, features); aerr != nil {
+		if aerr := advertiser.AdvertiseJoiner(ctx, replicaID, raftAddress, features, releaseVersion); aerr != nil {
 			slog.ErrorContext(ctx, "member-side CSR join: signed and admitted the leaf, but could not publish its pre-membership feature advertisement; member add will refuse it until it advertises on its own",
 				"node_uri", boundNodeURI, "replica_id", replicaID, "error", aerr)
 		}

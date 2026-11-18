@@ -130,7 +130,7 @@ func TestIssueAndAdmit_SignFailureWithUnreleasableReservationStillRefuses(t *tes
 	store := &faultyJoinStore{AtomicKVStore: backing, failCompareAndDeleteOnPrefix: joinIdentityPrefix}
 	nodeURI, csr := issueAndAdmitRequest(t, "node-release-fault")
 
-	resp := issueAndAdmit(context.Background(), &issuanceFailureProvider{cert: caCert}, store, nodeURI, csr, 0, nil, nil)
+	resp := issueAndAdmit(context.Background(), &issuanceFailureProvider{cert: caCert}, store, nodeURI, csr, 0, nil, "", nil)
 	if resp.Error != "signing failed" || len(resp.CertPEM) != 0 {
 		t.Fatalf("response = %+v; want the signing-failed refusal and no certificate", resp)
 	}
@@ -150,7 +150,7 @@ func TestIssueAndAdmit_PromoteFailureWithholdsTheSignedLeaf(t *testing.T) {
 	nodeURI, csr := issueAndAdmitRequest(t, "node-promote-fault")
 	adv := &fakeFeatureAdvertiser{}
 
-	resp := issueAndAdmit(context.Background(), newTestClusterCAProvider(t), store, nodeURI, csr, 7, []string{"f"}, adv)
+	resp := issueAndAdmit(context.Background(), newTestClusterCAProvider(t), store, nodeURI, csr, 7, []string{"f"}, "", adv)
 	if resp.Error != "join request could not be processed" || len(resp.CertPEM) != 0 {
 		t.Fatalf("response = %+v; want the generic refusal and no certificate", resp)
 	}

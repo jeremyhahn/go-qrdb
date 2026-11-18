@@ -85,7 +85,7 @@ func New(leaseSvc service.LeaseServicer, mvcc service.MVCCKVServicer) *Advertise
 // an unknown name is dropped, never trusted onto the wire of the
 // advertisement record -- so the result is bounded by that fixed set
 // regardless of how many names the joiner claimed.
-func (a *Advertiser) AdvertiseJoiner(ctx context.Context, replicaID uint64, raftAddress string, features []string) error {
+func (a *Advertiser) AdvertiseJoiner(ctx context.Context, replicaID uint64, raftAddress string, features []string, releaseVersion string) error {
 	known := featuregate.SupportedNames()
 	filtered := make([]string, 0, len(features))
 	for _, f := range features {
@@ -94,7 +94,7 @@ func (a *Advertiser) AdvertiseJoiner(ctx context.Context, replicaID uint64, raft
 		}
 	}
 
-	member := cluster.Member{NodeID: replicaID, Address: raftAddress, Features: filtered}
+	member := cluster.Member{NodeID: replicaID, Address: raftAddress, Features: filtered, ReleaseVersion: releaseVersion}
 	data, err := json.Marshal(member)
 	if err != nil {
 		return &EncodeError{Err: err}

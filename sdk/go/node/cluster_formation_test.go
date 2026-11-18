@@ -712,7 +712,7 @@ func advertiseJoiner(ctx context.Context, t *testing.T, leader *Node, replicaID 
 	if advertiser == nil {
 		t.Fatal("the leader has no lease or MVCC service to advertise through")
 	}
-	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames()); err != nil {
+	if err := advertiser.AdvertiseJoiner(ctx, replicaID, addr, featuregate.SupportedNames(), ""); err != nil {
 		t.Fatalf("AdvertiseJoiner(%d, %s): %v", replicaID, addr, err)
 	}
 	deadline := time.Now().Add(clusterFormationBudget)
