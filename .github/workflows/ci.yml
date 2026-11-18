@@ -1032,11 +1032,9 @@ jobs:
              timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             ci_registry_outage "$CI_REGISTRY" "$?"
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
             exit 1
           fi
@@ -1591,11 +1589,9 @@ jobs:
              timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             ci_registry_outage "$CI_REGISTRY" "$?"
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
             exit 1
           fi
@@ -1791,11 +1787,9 @@ jobs:
              timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             ci_registry_outage "$CI_REGISTRY" "$?"
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
             exit 1
           fi

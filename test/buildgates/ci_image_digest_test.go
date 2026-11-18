@@ -508,11 +508,9 @@ lan_push "$IT_ID" it-image it_tag`
    ` + lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 &&
    [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
    docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-  docker rmi "$REF" >/dev/null 2>&1 || true
   echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
 else
   ci_registry_outage "$CI_REGISTRY" "$?"
-  docker rmi "$REF" >/dev/null 2>&1 || true
   echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not ` + poolProducer + `'s image: a pool leg takes no other (ruling 879)"
   exit 1
 fi`
@@ -699,6 +697,13 @@ func lanScriptProblems(where, run string, pull bool) (problems []string) {
 		}
 		if !strings.Contains(run, `docker tag "$ID" "$IMAGE"`) || strings.Contains(run, `docker tag "$REF"`) {
 			problems = append(problems, where+` tags something other than the verified "$ID": want docker tag "$ID" "$IMAGE"`)
+		}
+		// Codex P1 on #1631: the pool daemon is shared, and sibling legs of the
+		// run pull the same "$REF"; a leg that removes it can take it from a
+		// sibling between that sibling's pull and its check, and a pool leg
+		// fails closed.
+		if strings.Contains(run, `docker rmi "$REF"`) {
+			problems = append(problems, where+` removes "$REF", which a sibling leg on the shared daemon may still be checking`)
 		}
 	}
 	for _, cmd := range lanDockerCmd.FindAllString(run, -1) {
@@ -1207,11 +1212,9 @@ jobs:
              timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             ci_registry_outage "$CI_REGISTRY" "$?"
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
             exit 1
           fi
@@ -1261,11 +1264,9 @@ jobs:
              timeout -k 10 "${CI_IMAGE_REGISTRY_TIMEOUT:-300}" docker pull -q "$REF" >/dev/null 2>&1 &&
              [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&
              docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             ci_registry_outage "$CI_REGISTRY" "$?"
-            docker rmi "$REF" >/dev/null 2>&1 || true
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
             exit 1
           fi
@@ -1527,7 +1528,7 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 		{name: "a pull with no timeout", old: pull, new: `docker pull -q "$REF" >/dev/null 2>&1 &&`},
 		{name: "a pull bounded by a timeout of its own", old: pull, new: `timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&`},
 		{name: "a tag printing its stderr", old: tagID, new: `docker tag "$ID" "$IMAGE"; then`},
-		{name: "an rmi printing its stderr", old: `docker rmi "$REF" >/dev/null 2>&1`, new: `docker rmi "$REF" >/dev/null`},
+		{name: "a removal of the registry tag a sibling leg checks", old: `  echo "$HANDOFF=$ID" >> "$GITHUB_ENV"`, new: `  docker rmi "$REF" >/dev/null 2>&1 || true` + "\n" + `  echo "$HANDOFF=$ID" >> "$GITHUB_ENV"`},
 	}
 	for _, family := range []string{"toolchain", "it"} {
 		f := imageFamilies[family]
