@@ -63,14 +63,13 @@ probe=
 while [ $# -gt 0 ]; do
 	case $1 in
 	-e) export "$2"; shift 2 ;;
-	-v) src=${2%%:*}; rest=${2#*:}
-		[ "${rest%%:*}" = /usr/local/bin/apk-mirror ] && ln -sf "$src" "$STUB_DIR/bin/apk-mirror"
-		shift 2 ;;
+	-v) echo "stub docker: -v $2 names a path on the runner, which the pool's daemon does not share" >&2; exit 98 ;;
 	-c) probe=$2; shift 2 ;;
 	*) shift ;;
 	esac
 done
-probe=$(printf '%s' "$probe" | sed "s#/etc/apk/repositories#$STUB_DIR/repos#g; s#/var/cache/apk#$STUB_DIR/cache#g")
+probe=$(printf '%s' "$probe" | sed "s#/etc/apk/repositories#$STUB_DIR/repos#g; s#/var/cache/apk#$STUB_DIR/cache#g; s#/tmp/apk-mirror#$STUB_DIR/tmp/apk-mirror#g")
+mkdir -p "$STUB_DIR/tmp"
 APK_REPOSITORIES="$STUB_DIR/repos" PATH="$STUB_DIR/bin:$PATH" sh -c "$probe"
 `
 
