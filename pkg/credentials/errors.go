@@ -144,6 +144,22 @@ func (e *OperationError) Error() string {
 // Unwrap returns the underlying cause for errors.Is and errors.As support.
 func (e *OperationError) Unwrap() error { return e.Cause }
 
+// LayoutConflictError reports the credential names a move from an earlier
+// credential store left in place because the new store already holds a
+// record of that name. Neither copy is changed: the new store's records
+// stay authoritative and the earlier store keeps its records of these
+// names for an operator to reconcile. The message lists names only, never
+// values.
+type LayoutConflictError struct {
+	// Names are the conflicting credential names, sorted.
+	Names []string
+}
+
+func (e *LayoutConflictError) Error() string {
+	return "credentials: the new credential store already holds records of " +
+		strings.Join(e.Names, ", ") + "; their records stay in the earlier store"
+}
+
 // CredentialMigrationConflictError reports a credential whose node-local
 // copy under the old "credentials/" layout differs from the replicated
 // record another node already migrated to "__sys:credentials/". The node
