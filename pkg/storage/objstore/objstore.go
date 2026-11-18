@@ -403,14 +403,24 @@ func lockNamespace(namespace string) func() {
 // by name, so a setting that only tunes the provider does not split one
 // namespace into two owner locks. A provider absent from locationSettings is
 // keyed on every setting. Inline credentials are refused before the key is
-// taken (RejectCredentialSettings).
+// taken (RejectCredentialSettings). An S3 or Azure "endpoint" is keyed in its
+// canonical form (canonicalS3Endpoint, canonicalAzureEndpoint), so every
+// spelling of one effective endpoint, the omitted default included, is one
+// namespace.
 func namespaceKey(provider string, settings map[string]string) string {
-	if provider == "s3" {
+	var endpoint string
+	switch provider {
+	case "s3":
+		endpoint = canonicalS3Endpoint(settings["endpoint"])
+	case "azure":
+		endpoint = canonicalAzureEndpoint(settings["endpoint"], settings["accountName"])
+	}
+	if endpoint != "" {
 		canonical := make(map[string]string, len(settings)+1)
 		for name, value := range settings {
 			canonical[name] = value
 		}
-		canonical["endpoint"] = canonicalS3Endpoint(settings["endpoint"])
+		canonical["endpoint"] = endpoint
 		settings = canonical
 	}
 	location, listed := locationSettings[provider]
@@ -500,6 +510,48 @@ func isAWSS3Host(host string) bool {
 	return false
 }
 
+// canonicalAzureEndpoint is the effective Azure blob endpoint an "endpoint"
+// setting names, so its spellings share one owner lock. An omitted endpoint is
+// the provider default, the account's blob host
+// (https://<accountName>.blob.core.windows.net), as go-objstore's Azure
+// provider builds it. A scheme-less endpoint is https, the scheme and host are
+// lowercased, a trailing dot on the host is dropped and the default port of
+// the scheme is made explicit. The path is kept without its trailing slash:
+// the container URL is the endpoint plus "/" plus the container, and an
+// emulator selects the account by the path. A query or fragment is dropped.
+// An endpoint that does not parse is keyed lowercased without its trailing
+// slash.
+func canonicalAzureEndpoint(endpoint, accountName string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		endpoint = "https://" + accountName + ".blob.core.windows.net"
+	}
+	raw := endpoint
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return strings.ToLower(strings.TrimRight(endpoint, "/"))
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	authority := host
+	if port != "" {
+		authority = net.JoinHostPort(host, port)
+	}
+	return scheme + "://" + authority + strings.TrimRight(u.EscapedPath(), "/")
+}
+
 // locationSettings lists, per go-objstore provider, the settings that
 // address the store: where its objects live. The rest (runLifecycle,
 // lifecycleManagerType, lifecyclePolicyFile, multipartExpiry,
@@ -518,6 +570,11 @@ func isAWSS3Host(host string) bool {
 // canonicalizes "endpoint" (canonicalS3Endpoint): an omitted endpoint and
 // every AWS S3 endpoint spelling are the one AWS identity, whose bucket
 // names are global, and any other endpoint is its scheme, host and port.
+//
+// An Azure namespace is the container at its effective endpoint: an omitted
+// endpoint is the account's default blob host, and namespaceKey canonicalizes
+// "endpoint" (canonicalAzureEndpoint) to its scheme, host, port and path, the
+// path kept because an emulator selects the account by it.
 var locationSettings = map[string][]string{
 	"local": {"path"},
 	"s3":    {"bucket", "endpoint"},

@@ -65,26 +65,34 @@ func TestNamespaceKey_S3EffectiveIdentity(t *testing.T) {
 // Two concurrent opens of one AWS bucket, spelled differently and by
 // different owners: exactly one succeeds, the other gets the owner refusal.
 func TestNew_S3EquivalentEndpointsConcurrentOwners(t *testing.T) {
+	requireOneOwnerAcrossSpellings(t, "s3", []map[string]string{
+		{"bucket": "b", "region": "us-east-1"},
+		{"bucket": "b", "region": "eu-west-1", "endpoint": "https://s3.eu-west-1.amazonaws.com/"},
+	})
+}
+
+// requireOneOwnerAcrossSpellings opens provider, backed by one shared
+// in-memory store, concurrently under each settings spelling of one namespace,
+// each as its own owner, and requires that exactly one opens and the rest are
+// refused by the owner lock.
+func requireOneOwnerAcrossSpellings(t *testing.T, provider string, spellings []map[string]string) {
+	t.Helper()
 	shared := objmemory.New()
 	require.NoError(t, shared.Configure(map[string]string{}, objcommon.Credentials{}))
-	prev, hadPrev := registeredProviders.Load("s3")
-	registeredProviders.Store("s3", registeredProvider{
+	prev, hadPrev := registeredProviders.Load(provider)
+	registeredProviders.Store(provider, registeredProvider{
 		creator: func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
 			return shared, nil
 		},
 	})
 	t.Cleanup(func() {
 		if hadPrev {
-			registeredProviders.Store("s3", prev)
+			registeredProviders.Store(provider, prev)
 		} else {
-			registeredProviders.Delete("s3")
+			registeredProviders.Delete(provider)
 		}
 	})
 
-	spellings := []map[string]string{
-		{"bucket": "b", "region": "us-east-1"},
-		{"bucket": "b", "region": "eu-west-1", "endpoint": "https://s3.eu-west-1.amazonaws.com/"},
-	}
 	engines := make([]*Engine, len(spellings))
 	errs := make([]error, len(spellings))
 	start := make(chan struct{})
@@ -94,7 +102,7 @@ func TestNew_S3EquivalentEndpointsConcurrentOwners(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			engines[i], errs[i] = New("s3", settings, WithOwner([]string{"db-a", "db-b"}[i]))
+			engines[i], errs[i] = New(provider, settings, WithOwner("db-"+string(rune('a'+i))))
 		}()
 	}
 	close(start)
@@ -112,5 +120,5 @@ func TestNew_S3EquivalentEndpointsConcurrentOwners(t *testing.T) {
 		refused++
 	}
 	require.Equal(t, 1, opened)
-	require.Equal(t, 1, refused)
+	require.Equal(t, len(spellings)-1, refused)
 }
