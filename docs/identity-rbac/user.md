@@ -684,7 +684,7 @@ system Admin role does not hold it yet. Run `qrdb roles reconcile` as the system
 Admin first; converging the system tenant grants the permission. Then rerun
 `--all-tenants`. Under strict separation of duties the system Admin is
 refused `--all-tenants` outright: run it as the system SO, which holds
-`roles:reconcile_all` by default.
+`roles:reconcile_all` only under strict separation.
 
 **Creating a role failed on a permission string.** The vocabulary is a fixed
 registry — you cannot invent `kv:frobnicate`. `qrdb roles permissions` lists

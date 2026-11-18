@@ -53,6 +53,7 @@ package rbac
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -743,6 +744,27 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	}
 
 	required := permission.Permission(resource + ":" + action)
+
+	// Strict separation of duties: the SO holds the strict-only
+	// SO-exclusive grants (permission.StrictSOGrants, the built-in role
+	// reconcile across every tenant), which are the Admin's in the standard
+	// posture. Additive, and only for the exact permission requested; the
+	// scope gate below still confines a cross-scope one to the system SO.
+	if a.strictSoD && slices.Contains(permission.StrictSOGrants, required) {
+		isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
+		if err != nil {
+			return err
+		}
+		if isSO {
+			merged := make(map[permission.Permission]struct{}, len(permSet)+1)
+			for p := range permSet {
+				merged[p] = struct{}{}
+			}
+			merged[required] = struct{}{}
+			permSet = merged
+		}
+	}
+
 	if !permissionGranted(permSet, resource, action) {
 		return &PermissionDeniedError{
 			Resource: resource,

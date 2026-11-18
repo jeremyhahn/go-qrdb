@@ -96,7 +96,8 @@ reconciled independently, the system tenant first. A sealed tenant is skipped
 with reason `sealed`, a tenant that refuses the call with reason `refused`. A
 tenant that fails is reported in `failed` and the pass continues, so the call
 itself succeeds. It carries the cross-tenant permission `roles:reconcile_all`,
-which only the system tenant's built-in Admin and SO roles hold. A caller
+which the system tenant's built-in Admin role holds in the standard posture
+and the system SO alone holds under strict separation. A caller
 bound to any other tenant is refused with 403 / `PermissionDenied`. Under
 strict separation of duties both the single-tenant and the all-tenants
 reconcile run only as an SO, and the system Admin is refused them with 403 /

@@ -991,9 +991,10 @@ Unix socket, MCP and the embedded transport — carries the full surface.
   not "an unauthenticated request"; the guard is what keeps those two apart and
   is pinned by a test.
 - **The all-tenant reconcile is a platform-operator verb, gated twice.**
-  `roles:reconcile_all` is cross-scope and granted to the built-in Admin and SO
-  roles, so only the system tenant's Admin and SO hold it effectively; under
-  strict separation the transports call `AuthorizeSOExclusive` first, so it runs
+  `roles:reconcile_all` is cross-scope and granted to the built-in Admin role,
+  so in the standard posture only the system tenant's Admin holds it
+  effectively; under strict separation the authorizer extends it to the system
+  SO (`permission.StrictSOGrants`) and the transports call `AuthorizeSOExclusive` first, so it runs
   only as a separate system SO. Independently of the role store, `role.ReconcileAllTenants`
   refuses a caller bound to any other tenant with
   `tenant.PlatformOperatorRequiredError`. Each tenant converges through its own

@@ -213,8 +213,9 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 // strict node's ceremony enrolled (#1128) over every transport: it creates
 // a system role and runs the system tenant's built-in role reconcile, each
 // of which strict separation refuses the system Admin, and proves the
-// all-tenants reconcile (roles:reconcile_all) SO-exclusive too: the system
-// Admin is refused it and the system SO runs it.
+// all-tenants reconcile (roles:reconcile_all), the system Admin's in the
+// standard posture, SO-only here: the system Admin is refused it and the
+// system SO runs it.
 func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 	t.Parallel()
 	n := startStrictSeparationNode(t)
@@ -256,9 +257,10 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 				}
 			}
 
-			// Under strict separation the all-tenants pass, which reaches
-			// pt's, is SO-exclusive like the single-tenant reconcile: the
-			// system Admin is refused and the system SO runs it.
+			// The all-tenants pass, which reaches pt's, is the system
+			// Admin's in the standard posture; under strict separation it
+			// is the system SO's only: the Admin is refused and the SO runs
+			// it.
 			allTenants := []string{"roles", "reconcile", "--all-tenants"}
 			out, err := runCLIProto(t, n, proto, allTenants...)
 			denied("Admin", "roles reconcile --all-tenants", out, err)
@@ -324,6 +326,12 @@ func TestSeparationPosture_CLI_StandardAdminHoldingSO_PerProtocol(t *testing.T) 
 				t.Fatalf("[%s] %s holds the so role after the revocation", proto.name, uma)
 			}
 			pt.soExclusiveOps(t, "admin", pt.adminConn, false)
+
+			// In the standard posture the all-tenants built-in role
+			// reconcile (roles:reconcile_all) is the system Admin's.
+			if out, err := runCLIProto(t, n, proto, "roles", "reconcile", "--all-tenants"); err != nil {
+				t.Fatalf("[%s] standard posture: roles reconcile --all-tenants as the system Admin: %v\noutput: %s", proto.name, err, out)
+			}
 		})
 	}
 }

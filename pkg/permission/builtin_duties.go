@@ -131,8 +131,6 @@ func registerGovernanceDuties() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
-		// Cross-tenant built-in role convergence (system-tenant SO).
-		RolesReconcileAll,
 		// User administration.
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
