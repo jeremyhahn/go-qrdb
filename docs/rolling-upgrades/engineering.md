@@ -71,8 +71,9 @@ skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 
 ## Questions for review
 
-Each question has a recommendation. The owner rules on Q4. The others are
-settled by convention (ruling 109) unless the review objects. The SPEC row
+Each question has a recommendation. The owner ruled on Q4 (decision 231 (a))
+and approved the SPEC row text as written (ruling 913). The others are settled
+by convention (ruling 109) unless the review objects; Q5 stays open. The SPEC row
 itself merges only on the owner's recorded approval of its text, as the rules
 of [SPEC.md](../SPEC.md) require. Owner decision 224 orders the row; it does not
 approve this wording.
@@ -91,7 +92,7 @@ approve this wording.
 4. **SPEC Boundaries ban on compatibility shims** ([SPEC.md](../SPEC.md)
    Boundaries; [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
    "No backward-compatibility code"). Speaking release N's wire from N+1 is
-   compatibility code. Recommendation for the owner: scope the ban. Code that
+   compatibility code. Ruled (owner decision 231 (a), ruling 913): the ban is scoped. Code that
    speaks exactly one previous release's wire, behind the version negotiation and
    deleted in the release after, is allowed. Any other shim stays banned.
 5. **How a client learns what a server supports** (the #1601 TTL case). Left
