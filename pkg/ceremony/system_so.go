@@ -23,11 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
-	"github.com/jeremyhahn/go-qrdb/pkg/pin"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/secure"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
@@ -255,40 +253,6 @@ func parsePEMCert(certPEM []byte) *x509.Certificate {
 	return cert
 }
 
-// checkSOAgainstIssuedAdmin refuses a system SO whose key is the key of the
-// admin certificate already issued (adminCertPEM), under the rule
-// validateSystemSOInputs applies to the supplied admin inputs: strict
-// separation refuses any shared key, the standard posture allows one only
-// for the admin enrolled as SO. Options naming no SO, or no issued admin
-// certificate, pass.
-func checkSOAgainstIssuedAdmin(adminCertPEM []byte, opts *InitializeOptions, strict bool) error {
-	if !systemSORequested(opts) || len(adminCertPEM) == 0 {
-		return nil
-	}
-	admin := parsePEMCert(adminCertPEM)
-	if admin == nil {
-		return &SystemSORejectedError{Cause: errors.New("the issued bootstrap admin certificate does not parse")}
-	}
-	var soKey []byte
-	if len(opts.SOCertPEM) > 0 {
-		cert := parsePEMCert(opts.SOCertPEM)
-		if cert == nil {
-			return &SystemSORejectedError{Cause: errors.New("the system SO certificate does not parse")}
-		}
-		soKey = cert.RawSubjectPublicKeyInfo
-	} else {
-		csr, err := parseAndVerifyCSR(opts.SOCSRPEM)
-		if err != nil {
-			return &SystemSORejectedError{Cause: err}
-		}
-		soKey = csr.RawSubjectPublicKeyInfo
-	}
-	if bytes.Equal(admin.RawSubjectPublicKeyInfo, soKey) && (strict || opts.SOUsername != adminUsername) {
-		return &SystemSORejectedError{Cause: errors.New("the system SO's key is the bootstrap admin's")}
-	}
-	return nil
-}
-
 // LastIssuedSystemSO returns a copy of the system SO the last successful
 // Initialize issued, or nil when it named none. The composer writes it to
 // the replicated pending store so first boot on any node can enrol the SO.
@@ -302,15 +266,9 @@ func (s *CeremonyService) LastIssuedSystemSO() *IssuedSystemSO {
 // records the system SO it issued, before it reports success.
 const pendingSystemSOKey = "ceremony/pending-system-so"
 
-// systemSOWriteOutstandingKey is the system barrier's write-ahead marker
-// for an M-of-N Initialize's system SO record: written before the record,
-// removed once the record is written. It outlives a restart, which the
-// in-memory unrecordedMofNResult does not, so a ceremony whose SO record
-// was never written stays enrolling however its envelopes are claimed.
-const systemSOWriteOutstandingKey = "ceremony/system-so-write-outstanding"
-
 // persistIssuedSystemSOLocked records so in the system barrier, which
-// Initialize has unsealed by now. The composer copies the SO into the
+// Initialize has unsealed by now (for M-of-N, Distribute calls it before the
+// Shamir initialization commits). The composer copies the SO into the
 // replicated store only once that store exists; a node that crashes before
 // then reads it back here on restart (PendingSystemSO), so strict first boot
 // is never stranded without its SO. The record carries the SO PIN only as
@@ -334,119 +292,6 @@ func (s *CeremonyService) persistIssuedSystemSOLocked(ctx context.Context, so *I
 		return &SystemSOPersistError{Op: "write", Cause: err}
 	}
 	return nil
-}
-
-// retrySystemSOPersistLocked completes an M-of-N Initialize whose last step,
-// persisting the issued system SO into the unsealed barrier, failed after
-// InitializeShamir had already committed the barrier and the holder
-// envelopes (go-qrdb#1129, option (b) at Initialize). Such a ceremony sits
-// in StateEnrolling, in process and after a restart alike, with no SO
-// record, and a plain retry would get ErrAlreadyInitialized.
-//
-// handled is false, leaving Initialize to refuse as before, unless there is
-// provably no SO record (the barrier reads it as absent or empty), the PINs
-// are already provisioned, and opts asks for an SO. The caller's SO and User
-// PINs must then match the provisioned ones (pin.Provision verifies a PIN
-// already set): the retry re-runs nothing else -- no PIN provisioning, no
-// officer enrollment, no barrier initialization -- and issues and persists
-// only the SO.
-func (s *CeremonyService) retrySystemSOPersistLocked(ctx context.Context, ca CeremonyCA, opts *InitializeOptions, caBundle []byte) (*InitResult, bool, error) {
-	blob, err := s.barrier.Get(ctx, pendingSystemSOKey)
-	if err == nil && len(blob) > 0 {
-		return nil, false, nil
-	}
-	if err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
-		return nil, false, nil
-	}
-	if s.pins == nil || !s.pins.SOPINSet() {
-		return nil, false, nil
-	}
-	// The carried result's holders are the failed call's roster: a retry
-	// naming another one would hand them back under the wrong names, so it
-	// is refused here, before anything is recorded or the carried result
-	// is consumed.
-	if s.unrecordedMofNResult != nil && !s.unrecordedMofNRoster.equal(rosterOf(opts)) {
-		return nil, true, ErrInitializeRetryRoster
-	}
-	// validateSystemSOInputs checked the SO's key against this retry's admin
-	// inputs, but the admin the retry hands back is the carried one the
-	// failed call issued: a retry naming another admin key could pass that
-	// check with an SO sharing the real admin's key. The separation is
-	// checked again here against the carried certificate, before anything
-	// is recorded.
-	if carried := s.unrecordedMofNResult; carried != nil {
-		if err := checkSOAgainstIssuedAdmin(carried.AdminCertPEM, opts, s.strictSoD); err != nil {
-			return nil, true, err
-		}
-	}
-	if err := pin.Provision(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
-		return nil, true, err
-	}
-	systemSO, err := issueSystemSO(ctx, ca, s.deps.TrustDomain, opts, caBundle)
-	if err != nil {
-		s.logger.Error("system SO credential issuance failed", slog.String("error", err.Error()))
-		return nil, true, err
-	}
-	if systemSO == nil {
-		return nil, false, nil
-	}
-	if err := s.persistIssuedSystemSOLocked(ctx, systemSO); err != nil {
-		return nil, true, err
-	}
-	s.clearSystemSOWriteOutstandingLocked(ctx)
-	s.lastSystemSO = systemSO
-	s.logger.Info("ceremony: system SO credential issued on retry", slog.String("username", systemSO.Username))
-	// The failed call committed the holders, the TLS certificate and the
-	// bootstrap admin credential but returned none of them: hand them back
-	// now, with the SO this retry recorded, so the caller holds the
-	// complete result -- a generated admin private key included, which
-	// exists nowhere else.
-	result := &InitResult{State: StateEnrolling, CACertPEM: caBundle}
-	if carried := s.unrecordedMofNResult; carried != nil {
-		copied := *carried
-		result = &copied
-		result.State = StateEnrolling
-		s.unrecordedMofNResult = nil
-		s.unrecordedMofNRoster = initRoster{}
-	}
-	result.SOCertPEM = systemSO.CertPEM
-	// Every holder may have claimed its envelope while the SO record was
-	// missing; CompleteClaimShare held the ceremony enrolling for this
-	// retry, which now completes that transition. Claims are held in
-	// memory, so after a restart none are and the ceremony stays enrolling
-	// until a fresh distribution's envelopes are claimed.
-	if s.system.allClaimed() {
-		s.becomeOperationalLocked(ctx)
-		result.State = StateOperational
-		s.logger.Info("all share envelopes claimed, ceremony operational")
-	}
-	return result, true, nil
-}
-
-// ErrInitializeRetryRoster refuses a retried M-of-N Initialize whose roster
-// (officer usernames, their order, the threshold, the officer count) differs
-// from the failed call's: that call's holders were committed for its roster
-// and are handed back only to a retry naming the same one. Nothing is
-// recorded and the carried result stays for the matching retry.
-var ErrInitializeRetryRoster = errors.New("ceremony: the retried Initialize names a different officer roster than the call it completes")
-
-// initRoster is an M-of-N Initialize's roster: its officer usernames in
-// request order (N is their count) and its threshold M.
-type initRoster struct {
-	usernames []string
-	threshold int
-}
-
-func rosterOf(opts *InitializeOptions) initRoster {
-	r := initRoster{threshold: opts.Threshold}
-	for _, o := range opts.Officers {
-		r.usernames = append(r.usernames, o.Username)
-	}
-	return r
-}
-
-func (r initRoster) equal(o initRoster) bool {
-	return r.threshold == o.threshold && slices.Equal(r.usernames, o.usernames)
 }
 
 // PendingSystemSO returns the system SO this node's Initialize issued: the
@@ -479,11 +324,6 @@ func (s *CeremonyService) PendingSystemSO(ctx context.Context) (*IssuedSystemSO,
 func (s *CeremonyService) ForgetPendingSystemSO(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The marker goes first: a marker left behind a removed record would
-	// read as a write still outstanding and hold the ceremony enrolling.
-	if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
-		return &SystemSOPersistError{Op: "remove", Cause: err}
-	}
 	if err := s.barrier.Delete(ctx, pendingSystemSOKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
 		return &SystemSOPersistError{Op: "remove", Cause: err}
 	}
@@ -491,10 +331,10 @@ func (s *CeremonyService) ForgetPendingSystemSO(ctx context.Context) error {
 }
 
 // SystemSOHandoffPending reports whether an initial ceremony's system SO
-// handoff is not yet durable: an M-of-N Initialize is between its Shamir
-// initialization and its SO record write, or that write failed (in this
-// process, or across a restart by the barrier's write-ahead marker) and no
-// retry has recorded the SO. While it holds, the bootstrap admin credential
+// handoff is not yet durable: an M-of-N Initialize that issued an SO is
+// running its Shamir initialization (Distribute writes the SO record before
+// that initialization commits), or a single-admin Initialize's SO intent
+// stands because its SO record is not yet written. While it holds, the bootstrap admin credential
 // must not be published (first boot would bind an admin with no SO) and the
 // sealed-window listener keeps serving, so the retried Initialize stays on
 // the unauthenticated, PIN-authenticated ceremony path. An unreadable
@@ -510,7 +350,7 @@ func (s *CeremonyService) SystemSOHandoffPending(ctx context.Context) bool {
 // handoff is pending (SystemSOHandoffPending). It reads both under s.mu, so
 // a poll that arrives while Initialize writes the SO record waits for that
 // write and sees the barrier as the write left it -- resealed by a failed
-// single-admin write, or unsealed with the M-of-N retry outstanding.
+// single-admin write, or resealed by a rolled-back M-of-N initialization.
 func (s *CeremonyService) HoldsSealedWindow(ctx context.Context) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -518,7 +358,7 @@ func (s *CeremonyService) HoldsSealedWindow(ctx context.Context) bool {
 }
 
 func (s *CeremonyService) systemSOHandoffPendingLocked(ctx context.Context) bool {
-	if s.systemSOInitInFlight || s.unrecordedMofNResult != nil {
+	if s.systemSOInFlight != nil {
 		return true
 	}
 	if s.state == StateOperational || s.barrier.IsSealed() {
@@ -530,69 +370,11 @@ func (s *CeremonyService) systemSOHandoffPendingLocked(ctx context.Context) bool
 	// barrier unseals and clears it only once the SO record is durable.
 	// An explicit unseal between a failed persist and the retry must not
 	// close the sealed window while that intent stands; an unreadable
-	// marker counts as pending, as the write-ahead probe below does.
+	// marker counts as pending.
 	intent, err := s.barrier.SystemSOIntent(ctx)
 	if err != nil {
 		s.logger.Warn("ceremony: cannot read the system SO intent marker", slog.String("error", err.Error()))
 		return true
 	}
-	if intent {
-		return true
-	}
-	return s.systemSOWriteOutstandingLocked(ctx)
-}
-
-// mofnSOWriteRetryOpenLocked reports the one unsealed state in which the
-// sealed-window gate admits the pre-operational verbs: an M-of-N Initialize
-// committed the barrier and the holders but not its system SO record, and
-// the retried Initialize must reach retrySystemSOPersistLocked. The verbs
-// themselves still refuse anonymous enrollment (enrollmentOpenLocked); the
-// retry is authenticated by the SO and User PINs it must repeat.
-func (s *CeremonyService) mofnSOWriteRetryOpenLocked(ctx context.Context) bool {
-	if s.systemSOInitInFlight {
-		return false
-	}
-	return s.systemSOHandoffPendingLocked(ctx)
-}
-
-// markSystemSOWriteOutstandingLocked writes the write-ahead marker for the
-// system SO record an M-of-N Initialize is about to write.
-func (s *CeremonyService) markSystemSOWriteOutstandingLocked(ctx context.Context) error {
-	if err := s.barrier.Put(ctx, systemSOWriteOutstandingKey, []byte{1}); err != nil {
-		return &SystemSOPersistError{Op: "write", Cause: err}
-	}
-	return nil
-}
-
-// clearSystemSOWriteOutstandingLocked removes the write-ahead marker once
-// the system SO record is written. Best-effort: a marker left beside its
-// written record reads as no write outstanding and is removed on that read.
-func (s *CeremonyService) clearSystemSOWriteOutstandingLocked(ctx context.Context) {
-	if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
-		s.logger.Warn("ceremony: failed to remove the system SO write-ahead marker", slog.String("error", err.Error()))
-	}
-}
-
-// systemSOWriteOutstandingLocked reports whether an M-of-N Initialize's
-// system SO record is still unwritten: in this process (the failed call's
-// carried result) or, across a restart, by the barrier's write-ahead marker
-// standing without its record. An unreadable barrier counts as outstanding:
-// the ceremony then stays enrolling rather than strand the SO.
-func (s *CeremonyService) systemSOWriteOutstandingLocked(ctx context.Context) bool {
-	if s.unrecordedMofNResult != nil {
-		return true
-	}
-	if _, err := s.barrier.Get(ctx, systemSOWriteOutstandingKey); err != nil {
-		if errors.Is(err, seal.ErrSecretNotFound) {
-			return false
-		}
-		s.logger.Warn("ceremony: cannot read the system SO write-ahead marker", slog.String("error", err.Error()))
-		return true
-	}
-	blob, err := s.barrier.Get(ctx, pendingSystemSOKey)
-	if err == nil && len(blob) > 0 {
-		s.clearSystemSOWriteOutstandingLocked(ctx)
-		return false
-	}
-	return true
+	return intent
 }

@@ -15,15 +15,15 @@ import (
 var errCrashedAfterCommit = errors.New("simulated crash: the process died after the initialization committed")
 
 // postCommitCrashBackend models a process that dies the moment the barrier
-// commits a Shamir initialization: once crashed, neither the system SO
-// record nor its write-ahead marker reaches storage.
+// commits a Shamir initialization: once crashed, no system SO record write
+// reaches storage.
 type postCommitCrashBackend struct {
 	seal.StorageBackend
 	crashed bool
 }
 
 func (b *postCommitCrashBackend) Put(ctx context.Context, key string, value []byte) error {
-	if b.crashed && (strings.HasSuffix(key, pendingSystemSOKey) || strings.HasSuffix(key, systemSOWriteOutstandingKey)) {
+	if b.crashed && strings.HasSuffix(key, pendingSystemSOKey) {
 		return errCrashedAfterCommit
 	}
 	return b.StorageBackend.Put(ctx, key, value)
@@ -42,11 +42,11 @@ func (c crashOnCommit) Committed(ctx context.Context, roster *seal.HolderRoster,
 	return err
 }
 
-// TestInitialize_ShamirSystemSOMarkerSurvivesCrashAfterCommit: a crash after
-// the M-of-N initialization commits, before its system SO record is written,
-// leaves the write-ahead marker in the barrier, so the restarted ceremony
-// still knows the SO is owed and stays enrolling.
-func TestInitialize_ShamirSystemSOMarkerSurvivesCrashAfterCommit(t *testing.T) {
+// TestInitialize_ShamirSystemSORecordSurvivesCrashAfterCommit: Distribute
+// writes the system SO record before the M-of-N initialization commits, so a
+// crash the moment it commits loses no SO: the restarted, unsealed ceremony
+// reads the record back for first boot.
+func TestInitialize_ShamirSystemSORecordSurvivesCrashAfterCommit(t *testing.T) {
 	ctx := context.Background()
 	backend := &postCommitCrashBackend{StorageBackend: seal.NewMemoryBackend()}
 	e := &holderEnv{t: t, backend: backend, ca: testCA(t), pins: pintest.NewBackend(t), factors: testFactors(t)}
@@ -63,7 +63,7 @@ func TestInitialize_ShamirSystemSOMarkerSurvivesCrashAfterCommit(t *testing.T) {
 	opts.SOCSRPEM = soCSR
 
 	_, err := e.svc.Initialize(ctx, e.ca, opts)
-	require.ErrorIs(t, err, errCrashedAfterCommit)
+	require.NoError(t, err, "nothing is written after the initialization commits")
 	require.True(t, backend.crashed, "the crash came after the initialization committed")
 
 	officers, err := e.svc.ListOfficers(ctx, seal.DomainUnseal)
@@ -88,10 +88,8 @@ func TestInitialize_ShamirSystemSOMarkerSurvivesCrashAfterCommit(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, b2.IsSealed())
 
-	_, err = b2.Get(ctx, systemSOWriteOutstandingKey)
-	require.NoError(t, err, "the write-ahead marker was durable before the initialization committed")
-	svc2.mu.Lock()
-	outstanding := svc2.systemSOWriteOutstandingLocked(ctx)
-	svc2.mu.Unlock()
-	require.True(t, outstanding, "the restarted ceremony still owes the system SO record")
+	pending, err := svc2.PendingSystemSO(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, pending, "the SO record was durable before the initialization committed")
+	require.Equal(t, "secofficer", pending.Username)
 }

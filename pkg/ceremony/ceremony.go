@@ -83,38 +83,21 @@ type CeremonyService struct {
 	// hand to first boot as it does lastAdminCertPEM. Nil when none.
 	lastSystemSO *IssuedSystemSO
 
-	// unrecordedMofNResult is the result of an M-of-N Initialize whose last
-	// step, the system SO record write, failed after everything else
-	// committed: the holders, the TLS certificate and SPKI pin, the share
-	// count and the bootstrap admin credential (a generated private key
-	// included) that the failed call could not return.
-	// retrySystemSOPersistLocked hands it back with the SO the retry
-	// records, so the retry's result is the complete one. Memory only, like
-	// the admin key itself: a restart loses it, and the retry then returns
-	// the CA bundle and the SO alone; the holders are read back with
-	// ListOfficers and the admin credential re-issued through
-	// ReissueAdminCredential.
-	unrecordedMofNResult *InitResult
-	// unrecordedMofNRoster is the roster (officer usernames in order and
-	// the threshold) of the call that saved unrecordedMofNResult. A
-	// retry naming any other roster is refused before it records anything
-	// (ErrInitializeRetryRoster): the carried holders are that roster's.
-	unrecordedMofNRoster initRoster
-	// systemSOInitInFlight is set while an M-of-N Initialize that issued a
-	// system SO runs the barrier's Shamir initialization. Distribute then
-	// writes the SO write-ahead marker into the freshly unsealed barrier
-	// BEFORE the barrier commits the initialization, so no crash after the
-	// commit can leave an initialized barrier with neither the SO record
-	// nor its marker.
-	systemSOInitInFlight bool
+	// systemSOInFlight is the system SO an M-of-N Initialize issued, set
+	// while it runs the barrier's Shamir initialization; nil when it
+	// issued none. Distribute writes its record into the freshly unsealed
+	// barrier BEFORE the barrier commits the initialization, so a failed
+	// write rolls the barrier back to sealed and no committed barrier is
+	// ever without the SO record its Initialize issued.
+	systemSOInFlight *IssuedSystemSO
 	// mofnInitInFlight is set while any M-of-N Initialize runs the
 	// barrier's Shamir initialization. Distribute then settles the SO
-	// write-ahead marker in the freshly unsealed barrier: written when
-	// systemSOInitInFlight, otherwise removed. A failed initialization rolls
-	// the barrier back to sealed with its marker still in storage, where no
-	// barrier can delete it; the next initialization's Distribute is the
-	// first point the marker is reachable, and an SO-less ceremony must not
-	// inherit it and stay enrolling on a write it never owed.
+	// record in the freshly unsealed barrier: written for
+	// systemSOInFlight, otherwise removed. A failed initialization rolls
+	// the barrier back to sealed with whatever record it wrote still in
+	// storage, where no barrier can delete it; the next initialization's
+	// Distribute is the first point that record is reachable, and an
+	// SO-less ceremony must not inherit it.
 	mofnInitInFlight bool
 
 	// strictSoD is the node's resolved strict separation-of-duties posture
@@ -560,12 +543,6 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrRestoreFailed
 	}
-	if s.state == StateEnrolling && opts.Threshold >= 2 {
-		if result, handled, err := s.retrySystemSOPersistLocked(ctx, ca, opts, caBundle); handled {
-			s.mu.Unlock()
-			return result, err
-		}
-	}
 	if s.state != StateAwaitingInit {
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
@@ -629,9 +606,9 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	// shares -- a single operator-supplied secret here would defeat the
 	// quorum requirement that mode exists for.
 	if !isMofN {
-		// The SO intent is the single-admin write-ahead marker, the
-		// counterpart of the M-of-N path's systemSOWriteOutstandingKey:
-		// written before the barrier is initialized, it stands through a
+		// The SO intent is the single-admin write-ahead marker (the M-of-N
+		// path needs none: Distribute writes its SO record before the
+		// barrier commits): written before the barrier is initialized, it stands through a
 		// failed SO record write or a crash anywhere before the record is
 		// durable, and a boot that auto-unseals (the none strategy) keeps
 		// the barrier sealed while it stands, so startup never reaches
@@ -833,7 +810,7 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		reg.Username = o.Username
 		result.Holders = append(result.Holders, reg)
 	}
-	s.systemSOInitInFlight = systemSO != nil
+	s.systemSOInFlight = systemSO
 	s.mofnInitInFlight = true
 	s.mu.Unlock()
 
@@ -852,11 +829,14 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// Without this, a retry after this specific failure could never
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
-		// The barrier rolled back to sealed, so a marker Distribute wrote
-		// stays in storage: the next initialization's Distribute removes
-		// it (mofnInitInFlight).
+		// A failed system SO record write in Distribute lands here too:
+		// the barrier rolled back to sealed, so nothing is committed and
+		// a fresh Initialize, in this process or after a restart, starts
+		// over. A record Distribute did write stays in storage: the next
+		// initialization's Distribute overwrites or removes it
+		// (mofnInitInFlight).
 		s.mu.Lock()
-		s.systemSOInitInFlight = false
+		s.systemSOInFlight = nil
 		s.mofnInitInFlight = false
 		s.rollbackOfficerInit(ctx, registered, pinsProvisionedByThisCall)
 		s.mu.Unlock()
@@ -864,42 +844,12 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 	}
 
 	s.mu.Lock()
-	s.systemSOInitInFlight = false
+	s.systemSOInFlight = nil
 	s.mofnInitInFlight = false
-	// InitializeShamir left the barrier unsealed; record the issued system
-	// SO in it before reporting success, as the single-admin path does.
-	//
-	// A failure here cannot be undone like an InitializeShamir failure:
-	// the barrier and the holder envelopes are already committed and the
-	// barrier has no un-initialize, so option (a) of go-qrdb#1129's
-	// round-1 finding is not available. Option (b) instead: the ceremony
-	// moves to StateEnrolling, exactly what restoreState reports for this
-	// barrier after a restart, and a retried Initialize then persists the
-	// SO, and only the SO (retrySystemSOPersistLocked), so strict first
-	// boot is never left without its required SO record.
+	// Distribute wrote the issued system SO record before the barrier
+	// committed the initialization, so it is durable by now.
 	result.ShareCount = params.ShareCount
 	result.State = StateEnrolling
-	// The write-ahead marker outlives a restart, which the carried result
-	// does not: CompleteClaimShare reads it, so a restarted ceremony whose
-	// SO record was never written stays enrolling too. Distribute wrote it
-	// before the barrier committed the initialization (systemSOInitInFlight),
-	// so it stands from that commit until the SO record below is durable.
-	persist := func() error {
-		if systemSO == nil {
-			return nil
-		}
-		return s.persistIssuedSystemSOLocked(ctx, systemSO)
-	}
-	if err := persist(); err != nil {
-		s.state = StateEnrolling
-		s.unrecordedMofNResult = result
-		s.unrecordedMofNRoster = rosterOf(opts)
-		s.mu.Unlock()
-		return nil, err
-	}
-	if systemSO != nil {
-		s.clearSystemSOWriteOutstandingLocked(ctx)
-	}
 	s.lastSystemSO = systemSO
 	s.state = StateEnrolling
 	s.mu.Unlock()
@@ -1243,15 +1193,6 @@ func (s *CeremonyService) CompleteClaimShare(ctx context.Context, domain seal.Qu
 		return nil, err
 	}
 	if s.state == StateEnrolling && s.system.allClaimed() {
-		// An operational ceremony refuses Initialize, and that would
-		// strand an SO record the M-of-N Initialize failed to write: the
-		// ceremony stays enrolling until the retry records the SO, and
-		// the retry then makes it operational (retrySystemSOPersistLocked).
-		if s.systemSOWriteOutstandingLocked(ctx) {
-			s.logger.Warn("all share envelopes claimed; the ceremony becomes operational " +
-				"once a retried Initialize records the system SO")
-			return res, nil
-		}
 		s.becomeOperationalLocked(ctx)
 		s.logger.Info("all share envelopes claimed, ceremony operational")
 	}
@@ -1306,6 +1247,21 @@ func (s *CeremonyService) StartRekey(ctx context.Context, domain seal.QuorumDoma
 func (s *CeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumDomain, threshold int, policy seal.FactorPolicy, exclude []string) (*seal.HolderRoster, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.mofnInitInFlight && domain == seal.DomainUnseal && !s.barrier.IsSealed() {
+		// The Shamir initialization has just generated the root key and
+		// unsealed the barrier, and prepares the roster it distributes to
+		// before it distributes and commits: the system SO record is
+		// written here, so a failed write fails the initialization and the
+		// barrier rolls back to sealed. It is the first write into the new
+		// barrier, ahead of the holder scope's sync of the officers
+		// enrolled while sealed, so a failed SO write leaves nothing behind
+		// that a restarted node would have to read under the rolled-back
+		// key. An SO-less initialization removes the record an earlier,
+		// rolled-back initialization left in storage instead.
+		if err := s.persistIssuedSystemSOLocked(ctx, s.systemSOInFlight); err != nil {
+			return nil, err
+		}
+	}
 	h, err := s.scope(domain)
 	if err != nil {
 		return nil, err
@@ -1320,18 +1276,6 @@ func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer,
 	h, err := s.scope(roster.Domain)
 	if err != nil {
 		return 0, err
-	}
-	if s.mofnInitInFlight && roster.Domain == seal.DomainUnseal {
-		// The initialization this distribution belongs to commits only
-		// after Distribute returns: the marker is settled before it.
-		if s.systemSOInitInFlight {
-			if err := s.markSystemSOWriteOutstandingLocked(ctx); err != nil {
-				return 0, err
-			}
-		} else if err := s.barrier.Delete(ctx, systemSOWriteOutstandingKey); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
-			// A marker an earlier, rolled-back initialization left behind.
-			return 0, &SystemSOPersistError{Op: "remove", Cause: err}
-		}
 	}
 	return h.distribute(ctx, secret, roster, digest)
 }
@@ -1409,7 +1353,7 @@ func (s *CeremonyService) becomeOperationalLocked(ctx context.Context) {
 func (s *CeremonyService) EnrollmentOpen(ctx context.Context) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx) || s.mofnSOWriteRetryOpenLocked(ctx)
+	return s.enrollmentOpenLocked(ctx) || s.singleAdminSOWriteRetryOpenLocked(ctx)
 }
 
 // singleAdminSOWriteRetryOpenLocked reports the one sealed state, besides a
