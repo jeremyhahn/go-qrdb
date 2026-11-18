@@ -77,8 +77,11 @@ RUN set -eu; \
 # stage has git and base does not.
 FROM ${GO_IMAGE} AS modules
 ARG GO_BUILD_PROXY
+# Ruling 886: the pool's LAN apk cache, empty on a hosted runner.
+ARG APK_MIRROR=
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/gomodcache GOPROXY=${GO_BUILD_PROXY}
-RUN apk add --no-cache git
+RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    apk-mirror add --no-cache git
 WORKDIR /src
 
 # Every module in the tree, at its own path: the `replace` directives point
@@ -125,6 +128,7 @@ RUN set -eu; \
 
 # ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS base
+ARG APK_MIRROR=
 # GOTOOLCHAIN=local: a go.mod asking for a newer Go fails instead of
 # downloading one. CGO for -race, and for go-mysql-server's MySQL REGEXP
 # engine (go-icu-regex): under the default build tags it is C++ linking the
@@ -140,9 +144,10 @@ ENV GOTOOLCHAIN=local \
     GOFLAGS=-mod=readonly \
     GOMODCACHE=/gomodcache \
     GOCACHE=/gocache
-RUN set -eu; \
-    apk upgrade --no-cache; \
-    apk add --no-cache gcc g++ musl-dev icu-dev bash; \
+RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    set -eu; \
+    apk-mirror upgrade --no-cache; \
+    apk-mirror add --no-cache gcc g++ musl-dev icu-dev bash; \
     addgroup -g 10001 dev; \
     adduser -D -u 10001 -G dev -h /home/dev dev; \
     install -d -m 0755 -o 10001 -g 10001 /src
@@ -158,8 +163,10 @@ ENV GOPROXY=off
 
 # ---------------------------------------------------------------------------
 FROM base AS toolchain
+ARG APK_MIRROR=
 ENV HOME=/tmp
-RUN apk add --no-cache make git curl jq shellcheck \
+RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    apk-mirror add --no-cache make git curl jq shellcheck \
       coreutils grep sed gawk findutils diffutils tar xz openssh-keygen; \
     git config --system --add safe.directory '*'
 COPY --from=tools /out/ /usr/local/bin/
@@ -177,7 +184,9 @@ ARG IT_TAGS
 # here on, so the upgrade takes Alpine's latest packages, a CVE fix among
 # them; base and toolchain do not declare it, so their cache does not move.
 ARG APK_INDEX_SUM
-RUN apk upgrade --no-cache
+ARG APK_MIRROR=
+RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    apk-mirror upgrade --no-cache
 WORKDIR /src
 # The whole source, filtered by .dockerignore, owned by root so the suite
 # cannot rewrite it. Not pkg and test alone: the qrdbdharness suites build the

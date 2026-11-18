@@ -4153,7 +4153,8 @@ DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
 	test/performance/qrdb test/performance/tikv test/vanguardprobe
-TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+APK_MIRROR_SCRIPT = scripts/apk-mirror.sh
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(APK_MIRROR_SCRIPT) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
 # The integration image and its compose project (#813). The image tag is
@@ -4225,6 +4226,7 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
+	$(if $(DEVCACHE_APK_MIRROR),--build-arg APK_MIRROR="$(DEVCACHE_APK_MIRROR)") \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
