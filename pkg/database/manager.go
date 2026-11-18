@@ -883,8 +883,9 @@ func (m *Manager) Drop(ctx context.Context, name string) error {
 // drop drops the open database db, held under key. See Drop.
 // reclaimDatabaseObjects deletes the data a dropped database keeps outside
 // the node's data directory (Manager.drop, step 2), whatever its status. The
-// database's own raw backend is used, never the barrier wrapper Backend
-// returns, which does not expose the reclaim. A backend that is closed or
+// database's own raw backend is used; it may be the per-database barrier
+// wrapper, which forwards the reclaim to the engine it wraps, so the engine
+// the database writes through is the one reclaimed. A backend that is closed or
 // failed cannot reclaim: an object-storage database's store is then opened
 // again from its configuration, reclaimed and closed, so its objects do not
 // outlive it.

@@ -73,6 +73,10 @@ type quiesceGated interface {
 // Compile-time interface check.
 var _ Backend = (*BarrierBackend)(nil)
 
+// A drop reclaims a barrier-wrapped database through the wrapper
+// (reclaimDatabaseObjects), so it must expose the reclaim.
+var _ backendReclaimer = (*BarrierBackend)(nil)
+
 // NewBarrierBackend creates a new BarrierBackend wrapping the given inner
 // Backend with the provided BarrierEncryptor for transparent encryption. When
 // the barrier exposes a quiesce gate, the backend registers its lease there.
@@ -333,4 +337,16 @@ func (b *BarrierBackend) Batch(ctx context.Context, ops []BatchOp) error {
 func (b *BarrierBackend) Close() error {
 	b.lease.Unregister()
 	return b.inner.Close()
+}
+
+// Reclaim forwards a drop's reclamation (backendReclaimer) to the wrapped
+// backend, so the engine the database writes through is the one that is
+// reclaimed: its write lock and reclaimed state fence every writer. A wrapped
+// backend that keeps nothing outside the data directory has nothing to reclaim.
+func (b *BarrierBackend) Reclaim() error {
+	r, ok := b.inner.(backendReclaimer)
+	if !ok {
+		return nil
+	}
+	return r.Reclaim()
 }

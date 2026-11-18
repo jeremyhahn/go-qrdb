@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -77,6 +79,103 @@ func newBarrierTestBackend(t *testing.T, barrier *xorBarrier) *BarrierBackend {
 	t.Cleanup(func() { _ = store.Close() })
 	inner := NewStandaloneBackend(store)
 	return NewBarrierBackend(inner, barrier)
+}
+
+// reclaimSpyStore is an in-memory store that is also a storage.Reclaimer. It
+// records each reclaim and the start and end of each write; a write signals
+// putStarted and then holds until release is closed.
+type reclaimSpyStore struct {
+	*memory.MemoryStorage
+	mu         sync.Mutex
+	events     []string
+	putStarted chan struct{}
+	startOnce  sync.Once
+	release    chan struct{}
+}
+
+func newReclaimSpyStore() *reclaimSpyStore {
+	release := make(chan struct{})
+	close(release)
+	return &reclaimSpyStore{
+		MemoryStorage: memory.NewStorage(),
+		putStarted:    make(chan struct{}),
+		release:       release,
+	}
+}
+
+func (s *reclaimSpyStore) record(event string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, event)
+}
+
+func (s *reclaimSpyStore) recorded() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.events)
+}
+
+func (s *reclaimSpyStore) Set(key, value []byte) error {
+	s.record("put-start")
+	s.startOnce.Do(func() { close(s.putStarted) })
+	<-s.release
+	err := s.MemoryStorage.Set(key, value)
+	s.record("put-end")
+	return err
+}
+
+func (s *reclaimSpyStore) Reclaim() error {
+	s.record("reclaim")
+	return nil
+}
+
+// TestBarrierBackend_ReclaimForwardsToTheWrappedEngine: a drop reclaims a
+// barrier-wrapped database through the engine it wraps, not a second one; a
+// wrapped engine with nothing to reclaim reports success.
+func TestBarrierBackend_ReclaimForwardsToTheWrappedEngine(t *testing.T) {
+	spy := newReclaimSpyStore()
+	t.Cleanup(func() { _ = spy.Close() })
+	b := NewBarrierBackend(NewStandaloneBackend(spy), &xorBarrier{mask: 0x5a})
+	if err := b.Reclaim(); err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+	if got := spy.recorded(); !slices.Equal(got, []string{"reclaim"}) {
+		t.Fatalf("events = %v, want one reclaim", got)
+	}
+
+	plain := newBarrierTestBackend(t, &xorBarrier{mask: 0x5a})
+	if err := plain.Reclaim(); err != nil {
+		t.Fatalf("Reclaim over a store with nothing to reclaim: %v", err)
+	}
+}
+
+// TestBarrierBackend_ReclaimWaitsForAnInFlightWrite: a write admitted through
+// the wrapper finishes before the reclaim runs, because the reclaim takes the
+// wrapped engine's write lock.
+func TestBarrierBackend_ReclaimWaitsForAnInFlightWrite(t *testing.T) {
+	spy := newReclaimSpyStore()
+	spy.release = make(chan struct{})
+	t.Cleanup(func() { _ = spy.Close() })
+	b := NewBarrierBackend(NewStandaloneBackend(spy), &xorBarrier{mask: 0x5a})
+
+	putErr := make(chan error, 1)
+	go func() { putErr <- b.Put(context.Background(), []byte("k"), []byte("v")) }()
+	<-spy.putStarted
+
+	reclaimErr := make(chan error, 1)
+	go func() { reclaimErr <- b.Reclaim() }()
+	close(spy.release)
+
+	if err := <-putErr; err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := <-reclaimErr; err != nil {
+		t.Fatalf("Reclaim: %v", err)
+	}
+	want := []string{"put-start", "put-end", "reclaim"}
+	if got := spy.recorded(); !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
 }
 
 func TestBarrierBackend_PutGet(t *testing.T) {
