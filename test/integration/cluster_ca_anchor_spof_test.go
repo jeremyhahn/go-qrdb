@@ -679,9 +679,8 @@ func writeNodeConfigYAML(t *testing.T, peerAdminURLs map[string]string) string {
 	return writeSealYAML(t, yaml)
 }
 
-func startFoundingSelfIssuedCANode(t *testing.T, raftPort, adminPort, grpcPort, noisePort, joinPort int, peers, memberIDs string, peerAdminURLs map[string]string, tee ...io.Writer) *clusterCAAnchorNode {
+func startFoundingSelfIssuedCANode(t *testing.T, bin string, raftPort, adminPort, grpcPort, noisePort, joinPort int, peers, memberIDs string, peerAdminURLs map[string]string, tee ...io.Writer) *clusterCAAnchorNode {
 	t.Helper()
-	bin := buildBinary(t)
 	dataDir := t.TempDir()
 	cfgPath := writeNodeConfigYAML(t, peerAdminURLs)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -745,9 +744,8 @@ func startFoundingSelfIssuedCANode(t *testing.T, raftPort, adminPort, grpcPort, 
 // later through the ordinary member-side CSR flow, is this test's actual
 // surviving anchor server; node 2 only exists so the group can found with
 // a real 2-member Raft transport (see startFoundingSelfIssuedCANode).
-func startSecondFounderExplicitTLS(t *testing.T, raftPort, adminPort, grpcPort int, peers, memberIDs, caCertPath string, leafPEM, keyPEM []byte, peerAdminURLs map[string]string) *clusterCAAnchorNode {
+func startSecondFounderExplicitTLS(t *testing.T, bin string, raftPort, adminPort, grpcPort int, peers, memberIDs, caCertPath string, leafPEM, keyPEM []byte, peerAdminURLs map[string]string) *clusterCAAnchorNode {
 	t.Helper()
-	bin := buildBinary(t)
 	dataDir := t.TempDir()
 	cfgPath := writeNodeConfigYAML(t, peerAdminURLs)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -809,6 +807,7 @@ func startSecondFounderExplicitTLS(t *testing.T, raftPort, adminPort, grpcPort i
 // this is not a founding call.
 func startJoiningSelfIssuedCANode(
 	t *testing.T,
+	bin string,
 	replicaID uint64,
 	raftPort, adminPort, grpcPort, noisePort, joinPort int,
 	peers, memberIDs string,
@@ -818,7 +817,6 @@ func startJoiningSelfIssuedCANode(
 	transport ...string,
 ) *clusterCAAnchorNode {
 	t.Helper()
-	bin := buildBinary(t)
 	dataDir := t.TempDir()
 	cfgPath := writeNodeConfigYAML(t, peerAdminURLs)
 	raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPort)
@@ -982,7 +980,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 
 	// Node 1 founds, generating Key A; returns before its own barrier is
 	// brought up (see startFoundingSelfIssuedCANode's doc comment).
-	node1 := startFoundingSelfIssuedCANode(t, raftPorts[0], adminPorts[0], grpcPorts[0], noisePorts[0], joinPorts[0],
+	node1 := startFoundingSelfIssuedCANode(t, buildBinary(t), raftPorts[0], adminPorts[0], grpcPorts[0], noisePorts[0], joinPorts[0],
 		peers12, fmt.Sprintf("2=%s", node2Identity), peerAdminURLs)
 
 	// Sign node 2's leaf AND its bootstrap admin credential with node 1's
@@ -993,7 +991,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	node2LeafPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, nodeLeafTemplate("node2"), &node2Key.PublicKey)
 	node2AdminKey, _, _ := generateNodeKeypairAndIdentity(t)
 	node2AdminCertPEM := signCertWithCA(t, node1.caPath, node1CAKeyPath, adminCertTemplate(t), &node2AdminKey.PublicKey)
-	node2 := startSecondFounderExplicitTLS(t, raftPorts[1], adminPorts[1], grpcPorts[1],
+	node2 := startSecondFounderExplicitTLS(t, buildBinary(t), raftPorts[1], adminPorts[1], grpcPorts[1],
 		peers12, fmt.Sprintf("1=%s", node1.identity), node1.caPath, node2LeafPEM, node2KeyPEM, peerAdminURLs)
 	if node2.identity != node2Identity {
 		t.Fatalf("node 2 identity mismatch: precomputed %s, derived from signed leaf %s", node2Identity, node2.identity)
@@ -1041,7 +1039,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	token3 := mintJoinTokenHTTP(t, node1.client, node1.adminPort, node3Addr)
 	peers123 := fmt.Sprintf("%s,3=%s", peers12, node3Addr)
 	memberIDs13 := fmt.Sprintf("1=%s,2=%s", node1.identity, node2.identity)
-	node3 := startJoiningSelfIssuedCANode(t, 3, raftPorts[2], adminPorts[2], grpcPorts[2], noisePorts[2], joinPorts[2],
+	node3 := startJoiningSelfIssuedCANode(t, buildBinary(t), 3, raftPorts[2], adminPorts[2], grpcPorts[2], noisePorts[2], joinPorts[2],
 		peers123, memberIDs13, node1, token3, peerAdminURLs)
 	// addMemberHTTP must run BEFORE anything else touches node 3 -- see
 	// startJoiningSelfIssuedCANode's doc comment: its own qrdbd process
@@ -1090,7 +1088,7 @@ func TestCluster_JoinThroughSurvivingMemberAfterCAGeneratorRemoved(t *testing.T)
 	token4 := mintJoinTokenHTTP(t, node3.client, node3.adminPort, node4Addr)
 	peers4 := fmt.Sprintf("2=%s,3=%s,4=%s", node2.raftAddr, node3.raftAddr, node4Addr)
 	memberIDs4 := fmt.Sprintf("2=%s,3=%s", node2.identity, node3.identity)
-	node4 := startJoiningSelfIssuedCANode(t, 4, raftPorts[3], adminPorts[3], grpcPorts[3], noisePorts[3], joinPorts[3],
+	node4 := startJoiningSelfIssuedCANode(t, buildBinary(t), 4, raftPorts[3], adminPorts[3], grpcPorts[3], noisePorts[3], joinPorts[3],
 		peers4, memberIDs4, node3, token4, peerAdminURLs)
 	// Same ordering constraint as node 3's own join above.
 	addMemberHTTP(t, node3.client, node3.adminPort, 1, 4, node4.raftAddr, node4.identity)
