@@ -260,12 +260,12 @@ func TestRemoteBackendKV_StillRefusesGuardedWrites(t *testing.T) {
 
 // newDedicatedStoreCollections builds the collection service the dedicated-store
 // bundle builds: NewCollectionService over the same BackendKVService, with no
-// secondary index and no sequence service, exactly as buildDedicatedStoreServices
-// wires it.
+// secondary index and a value sequence service over the same handle, exactly
+// as buildDedicatedStoreServices wires it.
 func newDedicatedStoreCollections(t *testing.T) (*CollectionService, *BackendKVService) {
 	t.Helper()
 	kv := newDedicatedStoreKV(t)
-	return NewCollectionService(kv), kv
+	return NewCollectionService(kv).WithSequenceService(NewValueSequenceService(kv)), kv
 }
 
 // TestDedicatedStoreCollection_SecondClaimInsideTheWindowIsRefused is the
