@@ -82,6 +82,32 @@ func openStores(provider string, create objfactory.StorageCreator, settings map[
 	return store, journal, nil
 }
 
+// canonicalNamespace returns the settings that name the provider's
+// namespace canonically, so every spelling of one namespace yields one
+// namespaceKey and so one owner lock. A walked provider's root is replaced
+// by its absolute, symlink-resolved path: a directory, a symlink to it and an
+// unclean spelling of either are one namespace. Any other provider's
+// namespace is its settings as given (bucket, prefix, endpoint), which the
+// provider addresses verbatim. Call it after the provider has created its
+// root, so the root resolves.
+func canonicalNamespace(provider string, settings map[string]string) (map[string]string, error) {
+	rootSetting, walked := walkedRoots[provider]
+	if !walked {
+		return settings, nil
+	}
+	abs, err := filepath.Abs(settings[rootSetting])
+	if err != nil {
+		return nil, err
+	}
+	physical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return nil, err
+	}
+	canonical := maps.Clone(settings)
+	canonical[rootSetting] = physical
+	return canonical, nil
+}
+
 // journalRoot names the sibling tree that holds the journal of a store rooted
 // at root, which openStores has already resolved to its physical
 // directory. The root is made absolute and cleaned first, so "/data/db/." and

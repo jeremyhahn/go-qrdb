@@ -237,7 +237,14 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err := closeStores(unkept...); err != nil {
 		return nil, err
 	}
-	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, settings)}
+	// The owner lock is keyed on the canonical namespace, not on the
+	// spelling the caller gave: a symlink alias and its target must take
+	// one lock, or both opens claim ownership.
+	canonical, err := canonicalNamespace(provider, settings)
+	if err != nil {
+		return nil, err
+	}
+	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, canonical)}
 	if err := e.claimNamespace(o.owner); err != nil {
 		return nil, err
 	}
