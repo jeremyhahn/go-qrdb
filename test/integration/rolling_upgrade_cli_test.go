@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // rollWriter puts keys through the cluster's CLI, over each transport in
@@ -18,17 +19,22 @@ import (
 type rollWriter struct {
 	c       *upgradeCluster
 	rolling atomic.Int32
+	phase   atomic.Int32
 	seq     int
 
-	mu     sync.Mutex
-	acked  map[string]string
-	failed []rollFailure
+	mu          sync.Mutex
+	acked       map[string]string
+	failed      []rollFailure
+	downAcks    int
+	downReached chan struct{}
 }
 
 // rollFailure is one write the cluster did not acknowledge during a roll.
 type rollFailure struct {
 	key, proto string
 	target     int
+	phase      string
+	down       bool
 	err        error
 }
 
@@ -38,20 +44,52 @@ type rollFailure struct {
 // rolling restart.
 const maxRollFailures = 8
 
+// minDownAcks is how many writes must be acknowledged that both started and
+// finished while the rolled node was stopped: proof that the remaining two
+// nodes kept the cluster writable, not just that writes resumed once the
+// node came back.
+const minDownAcks = 3
+
+// downWindow bounds how long a node is held down waiting for minDownAcks:
+// one leader election plus one CLI timeout.
+const downWindow = 45 * time.Second
+
+// Writer phases of the rolled node, read by putOnce before and after each
+// write.
+const (
+	phaseUp int32 = iota
+	phaseDown
+	phaseRestarting
+)
+
+var phaseNames = [...]string{phaseUp: "up", phaseDown: "down", phaseRestarting: "restarting"}
+
+// phaseSpan names the phase a write ran in, or the transition it spanned.
+func phaseSpan(before, after int32) string {
+	if before == after {
+		return phaseNames[before]
+	}
+	return phaseNames[before] + "->" + phaseNames[after]
+}
+
 func newRollWriter(c *upgradeCluster) *rollWriter {
 	w := &rollWriter{c: c, acked: make(map[string]string)}
 	w.rolling.Store(-1)
 	return w
 }
 
-// during runs roll with writes in flight beside it, one at a time, until
-// roll returns, and then asserts the cluster stayed available through the
-// roll: at least one write acknowledged during it and at most
-// maxRollFailures failed.
-func (w *rollWriter) during(t *testing.T, node int, roll func()) {
+// during rolls node onto bin with writes in flight beside it, one at a
+// time. It stops the node and holds it down until minDownAcks writes that
+// started and finished while it was stopped are acknowledged (failing at
+// downWindow), then restarts it, and asserts the cluster stayed available
+// through the roll: at least one write acknowledged, and at most
+// maxRollFailures failed overall and while the node was down.
+func (w *rollWriter) during(t *testing.T, node int, bin string) {
 	t.Helper()
+	downReached := make(chan struct{})
 	w.mu.Lock()
 	ackedBefore, failedBefore := len(w.acked), len(w.failed)
+	w.downAcks, w.downReached = 0, downReached
 	w.mu.Unlock()
 
 	w.rolling.Store(int32(node))
@@ -69,23 +107,56 @@ func (w *rollWriter) during(t *testing.T, node int, roll func()) {
 			w.putOnce(t)
 		}
 	}()
-	roll()
-	close(stop)
-	wg.Wait()
-	w.rolling.Store(-1)
+	var stopOnce sync.Once
+	stopWriter := func() {
+		stopOnce.Do(func() {
+			close(stop)
+			wg.Wait()
+			w.phase.Store(phaseUp)
+			w.rolling.Store(-1)
+		})
+	}
+	defer stopWriter()
+
+	w.c.stopNode(t, node)
+	w.phase.Store(phaseDown)
+	select {
+	case <-downReached:
+	case <-time.After(downWindow):
+		stopWriter()
+		w.mu.Lock()
+		downAcks, failed := w.downAcks, slices.Clone(w.failed[failedBefore:])
+		w.mu.Unlock()
+		t.Fatalf("node %d stopped: %d writes acknowledged within %s while it was down (want >= %d):%s",
+			node+1, downAcks, downWindow, minDownAcks, describeFailures(failed))
+	}
+	w.phase.Store(phaseRestarting)
+	w.c.restartNode(t, node, bin)
+	stopWriter()
 
 	w.mu.Lock()
 	acked := len(w.acked) - ackedBefore
 	failed := slices.Clone(w.failed[failedBefore:])
 	w.mu.Unlock()
-	if acked == 0 || len(failed) > maxRollFailures {
-		var b strings.Builder
-		for _, f := range failed {
-			fmt.Fprintf(&b, "\n  %s via %s to node %d: %v", f.key, f.proto, f.target+1, f.err)
+	downFailed := 0
+	for _, f := range failed {
+		if f.down {
+			downFailed++
 		}
-		t.Fatalf("roll of node %d: %d writes acknowledged, %d failed (want >= 1 acknowledged, <= %d failed):%s",
-			node+1, acked, len(failed), maxRollFailures, b.String())
 	}
+	if acked == 0 || len(failed) > maxRollFailures || downFailed > maxRollFailures {
+		t.Fatalf("roll of node %d: %d writes acknowledged, %d failed, %d while down (want >= 1 acknowledged, <= %d failed):%s",
+			node+1, acked, len(failed), downFailed, maxRollFailures, describeFailures(failed))
+	}
+}
+
+// describeFailures lists every recorded write failure with its phase.
+func describeFailures(failed []rollFailure) string {
+	var b strings.Builder
+	for _, f := range failed {
+		fmt.Fprintf(&b, "\n  [%s] %s via %s to node %d: %v", f.phase, f.key, f.proto, f.target+1, f.err)
+	}
+	return b.String()
 }
 
 // putOnce writes the next key over the next transport through a node that
@@ -100,15 +171,25 @@ func (w *rollWriter) putOnce(t *testing.T) {
 	}
 	key := fmt.Sprintf("roll/%03d", k)
 	value := fmt.Sprintf("v%03d-%s", k, proto.name)
-	if _, err := runCLIProto(t, w.c.nodes[target], proto, "kv", "put", key, value); err != nil {
-		w.mu.Lock()
-		w.failed = append(w.failed, rollFailure{key: key, proto: proto.name, target: target, err: err})
-		w.mu.Unlock()
+	before := w.phase.Load()
+	_, err := runCLIProto(t, w.c.nodes[target], proto, "kv", "put", key, value)
+	after := w.phase.Load()
+	down := before == phaseDown && after == phaseDown
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err != nil {
+		w.failed = append(w.failed, rollFailure{
+			key: key, proto: proto.name, target: target, phase: phaseSpan(before, after), down: down, err: err,
+		})
 		return
 	}
-	w.mu.Lock()
 	w.acked[key] = value
-	w.mu.Unlock()
+	if down {
+		w.downAcks++
+		if w.downAcks == minDownAcks {
+			close(w.downReached)
+		}
+	}
 }
 
 func (w *rollWriter) snapshot() map[string]string {
@@ -129,7 +210,7 @@ func TestRollingUpgrade_RollForward_CLI(t *testing.T) {
 	w := newRollWriter(c)
 
 	for i := range 3 {
-		w.during(t, i, func() { c.roll(t, i, bins.next) })
+		w.during(t, i, bins.next)
 		acked := w.snapshot()
 		c.requireReadsEverywhere(t, acked)
 		if i < 2 {

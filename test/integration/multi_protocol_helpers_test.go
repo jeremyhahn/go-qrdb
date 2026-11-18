@@ -890,10 +890,16 @@ func (c *sicacCluster) admitJoiner() {
 // whose feature advertisement is not yet live.
 const memberAddUnadvertisedRefusal = "no live feature advertisement from that node"
 
+// memberAddUnknownReleaseRefusal is the featuregate refusal while a
+// committed member (a founder still starting) has neither advertised nor
+// recorded its release; it clears once that member's gate starts.
+const memberAddUnknownReleaseRefusal = "cannot be established"
+
 // runMemberAddWhenAdvertised runs `admin member add` with args through node
-// over proto, acting as the operator who retries the featuregate refusal
-// once the joiner advertises. Advertisements refresh every
-// featuregate.DefaultRefreshInterval, so it retries that refusal alone for
+// over proto, acting as the operator who retries the featuregate refusals
+// until the joiner advertises and every member's release is established.
+// Advertisements refresh every featuregate.DefaultRefreshInterval, so it
+// retries those refusals alone for
 // twelve intervals, polling five times per interval, and returns any other
 // outcome at once.
 func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiProtocol, args ...string) (string, error) {
@@ -903,10 +909,10 @@ func runMemberAddWhenAdvertised(t *testing.T, node *multiProtoNode, proto multiP
 	var err error
 	pollUntil(12*featuregate.DefaultRefreshInterval, featuregate.DefaultRefreshInterval/5, func() bool {
 		out, err = runCLIProto(t, node, proto, cmd...)
-		if err == nil || !strings.Contains(out, memberAddUnadvertisedRefusal) {
+		if err == nil || (!strings.Contains(out, memberAddUnadvertisedRefusal) && !strings.Contains(out, memberAddUnknownReleaseRefusal)) {
 			return true
 		}
-		t.Logf("[%s] %s refused until the joiner advertises, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
+		t.Logf("[%s] %s refused until the joiner and every member advertise, retrying: %s", proto.name, strings.Join(cmd, " "), strings.TrimSpace(out))
 		return false
 	})
 	return out, err

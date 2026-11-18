@@ -198,8 +198,22 @@ func (c *upgradeCluster) awaitServing(t *testing.T, skip int) {
 // node serves every transport again.
 func (c *upgradeCluster) roll(t *testing.T, i int, bin string) {
 	t.Helper()
+	c.stopNode(t, i)
+	c.restartNode(t, i, bin)
+}
+
+// stopNode stops node i and forgets its process.
+func (c *upgradeCluster) stopNode(t *testing.T, i int) {
+	t.Helper()
 	stopNode(t, c.cmds[i], 10*time.Second)
 	c.cmds[i] = nil
+}
+
+// restartNode starts node i on bin and waits until it is unsealed,
+// healthy, serving admin, the cluster has a leader, and every protocol
+// answers on it.
+func (c *upgradeCluster) restartNode(t *testing.T, i int, bin string) {
+	t.Helper()
 	c.bins[i] = bin
 	c.cmds[i] = startNode(t, bin, c.args[i], fmt.Sprintf("[node%d] ", i+1), c.logs[i])
 	waitForNodesSelfUnsealed(t, c.ca, c.adminPorts[i])
