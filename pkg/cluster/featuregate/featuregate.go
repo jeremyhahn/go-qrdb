@@ -59,9 +59,11 @@
 package featuregate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -566,27 +568,68 @@ func (g *Gate) AdmitReplica(shardID uint64, raftAddr string) error {
 }
 
 // admitRelease refuses the node at raftAddr when its live advertisement
-// announces a release this binary does not accept (pkg/release.Check),
-// returning the *release.GapError with Channel "raft-membership". A record
-// with an empty ReleaseVersion predates release announcement and is judged
-// by its features alone; this node itself is never refused.
+// announces a release that is not adjacent (pkg/release.Adjacent) to this
+// binary's release or to the release of EVERY other member in the view:
+// admitting a 0.60 replica through a 0.59 member while a 0.58 member is
+// still in the cluster would leave two non-adjacent releases side by side.
+// It returns the *release.GapError with Channel "raft-membership" whose
+// Local is the release of the first member the candidate is not adjacent
+// to (this node first). A record with an empty ReleaseVersion predates
+// release announcement and is judged by its features alone, both as the
+// candidate and as a member compared against; this node itself is never
+// refused.
 func (g *Gate) admitRelease(raftAddr string) error {
-	if self, err := g.AdvertisedSelf(); err == nil && self.Address == raftAddr {
+	self, selfErr := g.AdvertisedSelf()
+	if selfErr == nil && self.Address == raftAddr {
 		return nil
 	}
-	for _, rec := range *g.view.Load() {
-		if rec.Address != raftAddr || rec.ReleaseVersion == "" {
+	view := *g.view.Load()
+	candidate := ""
+	for _, rec := range view {
+		if rec.Address == raftAddr && rec.ReleaseVersion != "" {
+			candidate = rec.ReleaseVersion
+			break
+		}
+	}
+	if candidate == "" {
+		return nil
+	}
+	refuse := func(err error, member, memberRelease string) error {
+		g.logger.Warn("feature gate: refusing replica on a release gap",
+			"address", raftAddr,
+			"peer_release", candidate,
+			"member", member,
+			"member_release", memberRelease)
+		return err
+	}
+	if err := release.Check(releaseChannel, candidate); err != nil {
+		return refuse(err, "self", release.Version())
+	}
+	// Map iteration order is random; compare in a stable order so the
+	// refusal names the same member every time.
+	keys := slices.SortedFunc(maps.Keys(view), func(a, b viewKey) int {
+		if c := cmp.Compare(a.source, b.source); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.nodeID, b.nodeID)
+	})
+	for _, k := range keys {
+		rec := view[k]
+		if rec.Address == raftAddr || rec.ReleaseVersion == "" {
 			continue
 		}
-		if err := release.Check(releaseChannel, rec.ReleaseVersion); err != nil {
-			g.logger.Warn("feature gate: refusing replica on a release gap",
-				"address", raftAddr,
-				"local_release", release.Version(),
-				"peer_release", rec.ReleaseVersion)
-			return err
+		if !releasesAdjacent(rec.ReleaseVersion, candidate) {
+			return refuse(&release.GapError{Channel: releaseChannel, Local: rec.ReleaseVersion, Peer: candidate},
+				rec.Address, rec.ReleaseVersion)
 		}
 	}
 	return nil
+}
+
+// releasesAdjacent reports whether two announced releases may run side by
+// side: a development build accepts any peer, as release.Check does.
+func releasesAdjacent(a, b string) bool {
+	return a == release.Dev || b == release.Dev || release.Adjacent(a, b)
 }
 
 // releaseChannel names the cluster-membership channel in a
