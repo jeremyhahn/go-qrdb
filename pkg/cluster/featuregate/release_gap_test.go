@@ -130,6 +130,23 @@ func TestAdmitReplica_UnknownMemberReleaseRefuses(t *testing.T) {
 	assert.Equal(t, UnknownMemberReleaseError{ShardID: systemShard, ReplicaID: 2, Address: "n2:7000"}, *unknown)
 }
 
+// A candidate is compared only with committed system-shard members: two
+// joiners that are each adjacent to the cluster but two releases apart from
+// one another do not block each other.
+func TestAdmitReplica_PreMembershipCandidatesDoNotBlockEachOther(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 4, "n4:7000", "0.58.0-alpha")
+	store.advertiseRelease(t, 5, "n5:7000", "0.60.0-alpha")
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+
+	assert.NoError(t, g.AdmitReplica(systemShard, "n4:7000"))
+	assert.NoError(t, g.AdmitReplica(systemShard, "n5:7000"))
+}
+
 // The gate records its own release under ReleasePrefix and drops a stale
 // one left by an earlier binary.
 func TestGate_RecordsOwnRelease(t *testing.T) {

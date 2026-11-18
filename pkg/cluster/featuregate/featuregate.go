@@ -59,7 +59,6 @@
 package featuregate
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -621,33 +620,25 @@ func (g *Gate) admitRelease(raftAddr string) error {
 	if err := release.Check(releaseChannel, candidate); err != nil {
 		return refuse(err, "self", release.Version())
 	}
-	// Map iteration order is random; compare in a stable order so the
-	// refusal names the same member every time.
-	keys := slices.SortedFunc(maps.Keys(view), func(a, b viewKey) int {
-		if c := cmp.Compare(a.source, b.source); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.nodeID, b.nodeID)
-	})
-	for _, k := range keys {
-		rec := view[k]
-		if rec.Address == raftAddr || rec.ReleaseVersion == "" {
-			continue
-		}
-		if !releasesAdjacent(rec.ReleaseVersion, candidate) {
-			return refuse(&release.GapError{Channel: releaseChannel, Local: rec.ReleaseVersion, Peer: candidate},
-				rec.Address, rec.ReleaseVersion)
-		}
-	}
-	// A committed member whose advertisement has lapsed is still a member:
-	// compare against the release it recorded, and refuse when there is none.
+	// Compare only with committed system-shard members: a pre-membership
+	// advertisement is another candidate, not a member it must stay
+	// adjacent to. A member's release is its live advertisement's; one
+	// that predates announcement is skipped; an offline member's is the
+	// release it recorded, and with neither the candidate is refused.
 	system, err := g.members.GroupMembership(g.systemShard)
 	if err != nil {
 		return err
 	}
 	recorded := *g.releases.Load()
 	for _, m := range committedMembers(system) {
-		if m.id == g.self.ReplicaID || m.addr == raftAddr || liveRecord(view, m.id, m.addr) != nil {
+		if m.id == g.self.ReplicaID || m.addr == raftAddr {
+			continue
+		}
+		if rec := liveRecord(view, m.id, m.addr); rec != nil {
+			if rec.ReleaseVersion != "" && !releasesAdjacent(rec.ReleaseVersion, candidate) {
+				return refuse(&release.GapError{Channel: releaseChannel, Local: rec.ReleaseVersion, Peer: candidate},
+					m.addr, rec.ReleaseVersion)
+			}
 			continue
 		}
 		rels := recorded[m.id]
