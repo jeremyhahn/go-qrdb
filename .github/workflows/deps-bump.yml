@@ -14,9 +14,11 @@
 # ci/deps-bump, with ONE pull request into main labelled `code-review` and
 # `task:ready`, so the normal review and auto-merge land it.
 #
-#   - The commit is written through the git data API with GITHUB_TOKEN
-#     (blobs, a tree on the base commit's tree, a commit), so GitHub signs it
-#     and the Signatures check reads it as a `web-flow` commit.
+#   - The commit is made by the GraphQL createCommitOnBranch mutation with
+#     GITHUB_TOKEN, on the expected head (expectedHeadOid), so GitHub signs
+#     it as a verified `web-flow` commit for the Signatures check; the job
+#     checks verification.verified before it opens the PR. (A commit POSTed
+#     to the git data API is unsigned and the Signatures check rejects it.)
 #   - With an open PR on the branch, the job first calls
 #     PUT pulls/N/update-branch and builds on the PR's new tip; only a 422
 #     "already up to date" counts as current, any other failure or a head
@@ -38,7 +40,7 @@
 #     owner rules, a person or agent with its own token re-applies the
 #     `code-review` label to start it.
 #
-# GitHub only (the git data API calls are GitHub's). Copy to
+# GitHub only (the REST and GraphQL calls are GitHub's). Copy to
 # .github/workflows/deps-bump.yml. The Makefile needs `deps-bump`, `deps-check`
 # and `build` (handbook templates/deps/depscheck/README.md).
 
@@ -196,33 +198,58 @@ jobs:
           git diff --cached --stat
           echo "CHANGED=$(git diff --cached --name-only | tr '\n' ' ')" >> "$GITHUB_ENV"
 
-      # One commit through the git data API, so GitHub signs it, then a
-      # fast-forward ref update (force: false) or a new ref.
+      # One commit made by GraphQL createCommitOnBranch: GitHub signs it as a
+      # verified web-flow commit (CI's Signatures job rejects the unsigned
+      # commit POST /git/commits makes). expectedHeadOid is the commit the
+      # bump was built on, so a branch that moved meanwhile refuses the
+      # commit. A missing branch is first created at that commit, and
+      # deleted again if the mutation fails, so no PR-less branch is left.
       - name: Commit to ci/deps-bump
         if: ${{ env.CHANGED != '' }}
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           set -euo pipefail
-          entries='[]'
+          # One JSON object per line, read back with --slurpfile: a go.sum in
+          # base64 can pass the 128 KiB limit on a single argv string.
+          add="$RUNNER_TEMP/bump-add.jsonl"
+          del="$RUNNER_TEMP/bump-del.jsonl"
+          : > "$add"
+          : > "$del"
           for f in $CHANGED; do
             if [ -f "$f" ]; then
-              blob=$(base64 -w0 "$f" | jq -Rs '{content: ., encoding: "base64"}' | gh api "repos/$REPO/git/blobs" --input - --jq .sha)
-              entries=$(jq -c --arg p "$f" --arg s "$blob" '. + [{path: $p, mode: "100644", type: "blob", sha: $s}]' <<<"$entries")
+              base64 -w0 "$f" | jq -Rsc --arg p "$f" '{path: $p, contents: .}' >> "$add"
             else
-              entries=$(jq -c --arg p "$f" '. + [{path: $p, mode: "100644", type: "blob", sha: null}]' <<<"$entries")
+              jq -nc --arg p "$f" '{path: $p}' >> "$del"
             fi
           done
-          base_tree=$(gh api "repos/$REPO/git/commits/$BASE_SHA" --jq .tree.sha)
-          tree=$(jq -n --arg b "$base_tree" --argjson e "$entries" '{base_tree: $b, tree: $e}' | gh api "repos/$REPO/git/trees" --input - --jq .sha)
-          msg=$(printf 'deps: bump dependencies to latest (ruling 640)\n\n%s\n' "$(git diff --cached --stat)")
-          commit=$(jq -n --arg m "$msg" --arg t "$tree" --arg p "$BASE_SHA" '{message: $m, tree: $t, parents: [$p]}' | gh api "repos/$REPO/git/commits" --input - --jq .sha)
-          if gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
-            gh api -X PATCH "repos/$REPO/git/refs/heads/$BRANCH" -f sha="$commit" -F force=false >/dev/null
-          else
-            gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$commit" >/dev/null
+          created=
+          if ! gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
+            gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
+            created=1
           fi
-          echo "deps-bump: $commit on $BRANCH"
+          stat=$(git diff --cached --stat)
+          # shellcheck disable=SC2016 # $in is a GraphQL variable
+          query='mutation($in: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $in) { commit { oid } } }'
+          if ! commit=$(jq -n --arg q "$query" --arg r "$REPO" --arg b "$BRANCH" --arg h "$BASE_SHA" \
+                --arg s "$stat" --slurpfile add "$add" --slurpfile del "$del" \
+                '{query: $q, variables: {in: {branch: {repositoryNameWithOwner: $r, branchName: $b}, expectedHeadOid: $h, message: {headline: "deps: bump dependencies to latest (ruling 640)", body: $s}, fileChanges: {additions: $add, deletions: $del}}}}' \
+              | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid // empty') || [ -z "$commit" ]; then
+            if [ -n "$created" ]; then
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
+            fi
+            echo "::error::createCommitOnBranch on $BRANCH (expected head $BASE_SHA) made no commit"
+            exit 1
+          fi
+          verified=$(gh api "repos/$REPO/commits/$commit" --jq .commit.verification.verified)
+          if [ "$verified" != true ]; then
+            if [ -n "$created" ]; then
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
+            fi
+            echo "::error::$commit on $BRANCH is not a verified (signed) commit; CI's Signatures job would reject it"
+            exit 1
+          fi
+          echo "deps-bump: signed $commit on $BRANCH"
 
       - name: Open the PR and label it
         id: pr
@@ -249,4 +276,4 @@ jobs:
 
       - name: Tear down
         if: always()
-        run: rm -f "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/bump.b64" "$RUNNER_TEMP/bump.patch"
+        run: rm -f "$RUNNER_TEMP/gomodauth.env" "$RUNNER_TEMP/bump.b64" "$RUNNER_TEMP/bump.patch" "$RUNNER_TEMP/bump-add.jsonl" "$RUNNER_TEMP/bump-del.jsonl"
