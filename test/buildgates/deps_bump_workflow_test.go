@@ -169,3 +169,87 @@ func TestDepsBumpRecoveryProblems_CanFail(t *testing.T) {
 		})
 	}
 }
+
+// depsBumpBaseStep is the name of deps-bump.yml's base-commit step.
+const depsBumpBaseStep = "- name: Find the base commit"
+
+// depsBumpBranchDeleteProblems lists where deps-bump.yml's base step can
+// delete ci/deps-bump with unmerged commits on it: the delete must follow a
+// read of the branch tip, the last merged PR's head and the compare status,
+// and a guard that refuses (exit 1) unless the head is the tip or the tip
+// is in main (behind or identical).
+func depsBumpBranchDeleteProblems(src string) []string {
+	i := strings.Index(src, depsBumpBaseStep)
+	if i < 0 {
+		return []string{"has no step " + depsBumpBaseStep}
+	}
+	step := src[i+len(depsBumpBaseStep):]
+	if j := strings.Index(step, "\n      - "); j >= 0 {
+		step = step[:j]
+	}
+	del := `gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH"`
+	d := strings.Index(step, del)
+	if d < 0 {
+		return nil
+	}
+	before := step[:d]
+	var p []string
+	for _, c := range []struct{ text, what string }{
+		{`tip=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha`, "reads the branch tip SHA"},
+		{`select(.merged_at != null)][0].head.sha`, "reads the last merged PR's head.sha"},
+		{`"repos/$REPO/compare/main...$tip"`, "asks the compare API whether the tip is in main"},
+		{`[ "$merged_head" != "$tip" ] && [ "$status" != behind ] && [ "$status" != identical ]`, "refuses unless the merged head is the tip or the tip is behind/identical to main"},
+	} {
+		if !strings.Contains(before, c.text) {
+			p = append(p, "the base step deletes the branch but never, before it, "+c.what)
+		}
+	}
+	g := strings.LastIndex(before, `[ "$merged_head" != "$tip" ]`)
+	if g >= 0 && !strings.Contains(before[g:], "exit 1") {
+		p = append(p, "the base step's merged-tip guard does not exit before the delete")
+	}
+	return p
+}
+
+func TestDepsBumpWorkflowDeletesOnlyAMergedTip(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", depsBumpWorkflowName, err)
+	}
+	if p := depsBumpBranchDeleteProblems(string(b)); len(p) != 0 {
+		t.Fatalf("%s:\n  %s", depsBumpWorkflowName, strings.Join(p, "\n  "))
+	}
+}
+
+func TestDepsBumpBranchDeleteProblems_CanFail(t *testing.T) {
+	good := `      - name: Find the base commit
+        run: |
+            if tip=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
+              merged_head=$(gh api "repos/$REPO/pulls?state=closed" --jq '[.[] | select(.merged_at != null)][0].head.sha // empty')
+              status=$(gh api "repos/$REPO/compare/main...$tip" --jq .status 2>/dev/null || true)
+              if [ "$merged_head" != "$tip" ] && [ "$status" != behind ] && [ "$status" != identical ]; then
+                echo "::error::refusing"
+                exit 1
+              fi
+              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null
+            fi
+      - name: Next
+`
+	if p := depsBumpBranchDeleteProblems(good); len(p) != 0 {
+		t.Fatalf("good workflow flagged: %v", p)
+	}
+	for name, tc := range map[string]struct{ from, to, want string }{
+		"no tip read":      {`tip=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha`, `gh api "repos/$REPO/git/ref/heads/$BRANCH"`, "branch tip SHA"},
+		"merged_at only":   {`[.[] | select(.merged_at != null)][0].head.sha // empty`, `.[0].merged_at // empty`, "head.sha"},
+		"no compare":       {`"repos/$REPO/compare/main...$tip"`, `"repos/$REPO/branches/main"`, "compare API"},
+		"no tip guard":     {`[ "$merged_head" != "$tip" ] && `, `[ -z "$merged_head" ] && `, "refuses unless"},
+		"guard falls thru": {"exit 1", "true", "does not exit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := depsBumpBranchDeleteProblems(strings.Replace(good, tc.from, tc.to, 1))
+			if len(p) == 0 || !strings.Contains(strings.Join(p, "\n"), tc.want) {
+				t.Fatalf("want a problem naming %q, got %v", tc.want, p)
+			}
+		})
+	}
+}

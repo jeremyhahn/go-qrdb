@@ -26,8 +26,9 @@
 #     (git merge-base --is-ancestor) before anything is built. It never
 #     force-updates a ref: a ref update is a fast-forward, and a branch left
 #     behind by an unmerged closed PR fails the job, for a person to close.
-#     The branch of a merged PR is deleted and re-created from main, which
-#     loses nothing.
+#     A branch whose tip is the head of the last merged PR, or already in
+#     main, is deleted and re-created from main, which loses nothing; any
+#     other tip is kept and fails the job.
 #   - A govulncheck finding on the standard library, the toolchain or an
 #     indirect-only module is reported, not failed, by deps-check, so it does
 #     not stop the verify: the portfolio-wide toolchain pass carries stdlib.
@@ -121,14 +122,20 @@ jobs:
             echo "open PR #$pr on $BRANCH; building on its tip $sha"
           else
             sha=$main
-            if gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
-              merged=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$BRANCH&base=main&sort=updated&direction=desc" --jq '.[0].merged_at // empty')
-              if [ -z "$merged" ]; then
-                echo "::error::$BRANCH exists with no open PR and its last PR was not merged; close or delete it by hand (this job never force-updates a ref)"
+            if tip=$(gh api "repos/$REPO/git/ref/heads/$BRANCH" --jq .object.sha 2>/dev/null); then
+              # Delete the branch only when its CURRENT tip is proven merged:
+              # the most recently merged bump PR's head is the tip, or the
+              # tip is already in main (compare status behind or identical).
+              # A merged_at on some older PR proves nothing about commits
+              # pushed to the branch after that PR landed.
+              merged_head=$(gh api "repos/$REPO/pulls?state=closed&head=$owner:$BRANCH&base=main&sort=updated&direction=desc&per_page=100" --jq '[.[] | select(.merged_at != null)][0].head.sha // empty')
+              status=$(gh api "repos/$REPO/compare/main...$tip" --jq .status 2>/dev/null || true)
+              if [ "$merged_head" != "$tip" ] && [ "$status" != behind ] && [ "$status" != identical ]; then
+                echo "::error::$BRANCH tip $tip is not the head of a merged PR (last merged head: ${merged_head:-none}) and not in main (compare: ${status:-unknown}); refusing to delete it, close or delete it by hand (this job never force-updates a ref)"
                 exit 1
               fi
               gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null
-              echo "$BRANCH belonged to a merged PR: deleted, re-created from main"
+              echo "$BRANCH tip $tip was merged: deleted, re-created from main"
             fi
             echo "no open PR on $BRANCH; building on main $sha"
           fi
