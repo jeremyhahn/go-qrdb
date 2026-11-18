@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -252,5 +253,33 @@ func (c *upgradeCluster) requireReadsEverywhere(t *testing.T, want map[string]st
 				}
 			}
 		}
+	}
+}
+
+// shard1Leader returns the index of the node every node agrees leads
+// shard 1.
+func (c *upgradeCluster) shard1Leader(t *testing.T) int {
+	t.Helper()
+	client := mtlsHTTPClient(t, c.ca, 5*time.Second)
+	return agreedShard1Leader(t, client, [3]*multiProtoNode(c.nodes), [3]uint64{1, 2, 3}, []int{0, 1, 2}, 60*time.Second)
+}
+
+// moveLeader hands shard 1's leadership to node to with `qrdb admin member
+// transfer-leadership`, asked of the current leader, and returns once every
+// node agrees that node to leads.
+func (c *upgradeCluster) moveLeader(t *testing.T, to int) {
+	t.Helper()
+	var out string
+	var err error
+	if !pollUntil(90*time.Second, 250*time.Millisecond, func() bool {
+		from := c.shard1Leader(t)
+		if from == to {
+			return true
+		}
+		out, err = runCLIProto(t, c.nodes[from], multiProtocols[0],
+			"admin", "member", "transfer-leadership", strconv.Itoa(to+1), "--shard-id", "1")
+		return false
+	}) {
+		t.Fatalf("shard 1 leadership never moved to node %d: last transfer-leadership: %v\noutput: %s", to+1, err, out)
 	}
 }
