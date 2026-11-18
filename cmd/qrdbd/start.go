@@ -186,6 +186,7 @@ type startFlags struct {
 	separationOfDuties    bool
 
 	invitationTTL           string
+	pendingUserSweep        string
 	invitationRequireKeyPin bool
 	invitationRedeemLimit   qrdbconfig.InvitationRedeemLimitConfig
 	// revocationCacheTTL is the auth.revocation_cache_ttl duration string.
@@ -905,6 +906,7 @@ func applyConfigToFlags(cmd *cobra.Command, f *startFlags, cfg *qrdbconfig.Confi
 	// (crypto/fips140.Enabled()) is always strict regardless of config.
 	f.separationOfDuties = cfg.Auth.SeparationOfDuties
 	f.invitationTTL = cfg.Auth.InvitationTTL
+	f.pendingUserSweep = cfg.Auth.PendingUserSweepInterval
 	f.invitationRequireKeyPin = cfg.Auth.InvitationRequireKeyPin
 	f.invitationRedeemLimit = cfg.Auth.InvitationRedeemLimit
 	f.revocationCacheTTL = cfg.Auth.RevocationCacheTTL
@@ -2360,6 +2362,11 @@ func runStart(f *startFlags) (err error) {
 			// against THIS node's auth-chain vocabulary (built-ins until the
 			// middleware is bound below, and with auth disabled).
 			userOpts = append(userOpts, user.WithAuthMethodVocabulary(authMethods.IsAuthMethod))
+			// A pending-user TTL waits for every member to carry its
+			// record fields (featuregate.PendingUserTTL), as on the SDK
+			// node path; the reaper below waits on the same check.
+			pendingTTLGate, pendingTTLOpt := daemonPendingTTLGate(svcHost)
+			userOpts = append(userOpts, pendingTTLOpt)
 			mgmtResult, err := bootstrapUserRoleStores(sigCtx, bootKVSvc, authKVSvc, txSvc, rnode, leaderWaitBudget(f), shard.ShardKV, f.replicaID, tenantSvcInst, strictSoD, bootBarriers, bootStrategy, complianceAudit, mtlsBindingPolicy, ceremonyCoreSvc, ceremonyCA, bundle.CACertPEM, userOpts...)
 			if err != nil {
 				_ = shutdownNode(nodeCloser)
@@ -2861,6 +2868,34 @@ func runStart(f *startFlags) (err error) {
 				serverOpts = append(serverOpts, opt)
 			} else {
 				slog.Error("user auth-factor service (M14) disabled", slog.Any("error", err))
+			}
+
+			// Pending users past their TTL are deleted by one node per
+			// tenant: an isolated tenant by its home group's Raft leader
+			// (the KV leader may hold it sealed while another node serves
+			// it), every other tenant by the KV shard's Raft leader; this
+			// node sweeps everything when standalone.
+			if sweep, err := qrdbconfig.ParsePendingUserSweepInterval(f.pendingUserSweep); err == nil {
+				var pendingLeader func(context.Context, string) bool
+				if host != nil {
+					localReplicaID := f.replicaID
+					leadsSystem := func() bool {
+						id, ok, lerr := host.LeaderID(shard.ShardKV)
+						return lerr == nil && ok && id == localReplicaID
+					}
+					homes, _ := mgmtResult.storeResolver.(tenant.HomeLocator)
+					var leadsHome func(string) bool
+					if raftBackendReg != nil {
+						homeReg := raftBackendReg
+						leadsHome = func(tenantID string) bool {
+							return homeReg.LeadsDatabase(tenantID, database.TenantHomeName)
+						}
+					}
+					pendingLeader = server.PendingSweepLeader(leadsSystem, homes, leadsHome)
+				}
+				serverOpts = append(serverOpts, server.WithPendingUserReaper(sweep, gatePendingSweep(pendingTTLGate, pendingLeader)))
+			} else {
+				slog.Error("pending user reaper disabled", slog.Any("error", err))
 			}
 
 			if authResult != nil {
@@ -4495,6 +4530,34 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 		tenantSvc:         tenantSvc,
 		legacyFactorStore: runtimeStore,
 	}, nil
+}
+
+// gatePendingSweep holds the pending-user reaper behind the pending-user TTL
+// activation check (lifecycle.PendingUserTTLRequired): until ttlGate passes,
+// no tenant is swept on this node, so a clustered node never claims or deletes
+// an expired pending user before every member carries the record fields. A
+// nil ttlGate (standalone) leaves leader as is; a nil leader means this node
+// leads every group.
+func gatePendingSweep(ttlGate func() error, leader func(context.Context, string) bool) func(context.Context, string) bool {
+	if ttlGate == nil {
+		return leader
+	}
+	return func(ctx context.Context, tenantID string) bool {
+		if ttlGate() != nil {
+			return false
+		}
+		return leader == nil || leader(ctx, tenantID)
+	}
+}
+
+// daemonPendingTTLGate builds the daemon's pending-user TTL activation check
+// on host, the same check the SDK node path takes
+// (lifecycle.PendingUserTTLRequired), and the user-store option that applies
+// it. Every user store bootstrapUserRoleStores builds takes the option, and
+// the reaper waits on the check through gatePendingSweep.
+func daemonPendingTTLGate(host service.Host) (func() error, user.Option) {
+	gate := lifecycle.PendingUserTTLRequired(host)
+	return gate, user.WithPendingTTLGate(gate)
 }
 
 // bootstrapAuthEnforcement initializes the auth enforcement layer: RBAC

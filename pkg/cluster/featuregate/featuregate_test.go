@@ -553,8 +553,8 @@ func TestNew_Validates(t *testing.T) {
 
 // The advertised names are exactly this binary's features.
 func TestSupported(t *testing.T) {
-	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit}, Supported())
-	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit)}, SupportedNames())
+	assert.Equal(t, []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}, Supported())
+	assert.Equal(t, []string{string(GuardedWrites), string(ClusterShardIDs), string(PrefixCompaction), string(NodeCompaction), string(ClusterSeal), string(ImportStaging), string(RangeDelete), string(AuditAppend), string(VectorEngine), string(TimeSeriesRetention), string(LeaseCheckpoint), string(PerNodeBarrierKeys), string(VerifiableLog), string(RollingMigration), string(TenantUndo), string(VerifiableLogKeys), string(VectorManhattan), string(CommandCaps), string(LockCreateRevisionToken), string(TransactionReads), string(VerifiableLogAudit), string(PendingUserTTL)}, SupportedNames())
 }
 
 // TestCheckActivated_AdoptsTenantUndoActivation pins that this binary
@@ -578,6 +578,22 @@ func TestGate_TenantUndoInactiveWithoutRecord(t *testing.T) {
 	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
 	assert.False(t, g.Activated(TenantUndo))
 	assert.False(t, g.Enabled(0, TenantUndo))
+}
+
+// TestGate_PendingUserTTLActivation pins that this binary implements
+// pending-user-ttl: inactive without an activation record, adopted with one.
+func TestGate_PendingUserTTLActivation(t *testing.T) {
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), newMemKV()))
+	assert.False(t, g.Enabled(0, PendingUserTTL))
+
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ActivationPrefix+string(PendingUserTTL), []byte(`{}`))
+	require.NoError(t, err)
+	g = newGate(t, threeNodes())
+	require.NoError(t, g.CheckActivated(context.Background(), kv))
+	assert.True(t, g.Activated(PendingUserTTL))
+	assert.True(t, g.Enabled(0, PendingUserTTL))
 }
 
 // TestCheckActivated_AdoptsPerNodeBarrierKeysActivation pins that this binary

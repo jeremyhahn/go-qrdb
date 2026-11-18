@@ -86,7 +86,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -4343,6 +4342,7 @@ func (n *Node) wireClientAndServer(ctx context.Context, svcNode *lifecycle.Node,
 		allOpts = append(allOpts, fwdOpt)
 	}
 	allOpts = append(allOpts, server.WithDefaultRetention(cfg.TimeSeries.DefaultRetentionDuration()))
+	allOpts = append(allOpts, n.pendingUserReaperOption(cfg, standalone, svcNode.StoreResolver))
 	if crypto.PINBackend == nil && n.sealPINBackend != nil {
 		allOpts = append(allOpts, server.WithPINBackend(n.sealPINBackend))
 	}
@@ -5160,9 +5160,9 @@ func buildClusteredRaftConfigs(
 		DeploymentID:          deploymentID,
 		MaxTotalInMemLogSize:  cfg.Raft.MaxTotalInMemLogSize,
 		AllowZeroDeploymentID: deploymentID == 0,
-		// Disable WAL fdatasync when QRDB_NOSYNC_WRITES=1 to avoid
-		// Docker overlay2 fsync latency issues in integration tests.
-		NoSyncWAL: os.Getenv("QRDB_NOSYNC_WRITES") == "1",
+		// The Raft WAL skips fdatasync only in a qrdb_testonly build with
+		// QRDB_NOSYNC_WRITES=1 (nosync_testbuild.go); production syncs it.
+		NoSyncWAL: noSyncWAL(),
 	}
 
 	// The Raft log's at-rest options are not decided here: buildClusteredHost
