@@ -5,6 +5,9 @@ package ceremony
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -163,4 +166,77 @@ func TestInitialize_SingleAdminSystemSOPersistFaultLeavesIntentStanding(t *testi
 	pending, err = b2.SystemSOIntent(ctx)
 	require.NoError(t, err)
 	assert.False(t, pending, "a recorded SO clears the intent")
+}
+
+// signCountingCA counts every certificate the ceremony asks the CA to sign.
+type signCountingCA struct {
+	*mockCA
+	signs atomic.Int64
+}
+
+func (c *signCountingCA) SignCSR(ctx context.Context, csrPEM []byte, opts *SignCSROptions) (*x509.Certificate, error) {
+	c.signs.Add(1)
+	return c.mockCA.SignCSR(ctx, csrPEM, opts)
+}
+
+func (c *signCountingCA) IssueCertificate(ctx context.Context, req *IssueCertRequest) (*IssuedCert, error) {
+	c.signs.Add(1)
+	return c.mockCA.IssueCertificate(ctx, req)
+}
+
+// TestInitialize_SingleAdminRetryVerifiesPINsBeforeSigning pins
+// go-qrdb#1129's round-2 P1: a retry after a failed single-admin init
+// presents PINs that are already provisioned, and a wrong or locked-out SO
+// PIN is refused before the CA signs anything.
+func TestInitialize_SingleAdminRetryVerifiesPINsBeforeSigning(t *testing.T) {
+	ctx := context.Background()
+	failOnce := func(t *testing.T, pins pin.PINBackend) (*singleAdminSOFaultEnv, *seal.StorageBarrier, *CeremonyService, *signCountingCA) {
+		t.Helper()
+		e := newSingleAdminSOFaultEnv(t)
+		e.pins = pins
+		b, svc := e.boot()
+		ca := &signCountingCA{mockCA: e.ca}
+		_, err := svc.Initialize(ctx, ca, e.opts())
+		require.ErrorIs(t, err, errSystemSOWrite)
+		ca.signs.Store(0)
+		return e, b, svc, ca
+	}
+
+	t.Run("wrong SO PIN", func(t *testing.T) {
+		e, b, svc, ca := failOnce(t, pintest.NewBackend(t))
+		wrong := e.opts()
+		wrong.SOPin = "not-the-so-pin"
+		_, err := svc.Initialize(ctx, ca, wrong)
+		require.ErrorIs(t, err, pin.ErrPINInvalid)
+		assert.Zero(t, ca.signs.Load(), "a wrong SO PIN must not cost a CA signing")
+		requireRecoverable(t, b, svc)
+
+		result, err := svc.Initialize(ctx, ca, e.opts())
+		require.NoError(t, err, "the right PIN still completes the ceremony")
+		requireSOHandedOff(t, b, svc, result)
+	})
+
+	t.Run("wrong user PIN", func(t *testing.T) {
+		e, _, svc, ca := failOnce(t, pintest.NewBackend(t))
+		wrong := e.opts()
+		wrong.UserPin = "not-the-user-pin"
+		_, err := svc.Initialize(ctx, ca, wrong)
+		require.ErrorIs(t, err, pin.ErrPINInvalid)
+		assert.Zero(t, ca.signs.Load(), "a wrong user PIN must not cost a CA signing")
+	})
+
+	t.Run("locked-out SO PIN", func(t *testing.T) {
+		e, _, svc, ca := failOnce(t, pin.NewLockoutBackend(pintest.NewBackend(t)))
+		wrong := e.opts()
+		wrong.SOPin = "not-the-so-pin"
+		var err error
+		for i := 0; i < 32 && !errors.Is(err, pin.ErrPINLocked); i++ {
+			_, err = svc.Initialize(ctx, ca, wrong)
+			require.Error(t, err)
+		}
+		require.ErrorIs(t, err, pin.ErrPINLocked, "repeated wrong SO PINs lock the counter out")
+		_, err = svc.Initialize(ctx, ca, e.opts())
+		require.ErrorIs(t, err, pin.ErrPINLocked, "a locked-out counter refuses even the right PIN")
+		assert.Zero(t, ca.signs.Load(), "a locked-out SO PIN must not cost a CA signing")
+	})
 }

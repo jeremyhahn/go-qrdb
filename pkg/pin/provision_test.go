@@ -154,3 +154,53 @@ func TestRequireSOPIN_GatesOnTheProvisionedPIN(t *testing.T) {
 		t.Fatalf("wrong PIN = %v", err)
 	}
 }
+
+// TestVerifyProvisioned_AuthenticatesWithoutProvisioning: VerifyProvisioned
+// checks the PINs a backend already holds and never sets one, so a caller can
+// authenticate a retry before doing anything costly (go-qrdb#1129).
+func TestVerifyProvisioned_AuthenticatesWithoutProvisioning(t *testing.T) {
+	const so, user = "so-pin-123", "user-pin-123"
+	tests := []struct {
+		name        string
+		provisionSO string
+		provisionU  string
+		soPIN       string
+		userPIN     string
+		want        error
+	}{
+		{name: "nothing provisioned", soPIN: so, userPIN: user},
+		{name: "nothing provisioned, no PINs presented"},
+		{name: "right PINs", provisionSO: so, provisionU: user, soPIN: so, userPIN: user},
+		{name: "right SO PIN, user PIN not presented", provisionSO: so, provisionU: user, soPIN: so},
+		{name: "wrong SO PIN", provisionSO: so, provisionU: user, soPIN: "so-pin-124", userPIN: user, want: ErrPINInvalid},
+		{name: "empty SO PIN with the SO PIN set", provisionSO: so, provisionU: user, userPIN: user, want: ErrSOPINRequired},
+		{name: "wrong user PIN", provisionSO: so, provisionU: user, soPIN: so, userPIN: "user-pin-124", want: ErrPINInvalid},
+		{name: "SO PIN only, user PIN presented", provisionSO: so, soPIN: so, userPIN: user},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := newProvisionBackend(t)
+			if tc.provisionSO != "" {
+				if err := Provision(context.Background(), b, tc.provisionSO, tc.provisionU); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := VerifyProvisioned(context.Background(), b, tc.soPIN, tc.userPIN)
+			if tc.want == nil && err != nil {
+				t.Fatalf("VerifyProvisioned = %v, want nil", err)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("VerifyProvisioned = %v, want %v", err, tc.want)
+			}
+			if tc.provisionSO == "" && b.SOPINSet() {
+				t.Fatal("VerifyProvisioned set the SO PIN")
+			}
+			if tc.provisionU == "" && b.UserPINSet() {
+				t.Fatal("VerifyProvisioned set the user PIN")
+			}
+		})
+	}
+	if err := VerifyProvisioned(context.Background(), nil, so, user); err != nil {
+		t.Fatalf("nil backend = %v, want nil", err)
+	}
+}

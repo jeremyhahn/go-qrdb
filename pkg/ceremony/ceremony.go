@@ -570,6 +570,13 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		s.mu.Unlock()
 		return nil, ErrAlreadyInitialized
 	}
+	// PINs already provisioned (a retry after a failed single-admin init)
+	// are authenticated before any CA signing, so a wrong or locked-out PIN
+	// costs no issuance. Issuance itself stays before barrier initialization.
+	if err := pin.VerifyProvisioned(ctx, s.pins, opts.SOPin, opts.UserPin); err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
 	// The system SO is issued before anything is committed: before the
 	// PINs are provisioned and before the system barrier is initialized and
 	// unsealed. The SO's only durable handoff is the record in that barrier,
