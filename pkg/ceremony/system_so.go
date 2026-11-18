@@ -526,6 +526,19 @@ func (s *CeremonyService) systemSOHandoffPendingLocked(ctx context.Context) bool
 	}
 	ctx, cancel := context.WithTimeout(ctx, enrollmentProbeTimeout)
 	defer cancel()
+	// A single-admin initial ceremony marks its SO intent before the
+	// barrier unseals and clears it only once the SO record is durable.
+	// An explicit unseal between a failed persist and the retry must not
+	// close the sealed window while that intent stands; an unreadable
+	// marker counts as pending, as the write-ahead probe below does.
+	intent, err := s.barrier.SystemSOIntent(ctx)
+	if err != nil {
+		s.logger.Warn("ceremony: cannot read the system SO intent marker", slog.String("error", err.Error()))
+		return true
+	}
+	if intent {
+		return true
+	}
 	return s.systemSOWriteOutstandingLocked(ctx)
 }
 

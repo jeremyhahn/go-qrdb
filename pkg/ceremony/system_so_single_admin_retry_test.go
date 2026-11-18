@@ -169,6 +169,30 @@ func TestInitialize_SingleAdminSystemSOPersistFaultLeavesIntentStanding(t *testi
 	assert.False(t, pending, "a recorded SO clears the intent")
 }
 
+// An explicit unseal after a failed single-admin SO persist must not close
+// the sealed window: the standing SO intent keeps the handoff pending until
+// a retried ceremony makes the SO record durable.
+func TestInitialize_SingleAdminStandingSOIntentHoldsSealedWindowAfterUnseal(t *testing.T) {
+	ctx := context.Background()
+	e := newSingleAdminSOFaultEnv(t)
+	b, svc := e.boot()
+
+	_, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.ErrorIs(t, err, errSystemSOWrite)
+	require.True(t, b.IsSealed())
+
+	require.NoError(t, b.Unseal(ctx, seal.Credentials{}))
+	require.False(t, b.IsSealed())
+	assert.True(t, svc.HoldsSealedWindow(ctx), "a standing SO intent holds the sealed window")
+	assert.True(t, svc.SystemSOHandoffPending(ctx), "a standing SO intent keeps the handoff pending")
+
+	result, err := svc.Initialize(ctx, e.ca, e.opts())
+	require.NoError(t, err, "the retry persists the SO")
+	requireSOHandedOff(t, b, svc, result)
+	assert.False(t, svc.HoldsSealedWindow(ctx), "a durable SO closes the sealed window")
+	assert.False(t, svc.SystemSOHandoffPending(ctx), "a durable SO ends the handoff")
+}
+
 // signCountingCA counts every certificate the ceremony asks the CA to sign.
 type signCountingCA struct {
 	*mockCA
