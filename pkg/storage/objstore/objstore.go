@@ -28,7 +28,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -245,6 +247,24 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 		return nil, err
 	}
 	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, canonical)}
+	// A walked root nested in, or holding, an open engine's root is
+	// refused: each listing would walk into the other's objects. The roots
+	// are registered now and released if the open fails after this point.
+	if rootSetting, walked := walkedRoots[provider]; walked {
+		dataRoot := canonical[rootSetting]
+		jRoot, err := journalRoot(dataRoot)
+		if err != nil {
+			return nil, err
+		}
+		if err := registerRoots(e, [2]string{dataRoot, jRoot}); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if !opened {
+				unregisterRoots(e)
+			}
+		}()
+	}
 	if err := e.claimNamespace(o.owner); err != nil {
 		return nil, err
 	}
@@ -322,13 +342,24 @@ func lockNamespace(namespace string) func() {
 }
 
 // namespaceKey is the identity of the namespace provider and settings
-// select: the provider and every setting, sorted by name. Inline credentials
-// are refused before it is taken (RejectCredentialSettings), so the settings
-// carry only what locates the bucket or prefix.
+// select: the provider and its location settings (locationSettings), sorted
+// by name, so a setting that only tunes the provider does not split one
+// namespace into two owner locks. A provider absent from locationSettings is
+// keyed on every setting. Inline credentials are refused before the key is
+// taken (RejectCredentialSettings).
 func namespaceKey(provider string, settings map[string]string) string {
+	location, listed := locationSettings[provider]
 	names := make([]string, 0, len(settings))
-	for name := range settings {
-		names = append(names, name)
+	if listed {
+		for _, name := range location {
+			if _, set := settings[name]; set {
+				names = append(names, name)
+			}
+		}
+	} else {
+		for name := range settings {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	var b strings.Builder
@@ -340,6 +371,79 @@ func namespaceKey(provider string, settings map[string]string) string {
 		b.WriteString(settings[name])
 	}
 	return b.String()
+}
+
+// locationSettings lists, per go-objstore provider, the settings that
+// address the store: where its objects live. The rest (runLifecycle,
+// lifecycleManagerType, lifecyclePolicyFile, multipartExpiry,
+// forcePathStyle, skip_client, resourceGroup, subscriptionID) tune how the
+// provider reaches or manages the store, so two opens differing only in
+// them share one namespace and one owner lock. A provider absent from the
+// map, such as a RegisterProvider one, is keyed on every setting.
+var locationSettings = map[string][]string{
+	"local": {"path"},
+	"s3":    {"bucket", "endpoint", "region"},
+	"gcs":   {"bucket", "project"},
+	"azure": {"accountName", "containerName", "endpoint"},
+}
+
+// OverlappingRootError reports a walked root (a local directory) that holds,
+// or is held by, a root another open engine uses: each engine's listing
+// would walk into the other's objects, and Reclaim would delete them.
+type OverlappingRootError struct {
+	// Root is the physical root the refused open asked for.
+	Root string
+	// Other is the open engine's data or journal root it overlaps.
+	Other string
+}
+
+func (e *OverlappingRootError) Error() string {
+	return "objstore: local root " + strconv.Quote(e.Root) + " overlaps the open root " + strconv.Quote(e.Other)
+}
+
+// openRoots registers the data and journal roots of every open engine on a
+// walked provider, so New refuses a root nested in, or holding, one of them.
+// Equal roots are not an overlap: the owner lock governs those.
+var openRoots = struct {
+	mu    sync.Mutex
+	roots map[*Engine][2]string
+}{roots: map[*Engine][2]string{}}
+
+// registerRoots refuses roots that strictly nest with a registered root and
+// otherwise registers them for e. The check and the registration are one
+// critical section, so two racing opens cannot both pass.
+func registerRoots(e *Engine, roots [2]string) error {
+	openRoots.mu.Lock()
+	defer openRoots.mu.Unlock()
+	for _, other := range openRoots.roots {
+		for _, root := range roots {
+			for _, held := range other {
+				if strictlyNested(root, held) || strictlyNested(held, root) {
+					return &OverlappingRootError{Root: root, Other: held}
+				}
+			}
+		}
+	}
+	openRoots.roots[e] = roots
+	return nil
+}
+
+// unregisterRoots releases e's roots; it is a no-op for an engine that
+// registered none.
+func unregisterRoots(e *Engine) {
+	openRoots.mu.Lock()
+	defer openRoots.mu.Unlock()
+	delete(openRoots.roots, e)
+}
+
+// strictlyNested reports whether inner lies below outer, path component
+// wise: "/a/b" is below "/a", "/ab" and "/a" itself are not.
+func strictlyNested(inner, outer string) bool {
+	rel, err := filepath.Rel(outer, inner)
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // claimNamespace checks or writes the format marker (ensureFormatMarker) and
@@ -717,16 +821,20 @@ func (e *Engine) Close() error {
 		return nil
 	}
 	e.providersClosed = true
+	unregisterRoots(e)
 	return closeStores(e.store, e.journal)
 }
 
-// Reclaim implements storage.Reclaimer: it deletes every object the engine's
-// dedicated store and journal hold -- each key, a pending commit journal, and
-// the layout mark last -- so no object outlives the database that owned it.
-// The store is dedicated to the engine (see New), so everything in it is the
-// engine's. It runs with every write excluded; the engine stays open and
-// empty, refuses every write from the moment it starts (so none lands between
-// the reclamation and Close), and the caller closes it. A failure leaves the rest in place for a retry.
+// Reclaim implements storage.Reclaimer: it deletes every object the engine
+// writes -- each key (the "k/" and "h/" names), a pending commit journal, and
+// the layout and owner markers last -- so no object outlives the database
+// that owned it. Any other name under the root is left in place: on a walked
+// provider the listing also reaches objects the engine did not write, such
+// as a nested namespace's, and those are not this engine's to delete. It
+// runs with every write excluded; the engine stays open and empty, refuses
+// every write from the moment it starts (so none lands between the
+// reclamation and Close), and the caller closes it. A failure leaves the
+// rest in place for a retry.
 func (e *Engine) Reclaim() error {
 	leave, err := e.enter()
 	if err != nil {
@@ -746,7 +854,11 @@ func (e *Engine) Reclaim() error {
 		return err
 	}
 	for _, name := range names {
-		if name == formatMarkerName || name == ownerMarkerName {
+		// Only the names this engine writes are deleted: on a walked
+		// provider the listing also reaches objects under the root that
+		// are not this engine's (a nested namespace's, or anything else
+		// placed there), and those stay. The markers go last, below.
+		if !strings.HasPrefix(name, directPrefix) && !strings.HasPrefix(name, hashedPrefix) {
 			continue
 		}
 		if err := e.store.Delete(name); err != nil && !notFound(err) {

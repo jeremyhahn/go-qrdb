@@ -57,7 +57,7 @@ func writeObjstoreCredentialFile(t *testing.T, dir, name, value string, mode os.
 
 // writeObjstoreModeConfig writes a standalone configuration whose default
 // database is the objstore backend on the local provider; objstore is the
-// YAML appended under storage.objstore after its settings.
+// YAML appended under databases[0].objstore after its settings.
 func writeObjstoreModeConfig(t *testing.T, objstore string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -67,18 +67,33 @@ func writeObjstoreModeConfig(t *testing.T, objstore string) string {
 
 // writeObjstoreProviderConfig writes, into dir, a standalone configuration
 // whose default database is the objstore backend; provider is the YAML of
-// the provider and its settings under storage.objstore, and objstore the
+// the provider and its settings under databases[0].objstore, and objstore the
 // YAML appended after it.
 func writeObjstoreProviderConfig(t *testing.T, dir, provider, objstore string) string {
 	t.Helper()
-	body := "seal:\n  enabled: true\n  strategy: passphrase\n" +
-		"databases:\n  - name: \"default\"\n    backend: \"objstore\"\n" +
-		"storage:\n  objstore:\n" + provider + objstore
+	// Config.Load requires databases[].objstore.provider for an objstore
+	// backend, so the provider block sits under the database.
+	body := "seal:\n  enabled: false\nauth:\n  enabled: false\n" +
+		"databases:\n  - name: \"default\"\n    backend: \"objstore\"\n    objstore:\n" +
+		indentYAML(provider) + indentYAML(objstore)
 	path := filepath.Join(dir, "qrdb.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+// indentYAML indents every non-empty line of block by two more spaces.
+func indentYAML(block string) string {
+	lines := strings.SplitAfter(block, "\n")
+	var b strings.Builder
+	for _, line := range lines {
+		if line != "" && line != "\n" {
+			b.WriteString("  ")
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // TestObjstoreCredentials_RefusesAnInlineCredential proves qrdbd start
@@ -92,11 +107,11 @@ func TestObjstoreCredentials_RefusesAnInlineCredential(t *testing.T) {
 	}{
 		"in settings": {
 			objstore: "      secret_key: " + fakeObjstoreSecret + "\n",
-			names:    "storage.objstore.settings",
+			names:    "databases[0].objstore.settings",
 		},
 		"under credentials": {
 			objstore: "    credentials:\n      secret: " + fakeObjstoreSecret + "\n",
-			names:    "storage.objstore.credentials.secret",
+			names:    "databases[0].objstore.credentials.secret",
 		},
 	}
 	for name, tc := range cases {
@@ -123,33 +138,18 @@ func TestObjstoreCredentials_RefusesAnInlineCredential(t *testing.T) {
 
 // TestObjstoreCredentials_IgnoredCredentialFailsTheBoot proves a credential
 // reference for a provider that does not read it stops the boot once the
-// barrier unseals rather than open the store under the ambient identity: the
+// node boots rather than open the store under the ambient identity: the
 // "local" provider reads no credential, the error names the refused file, and
 // the secret never reaches the output.
 func TestObjstoreCredentials_IgnoredCredentialFailsTheBoot(t *testing.T) {
 	bin := buildBinary(t)
-	ca := generateTestCA(t)
 	secrets := t.TempDir()
 	keyFile := writeObjstoreCredentialFile(t, secrets, "access-key", fakeObjstoreKey, 0o600)
 	secretFile := writeObjstoreCredentialFile(t, secrets, "secret-key", fakeObjstoreSecret, 0o600)
 	cfg := writeObjstoreModeConfig(t, fmt.Sprintf(
 		"    credentials:\n      key_file: %q\n      secret_file: %q\n", keyFile, secretFile))
 
-	restPort := allocateTCPPorts(t, 1)[0]
-	args := append([]string{
-		"start",
-		"--config", cfg,
-		"--mode", "standalone",
-		"--data-dir", t.TempDir(),
-		"--admin-port", strconv.Itoa(restPort),
-		"--auth-enabled",
-		"--enable-rest",
-	}, ca.tlsFlags(t)...)
-	out := &watchOutputBuf{}
-	cmd := spawnNode(t, bin, args, out)
-
-	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
-	initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
+	cmd, out := startObjstoreCredentialNode(t, bin, cfg, t.TempDir())
 
 	if err := awaitNodeExit(t, cmd, 60*time.Second); err == nil {
 		t.Fatalf("qrdbd booted with a credential the local provider ignores:\n%s", out)
@@ -174,27 +174,11 @@ func randomObjstoreCredential(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// startObjstoreCredentialNode boots qrdbd from bin with cfg and dataDir and
-// initializes and unseals its barrier, which opens the objstore backend.
+// startObjstoreCredentialNode boots qrdbd from bin with cfg and dataDir; the
+// boot opens the objstore backend. The configuration disables the seal (and
+// so auth, which requires it): a seal-enabled node refuses an objstore
+// database outright (database.SealedNodeBackendError).
 func startObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf) {
-	t.Helper()
-	cmd, out, _ := startObjstoreCredentialNodeConn(t, bin, cfg, dataDir)
-	return cmd, out
-}
-
-// startObjstoreCredentialNodeConn is startObjstoreCredentialNode that also
-// returns the qrdb CLI's connection flags for the node's REST transport, as
-// the admin the ceremony bound.
-func startObjstoreCredentialNodeConn(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf, []string) {
-	t.Helper()
-	cmd, out, _, _, conn := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
-	return cmd, out, conn
-}
-
-// spawnObjstoreCredentialNode is startObjstoreCredentialNodeConn that also
-// returns the CA and the REST port a caller needs to wait until the unsealed
-// node serves.
-func spawnObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.Cmd, *watchOutputBuf, *testCA, int, []string) {
 	t.Helper()
 	ca := generateTestCA(t)
 	restPort := allocateTCPPorts(t, 1)[0]
@@ -204,14 +188,15 @@ func spawnObjstoreCredentialNode(t *testing.T, bin, cfg, dataDir string) (*exec.
 		"--mode", "standalone",
 		"--data-dir", dataDir,
 		"--admin-port", strconv.Itoa(restPort),
-		"--auth-enabled",
 		"--enable-rest",
 	}, ca.tlsFlags(t)...)
 	out := &watchOutputBuf{}
-	cmd := spawnNode(t, bin, args, out)
-	waitForBarrierStatusReachable(t, ca, restPort, 90*time.Second)
-	certPath, keyPath := initAndUnsealBarrier(t, ca, restPort, "objstore-credentials-passphrase")
-	return cmd, out, ca, restPort, restConnArgs(ca, certPath, keyPath, restPort)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("node output:\n%s", out)
+		}
+	})
+	return spawnNode(t, bin, args, out), out
 }
 
 // assertObjstoreCredentialsNotEchoed fails the test when any credential in
@@ -251,7 +236,7 @@ func assertObjstoreCredentialsNotEchoed(t *testing.T, creds map[string]string, o
 
 // TestObjstoreCredentials_LocalRefusesUnusedCredentialFiles boots qrdbd on
 // the local provider with key and secret files generated at test time: the
-// local provider reads neither, so the boot stops once the barrier unseals,
+// local provider reads neither, so the boot stops,
 // the error names the refused key file, and neither value reaches the
 // node's output, its data directory or its configuration directory.
 func TestObjstoreCredentials_LocalRefusesUnusedCredentialFiles(t *testing.T) {
@@ -337,7 +322,7 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	// marker proves the credential reached the provider. Serving the
 	// database on objstore is the object-storage-provider row's, not this
 	// one's, so the node is stopped once the signed request has verified.
-	cmd, out, _, _, _ := spawnObjstoreCredentialNode(t, bin, cfg, dataDir)
+	cmd, out := startObjstoreCredentialNode(t, bin, cfg, dataDir)
 	// Whatever the node did before the test ends, on a passing path or a
 	// failing one, it left neither credential behind.
 	defer func() {
