@@ -158,6 +158,8 @@ env:
   # embeds or generates from docs/ or markdown. The gates that read docs/ are
   # lint-class and run in `make lint-gates`, which a docs-only PR still runs.
   DOCS_ONLY_PATTERN: '(\.md$|^docs/)'
+  # #1619: a PR changing any file that matches this runs clusterproof-soak.
+  CLUSTERPROOF_PATTERN: '^(scripts/cluster-proof-ci\.sh|test/clusterproof/)'
 
 jobs:
   # v1.24: a PR whose every changed file matches DOCS_ONLY_PATTERN runs lint
@@ -194,6 +196,7 @@ jobs:
     timeout-minutes: 15   # CUSTOMIZE (go-qrdb): the template's 10, plus the full-tree gates
     outputs:
       docs_only: ${{ steps.diff.outputs.docs_only }}
+      clusterproof: ${{ steps.diff.outputs.clusterproof }}
     env:
       # go-qrdb: the objstore storage backend, and the embedded transport's
       # volume pool, which is go-objstore's pool type.
@@ -234,6 +237,17 @@ jobs:
           fi
           echo "docs only: $docs_only"
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          # #1619: a PR that changes the cluster proof's script or harness
+          # also runs the clusterproof-soak job; always false off pull_request.
+          clusterproof=false
+          if [ "$EVENT" = pull_request ]; then
+            if cp_files=$(git diff --name-only --no-renames "$BASE...$HEAD") &&
+              printf '%s\n' "$cp_files" | grep -qE "$CLUSTERPROOF_PATTERN"; then
+              clusterproof=true
+            fi
+          fi
+          echo "clusterproof: $clusterproof"
+          echo "clusterproof=$clusterproof" >> "$GITHUB_OUTPUT"
 
       - name: No direct go-objstore import outside the storage seam
         if: steps.diff.outputs.docs_only != 'true'
@@ -2098,7 +2112,11 @@ jobs:
   # and checks the evidence bundle, which it keeps as an artifact.
   clusterproof-soak:
     name: Soak [clusterproof nemesis]
-    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !github.event.pull_request.draft }}   # ruling 214
+    # A PR that changes scripts/cluster-proof-ci.sh or test/clusterproof/
+    # (preflight's clusterproof output) runs it too, so the soak is proven on
+    # its own PR before it reaches main.
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.preflight.outputs.clusterproof == 'true')) && !github.event.pull_request.draft }}   # ruling 214
+    needs: [preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:

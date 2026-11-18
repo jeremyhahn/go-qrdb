@@ -88,6 +88,12 @@ const (
 	// NIGHTLY, spelled as ci.yml spells both.
 	nightlyIf = "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
 
+	// nightlyOrPathIf is the `if:` of a nightly job that a pull request
+	// changing its own files also runs (#1619: clusterproof-soak, selected
+	// by preflight's clusterproof output). A skip is still excused off the
+	// nightly events, and a run on the PR must succeed like any other.
+	nightlyOrPathIf = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && needs.preflight.outputs.clusterproof == 'true')"
+
 	// codeTierIf is the `if:` of every code-tier job (DS-3160), spelled
 	// exactly so: every event but a docs-only pull request. docs_only is
 	// false off pull_request and on ci:full, so a code job runs on main,
@@ -440,7 +446,8 @@ func ciTierProblems(wf ciWorkflow) []string {
 					"stop gating docs-only pull requests or main")
 			}
 		case tierNightly:
-			if tierCondition(job.If) != withoutDraftSkip(nightlyIf) {
+			if c := tierCondition(job.If); c != withoutDraftSkip(nightlyIf) &&
+				(name != "clusterproof-soak" || c != nightlyOrPathIf || !slices.Contains(needsList(job.Needs), changesJob)) {
 				problems = append(problems, "job "+name+" is tagged nightly in "+ciGateJob+
 					" but its `if:` is "+strconv.Quote(tierCondition(job.If))+", not the nightly condition")
 			}
