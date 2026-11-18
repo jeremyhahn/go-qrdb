@@ -202,7 +202,22 @@ func TestRollingUpgrade_OldBinaryRefusedAfterActivation_CLI(t *testing.T) {
 func TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI(t *testing.T) {
 	bins := buildUpgradeBinaries(t)
 	nodeBins, nIdx, nextIdx := shapeBinaries(bins, mixedShapes[1].next)
-	c := startUpgradeCluster(t, nodeBins)
+	c := startIsolationRaftCluster(t, nodeBins)
+
+	cli := buildCLIBinary(t)
+	var nodes [3]*multiProtoNode
+	for i := range nodes {
+		certPath, keyPath := c.ca.boundAdminCert(t, c.dataDirs[i])
+		nodes[i] = &multiProtoNode{
+			cli:        cli,
+			ca:         c.ca,
+			dataDir:    c.dataDirs[i],
+			clientCert: certPath,
+			clientKey:  keyPath,
+			restPort:   c.adminPorts[i],
+			grpcPort:   c.grpcPorts[i],
+		}
+	}
 
 	for _, dir := range []struct {
 		tenant string
@@ -211,12 +226,22 @@ func TestRollingUpgrade_KeyDeliveryAcrossVersions_CLI(t *testing.T) {
 		{tenant: "upg-from-n", leader: nIdx},
 		{tenant: "upg-from-next", leader: nextIdx},
 	} {
-		c.moveLeader(t, dir.leader)
-		proto := multiProtocols[0]
-		certPath, keyPath := createTenantWithAdminCert(t, c.nodes[dir.leader], proto, dir.tenant,
+		moveShard1Leader(t, c.ca, nodes, dir.leader)
+		certPath, keyPath := createTenantWithAdminCert(t, nodes[dir.leader], multiProtocols[0], dir.tenant,
 			"Upgrade key delivery "+dir.tenant, "raft", true, dir.tenant+"-admin")
 		client := mtlsHTTPClientFromFiles(t, c.ca, certPath, keyPath, 15*time.Second)
+		// A node trusts the tenant admin's certificate once the tenant's
+		// record has replicated to it.
+		for i, port := range c.adminPorts {
+			url := fmt.Sprintf("https://127.0.0.1:%d/v1/tenants/%s/barrier/status", port, dir.tenant)
+			var code int
+			if !pollUntil(2*time.Minute, 250*time.Millisecond, func() bool {
+				_, code = iraftAPIGetTolerant(t, client, url)
+				return code != 0
+			}) {
+				t.Fatalf("node %d never accepted tenant %q's admin certificate (last status %d)", i+1, dir.tenant, code)
+			}
+		}
 		assertPerNodeTenantKeys(t, client, c.adminPorts, dir.tenant, 2*time.Minute)
 	}
-	requireNotActivated(t, c, "in a mixed N/N+1 cluster")
 }

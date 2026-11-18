@@ -260,23 +260,36 @@ func (c *upgradeCluster) requireReadsEverywhere(t *testing.T, want map[string]st
 // shard 1.
 func (c *upgradeCluster) shard1Leader(t *testing.T) int {
 	t.Helper()
-	client := mtlsHTTPClient(t, c.ca, 5*time.Second)
-	return agreedShard1Leader(t, client, [3]*multiProtoNode(c.nodes), [3]uint64{1, 2, 3}, []int{0, 1, 2}, 60*time.Second)
+	return agreedShard1LeaderOf(t, c.ca, [3]*multiProtoNode(c.nodes))
 }
 
-// moveLeader hands shard 1's leadership to node to with `qrdb admin member
-// transfer-leadership`, asked of the current leader, and returns once every
-// node agrees that node to leads.
+// moveLeader hands shard 1's leadership to node to.
 func (c *upgradeCluster) moveLeader(t *testing.T, to int) {
+	t.Helper()
+	moveShard1Leader(t, c.ca, [3]*multiProtoNode(c.nodes), to)
+}
+
+// agreedShard1LeaderOf returns the index of the node every one of nodes,
+// replicas 1 to 3 of shard 1, agrees leads it.
+func agreedShard1LeaderOf(t *testing.T, ca *testCA, nodes [3]*multiProtoNode) int {
+	t.Helper()
+	client := mtlsHTTPClient(t, ca, 5*time.Second)
+	return agreedShard1Leader(t, client, nodes, [3]uint64{1, 2, 3}, []int{0, 1, 2}, 60*time.Second)
+}
+
+// moveShard1Leader hands shard 1's leadership to nodes[to] with `qrdb admin
+// member transfer-leadership`, asked of the current leader over REST, and
+// returns once every node agrees that nodes[to] leads.
+func moveShard1Leader(t *testing.T, ca *testCA, nodes [3]*multiProtoNode, to int) {
 	t.Helper()
 	var out string
 	var err error
 	if !pollUntil(90*time.Second, 250*time.Millisecond, func() bool {
-		from := c.shard1Leader(t)
+		from := agreedShard1LeaderOf(t, ca, nodes)
 		if from == to {
 			return true
 		}
-		out, err = runCLIProto(t, c.nodes[from], multiProtocols[0],
+		out, err = runCLIProto(t, nodes[from], multiProtocols[0],
 			"admin", "member", "transfer-leadership", strconv.Itoa(to+1), "--shard-id", "1")
 		return false
 	}) {

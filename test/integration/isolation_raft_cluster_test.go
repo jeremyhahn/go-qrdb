@@ -65,25 +65,77 @@ const iraftTenantID = "t1"
 const iraftDBName = "db1"
 
 // TestIsolationRaft_EndToEnd is the Phase 4c end-to-end integration test.
-func TestIsolationRaft_EndToEnd(t *testing.T) {
-	bin := buildBinary(t)
-	ca := generateTestCA(t)
+// iraftBarrierPassphrase seals the system barrier of every iraftCluster node.
+const iraftBarrierPassphrase = "integration-test-barrier-secret"
+
+// iraftCluster is a three-node sealed pebble cluster with a "default"
+// volume pool on every node, entitled to raft-isolated tenants with a
+// system-managed barrier and with the peer admin URLs key delivery needs.
+type iraftCluster struct {
+	ca            *testCA
+	raftPorts     []int
+	adminPorts    []int
+	grpcPorts     []int
+	peersFlag     string
+	nodeCertPaths []string
+	nodeKeyPaths  []string
+	dataDirs      []string
+	configPaths   []string
+	cmds          []*exec.Cmd
+	leaderPort    int
+	sysClient     *http.Client
+}
+
+// args returns node i's start arguments; they are the same on a restart.
+func (c *iraftCluster) args(t *testing.T, i int) []string {
+	t.Helper()
+	return []string{
+		"start",
+		"--config", c.configPaths[i],
+		"--listen", fmt.Sprintf("0.0.0.0:%d", c.raftPorts[i]),
+		"--raft-address", fmt.Sprintf("127.0.0.1:%d", c.raftPorts[i]),
+		"--data-dir", c.dataDirs[i],
+		"--sm", "pebble",
+		"--discovery", "static",
+		"--peers", c.peersFlag,
+		"--member-identities", memberIdentitiesFlag(t, c.nodeCertPaths),
+		"--shard-id", "1",
+		"--replica-id", fmt.Sprintf("%d", i+1),
+		"--admin-port", fmt.Sprintf("%d", c.adminPorts[i]),
+		"--grpc-port", fmt.Sprintf("%d", c.grpcPorts[i]),
+		"--cluster-trust-domain", iraftTrustDomain,
+		"--tls-ca-file", c.ca.CertPath,
+		"--tls-cert-file", c.nodeCertPaths[i],
+		"--tls-key-file", c.nodeKeyPaths[i],
+	}
+}
+
+// startIsolationRaftCluster starts node i on bins[i], initializes and
+// unseals every node's system barrier, waits for a leader, and creates the
+// "default" volume pool on every node.
+func startIsolationRaftCluster(t *testing.T, bins []string) *iraftCluster {
+	t.Helper()
+	if len(bins) != 3 {
+		t.Fatalf("startIsolationRaftCluster: %d binaries, want 3", len(bins))
+	}
+	c := &iraftCluster{ca: generateTestCA(t)}
+	ca := c.ca
 
 	// Allocate ports: 3 raft (UDP), 3 admin (TCP), 3 gRPC (TCP).
-	raftPorts := allocatePorts(t, 3)
-	adminPorts := allocateTCPPorts(t, 3)
-	grpcPorts := allocateTCPPorts(t, 3)
-	peersFlag := buildPeersFlag(raftPorts)
+	c.raftPorts = allocatePorts(t, 3)
+	c.adminPorts = allocateTCPPorts(t, 3)
+	c.grpcPorts = allocateTCPPorts(t, 3)
+	c.peersFlag = buildPeersFlag(c.raftPorts)
 
 	// Generate SPIFFE-SAN node certificates — one per node, reused across
 	// restarts. The SPIFFE URI SAN (spiffe://<trustDomain>/node/<raftAddr>)
 	// is mandatory for Phase 4c-1c key delivery: the sender's fetchNodeKey
 	// verifies it and rejects the transfer if absent (ErrRecipientUntrusted).
-	nodeCertPaths := make([]string, 3)
-	nodeKeyPaths := make([]string, 3)
+	c.nodeCertPaths = make([]string, 3)
+	c.nodeKeyPaths = make([]string, 3)
 	for i := range 3 {
-		raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[i])
-		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, iraftTrustDomain)
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", c.raftPorts[i])
+		c.nodeCertPaths[i], c.nodeKeyPaths[i] = ca.generateNodeCertWithSPIFFE(t, raftAddr, iraftTrustDomain)
 	}
 
 	// Build the peer admin URL map: raftAddr → https://127.0.0.1:<adminPort>.
@@ -95,90 +147,70 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	// correct entries for all followers.
 	peerAdminURLs := make(map[string]string, 3)
 	for i := range 3 {
-		raftAddr := fmt.Sprintf("127.0.0.1:%d", raftPorts[i])
-		adminURL := fmt.Sprintf("https://127.0.0.1:%d", adminPorts[i])
-		peerAdminURLs[raftAddr] = adminURL
+		raftAddr := fmt.Sprintf("127.0.0.1:%d", c.raftPorts[i])
+		peerAdminURLs[raftAddr] = fmt.Sprintf("https://127.0.0.1:%d", c.adminPorts[i])
 	}
 
 	// Per-node data and volume-pool directories (survive restart via dataDirs).
-	dataDirs := make([]string, 3)
-	volumePoolDirs := make([]string, 3)
-	configPaths := make([]string, 3)
+	c.dataDirs = make([]string, 3)
+	c.configPaths = make([]string, 3)
 	for i := range 3 {
-		dataDirs[i] = t.TempDir()
-		volumePoolDirs[i] = t.TempDir()
-		configPaths[i] = writeIsolationRaftConfig(t, volumePoolDirs[i], peerAdminURLs)
+		c.dataDirs[i] = t.TempDir()
+		c.configPaths[i] = writeIsolationRaftConfig(t, t.TempDir(), peerAdminURLs)
 	}
 
-	// ---------------------------------------------------------------------------
-	// Phase 1: Start 3-node cluster.
-	// ---------------------------------------------------------------------------
-	cmds := make([]*exec.Cmd, 3)
+	// Start the 3-node cluster.
+	c.cmds = make([]*exec.Cmd, 3)
 	for i := range 3 {
-		args := []string{
-			"start",
-			"--config", configPaths[i],
-			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
-			"--data-dir", dataDirs[i],
-			"--sm", "pebble",
-			"--discovery", "static",
-			"--peers", peersFlag,
-			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
-			"--shard-id", "1",
-			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--cluster-trust-domain", iraftTrustDomain,
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPaths[i],
-			"--tls-key-file", nodeKeyPaths[i],
-		}
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
-		cmds[i] = cmd
+		cmd := spawnNode(t, bins[i], c.args(t, i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R1] ", i+1)})
+		c.cmds[i] = cmd
 		t.Cleanup(func() {
 			killNode(t, cmd)
 		})
 	}
 
-	// ---------------------------------------------------------------------------
 	// Sealed-window phase: initialize and unseal the system barrier on all
 	// 3 nodes concurrently. When seal.enabled=true the daemon starts a minimal
 	// sealed-window REST server (barrier + ceremony only) on the admin port
 	// BEFORE constructing the Raft host. The full server (and host.id) only
 	// appear after unsealing. We must drive init+unseal on each node before
 	// waitForHealthy and waitForAdmin succeed.
-	// ---------------------------------------------------------------------------
-	const iraftBarrierPassphrase = "integration-test-barrier-secret"
-
 	var sealWg sync.WaitGroup
 	sealWg.Add(3)
 	for i := range 3 {
 		go func(idx int) {
 			defer sealWg.Done()
-			t.Logf("node %d: waiting for sealed-window listener on port %d", idx+1, adminPorts[idx])
-			waitForBarrierStatusReachable(t, ca, adminPorts[idx], 90*time.Second)
+			t.Logf("node %d: waiting for sealed-window listener on port %d", idx+1, c.adminPorts[idx])
+			waitForBarrierStatusReachable(t, ca, c.adminPorts[idx], 90*time.Second)
 			t.Logf("node %d: initializing and unsealing system barrier", idx+1)
-			initAndUnsealBarrier(t, ca, adminPorts[idx], iraftBarrierPassphrase)
+			initAndUnsealBarrier(t, ca, c.adminPorts[idx], iraftBarrierPassphrase)
 			t.Logf("node %d: system barrier unsealed", idx+1)
 		}(i)
 	}
 	sealWg.Wait()
 
 	// Wait for all nodes to be healthy and elect a leader.
-	for i, dir := range dataDirs {
+	for i, dir := range c.dataDirs {
 		waitForHealthy(t, dir, 60*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
+		waitForAdmin(t, ca.Pool, c.adminPorts[i], 90*time.Second)
 	}
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-	warmupWrite(t, ca, leaderPort, 15*time.Second)
-	t.Logf("cluster healthy, leader on admin port %d", leaderPort)
+	c.leaderPort = waitForLeaderViaAdmin(t, ca, c.adminPorts, 60*time.Second)
+	warmupWrite(t, ca, c.leaderPort, 15*time.Second)
+	t.Logf("cluster healthy, leader on admin port %d", c.leaderPort)
 
 	// System-admin mTLS client (CN=admin, OU=system).
-	sysClient := mtlsHTTPClient(t, ca, 15*time.Second)
+	c.sysClient = mtlsHTTPClient(t, ca, 15*time.Second)
 
-	createVolumePoolREST(t, sysClient, leaderPort, "default")
-	waitForVolumePoolReady(t, sysClient, leaderPort, "default", len(dataDirs), 60*time.Second)
+	createVolumePoolREST(t, c.sysClient, c.leaderPort, "default")
+	waitForVolumePoolReady(t, c.sysClient, c.leaderPort, "default", len(c.dataDirs), 60*time.Second)
+	return c
+}
+
+func TestIsolationRaft_EndToEnd(t *testing.T) {
+	bin := buildBinary(t)
+	c := startIsolationRaftCluster(t, []string{bin, bin, bin})
+	ca, adminPorts, dataDirs, cmds := c.ca, c.adminPorts, c.dataDirs, c.cmds
+	leaderPort, sysClient := c.leaderPort, c.sysClient
 
 	// ---------------------------------------------------------------------------
 	// Phase 2: Create tenant "t1" with IsolationRaft + barrier_auto_unseal.
@@ -465,26 +497,7 @@ func TestIsolationRaft_EndToEnd(t *testing.T) {
 	t.Log("restarting all nodes")
 	cmds2 := make([]*exec.Cmd, 3)
 	for i := range 3 {
-		args := []string{
-			"start",
-			"--config", configPaths[i],
-			"--listen", fmt.Sprintf("0.0.0.0:%d", raftPorts[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", raftPorts[i]),
-			"--data-dir", dataDirs[i],
-			"--sm", "pebble",
-			"--discovery", "static",
-			"--peers", peersFlag,
-			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
-			"--shard-id", "1",
-			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--cluster-trust-domain", iraftTrustDomain,
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPaths[i],
-			"--tls-key-file", nodeKeyPaths[i],
-		}
-		cmd := spawnNode(t, bin, args, &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
+		cmd := spawnNode(t, bin, c.args(t, i), &logWriter{t: t, prefix: fmt.Sprintf("[node%d-R2] ", i+1)})
 		cmds2[i] = cmd
 		t.Cleanup(func() {
 			killNode(t, cmd)
