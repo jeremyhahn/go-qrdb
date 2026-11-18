@@ -239,10 +239,16 @@ jobs:
           echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
           # #1619: a PR that changes the cluster proof's script or harness
           # also runs the clusterproof-soak job; always false off pull_request.
+          # A diff that fails selects the soak (fail closed): an unknown file
+          # set may change the proof, so the soak runs rather than skips.
           clusterproof=false
           if [ "$EVENT" = pull_request ]; then
-            if cp_files=$(git diff --name-only --no-renames "$BASE...$HEAD") &&
-              printf '%s\n' "$cp_files" | grep -qE "$CLUSTERPROOF_PATTERN"; then
+            if cp_files=$(git diff --name-only --no-renames "$BASE...$HEAD"); then
+              if printf '%s\n' "$cp_files" | grep -qE "$CLUSTERPROOF_PATTERN"; then
+                clusterproof=true
+              fi
+            else
+              echo "::warning::git diff --name-only --no-renames $BASE...$HEAD failed; clusterproof-soak runs (fail closed)"
               clusterproof=true
             fi
           fi
