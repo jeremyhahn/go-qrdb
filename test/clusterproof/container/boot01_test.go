@@ -16,8 +16,13 @@ const (
 	bootTimeout = 5 * time.Minute
 	// callTimeout bounds each SDK call.
 	callTimeout = 10 * time.Second
-	// logTail is how much of each container's log a failed run reports.
-	logTail = 200
+	// logTail is how much of each container's log a failed run reads: the
+	// status poll writes an audit line a second per transport, so it is
+	// large enough that logKeep other lines remain after the filter.
+	logTail = 20000
+	// logKeep is how many lines that are not admin:status audit lines a
+	// failed run reports per container.
+	logKeep = 200
 )
 
 // EnvKeep names the variable that, set to 1, leaves the booted cluster
@@ -69,7 +74,9 @@ func TestBOOT01(t *testing.T) {
 		if t.Failed() {
 			for _, n := range inv.Nodes {
 				logs, err := c.Logs(ctx, n, logTail)
-				t.Logf("--- %s log (last %d lines, err %v) ---\n%s", n.Name, logTail, err, logs)
+				logs, dropped := withoutStatusAudit(logs, logKeep)
+				t.Logf("--- %s log (last %d of %d lines, %d admin:status audit lines left out, err %v) ---\n%s",
+					n.Name, logKeep, logTail, dropped, err, logs)
 			}
 		}
 		if keep && !t.Failed() {
