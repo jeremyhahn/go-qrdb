@@ -124,9 +124,11 @@ them. Each test states which pair of builds it runs on:
   (gap refusal) and the negotiation parts of T2 always do. It builds N+1 from the same tree
   with a higher release and wire version. This build also registers one
   test-only feature and one test-only request field, under a test build tag,
-  so that T4 and T8 also run against a feature the older side lacks. Without
-  them the two sides would support the same features, and those tests could
-  not fail.
+  so that T4 and T8 also run against a feature the older side lacks. The
+  test-only feature also gives the N+1 build one gated replicated operation, a
+  test-only Raft command reachable from the CLI under the same test build tag,
+  so that gating before activation is observable (T9). Without them the two
+  sides would support the same features, and those tests could not fail.
 
 | Test | What it proves |
 |---|---|
@@ -138,6 +140,7 @@ them. Each test states which pair of builds it runs on:
 | T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. |
 | T7 | Key delivery across versions, in both directions. |
 | T8 | An SDK with the TTL field → the fixed pre-TTL v0.58.5-alpha server: TTL user create is refused before any user exists, with a typed error. Today it is created and then deleted (#1601), which this test must reject. SDK → server on the same or a newer release works. The synthetic pair repeats this with the test-only field. This is the first case (#1601). |
+| T9 | Pre-activation gating. In both mixed configurations (2×N + 1×(N+1) and 1×N + 2×(N+1)) and before the T3 rollback, the test-only gated operation invoked on an N+1 member is refused with the typed not-yet-active error (or takes the N path) on every transport, no member's Raft log carries the new command, and the N members keep applying. After every member runs N+1 and the feature activates, the same operation succeeds and replicates to every member. |
 
 ## Delivery
 
