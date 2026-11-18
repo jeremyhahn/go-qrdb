@@ -148,6 +148,8 @@ type digestStep struct {
 	Run  string            `yaml:"run"`
 	With map[string]string `yaml:"with"`
 	Env  map[string]string `yaml:"env"`
+	// ContinueOnError is a string: the key takes a boolean or an expression.
+	ContinueOnError string `yaml:"continue-on-error"`
 }
 
 type digestJob struct {
@@ -625,7 +627,7 @@ func producerOutTerm(o string) string {
 // with the step pull: it must run exactly when the pull did not succeed, so
 // its if: requires the pull's output not true and narrows by nothing the
 // pull's own if: does not also require.
-func lanDownloadProblems(name string, s, pull digestStep, f imageFamily) []string {
+func lanDownloadProblems(name string, s, pull digestStep, f imageFamily, retry string) []string {
 	where := name + "'s download of " + strconv.Quote(f.artifact)
 	want := "steps." + pull.ID + ".outputs.pulled != 'true'"
 	terms, ok := condTerms(s.If)
@@ -636,13 +638,65 @@ func lanDownloadProblems(name string, s, pull digestStep, f imageFamily) []strin
 	pullTerms, _ := condTerms(pull.If)
 	var problems []string
 	for _, t := range terms {
-		if t == want {
+		if t == want || (retry != "" && t == retry) {
 			continue
 		}
 		if t == lanRegistryCond || t == producerOutTerm(f.lan) || !slices.Contains(pullTerms, t) {
 			problems = append(problems, where+" also requires "+strconv.Quote(t)+
 				", which a skipped or failed pull does not imply: the job would load no image")
 		}
+	}
+	return problems
+}
+
+// retryTerm is the && term that runs the second attempt of an image
+// download: exactly when its first attempt, step id, failed (#1593: one
+// self-hosted leg lost its artifact download while five others took it).
+func retryTerm(id string) string { return "steps." + id + ".outcome == 'failure'" }
+
+// isDownloadRetry reports whether s is the second attempt of the artifact
+// download prev: the same artifact, run on prev's failure.
+func isDownloadRetry(prev, s digestStep) bool {
+	if prev.ID == "" || !strings.HasPrefix(prev.Uses, downloadArtifactAction) ||
+		!strings.HasPrefix(s.Uses, downloadArtifactAction) || s.With["name"] != prev.With["name"] {
+		return false
+	}
+	terms, _ := condTerms(s.If)
+	return slices.Contains(terms, retryTerm(prev.ID))
+}
+
+// downloadRetryProblems checks that the image download steps[i] is a first
+// attempt that tolerates its failure (an id, continue-on-error: true) and is
+// followed by exactly one retry: the same action and inputs, under the first
+// attempt's condition plus its failure, failing the job if it fails too.
+func downloadRetryProblems(name string, steps []digestStep, i int) []string {
+	s := steps[i]
+	where := name + "'s download of " + strconv.Quote(s.With["name"])
+	const why = ": one failed artifact download would fail the job (#1593)"
+	if s.ID == "" || strings.TrimSpace(s.ContinueOnError) != "true" {
+		return []string{where + " has no id or no continue-on-error: true" + why}
+	}
+	if i+1 >= len(steps) || !isDownloadRetry(s, steps[i+1]) {
+		return []string{where + " is not followed by a retry of it under " + strconv.Quote(retryTerm(s.ID)) + why}
+	}
+	r := steps[i+1]
+	var problems []string
+	if r.Uses != s.Uses || !maps.Equal(r.With, s.With) {
+		problems = append(problems, where+"'s retry runs "+strconv.Quote(r.Uses)+" with other inputs; "+
+			"want the first attempt's pinned action, name and path")
+	}
+	if strings.TrimSpace(r.ContinueOnError) != "" {
+		problems = append(problems, where+"'s retry sets continue-on-error: a second failure must fail the job")
+	}
+	first, _ := condTerms(s.If)
+	got, _ := condTerms(r.If)
+	want := append(slices.Clone(first), retryTerm(s.ID))
+	slices.Sort(want)
+	got = slices.Clone(got)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		problems = append(problems, where+"'s retry runs under if: "+strconv.Quote(r.If)+"; want the && terms "+
+			strconv.Quote(strings.Join(want, " && "))+": the first attempt's condition and its failure")
 	}
 	return problems
 }
@@ -735,9 +789,16 @@ func consumerProblems(name string, job digestJob, read map[string]bool, stage ma
 			if _, seen := downloaded[art]; !seen {
 				downloaded[art] = i
 			}
+			retry := ""
+			if i > 0 && isDownloadRetry(job.Steps[i-1], s) {
+				// The second attempt: checked with its first attempt.
+				retry = retryTerm(job.Steps[i-1].ID)
+			} else {
+				problems = append(problems, downloadRetryProblems(name, job.Steps, i)...)
+			}
 			for fam, f := range imageFamilies {
 				if pull, ok := pulls[fam]; ok && f.artifact == art {
-					problems = append(problems, lanDownloadProblems(name, s, pull, f)...)
+					problems = append(problems, lanDownloadProblems(name, s, pull, f, retry)...)
 				}
 			}
 		}
@@ -1032,7 +1093,15 @@ jobs:
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the toolchain image
+        id: download_toolchain
         if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: toolchain-image
+          path: ${{ runner.temp }}/toolchain-image
+      - name: Download the toolchain image (retry)
+        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: toolchain-image
@@ -1074,7 +1143,15 @@ jobs:
           fi
           docker rmi "$REF" >/dev/null 2>&1 || true
       - name: Download the integration image
+        id: download_it
         if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Download the integration image (retry)
+        if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
@@ -1097,6 +1174,14 @@ jobs:
       ID: ${{ needs.docker-build.outputs.it_id }}
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        id: download_it
+        continue-on-error: true
+        with:
+          name: it-image
+          path: ${{ runner.temp }}/it-image
+      - name: Retry the download
+        if: ${{ steps.download_it.outcome == 'failure' }}
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: it-image
           path: ${{ runner.temp }}/it-image
@@ -1274,6 +1359,27 @@ func TestCIImageDigest_CanFail(t *testing.T) {
 		{name: "the registry in the workflow env", old: "env:\n  CI_PUBLISH:", new: "env:\n  CI_REGISTRY: ${{ secrets.CI_IMAGE_REGISTRY }}\n  CI_PUBLISH:"},
 		{name: "an output naming the registry", old: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n",
 			new: "      registry_it_tag: ${{ steps.registry.outputs.it_tag }}\n      registry: ${{ env.CI_REGISTRY }}\n"},
+		// #1593: every image download is retried once.
+		{name: "a download without its retry",
+			old: "      - name: Retry the download\n        if: ${{ steps.download_it.outcome == 'failure' }}\n",
+			new: "      - name: Something else\n        if: ${{ always() }}\n"},
+		{name: "a first attempt that fails the job",
+			old: "        id: download_toolchain\n        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n        continue-on-error: true\n",
+			new: "        id: download_toolchain\n        if: ${{ steps.pull_toolchain.outputs.pulled != 'true' }}\n"},
+		{name: "a first attempt without an id", old: "        id: download_it\n        continue-on-error: true\n",
+			new: "        continue-on-error: true\n"},
+		{name: "a retry that drops the fallback term",
+			old: "if: ${{ steps.pull_toolchain.outputs.pulled != 'true' && steps.download_toolchain.outcome == 'failure' }}",
+			new: "if: ${{ steps.download_toolchain.outcome == 'failure' }}"},
+		{name: "a retry that drops the first attempt's term",
+			old: "if: ${{ env.FULL == 'true' && steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}",
+			new: "if: ${{ steps.pull_it.outputs.pulled != 'true' && steps.download_it.outcome == 'failure' }}"},
+		{name: "a retry that tolerates its failure",
+			old: "        if: ${{ steps.download_it.outcome == 'failure' }}\n",
+			new: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        continue-on-error: true\n"},
+		{name: "a retry with other inputs",
+			old: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n",
+			new: "        if: ${{ steps.download_it.outcome == 'failure' }}\n        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0\n        with:\n          name: it-image\n          path: ${{ runner.temp }}/it-image\n          github-token: x\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if !strings.Contains(digestFixture, tc.old) {
