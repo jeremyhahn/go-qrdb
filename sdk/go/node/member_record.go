@@ -21,6 +21,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
 	qrdbconfig "github.com/jeremyhahn/go-qrdb/pkg/config"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
 )
 
@@ -55,6 +56,9 @@ func (n *Node) startMemberRecord(host leaderReporter, cfg *qrdbconfig.Config) {
 		Address:      cfg.Raft.RaftAddress,
 		APIEndpoints: endpoints,
 		Features:     featuregate.SupportedNames(),
+		// ReleaseVersion lets peers refuse a release gap
+		// (featuregate.Gate.AdmitReplica).
+		ReleaseVersion: release.Version(),
 	}
 	ctx := n.background()
 	n.memberWG.Add(1)

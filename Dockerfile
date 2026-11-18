@@ -79,7 +79,7 @@ COPY . .
 ARG BUILD_TAGS="codec_json raft qrdb_ts qrdb_vector"
 RUN CGO_ENABLED=1 go build \
     -tags "${BUILD_TAGS}" \
-    -ldflags "-X main.version=$(cat VERSION) -X main.buildDate=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    -ldflags "-X github.com/jeremyhahn/go-qrdb/pkg/release.version=$(cat VERSION) -X main.buildDate=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     -o /build/bin/qrdbd \
     ./cmd/qrdbd
 

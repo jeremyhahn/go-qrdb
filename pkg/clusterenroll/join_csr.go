@@ -40,6 +40,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/cakey"
 	"github.com/jeremyhahn/go-qrdb/pkg/clusterca"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/util/securefile"
 )
 
@@ -191,6 +192,13 @@ type JoinRequest struct {
 	// names its own binary knows before publishing anything -- an unknown
 	// name is never trusted onto the wire of the advertisement record.
 	Features []string `json:"features,omitempty"`
+
+	// ReleaseVersion is the joiner's release (pkg/release.Version). The
+	// signing member refuses a release that is not adjacent to its own
+	// before anything else, the token included, is looked at; every joiner
+	// from the release that introduced the field on sends it, so an empty
+	// one is refused too.
+	ReleaseVersion string `json:"release_version,omitempty"`
 }
 
 // JoinResponse is the join-admission response payload, over either
@@ -207,7 +215,47 @@ type JoinResponse struct {
 	// remember or supply it.
 	Pending   bool   `json:"pending,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
+
+	// ReleaseVersion is the signing member's release, set only when it
+	// refuses the joiner's release as not adjacent (pkg/release.Check), so
+	// the joiner can report the gap as a typed *release.GapError naming
+	// both versions.
+	ReleaseVersion string `json:"release_version,omitempty"`
 }
+
+// enrollmentChannel names the cluster-enrolment channel in a
+// *release.GapError.
+const enrollmentChannel = "enrollment"
+
+// checkJoinerRelease refuses a joiner whose announced release is not
+// adjacent to this member's, logging both versions. It returns nil when the
+// joiner may proceed.
+func checkJoinerRelease(ctx context.Context, req *JoinRequest) *JoinResponse {
+	err := release.Check(enrollmentChannel, req.ReleaseVersion)
+	if err == nil {
+		return nil
+	}
+	slog.WarnContext(ctx, "member-side CSR join: refusing a joiner on a release gap",
+		"local_release", release.Version(),
+		"peer_release", req.ReleaseVersion,
+		"node_uri", req.NodeURI)
+	return &JoinResponse{Error: err.Error(), ReleaseVersion: release.Version()}
+}
+
+// joinRefusal turns a refused JoinResponse into the joiner's error: a
+// *release.GapError when the member refused on a release gap (it carries
+// its ReleaseVersion only then), else a *JoinRefusedError.
+func joinRefusal(resp *JoinResponse) error {
+	if resp.ReleaseVersion != "" {
+		return &release.GapError{Channel: enrollmentChannel, Local: joinerRelease(), Peer: resp.ReleaseVersion}
+	}
+	return &JoinRefusedError{Reason: resp.Error}
+}
+
+// joinerRelease is the release a joiner announces. It is release.Version;
+// a test points it elsewhere to play a joiner of another release against an
+// in-process member.
+var joinerRelease = release.Version
 
 // FeatureAdvertiser publishes a lease-backed feature advertisement for a
 // node that is not a cluster member yet, under the SAME record
@@ -290,6 +338,13 @@ type FeatureAdvertiser interface {
 // still good, and the operator's member add simply surfaces the same
 // refusal it would have without this parameter at all.
 func HandleJoinRequest(ctx context.Context, provider cakey.Provider, store kvstore.AtomicKVStore, trustDomain string, req *JoinRequest, advertiser FeatureAdvertiser) *JoinResponse {
+	// The release gap is checked FIRST, before the token is consumed: it is
+	// a property of the joiner's binary, says nothing about the token, and
+	// a refused joiner keeps its single-use token for the release it
+	// should have run (SPEC row rolling-upgrades, clause 3).
+	if refused := checkJoinerRelease(ctx, req); refused != nil {
+		return refused
+	}
 	// Checked BEFORE the token is consumed, and on failure reported with
 	// the SAME generic message the infrastructure-failure branch below
 	// uses: a sealed node (or any other reason provider cannot currently
@@ -1064,7 +1119,7 @@ func joinClientExchangeP256(conn net.Conn, serverKey []byte, timeout time.Durati
 // channel and decodes the member's answer. It is the suite-independent half of
 // the initiator exchange.
 func joinClientRequest(conn net.Conn, ch joinChannel, deadline time.Time, token string, csrDER []byte, nodeURI string, replicaID uint64, features []string) ([]byte, error) {
-	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: replicaID, Features: features}
+	req := JoinRequest{Token: token, CSRDER: csrDER, NodeURI: nodeURI, ReplicaID: replicaID, Features: features, ReleaseVersion: joinerRelease()}
 	reqData, err := json.Marshal(req)
 	if err != nil {
 		return nil, &FetchError{Method: "join", Err: err}
@@ -1091,7 +1146,7 @@ func joinClientRequest(conn net.Conn, ch joinChannel, deadline time.Time, token 
 		return nil, &FetchError{Method: "join", Err: err}
 	}
 	if resp.Error != "" {
-		return nil, &JoinRefusedError{Reason: resp.Error}
+		return nil, joinRefusal(&resp)
 	}
 	if resp.Pending {
 		return nil, &JoinPendingError{RequestID: resp.RequestID}

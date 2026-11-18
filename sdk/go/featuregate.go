@@ -19,6 +19,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // StartFeatureGate brings a node's feature gate up over this client's
@@ -48,7 +49,7 @@ func (c *Client) StartFeatureGate(ctx context.Context, gate *featuregate.Gate, a
 	}
 	adv, err := cluster.NewAdvertiser(
 		c.NewMembershipStoreAt(featuregate.AdvertisementPrefix),
-		cluster.Member{NodeID: self.ReplicaID, Address: self.Address, Features: featuregate.SupportedNames()},
+		cluster.Member{NodeID: self.ReplicaID, Address: self.Address, Features: featuregate.SupportedNames(), ReleaseVersion: release.Version()},
 		cluster.AdvertiseConfig{},
 		append([]cluster.AdvertiseOption{cluster.WithAdvertiseSettler(settleRegistration)}, opts...)...,
 	)

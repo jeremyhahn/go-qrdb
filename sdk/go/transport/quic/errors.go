@@ -15,7 +15,11 @@
 package quic
 
 import (
+	"errors"
 	"strconv"
+	"strings"
+
+	quicgo "github.com/quic-go/quic-go"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 )
@@ -77,7 +81,7 @@ func (e *dialError) Unwrap() error {
 }
 
 // alpnMismatchError is returned by Connect when the TLS handshake selected a
-// protocol other than wire.ProtocolV3 -- possible only when a caller-supplied
+// protocol outside wire.Protocols -- possible only when a caller-supplied
 // TLS config offers others and the peer is not a qrdb QUIC listener.
 type alpnMismatchError struct {
 	Negotiated string
@@ -86,6 +90,40 @@ type alpnMismatchError struct {
 // Error returns a human-readable description.
 func (e *alpnMismatchError) Error() string {
 	return "quic transport: server selected ALPN protocol " + strconv.Quote(e.Negotiated) + ", want " + strconv.Quote(wire.ProtocolV3)
+}
+
+// noApplicationProtocolCode is the QUIC CRYPTO_ERROR carrying the TLS
+// no_application_protocol alert (120): 0x100 + 120 (RFC 9001 section 4.8).
+const noApplicationProtocolCode = quicgo.TransportErrorCode(0x100 + 120)
+
+// noApplicationProtocol reports whether err is a handshake the server ended
+// because it speaks none of the ALPN protocols the client offered.
+func noApplicationProtocol(err error) bool {
+	var te *quicgo.TransportError
+	return errors.As(err, &te) && te.ErrorCode == noApplicationProtocolCode
+}
+
+// protocolRefusedError is returned by Connect when the server refuses the
+// handshake with the TLS no_application_protocol alert (120): it speaks
+// none of the frame protocols this client offered, so it runs a release
+// outside the adjacent range (SPEC row rolling-upgrades). It is not
+// retried.
+type protocolRefusedError struct {
+	// Offered is the ALPN list this client offered, current first.
+	Offered []string
+	// Err is the QUIC transport error that carried the alert.
+	Err error
+}
+
+// Error names the protocols offered.
+func (e *protocolRefusedError) Error() string {
+	return "quic transport: server refused every offered protocol " + strconv.Quote(strings.Join(e.Offered, ",")) +
+		" (no_application_protocol): it runs a release that is not adjacent to this client's"
+}
+
+// Unwrap returns the QUIC transport error.
+func (e *protocolRefusedError) Unwrap() error {
+	return e.Err
 }
 
 // streamError is returned when opening a QUIC stream fails.

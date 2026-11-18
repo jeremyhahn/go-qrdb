@@ -23,6 +23,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -283,6 +284,14 @@ func (t *Transport) dial(ctx context.Context) error {
 	// caller's bound.
 	conn, err := quicgo.DialAddr(ctx, addr, tlsCfg, quicCfg)
 	if err != nil {
+		if noApplicationProtocol(err) {
+			// The server speaks none of the protocols offered: a release
+			// outside the adjacent range (SPEC row rolling-upgrades).
+			return &transport.ConnectionError{
+				Address: t.config.Address,
+				Err:     &protocolRefusedError{Offered: slices.Clone(tlsCfg.NextProtos), Err: err},
+			}
+		}
 		return &transport.ConnectionError{
 			Address: t.config.Address,
 			Err:     &dialError{Err: err},
@@ -290,10 +299,11 @@ func (t *Transport) dial(ctx context.Context) error {
 	}
 
 	// A caller-supplied TLS config may offer other protocols alongside
-	// wire.ProtocolV3, and a server that is not a qrdb QUIC listener could
-	// select one of them. Every call on this connection relies on ProtocolV3's
-	// stream discipline, so anything else is refused rather than spoken to.
-	if got := conn.ConnectionState().TLS.NegotiatedProtocol; got != wire.ProtocolV3 {
+	// wire.Protocols, and a server that is not a qrdb QUIC listener could
+	// select one of them. Every call on this connection relies on the qrdb
+	// frame protocol's stream discipline, so anything else is refused rather
+	// than spoken to.
+	if got := conn.ConnectionState().TLS.NegotiatedProtocol; !slices.Contains(wire.Protocols, got) {
 		_ = conn.CloseWithError(0, "unsupported protocol")
 		return &transport.ConnectionError{
 			Address: t.config.Address,
@@ -1210,8 +1220,8 @@ func callContextError(ctx context.Context, err error) error {
 }
 
 // buildTLSConfig constructs the TLS configuration from the transport
-// config. QUIC always requires TLS; ALPN offers wire.ProtocolV3, the only
-// protocol a qrdb QUIC listener accepts.
+// config. QUIC always requires TLS; ALPN offers wire.Protocols, the frame
+// protocols this release speaks, current first.
 func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 	return transport.BuildTLSConfig(transport.TLSBuildOptions{
 		Custom:     t.config.TLSConfig,
@@ -1219,7 +1229,7 @@ func (t *Transport) buildTLSConfig() (*tls.Config, error) {
 		CAFile:     t.config.TLSCAFile,
 		CertFile:   t.config.TLSCertFile,
 		KeyFile:    t.config.TLSKeyFile,
-		NextProtos: []string{wire.ProtocolV3},
+		NextProtos: slices.Clone(wire.Protocols),
 	})
 }
 
