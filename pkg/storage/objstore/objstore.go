@@ -371,15 +371,17 @@ func lockNamespace(namespace string) func() {
 // taken (RejectCredentialSettings).
 func namespaceKey(provider string, settings map[string]string) string {
 	location, listed := locationSettings[provider]
-	names := make([]string, 0, len(settings))
-	if listed {
-		for _, name := range location {
-			if _, set := settings[name]; set {
-				names = append(names, name)
-			}
-		}
-	} else {
+	if !listed {
 		for name := range settings {
+			location = append(location, name)
+		}
+	}
+	// A location setting set to "" leaves the provider default in place,
+	// as an omitted one does: both spellings name one namespace, so an
+	// empty value is left out of the key.
+	names := make([]string, 0, len(location))
+	for _, name := range location {
+		if settings[name] != "" {
 			names = append(names, name)
 		}
 	}

@@ -75,3 +75,40 @@ func TestNew_GCSOwnerClaimRaceAcrossProjects(t *testing.T) {
 		require.NoError(t, engines[winner].Close())
 	}
 }
+
+// TestNew_S3EmptyEndpointIsOmittedEndpoint: an S3 endpoint set to "" and
+// one left out name the same bucket, so a second owner's claim through the
+// other spelling is refused.
+func TestNew_S3EmptyEndpointIsOmittedEndpoint(t *testing.T) {
+	require.Equal(t,
+		namespaceKey("s3", map[string]string{"bucket": "b", "region": "r"}),
+		namespaceKey("s3", map[string]string{"bucket": "b", "region": "r", "endpoint": ""}))
+
+	// One in-memory bucket stands for the one S3 bucket both spellings reach.
+	shared := objmemory.New()
+	require.NoError(t, shared.Configure(map[string]string{}, objcommon.Credentials{}))
+	prev, hadPrev := registeredProviders.Load("s3")
+	registeredProviders.Store("s3", registeredProvider{
+		creator: func(map[string]string, objcommon.Credentials) (objcommon.Storage, error) {
+			return shared, nil
+		},
+	})
+	t.Cleanup(func() {
+		if hadPrev {
+			registeredProviders.Store("s3", prev)
+		} else {
+			registeredProviders.Delete("s3")
+		}
+	})
+
+	first, err := New("s3", map[string]string{"bucket": "b", "region": "r"}, WithOwner("db-a"))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, first.Close()) }()
+
+	second, err := New("s3", map[string]string{"bucket": "b", "region": "r", "endpoint": ""}, WithOwner("db-b"))
+	if err == nil {
+		require.NoError(t, second.Close())
+	}
+	_, refused := ownerRefusal(err)
+	require.True(t, refused, "got %v", err)
+}
