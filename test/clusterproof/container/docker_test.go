@@ -173,6 +173,24 @@ func TestLogsAndRemove(t *testing.T) {
 	}
 }
 
+// A fresh host has no containers: docker's "No such container" answer is
+// a removed container, not a failure, and any other failure still counts.
+func TestRemoveAbsentContainer(t *testing.T) {
+	inv := testInventory(t)
+	absent := reply{match: "clusterproof-n1", out: "Error response from daemon: No such container: clusterproof-n1", err: errors.New("exit status 1")}
+	r := &fakeRunner{replies: []reply{absent}}
+	c := newTestCluster(t, inv, r)
+	if err := c.Remove(context.Background()); err != nil || len(r.runs) != 3 {
+		t.Errorf("remove absent: got %v after %d runs, want nil after all three", err, len(r.runs))
+	}
+	r.runs = nil
+	r.replies = []reply{absent, {match: "clusterproof-n2", err: errors.New("daemon down")}}
+	var ce *CommandError
+	if err := c.Remove(context.Background()); !errors.As(err, &ce) || ce.Node != "n2" || len(r.runs) != 3 {
+		t.Errorf("remove: got %v after %d runs, want n2's failure after all three", err, len(r.runs))
+	}
+}
+
 func TestRunRenderFailure(t *testing.T) {
 	inv := testInventory(t)
 	inv.Docker = []string{"ssh", "{{.Vars.missing}}", "$@"}
