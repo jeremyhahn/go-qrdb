@@ -70,17 +70,41 @@ func baseVersions(file string, data []byte) (map[string]string, error) {
 	for _, d := range dependencies(file, directives) {
 		out[d.Kind+" "+d.Module] = baseKey(d)
 	}
+	for path, version := range requireVersions(directives) {
+		out[requiresKey+path] = version
+	}
 	return out, nil
+}
+
+// requiresKey prefixes a baseVersions entry holding the version go.mod
+// requires of a module, whatever replaces it: it decides whether a
+// version-specific replace of that module is active.
+const requiresKey = "requires "
+
+// requireVersions is the version each require line of directives names.
+func requireVersions(directives []directive) map[string]string {
+	out := make(map[string]string)
+	for _, d := range directives {
+		if d.Kind == kindRequire {
+			out[d.Path] = d.Version
+		}
+	}
+	return out
 }
 
 // touched reports whether the change adds dep or changes its version or
 // path. A nil base (the module is new) touches everything.
-func touched(dep dependency, base map[string]string) bool {
+func touched(dep dependency, base, requires map[string]string) bool {
 	if base == nil {
 		return true
 	}
 	was, ok := base[dep.Kind+" "+dep.Module]
-	return !ok || was != baseKey(dep)
+	if !ok || was != baseKey(dep) {
+		return true
+	}
+	// A version-specific replace applies only while its module is at that
+	// version: a change of the requirement can activate it unchanged.
+	return dep.Kind == kindReplace && dep.Replaces != "" && base[requiresKey+dep.Module] != requires[dep.Module]
 }
 
 // baseKey is what the base comparison keys a line on: its target, plus a

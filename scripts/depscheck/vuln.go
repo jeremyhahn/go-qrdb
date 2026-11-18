@@ -167,7 +167,7 @@ func (v vulnFinding) note() string {
 // requiredModules is the set of module paths with a require line, direct
 // or // indirect, in the go.mod of dir, plus the replacement path of every
 // active versioned replace of one of them.
-func requiredModules(dir string) (map[string]bool, error) {
+func requiredModules(src moduleSource, dir string) (map[string]bool, error) {
 	file := filepath.Join(dir, "go.mod")
 	data, err := os.ReadFile(file) //#nosec G304 -- the go.mod of a module directory the Makefile names
 	if err != nil {
@@ -177,27 +177,47 @@ func requiredModules(dir string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	required := make(map[string]string)
+	required := make(map[string]bool)
 	for _, d := range directives {
 		if d.Kind == kindRequire {
-			required[d.Path] = d.Version
+			required[d.Path] = true
 		}
 	}
 	out := make(map[string]bool, len(required))
 	for path := range required {
 		out[path] = true
 	}
-	// An active versioned replace puts its replacement in the build in
-	// place of the module required, so govulncheck reports a finding on
-	// the replacement's path: that path is required too. A replace is
-	// active when it names the required module and either no version or
-	// the version required.
+	// An active replace puts its replacement in the build in place of the
+	// module required, so govulncheck reports a finding on the
+	// replacement's path: that path is required too. A replace with no
+	// left-hand version is active whenever its module is required; a
+	// version-specific one only when the build selects that version,
+	// which MVS can raise above the version go.mod requires.
+	var pinned []string
 	for _, d := range directives {
-		if d.Kind != kindReplace || d.NewVersion == "" {
+		if d.Kind != kindReplace || d.NewVersion == "" || !required[d.Path] {
 			continue
 		}
-		version, ok := required[d.Path]
-		if ok && (d.Version == "" || d.Version == version) {
+		if d.Version == "" {
+			out[d.NewPath] = true
+			continue
+		}
+		pinned = append(pinned, d.Path)
+	}
+	if len(pinned) == 0 {
+		return out, nil
+	}
+	listing, err := src.List(dir, pinned)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range directives {
+		if d.Kind != kindReplace || d.NewVersion == "" || d.Version == "" || !required[d.Path] {
+			continue
+		}
+		// A selection the go command cannot tell counts as active: a
+		// replacement govulncheck reports is in the build.
+		if mod, ok := listing[d.Path]; !ok || mod.Version == "" || mod.Version == d.Version {
 			out[d.NewPath] = true
 		}
 	}

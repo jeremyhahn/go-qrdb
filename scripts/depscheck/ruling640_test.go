@@ -183,7 +183,7 @@ func TestTouched(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, touched(dep, tc.base))
+			assert.Equal(t, tc.want, touched(dep, tc.base, nil))
 		})
 	}
 }
@@ -212,9 +212,35 @@ func TestTouchedReplaceLeftHandVersion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			base, err := baseVersions("go.mod", []byte(tc.base))
 			require.NoError(t, err)
-			assert.Equal(t, tc.want, touched(rep, base))
+			assert.Equal(t, tc.want, touched(rep, base, requireVersions(mustParse(t, head))))
 		})
 	}
+}
+
+// TestTouchedReplaceActivatedByRequire: base requires a v1.0.0 with an
+// inactive replace of a v1.2.0; head bumps the require to v1.2.0, which
+// activates the unchanged replace. The replacement is touched.
+func TestTouchedReplaceActivatedByRequire(t *testing.T) {
+	const base = "module example.com/m\n\ngo 1.22\n\nrequire example.com/a v1.0.0\n\nreplace example.com/a v1.2.0 => example.com/a v1.1.0\n"
+	const head = "module example.com/m\n\ngo 1.22\n\nrequire example.com/a v1.2.0\n\nreplace example.com/a v1.2.0 => example.com/a v1.1.0\n"
+	var rep dependency
+	for _, d := range dependencies("go.mod", mustParse(t, head)) {
+		if d.Kind == kindReplace {
+			rep = d
+		}
+	}
+	was, err := baseVersions("go.mod", []byte(base))
+	require.NoError(t, err)
+	assert.True(t, touched(rep, was, requireVersions(mustParse(t, head))), "the change activates the replace")
+	same, err := baseVersions("go.mod", []byte(head))
+	require.NoError(t, err)
+	assert.False(t, touched(rep, same, requireVersions(mustParse(t, head))))
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(head), 0o600))
+	findings := []finding{{Dep: rep}}
+	require.NoError(t, markUntouched(&fakeBase{data: base, found: true}, dir, "abc123", findings))
+	assert.False(t, findings[0].Untouched, "the lag of a newly activated replacement fails under -base")
 }
 
 func mustParse(t *testing.T, data string) []directive {
@@ -487,14 +513,14 @@ func TestReportUntouchedVersusFresh(t *testing.T) {
 }
 
 func TestRequiredModules(t *testing.T) {
-	got, err := requiredModules("testdata/fail")
+	got, err := requiredModules(proxied, "testdata/fail")
 	require.NoError(t, err)
 	assert.True(t, got["example.com/current"])
 	assert.True(t, got["example.com/dep"], "a // indirect require line is a requirement")
 	assert.False(t, got["example.com/gone"], "a replace with no require line is not")
 	assert.False(t, got["stdlib"])
 
-	_, err = requiredModules("testdata/missing")
+	_, err = requiredModules(proxied, "testdata/missing")
 	assert.Error(t, err)
 }
 
@@ -507,8 +533,10 @@ func TestRequiredModulesActiveReplacement(t *testing.T) {
 		"replace example.com/absent => example.com/absentfork v1.0.0\n\n" +
 		"replace example.com/pinned => ../local\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+	list := `{"Path":"example.com/orig","Version":"v1.0.0"}` + "\n" + `{"Path":"example.com/pinned","Version":"v1.2.0"}` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "list.json"), []byte(list), 0o600))
 
-	got, err := requiredModules(dir)
+	got, err := requiredModules(proxied, dir)
 	require.NoError(t, err)
 	assert.True(t, got["example.com/orig"])
 	assert.True(t, got["example.com/fork"], "the replacement of a required module is in the build")
@@ -521,6 +549,31 @@ func TestRequiredModulesActiveReplacement(t *testing.T) {
 	require.Len(t, findings, 1)
 	assert.Equal(t, "example.com/fork", findings[0].Module)
 	assert.True(t, findings[0].Required, "a vulnerable replacement fails the gate")
+}
+
+// TestRequiredModulesReplacementActivatedByMVS: go.mod requires orig
+// v1.0.0, another dependency makes MVS select v1.2.0, and a replace of
+// v1.2.0 is active: its replacement is required, so a vulnerability on it
+// fails the gate.
+func TestRequiredModulesReplacementActivatedByMVS(t *testing.T) {
+	dir := t.TempDir()
+	gomod := "module example.com/m\n\ngo 1.25\n\n" +
+		"require (\n\texample.com/orig v1.0.0\n\texample.com/other v1.0.0\n)\n\n" +
+		"replace example.com/orig v1.2.0 => example.com/fork v1.0.0\n\n" +
+		"replace example.com/other v1.0.0 => example.com/otherfork v1.0.0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+	list := `{"Path":"example.com/orig","Version":"v1.2.0"}` + "\n" + `{"Path":"example.com/other","Version":"v1.1.0"}` + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "list.json"), []byte(list), 0o600))
+
+	got, err := requiredModules(proxied, dir)
+	require.NoError(t, err)
+	assert.True(t, got["example.com/fork"], "MVS selects the replaced version: the replacement is in the build")
+	assert.False(t, got["example.com/otherfork"], "MVS selects past the replaced version: the replace is inactive")
+
+	hits := map[string][]advisory{"example.com/fork@v1.0.0": {{ID: "GO-2026-0001"}}}
+	findings := vulnFindings(dir, hits, got)
+	require.Len(t, findings, 1)
+	assert.True(t, findings[0].Required, "a vulnerable replacement MVS activates fails the gate")
 }
 
 // TestScanDir: a module scan runs in a package directory of the module,

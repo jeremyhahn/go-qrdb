@@ -134,7 +134,7 @@ func runWith(args []string, tools toolset, now time.Time, stdout, stderr io.Writ
 			if err != nil {
 				return fail(err)
 			}
-			required, err := requiredModules(dir)
+			required, err := requiredModules(tools.src, dir)
 			if err != nil {
 				return fail(err)
 			}
@@ -178,8 +178,18 @@ func markUntouched(base baseReader, dir, commit string, findings []finding) erro
 			return err
 		}
 	}
+	file := filepath.Join(dir, "go.mod")
+	head, err := os.ReadFile(file) //#nosec G304 -- the go.mod of a module directory the Makefile names
+	if err != nil {
+		return err
+	}
+	directives, err := parseGoMod(file, head)
+	if err != nil {
+		return err
+	}
+	requires := requireVersions(directives)
 	for i := range findings {
-		findings[i].Untouched = !touched(findings[i].Dep, was)
+		findings[i].Untouched = !touched(findings[i].Dep, was, requires)
 	}
 	return nil
 }
