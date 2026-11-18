@@ -74,9 +74,8 @@ skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 Each question has a recommendation. The owner ruled on Q4 (decision 231 (a))
 and approved the SPEC row text as written (ruling 913). The others are settled
 by convention (ruling 109) unless the review objects; Q5 stays open. The SPEC row
-itself merges only on the owner's recorded approval of its text, as the rules
-of [SPEC.md](../SPEC.md) require. Owner decision 224 orders the row; it does not
-approve this wording.
+merges on that recorded approval of its text, as the rules of
+[SPEC.md](../SPEC.md) require. Owner decision 224 ordered the row.
 
 1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
    releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
