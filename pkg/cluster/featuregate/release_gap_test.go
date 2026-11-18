@@ -16,6 +16,7 @@ package featuregate
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -84,4 +85,32 @@ func TestAdmitReplica_RefusesGapToAnyMember(t *testing.T) {
 	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
 	require.ErrorAs(t, g.AdmitReplica(systemShard, "n3:7000"), &gap)
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n4:7000"))
+}
+
+// TestAdmitReplica_ReleaseOnlyChangeReplacesTheView: node 3 re-advertising
+// with only its release changed (0.59 -> 0.61) replaces the cached view, so
+// AdmitReplica refuses it afterwards, whether the change arrives as a watch
+// update or through the periodic reseed of a store without a watch.
+func TestAdmitReplica_ReleaseOnlyChangeReplacesTheView(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	cases := map[string]func(*leaseStore) (cluster.MembershipStore, *Gate){
+		"watch update": func(s *leaseStore) (cluster.MembershipStore, *Gate) { return s, newGate(t, threeNodes()) },
+		"reseed":       func(s *leaseStore) (cluster.MembershipStore, *Gate) { return noWatchStore{s}, newFastGate(t) },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			ls, kv := newLeaseStore(), newMemKV()
+			ls.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
+			ls.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+			store, g := setup(ls)
+			require.NoError(t, g.Start(context.Background(), kv, store))
+			require.NoError(t, g.AdmitReplica(dedicatedShard, "n3:7000"))
+
+			ls.advertiseRelease(t, 3, "n3:7000", "0.61.0-alpha")
+			eventually(t, func() bool {
+				var gap *release.GapError
+				return errors.As(g.AdmitReplica(dedicatedShard, "n3:7000"), &gap)
+			}, "a release-only change did not replace the cached view")
+		})
+	}
 }

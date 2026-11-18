@@ -986,7 +986,7 @@ func sameView(a, b map[viewKey]cluster.Member) bool {
 	}
 	for k, am := range a {
 		bm, ok := b[k]
-		if !ok || am.Address != bm.Address || !slices.Equal(am.Features, bm.Features) {
+		if !ok || am.Address != bm.Address || am.ReleaseVersion != bm.ReleaseVersion || !slices.Equal(am.Features, bm.Features) {
 			return false
 		}
 	}
