@@ -321,7 +321,8 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 	// The engine formats the store at open, so a signed PUT of the format
 	// marker proves the credential reached the provider. Serving the
 	// database on objstore is the object-storage-provider row's, not this
-	// one's, so the node is stopped once the signed request has verified.
+	// one's, so the node is stopped once the signed format-marker PUT is
+	// stored.
 	cmd, out := startObjstoreCredentialNode(t, bin, cfg, dataDir)
 	// Whatever the node did before the test ends, on a passing path or a
 	// failing one, it left neither credential behind.
@@ -330,7 +331,7 @@ func TestObjstoreCredentials_S3ReceivesBothCredentialsAndNeverEchoesThem(t *test
 		assertObjstoreCredentialsNotEchoed(t, map[string]string{"key": key, "secret": secret},
 			out.String(), []string{dataDir, cfgDir}, stub.objectBodies())
 	}()
-	stub.awaitSignedRequest(t, 60*time.Second, out)
+	stub.awaitStoredObject(t, 60*time.Second, out)
 	stopNode(t, cmd, 30*time.Second)
 
 	if stub.verifiedCount() == 0 {

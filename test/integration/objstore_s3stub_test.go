@@ -56,8 +56,9 @@ type s3Stub struct {
 	verified int
 	requests []string
 	failures []string
-	signed   chan struct{}
-	once     sync.Once
+	// stored is closed once the first verified PUT is stored.
+	stored     chan struct{}
+	storedOnce sync.Once
 }
 
 // newS3Stub starts the stub for bucket and closes it when the test ends.
@@ -69,7 +70,7 @@ func newS3Stub(t *testing.T, bucket, region, key, secret string) *s3Stub {
 		key:     key,
 		secret:  secret,
 		objects: make(map[string][]byte),
-		signed:  make(chan struct{}),
+		stored:  make(chan struct{}),
 	}
 	s.server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.server.Close)
@@ -79,16 +80,16 @@ func newS3Stub(t *testing.T, bucket, region, key, secret string) *s3Stub {
 // URL is the stub's endpoint.
 func (s *s3Stub) URL() string { return s.server.URL }
 
-// awaitSignedRequest blocks until the stub has admitted one request whose
-// signature verified, failing the test after timeout with the node's output.
-func (s *s3Stub) awaitSignedRequest(t *testing.T, timeout time.Duration, node fmt.Stringer) {
+// awaitStoredObject blocks until the stub has stored one PUT whose signature
+// verified, failing the test after timeout with the node's output.
+func (s *s3Stub) awaitStoredObject(t *testing.T, timeout time.Duration, node fmt.Stringer) {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
-	case <-s.signed:
+	case <-s.stored:
 	case <-timer.C:
-		t.Fatalf("no SigV4-verified request reached the S3 stub within %v; verified requests: %v; failures: %v\nnode output:\n%s", timeout, s.requestList(), s.failureList(), node)
+		t.Fatalf("no SigV4-verified PUT was stored by the S3 stub within %v; verified requests: %v; failures: %v\nnode output:\n%s", timeout, s.requestList(), s.failureList(), node)
 	}
 }
 
@@ -159,7 +160,6 @@ func (s *s3Stub) serve(w http.ResponseWriter, r *http.Request) {
 	s.verified++
 	s.requests = append(s.requests, r.Method+" "+r.Host+r.URL.RequestURI())
 	s.mu.Unlock()
-	s.once.Do(func() { close(s.signed) })
 
 	// A virtual-hosted request names the bucket in its host, a path-style
 	// one in its first path segment.
@@ -290,6 +290,7 @@ func (s *s3Stub) serveObject(w http.ResponseWriter, r *http.Request, key string,
 		s.mu.Lock()
 		s.objects[key] = body
 		s.mu.Unlock()
+		s.storedOnce.Do(func() { close(s.stored) })
 		w.Header().Set("ETag", s3ETag(body))
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet, http.MethodHead:
