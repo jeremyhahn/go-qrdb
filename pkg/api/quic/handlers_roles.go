@@ -388,6 +388,9 @@ func (s *Server) handleReconcileRolesAllTenants(ctx context.Context, _ []byte) (
 		return nil, &ServiceNotConfiguredError{Service: "tenant"}
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		return nil, err
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
 	if err != nil {
 		return nil, err

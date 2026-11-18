@@ -71,6 +71,10 @@ func registerSOGrants() {
 		RolesCreate, RolesRead, RolesUpdate,
 		RolesDelete, RolesList, RolesAssign,
 		RolesUnassign, PermissionsList,
+		// Cross-tenant built-in role convergence. It is cross-scope
+		// (cross_scope.go), so only effective for the system-tenant SO;
+		// under strict separation it runs only as a separate SO principal.
+		RolesReconcileAll,
 		// User management
 		UsersCreate, UsersRead, UsersUpdate,
 		UsersDelete, UsersList, UsersEnable,
@@ -288,7 +292,7 @@ func registerAdminGrants() {
 		TenantsSetStatus,
 		TenantsListDeleted, TenantsReconcileDeleted,
 		// Cross-tenant built-in role convergence -- only effective for
-		// system-tenant Admin.
+		// system-tenant Admin, and outside strict separation.
 		RolesReconcileAll,
 		// Cross-scope volume pool management — only effective for system-tenant Admin.
 		VolumePoolCreate, VolumePoolList, VolumePoolRead,

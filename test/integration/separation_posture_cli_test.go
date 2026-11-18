@@ -213,8 +213,8 @@ func TestSeparationPosture_CLI_StrictRefusesAdmin_PerProtocol(t *testing.T) {
 // strict node's ceremony enrolled (#1128) over every transport: it creates
 // a system role and runs the system tenant's built-in role reconcile, each
 // of which strict separation refuses the system Admin, and proves the
-// all-tenants reconcile (roles:reconcile_all) Admin-only: the system Admin
-// runs it and the system SO is refused.
+// all-tenants reconcile (roles:reconcile_all) SO-exclusive too: the system
+// Admin is refused it and the system SO runs it.
 func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 	t.Parallel()
 	n := startStrictSeparationNode(t)
@@ -256,15 +256,15 @@ func TestSeparationPosture_CLI_SystemSO_PerProtocol(t *testing.T) {
 				}
 			}
 
-			// roles:reconcile_all is Admin-only in both postures
-			// (docs/SPEC.md): the all-tenants pass, which reaches pt's,
-			// runs as the system Admin and is refused the system SO.
+			// Under strict separation the all-tenants pass, which reaches
+			// pt's, is SO-exclusive like the single-tenant reconcile: the
+			// system Admin is refused and the system SO runs it.
 			allTenants := []string{"roles", "reconcile", "--all-tenants"}
-			if out, err := runCLIProto(t, n, proto, allTenants...); err != nil {
-				t.Fatalf("[%s] roles reconcile --all-tenants as the system Admin: %v\noutput: %s", proto.name, err, out)
+			out, err := runCLIProto(t, n, proto, allTenants...)
+			denied("Admin", "roles reconcile --all-tenants", out, err)
+			if out, err := runQRDB(t, n.cli, soConn, allTenants...); err != nil {
+				t.Fatalf("[%s] roles reconcile --all-tenants as the system SO: %v\noutput: %s", proto.name, err, out)
 			}
-			out, err := runQRDB(t, n.cli, soConn, allTenants...)
-			denied("SO", "roles reconcile --all-tenants", out, err)
 		})
 	}
 }

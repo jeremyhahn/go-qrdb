@@ -460,11 +460,11 @@ then exits non-zero naming every failed tenant. `--output json` and
 lists.
 
 Requires `roles:reconcile_all`, a cross-tenant permission held only by the
-system tenant's built-in Admin role, in both separation postures. A tenant's
-own Admin, the system SO, or any other tenant principal, is refused even if it
-holds `roles:create`. Under strict separation of duties
-(`auth.separation_of_duties`) the single-tenant reconcile is an SO's alone and
-the system Admin is refused it; `--all-tenants` stays the system Admin's. First
+system tenant's built-in Admin and SO roles. A tenant's own Admin or SO, or any
+other tenant principal, is refused even if it holds `roles:create`. Under strict
+separation of duties (`auth.separation_of_duties`) both the single-tenant
+reconcile and `--all-tenants` are an SO's alone and the system Admin is refused
+them. First
 boot can enrol the system SO (`qrdb init --so-username` with `--so-csr` or
 `--so-cert`).
 

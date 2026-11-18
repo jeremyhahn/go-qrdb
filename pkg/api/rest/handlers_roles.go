@@ -659,6 +659,10 @@ func (s *Server) handleReconcileRolesAllTenants(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		writeErrorJSON(w, mapHTTPError(err), err)
+		return
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)

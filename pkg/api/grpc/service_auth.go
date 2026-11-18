@@ -654,6 +654,9 @@ func (s *qrdbServiceServer) ReconcileBuiltInRolesAllTenants(ctx context.Context,
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "tenant"})
 	}
 
+	if err := s.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		return nil, mapServiceError(err)
+	}
 	report, err := role.ReconcileAllTenants(ctx, s.roleSvc, s.tenantSvc)
 	if err != nil {
 		return nil, mapServiceError(err)
