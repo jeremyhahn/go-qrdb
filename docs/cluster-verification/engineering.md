@@ -507,8 +507,16 @@ file is read before any container command runs.
 | `nodes[].tls_dir` | yes | the node's directory on its host, holding `ca.pem`, `node.pem` and `node-key.pem`; the certificate must name `address` |
 | `nodes[].data` | yes | the node's data directory on its host; it must be empty before a run |
 | `nodes[].vars` | no | the node's template variables for `docker` |
+| `nodes[].image` | no | the image this node runs, overriding `image`; a rolling-upgrade run starts a mixed cluster this way |
 
 At least three nodes are required.
+
+`Cluster.Replace` swaps one node's container for one on another image: it
+removes the container and starts it again on the new image with the same
+name, data and TLS directories, arguments and member identities, so the
+node rejoins with its state. It is one step of a rolling upgrade or
+rollback. A node outside the inventory, an empty image or a missing
+identity is refused before any container command runs.
 
 ```json
 {

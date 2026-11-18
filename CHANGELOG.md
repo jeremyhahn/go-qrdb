@@ -13,6 +13,10 @@ are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Added
+
+- **Rolling-upgrade matrix, first slice (#1628).** A test-only `qrdb_upgrade_probe` build is the synthetic N+1 (feature `upgrade-probe`, opcode `0xF0`, proposed only once every member supports it); CLI e2e tests over every transport roll a three-node cluster from N to N+1 under writes, and roll one node back before activation, with no acknowledged write lost. The clusterproof inventory takes a per-node `image`, and `Cluster.Replace` moves one node to another image on its data.
+
 ### Changed
 
 - CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
