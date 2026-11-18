@@ -76,6 +76,11 @@ func (t *Transport) ReconcileBuiltInRolesAllTenants(ctx context.Context) (*trans
 	if err := t.authorizeTenantSelf(ctx, permission.RolesReconcileAll); err != nil {
 		return nil, err
 	}
+	// Same strict-posture gate the gRPC, REST, QUIC and MCP transports
+	// apply: the bulk reconcile is SO-exclusive, a system Admin is refused.
+	if err := t.authMW.AuthorizeSOExclusive(ctx, "", "reconcile built-in roles in every tenant"); err != nil {
+		return nil, err
+	}
 
 	report, err := role.ReconcileAllTenants(ctx, t.roleSvc, t.tenantSvc)
 	if err != nil {

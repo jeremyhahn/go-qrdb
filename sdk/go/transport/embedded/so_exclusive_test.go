@@ -26,6 +26,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/rbac"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
@@ -121,6 +122,74 @@ func TestEmbeddedSOExclusive_RoleCreateAndReconcile(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestEmbeddedSOExclusive_ReconcileAllTenants: the bulk built-in role
+// reconcile carries the same strict-posture gate as on the network
+// transports, so a system Admin holding roles:reconcile_all is refused and
+// the system SO is let through.
+func TestEmbeddedSOExclusive_ReconcileAllTenants(t *testing.T) {
+	const sysSO, sysAdmin = "system-so", "system-admin"
+	tests := []struct {
+		name    string
+		strict  bool
+		roles   []string
+		wantErr func(error) bool
+	}{
+		{name: "strict: system SO", strict: true, roles: []string{sysSO}},
+		{name: "strict: system admin", strict: true, roles: []string{sysAdmin}, wantErr: errorIs[*auth.SORoleRequiredError]},
+		{name: "standard: system admin", roles: []string{sysAdmin}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			roleSvc := &mockRoleServicer{
+				resolvePermsFn: func(context.Context, []string) ([]permission.Permission, error) {
+					return []permission.Permission{permission.RolesReconcileAll}, nil
+				},
+				getRoleByNameFn: func(_ context.Context, tenantID, name string) (*role.Role, error) {
+					ids := map[string]string{role.RoleNameSO: sysSO, role.RoleNameAdmin: sysAdmin}
+					id, ok := ids[name]
+					if tenantID != tenantid.System || !ok {
+						return nil, &role.RoleNotFoundError{ID: name}
+					}
+					return &role.Role{ID: id, TenantID: tenantid.System, Name: name}, nil
+				},
+				reconcileFn: func(_ context.Context, tenantID string) (*role.ReconcileReport, error) {
+					calls++
+					return &role.ReconcileReport{TenantID: tenantID}, nil
+				},
+			}
+			opts := []authmw.Option{authmw.WithRoleResolver(roleSvc)}
+			if tt.strict {
+				opts = append(opts, authmw.WithStrictSeparation(true))
+			}
+			tr, err := New(newMockKVService(), &mockAdminService{},
+				WithRoleService(roleSvc),
+				WithTenantService(liveEmbeddedTenants(t, "acme")),
+				WithAuthMiddleware(authmw.New(rbac.New(roleSvc), opts...)),
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, err = tr.ReconcileBuiltInRolesAllTenants(roleAssignmentIdentityCtx(tenantid.System, tt.roles...))
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				if calls == 0 {
+					t.Fatal("an allowed reconcile never reached the role service")
+				}
+				return
+			}
+			if !tt.wantErr(err) {
+				t.Fatalf("unexpected refusal %T: %v", err, err)
+			}
+			if calls != 0 {
+				t.Fatalf("a refused reconcile reached the role service %d times", calls)
+			}
+		})
 	}
 }
 
