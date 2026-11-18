@@ -67,7 +67,7 @@ func TestApkMirrorScript(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "bin")
-			if err := os.Mkdir(bin, 0o755); err != nil {
+			if err := os.Mkdir(bin, 0o750); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(filepath.Join(bin, "apk"), []byte(fakeApk), 0o755); err != nil { // #nosec G306 -- the stub must be executable

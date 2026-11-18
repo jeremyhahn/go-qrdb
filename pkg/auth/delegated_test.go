@@ -177,6 +177,10 @@ type delegRevocation struct {
 	err     error
 }
 
+func (r delegRevocation) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return r.IsCertRevoked(ctx, c)
+}
+
 func (r delegRevocation) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) {
 	return r.revoked, r.err
 }
