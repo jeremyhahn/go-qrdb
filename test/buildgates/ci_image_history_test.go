@@ -84,7 +84,7 @@ func TestCIImageHistoryScript(t *testing.T) {
 		{name: "an apt proxy in a later entry", history: cleanHistory + "\nRUN |1 APT_PROXY=http://10.20.30.40:3142 /bin/sh -c apt-get update", config: cleanConfig, want: "history entry 5"},
 		{name: "a 172.16/12 address", history: "ENV REG=172.20.0.5:5005", config: cleanConfig, want: "history entry 1"},
 		{name: "an address at the start of an entry", history: "192.168.1.1", config: cleanConfig, want: "history entry 1"},
-		{name: "an address in the config", history: cleanHistory, config: `{"Env":["GOPROXY=http://10.0.0.7:3000|https://proxy.golang.org"]}`, want: "config"},
+		{name: "an address in the config", history: cleanHistory, config: `{"Env":["PEER_URL=http://10.0.0.7:3000"]}`, want: "config"},
 		{name: "an address in a label", history: cleanHistory, config: `{"Labels":{"cache":"192.168.77.7"}}`, want: "config"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
