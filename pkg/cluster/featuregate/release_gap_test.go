@@ -87,6 +87,62 @@ func TestAdmitReplica_RefusesGapToAnyMember(t *testing.T) {
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n4:7000"))
 }
 
+// A committed member whose advertisement lease lapsed (it is offline) still
+// holds its release: the gate compares a joiner against the release the
+// member recorded in the replicated KV.
+func TestAdmitReplica_OfflineMemberReleaseIsKept(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"2/0.58.0-alpha", []byte("n2:7000"))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	store.expire(2)
+	store.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+	require.NoError(t, g.reseed(context.Background(), 0, store))
+
+	var gap *release.GapError
+	require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &gap)
+	assert.Equal(t, "0.58.0-alpha", gap.Local)
+
+	store.advertiseRelease(t, 4, "n4:7000", "0.59.0-alpha")
+	require.NoError(t, g.reseed(context.Background(), 0, store))
+	assert.NoError(t, g.AdmitReplica(systemShard, "n4:7000"))
+}
+
+// With neither a live advertisement nor a recorded release for a committed
+// member, the gate cannot establish adjacency and refuses.
+func TestAdmitReplica_UnknownMemberReleaseRefuses(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	store.expire(2)
+	store.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
+	require.NoError(t, g.reseed(context.Background(), 0, store))
+
+	var unknown *UnknownMemberReleaseError
+	require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &unknown)
+	assert.Equal(t, UnknownMemberReleaseError{ShardID: systemShard, ReplicaID: 2, Address: "n2:7000"}, *unknown)
+}
+
+// The gate records its own release under ReleasePrefix and drops a stale
+// one left by an earlier binary.
+func TestGate_RecordsOwnRelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.58.0-alpha", []byte("n1:7000"))
+	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	assert.True(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"))
+	assert.False(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
+}
+
 // TestAdmitReplica_ReleaseOnlyChangeReplacesTheView: node 3 re-advertising
 // with only its release changed (0.59 -> 0.61) replaces the cached view, so
 // AdmitReplica refuses it afterwards, whether the change arrives as a watch

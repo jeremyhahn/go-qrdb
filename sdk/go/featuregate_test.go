@@ -48,6 +48,11 @@ func (a activations) ListStale(ctx context.Context, prefix string) ([]string, er
 	return a.ListAll(ctx, prefix)
 }
 
+func (a activations) Delete(_ context.Context, key string) error {
+	delete(a, key)
+	return nil
+}
+
 // members is a featuregate.MembershipSource over a fixed system shard.
 type members map[uint64]string
 

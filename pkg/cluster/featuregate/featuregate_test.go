@@ -197,6 +197,16 @@ func (k *memKV) ListStale(_ context.Context, prefix string) ([]string, error) {
 
 // listLocked lists the keys under prefix, or fails with err when it is set.
 // The caller holds k.mu.
+func (k *memKV) Delete(_ context.Context, key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.putErr != nil {
+		return k.putErr
+	}
+	delete(k.data, key)
+	return nil
+}
+
 func (k *memKV) listLocked(prefix string, err error) ([]string, error) {
 	if err != nil {
 		return nil, err

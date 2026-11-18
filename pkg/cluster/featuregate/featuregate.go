@@ -65,6 +65,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,6 +292,13 @@ const (
 	// permanent key per feature: "__sys:cluster/features/activated/{feature}".
 	ActivationPrefix = "__sys:cluster/features/activated/"
 
+	// ReleasePrefix is the reserved key prefix of recorded releases: one
+	// replicated key "{ReleasePrefix}{replicaID}/{release}" per system-shard
+	// member, valued with its raft address. A member's gate writes its own
+	// key once it is committed, so its release outlives its advertisement
+	// lease and a joiner is still compared against an offline member.
+	ReleasePrefix = "__sys:cluster/features/releases/"
+
 	// DefaultRefreshInterval is how often the gate re-reads advertisements,
 	// activations and group membership, re-subscribes a lost watch, and
 	// retries activation.
@@ -336,6 +344,7 @@ type ActivationKV interface {
 	PutIfAbsent(ctx context.Context, key string, value []byte) (bool, error)
 	ListAll(ctx context.Context, prefix string) ([]string, error)
 	ListStale(ctx context.Context, prefix string) ([]string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 // Config configures a Gate.
@@ -383,6 +392,11 @@ type Gate struct {
 	mu   sync.Mutex // serializes view replacement
 	view atomic.Pointer[map[viewKey]cluster.Member]
 
+	// releases maps a system-shard replica ID to the releases recorded
+	// under ReleasePrefix for it, replaced whole by recordRelease. It
+	// stands in for a committed member whose advertisement has lapsed.
+	releases atomic.Pointer[map[uint64][]string]
+
 	// refusal is the activated feature this binary lacks, once
 	// CheckActivated has found one; see Refusal.
 	refusal atomic.Pointer[UnsupportedFeatureError]
@@ -426,6 +440,8 @@ func New(cfg Config) (*Gate, error) {
 	}
 	empty := map[viewKey]cluster.Member{}
 	g.view.Store(&empty)
+	noReleases := map[uint64][]string{}
+	g.releases.Store(&noReleases)
 	return g, nil
 }
 
@@ -623,6 +639,56 @@ func (g *Gate) admitRelease(raftAddr string) error {
 				rec.Address, rec.ReleaseVersion)
 		}
 	}
+	// A committed member whose advertisement has lapsed is still a member:
+	// compare against the release it recorded, and refuse when there is none.
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return err
+	}
+	recorded := *g.releases.Load()
+	for _, m := range committedMembers(system) {
+		if m.id == g.self.ReplicaID || m.addr == raftAddr || liveRecord(view, m.id, m.addr) != nil {
+			continue
+		}
+		rels := recorded[m.id]
+		if len(rels) == 0 {
+			return refuse(&UnknownMemberReleaseError{ShardID: g.systemShard, ReplicaID: m.id, Address: m.addr}, m.addr, "")
+		}
+		for _, rel := range rels {
+			if !releasesAdjacent(rel, candidate) {
+				return refuse(&release.GapError{Channel: releaseChannel, Local: rel, Peer: candidate}, m.addr, rel)
+			}
+		}
+	}
+	return nil
+}
+
+// committedMember is one replica or witness of a committed membership.
+type committedMember struct {
+	id   uint64
+	addr string
+}
+
+// committedMembers lists the replicas, then the witnesses, of system, each
+// in replica-ID order, so a refusal names the same member every time.
+func committedMembers(system GroupMembership) []committedMember {
+	members := make([]committedMember, 0, len(system.Replicas)+len(system.Witnesses))
+	for _, group := range []map[uint64]string{system.Replicas, system.Witnesses} {
+		for _, id := range slices.Sorted(maps.Keys(group)) {
+			members = append(members, committedMember{id: id, addr: group[id]})
+		}
+	}
+	return members
+}
+
+// liveRecord returns the advertisement in view from the member with replica
+// ID id at addr, matched as supportingAddresses matches, or nil.
+func liveRecord(view map[viewKey]cluster.Member, id uint64, addr string) *cluster.Member {
+	for k, rec := range view {
+		if k.nodeID == id && rec.Address == addr {
+			return &rec
+		}
+	}
 	return nil
 }
 
@@ -652,6 +718,54 @@ func (g *Gate) AdvertisedSelf() (Self, error) {
 		return Self{}, &NotAMemberError{ReplicaID: g.self.ReplicaID, ShardID: g.systemShard}
 	}
 	return Self{ReplicaID: g.self.ReplicaID, Address: addr}, nil
+}
+
+// recordRelease records this node's release under ReleasePrefix once the
+// system shard has committed it, removes any release an earlier binary
+// recorded for it, and reloads the recorded releases of every member. It
+// writes only when the record is missing or stale.
+func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
+	self, err := g.AdvertisedSelf()
+	if err != nil {
+		return err
+	}
+	own := ReleasePrefix + strconv.FormatUint(self.ReplicaID, 10) + "/"
+	key := own + release.Version()
+	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	if err != nil {
+		return &StoreError{Op: "list releases", Err: err}
+	}
+	recorded, stale := slices.Contains(keys, key), false
+	for _, k := range keys {
+		if k == key || !strings.HasPrefix(k, own) {
+			continue
+		}
+		stale = true
+		if err := kv.Delete(ctx, k); err != nil {
+			return &StoreError{Op: "delete release", Err: err}
+		}
+	}
+	if !recorded {
+		if _, err := kv.PutIfAbsent(ctx, key, []byte(self.Address)); err != nil {
+			return &StoreError{Op: "record release", Err: err}
+		}
+	}
+	if !recorded || stale {
+		if keys, err = kv.ListStale(ctx, ReleasePrefix); err != nil {
+			return &StoreError{Op: "list releases", Err: err}
+		}
+	}
+	releases := make(map[uint64][]string, len(keys))
+	for _, k := range keys {
+		idText, rel, ok := strings.Cut(strings.TrimPrefix(k, ReleasePrefix), "/")
+		id, err := strconv.ParseUint(idText, 10, 64)
+		if !ok || err != nil || rel == "" || !strings.HasPrefix(k, ReleasePrefix) {
+			continue
+		}
+		releases[id] = append(releases[id], rel)
+	}
+	g.releases.Store(&releases)
+	return nil
 }
 
 // Activated reports whether feature has been activated cluster-wide.
@@ -827,6 +941,9 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 			return err
 		}
 	}
+	if err := g.recordRelease(ctx, kv); err != nil {
+		g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
+	}
 	g.activate(ctx, kv)
 
 	events := make(chan sourcedEvent, 64)
@@ -917,6 +1034,9 @@ func (g *Gate) run(ctx context.Context, kv ActivationKV, adverts []cluster.Membe
 				if err := g.reseed(ctx, i, store); err != nil {
 					g.logger.Warn("feature gate: advertisement refresh failed", "error", err)
 				}
+			}
+			if err := g.recordRelease(ctx, kv); err != nil {
+				g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
 			}
 			if err := g.CheckActivated(ctx, kv); err != nil {
 				g.logger.Error("feature gate: activation refresh failed", "error", err)

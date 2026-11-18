@@ -61,6 +61,8 @@ func (k guardedWritesActivatedKV) ListStale(ctx context.Context, prefix string) 
 	return k.ListAll(ctx, prefix)
 }
 
+func (guardedWritesActivatedKV) Delete(context.Context, string) error { return nil }
+
 var _ featuregate.ActivationKV = guardedWritesActivatedKV{}
 
 // With a gate, the adapter answers from it: Enabled is Activated and nothing
@@ -126,6 +128,8 @@ func (activatedKV) ListAll(context.Context, string) ([]string, error) {
 func (k activatedKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
 	return k.ListAll(ctx, prefix)
 }
+
+func (activatedKV) Delete(context.Context, string) error { return nil }
 
 var _ featuregate.ActivationKV = activatedKV{}
 
