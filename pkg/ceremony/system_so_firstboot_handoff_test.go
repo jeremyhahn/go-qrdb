@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 )
 
@@ -52,33 +51,33 @@ func (s *mapPendingStore) Delete(_ context.Context, key string) error {
 }
 
 // TestShamirSOWriteFault_HoldsAdminPublishAndSealedWindowUntilRetry pins
-// go-qrdb#1579 Codex round 1 P1 (2): after an M-of-N Initialize unsealed the
-// barrier and failed its SO record write, first boot publishes no admin
-// credential (it would bind an admin with no SO), the sealed window stays
-// held and admits the retried Initialize, and once the retry records the
-// SO first boot publishes both and the window closes.
+// go-qrdb#1579 Codex round 1 P1 (2): after an M-of-N Initialize failed its
+// SO record write, which rolls the initialization back, first boot
+// publishes no admin credential (it would bind an admin with no SO), the
+// sealed window stays held and admits the retried Initialize, and once the
+// retry records the SO first boot publishes both and the window closes.
 func TestShamirSOWriteFault_HoldsAdminPublishAndSealedWindowUntilRetry(t *testing.T) {
 	ctx := context.Background()
 	// f.failed is the core whose 2-of-3 Initialize issued a system SO and
-	// failed the SO record write after everything else committed; retry
-	// repeats that Initialize on it.
-	f := newShamirSOPersistFault(t)
+	// failed the SO record write.
+	f := newShamirSOWriteFault(t)
 	core := f.failed
-	retry := func() (*ceremony.InitResult, error) { return core.Initialize(ctx, f.ca, f.options()) }
 	store := &mapPendingStore{m: map[string][]byte{}}
 
-	require.True(t, core.SystemSOHandoffPending(ctx), "the SO record is not durable")
+	adminPEM, _ := core.LastIssuedAdminCertPEM()
+	assert.Empty(t, adminPEM, "the rolled-back Initialize hands first boot no admin credential")
+	assert.Nil(t, core.LastIssuedSystemSO(), "nor an SO")
 	assert.True(t, core.HoldsSealedWindow(ctx), "the sealed window stays up for the retry")
 	assert.True(t, core.EnrollmentOpen(ctx), "the sealed gate admits the retried Initialize")
 
-	require.NoError(t, firstboot.WriteIssuedSystemSOIfAny(ctx, core, store, nil))
-	err := firstboot.WriteIssuedAdminCertIfAny(ctx, core, store, nil)
-	var pending *firstboot.SystemSOHandoffPendingError
-	require.ErrorAs(t, err, &pending)
+	require.NoError(t, firstboot.WriteIssuedAdminCertIfAny(ctx, core, store, nil))
 	recorded, _ := store.Get(ctx, firstboot.PendingAdminCertKey)
 	assert.Empty(t, recorded, "no admin credential is published without the SO")
 
-	result, err := retry()
+	// The rolled-back barrier initializes again only after a restart.
+	core = f.newService(f.newBarrier())
+	assert.True(t, core.HoldsSealedWindow(ctx), "the restarted node holds the sealed window")
+	result, err := core.Initialize(ctx, f.ca, f.options())
 	require.NoError(t, err, "the retry records the SO")
 	require.NotEmpty(t, result.SOCertPEM)
 

@@ -829,11 +829,11 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// Without this, a retry after this specific failure could never
 		// re-enroll any of them (their usernames would stay permanently
 		// claimed by a ceremony that never became operational).
-		// A failed system SO record write in Distribute lands here too:
+		// A failed system SO record write in PrepareRoster lands here too:
 		// the barrier rolled back to sealed, so nothing is committed and
-		// a fresh Initialize, in this process or after a restart, starts
-		// over. A record Distribute did write stays in storage: the next
-		// initialization's Distribute overwrites or removes it
+		// a fresh Initialize after a restart (seal.ErrRestartRequired)
+		// starts over. A record PrepareRoster did write stays in storage:
+		// the next initialization's PrepareRoster overwrites or removes it
 		// (mofnInitInFlight).
 		s.mu.Lock()
 		s.systemSOInFlight = nil
@@ -915,6 +915,10 @@ func (s *CeremonyService) GenerateRecoveryKeys(ctx context.Context, threshold in
 // Must be called with s.mu held, matching every other call site inside
 // Initialize's critical section; it does not unlock.
 func (s *CeremonyService) rollbackOfficerInit(ctx context.Context, registered []string, pinsProvisionedByThisCall bool) {
+	// The admin credential this call issued belongs to an initialization
+	// that did not happen: first boot must not publish it.
+	s.lastAdminCertPEM = nil
+	s.lastAdminSource = ""
 	for i := len(registered) - 1; i >= 0; i-- {
 		username := registered[i]
 		if err := s.system.removeEnrolled(ctx, username, func() error { return nil }); err != nil {

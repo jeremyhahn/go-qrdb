@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"log/slog"
@@ -26,55 +25,33 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors"
 	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest"
-	"github.com/jeremyhahn/go-qrdb/pkg/authfactors/mtls"
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/pin/pintest"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetry drives the
-// SO-persist retry through the composition qrdbd and clustered SDK nodes
-// serve: the core wrapped in service.CeremonyServiceWithAdminRebind. A
-// 2-of-3 ceremony whose SO record write failed restarts enrolling with no SO
-// record; the retried Initialize must reach the core, which persists the SO,
+// TestCeremonyServiceWithAdminRebind_ShamirSystemSOWriteFaultRetry drives
+// the retry of a 2-of-3 Initialize whose system SO record write failed
+// through the composition qrdbd and clustered SDK nodes serve: the core
+// wrapped in service.CeremonyServiceWithAdminRebind. The failed write rolled
+// the initialization back, so the retried Initialize after the restart the
+// rolled-back barrier needs must reach the core, which records the SO,
 // rather than the wrapper's admin reissue.
-func TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetry(t *testing.T) {
+func TestCeremonyServiceWithAdminRebind_ShamirSystemSOWriteFaultRetry(t *testing.T) {
 	ctx := context.Background()
-	f := newShamirSOPersistFault(t)
-	pending, err := f.service.PendingSystemSO(ctx)
-	require.NoError(t, err)
-	require.Nil(t, pending, "the failed write left no SO record")
+	f := newShamirSOWriteFault(t)
+	b := f.newBarrier()
+	svc := f.newService(b)
+	require.Equal(t, ceremony.StateAwaitingInit, svc.State(), "the failed write rolled the initialization back")
 
-	composed := service.NewCeremonyServiceWithAdminRebind(service.NewCeremonyService(f.service), f.service, nil, nil, nil)
-
-	wrongPIN := serviceInitOptions(f.options())
-	wrongPIN.SOPin = "not-the-so-pin"
-	_, err = composed.CeremonyInitialize(ctx, f.ca, wrongPIN)
-	require.Error(t, err, "the retry must prove the provisioned SO PIN")
-
+	composed := service.NewCeremonyServiceWithAdminRebind(service.NewCeremonyService(svc), svc, nil, nil, nil)
 	result, err := composed.CeremonyInitialize(ctx, f.ca, serviceInitOptions(f.options()))
-	require.NoError(t, err, "the retried ceremony persists the SO")
+	require.NoError(t, err, "the retry reaches the core and records the SO")
 	require.NotNil(t, result)
-	assert.Equal(t, ceremony.StateEnrolling, f.service.State())
+	assert.Equal(t, ceremony.StateEnrolling, svc.State())
 
-	pending, err = f.reopen().PendingSystemSO(ctx)
-	require.NoError(t, err)
-	require.NotNil(t, pending, "first boot is handed the SO")
-	assert.Equal(t, "secofficer", pending.Username)
-}
-
-// The service whose SO record write failed must not report the SO as
-// pending from its own memory: without a restart, the wrapper would take
-// the retry for an admin reissue and the SO record would never be written.
-func TestCeremonyServiceWithAdminRebind_ShamirSystemSOPersistRetryWithoutRestart(t *testing.T) {
-	ctx := context.Background()
-	f := newShamirSOPersistFault(t)
-	composed := service.NewCeremonyServiceWithAdminRebind(service.NewCeremonyService(f.failed), f.failed, nil, nil, nil)
-	_, err := composed.CeremonyInitialize(ctx, f.ca, serviceInitOptions(f.options()))
-	require.NoError(t, err, "the retry persists the SO")
-
-	pending, err := f.reopen().PendingSystemSO(ctx)
+	pending, err := f.newService(b).PendingSystemSO(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, pending, "first boot is handed the SO")
 	assert.Equal(t, "secofficer", pending.Username)
@@ -158,24 +135,24 @@ func newRebindHolder(t *testing.T, username string) *rebindHolder {
 	}
 }
 
-// shamirSOPersistFault is a 2-of-3 ceremony whose system SO record write
-// failed, restarted and unsealed by two holders: service is enrolling, its
-// barrier is unsealed and it holds no SO record, the state a retried
-// Initialize must repair.
-type shamirSOPersistFault struct {
+// shamirSOWriteFault is a 2-of-3 ceremony whose Initialize issued a system
+// SO and failed the SO record write, which rolled the initialization back:
+// the barrier is sealed and uninitialized again and nothing is committed.
+type shamirSOWriteFault struct {
 	// failed is the service whose Initialize hit the write fault, still
-	// running; service is the one restarted over the same storage.
-	failed  *ceremony.CeremonyService
-	service *ceremony.CeremonyService
-	ca      *ceremony.LocalCA
+	// running over its rolled-back barrier.
+	failed *ceremony.CeremonyService
+	ca     *ceremony.LocalCA
 	// options returns the ceremony's original options, the ones a retry
 	// repeats.
 	options func() *ceremony.InitializeOptions
-	// reopen builds a fresh service over the same storage.
-	reopen func() *ceremony.CeremonyService
+	// newBarrier and newService build a restarted barrier and service over
+	// the same storage.
+	newBarrier func() *seal.StorageBarrier
+	newService func(*seal.StorageBarrier) *ceremony.CeremonyService
 }
 
-func newShamirSOPersistFault(t *testing.T) *shamirSOPersistFault {
+func newShamirSOWriteFault(t *testing.T) *shamirSOWriteFault {
 	t.Helper()
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -204,7 +181,8 @@ func newShamirSOPersistFault(t *testing.T) *shamirSOPersistFault {
 		svc.SetPINBackend(pins)
 		return svc
 	}
-	svc := newService(barrier())
+	b := barrier()
+	svc := newService(b)
 
 	alice := newRebindHolder(t, "alice")
 	bob := newRebindHolder(t, "bob")
@@ -229,56 +207,14 @@ func newShamirSOPersistFault(t *testing.T) *shamirSOPersistFault {
 	_, err = svc.Initialize(ctx, ca, opts())
 	require.ErrorIs(t, err, errRebindSOWrite)
 	require.False(t, backend.armed, "the fault hit the SO record write")
+	require.True(t, b.IsSealed(), "the initialization rolled back to sealed")
 
-	officers, err := svc.ListOfficers(ctx, seal.DomainUnseal)
-	require.NoError(t, err)
-	for _, o := range officers {
-		for _, h := range []*rebindHolder{alice, bob} {
-			if o.Username == h.username {
-				h.thumb = o.CertThumbprint
-			}
-		}
-	}
-	for _, h := range []*rebindHolder{alice, bob} {
-		ch, err := svc.BeginClaimShare(ctx, seal.DomainUnseal, h.username, h.thumb)
-		require.NoError(t, err, h.username)
-		sig, err := ceremony.SignShareClaim(h.key, ceremony.ScopeSystem.ClaimLabel(), h.username, ch.Nonce)
-		require.NoError(t, err)
-		res, err := svc.CompleteClaimShare(ctx, seal.DomainUnseal, h.username, hex.EncodeToString(ch.Nonce), sig, h.thumb)
-		require.NoError(t, err, h.username)
-		h.envelope = res.Envelope
-	}
-
-	b2 := barrier()
-	require.True(t, b2.IsSealed())
-	svc2 := newService(b2)
-	require.Equal(t, ceremony.StateEnrolling, svc2.State())
-	for _, h := range []*rebindHolder{alice, bob} {
-		ch, err := svc2.BeginQuorum(ctx, seal.DomainUnseal, seal.OpUnseal, h.username, "")
-		require.NoError(t, err)
-		resp, err := mtls.SignChallenge(h.key, ch.ChallengeID, ch.MethodData[mtls.MethodDataPurpose], ch.Nonce)
-		require.NoError(t, err)
-		env, err := ceremony.ParseShareEnvelope(h.envelope)
-		require.NoError(t, err)
-		share, err := env.OpenWithKey(h.key)
-		require.NoError(t, err)
-		_, err = b2.SubmitHolderShare(ctx, &seal.HolderSubmission{
-			Domain: seal.DomainUnseal,
-			Op:     seal.OpUnseal,
-			Holder: h.username,
-			Proof:  seal.HolderProof{ChallengeID: ch.ChallengeID, Factor: ch.Factor, Response: resp},
-			Share:  share,
-		})
-		require.NoError(t, err)
-	}
-	require.False(t, b2.IsSealed())
-
-	return &shamirSOPersistFault{
-		failed:  svc,
-		service: svc2,
-		ca:      ca,
-		options: opts,
-		reopen:  func() *ceremony.CeremonyService { return newService(b2) },
+	return &shamirSOWriteFault{
+		failed:     svc,
+		ca:         ca,
+		options:    opts,
+		newBarrier: barrier,
+		newService: newService,
 	}
 }
 
