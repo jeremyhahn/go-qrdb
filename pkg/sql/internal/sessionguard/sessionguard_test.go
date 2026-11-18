@@ -17,7 +17,10 @@
 package sessionguard
 
 import (
+	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,6 +54,55 @@ func newStarted(t *testing.T, probe Probe, streams *clusterseal.Streams) *Guard 
 	g.Start()
 	t.Cleanup(g.Stop)
 	return g
+}
+
+// callerProbe is a sealed probe that counts the reads each watch loop makes,
+// telling them apart by the calling function.
+type callerProbe struct{ byProbe, byAdmission atomic.Int32 }
+
+func (p *callerProbe) IsSealed() bool {
+	if pc, _, _, ok := runtime.Caller(1); ok {
+		if fn := runtime.FuncForPC(pc); fn != nil {
+			switch {
+			case strings.HasSuffix(fn.Name(), ".watchAdmission"):
+				p.byAdmission.Add(1)
+			case strings.HasSuffix(fn.Name(), ".watchProbe"):
+				p.byProbe.Add(1)
+			}
+		}
+	}
+	return true
+}
+
+// countingAdmission counts every Revoked call.
+type countingAdmission struct{ n atomic.Int32 }
+
+func (a *countingAdmission) Revoked(context.Context, string) bool {
+	a.n.Add(1)
+	return false
+}
+
+// TestWatchAdmission_SealedSkipsTheAdmission drives both watch loops
+// against a sealed probe until each has read it several times: the
+// admission loop skips its tick, so the admission is never consulted.
+func TestWatchAdmission_SealedSkipsTheAdmission(t *testing.T) {
+	probe := &callerProbe{}
+	admission := &countingAdmission{}
+	g := New(probe, nil, time.Millisecond, WithAdmission(admission))
+	g.Start()
+	deadline := time.Now().Add(5 * time.Second)
+	for probe.byAdmission.Load() < 3 || probe.byProbe.Load() < 3 {
+		if time.Now().After(deadline) {
+			g.Stop()
+			t.Fatalf("watch loops read the probe %d (admission) and %d (probe) times",
+				probe.byAdmission.Load(), probe.byProbe.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	g.Stop()
+	if n := admission.n.Load(); n != 0 {
+		t.Fatalf("a sealed node consulted the admission %d times", n)
+	}
 }
 
 // TestOpen_RefusesWhileSealed: no session opens while the probe is closed,

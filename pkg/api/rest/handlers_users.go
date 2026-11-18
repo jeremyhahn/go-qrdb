@@ -45,6 +45,10 @@ type createUserRequest struct {
 	// Empty defaults to active, or pending when Pending is set.
 	Lifecycle string `json:"lifecycle,omitempty"`
 	Pending   bool   `json:"pending,omitempty"`
+	// PendingTTL is how long a pending account may wait for activation, a
+	// Go duration ("15m", "24h"). Only valid with a pending create; empty or
+	// zero means no expiry.
+	PendingTTL string `json:"pending_ttl,omitempty"`
 }
 
 // updateUserRequest is the JSON payload for PUT /users/{id}.
@@ -115,6 +119,9 @@ type userResponse struct {
 	MFAEnrolledAt string   `json:"mfa_enrolled_at,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 	UpdatedAt     string   `json:"updated_at"`
+	// PendingExpiresAt is when an unactivated pending account is reaped,
+	// RFC 3339; omitted when the account has no expiry.
+	PendingExpiresAt string `json:"pending_expires_at,omitempty"`
 }
 
 // listUsersResponse is the JSON payload returned by GET /users/list.
@@ -150,7 +157,18 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var pendingTTL time.Duration
+	if req.PendingTTL != "" {
+		d, perr := time.ParseDuration(req.PendingTTL)
+		if perr != nil {
+			writeErrorJSON(w, http.StatusBadRequest, &InvalidParameterError{Param: "pending_ttl", Err: perr})
+			return
+		}
+		pendingTTL = d
+	}
+
 	u, err := s.userSvc.CreateUser(ctx, &user.CreateUserRequest{
+		PendingTTL:           pendingTTL,
 		Username:             req.Username,
 		Email:                req.Email,
 		Name:                 req.Name,
@@ -676,25 +694,26 @@ func userToResponse(ctx context.Context, lister user.FactorLister, u *user.User)
 	}
 
 	return &userResponse{
-		ID:            u.ID,
-		Username:      u.Username,
-		Email:         u.Email,
-		Name:          u.Name,
-		TenantID:      u.TenantID,
-		RoleIDs:       roleIDs,
-		System:        u.System,
-		Lifecycle:     string(u.Lifecycle),
-		AuthMethods:   u.AuthMethods,
-		LastAuth:      formatLastAuth(u.LastAuth),
-		CertBindings:  user.WireCertBindings(u.CertBindings),
-		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
-		Attributes:    u.Attributes,
-		Factors:       factors.Factors,
-		MFAEnabled:    factors.MFAEnabled,
-		MFAMethods:    factors.MFAMethods,
-		MFAEnrolledAt: factors.MFAEnrolledAt,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+		ID:               u.ID,
+		Username:         u.Username,
+		Email:            u.Email,
+		Name:             u.Name,
+		TenantID:         u.TenantID,
+		RoleIDs:          roleIDs,
+		System:           u.System,
+		Lifecycle:        string(u.Lifecycle),
+		AuthMethods:      u.AuthMethods,
+		LastAuth:         formatLastAuth(u.LastAuth),
+		CertBindings:     user.WireCertBindings(u.CertBindings),
+		RoleBindings:     user.WireRoleBindings(u.RoleBindings),
+		Attributes:       u.Attributes,
+		Factors:          factors.Factors,
+		MFAEnabled:       factors.MFAEnabled,
+		MFAMethods:       factors.MFAMethods,
+		MFAEnrolledAt:    factors.MFAEnrolledAt,
+		CreatedAt:        u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        u.UpdatedAt.Format(time.RFC3339),
+		PendingExpiresAt: formatLastAuth(u.PendingExpiresAt),
 	}, nil
 }
 

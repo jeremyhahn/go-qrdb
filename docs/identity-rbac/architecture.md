@@ -1110,6 +1110,15 @@ the policy is that grant written down.
   `suspended` · `locked` · `disabled` · `deleting`. `User.CanAuthenticate()` is
   the check, and it fails closed on an absent state and on a state this build
   does not recognize.
+- **A pending account can expire, and only the leader reaps it.** A pending
+  create may set a TTL, stored as `User.PendingExpiresAt`; activation clears
+  it. `user.PendingReaper` runs on the node on a ticker
+  (`auth.pending_user_sweep_interval`, default `1m`, `off` disables) and acts
+  only while the node is the Raft leader (a standalone node is always leader).
+  Each sweep walks every tenant's users, re-reads each candidate, and deletes
+  only a record still `pending` past its expiry — with its role assignments
+  and enrolled factors — auditing `pending_reaped`. An `active` account, or a
+  pending one with no TTL, is never touched.
 - **`deleting` is terminal.** A deletion writes it before its first mutation,
   and from that instant no concurrent enable, and no credential ceremony
   finishing late, can make the account authenticable again. `DeleteUser` marks
