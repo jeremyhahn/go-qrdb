@@ -462,6 +462,31 @@ func TestRequiredModules(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRequiredModulesActiveReplacement(t *testing.T) {
+	dir := t.TempDir()
+	gomod := "module example.com/m\n\ngo 1.25\n\n" +
+		"require (\n\texample.com/orig v1.0.0\n\texample.com/pinned v1.2.0\n)\n\n" +
+		"replace example.com/orig => example.com/fork v1.0.0\n\n" +
+		"replace example.com/pinned v1.1.0 => example.com/oldfork v1.1.0\n\n" +
+		"replace example.com/absent => example.com/absentfork v1.0.0\n\n" +
+		"replace example.com/pinned => ../local\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+
+	got, err := requiredModules(dir)
+	require.NoError(t, err)
+	assert.True(t, got["example.com/orig"])
+	assert.True(t, got["example.com/fork"], "the replacement of a required module is in the build")
+	assert.False(t, got["example.com/oldfork"], "a replace of another version is not active")
+	assert.False(t, got["example.com/absentfork"], "a replace of a module not required is not active")
+	assert.False(t, got["../local"], "a directory replacement is not a module path")
+
+	hits := map[string][]advisory{"example.com/fork@v1.0.0": {{ID: "GO-2026-0001"}}}
+	findings := vulnFindings(dir, hits, got)
+	require.Len(t, findings, 1)
+	assert.Equal(t, "example.com/fork", findings[0].Module)
+	assert.True(t, findings[0].Required, "a vulnerable replacement fails the gate")
+}
+
 // TestScanDir: a module scan runs in a package directory of the module,
 // because govulncheck -scan module takes no pattern and fails with "no Go
 // files" in a root that has none.

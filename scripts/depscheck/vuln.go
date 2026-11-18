@@ -164,7 +164,8 @@ func (v vulnFinding) note() string {
 }
 
 // requiredModules is the set of module paths with a require line, direct
-// or // indirect, in the go.mod of dir.
+// or // indirect, in the go.mod of dir, plus the replacement path of every
+// active versioned replace of one of them.
 func requiredModules(dir string) (map[string]bool, error) {
 	file := filepath.Join(dir, "go.mod")
 	data, err := os.ReadFile(file) //#nosec G304 -- the go.mod of a module directory the Makefile names
@@ -175,10 +176,28 @@ func requiredModules(dir string) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]bool)
+	required := make(map[string]string)
 	for _, d := range directives {
 		if d.Kind == kindRequire {
-			out[d.Path] = true
+			required[d.Path] = d.Version
+		}
+	}
+	out := make(map[string]bool, len(required))
+	for path := range required {
+		out[path] = true
+	}
+	// An active versioned replace puts its replacement in the build in
+	// place of the module required, so govulncheck reports a finding on
+	// the replacement's path: that path is required too. A replace is
+	// active when it names the required module and either no version or
+	// the version required.
+	for _, d := range directives {
+		if d.Kind != kindReplace || d.NewVersion == "" {
+			continue
+		}
+		version, ok := required[d.Path]
+		if ok && (d.Version == "" || d.Version == version) {
+			out[d.NewPath] = true
 		}
 	}
 	return out, nil
