@@ -223,6 +223,31 @@ func ClearPendingSystemSOIfEnrolled(ctx context.Context, store PendingAdminCertS
 	return true, nil
 }
 
+// ConsumeEnrolledSystemSO marks the pending system SO record consumed when it
+// is exactly the record so was read from: same username, certificate and PIN
+// record. A first boot that enrolled (or retired) so calls it before the node
+// serves, so the record cannot outlive the enrollment and re-bind a key the
+// SO's operator withdraws later. An absent, already-consumed or different
+// record is left as it is and reported consumed=false; a store fault is
+// returned, and the caller must not report the boot successful.
+func ConsumeEnrolledSystemSO(ctx context.Context, store PendingAdminCertStore, so *SOConfig) (bool, error) {
+	if store == nil || so == nil {
+		return false, nil
+	}
+	pending, err := PendingSystemSO(ctx, store)
+	if err != nil {
+		return false, err
+	}
+	if pending == nil || pending.Username != so.Username || pending.PINRecord != so.PINRecord ||
+		!bytes.Equal(pending.CertPEM, so.CertPEM) {
+		return false, nil
+	}
+	if err := store.Put(ctx, PendingSystemSOKey, pendingAdminCertConsumedMarker); err != nil {
+		return false, &PendingAdminCertStoreError{Op: "consume system SO", Cause: err}
+	}
+	return true, nil
+}
+
 // readPendingSystemSO reads the pending system SO record. Only not-found
 // means absent (nil, nil): any other store failure is returned, so a store
 // that cannot answer never reads as "no SO" and lets startup or
