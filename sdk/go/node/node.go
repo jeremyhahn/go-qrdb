@@ -3640,6 +3640,13 @@ func buildNodeSealSubsystem(ctx context.Context, cfg *qrdbconfig.Config, dataDir
 	// (docs/credentials/architecture.md, "Storage"); until then it fails
 	// closed.
 	credOpts := []credentials.Option{credentials.WithLegacyStore(barrier)}
+	// The credential core records migration, conflict handling, scheduled
+	// rotation and retention GC on the node's compliance trail. It takes the
+	// logger at construction, before binding and before the boot migration
+	// runs, so no event of the boot path is lost.
+	if trail != nil {
+		credOpts = append(credOpts, credentials.WithAuditLogger(trail))
+	}
 	if nOpts != nil && nOpts.credentialRotation != nil {
 		credOpts = append(credOpts, credentials.WithRotationValueSource(nOpts.credentialRotation))
 	}
