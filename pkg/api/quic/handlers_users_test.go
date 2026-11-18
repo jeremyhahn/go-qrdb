@@ -106,6 +106,47 @@ func TestHandleCreateUser_Success(t *testing.T) {
 	}
 }
 
+// TestHandleCreateUser_PendingTTL carries pendingTTL into the domain request,
+// returns pendingExpiresAt, and refuses a TTL that is not a duration.
+func TestHandleCreateUser_PendingTTL(t *testing.T) {
+	expires := time.Date(2026, 11, 14, 12, 15, 0, 0, time.UTC)
+	var got *user.CreateUserRequest
+	mock := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{
+				ID: 7, Username: req.Username, Lifecycle: user.LifecyclePending,
+				PendingExpiresAt: &expires, CreatedAt: expires, UpdatedAt: expires,
+			}, nil
+		},
+	}
+	srv := NewServer(nil, nil, "localhost:0", WithUserService(mock))
+	payload, _ := json.Marshal(createUserWireRequest{
+		Username: "pam", Email: "pam@example.com", Pending: true, PendingTTL: "15m",
+	})
+	resp, err := srv.handleCreateUser(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.PendingTTL != 15*time.Minute || !got.Pending {
+		t.Fatalf("PendingTTL = %v, Pending = %v", got.PendingTTL, got.Pending)
+	}
+	var out userWireResponse
+	if err := json.Unmarshal(resp, &out); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if out.PendingExpiresAt != "2026-11-14T12:15:00Z" {
+		t.Fatalf("pendingExpiresAt = %q", out.PendingExpiresAt)
+	}
+
+	got = nil
+	bad, _ := json.Marshal(createUserWireRequest{Username: "pam", Pending: true, PendingTTL: "soon"})
+	var inv *InvalidArgumentError
+	if _, err := srv.handleCreateUser(context.Background(), bad); !errors.As(err, &inv) || got != nil {
+		t.Fatalf("bad TTL: err %v, service called %v", err, got != nil)
+	}
+}
+
 func TestHandleCreateUser_ServiceError(t *testing.T) {
 	mock := &mockUserService{
 		createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {

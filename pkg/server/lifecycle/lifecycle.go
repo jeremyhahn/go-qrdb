@@ -954,6 +954,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// Every user store below validates written permitted-method policies
 	// against THIS node's auth-chain vocabulary.
 	userOpts = append(userOpts, user.WithAuthMethodVocabulary(infra.AuthMethodVocabulary))
+	// A pending-user TTL waits for every member to carry its record fields.
+	userOpts = append(userOpts, user.WithPendingTTLGate(PendingUserTTLRequired(infra.Host)))
+	// The pending-user reaper's pending_reaped event (and every other user
+	// audit event) reaches the node's audit log on the SDK path too.
+	if infra.AuditLogger != nil {
+		userOpts = append(userOpts, user.WithAuditLogger(infra.AuditLogger))
+	}
 	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}

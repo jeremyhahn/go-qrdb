@@ -442,6 +442,15 @@ func (r *routingUserAuthFactorService) Delete(ctx context.Context, factorID stri
 	return svc.Delete(ctx, factorID, force)
 }
 
+// Purge routes to the tenant's factor service.
+func (r *routingUserAuthFactorService) Purge(ctx context.Context, userID uint64) (int, error) {
+	svc, err := r.serviceFor(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return svc.Purge(ctx, userID)
+}
+
 // Rotate routes to the caller's tenant. Both the old and the new factor live
 // in that one store, so the rotation cannot straddle a tenant boundary.
 func (r *routingUserAuthFactorService) Rotate(ctx context.Context, oldID string, newFactor *auth.AuthFactor) error {
