@@ -57,6 +57,28 @@ func TestNew_OverlappingRoots(t *testing.T) {
 	}
 }
 
+// TestNew_AliasedJournalRefused: a database whose journal directory is a
+// symlink to another open database's journal shares that journal, so the
+// second open is refused as an overlapping root.
+func TestNew_AliasedJournalRefused(t *testing.T) {
+	base := t.TempDir()
+	a := filepath.Join(base, "a")
+	b := filepath.Join(base, "b")
+	require.NoError(t, os.MkdirAll(b+journalTreeSuffix, 0o700))
+	require.NoError(t, os.Symlink(b+journalTreeSuffix, a+journalTreeSuffix))
+
+	first, err := openLocal(t, b)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, first.Close()) }()
+
+	second, err := openLocal(t, a)
+	if err == nil {
+		require.NoError(t, second.Close())
+	}
+	var overlap *OverlappingRootError
+	require.True(t, errors.As(err, &overlap), "got %v", err)
+}
+
 // TestNew_OverlapReleasedOnClose covers the registry release: a nested root
 // opens once the root holding it is closed.
 func TestNew_OverlapReleasedOnClose(t *testing.T) {

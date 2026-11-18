@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -273,7 +274,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	// are registered now and released if the open fails after this point.
 	if rootSetting, walked := walkedRoots[provider]; walked {
 		dataRoot := canonical[rootSetting]
-		jRoot, err := journalRoot(dataRoot)
+		jRoot, err := physicalJournalRoot(dataRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -441,11 +442,15 @@ var openRoots = struct {
 func registerRoots(e *Engine, roots [2]string) error {
 	openRoots.mu.Lock()
 	defer openRoots.mu.Unlock()
-	for _, other := range openRoots.roots {
+	for other, held := range openRoots.roots {
 		for _, root := range roots {
-			for _, held := range other {
-				if strictlyNested(root, held) || strictlyNested(held, root) {
-					return &OverlappingRootError{Root: root, Other: held}
+			for _, h := range held {
+				// An equal root is shared only by the same namespace: a
+				// journal tree aliased onto another database's journal
+				// (or root) is a second writer on the same objects.
+				if strictlyNested(root, h) || strictlyNested(h, root) ||
+					(root == h && other.namespace != e.namespace) {
+					return &OverlappingRootError{Root: root, Other: h}
 				}
 			}
 		}
@@ -553,6 +558,29 @@ func strictlyNested(inner, outer string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// physicalJournalRoot is the journal tree of the physical data root with
+// its own symlinks resolved: the journal store follows a symlinked journal
+// directory, so its lexical name would hide that two databases share one
+// journal. A journal tree not yet created resolves through its parent.
+func physicalJournalRoot(dataRoot string) (string, error) {
+	lexical, err := journalRoot(dataRoot)
+	if err != nil {
+		return "", err
+	}
+	physical, err := filepath.EvalSymlinks(lexical)
+	if err == nil {
+		return physical, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(lexical))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(lexical)), nil
 }
 
 // claimNamespace checks or writes the format marker (ensureFormatMarker) and
