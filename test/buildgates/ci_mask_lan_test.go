@@ -31,8 +31,10 @@ var maskLANBuildStep = regexp.MustCompile(`(^|[\s;&|(` + "`" + `])(make|docker|g
 // maskLANPoolLabel names a runs-on that can reach the pools.
 var maskLANPoolLabel = regexp.MustCompile(`self-hosted|bigdisk|codex|qwen`)
 
-// maskLANProblems lists each pool job without the mask step before its first
-// build step.
+// maskLANProblems lists each pool job that builds without the mask step
+// before its first build step. A pool job that builds nothing (one that only
+// reads the other jobs' results, like a gate) prints no environment and is
+// left alone.
 func maskLANProblems(body []byte) []string {
 	var wf struct {
 		Jobs map[string]struct {
@@ -70,9 +72,10 @@ func maskLANProblems(body []byte) []string {
 			}
 		}
 		switch {
+		case build < 0:
 		case mask < 0:
 			problems = append(problems, "pool job "+name+" never runs "+maskLANScript+": its log could print a LAN address (ruling 887)")
-		case build >= 0 && build < mask:
+		case build < mask:
 			problems = append(problems, "pool job "+name+" runs "+strings.TrimSpace(job.Steps[build].Name)+" before "+maskLANScript)
 		}
 	}
@@ -102,6 +105,9 @@ func TestCIPoolJobsMaskTheLANAddresses(t *testing.T) {
 	}
 	if p := maskLANProblems([]byte("jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: make build\n")); len(p) != 0 {
 		t.Fatalf("a hosted job was held to the pool rule: %v", p)
+	}
+	if p := maskLANProblems([]byte(pool + "      - run: echo \"$RESULTS\"\n")); len(p) != 0 {
+		t.Fatalf("a pool job that builds nothing was held to the rule: %v", p)
 	}
 }
 
