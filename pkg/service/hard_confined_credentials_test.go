@@ -252,6 +252,10 @@ func TestHardConfinedKeys_TheCredentialSidecarPrefixesAreConfinedWhole(t *testin
 func TestHardConfinedKeys_TheCredentialLayoutMoveMarkerIsConfinedWhole(t *testing.T) {
 	root := InternalKeyPrefixSystem + "credential-layout-moved/"
 	requireConfinedWhole(t, root, root+"0123abcd/db-pass")
+	// A forged or replaced source identity would let a move pass claim
+	// another source's markers.
+	source := InternalKeyPrefixSystem + "credential-layout-source/"
+	requireConfinedWhole(t, source, source+"id")
 }
 
 // requireConfinedWhole asserts key, a record under root, is refused to the

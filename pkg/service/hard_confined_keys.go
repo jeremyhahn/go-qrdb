@@ -125,7 +125,9 @@ var hardConfinedMaterialPrefixes = []string{
 // tells a later move pass the destination copy of a credential is
 // committed, so the pass deletes the source records without copying
 // them, and a marker forged through the embedded KV would destroy the
-// only copy.
+// only copy. credentials.LayoutSourcePrefix holds a source store's
+// identity, which the marker keys name: a forged or replaced identity
+// would let a move pass claim another source's markers.
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
@@ -133,6 +135,7 @@ var hardConfinedWholePrefixes = []string{
 	credentials.VersionKeyPrefix,
 	credentials.StagedKeyPrefix,
 	credentials.LayoutMovedPrefix,
+	credentials.LayoutSourcePrefix,
 	delegationPolicyConfinedPrefix,
 }
 

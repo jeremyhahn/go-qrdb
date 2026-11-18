@@ -2,7 +2,9 @@ package credentials
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"slices"
@@ -20,15 +22,24 @@ var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix,
 
 // LayoutMovedPrefix keys the move marker a layout move writes into the
 // destination store in the same guarded batch as a credential's records:
-// it says the copy there is this move's, so a pass that stopped before
-// the source records were deleted is finished, not reported as a
-// conflict. No layout prefix matches it, and the marker carries no secret.
-// pkg/service hard-confines it: a forged marker would make a move pass
-// delete the source records without copying them.
+// it says the copy there is this source store's, so a pass that stopped
+// before the source records were deleted is finished, not reported as a
+// conflict. The marker key is LayoutMovedPrefix + <source id> + "/" +
+// <name>, and its value the move id of the pass that wrote it. No layout
+// prefix matches it, and the marker carries no secret. pkg/service
+// hard-confines it: a forged marker would make a move pass delete the
+// source records without copying them.
 const LayoutMovedPrefix = "__sys:credential-layout-moved/"
 
-// layoutMovedValue is the fixed value of a move marker.
-const layoutMovedValue = "moved"
+// LayoutSourcePrefix holds the identity record of a store credentials are
+// moved out of; LayoutSourceKey is that record. It is not a layout
+// prefix and is never moved. pkg/service hard-confines it: a forged or
+// replaced source identity would let a move pass claim another source's
+// markers.
+const LayoutSourcePrefix = "__sys:credential-layout-source/"
+
+// LayoutSourceKey is the source store's identity record.
+const LayoutSourceKey = LayoutSourcePrefix + "id"
 
 // BindStoreFrom binds st as the credential store, as BindStore does, and
 // moves every record of the replicated layout that from holds into st:
@@ -124,20 +135,79 @@ func layoutSetOf(prefix, key string) (name, enc string) {
 	return string(raw), seg
 }
 
+// layoutMove identifies one move pass: the source store's identity and a
+// fresh id for this pass.
+type layoutMove struct{ source, id string }
+
+// marker is the key of name's move marker for this pass's source store.
+func (m layoutMove) marker(name string) string {
+	return LayoutMovedPrefix + m.source + "/" + name
+}
+
+// layoutSourceID returns the identity of the store credentials are moved
+// out of, writing a fresh one the first time. A concurrent first write
+// that wins the race is the identity.
+func layoutSourceID(ctx context.Context, from Store) (string, error) {
+	held, err := holdsKey(ctx, from, LayoutSourceKey)
+	if err != nil {
+		return "", err
+	}
+	if !held {
+		id, err := newLayoutID()
+		if err != nil {
+			return "", err
+		}
+		if _, err := from.PutIfAbsent(ctx, LayoutSourceKey, []byte(id)); err != nil {
+			return "", err
+		}
+	}
+	id, err := from.Get(ctx, LayoutSourceKey)
+	if err != nil {
+		return "", err
+	}
+	if len(id) == 0 {
+		return "", errors.New("credentials: empty credential store identity")
+	}
+	src := string(id)
+	clear(id)
+	return src, nil
+}
+
+// newLayoutID returns a random 128-bit id in hex, which never holds '/'.
+func newLayoutID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // moveLayout moves every replicated-layout record from from into to, one
 // credential name at a time. A name to already holds any record of is not
 // moved: both copies stay where they are and the name is reported in a
 // *LayoutConflictError once every other name has moved. Every other name's
 // records are written in one guarded batch that requires each destination
-// key absent and writes the name's move marker (LayoutMovedPrefix) with
-// them. Only a batch that applied deletes its source records, and the
-// marker goes last: a move cut short before the batch copies again next
-// time, and one cut short after it finds the marker and only deletes the
-// source records left, so they can never bring back a credential deleted
-// from to since. A marker whose name has no source records left (a pass
-// cut short before deleting it) is removed at the end. Each value read
-// from from is wiped once its write attempt is over.
+// key absent and writes the name's move marker with them. Markers are per
+// source store: the marker key names from's identity (LayoutSourceKey) and
+// its value this pass's move id. Only a batch that applied deletes its
+// source records, and the marker goes last: a move cut short before the
+// batch copies again next time, and one cut short after it finds this
+// source's marker and only deletes the source records left, so they can
+// never bring back a credential deleted from to since. Another source's
+// marker on a name is an ordinary conflict. A marker of this source whose
+// name has no source records left (a pass cut short before deleting it) is
+// removed at the end; other sources' markers are left alone. Each value
+// read from from is wiped once its write attempt is over.
 func moveLayout(ctx context.Context, from, to Store) error {
+	src, err := layoutSourceID(ctx, from)
+	if err != nil {
+		return err
+	}
+	id, err := newLayoutID()
+	if err != nil {
+		return err
+	}
+	move := layoutMove{source: src, id: id}
 	sets := map[string]*layoutSet{}
 	var order []string
 	for _, prefix := range layoutPrefixes {
@@ -158,7 +228,7 @@ func moveLayout(ctx context.Context, from, to Store) error {
 	}
 	var conflicts []string
 	for _, name := range order {
-		moved, err := moveLayoutSet(ctx, from, to, sets[name])
+		moved, err := moveLayoutSet(ctx, from, to, move, sets[name])
 		if err != nil {
 			return err
 		}
@@ -166,12 +236,13 @@ func moveLayout(ctx context.Context, from, to Store) error {
 			conflicts = append(conflicts, name)
 		}
 	}
-	markers, err := to.List(ctx, LayoutMovedPrefix)
+	markerRoot := LayoutMovedPrefix + move.source + "/"
+	markers, err := to.List(ctx, markerRoot)
 	if err != nil {
 		return err
 	}
 	for _, marker := range markers {
-		if _, ok := sets[strings.TrimPrefix(marker, LayoutMovedPrefix)]; ok {
+		if _, ok := sets[strings.TrimPrefix(marker, markerRoot)]; ok {
 			continue
 		}
 		if err := to.Delete(ctx, marker); err != nil {
@@ -188,10 +259,12 @@ func moveLayout(ctx context.Context, from, to Store) error {
 // moveLayoutSet moves one credential's records and reports false, leaving
 // both stores as they were, when to already holds a record of that name
 // without its move marker or the guarded write did not apply. When to
-// holds the marker, an earlier pass committed the set: its remaining
-// source records and then the marker are deleted, and nothing is copied.
-func moveLayoutSet(ctx context.Context, from, to Store, set *layoutSet) (bool, error) {
-	marker := LayoutMovedPrefix + set.name
+// holds this source's marker, an earlier pass committed the set: its
+// remaining source records and then the marker are deleted, and nothing is
+// copied. Another source's marker on the name is an ordinary conflict:
+// destinationHolds sees that source's records.
+func moveLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *layoutSet) (bool, error) {
+	marker := move.marker(set.name)
 	marked, err := holdsKey(ctx, to, marker)
 	if err != nil {
 		return false, err
@@ -201,7 +274,7 @@ func moveLayoutSet(ctx context.Context, from, to Store, set *layoutSet) (bool, e
 		// its source records were gone: finish that pass. The source
 		// copy is never copied again, so a credential deleted from to
 		// since cannot come back.
-		return true, finishLayoutSet(ctx, from, to, set)
+		return true, finishLayoutSet(ctx, from, to, move, set)
 	}
 	held, err := destinationHolds(ctx, to, set)
 	if err != nil || held {
@@ -223,18 +296,18 @@ func moveLayoutSet(ctx context.Context, from, to Store, set *layoutSet) (bool, e
 		writes = append(writes, kvstore.KV{Key: key, Value: value})
 	}
 	guards = append(guards, kvstore.Guard{Key: marker})
-	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(layoutMovedValue)})
+	writes = append(writes, kvstore.KV{Key: marker, Value: []byte(move.id)})
 	applied, err := to.PutAllIfAllUnchanged(ctx, guards, writes)
 	if err != nil || !applied {
 		return false, err
 	}
-	return true, finishLayoutSet(ctx, from, to, set)
+	return true, finishLayoutSet(ctx, from, to, move, set)
 }
 
 // finishLayoutSet deletes the source records of a set whose copy, with its
 // move marker, is committed in to, and then the marker. A source key that
 // is already gone is not an error.
-func finishLayoutSet(ctx context.Context, from, to Store, set *layoutSet) error {
+func finishLayoutSet(ctx context.Context, from, to Store, move layoutMove, set *layoutSet) error {
 	for _, key := range set.keys {
 		present, err := holdsKey(ctx, from, key)
 		if err != nil {
@@ -247,7 +320,7 @@ func finishLayoutSet(ctx context.Context, from, to Store, set *layoutSet) error 
 			return err
 		}
 	}
-	return to.Delete(ctx, LayoutMovedPrefix+set.name)
+	return to.Delete(ctx, move.marker(set.name))
 }
 
 // holdsKey reports whether st holds exactly key.

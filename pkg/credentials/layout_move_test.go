@@ -242,6 +242,78 @@ func requireMovedAndClean(t *testing.T, from, to Store, name string, keys []stri
 	assert.Empty(t, markers, "the move marker of %s is gone", name)
 }
 
+// markerOf is the move-marker key of name for the source store from.
+func markerOf(t *testing.T, from Store, name string) string {
+	t.Helper()
+	src, err := layoutSourceID(context.Background(), from)
+	require.NoError(t, err)
+	return LayoutMovedPrefix + src + "/" + name
+}
+
+// requireMarked checks st holds the marker key with a move id as value.
+func requireMarked(t *testing.T, st Store, marker string) {
+	t.Helper()
+	held, err := holdsKey(context.Background(), st, marker)
+	require.NoError(t, err)
+	require.True(t, held, marker)
+	id, err := st.Get(context.Background(), marker)
+	require.NoError(t, err)
+	assert.NotEmpty(t, id, "a marker carries its move id")
+}
+
+func TestLayoutSourceID_IsStable(t *testing.T) {
+	ctx := context.Background()
+	a, b := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	first, err := layoutSourceID(ctx, a)
+	require.NoError(t, err)
+	require.NotEmpty(t, first)
+	again, err := layoutSourceID(ctx, a)
+	require.NoError(t, err)
+	assert.Equal(t, first, again, "a store keeps its identity")
+	other, err := layoutSourceID(ctx, b)
+	require.NoError(t, err)
+	assert.NotEqual(t, first, other, "two stores have distinct identities")
+}
+
+// Two source stores holding the same name: the second store's pass does
+// not take the first store's marker as its own, so it keeps its copy and
+// reports the conflict, and neither pass sweeps the other's markers.
+func TestMoveLayout_TwoSourcesSameNameKeepBothCopies(t *testing.T) {
+	ctx := context.Background()
+	memA, memB, to := seal.NewMemoryBackend(), seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keysA := putLayout(t, memA, "db", "old")
+	keysB := putLayout(t, memB, "db", "other")
+	fromA := &faultyStore{Store: memA, op: "delete", key: credentialPrefix + "db"}
+	require.ErrorIs(t, moveLayout(ctx, fromA, to), errInjected)
+	markerA := markerOf(t, memA, "db")
+	foreign := LayoutMovedPrefix + "feedface/gone"
+	require.NoError(t, to.Put(ctx, foreign, []byte("m")))
+
+	err := moveLayout(ctx, memB, to)
+	var conflict *LayoutConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, []string{"db"}, conflict.Names)
+	for _, k := range keysB {
+		requireValue(t, memB, k, "other@"+k)
+	}
+	for _, k := range keysA {
+		requireValue(t, to, k, "old@"+k)
+	}
+	requireMarked(t, to, markerA)
+	requireMarked(t, to, foreign)
+
+	require.NoError(t, moveLayout(ctx, fromA, to))
+	for _, k := range keysA {
+		requireAbsent(t, memA, k)
+		requireValue(t, to, k, "old@"+k)
+	}
+	requireAbsent(t, to, markerA)
+	requireMarked(t, to, foreign)
+	for _, k := range keysB {
+		requireValue(t, memB, k, "other@"+k)
+	}
+}
+
 // A pass that stops after the destination commit, before any source record
 // is deleted, is finished by the next pass, not reported as a conflict.
 func TestMoveLayout_CrashAfterCommitIsFinished(t *testing.T) {
@@ -252,7 +324,7 @@ func TestMoveLayout_CrashAfterCommitIsFinished(t *testing.T) {
 
 	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
 	require.True(t, from.fired)
-	requireValue(t, to, LayoutMovedPrefix+"db", layoutMovedValue)
+	requireMarked(t, to, markerOf(t, mem, "db"))
 	for _, key := range keys {
 		requireValue(t, from, key, "old@"+key)
 	}
@@ -284,11 +356,12 @@ func TestMoveLayout_LeftoverMarkerIsRemoved(t *testing.T) {
 	ctx := context.Background()
 	from, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
 	keys := putLayout(t, from, "db", "old")
-	to := &faultyStore{Store: mem, op: "delete", key: LayoutMovedPrefix + "db"}
+	marker := markerOf(t, from, "db")
+	to := &faultyStore{Store: mem, op: "delete", key: marker}
 
 	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
 	require.True(t, to.fired)
-	requireValue(t, to, LayoutMovedPrefix+"db", layoutMovedValue)
+	requireMarked(t, to, marker)
 
 	require.NoError(t, moveLayout(ctx, from, to))
 	requireMovedAndClean(t, from, to, "db", keys)
@@ -310,7 +383,7 @@ func TestMoveLayout_UnmarkedDestinationStillConflicts(t *testing.T) {
 		requireValue(t, from, key, "old@"+key)
 	}
 	requireValue(t, to, credentialPrefix+"db", "new")
-	requireAbsent(t, to, LayoutMovedPrefix+"db")
+	requireAbsent(t, to, markerOf(t, from, "db"))
 }
 
 // A credential deleted after a move that stopped before its source records
