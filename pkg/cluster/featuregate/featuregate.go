@@ -226,6 +226,14 @@ const VerifiableLogKeys feature.Feature = "verifiable-log-keys"
 // See docs/databases/architecture.md.
 const VerifiableLogAudit feature.Feature = "verifiable-log-audit"
 
+// PendingUserTTL is the pending-user expiry: User.PendingExpiresAt and the
+// reaper's ExpiryClaim on the user record, and the "__reap/" markers the
+// pending-user reaper writes. A binary without it decodes a user record
+// without those fields and drops them on its next update of the record, so
+// a TTL-bearing create is refused (feature.NotActiveError) and the reaper
+// does not sweep until the feature is active cluster-wide.
+const PendingUserTTL feature.Feature = "pending-user-ttl"
+
 // VectorManhattan is the Manhattan (L1) distance metric on a FLAT or IVF
 // vector namespace: record metric value 3 (pkg/vector DistanceManhattan),
 // which a binary from before it refuses as an unknown metric while its
@@ -254,7 +262,7 @@ const LockCreateRevisionToken feature.Feature = "lock-create-revision-token"
 
 // supported lists the features this binary implements. A new feature is
 // added here, and to nothing else in this package.
-var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit}
+var supported = []feature.Feature{GuardedWrites, ClusterShardIDs, PrefixCompaction, NodeCompaction, ClusterSeal, ImportStaging, RangeDelete, AuditAppend, VectorEngine, TimeSeriesRetention, LeaseCheckpoint, PerNodeBarrierKeys, VerifiableLog, RollingMigration, TenantUndo, VerifiableLogKeys, VectorManhattan, CommandCaps, LockCreateRevisionToken, TransactionReads, VerifiableLogAudit, PendingUserTTL}
 
 // Supported returns the features this binary implements.
 func Supported() []feature.Feature {

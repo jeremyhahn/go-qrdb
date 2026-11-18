@@ -26,8 +26,15 @@ group — identity is a certificate.
 | `--without-email-login-key` | bool | create an identity with **no** email login key — certificate-only or bootstrap. It cannot be resolved by email |
 | `--tenant-id` | string | tenant (maps to certificate OU) |
 | `--roles` | string | comma-separated **role IDs** to assign |
+| `--pending` | bool | create the account `pending`: it cannot log in until `qrdb users enable` activates it |
+| `--pending-ttl` | duration | with `--pending`, delete the account if it is not activated within this time (`15m`, `24h`); `0` = never. Refused without `--pending` or when negative |
 
 ```bash
+# A pending account the reaper deletes unless it is activated within a day.
+qrdb users create --username bob --email bob@acme.com --tenant-id acme \
+  --pending --pending-ttl 24h
+qrdb users enable "$BOB_ID"   # activates it and clears the expiry
+
 # An ordinary user: the email is the login key.
 qrdb users create --username alice --email alice@acme.com --name "Alice" \
   --tenant-id acme --roles "$OPERATOR_ROLE_ID"

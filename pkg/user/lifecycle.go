@@ -14,6 +14,8 @@
 
 package user
 
+import "time"
+
 // Lifecycle is the canonical account state of a user. It is the SINGLE source
 // of truth for whether an account may authenticate, and the only account-state
 // field a User carries.
@@ -187,6 +189,25 @@ func (l Lifecycle) String() string { return string(l) }
 // prefer — the kind of silent choice that shows up later as an invited user who
 // could log in without redeeming the invitation.
 func initialLifecycle(req *CreateUserRequest) (Lifecycle, error) {
+	initial, err := requestedLifecycle(req)
+	if err != nil {
+		return "", err
+	}
+	if req.PendingTTL < 0 {
+		return "", &ValidationError{Field: "pending_ttl", Reason: "must not be negative"}
+	}
+	if req.PendingTTL > 0 && initial != LifecyclePending {
+		return "", &ValidationError{
+			Field:  "pending_ttl",
+			Reason: "applies only to a " + string(LifecyclePending) + " account, not " + string(initial),
+		}
+	}
+	return initial, nil
+}
+
+// requestedLifecycle resolves the state a create asks for from Lifecycle and
+// its Pending shorthand.
+func requestedLifecycle(req *CreateUserRequest) (Lifecycle, error) {
 	if req.Lifecycle == "" {
 		if req.Pending {
 			return LifecyclePending, nil
@@ -210,6 +231,37 @@ func initialLifecycle(req *CreateUserRequest) (Lifecycle, error) {
 	return req.Lifecycle, nil
 }
 
+// pendingExpiry is the PendingExpiresAt a create stamps: now plus the
+// request's TTL for a pending account that asked for one, nil otherwise.
+// initialLifecycle has already refused a TTL on any other state.
+func pendingExpiry(req *CreateUserRequest, initial Lifecycle, now time.Time) *time.Time {
+	if initial != LifecyclePending || req.PendingTTL <= 0 {
+		return nil
+	}
+	at := now.Add(req.PendingTTL).UTC()
+	return &at
+}
+
+// PendingExpired reports whether u is a pending account whose TTL has run
+// out at now — the one condition under which PendingReaper deletes it. An
+// account in any other state, or pending without a TTL, never expires.
+func PendingExpired(u *User, now time.Time) bool {
+	return u != nil && u.Lifecycle == LifecyclePending &&
+		u.PendingExpiresAt != nil && !now.Before(*u.PendingExpiresAt)
+}
+
+// ExpiryClaimed reports whether u is a lapsed pending account the reaper has
+// claimed (ClaimExpiredPending) and not yet finished deleting.
+func ExpiryClaimed(u *User) bool {
+	return u != nil && u.Lifecycle == LifecycleDeleting && u.ExpiryClaim != nil
+}
+
+// PendingReapable reports whether the reaper should (finish) deleting u: an
+// expired pending account, or one it already claimed.
+func PendingReapable(u *User, now time.Time) bool {
+	return PendingExpired(u, now) || ExpiryClaimed(u)
+}
+
 // creatableLifecycles returns the directly-creatable states in a stable order
 // for error messages. Ordered by lifecycle progression rather than by map
 // iteration so the message reads the same on every call.
@@ -231,6 +283,12 @@ func applyLifecycle(u *User, to Lifecycle) error {
 		return &LifecycleTransitionError{ID: u.ID, From: u.Lifecycle, To: to}
 	}
 	u.Lifecycle = to
+	// The TTL describes an account awaiting activation; nothing else may
+	// carry one, or the reaper's contract (it never deletes an active
+	// account) would rest on the reaper's own check alone.
+	if to != LifecyclePending {
+		u.PendingExpiresAt = nil
+	}
 	return nil
 }
 

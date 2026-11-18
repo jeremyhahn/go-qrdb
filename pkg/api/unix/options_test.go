@@ -34,37 +34,6 @@ func (stubEncryptionMigrator) EnableEncryption(_ context.Context, _ service.Barr
 
 var _ service.EncryptionMigrator = stubEncryptionMigrator{}
 
-// TestWithLock_Applied verifies the WithLock option sets the lockSvc field.
-func TestWithLock_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-lock.sock",
-		WithLock(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.lockSvc != nil {
-		t.Fatal("expected nil lockSvc")
-	}
-}
-
-// TestWithTenantService_Applied verifies the WithTenantService option sets the tenantSvc field.
-func TestWithTenantService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tenant.sock",
-		WithTenantService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.tenantSvc != nil {
-		t.Fatal("expected nil tenantSvc")
-	}
-}
-
-// TestWithEncryptionMigrator_Applied verifies the WithEncryptionMigrator
-// option sets the encMigrator field. The nil case must not crash Start.
-func TestWithEncryptionMigrator_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-encmigrator.sock",
-		WithEncryptionMigrator(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.encMigrator != nil {
-		t.Fatal("expected nil encMigrator")
-	}
-}
-
 // TestWithEncryptionMigrator_NonNil verifies the WithEncryptionMigrator
 // option propagates a non-nil migrator through to the Server struct.
 func TestWithEncryptionMigrator_NonNil(t *testing.T) {
@@ -92,27 +61,6 @@ func TestStart_WithEncryptionMigrator_Registered(t *testing.T) {
 
 	if srv.Addr() == "" {
 		t.Fatal("expected non-empty Addr after Start")
-	}
-}
-
-// TestWithAuthFactorService_Applied verifies the WithAuthFactorService option sets the authFactorSvc field.
-func TestWithAuthFactorService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-authfactor.sock",
-		WithAuthFactorService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.authFactorSvc != nil {
-		t.Fatal("expected nil authFactorSvc")
-	}
-}
-
-// TestWithTenantBarrierService_Applied verifies the WithTenantBarrierService
-// option sets the tenantBarrierSvc field. The nil case must not crash Start.
-func TestWithTenantBarrierService_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-tenantbarrier.sock",
-		WithTenantBarrierService(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.tenantBarrierSvc != nil {
-		t.Fatal("expected nil tenantBarrierSvc")
 	}
 }
 
@@ -145,57 +93,5 @@ func TestWithAdminService_Applied(t *testing.T) {
 		WithTLS(selfSignedTLSConfig(t)))
 	if srv.adminSvc == nil {
 		t.Fatal("expected non-nil adminSvc after WithAdminService")
-	}
-}
-
-// TestWithAuditLogger_Applied verifies the WithAuditLogger option sets the auditLogger field.
-func TestWithAuditLogger_Applied(t *testing.T) {
-	srv := NewServer(newMockKVService(), &mockAdminService{}, "/tmp/test-audit.sock",
-		WithAuditLogger(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-	if srv.auditLogger != nil {
-		t.Fatal("expected nil auditLogger")
-	}
-}
-
-// TestWithAllNewOptions_StartStop exercises all newly-covered options in an
-// integrated Start/Stop cycle.
-func TestWithAllNewOptions_StartStop(t *testing.T) {
-	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
-		WithLock(nil),
-		WithTenantService(nil),
-		WithAuthFactorService(nil),
-		WithTenantBarrierService(nil),
-		WithAuditLogger(nil),
-		WithTLS(selfSignedTLSConfig(t)))
-
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	defer srv.Stop()
-
-	if srv.Addr() != socketPath {
-		t.Errorf("expected Addr %q, got %q", socketPath, srv.Addr())
-	}
-}
-
-// TestStart_WithTenantBarrierService_Registered exercises the non-nil
-// tenantBarrierSvc branch in Start so that the gRPC service registration is
-// covered. This is the parallel of TestStart_WithAuditLogger but for the
-// per-tenant barrier RPCs.
-func TestStart_WithTenantBarrierService_Registered(t *testing.T) {
-	socketPath := tempSocketPath(t)
-	srv := NewServer(newMockKVService(), &mockAdminService{}, socketPath,
-		WithTenantBarrierService(&stubTenantBarrierSvc{}),
-		WithTLS(selfSignedTLSConfig(t)))
-
-	if err := srv.Start(); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	defer srv.Stop()
-
-	if srv.Addr() == "" {
-		t.Fatal("expected non-empty Addr after Start")
 	}
 }

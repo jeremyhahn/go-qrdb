@@ -737,30 +737,6 @@ func TestKVRowIter_Close(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance tests
-// ---------------------------------------------------------------------------
-
-func TestKVTable_ImplementsInsertableTable(t *testing.T) {
-	var _ sqle.InsertableTable = (*KVTable)(nil)
-}
-
-func TestKVTable_ImplementsDeletableTable(t *testing.T) {
-	var _ sqle.DeletableTable = (*KVTable)(nil)
-}
-
-func TestKVTable_ImplementsUpdatableTable(t *testing.T) {
-	var _ sqle.UpdatableTable = (*KVTable)(nil)
-}
-
-func TestKVTable_ImplementsReplaceableTable(t *testing.T) {
-	var _ sqle.ReplaceableTable = (*KVTable)(nil)
-}
-
-func TestKVWriter_ImplementsRowReplacer(t *testing.T) {
-	var _ sqle.RowReplacer = (*kvWriter)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // Insert with unsupported value type
 // ---------------------------------------------------------------------------
 

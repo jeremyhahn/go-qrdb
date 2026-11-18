@@ -112,6 +112,8 @@ func newUsersCreateCmd() *cobra.Command {
 		tenantID             string
 		roles                string
 		withoutEmailLoginKey bool
+		pending              bool
+		pendingTTL           time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -119,12 +121,22 @@ func newUsersCreateCmd() *cobra.Command {
 		Short: "Create a new user",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if pendingTTL != 0 && !pending {
+				return fmt.Errorf("--pending-ttl requires --pending")
+			}
+			if pendingTTL < 0 {
+				return fmt.Errorf("--pending-ttl must not be negative")
+			}
 			req := &transport.CreateUserRequest{
 				Username:             username,
 				Email:                email,
 				Name:                 name,
 				WithoutEmailLoginKey: withoutEmailLoginKey,
 				TenantID:             tenantID,
+				Pending:              pending,
+			}
+			if pendingTTL > 0 {
+				req.PendingTTL = pendingTTL.String()
 			}
 
 			if roles != "" {
@@ -148,6 +160,10 @@ func newUsersCreateCmd() *cobra.Command {
 		"Create a user with no email login key — a certificate-only or bootstrap identity that cannot be resolved by email")
 	cmd.Flags().StringVar(&tenantID, "tenant-id", "", "Tenant ID")
 	cmd.Flags().StringVar(&roles, "roles", "", "Comma-separated role IDs to assign")
+	cmd.Flags().BoolVar(&pending, "pending", false,
+		"Create the account pending: it cannot log in until activated with 'users enable'")
+	cmd.Flags().DurationVar(&pendingTTL, "pending-ttl", 0,
+		"With --pending, delete the account if it is not activated within this duration (e.g. 15m, 24h); 0 = never")
 
 	return cmd
 }
