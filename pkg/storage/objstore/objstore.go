@@ -401,10 +401,15 @@ func namespaceKey(provider string, settings map[string]string) string {
 // provider reaches or manages the store, so two opens differing only in
 // them share one namespace and one owner lock. A provider absent from the
 // map, such as a RegisterProvider one, is keyed on every setting.
+//
+// A GCS bucket name is global and the backend places objects by bucket
+// alone, so "project" (the billing and creation project) does not select
+// the namespace: two opens of one bucket under different projects are one
+// namespace and take one owner lock.
 var locationSettings = map[string][]string{
 	"local": {"path"},
 	"s3":    {"bucket", "endpoint", "region"},
-	"gcs":   {"bucket", "project"},
+	"gcs":   {"bucket"},
 	"azure": {"accountName", "containerName", "endpoint"},
 }
 
