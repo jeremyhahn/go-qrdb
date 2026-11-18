@@ -22,12 +22,12 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/firstboot"
 )
 
-// consumeTestNotFound is the not-found shape firstboot's record readers
+// consumeTestNotFoundError is the not-found shape firstboot's record readers
 // recognise (a KeyNotFound method).
-type consumeTestNotFound struct{ key string }
+type consumeTestNotFoundError struct{ key string }
 
-func (e *consumeTestNotFound) Error() string       { return "not found: " + e.key }
-func (e *consumeTestNotFound) KeyNotFound() string { return e.key }
+func (e *consumeTestNotFoundError) Error() string       { return "not found: " + e.key }
+func (e *consumeTestNotFoundError) KeyNotFound() string { return e.key }
 
 // consumeTestStore is a map-backed firstboot.PendingAdminCertStore whose
 // Put can be made to fail.
@@ -52,7 +52,7 @@ func (s *consumeTestStore) PutIfAbsent(_ context.Context, key string, value []by
 func (s *consumeTestStore) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := s.records[key]
 	if !ok {
-		return nil, &consumeTestNotFound{key: key}
+		return nil, &consumeTestNotFoundError{key: key}
 	}
 	return v, nil
 }
