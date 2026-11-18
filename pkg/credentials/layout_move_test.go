@@ -228,3 +228,112 @@ func TestBindStoreFrom_WipesTheMovedValues(t *testing.T) {
 	assert.Equal(t, "v2", retrieveString(t, svc, "db"), "the moved value is intact")
 	assert.Equal(t, "v1", versionString(t, svc, "db", 1))
 }
+
+// requireMovedAndClean checks a finished move of keys: to holds each value,
+// from holds none of them and no move marker is left.
+func requireMovedAndClean(t *testing.T, from, to Store, name string, keys []string) {
+	t.Helper()
+	for _, key := range keys {
+		requireValue(t, to, key, "old@"+key)
+		requireAbsent(t, from, key)
+	}
+	markers, err := to.List(context.Background(), layoutMovedPrefix)
+	require.NoError(t, err)
+	assert.Empty(t, markers, "the move marker of %s is gone", name)
+}
+
+// A pass that stops after the destination commit, before any source record
+// is deleted, is finished by the next pass, not reported as a conflict.
+func TestMoveLayout_CrashAfterCommitIsFinished(t *testing.T) {
+	ctx := context.Background()
+	mem, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := putLayout(t, mem, "db", "old")
+	from := &faultyStore{Store: mem, op: "delete", key: credentialPrefix + "db"}
+
+	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
+	require.True(t, from.fired)
+	requireValue(t, to, layoutMovedPrefix+"db", layoutMovedValue)
+	for _, key := range keys {
+		requireValue(t, from, key, "old@"+key)
+	}
+
+	require.NoError(t, moveLayout(ctx, from, to), "the retry is no LayoutConflictError")
+	requireMovedAndClean(t, from, to, "db", keys)
+}
+
+// A source Delete that fails mid-set leaves part of the source; the next
+// pass deletes the rest.
+func TestMoveLayout_SourceDeleteFailsMidSet(t *testing.T) {
+	ctx := context.Background()
+	mem, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := putLayout(t, mem, "db", "old")
+	from := &faultyStore{Store: mem, op: "delete", key: versionKey("db", 1)}
+
+	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
+	require.True(t, from.fired)
+	requireAbsent(t, from, credentialPrefix+"db")
+	requireValue(t, from, versionKey("db", 1), "old@"+versionKey("db", 1))
+
+	require.NoError(t, moveLayout(ctx, from, to))
+	requireMovedAndClean(t, from, to, "db", keys)
+}
+
+// A pass that stops after the last source Delete leaves only the marker;
+// the next pass removes it.
+func TestMoveLayout_LeftoverMarkerIsRemoved(t *testing.T) {
+	ctx := context.Background()
+	from, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := putLayout(t, from, "db", "old")
+	to := &faultyStore{Store: mem, op: "delete", key: layoutMovedPrefix + "db"}
+
+	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
+	require.True(t, to.fired)
+	requireValue(t, to, layoutMovedPrefix+"db", layoutMovedValue)
+
+	require.NoError(t, moveLayout(ctx, from, to))
+	requireMovedAndClean(t, from, to, "db", keys)
+}
+
+// A destination record without a move marker is still a conflict: the
+// source copy is kept and no marker is written.
+func TestMoveLayout_UnmarkedDestinationStillConflicts(t *testing.T) {
+	ctx := context.Background()
+	from, to := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	keys := putLayout(t, from, "db", "old")
+	require.NoError(t, to.Put(ctx, credentialPrefix+"db", []byte("new")))
+
+	err := moveLayout(ctx, from, to)
+	var conflict *LayoutConflictError
+	require.ErrorAs(t, err, &conflict)
+	assert.Equal(t, []string{"db"}, conflict.Names)
+	for _, key := range keys {
+		requireValue(t, from, key, "old@"+key)
+	}
+	requireValue(t, to, credentialPrefix+"db", "new")
+	requireAbsent(t, to, layoutMovedPrefix+"db")
+}
+
+// A credential deleted after a move that stopped before its source records
+// were gone does not come back on the next move pass.
+func TestMoveLayout_DeletedCredentialNotResurrected(t *testing.T) {
+	ctx := context.Background()
+	first, second := seal.NewMemoryBackend(), seal.NewMemoryBackend()
+	svc := newUnboundService(t)
+	require.NoError(t, svc.BindStore(ctx, first))
+	require.NoError(t, svc.StoreCredential(ctx, "db", []byte("v1")))
+
+	from := &faultyStore{Store: first, op: "delete", key: credentialPrefix + "db"}
+	require.ErrorIs(t, moveLayout(ctx, from, second), errInjected)
+	require.NoError(t, svc.BindStore(ctx, second))
+	assert.Equal(t, "v1", retrieveString(t, svc, "db"))
+	require.NoError(t, svc.DeleteCredential(ctx, "db"))
+
+	require.NoError(t, moveLayout(ctx, from, second))
+	_, err := svc.retrieveBytes(ctx, "db")
+	require.ErrorIs(t, err, ErrCredentialNotFound)
+	for _, prefix := range layoutPrefixes {
+		left, err := first.List(ctx, prefix)
+		require.NoError(t, err)
+		assert.Empty(t, left, "the earlier store keeps no record of the name")
+	}
+}
