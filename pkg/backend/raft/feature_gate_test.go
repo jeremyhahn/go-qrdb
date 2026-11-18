@@ -181,3 +181,31 @@ func TestHostAdapter_AdmitReplica(t *testing.T) {
 	assert.Equal(t, "old:1", refused.Address)
 	assert.NoError(t, a.AdmitReplica(7, "n1"))
 }
+
+func TestHostAdapter_AdmitReplicaAt(t *testing.T) {
+	ungated := NewWithInner(nil, &mockQuicraftHost{})
+	id, err := ungated.AdmitReplicaAt(7, "old:1")
+	require.NoError(t, err)
+	assert.Zero(t, id)
+
+	gate := gateOver(t, groups{
+		1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}},
+		7: {ConfigChangeID: 1, Replicas: map[uint64]string{9: "n1"}},
+	})
+	a := NewWithInner(nil, &mockQuicraftHost{})
+	WithFeatureGate(gate)(a)
+
+	for _, shard := range []uint64{1, 7} {
+		wantID, wantErr := gate.AdmitReplicaAt(shard, "n1")
+		require.NoError(t, wantErr)
+		id, err = a.AdmitReplicaAt(shard, "n1")
+		require.NoError(t, err)
+		assert.Equal(t, wantID, id, "shard %d", shard)
+	}
+
+	var refused *featuregate.UnsupportedReplicaError
+	id, err = a.AdmitReplicaAt(7, "old:1")
+	require.ErrorAs(t, err, &refused)
+	assert.Equal(t, "old:1", refused.Address)
+	assert.Zero(t, id)
+}
