@@ -572,6 +572,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       # With no LAN CI registry the pool legs could take no image: fail here,
       # and say why, rather than leave them to fail one by one.
       - name: Require the LAN CI registry
@@ -1008,6 +1013,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1566,6 +1576,11 @@ jobs:
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
 
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
+
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
         run: |
@@ -1655,6 +1670,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'
@@ -1763,6 +1783,11 @@ jobs:
             echo "::add-mask::$val"
             case $val in *://*:*@*) t=${val#*://}; t=${t%%@*}; echo "::add-mask::${t#*:}" ;; esac
           done
+
+      # Ruling 887: the LAN addresses this runner's environment names, masked
+      # before any step that builds can print one.
+      - name: Mask the LAN addresses
+        run: scripts/ci-mask-lan.sh
 
       - name: Free the runner's disk
         if: runner.environment == 'github-hosted'

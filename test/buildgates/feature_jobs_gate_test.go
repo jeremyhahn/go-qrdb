@@ -100,6 +100,11 @@ const (
 	// the images. Like the credential mask, it runs no make target.
 	freeDiskStepName = "Free the runner's disk"
 
+	// maskLANStepName is the step every pool job runs before it builds
+	// (scripts/ci-mask-lan.sh, ruling 887); like the credential mask it runs no
+	// make target.
+	maskLANStepName = "Mask the LAN addresses"
+
 	// featureLoad is each hosted shard's first step after the artifact
 	// download: it loads docker-build's integration image, checks it against
 	// docker-build's image ID, and hands that verified ID, never the shared
@@ -219,7 +224,7 @@ func featureJobProblems(body []byte, want []string) []string {
 		// the shard; the mask's shape is ci_logs_test.go's to check. Only a run
 		// step before any other that runs no make target is taken for one, so
 		// the name cannot carry a narrowed run past this gate.
-		if len(runs) == 0 && (s.Name == maskStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
+		if len(runs) == 0 && (s.Name == maskStepName || s.Name == maskLANStepName || s.Name == freeDiskStepName) && !strings.Contains(s.Run, "make ") {
 			continue
 		}
 		// The LAN CI registry's pull (#1593) leads the load in its exact
