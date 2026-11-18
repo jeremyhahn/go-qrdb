@@ -1021,44 +1021,12 @@ cluster-proof-check: cluster-proof-bin
 # BOOT-01 in container mode: start the inventory's nodes from the release
 # image, take them through first boot and check the admin surface on every
 # transport (docs/cluster-verification/user.md). PROOF_INVENTORY names the
-# inventory; the test fails without one rather than skipping. PROOF_KEEP=1
-# leaves the cluster running after a pass, for a soak against it.
+# inventory; the test fails without one rather than skipping.
 export PROOF_INVENTORY
-export PROOF_KEEP
 
 .PHONY: cluster-proof-boot
 cluster-proof-boot:
 	cd test/clusterproof && $(GOTEST) -tags "$(MIN_TAGS),clusterproof,clusterproof_container" -run '^TestBOOT01$$' ./container/
-
-# The cluster proof on one machine, as the nightly clusterproof-soak job runs
-# it (#1619): boot the three containers `scripts/cluster-proof-ci.sh render`
-# wrote into CLUSTERPROOF_CI_DIR, soak them under PROOF_SEAL=none and check
-# the bundle. The default nemesis is every fault but clock-rate (the nodes
-# share the harness's kernel) and slow-disk (no known block device on a
-# hosted runner). `scripts/cluster-proof-ci.sh down` removes the cluster.
-CLUSTERPROOF_CI_DIR ?= $(CURDIR)/build/clusterproof-ci
-CLUSTERPROOF_CI_NODES := node-1=192.0.2.11:63004,node-2=192.0.2.12:63004,node-3=192.0.2.13:63004
-CLUSTERPROOF_CI_NEMESIS := disk-full,kill,partition-bridge,partition-isolate-leader,partition-majority-minority,pause
-CLUSTERPROOF_CI_PROOF = PROOF_NODES=$(CLUSTERPROOF_CI_NODES) \
-	PROOF_TARGETS=$(CLUSTERPROOF_CI_DIR)/targets.json \
-	PROOF_WORKLOAD=$(CLUSTERPROOF_CI_DIR)/workload.json \
-	PROOF_SEAL=none \
-	PROOF_BUNDLE=$(CLUSTERPROOF_CI_DIR)/bundle \
-	PROOF_DURATION=$(or $(PROOF_DURATION),30m) \
-	PROOF_NEMESIS=$(or $(PROOF_NEMESIS),$(CLUSTERPROOF_CI_NEMESIS))
-
-# The image the CI cluster's faults run in (`scripts/cluster-proof-ci.sh render
-# DIR IMAGE FAULT_IMAGE`): debian with the tools the default partition and
-# disk-full commands run, which the release image does not carry.
-.PHONY: cluster-proof-fault-image
-cluster-proof-fault-image:
-	docker build -f test/clusterproof/fault.Dockerfile -t clusterproof-fault:$(BUILD_VERSION) test/clusterproof
-
-.PHONY: cluster-proof-ci
-cluster-proof-ci:
-	scripts/cluster-proof-ci.sh up $(CLUSTERPROOF_CI_DIR)
-	$(MAKE) cluster-proof $(CLUSTERPROOF_CI_PROOF)
-	$(MAKE) cluster-proof-check $(CLUSTERPROOF_CI_PROOF)
 
 # Run one package's unit tests under the same build tags `make test` uses --
 # the uniform escape hatch for a package that has no named test-<pkg> target
@@ -4153,7 +4121,8 @@ DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
 	test/performance/qrdb test/performance/tikv test/vanguardprobe
-TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+APK_MIRROR_SCRIPT = scripts/apk-mirror.sh
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(APK_MIRROR_SCRIPT) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
 # The integration image and its compose project (#813). The image tag is
@@ -4225,7 +4194,17 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
+	--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
+
+# concurrent-load follows a content-tagged image build. Two builds that miss
+# together on one daemon both build, and only the first --load can tag the
+# result: the second fails with "image ... already exists" (run 57133). That
+# loser finds the image held once its build fails, and the tag is the
+# content, so it succeeds; any other failed build fails with the build's
+# status. docker-build-toolchain and docker-build-it both use it: pool-images
+# builds on a daemon that independent runs share (#1631).
+concurrent-load = || { status=$$?; docker image inspect '$(1)' >/dev/null 2>&1 || exit $$status; echo "==> a concurrent build loaded $(1) first"; }
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
@@ -4248,17 +4227,13 @@ docker-build-toolchain:
 		:; \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . && \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . $(call concurrent-load,$(TOOLCHAIN_IMAGE)); \
 		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Two builds that miss together on one daemon both build, and only the
-# first --load can tag the result: the second fails with "image ... already
-# exists" (run 57133). That loser finds the image held once its build fails,
-# and the tag is the content, so it succeeds; any other failed build fails
-# with the build's status.
+# tree's. Its build recovers from a concurrent load (concurrent-load).
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
@@ -4271,11 +4246,7 @@ docker-build-it:
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-			--target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-		}; \
+			--target integration -t $(IT_IMAGE) . $(call concurrent-load,$(IT_IMAGE)); \
 		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 

@@ -1612,7 +1612,10 @@ acknowledgements are ordinary metadata writes.
 
 Standing rules that also apply:
 - **No backward-compatibility code.** Pre-release tenants are re-created, not
-  migrated.
+  migrated. The one exception is the rolling-upgrades wire rule: a release
+  speaks exactly one previous release's wire, chosen by version negotiation and
+  deleted in the release after ([SPEC.md](../SPEC.md) Boundaries, owner
+  decision 231 (a)).
 - **Changes ship behind the cluster feature gate** (`pkg/cluster/featuregate`).
 
 Open question: SNI as the passthrough routing input.
