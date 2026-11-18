@@ -37,10 +37,10 @@ review.
 | Cluster enrolment | first frame is version ‖ suite, version `0x01`, checked on receipt; `JoinRequest.Features` | `pkg/cluster/clusterenroll` |
 | Key delivery | no version in the envelope; `qrdb/keydelivery/v1` appears only in the HPKE info string and the URL | `pkg/cluster/keydelivery` |
 | Raft command encoding | `[op:1][payload]`, no version; an unknown opcode is `InvalidOpcodeError`, and a mixed group diverges | `pkg/protocol` |
-| Cluster feature gate | 21 features advertised per replica; enabled per group when all its replicas advertise it, activated permanently when all nodes do; `UnsupportedFeatureError` refuses a binary that lacks an activated feature | `pkg/cluster/featuregate` |
+| Cluster feature gate | 22 features, each advertised per node; `Gate.Enabled` is true only once a feature is activated cluster-wide (every node advertises it), and activation is permanent. Per-group early enablement was removed because log replay to a rolled-back replica diverges. `CheckActivated` (`UnsupportedFeatureError`) refuses to start a binary that lacks an activated feature; before activation a write keeps the documented fallback | `pkg/cluster/featuregate` |
 | Node release version | `VERSION` passed as `-X main.version` (default `dev`), shown only by `qrdbd version`; peers do not exchange it | `cmd/qrdbd` |
 | Capabilities RPC | 19 booleans, no server version | `CapabilitiesResponse` |
-| SDK user create | no TTL field | `sdk/go/transport` |
+| SDK user create | sends `pending_ttl_seconds` (#1587, in v0.58.5-alpha). An older server drops it; the SDK then sees an account with no expiry and deletes it (`transport.EnforcePendingTTL`). This is an undo after the fact, not a refusal (#1601) | `sdk/go/transport` |
 | Test infrastructure | the clusterproof inventory has one image for the whole cluster; nothing builds an older release | `test/clusterproof` |
 
 Documents that say version equality is required today and change with this row:
@@ -72,7 +72,10 @@ skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
 ## Questions for review
 
 Each question has a recommendation. The owner rules on Q4. The others are
-settled by convention (ruling 109) unless the review objects.
+settled by convention (ruling 109) unless the review objects. The SPEC row
+itself merges only on the owner's recorded approval of its text, as the rules
+of [SPEC.md](../SPEC.md) require. Owner decision 224 orders the row; it does not
+approve this wording.
 
 1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
    releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
@@ -100,20 +103,32 @@ settled by convention (ruling 109) unless the review objects.
 
 All tests are CLI multi-protocol end-to-end tests, with no sleeps (waits are on
 observed state), under the cluster suites. **N** is the first release that
-carries this row. Until two such releases exist, the matrix builds N+1 from the
-same tree with a synthetic higher release and wire version. The clusterproof
-inventory needs a per-node image to run them.
+carries this row. The clusterproof inventory needs a per-node image to run
+them. Each test states which pair of builds it runs on:
+
+- **Released pair.** v0.58.4-alpha lacks the pending-user TTL (feature
+  `pending-user-ttl`, #1587), and v0.58.5-alpha has it. The two releases really
+  differ in feature support, so T1-T4 and T6-T8 run on real releases from the
+  first lane on. v0.58.4-alpha is the older side, and each later release
+  replaces the newer side.
+- **Synthetic N+1.** Until two releases carry the version announcement, T5
+  (gap refusal) and the negotiation parts of T2 build N+1 from the same tree
+  with a higher release and wire version. This build also registers one
+  test-only feature and one test-only request field, under a test build tag,
+  so that T4 and T8 also run against a feature the older side lacks. Without
+  them the two sides would support the same features, and those tests could
+  not fail.
 
 | Test | What it proves |
 |---|---|
 | T1 | Roll a three-node cluster N → N+1 one node at a time under the clusterproof workload. The linearizability check passes, and no write is lost. |
 | T2 | Mid-upgrade clusters, 2×N + 1×(N+1) and 1×N + 2×(N+1). Every transport (gRPC, REST, QUIC, MCP, SQL wires) serves through the CLI on every node, and forwarding works in both directions (N → N+1 leader and N+1 → N leader). |
 | T3 | Roll back N+1 → N before activation. Data written during the mixed phase reads back. |
-| T4 | After activation, an N binary refuses to start, with the typed error naming the feature. |
+| T4 | After activation, an N binary refuses to start, with the typed error naming the feature: on the released pair, `pending-user-ttl` activated by v0.58.5-alpha refuses v0.58.4-alpha; on the synthetic pair, the test-only feature. |
 | T5 | Version-gap refusal (N and N+2) on every channel: enrolment returns the typed refusal, ALPN ends in alert 120, the Raft `WireWindow` refuses. The node logs both versions, and the cluster does not diverge. |
 | T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. |
 | T7 | Key delivery across versions, in both directions. |
-| T8 | SDK N+1 → server N: TTL user create is refused with the typed error and no user is created. SDK N → server N+1 works. This is the first case (#1601). |
+| T8 | An SDK with the TTL field → a v0.58.4-alpha server: TTL user create is refused before any user exists, with a typed error. Today it is created and then deleted (#1601), which this test must reject. SDK → server on the same or a newer release works. The synthetic pair repeats this with the test-only field. This is the first case (#1601). |
 
 ## Delivery
 
