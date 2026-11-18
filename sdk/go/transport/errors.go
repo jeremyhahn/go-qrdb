@@ -16,6 +16,7 @@ package transport
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"time"
 
@@ -741,6 +742,27 @@ type InvalidConsistencyLevelError struct {
 // Error returns a human-readable description.
 func (e *InvalidConsistencyLevelError) Error() string {
 	return "transport: invalid consistency level: " + e.Level
+}
+
+// RetainVersionsRangeError is returned when a rotation policy's retention
+// count does not fit the int32 the wire carries. Narrowing it would wrap
+// to a different count, so the transport rejects it before encoding.
+type RetainVersionsRangeError struct {
+	Count int
+}
+
+// Error returns a human-readable description.
+func (e *RetainVersionsRangeError) Error() string {
+	return "transport: invalid argument: retain versions " + strconv.Itoa(e.Count) + " is outside the int32 range"
+}
+
+// CheckRetainVersions returns a *RetainVersionsRangeError when count does
+// not fit an int32, and nil otherwise.
+func CheckRetainVersions(count int) error {
+	if int64(count) < math.MinInt32 || int64(count) > math.MaxInt32 {
+		return &RetainVersionsRangeError{Count: count}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

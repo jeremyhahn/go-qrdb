@@ -16,7 +16,6 @@ package grpc
 
 import (
 	"context"
-	"math"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
@@ -144,11 +143,14 @@ func (t *Transport) CredentialSetRotationPolicy(ctx context.Context, req *transp
 	if req == nil {
 		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: credentialNilRequestError{}}
 	}
+	if err := transport.CheckRetainVersions(req.RetainVersions); err != nil {
+		return &transport.RequestError{Method: "CredentialSetRotationPolicy", Err: err}
+	}
 	_, err := t.client.CredentialSetRotationPolicy(ctx, &pb.CredentialSetRotationPolicyRequest{
 		Name:           req.Name,
 		Enabled:        req.Enabled,
 		Interval:       req.Interval,
-		RetainVersions: int32(min(req.RetainVersions, math.MaxInt32)), //nolint:gosec // clamped to the int32 range
+		RetainVersions: int32(req.RetainVersions), //nolint:gosec // range-checked above
 	})
 	if err != nil {
 		return mapGRPCError("CredentialSetRotationPolicy", err)
