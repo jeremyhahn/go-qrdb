@@ -29,6 +29,8 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"net"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -370,6 +372,14 @@ func lockNamespace(namespace string) func() {
 // keyed on every setting. Inline credentials are refused before the key is
 // taken (RejectCredentialSettings).
 func namespaceKey(provider string, settings map[string]string) string {
+	if provider == "s3" {
+		canonical := make(map[string]string, len(settings)+1)
+		for name, value := range settings {
+			canonical[name] = value
+		}
+		canonical["endpoint"] = canonicalS3Endpoint(settings["endpoint"])
+		settings = canonical
+	}
 	location, listed := locationSettings[provider]
 	if !listed {
 		for name := range settings {
@@ -397,6 +407,66 @@ func namespaceKey(provider string, settings map[string]string) string {
 	return b.String()
 }
 
+// awsS3Identity is the canonical endpoint of AWS S3, whose bucket names
+// are global: every AWS endpoint reaches one bucket of a given name.
+const awsS3Identity = "aws"
+
+// canonicalS3Endpoint returns the identity of the S3 service an endpoint
+// setting reaches. An omitted endpoint (the SDK default) and any AWS S3
+// endpoint (s3.amazonaws.com, s3.<region>.amazonaws.com,
+// s3-<region>.amazonaws.com and their bucket virtual-host forms, over http
+// or https) are awsS3Identity. Any other endpoint is its lowercased scheme
+// and host with the port made explicit (443 for https, 80 for http), any
+// path or trailing slash dropped.
+func canonicalS3Endpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return awsS3Identity
+	}
+	raw := endpoint
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return strings.ToLower(strings.TrimRight(endpoint, "/"))
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if isAWSS3Host(host) {
+		return awsS3Identity
+	}
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	if port == "" {
+		return scheme + "://" + host
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+// isAWSS3Host reports whether host is an AWS S3 service host: under
+// amazonaws.com, with an "s3" or "s3-<region>" label (a bucket
+// virtual-host form puts the bucket name before it).
+func isAWSS3Host(host string) bool {
+	rest, ok := strings.CutSuffix(host, ".amazonaws.com")
+	if !ok {
+		return false
+	}
+	for _, label := range strings.Split(rest, ".") {
+		if label == "s3" || strings.HasPrefix(label, "s3-") {
+			return true
+		}
+	}
+	return false
+}
+
 // locationSettings lists, per go-objstore provider, the settings that
 // address the store: where its objects live. The rest (runLifecycle,
 // lifecycleManagerType, lifecyclePolicyFile, multipartExpiry,
@@ -409,9 +479,15 @@ func namespaceKey(provider string, settings map[string]string) string {
 // alone, so "project" (the billing and creation project) does not select
 // the namespace: two opens of one bucket under different projects are one
 // namespace and take one owner lock.
+//
+// An S3 namespace is the bucket at its effective endpoint. "region" only
+// routes requests, so it never selects the namespace, and namespaceKey
+// canonicalizes "endpoint" (canonicalS3Endpoint): an omitted endpoint and
+// every AWS S3 endpoint spelling are the one AWS identity, whose bucket
+// names are global, and any other endpoint is its scheme, host and port.
 var locationSettings = map[string][]string{
 	"local": {"path"},
-	"s3":    {"bucket", "endpoint", "region"},
+	"s3":    {"bucket", "endpoint"},
 	"gcs":   {"bucket"},
 	"azure": {"accountName", "containerName", "endpoint"},
 }
