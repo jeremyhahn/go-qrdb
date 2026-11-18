@@ -40,7 +40,7 @@ func TestPermissionsOwnTool_ReturnsTheCallersOwnGrants(t *testing.T) {
 	}
 	ctx := auth.WithIdentity(context.Background(), id)
 
-	result, err := handlePermissionsOwn(roles)(ctx, mcp.CallToolRequest{})
+	result, err := handlePermissionsOwn(roles, nil)(ctx, mcp.CallToolRequest{})
 	if err != nil {
 		t.Fatalf("handlePermissionsOwn: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestPermissionsOwnTool_ReturnsTheCallersOwnGrants(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	want, err := role.ListOwnPermissions(ctx, roles)
+	want, err := role.ListOwnPermissions(ctx, roles, false)
 	if err != nil {
 		t.Fatalf("role.ListOwnPermissions: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestPermissionsOwnTool_NeverReturnsAnotherTenantsGrants(t *testing.T) {
 	ctx := auth.WithIdentity(context.Background(), authtest.AdminIdentity(authtest.BindingTenant, "alice"))
 	ctx = tenant.WithTenantID(ctx, authtest.OtherTenant)
 
-	if _, err := handlePermissionsOwn(roles)(ctx, mcp.CallToolRequest{}); err != nil {
+	if _, err := handlePermissionsOwn(roles, nil)(ctx, mcp.CallToolRequest{}); err != nil {
 		t.Fatalf("handlePermissionsOwn: %v", err)
 	}
 	if got := roles.Resolved(); !reflect.DeepEqual(got, []string{authtest.BindingTenant}) {
@@ -77,7 +77,7 @@ func TestPermissionsOwnTool_NeverReturnsAnotherTenantsGrants(t *testing.T) {
 func TestPermissionsOwnTool_RefusesAnUnauthenticatedCaller(t *testing.T) {
 	roles := authtest.NewTenantRoutedRoles(t, authtest.BindingTenant)
 
-	_, err := handlePermissionsOwn(roles)(context.Background(), mcp.CallToolRequest{})
+	_, err := handlePermissionsOwn(roles, nil)(context.Background(), mcp.CallToolRequest{})
 	if !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("error = %v, want auth.ErrUnauthenticated", err)
 	}

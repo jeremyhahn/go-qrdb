@@ -52,7 +52,7 @@ func TestHandleListOwnPermissions_ReturnsTheCallersOwnGrants(t *testing.T) {
 	var resp listOwnPermissionsResponse
 	decodeJSON(t, rec, &resp)
 
-	want, err := role.ListOwnPermissions(ctx, roles)
+	want, err := role.ListOwnPermissions(ctx, roles, false)
 	if err != nil {
 		t.Fatalf("role.ListOwnPermissions: %v", err)
 	}

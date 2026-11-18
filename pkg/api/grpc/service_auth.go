@@ -564,7 +564,7 @@ func (s *qrdbServiceServer) ListOwnPermissions(ctx context.Context, _ *emptypb.E
 		return nil, mapServiceError(&ServiceNotConfiguredError{Service: "role"})
 	}
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		return nil, mapServiceError(err)
 	}

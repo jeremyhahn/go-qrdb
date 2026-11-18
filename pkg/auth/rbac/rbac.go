@@ -757,19 +757,17 @@ func (a *RBACAuthorizer) Authorize(ctx context.Context, identity *auth.Identity,
 	// holding the SO, so it must not earn an SO-exclusive grant (Codex r2
 	// P1 on #1129). The deny-list above keeps the alias: denying more is
 	// safe, granting more is not.
-	if a.strictSoD && slices.Contains(permission.StrictSOGrants, required) {
-		isSO := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameSO)
-		if !isSO && len(bound) > 0 {
-			isSO = hasCanonicalSystemRole(bound, target, role.RoleNameSO)
+	grants := role.StrictSOGrants(a.strictSoD, identity.Roles, identity.TenantID)
+	if len(grants) == 0 && len(bound) > 0 {
+		grants = role.StrictSOGrants(a.strictSoD, bound, target)
+	}
+	if slices.Contains(grants, required) {
+		merged := make(map[permission.Permission]struct{}, len(permSet)+1)
+		for p := range permSet {
+			merged[p] = struct{}{}
 		}
-		if isSO {
-			merged := make(map[permission.Permission]struct{}, len(permSet)+1)
-			for p := range permSet {
-				merged[p] = struct{}{}
-			}
-			merged[required] = struct{}{}
-			permSet = merged
-		}
+		merged[required] = struct{}{}
+		permSet = merged
 	}
 
 	if !permissionGranted(permSet, resource, action) {

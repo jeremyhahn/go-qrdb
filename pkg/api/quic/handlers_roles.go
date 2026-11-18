@@ -279,7 +279,7 @@ func (s *Server) handleListOwnPermissions(ctx context.Context, _ []byte) ([]byte
 		return nil, &ServiceNotConfiguredError{Service: "role"}
 	}
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		return nil, err
 	}

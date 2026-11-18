@@ -83,6 +83,70 @@ func TestAuthorize_RolesReconcileAll_PerPosture(t *testing.T) {
 	}
 }
 
+// TestListOwnPermissions_ListsWhatAuthorizeGrantsPerPosture pins the listing
+// to the authorizer: role.ListOwnPermissions, under each posture, lists
+// roles:reconcile_all exactly when Authorize grants it (Codex P1 on #1579).
+func TestListOwnPermissions_ListsWhatAuthorizeGrantsPerPosture(t *testing.T) {
+	ctx := context.Background()
+	sysRoles := authtest.BuiltInRoles(t, tenantid.System)
+	sysSO, err := sysRoles.GetRoleByName(ctx, tenantid.System, role.RoleNameSO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysAdmin, err := sysRoles.GetRoleByName(ctx, tenantid.System, role.RoleNameAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acmeRoles := authtest.BuiltInRoles(t, "acme")
+	acmeSO, err := acmeRoles.GetRoleByName(ctx, "acme", role.RoleNameSO)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	so := &auth.Identity{Subject: "so", TenantID: tenantid.System, Roles: []string{sysSO.ID}}
+	admin := &auth.Identity{Subject: "admin", TenantID: tenantid.System, Roles: []string{sysAdmin.ID}}
+	tenantSO := &auth.Identity{Subject: "tenant-so", TenantID: "acme", Roles: []string{acmeSO.ID}}
+	boundSO := &auth.Identity{Subject: "bound-so", TenantID: tenantid.System,
+		RoleBindings: []auth.RoleBinding{{RoleID: sysSO.ID, TenantID: tenantid.System}}}
+
+	for _, tc := range []struct {
+		name     string
+		roles    role.RoleServicer
+		identity *auth.Identity
+		strict   bool
+		allowed  bool
+	}{
+		{"standard: system Admin", sysRoles, admin, false, true},
+		{"standard: system SO", sysRoles, so, false, false},
+		{"strict: system SO", sysRoles, so, true, true},
+		{"standard: system SO by binding", sysRoles, boundSO, false, false},
+		{"strict: system SO by binding", sysRoles, boundSO, true, true},
+		{"standard: tenant SO", acmeRoles, tenantSO, false, false},
+		{"strict: tenant SO", acmeRoles, tenantSO, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authErr := New(tc.roles, WithStrictSeparation(tc.strict)).
+				Authorize(ctxFor(tc.identity.TenantID), tc.identity, "roles", "reconcile_all")
+			if (authErr == nil) != tc.allowed {
+				t.Fatalf("Authorize(roles:reconcile_all) = %v, want allowed=%v", authErr, tc.allowed)
+			}
+			perms, err := role.ListOwnPermissions(auth.WithIdentity(ctxFor(tc.identity.TenantID), tc.identity), tc.roles, tc.strict)
+			if err != nil {
+				t.Fatal(err)
+			}
+			listed := false
+			for _, p := range perms {
+				if p.Name == permission.RolesReconcileAll.String() {
+					listed = true
+				}
+			}
+			if listed != tc.allowed {
+				t.Fatalf("roles:reconcile_all listed = %v, want %v (as Authorize grants it)", listed, tc.allowed)
+			}
+		})
+	}
+}
+
 // TestAuthorize_RolesReconcileAll_CustomRoleWithSOIDIsNotSO pins Codex r2
 // P1 on #1129: a custom system-tenant role a caller created with the ID
 // "so" is not the built-in SO, so in the strict posture holding it — in

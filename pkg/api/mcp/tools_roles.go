@@ -89,7 +89,7 @@ func roleTools(roleSvc role.RoleServicer, userSvc user.UserServicer, authMW *aut
 			// own effective permissions, which role.ListOwnPermissions
 			// resolves in the caller's own tenant.
 			Perm:    permission.IdentityGated,
-			Handler: handlePermissionsOwn(roleSvc),
+			Handler: handlePermissionsOwn(roleSvc, authMW),
 		},
 		{
 			Tool: toolPermissionsAuthorize(),
@@ -633,9 +633,9 @@ func toolPermissionsOwn() mcp.Tool {
 
 // handlePermissionsOwn returns a tool handler that delegates to
 // role.ListOwnPermissions.
-func handlePermissionsOwn(roleSvc role.RoleServicer) mcpserver.ToolHandlerFunc {
+func handlePermissionsOwn(roleSvc role.RoleServicer, authMW *authmw.AuthMiddleware) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		perms, err := role.ListOwnPermissions(ctx, roleSvc)
+		perms, err := role.ListOwnPermissions(ctx, roleSvc, authMW.StrictSeparation())
 		if err != nil {
 			return nil, &ToolError{Tool: "qrdb_permissions_own", Err: err}
 		}

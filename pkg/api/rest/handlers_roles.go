@@ -504,7 +504,7 @@ func (s *Server) handleListOwnPermissions(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), apiRequestTimeout)
 	defer cancel()
 
-	perms, err := role.ListOwnPermissions(ctx, s.roleSvc)
+	perms, err := role.ListOwnPermissions(ctx, s.roleSvc, s.authMW.StrictSeparation())
 	if err != nil {
 		writeErrorJSON(w, mapHTTPError(err), err)
 		return

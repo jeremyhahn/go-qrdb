@@ -16,10 +16,12 @@ package role
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 // PermissionInfo is one effective permission projected with its declared
@@ -70,7 +72,14 @@ func EffectivePermissions(ctx context.Context, svc RoleServicer, roleIDs []strin
 // the resolve read that tenant's roles. The operation needs authentication
 // only, no permission: a caller with no identity is refused with
 // auth.ErrUnauthenticated.
-func ListOwnPermissions(ctx context.Context, svc RoleServicer) ([]PermissionInfo, error) {
+//
+// The listing includes the posture grants Authorize extends
+// (StrictSOGrants), with strict the node's separation-of-duties posture: a
+// system-tenant caller holding the built-in SO, directly or by a binding in
+// its own tenant, lists the strict-only SO grants under strict. They are
+// listed for a system-tenant caller only, because Authorize's scope gate
+// refuses those cluster grants in every other tenant.
+func ListOwnPermissions(ctx context.Context, svc RoleServicer, strict bool) ([]PermissionInfo, error) {
 	identity := auth.IdentityFromContext(ctx)
 	if identity == nil || identity.Subject == "" || identity.TenantID == "" {
 		return nil, auth.ErrUnauthenticated
@@ -79,6 +88,19 @@ func ListOwnPermissions(ctx context.Context, svc RoleServicer) ([]PermissionInfo
 	perms, err := EffectivePermissions(ctx, svc, identity.Roles)
 	if err != nil {
 		return nil, err
+	}
+	if tenantid.IsSystem(identity.TenantID) {
+		ids := slices.Clone(identity.Roles)
+		for _, b := range identity.RoleBindings {
+			if b.TenantID == identity.TenantID {
+				ids = append(ids, b.RoleID)
+			}
+		}
+		if grants := StrictSOGrants(strict, ids, identity.TenantID); len(grants) > 0 {
+			perms = append(slices.Clone(perms), grants...)
+			slices.Sort(perms)
+			perms = slices.Compact(perms)
+		}
 	}
 	out := make([]PermissionInfo, len(perms))
 	for i, p := range perms {
