@@ -855,8 +855,8 @@ func TestAdminService_Status_NotLeader(t *testing.T) {
 	if si.IsLeader {
 		t.Fatal("expected IsLeader=false")
 	}
-	if si.LeaderID != 0 {
-		t.Fatalf("expected LeaderID 0 (no local leader), got %d", si.LeaderID)
+	if si.LeaderID != 1 {
+		t.Fatalf("expected the follower to name leader 1, got %d", si.LeaderID)
 	}
 	if !si.IsDraining {
 		t.Fatal("expected IsDraining=true")

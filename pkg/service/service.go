@@ -1172,13 +1172,15 @@ func (s *AdminService) Health(_ context.Context) (*HealthStatus, error) {
 func (s *AdminService) Status(_ context.Context) (*StatusInfo, error) {
 	info := s.host.NodeHostInfo(quicraft.NodeHostInfoOption{SkipLogInfo: true})
 
+	// LeaderID names the primary (lowest-ID) shard's leader as this replica
+	// knows it, so a follower names the leader too: every member of a
+	// healthy cluster reports the same LeaderID.
 	isLeader := false
-	var leaderID uint64
-	for _, si := range info.ShardInfoList {
-		if si.IsLeader {
-			isLeader = true
-			leaderID = si.ReplicaID
-			break
+	var leaderID, primary uint64
+	for i, si := range info.ShardInfoList {
+		isLeader = isLeader || si.IsLeader
+		if i == 0 || si.ShardID < primary {
+			primary, leaderID = si.ShardID, si.LeaderID
 		}
 	}
 
