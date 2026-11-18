@@ -33,7 +33,9 @@ import (
 // own system barrier and master key, never shared -- see
 // docs/barrier-seal/architecture.md), and NOT a file in data_dir.
 // Composers write it under the system tenant's identity namespace, the same
-// store first boot's own role and user records live in.
+// store first boot's own role and user records live in. Its raw key
+// ("system/" + PendingAdminCertKey) is hard-confined on the embedded
+// transport, like PendingSystemSOKey's.
 const PendingAdminCertKey = "pending-admin-cert"
 
 // pendingAdminCertConsumedMarker is the value ClearPendingAdminCert writes

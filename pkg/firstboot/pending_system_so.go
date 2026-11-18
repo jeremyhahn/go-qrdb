@@ -38,6 +38,11 @@ import (
 // Composers write it BEFORE the pending admin certificate: both records
 // live on one Raft shard, so a replica that sees the admin's record sees
 // the SO's too, and first boot's wait for the admin covers the SO.
+//
+// Its raw key ("system/" + PendingSystemSOKey) is hard-confined on the
+// embedded transport (pkg/service's hardConfinedWholePrefixes): an embedded
+// caller can neither read, forge, replace nor delete it, while first boot
+// reaches it through the node's raw store.
 const PendingSystemSOKey = "pending-system-so"
 
 // pendingSystemSO is the record's JSON form.

@@ -317,7 +317,11 @@ crashes before the next step recovers it on restart. Its composers (`qrdbd`,
 `firstboot.PendingSystemSOKey` with `firstboot.WriteIssuedSystemSOIfAny`,
 which drops the barrier's copy once the replicated record is consumed. Only
 not-found reads as no record: any other store fault fails the boot and
-refuses consumption.
+refuses consumption. The record's raw key, like the pending admin
+certificate's, is hard-confined on the embedded transport: every verb, scan
+root and transaction naming it is refused and broader sweeps filter it out, so
+an embedded caller with `kv:put` cannot forge an SO enrolment. First boot
+reaches both records through the node's raw store.
 They write it before the pending admin certificate. Both records are on one
 Raft shard, so first boot's bounded wait for the admin's record covers the
 SO's too. First boot reads the record (`firstboot.PendingSystemSO`), and the

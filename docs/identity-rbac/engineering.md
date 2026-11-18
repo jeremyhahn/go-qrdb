@@ -127,6 +127,8 @@ func (p Policy) Bound(scope []string, ttl time.Duration) (Grant, time.Duration, 
 // pkg/service/hard_confined_keys.go — the whole policy prefix is hard-confined
 // on the embedded transport (every verb, scan root and transaction refused,
 // broader sweeps filtered); TenantKeyPrefixes reclaims a tenant's policies.
+// The first-boot handoff records system/pending-system-so (the pending system
+// SO) and system/pending-admin-cert are hard-confined beside it, as exact keys.
 // sdk/go/node: Node.MintDelegation — the first mint, in process, as the
 // service principal.
 ```
