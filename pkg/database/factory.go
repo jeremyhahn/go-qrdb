@@ -39,8 +39,17 @@ type BackendFactory interface {
 // EmbeddedBackendFactory creates standalone backends backed by local storage
 // engines (memory, file, pebble).
 type EmbeddedBackendFactory struct {
-	objectStorage ObjectStorageOpener
+	objectStorage         ObjectStorageOpener
+	objectStorageValidate ObjectStorageSettingsValidator
 }
+
+// ObjectStorageSettingsValidator checks a database's Objstore provider
+// settings before the database is written to the catalog, which replicates
+// them to every node: it refuses an inline credential, returning
+// *ObjstoreCredentialSettingError. pkg/database does not link go-objstore,
+// which owns the set of credential setting names, so the node composer
+// supplies it (pkg/database/objstoredb.ValidateSettings).
+type ObjectStorageSettingsValidator func(settings map[string]string) error
 
 // ObjectStorageOpener opens the storage of a `backend: objstore` database
 // from its DatabaseConfig. pkg/database does not link an object-storage
@@ -58,6 +67,49 @@ func WithObjectStorage(open ObjectStorageOpener) EmbeddedBackendFactoryOption {
 	return func(f *EmbeddedBackendFactory) {
 		f.objectStorage = open
 	}
+}
+
+// WithObjectStorageValidator supplies the settings validator for a
+// database's Objstore block, whatever its backend. Without it the factory
+// refuses any Objstore block with *ObjectStorageNotWiredError.
+func WithObjectStorageValidator(validate ObjectStorageSettingsValidator) EmbeddedBackendFactoryOption {
+	return func(f *EmbeddedBackendFactory) {
+		f.objectStorageValidate = validate
+	}
+}
+
+// ValidateObjectStorage checks cfg's Objstore block through the
+// WithObjectStorageValidator validator. A config without one is valid; one
+// with a block and no validator wired is refused with
+// *ObjectStorageNotWiredError. The Manager calls it before the catalog write.
+func (f *EmbeddedBackendFactory) ValidateObjectStorage(cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	if f.objectStorageValidate == nil {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return f.objectStorageValidate(cfg.Objstore.Settings)
+}
+
+// objectStorageValidating is a BackendFactory that validates a database's
+// Objstore block (EmbeddedBackendFactory.ValidateObjectStorage).
+type objectStorageValidating interface {
+	ValidateObjectStorage(cfg DatabaseConfig) error
+}
+
+// validateObjectStorage checks cfg's Objstore block through factory. A
+// factory that cannot validate one refuses it with *ObjectStorageNotWiredError,
+// so an unchecked setting never reaches the catalog.
+func validateObjectStorage(factory BackendFactory, cfg DatabaseConfig) error {
+	if cfg.Objstore == nil {
+		return nil
+	}
+	v, ok := factory.(objectStorageValidating)
+	if !ok {
+		return &ObjectStorageNotWiredError{Name: cfg.Name}
+	}
+	return v.ValidateObjectStorage(cfg)
 }
 
 // NewEmbeddedBackendFactory creates a new EmbeddedBackendFactory.

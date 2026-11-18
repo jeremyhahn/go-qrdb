@@ -20,13 +20,18 @@ with `objstore.WithCredentialFiles`, so the engine opens the credential
 handle and never holds a plaintext copy; an open that fails returns
 `database.StorageCreateError` wrapping the objstore error
 (`objstore.CredentialFileError`, `objstore.UnsupportedProviderError`).
-`pkg/database` does not link the engine: the opener is wired with
-`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open))`
+`pkg/database` does not link the engine: the opener and the settings
+validator are wired with
+`database.NewEmbeddedBackendFactory(database.WithObjectStorage(objstoredb.Open), database.WithObjectStorageValidator(objstoredb.ValidateSettings))`
 (`objstoredb.NewBackendFactory`), which `qrdbd` and the server lifecycle do.
-A lean embedder — `pkg/database` or the Go SDK node without an opener —
-refuses such a database with `database.ObjectStorageNotWiredError`; a Go SDK
-standalone node opens it when built with
-`node.WithObjectStorage(objstoredb.Open)`. A node running under the seal
+`Manager.Create` runs the validator on a database's `objstore` block, whatever
+its backend, before the catalog write, so an inline credential
+(`database.ObjstoreCredentialSettingError`) never reaches the replicated
+catalog record. A lean embedder — `pkg/database` or the Go SDK node without
+the seam — refuses such a database, and any `objstore` block, with
+`database.ObjectStorageNotWiredError`; a Go SDK standalone node serves it
+when built with `node.WithObjectStorage(objstoredb.Open)` and
+`node.WithObjectStorageValidator(objstoredb.ValidateSettings)`. A node running under the seal
 refuses such a database at create (`database.SealedNodeBackendError`),
 opener or not: the barrier never reaches a provider's objects. `objstore`
 also serves as the standalone node's `storage.backend`.

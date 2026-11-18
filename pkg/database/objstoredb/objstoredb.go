@@ -16,10 +16,13 @@
 // into pkg/database's EmbeddedBackendFactory. pkg/database does not import the
 // engine, so a lean embedder stays free of go-objstore; the node composers
 // (qrdbd, the server lifecycle and the Go SDK node) pass
-// database.WithObjectStorage(objstoredb.Open).
+// database.WithObjectStorage(objstoredb.Open) and
+// database.WithObjectStorageValidator(objstoredb.ValidateSettings), as
+// NewBackendFactory does.
 package objstoredb
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -61,5 +64,25 @@ func namespaceOwner(cfg database.DatabaseConfig) string {
 // NewBackendFactory returns the embedded backend factory with object storage
 // wired in.
 func NewBackendFactory() *database.EmbeddedBackendFactory {
-	return database.NewEmbeddedBackendFactory(database.WithObjectStorage(Open))
+	return database.NewEmbeddedBackendFactory(database.WithObjectStorage(Open),
+		database.WithObjectStorageValidator(ValidateSettings))
+}
+
+// ValidateSettings is the database.ObjectStorageSettingsValidator the node
+// composers wire with WithObjectStorageValidator: it refuses an inline
+// credential among a database's Objstore settings (go-objstore owns the set of
+// credential setting names) with a *database.ObjstoreCredentialSettingError
+// naming the setting, never its value; the cause stays reachable through
+// Unwrap.
+func ValidateSettings(settings map[string]string) error {
+	err := objstore.RejectCredentialSettings(settings)
+	if err == nil {
+		return nil
+	}
+	settingErr := &database.ObjstoreCredentialSettingError{Err: err}
+	var cause *objstore.CredentialSettingError
+	if errors.As(err, &cause) {
+		settingErr.Setting = cause.Setting
+	}
+	return settingErr
 }

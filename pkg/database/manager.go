@@ -326,6 +326,12 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Whatever the backend, an Objstore block is recorded in the catalog,
+	// so its settings pass the factory's validator (an inline credential is
+	// refused) before any catalog write.
+	if err := validateObjectStorage(m.factory, cfg); err != nil {
+		return nil, err
+	}
 	cat, err := m.catalog("create database")
 	if err != nil {
 		return nil, err

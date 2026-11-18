@@ -18,6 +18,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
@@ -118,5 +119,55 @@ func TestFactory_UnknownProvider(t *testing.T) {
 	var unsupported *objstore.UnsupportedProviderError
 	if !errors.As(err, &unsupported) || unsupported.Provider != "no-such-provider" {
 		t.Fatalf("Create objstore = %v, want *objstore.UnsupportedProviderError", err)
+	}
+}
+
+// TestValidateSettings_RefusesInlineSecret checks the seam's validator
+// refuses an inline secret with *database.ObjstoreCredentialSettingError,
+// naming the setting, never echoing the value, and keeping go-objstore's
+// refusal reachable.
+func TestValidateSettings_RefusesInlineSecret(t *testing.T) {
+	const secret = "inline-secret-must-not-leak"
+	err := objstoredb.ValidateSettings(map[string]string{"bucket": "b", "secret_key": secret})
+	var settingErr *database.ObjstoreCredentialSettingError
+	if !errors.As(err, &settingErr) {
+		t.Fatalf("ValidateSettings = %v, want *database.ObjstoreCredentialSettingError", err)
+	}
+	if settingErr.Setting != "secret_key" {
+		t.Fatalf("Setting = %q, want secret_key", settingErr.Setting)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("the refusal echoes the secret")
+	}
+	var cause *objstore.CredentialSettingError
+	if !errors.As(err, &cause) {
+		t.Fatalf("cause %v is not *objstore.CredentialSettingError", errors.Unwrap(err))
+	}
+}
+
+// TestValidateSettings_AcceptsNonSecretSettings checks settings without a
+// credential pass.
+func TestValidateSettings_AcceptsNonSecretSettings(t *testing.T) {
+	for _, settings := range []map[string]string{nil, {"bucket": "b", "region": "r"}} {
+		if err := objstoredb.ValidateSettings(settings); err != nil {
+			t.Fatalf("ValidateSettings(%v) = %v", settings, err)
+		}
+	}
+}
+
+// TestNewBackendFactory_WiresTheValidator checks the composed factory
+// validates an Objstore block through ValidateSettings.
+func TestNewBackendFactory_WiresTheValidator(t *testing.T) {
+	f := objstoredb.NewBackendFactory()
+	refused := database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{Provider: "memory", Settings: map[string]string{"secret_key": "x"}}}
+	var settingErr *database.ObjstoreCredentialSettingError
+	if err := f.ValidateObjectStorage(refused); !errors.As(err, &settingErr) {
+		t.Fatalf("ValidateObjectStorage = %v, want *database.ObjstoreCredentialSettingError", err)
+	}
+	accepted := database.DatabaseConfig{Name: "blobs", Backend: database.BackendObjstore,
+		Objstore: &database.DatabaseObjstoreConfig{Provider: "memory"}}
+	if err := f.ValidateObjectStorage(accepted); err != nil {
+		t.Fatalf("ValidateObjectStorage = %v", err)
 	}
 }

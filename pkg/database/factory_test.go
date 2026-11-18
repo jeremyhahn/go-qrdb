@@ -686,7 +686,7 @@ func TestEmbeddedBackendFactory_ObjstoreNotWired(t *testing.T) {
 // created, while an unsealed node's manager opens it.
 func TestManager_SealedNodeRefusesObjstoreDatabase(t *testing.T) {
 	opener := &openerStore{store: memory.NewStorage()}
-	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open)))
+	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open), WithObjectStorageValidator(refuseSecretKey)))
 	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
 
 	sealed := newCatalogManager(nil, t.TempDir(), WithSealedNode(true), factory)
@@ -722,7 +722,7 @@ func TestManager_SealedNodeRefusesToReopenObjstoreRecord(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	opener := &openerStore{store: memory.NewStorage()}
-	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open)))
+	factory := WithBackendFactory(NewEmbeddedBackendFactory(WithObjectStorage(opener.open), WithObjectStorageValidator(refuseSecretKey)))
 	cfg := DatabaseConfig{Name: "blobs", Backend: BackendObjstore, Objstore: &DatabaseObjstoreConfig{Provider: "s3"}}
 
 	unsealed := newCatalogManager(nil, dir, WithSealedNode(false), factory)

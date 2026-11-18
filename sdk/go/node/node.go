@@ -312,6 +312,15 @@ func WithObjectStorage(open database.ObjectStorageOpener) NodeOption {
 	return func(o *nodeOptions) { o.objectStorage = open }
 }
 
+// WithObjectStorageValidator supplies the settings validator the standalone
+// database manager runs on a database's Objstore block before the catalog
+// write (pkg/database/objstoredb.ValidateSettings refuses an inline
+// credential). Without it a database with an Objstore block is refused with
+// *database.ObjectStorageNotWiredError.
+func WithObjectStorageValidator(validate database.ObjectStorageSettingsValidator) NodeOption {
+	return func(o *nodeOptions) { o.objectStorageValidate = validate }
+}
+
 // WithDEKProvider replaces the software tenant DEK keyring with a composer's
 // dek.Provider, typically one backed by a device that never exports the
 // tenant keys. Equivalent to server.WithDEKProvider; forwarded in both boot
@@ -466,6 +475,7 @@ type nodeOptions struct {
 	storageFactory          server.StorageFactory
 	replicaStorageFactory   ReplicaStorageFactory
 	objectStorage           database.ObjectStorageOpener
+	objectStorageValidate   database.ObjectStorageSettingsValidator
 	dekProvider             dek.Provider
 	headSignerProvider      vlog.HeadSignerProvider
 	invitationRedeemLimiter ratelimit.Limiter
@@ -1451,6 +1461,10 @@ type Node struct {
 	// `backend: objstore` database; nil refuses one.
 	objectStorage database.ObjectStorageOpener
 
+	// objectStorageValidate is the WithObjectStorageValidator validator,
+	// copied from nodeOptions; nil refuses an Objstore block.
+	objectStorageValidate database.ObjectStorageSettingsValidator
+
 	// watchHubOpts configures every watch hub this node builds, its own and
 	// its tenants': watch.buffer_size and the one watch.max_watchers limit
 	// they share (server.WatchHubOptions). Set once by the constructor so a
@@ -1963,7 +1977,8 @@ func (n *Node) startLeaseExpiryStandalone(lr *lease.Lessor, leaseSvc service.Lea
 func (n *Node) newStandaloneDatabaseManager(dataDir string, cfg *qrdbconfig.Config) *database.Manager {
 	dbManager := database.NewManager(n.logger, dataDir, database.WithDefaults(standaloneDatabaseDefaults(cfg)),
 		database.WithSealedNode(cfg.Seal.Enabled),
-		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithObjectStorage(n.objectStorage))))
+		database.WithBackendFactory(database.NewEmbeddedBackendFactory(database.WithObjectStorage(n.objectStorage),
+			database.WithObjectStorageValidator(n.objectStorageValidate))))
 	n.dbManager = dbManager
 	return dbManager
 }
@@ -3090,6 +3105,7 @@ func NewStandaloneNode(ctx context.Context, cfg *qrdbconfig.Config, serverOpts [
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
 		objectStorage:             nOpts.objectStorage,
+		objectStorageValidate:     nOpts.objectStorageValidate,
 		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,
@@ -3317,6 +3333,7 @@ func NewClusteredNode(ctx context.Context, cfg *qrdbconfig.Config, members map[u
 		contextBinder:             nOpts.contextBinder,
 		tenantIsolation:           nOpts.tenantIsolation,
 		objectStorage:             nOpts.objectStorage,
+		objectStorageValidate:     nOpts.objectStorageValidate,
 		watchHubOpts:              server.WatchHubOptions(cfg.Watch),
 		defaultTenantEntitlements: nOpts.defaultTenantEntitlements,
 		abacPolicies:              nOpts.abacPolicies,

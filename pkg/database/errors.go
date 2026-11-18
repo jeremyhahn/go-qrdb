@@ -56,9 +56,11 @@ func (e *InvalidBackendError) Error() string {
 }
 
 // ObjstoreCredentialSettingError is returned when a database's Objstore
-// settings carry a credential inline (DatabaseObjstoreConfig.Validate). It
-// names the offending setting, never its value; the credential is named by
-// key_file and secret_file instead.
+// settings carry a credential inline, by the factory's
+// ObjectStorageSettingsValidator before the catalog write. It names the
+// offending setting, never its value; the credential is named by key_file and
+// secret_file instead. Err is the validator's cause (go-objstore's refusal
+// for pkg/database/objstoredb.ValidateSettings).
 type ObjstoreCredentialSettingError struct {
 	Setting string
 	Err     error
@@ -69,7 +71,7 @@ func (e *ObjstoreCredentialSettingError) Error() string {
 	return "database: objstore setting " + strconv.Quote(e.Setting) + " carries a credential inline; reference it by key_file and secret_file"
 }
 
-// Unwrap returns go-objstore's refusal.
+// Unwrap returns the validator's cause.
 func (e *ObjstoreCredentialSettingError) Unwrap() error { return e.Err }
 
 // SealedNodeBackendError is returned when a node running under the seal
@@ -88,7 +90,9 @@ func (e *SealedNodeBackendError) Error() string {
 }
 
 // ObjectStorageNotWiredError reports a `backend: objstore` database opened by
-// an EmbeddedBackendFactory built without WithObjectStorage: object storage is
+// an EmbeddedBackendFactory built without WithObjectStorage, or a database
+// with an Objstore block created through a factory without
+// WithObjectStorageValidator: object storage is
 // not wired into this build (a lean embedder of pkg/database without the node
 // composer, which supplies pkg/database/objstoredb.Open).
 type ObjectStorageNotWiredError struct {
@@ -97,7 +101,7 @@ type ObjectStorageNotWiredError struct {
 
 func (e *ObjectStorageNotWiredError) Error() string {
 	return "database: " + strconv.Quote(e.Name) + ": backend \"objstore\" is not wired into this build" +
-		" (the backend factory has no WithObjectStorage opener)"
+		" (the backend factory lacks the WithObjectStorage opener or the WithObjectStorageValidator settings validator)"
 }
 
 // AlreadyExistsError is returned when attempting to create a database with
