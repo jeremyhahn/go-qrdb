@@ -1031,13 +1031,61 @@ func (s *CredentialService) deleteBarrierAll(ctx context.Context, name string) e
 	if err := s.deleteBarrierStaged(ctx, name, math.MaxUint64); err != nil {
 		return err
 	}
-	if err := s.store.Delete(ctx, metaKey(name)); err != nil {
-		return &OperationError{Op: "delete meta", Cause: err}
+	return s.deleteBarrierHead(ctx, name)
+}
+
+// deleteBarrierHead deletes name's current value and its metadata record,
+// which holds the rotation policy, in one commit guarded on both as read.
+// Two separate deletes would let a SetRotationPolicy between them find the
+// value present and the metadata absent and recreate the policy, which a
+// credential later stored under the name would then keep. A write that
+// lands between the read and the commit fails the guard, and the delete
+// reads again.
+func (s *CredentialService) deleteBarrierHead(ctx context.Context, name string) error {
+	metaK, valueK := metaKey(name), credentialPrefix+name
+	for range rotationMetaRetries {
+		rawMeta, err := s.getOptional(ctx, metaK)
+		if err != nil {
+			return &OperationError{Op: "read meta", Cause: err}
+		}
+		rawValue, err := s.getOptional(ctx, valueK)
+		if err != nil {
+			secure.Wipe(rawMeta)
+			return &OperationError{Op: "read current", Cause: err}
+		}
+		if rawMeta == nil && rawValue == nil {
+			return nil
+		}
+		applied, err := s.store.PutAllIfAllUnchanged(ctx,
+			[]kvstore.Guard{{Key: metaK, Value: rawMeta}, {Key: valueK, Value: rawValue}},
+			[]kvstore.KV{{Key: metaK, Delete: true}, {Key: valueK, Delete: true}})
+		secure.Wipe(rawValue)
+		if err != nil {
+			return &OperationError{Op: "delete current", Cause: err}
+		}
+		if applied {
+			return nil
+		}
 	}
-	if err := s.store.Delete(ctx, credentialPrefix+name); err != nil {
-		return &OperationError{Op: "delete current", Cause: err}
+	return &OperationError{Op: "delete current", Cause: ErrRotationMetaContended}
+}
+
+// getOptional reads key, returning nil with a nil error when it is absent.
+// A present empty value is returned as a non-nil empty slice, so a guard
+// built from it still requires the key to be present.
+func (s *CredentialService) getOptional(ctx context.Context, key string) ([]byte, error) {
+	raw, err := s.store.Get(ctx, key)
+	switch {
+	case err == nil:
+		if raw == nil {
+			raw = []byte{}
+		}
+		return raw, nil
+	case errors.Is(err, seal.ErrSecretNotFound):
+		return nil, nil
+	default:
+		return nil, err
 	}
-	return nil
 }
 
 // =============================================================================

@@ -598,6 +598,93 @@ func TestSetRotationPolicy_DeleteBetweenCheckAndWrite(t *testing.T) {
 	}
 }
 
+// valueDeletePauseStore pauses the first operation that deletes key's
+// current value, a lone Delete or a batch carrying the delete, before it
+// reaches the store beneath: paused is closed, and the operation goes on
+// once release is closed.
+type valueDeletePauseStore struct {
+	Store
+	key     string
+	paused  chan struct{}
+	release chan struct{}
+	once    atomic.Bool
+}
+
+func (s *valueDeletePauseStore) pause() {
+	if s.once.CompareAndSwap(false, true) {
+		close(s.paused)
+		<-s.release
+	}
+}
+
+func (s *valueDeletePauseStore) Delete(ctx context.Context, key string) error {
+	if key == s.key {
+		s.pause()
+	}
+	return s.Store.Delete(ctx, key)
+}
+
+func (s *valueDeletePauseStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
+	for _, w := range writes {
+		if w.Key == s.key && w.Delete {
+			s.pause()
+			break
+		}
+	}
+	return s.Store.PutAllIfAllUnchanged(ctx, guards, writes)
+}
+
+// A rotation policy set while DeleteCredential is removing the credential
+// does not outlive it: the delete takes the value, the metadata and the
+// policy in one guarded commit, so a credential later stored under the name
+// carries no policy and is not rotated.
+func TestDeleteCredential_PolicySetMidDeleteDoesNotSurvive(t *testing.T) {
+	svc := newRotationService(t, WithRotationValueSource(func(_ context.Context, name, _ string) (*secure.Buffer, error) {
+		return secure.NewBufferFromBytes([]byte(name + "-rotated"))
+	}))
+	ctx := t.Context()
+	storeRotationCredential(t, svc, "db")
+	inner, err := svc.store.current()
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	hook := &valueDeletePauseStore{
+		Store:   inner,
+		key:     credentialPrefix + "db",
+		paused:  make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	if err := svc.store.bind(hook); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	deleted := make(chan error, 1)
+	go func() { deleted <- svc.DeleteCredential(ctx, "db") }()
+	<-hook.paused
+	// The policy write may land or be refused; either way none may survive.
+	_ = svc.SetRotationPolicy(ctx, "db", *testPolicy)
+	close(hook.release)
+	if err := <-deleted; err != nil {
+		t.Fatalf("DeleteCredential: %v", err)
+	}
+
+	if _, err := inner.Get(ctx, metaKey("db")); !errors.Is(err, seal.ErrSecretNotFound) {
+		t.Fatalf("metadata after delete: err = %v, want ErrSecretNotFound", err)
+	}
+	storeRotationCredential(t, svc, "db")
+	policy, err := svc.RotationPolicy(ctx, "db")
+	if err != nil {
+		t.Fatalf("RotationPolicy: %v", err)
+	}
+	if policy != (RotationPolicy{}) {
+		t.Fatalf("RotationPolicy = %+v, want the zero policy", policy)
+	}
+	n, err := svc.RotateDue(ctx, rotationEpoch.Add(24*365*time.Hour))
+	if n != 0 || err != nil {
+		t.Fatalf("RotateDue = %d, %v; want 0 and nil", n, err)
+	}
+}
+
 // TestRotateDue_ManualRotationBeforeCommitKept: a manual rotation lands
 // between the scheduled rotation's read of the current value and its
 // write. That write is conditional on the value read, so the manual value
