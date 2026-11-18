@@ -834,7 +834,11 @@ func (s *CeremonyService) Initialize(ctx context.Context, ca CeremonyCA, opts *I
 		// a fresh Initialize after a restart (seal.ErrRestartRequired)
 		// starts over. A record PrepareRoster did write stays in storage:
 		// the next initialization's PrepareRoster overwrites or removes it
-		// (mofnInitInFlight).
+		// (mofnInitInFlight). So do the officer records PrepareRoster
+		// wrote into the unsealed barrier: rolled back to sealed, the
+		// barrier refuses their deletion here, and the next
+		// initialization's PrepareRoster removes them
+		// (removeAbandonedOfficerRecordsLocked).
 		s.mu.Lock()
 		s.systemSOInFlight = nil
 		s.mofnInitInFlight = false
@@ -1265,6 +1269,9 @@ func (s *CeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumD
 		if err := s.persistIssuedSystemSOLocked(ctx, s.systemSOInFlight); err != nil {
 			return nil, err
 		}
+		if err := s.removeAbandonedOfficerRecordsLocked(ctx); err != nil {
+			return nil, err
+		}
 	}
 	h, err := s.scope(domain)
 	if err != nil {
@@ -1272,6 +1279,51 @@ func (s *CeremonyService) PrepareRoster(ctx context.Context, domain seal.QuorumD
 	}
 	return h.prepareRoster(ctx, domain, threshold, policy, exclude)
 }
+
+// removeAbandonedOfficerRecordsLocked deletes every officer record stored
+// under the system scope when an M-of-N initialization has just unsealed a
+// new barrier, before the holder scope's sync writes the officers enrolled
+// for it. A barrier being initialized holds no officer record of its own
+// yet: any record there was written by an earlier initialization that
+// failed at Distribute or later, or crashed, after its PrepareRoster wrote
+// the records into the then-unsealed barrier. That barrier rolled back to
+// sealed, so neither its Initialize error path nor anything else could
+// delete them, and they are encrypted under a root key that no longer
+// exists: the sync would fail reading them ("decryption failed") and no
+// retry could complete. Listing and deleting read no ciphertext.
+//
+// Must be called with s.mu held, on the unsealed barrier.
+func (s *CeremonyService) removeAbandonedOfficerRecordsLocked(ctx context.Context) error {
+	keys, err := s.barrier.List(ctx, officerRegistryPrefix)
+	if err != nil {
+		return &AbandonedOfficerRecordsError{Cause: err}
+	}
+	for _, key := range keys {
+		if err := s.barrier.Delete(ctx, key); err != nil && !errors.Is(err, seal.ErrSecretNotFound) {
+			return &AbandonedOfficerRecordsError{Cause: err}
+		}
+		s.logger.Warn("ceremony: removed an officer record a rolled-back initialization left in storage",
+			slog.String("key", key))
+	}
+	return nil
+}
+
+// AbandonedOfficerRecordsError fails an M-of-N initialization that could not
+// remove the officer records an earlier, rolled-back initialization left in
+// storage (removeAbandonedOfficerRecordsLocked). The initialization rolls
+// back; a retry after a restart tries the removal again.
+type AbandonedOfficerRecordsError struct {
+	// Cause is the storage error.
+	Cause error
+}
+
+// Error returns a human-readable description.
+func (e *AbandonedOfficerRecordsError) Error() string {
+	return "ceremony: remove the officer records of a rolled-back initialization: " + e.Cause.Error()
+}
+
+// Unwrap returns the storage error.
+func (e *AbandonedOfficerRecordsError) Unwrap() error { return e.Cause }
 
 // Distribute implements seal.CeremonyDistributor.
 func (s *CeremonyService) Distribute(ctx context.Context, secret *secure.Buffer, roster *seal.HolderRoster, digest []byte) (int, error) {
