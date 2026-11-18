@@ -5,6 +5,8 @@ package integration_test
 import (
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,9 +20,23 @@ type rollWriter struct {
 	rolling atomic.Int32
 	seq     int
 
-	mu    sync.Mutex
-	acked map[string]string
+	mu     sync.Mutex
+	acked  map[string]string
+	failed []rollFailure
 }
+
+// rollFailure is one write the cluster did not acknowledge during a roll.
+type rollFailure struct {
+	key, proto string
+	target     int
+	err        error
+}
+
+// maxRollFailures bounds the writes a single roll may fail: one leader
+// election (the stopped node may hold shard leadership) plus the requests
+// in flight on the node being stopped. More than that is an outage, not a
+// rolling restart.
+const maxRollFailures = 8
 
 func newRollWriter(c *upgradeCluster) *rollWriter {
 	w := &rollWriter{c: c, acked: make(map[string]string)}
@@ -28,17 +44,23 @@ func newRollWriter(c *upgradeCluster) *rollWriter {
 	return w
 }
 
-// during runs roll with up to limit writes in flight beside it, one at a
-// time, and returns once both have finished.
-func (w *rollWriter) during(t *testing.T, node, limit int, roll func()) {
+// during runs roll with writes in flight beside it, one at a time, until
+// roll returns, and then asserts the cluster stayed available through the
+// roll: at least one write acknowledged during it and at most
+// maxRollFailures failed.
+func (w *rollWriter) during(t *testing.T, node int, roll func()) {
 	t.Helper()
+	w.mu.Lock()
+	ackedBefore, failedBefore := len(w.acked), len(w.failed)
+	w.mu.Unlock()
+
 	w.rolling.Store(int32(node))
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for range limit {
+		for {
 			select {
 			case <-stop:
 				return
@@ -51,6 +73,19 @@ func (w *rollWriter) during(t *testing.T, node, limit int, roll func()) {
 	close(stop)
 	wg.Wait()
 	w.rolling.Store(-1)
+
+	w.mu.Lock()
+	acked := len(w.acked) - ackedBefore
+	failed := slices.Clone(w.failed[failedBefore:])
+	w.mu.Unlock()
+	if acked == 0 || len(failed) > maxRollFailures {
+		var b strings.Builder
+		for _, f := range failed {
+			fmt.Fprintf(&b, "\n  %s via %s to node %d: %v", f.key, f.proto, f.target+1, f.err)
+		}
+		t.Fatalf("roll of node %d: %d writes acknowledged, %d failed (want >= 1 acknowledged, <= %d failed):%s",
+			node+1, acked, len(failed), maxRollFailures, b.String())
+	}
 }
 
 // putOnce writes the next key over the next transport through a node that
@@ -66,6 +101,9 @@ func (w *rollWriter) putOnce(t *testing.T) {
 	key := fmt.Sprintf("roll/%03d", k)
 	value := fmt.Sprintf("v%03d-%s", k, proto.name)
 	if _, err := runCLIProto(t, w.c.nodes[target], proto, "kv", "put", key, value); err != nil {
+		w.mu.Lock()
+		w.failed = append(w.failed, rollFailure{key: key, proto: proto.name, target: target, err: err})
+		w.mu.Unlock()
 		return
 	}
 	w.mu.Lock()
@@ -91,11 +129,8 @@ func TestRollingUpgrade_RollForward_CLI(t *testing.T) {
 	w := newRollWriter(c)
 
 	for i := range 3 {
-		w.during(t, i, 10, func() { c.roll(t, i, bins.next) })
+		w.during(t, i, func() { c.roll(t, i, bins.next) })
 		acked := w.snapshot()
-		if len(acked) == 0 {
-			t.Fatalf("roll of node %d: no write was acknowledged", i+1)
-		}
 		c.requireReadsEverywhere(t, acked)
 		if i < 2 {
 			if on := activatedOn(c.logs, upgradeProbeFeature); len(on) != 0 {
