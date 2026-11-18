@@ -32,6 +32,8 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -53,7 +55,13 @@ type Engine struct {
 	// journal holds the commit journal. It is store itself unless the
 	// provider lists by walking a directory tree, in which case it is a
 	// separate store the walk never visits (see openStores).
-	journal  objcommon.Storage
+	journal objcommon.Storage
+
+	// journalShared is set when journal is the store slot itself, so Close
+	// releases that provider once without comparing the two values (a
+	// provider value need not be comparable; see sameStorage).
+	journalShared bool
+
 	provider string
 	closed   atomic.Bool
 
@@ -139,15 +147,12 @@ func (e *Engine) enter() (leave func(), err error) {
 // resources and is left as it is.
 func closeStores(stores ...objcommon.Storage) error {
 	var errs []error
-	seen := make(map[objcommon.Storage]struct{}, len(stores))
+	closed := make([]objcommon.Storage, 0, len(stores))
 	for _, s := range stores {
-		if s == nil {
+		if s == nil || slices.ContainsFunc(closed, func(c objcommon.Storage) bool { return sameStorage(c, s) }) {
 			continue
 		}
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
+		closed = append(closed, s)
 		switch c := s.(type) {
 		case interface{ Close() error }:
 			errs = append(errs, c.Close())
@@ -156,6 +161,19 @@ func closeStores(stores ...objcommon.Storage) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// sameStorage reports whether a and b are one provider value. A
+// RegisterProvider creator may return a value type holding a map or a
+// slice, which == panics on, so two values are compared only when both
+// are comparable; otherwise they are distinct. Callers that must know a
+// slot is reused track it by slot (openStores), not by value.
+func sameStorage(a, b objcommon.Storage) bool {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if !va.IsValid() || !vb.IsValid() || va.Type() != vb.Type() || !va.Comparable() || !vb.Comparable() {
+		return false
+	}
+	return a == b
 }
 
 // New constructs an objstore-backed engine for the given go-objstore provider.
@@ -236,17 +254,32 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
-	store, journal, err := openStores(provider, create, settings, store, creds)
+	kept, err := openStores(provider, create, settings, store, creds)
 	if err != nil {
 		return nil, credentialOpenError(o.credentials, err)
 	}
+	// The kept providers are known by slot, not by value: created[0] is
+	// the store passed to openStores, openStores creates a replacement
+	// data store before the journal, and the journal is the last created.
+	// Comparing the values would panic on a non-comparable provider type.
+	dataSlot, journalSlot := 0, 0
+	if kept.dataCreated {
+		dataSlot = 1
+	}
+	if kept.journalCreated {
+		journalSlot = len(created) - 1
+	}
 	var unkept []objcommon.Storage
-	for _, s := range created {
-		if s != store && s != journal {
+	for i, s := range created {
+		if i != dataSlot && i != journalSlot {
 			unkept = append(unkept, s)
 		}
 	}
-	created = []objcommon.Storage{store, journal}
+	store, journal := kept.data, kept.journal
+	created = []objcommon.Storage{store}
+	if journalSlot != dataSlot {
+		created = append(created, journal)
+	}
 	if err := closeStores(unkept...); err != nil {
 		return nil, err
 	}
@@ -257,7 +290,7 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, canonical), owner: o.owner}
+	e := &Engine{store: store, journal: journal, journalShared: journalSlot == dataSlot, provider: provider, namespace: namespaceKey(provider, canonical), owner: o.owner}
 	// One namespace is open in this process by one owner at a time: an
 	// equal root or equal bucket settings opened by a different owner (or
 	// unowned) is refused, not shared.
@@ -1041,6 +1074,9 @@ func (e *Engine) Close() error {
 	e.providersClosed = true
 	unregisterRoots(e)
 	unregisterNamespace(e)
+	if e.journalShared {
+		return closeStores(e.store)
+	}
 	return closeStores(e.store, e.journal)
 }
 

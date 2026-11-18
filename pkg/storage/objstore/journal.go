@@ -49,37 +49,50 @@ const journalTreeSuffix = ".journal"
 // symlinked root, and every spelling of the root -- a symlink, its target, a
 // path through a symlinked parent -- must list one tree and reach the one
 // journal recovery has to find. Every store opens through create, the creator
-// New resolved for provider.
-func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (data, journal objcommon.Storage, err error) {
+// New resolved for provider. It reports which stores it created
+// (keptStores), so New tracks each provider by slot.
+func openStores(provider string, create objfactory.StorageCreator, settings map[string]string, store objcommon.Storage, creds objcommon.Credentials) (keptStores, error) {
 	rootSetting, walked := walkedRoots[provider]
 	if !walked {
-		return store, store, nil
+		return keptStores{data: store, journal: store}, nil
 	}
+	kept := keptStores{data: store}
 	// The provider has created its root by now, so it resolves.
 	physical, err := filepath.EvalSymlinks(settings[rootSetting])
 	if err != nil {
-		return nil, nil, err
+		return keptStores{}, err
 	}
 	if physical != settings[rootSetting] {
 		dataSettings := maps.Clone(settings)
 		dataSettings[rootSetting] = physical
-		if store, err = create(dataSettings, creds); err != nil {
-			return nil, nil, err
+		if kept.data, err = create(dataSettings, creds); err != nil {
+			return keptStores{}, err
 		}
+		kept.dataCreated = true
 	}
-	if err := refuseInTreeJournal(provider, store); err != nil {
-		return nil, nil, err
+	if err := refuseInTreeJournal(provider, kept.data); err != nil {
+		return keptStores{}, err
 	}
 	root, err := journalRoot(physical)
 	if err != nil {
-		return nil, nil, err
+		return keptStores{}, err
 	}
 	journalSettings := maps.Clone(settings)
 	journalSettings[rootSetting] = root
-	if journal, err = create(journalSettings, creds); err != nil {
-		return nil, nil, err
+	if kept.journal, err = create(journalSettings, creds); err != nil {
+		return keptStores{}, err
 	}
-	return store, journal, nil
+	kept.journalCreated = true
+	return kept, nil
+}
+
+// keptStores is what openStores keeps: the data store and the journal
+// store, and whether openStores created each one (in that order) or kept
+// the store it was passed. New tracks the providers by these slots, never
+// by comparing provider values (see sameStorage).
+type keptStores struct {
+	data, journal               objcommon.Storage
+	dataCreated, journalCreated bool
 }
 
 // canonicalNamespace returns the settings that name the provider's
