@@ -312,18 +312,18 @@ func (a *RBACAuthorizer) holdsSystemRole(ctx context.Context, identity *auth.Ide
 // identity's home tenant when both come from its home Roles, else the
 // call's target tenant whose binding supplied one of them.
 func (a *RBACAuthorizer) holdsSOWithAdmin(ctx context.Context, identity *auth.Identity, bound []string, target string) (bool, string, error) {
+	// SO and Admin are the built-in roles, matched by their canonical
+	// (persisted) IDs only: a tenant may give a custom role the
+	// caller-supplied ID "so" or "admin", and holding it holds no built-in
+	// role, so the assignment gate's combinations are not refused here.
 	viaBinding := false
-	isSO, err := a.holdsSystemRole(ctx, identity, role.RoleNameSO)
-	if err == nil && !isSO && len(bound) > 0 {
-		isSO, err = a.roleIDsHoldSystemRole(ctx, bound, target, role.RoleNameSO)
-		viaBinding = isSO
+	isSO := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameSO)
+	if !isSO && len(bound) > 0 && hasCanonicalSystemRole(bound, target, role.RoleNameSO) {
+		isSO, viaBinding = true, true
 	}
-	if err != nil || !isSO {
-		return false, "", err
+	if !isSO {
+		return false, "", nil
 	}
-	// Admin is the built-in role, matched by its canonical (persisted) ID
-	// only: a tenant may give a custom role the caller-supplied ID "admin",
-	// and a separate SO holding it holds no Admin role.
 	isAdmin := hasCanonicalSystemRole(identity.Roles, identity.TenantID, role.RoleNameAdmin)
 	if !isAdmin && len(bound) > 0 && hasCanonicalSystemRole(bound, target, role.RoleNameAdmin) {
 		isAdmin, viaBinding = true, true
