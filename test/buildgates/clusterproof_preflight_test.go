@@ -61,17 +61,19 @@ func runPreflight(t *testing.T, files string, diffRC string) (string, string) {
 	script, wfEnv := preflightScript(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
-	if err := os.Mkdir(bin, 0o755); err != nil {
+	if err := os.Mkdir(bin, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	stub := "#!/usr/bin/env bash\nif [ \"$1\" = diff ]; then printf '%s' \"$STUB_FILES\"; exit \"$STUB_RC\"; fi\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(stub), 0o755); err != nil {
+	// #nosec G306 -- test stub must be executable
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(stub), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "output")
-	if err := os.WriteFile(out, nil, 0o644); err != nil {
+	if err := os.WriteFile(out, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// #nosec G204 -- fixed interpreter, script from the repo's workflow
 	cmd := exec.Command("bash", "-e", "-c", script)
 	cmd.Env = []string{
 		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
