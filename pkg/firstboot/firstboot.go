@@ -89,6 +89,11 @@ type Result struct {
 	// SOUserID is the system SO's user id. Zero when no SO was given.
 	SOUserID uint64
 
+	// SORetired is true when Dependencies.SO came from a retained pending
+	// record that an earlier run enrolled and whose account was deleted
+	// since: this run enrolled nothing (pendingSOAccountDeleted).
+	SORetired bool
+
 	// SOCertPEM is the system SO's certificate this run bound: signed from
 	// its CSR or adopted. Nil when no SO was given or it was already bound.
 	SOCertPEM []byte

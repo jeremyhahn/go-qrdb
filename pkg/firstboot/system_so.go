@@ -214,6 +214,8 @@ func checkSystemSO(ctx context.Context, deps Dependencies) error {
 		return &MissingSOSeamError{Seam: "Dependencies.SOPINs to commit its PIN"}
 	case (so.PIN == nil || !so.PIN.IsAlive()) && !implementsPINRecordSetter(deps.SOPINs):
 		return &MissingSOSeamError{Seam: "Dependencies.SOPINs implementing SOPINRecordSetter to commit its PIN record"}
+	case (so.PIN == nil || !so.PIN.IsAlive()) && !implementsPINRecordMatcher(deps.SOPINs):
+		return &MissingSOSeamError{Seam: "Dependencies.SOPINs implementing SOPINRecordMatcher to prove its PIN record"}
 	case deps.Binder == nil:
 		return &MissingSOSeamError{Seam: "Dependencies.Binder to bind its certificate"}
 	case len(so.CSRPEM) > 0 && deps.Signer == nil:
@@ -287,6 +289,11 @@ func implementsPINRecordSetter(pins SOPINSetter) bool {
 	return ok
 }
 
+func implementsPINRecordMatcher(pins SOPINSetter) bool {
+	_, ok := pins.(SOPINRecordMatcher)
+	return ok
+}
+
 // spkiThumbprintOf is the SPKI thumbprint of the key a CSR or a
 // certificate (whichever is given) names: the identifier a binding holds.
 func spkiThumbprintOf(csrPEM, certPEM []byte) (string, error) {
@@ -340,9 +347,22 @@ func checkSOCertLogsInAsUsername(so *SOConfig) error {
 // committed. Idempotent: a re-run finds this SO, binds it only when it
 // holds no live binding, accepts a PIN an earlier run already set, and
 // returns a CSR-signed SO's certificate again, reissued for its bound key.
+// An SO from a retained record whose PIN is committed but whose account is
+// gone was enrolled and deleted since, and is not re-created
+// (pendingSOAccountDeleted).
 func enrollSystemSO(ctx context.Context, deps Dependencies, tenantID string, result *Result) error {
 	so := deps.SO
 	if so == nil {
+		return nil
+	}
+	deleted, err := pendingSOAccountDeleted(ctx, deps, tenantID)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		result.SORetired = true
+		deps.Logger.Warn("first-boot: the pending system SO was enrolled and deleted since; not re-creating it",
+			slog.String("username", so.Username), slog.String("tenant", tenantID))
 		return nil
 	}
 	soUser, created, err := createSystemSO(ctx, deps, tenantID)
@@ -463,6 +483,54 @@ func installSOTrustAnchors(ctx context.Context, deps Dependencies, tenantID stri
 	}
 	deps.Logger.Info("first-boot: system SO trust anchors installed", slog.String("tenant", tenantID))
 	return nil
+}
+
+// pendingSOAccountDeleted reports whether deps.SO, an SO handed over as a
+// PIN record (a retained pending record, never a live PIN), was enrolled
+// by an earlier run and deleted since: tenantID's committed SO PIN is its
+// record, which enrollSystemSO commits only after creating the account,
+// and no account holds its username once the lookup has had
+// adminConvergeWindow to see a replicated create. Such an SO is never
+// re-created: withdrawn access must not return on restart.
+func pendingSOAccountDeleted(ctx context.Context, deps Dependencies, tenantID string) (bool, error) {
+	so := deps.SO
+	if so == nil || so.PINRecord == "" || (so.PIN != nil && so.PIN.IsAlive()) {
+		return false, nil
+	}
+	matcher, ok := deps.SOPINs.(SOPINRecordMatcher)
+	if !ok {
+		return false, &MissingSOSeamError{Seam: "an SOPINs that compares a committed PIN record (SOPINRecordMatcher)"}
+	}
+	matches, err := matcher.SOPINRecordMatches(ctx, tenantID, so.PINRecord)
+	if err != nil {
+		return false, &SystemSOEnrollmentError{Op: "PIN check", Cause: err}
+	}
+	if !matches {
+		return false, nil
+	}
+	users := userResolver(deps)
+	if users == nil {
+		return false, &MissingSOSeamError{Seam: "a UserResolver to look up the SO"}
+	}
+	deadline := time.Now().Add(adminConvergeWindow)
+	for {
+		existing, lookupErr := users.GetUserByUsername(ctx, tenantID, so.Username)
+		if lookupErr == nil && existing != nil {
+			return false, nil
+		}
+		var notFound *user.UserNotFoundError
+		if lookupErr != nil && !errors.As(lookupErr, &notFound) {
+			return false, &SystemSOEnrollmentError{Op: "account", Cause: lookupErr}
+		}
+		if !time.Now().Before(deadline) {
+			return true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return false, &SystemSOEnrollmentError{Op: "account", Cause: ctx.Err()}
+		case <-time.After(adminConvergeInterval):
+		}
+	}
 }
 
 // createSystemSO creates the system SO's account with the so role alone. A

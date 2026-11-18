@@ -324,8 +324,11 @@ an embedded caller with `kv:put` cannot forge an SO enrolment. First boot
 reaches both records through the node's raw store.
 They write it before the pending admin certificate. Both records are on one
 Raft shard, so first boot's bounded wait for the admin's record covers the
-SO's too. First boot reads the record (`firstboot.PendingSystemSO`), and the
-composer then marks it consumed (`firstboot.ClearPendingSystemSO`). The embedded
+SO's too. First boot reads the record (`firstboot.PendingSystemSO`). Once a
+first boot has run with it, `qrdbd` marks it consumed
+(`firstboot.ClearPendingSystemSO`) synchronously, before the node serves, so
+no account mutation can see it still pending; a failed write fails the boot.
+The embedded
 `node.FirstBoot` takes `SO` from its caller's `firstboot.Dependencies`
 verbatim.
 
@@ -360,7 +363,19 @@ quietly, as enrolment binds after it commits the PIN.
 linearizable read, which on a node booting before its peers waits for a
 quorum the cluster cannot form until the node serves. The check is retried
 on a bounded schedule; a record still pending at the end stays for the next
-start.
+start. The background check is for nodes that only waited; the node that ran
+first boot with the record has already consumed it.
+
+A retained record never re-creates a deleted SO. Enrolment creates the
+account before it commits the PIN, and the PIN record carries a
+per-ceremony salt, so a record whose committed PIN is its own
+(`SOPINRecordMatches`) while no account holds its username, after
+the lookup has had the admin convergence window to see a replicated create,
+names an SO an earlier run enrolled and that has been deleted since. First
+boot enrols nothing for it and reports `firstboot.Result.SORetired`. For the
+check, an SO handed over as a PIN record needs an SOPINs implementing
+`SOPINRecordMatcher`; one that lacks it is refused before any write
+(`*firstboot.MissingSOSeamError`).
 
 ## Startup sequence
 

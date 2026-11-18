@@ -363,6 +363,115 @@ func TestWriteIssuedSystemSOIfAny_SurvivesACrashAfterInitialize(t *testing.T) {
 	assert.Nil(t, left, "the consumed SO's record is gone from the barrier")
 }
 
+// retainedSOHarness enrols the ceremony's issued SO through a first boot
+// fed from its replicated pending record, and returns the harness, the
+// store still holding that record (never consumed), and the SO's username.
+func retainedSOHarness(t *testing.T) (*soHarness, *memPendingAdminCertStore, string) {
+	t.Helper()
+	ctx := context.Background()
+	core := ceremonyCoreOver(t, seal.NewMemoryBackend())
+	ca, caPEM := ceremonytest.NewCA(t, "test-ca")
+	core.SetPINBackend(pintest.NewBackend(t))
+	_, err := core.Initialize(ctx, ca, &ceremony.InitializeOptions{
+		SOPin: "test-so-pin", UserPin: "test-user-pin", AdminGenerate: true,
+		SOUsername: "secofficer", SOCSRPEM: testCSR(t),
+	})
+	require.NoError(t, err)
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, core, store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	h := newSOHarness(t, true)
+	pins, err := auth.NewSOAuthenticator(kvstore.NewMemoryKVStore(), audit.NewRingBuffer(8), discardLogger())
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(caPEM))
+	h.deps.SO = so
+	h.deps.SOPINs = pins
+	h.deps.AdminCertPool = pool
+	result, err := Initialize(ctx, h.deps)
+	require.NoError(t, err)
+	require.True(t, result.SOCreated)
+	require.False(t, result.SORetired)
+	require.NotNil(t, h.users.byName[so.Username])
+	require.Equal(t, 1, h.binder.calls[h.users.byName[so.Username].ID])
+	return h, store, so.Username
+}
+
+// restartWithRetainedSO re-reads the still-pending record, as the next
+// start does, and runs first boot again with it.
+func restartWithRetainedSO(t *testing.T, h *soHarness, store *memPendingAdminCertStore) *Result {
+	t.Helper()
+	ctx := context.Background()
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so, "the unconsumed record is still pending")
+	h.deps.SO = so
+	result, err := Initialize(ctx, h.deps)
+	require.NoError(t, err)
+	return result
+}
+
+// TestInitialize_DeletedPendingSOIsNotRecreatedFromItsRetainedRecord (PR
+// #1579 review round 2, P1): the SO was enrolled, its pending record was
+// never consumed, and the SO was deleted since. The next start must not
+// re-create the account from the retained record: withdrawn access does
+// not return on restart.
+func TestInitialize_DeletedPendingSOIsNotRecreatedFromItsRetainedRecord(t *testing.T) {
+	h, store, username := retainedSOHarness(t)
+	soID := h.users.byName[username].ID
+	delete(h.users.byName, username)
+	shrinkAdminConvergeWindow(t, 50*time.Millisecond, time.Millisecond)
+
+	result := restartWithRetainedSO(t, h, store)
+	assert.True(t, result.SORetired)
+	assert.False(t, result.SOCreated)
+	assert.Nil(t, h.users.byName[username], "the deleted SO was re-created")
+	assert.Equal(t, 1, h.users.creates[username])
+	assert.Equal(t, 1, h.binder.calls[soID])
+}
+
+// TestInitialize_PendingSOWithItsPINAndItsAccountStillEnrols: a retained
+// record whose committed PIN is its own and whose account still exists is
+// an interrupted enrolment, not a deleted SO, and is completed.
+func TestInitialize_PendingSOWithItsPINAndItsAccountStillEnrols(t *testing.T) {
+	h, store, username := retainedSOHarness(t)
+	soID := h.users.byName[username].ID
+	h.users.byName[username].CertBindings = nil
+
+	result := restartWithRetainedSO(t, h, store)
+	assert.False(t, result.SORetired)
+	assert.Equal(t, soID, result.SOUserID)
+	assert.Equal(t, 2, h.binder.calls[soID], "the unbound SO is bound again")
+	assert.False(t, result.SOCreated, "the standing account is reused, not re-created")
+}
+
+// recordSetterOnlyPINs commits a PIN record but cannot compare one.
+type recordSetterOnlyPINs struct{}
+
+func (recordSetterOnlyPINs) SetSOPIN(context.Context, string, []byte) error {
+	return errors.New("recordSetterOnlyPINs commits records only")
+}
+
+func (recordSetterOnlyPINs) CommitSOPINRecord(context.Context, string, string) error { return nil }
+
+// TestInitialize_PendingSOWithoutPINRecordMatcherIsRefusedBeforeAnyWrite:
+// an SO handed over as a PIN record needs an SOPINs that can prove the
+// committed record is its own, refused in the pre-flight before any write.
+func TestInitialize_PendingSOWithoutPINRecordMatcherIsRefusedBeforeAnyWrite(t *testing.T) {
+	h := newSOHarness(t, true)
+	h.deps.SO.PIN = nil
+	h.deps.SO.PINRecord = "A:00"
+	h.deps.SOPINs = recordSetterOnlyPINs{}
+	_, err := Initialize(context.Background(), h.deps)
+	var e *MissingSOSeamError
+	require.ErrorAs(t, err, &e)
+	assert.Contains(t, e.Seam, "SOPINRecordMatcher")
+	assert.Empty(t, h.users.creates)
+}
+
 // An encryption migration re-keys the barrier, so the barrier's copy of the
 // SO, sealed by the boot that issued it, no longer decrypts. Once the
 // replicated store holds the SO (or its consumed marker), a restart must

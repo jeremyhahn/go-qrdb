@@ -4470,8 +4470,11 @@ func bootstrapUserRoleStores(ctx context.Context, bootKVSvc, runtimeKVSvc servic
 	}
 	// The system SO's only once it is enrolled: once consumed, a later
 	// strict first boot reads it as already enrolled
-	// (firstboot.SystemSOConsumed), and a node that only waited for the
-	// leader to replicate the admin may have returned before the SO exists.
+	// (firstboot.SystemSOConsumed). The node whose first boot ran with the
+	// record already consumed it before serving
+	// (consumePendingSystemSOAfterFirstBoot), so no account mutation sees it
+	// pending; this check covers a node that only waited for the leader to
+	// replicate the admin and may have returned before the SO exists.
 	// Kept, the record makes the next start's first boot enrol the SO.
 	// The check reads the committed SO PIN linearizably, which blocks until
 	// the cluster has a quorum; a node booting before its peers would never
@@ -5121,7 +5124,7 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 	for {
 		initErr := runInit()
 		if initErr == nil {
-			return nil
+			return consumePendingSystemSOAfterFirstBoot(ctx, pendingAdminCertStore, pendingSO)
 		}
 		if errors.Is(initErr, quicraft.ErrReadIndexNotReady) && time.Now().Before(readyDeadline) {
 			select {
@@ -5161,6 +5164,22 @@ func runFirstBoot(ctx context.Context, node raftNode, leaderWait time.Duration, 
 		slog.Info("first-boot: waiting for leader to replicate admin",
 			slog.Any("reason", firstBootErr))
 		return waitForAdminReplication(ctx, userSvc, tenantid.System)
+	}
+	return nil
+}
+
+// consumePendingSystemSOAfterFirstBoot marks the pending system SO record
+// consumed once this node's first boot has run with it: the SO is enrolled,
+// or was enrolled and deleted since (firstboot.Result.SORetired). It runs
+// before the node serves, so no account mutation can see the record still
+// pending; a failed write fails the boot. Nodes that only waited for the
+// leader keep the background check (firstboot.ClearPendingSystemSOInBackground).
+func consumePendingSystemSOAfterFirstBoot(ctx context.Context, store firstboot.PendingAdminCertStore, pendingSO *firstboot.SOConfig) error {
+	if pendingSO == nil {
+		return nil
+	}
+	if err := firstboot.ClearPendingSystemSO(ctx, store); err != nil {
+		return &AuthBootstrapError{Step: "consume pending system SO", Err: err}
 	}
 	return nil
 }
