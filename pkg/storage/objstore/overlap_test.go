@@ -91,3 +91,35 @@ func TestReclaim_LeavesForeignObjects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"child/x"}, names)
 }
+
+// TestReclaim_LeavesNamespaceNestedUnderKeyPrefix proves Reclaim deletes
+// only canonical record names: a namespace created at root/k/child (after
+// the root's engine closed, so no overlap refusal applies) keeps its format
+// marker and its records when the root's database is dropped.
+func TestReclaim_LeavesNamespaceNestedUnderKeyPrefix(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a")
+	e, err := openLocal(t, root)
+	require.NoError(t, err)
+	require.NoError(t, e.Set([]byte("key"), []byte("value")))
+	require.NoError(t, e.Close())
+
+	childRoot := filepath.Join(root, "k", "child")
+	child, err := openLocal(t, childRoot)
+	require.NoError(t, err)
+	require.NoError(t, child.Set([]byte("childkey"), []byte("childvalue")))
+	require.NoError(t, child.Close())
+
+	e, err = openLocal(t, root)
+	require.NoError(t, err)
+	require.NoError(t, e.Reclaim())
+	require.NoError(t, e.Close())
+
+	_, err = os.Stat(filepath.Join(childRoot, formatMarkerName))
+	require.NoError(t, err, "Reclaim deleted the nested namespace's format marker")
+	child, err = openLocal(t, childRoot)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, child.Close()) }()
+	got, err := child.Get([]byte("childkey"))
+	require.NoError(t, err)
+	assert.Equal(t, []byte("childvalue"), got)
+}

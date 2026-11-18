@@ -962,11 +962,13 @@ func (e *Engine) Reclaim() error {
 		return err
 	}
 	for _, name := range names {
-		// Only the names this engine writes are deleted: on a walked
-		// provider the listing also reaches objects under the root that
-		// are not this engine's (a nested namespace's, or anything else
-		// placed there), and those stay. The markers go last, below.
-		if !strings.HasPrefix(name, directPrefix) && !strings.HasPrefix(name, hashedPrefix) {
+		// Only the names this engine writes are deleted: records whose
+		// name decodes as a direct or hashed key. On a walked provider the
+		// listing also reaches objects under the root that are not this
+		// engine's -- a namespace nested under k/ or h/ (its markers,
+		// journal and records), or anything else placed there -- and those
+		// stay. The journal and markers at the root go last, below.
+		if _, direct := decodeDirectName(name); !direct && !isHashedName(name) {
 			continue
 		}
 		if err := e.store.Delete(name); err != nil && !notFound(err) {
