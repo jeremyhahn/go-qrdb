@@ -105,6 +105,10 @@ func (v providerTenantCA) VerifyTenantIssuer(ctx context.Context, tenantID strin
 
 type dlgNothingRevoked struct{}
 
+func (r dlgNothingRevoked) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return r.IsCertRevoked(ctx, c)
+}
+
 func (dlgNothingRevoked) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) {
 	return false, nil
 }
