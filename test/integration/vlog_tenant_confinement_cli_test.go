@@ -29,11 +29,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/transparency-dev/merkle/proof"
+	"github.com/transparency-dev/merkle/rfc6962"
+
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/vlogwire"
 )
 
 // vlogTenantPermissions is what each tenant identity's role holds.
-var vlogTenantPermissions = []string{"vlog:create", "vlog:list", "vlog:append", "vlog:head", "admin:health"}
+var vlogTenantPermissions = []string{"vlog:create", "vlog:list", "vlog:append", "vlog:head", "vlog:get", "vlog:proof", "admin:health"}
 
 // vlogTenantJSON runs one vlog verb as a tenant identity and decodes its JSON.
 func vlogTenantJSON[T any](t *testing.T, node *multiProtoNode, proto multiProtocol, conn []string, args ...string) T {
@@ -106,6 +109,44 @@ func TestVlog_CLI_TenantConfinement_PerProtocol(t *testing.T) {
 			}
 			if h := vlogTenantJSON[vlogwire.Head](t, node, proto, acmeConn, "head", "--log", private); h.Size != 0 {
 				t.Fatalf("[%s] acme's log %q grew to %d through globex", proto.name, private, h.Size)
+			}
+
+			// The entry and proof reads of acme's log work for acme and
+			// refuse globex exactly as head does.
+			vlogTenantJSON[vlogwire.AppendResult](t, node, proto, acmeConn, "append", "--log", private, "--entry", "e0", "--entry", "e1")
+			head2 := vlogTenantJSON[vlogwire.Head](t, node, proto, acmeConn, "head", "--log", private)
+			vlogTenantJSON[vlogwire.AppendResult](t, node, proto, acmeConn, "append", "--log", private, "--entry", "e2", "--entry", "e3", "--entry", "e4")
+			head5 := vlogTenantJSON[vlogwire.Head](t, node, proto, acmeConn, "head", "--log", private)
+			if head2.Size != 2 || head5.Size != 5 {
+				t.Fatalf("[%s] acme's log %q head sizes %d, %d; want 2 and 5", proto.name, private, head2.Size, head5.Size)
+			}
+
+			got := vlogTenantJSON[vlogwire.GetResult](t, node, proto, acmeConn, "get", "--log", private, "--from", "1", "--limit", "3")
+			if len(got.Entries) != 3 || got.Entries[0].Index != 1 || string(got.Entries[0].Body) != "e1" || string(got.Entries[2].Body) != "e3" {
+				t.Fatalf("[%s] acme get --from 1 --limit 3 of %q = %+v, want e1..e3", proto.name, private, got.Entries)
+			}
+			incl := vlogTenantJSON[vlogwire.InclusionProof](t, node, proto, acmeConn, "prove-inclusion", "--log", private, "--index", "3", "--size", "5")
+			leaf := rfc6962.DefaultHasher.HashLeaf([]byte("e3"))
+			if err := proof.VerifyInclusion(rfc6962.DefaultHasher, incl.Index, incl.Size, leaf, incl.Hashes, head5.Root); err != nil {
+				t.Fatalf("[%s] acme prove-inclusion of e3 in %q does not verify against the size-5 root: %v", proto.name, private, err)
+			}
+			cons := vlogTenantJSON[vlogwire.ConsistencyProof](t, node, proto, acmeConn, "prove-consistency", "--log", private, "--size1", "2", "--size2", "5")
+			if err := proof.VerifyConsistency(rfc6962.DefaultHasher, cons.Size1, cons.Size2, cons.Hashes, head2.Root, head5.Root); err != nil {
+				t.Fatalf("[%s] acme prove-consistency 2->5 of %q does not verify against the head roots: %v", proto.name, private, err)
+			}
+
+			for _, args := range [][]string{
+				{"get", "--log", private, "--from", "1", "--limit", "3"},
+				{"prove-inclusion", "--log", private, "--index", "3", "--size", "5"},
+				{"prove-consistency", "--log", private, "--size1", "2", "--size2", "5"},
+			} {
+				out, err := runQRDB(t, node.cli, globexConn, append([]string{"vlog"}, args...)...)
+				if err == nil {
+					t.Fatalf("[%s] globex read acme's log %q with %s: %s", proto.name, private, args[0], out)
+				}
+				if !strings.Contains(out, "not found") {
+					t.Fatalf("[%s] globex %s of acme's log %q: want not found, got: %s", proto.name, args[0], private, out)
+				}
 			}
 		})
 	}
