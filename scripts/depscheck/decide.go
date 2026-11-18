@@ -35,6 +35,10 @@ type finding struct {
 // behind it, with no go.mod reason comment, fails the check.
 const freshWindow = 7 * 24 * time.Hour
 
+// notKnownDependency is the go command's text for a module that is not in
+// the build list ("module M: not a known dependency").
+const notKnownDependency = "not a known dependency"
+
 // assess judges one dependency against its `go list` entry. listed is false
 // when the listing has no entry for the module at all.
 //
@@ -54,14 +58,17 @@ func assess(dep dependency, mod listedModule, listed bool, firstParty string, no
 	case !listed:
 		f.Lookup = &LookupError{Module: dep.Module, Reason: "go list returned no entry for it"}
 		return f
+	case dep.Kind == kindReplace && mod.Version == "" && (mod.Error == nil || strings.Contains(mod.Error.Err, notKnownDependency)):
+		// The replaced module is not in the build list: the go command
+		// lists it with no version and, depending on the query, no error
+		// or "not a known dependency". The replace applies to nothing.
+		f.Unused = true
+		return f
 	case mod.Error != nil:
 		f.Lookup = &LookupError{Module: dep.Module, Reason: mod.Error.Err}
 		return f
-	case mod.Version == "" && dep.Kind == kindReplace:
-		f.Unused = true
-		return f
 	case mod.Version == "":
-		f.Lookup = &LookupError{Module: dep.Module, Reason: "not a known dependency"}
+		f.Lookup = &LookupError{Module: dep.Module, Reason: notKnownDependency}
 		return f
 	case dep.Path != dep.Module:
 		// A fork: holding it is always a decision that needs its reason.
