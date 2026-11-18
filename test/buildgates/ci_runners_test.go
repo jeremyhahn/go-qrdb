@@ -100,9 +100,10 @@ const (
 	// Floors, well under today's counts (7 workflows, 50 jobs).
 	runnerWorkflowFloor = 6
 	runnerJobFloor      = 30
-	// hostedJobFloor, under ci.yml's count (18 jobs, all on ubuntu-latest):
-	// a regression of the whole workflow to the pools fails here.
-	hostedJobFloor = 15
+	// hostedJobFloor, under ci.yml's count (14 jobs on ubuntu-latest; the
+	// coverage and fips splits and the overflowJobs run on the pool): a
+	// regression of the whole workflow to the pools fails here.
+	hostedJobFloor = 12
 	// selfHostedReason is the line comment a pool job's runs-on carries.
 	selfHostedReason = "self-hosted:"
 	// overflowReason is the reason a split matrix job states (ruling 834,
@@ -949,10 +950,28 @@ func TestRunnerProblems_Split(t *testing.T) {
 	}
 }
 
+// The overflow tuning (ruling 841, tuned from measured queues): what the
+// account's 40 hosted slots shed to the Docker pool.
+var (
+	// splitPoolLegs is how many of a split job's legs run on the pool: 9 of
+	// 12 once the hosted slots sat at the ceiling with 56 jobs queued while
+	// the pool waited 1.3 minutes. The three that stay hosted are the
+	// shortest measured legs (tenant, seal, server).
+	splitPoolLegs = 9
+	// overflowJobs are the long single jobs that run on the Docker pool
+	// whole, under the overflow reason. soak is not one: it runs only on a
+	// schedule or a dispatch, which poolSplit keeps on ubuntu-latest.
+	overflowJobs = []string{"integration-features", "integration-standalone"}
+	// hostedGateJobs are the short jobs every run waits on; they stay on the
+	// hosted runners.
+	hostedGateJobs = []string{"preflight", "coverage-merge", "ci-gate"}
+)
+
 // TestCISplitsTheLargeMatrices: ruling 841. coverage and fips, the two
 // largest matrices, split their legs between the hosted runners and the
-// Docker pool, with the same pool legs, so neither runner kind queues while
-// the other has room. A split job shares a pool daemon with other runs, whose
+// Docker pool, with the same splitPoolLegs pool legs, so neither runner kind
+// queues while the other has room; the overflowJobs run on the pool whole
+// and the hostedGateJobs stay hosted. A split job shares a pool daemon with other runs, whose
 // loads can move the toolchain tag, so it runs the toolchain by the image ID
 // docker-build recorded, never by the tag.
 func TestCISplitsTheLargeMatrices(t *testing.T) {
@@ -971,6 +990,9 @@ func TestCISplitsTheLargeMatrices(t *testing.T) {
 			t.Errorf("job %s does not split its legs between ubuntu-latest and the Docker pool (ruling 841)", name)
 			continue
 		}
+		if len(legs) != splitPoolLegs {
+			t.Errorf("job %s sends %d legs to the pool; the tuning sends %d", name, len(legs), splitPoolLegs)
+		}
 		for _, step := range job.Steps {
 			if strings.Contains(step.Run, `TOOLCHAIN_IMAGE=$IMAGE`) {
 				t.Errorf("job %s hands on the toolchain by its tag; a split job shares a pool daemon, so it hands on TOOLCHAIN_IMAGE=$ID", name)
@@ -983,6 +1005,21 @@ func TestCISplitsTheLargeMatrices(t *testing.T) {
 			first = legs
 		} else if !slices.Equal(first, legs) {
 			t.Errorf("job %s sends legs %v to the pool, coverage %v; keep one split", name, legs, first)
+		}
+	}
+	for _, name := range overflowJobs {
+		job, ok := wf.Jobs[name]
+		if !ok {
+			t.Errorf("%s has no job %s", poolWorkflow, name)
+			continue
+		}
+		if job.RunsOn.Value != dockerRunner || poolReason(job.RunsOn.LineComment) != overflowReason {
+			t.Errorf("job %s runs on %q (%q); an overflow job runs on dockerRunner with `# self-hosted: %s`", name, job.RunsOn.Value, job.RunsOn.LineComment, overflowReason)
+		}
+	}
+	for _, name := range hostedGateJobs {
+		if job, ok := wf.Jobs[name]; !ok || job.RunsOn.Value != hostedRunner {
+			t.Errorf("gate job %s is not on %s; the short jobs every run waits on stay hosted", name, hostedRunner)
 		}
 	}
 }
