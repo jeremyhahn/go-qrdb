@@ -98,3 +98,97 @@ func TestGapError_NamesBothVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestSetForTesting_SetsAndRestores(t *testing.T) {
+	before := Version()
+	restore := SetForTesting("1.4.2")
+	if got := Version(); got != "1.4.2" {
+		t.Fatalf("Version() = %q after SetForTesting, want 1.4.2", got)
+	}
+	restore()
+	if got := Version(); got != before {
+		t.Fatalf("Version() = %q after restore, want %q", got, before)
+	}
+}
+
+func TestParse(t *testing.T) {
+	cases := []struct {
+		in   string
+		want semver
+		ok   bool
+	}{
+		{"1.2.3", semver{1, 2, 3}, true},
+		{"v1.2.3", semver{1, 2, 3}, true},
+		{"0.0.0", semver{0, 0, 0}, true},
+		{"1.2.3-rc.1+build.5", semver{1, 2, 3}, true},
+		{"1.2.3-alpha-1.x", semver{1, 2, 3}, true},
+		{"1.2.3+001", semver{1, 2, 3}, true}, // build metadata may lead with zero
+		{"1.2.3-0", semver{1, 2, 3}, true},
+		{"", semver{}, false},
+		{"v", semver{}, false},
+		{"1.2", semver{}, false},
+		{"1.2.3.4", semver{}, false},
+		{"1..3", semver{}, false},
+		{"01.2.3", semver{}, false},
+		{"1.02.3", semver{}, false},
+		{"1.2.x", semver{}, false},
+		{"1.2.3-", semver{}, false},
+		{"1.2.3+", semver{}, false},
+		{"1.2.3-rc..1", semver{}, false},
+		{"1.2.3+build..1", semver{}, false},
+		{"1.2.3-01", semver{}, false},
+		{"1.2.3-rc_1", semver{}, false},
+		{"1.2.3+b!", semver{}, false},
+		{"18446744073709551616.0.0", semver{}, false}, // overflows uint64
+	}
+	for _, c := range cases {
+		got, ok := parse(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("parse(%q) = %+v, %v; want %+v, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestCheck_RefusalsAndAcceptance(t *testing.T) {
+	cases := []struct {
+		name, local, peer string
+		refused           bool
+	}{
+		{"same release", "1.4.2", "1.4.2", false},
+		{"patch differs", "1.4.2", "1.4.9", false},
+		{"adjacent minor up", "1.4.2", "1.5.0", false},
+		{"adjacent minor down", "1.5.0", "1.4.2", false},
+		{"major boundary up", "1.9.3", "2.0.0", false},
+		{"major boundary down", "2.0.1", "1.9.3", false},
+		{"pre-release adjacent", "1.4.2", "1.5.0-rc.1", false},
+		{"pre-release of same release", "1.5.0-rc.1", "1.5.0", false},
+		{"gap two minors up", "1.4.2", "1.6.0", true},
+		{"gap two minors down", "1.6.0", "1.4.2", true},
+		{"gap major skips .0", "1.9.3", "2.1.0", true},
+		{"gap two majors", "1.0.0", "3.0.0", true},
+		{"pre-release across gap", "1.4.2", "1.6.0-rc.1", true},
+		{"empty peer", "1.4.2", "", true},
+		{"unparsable peer", "1.4.2", "1.4", true},
+		{"bad pre-release peer", "1.4.2", "1.4.3-01", true},
+		{"unparsable local", "garbage", "1.4.2", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withVersion(t, c.local)
+			err := Check("raft", c.peer)
+			if !c.refused {
+				if err != nil {
+					t.Fatalf("Check(%q) with local %q = %v, want nil", c.peer, c.local, err)
+				}
+				return
+			}
+			gap, ok := err.(*GapError)
+			if !ok {
+				t.Fatalf("Check(%q) with local %q = %v (%T), want *GapError", c.peer, c.local, err, err)
+			}
+			if gap.Channel != "raft" || gap.Local != c.local || gap.Peer != c.peer {
+				t.Fatalf("GapError = %+v, want channel raft, local %q, peer %q", gap, c.local, c.peer)
+			}
+		})
+	}
+}

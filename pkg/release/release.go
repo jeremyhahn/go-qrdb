@@ -104,7 +104,7 @@ func validIdents(s string, preRelease bool) bool {
 			return false
 		}
 		for _, c := range id {
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '-') {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '-' {
 				return false
 			}
 		}
