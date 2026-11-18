@@ -59,6 +59,14 @@ type Engine struct {
 	// this process that open one namespace share its owner-claim lock.
 	namespace string
 
+	// owner is the identity the engine opened its namespace as (WithOwner);
+	// empty for an unowned engine.
+	owner string
+
+	// namespaceHeld is set while the engine holds its namespace in
+	// openNamespaces. It changes only under openNamespaces.mu.
+	namespaceHeld bool
+
 	// journalMu serializes batch commits: the commit journal is a single
 	// object per engine, so two concurrent commits must not interleave
 	// publish/apply/clear.
@@ -246,7 +254,20 @@ func New(provider string, settings map[string]string, opts ...Option) (*Engine, 
 	if err != nil {
 		return nil, err
 	}
-	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, canonical)}
+	e := &Engine{store: store, journal: journal, provider: provider, namespace: namespaceKey(provider, canonical), owner: o.owner}
+	// One namespace is open in this process by one owner at a time: an
+	// equal root or equal bucket settings opened by a different owner (or
+	// unowned) is refused, not shared.
+	if sharesNamespace(provider, canonical) {
+		if err := registerNamespace(e); err != nil {
+			return nil, err
+		}
+		defer func() {
+			if !opened {
+				unregisterNamespace(e)
+			}
+		}()
+	}
 	// A walked root nested in, or holding, an open engine's root is
 	// refused: each listing would walk into the other's objects. The roots
 	// are registered now and released if the open fails after this point.
@@ -403,7 +424,7 @@ func (e *OverlappingRootError) Error() string {
 
 // openRoots registers the data and journal roots of every open engine on a
 // walked provider, so New refuses a root nested in, or holding, one of them.
-// Equal roots are not an overlap: the owner lock governs those.
+// Equal roots are not an overlap: openNamespaces governs those (one owner).
 var openRoots = struct {
 	mu    sync.Mutex
 	roots map[*Engine][2]string
@@ -434,6 +455,89 @@ func unregisterRoots(e *Engine) {
 	openRoots.mu.Lock()
 	defer openRoots.mu.Unlock()
 	delete(openRoots.roots, e)
+}
+
+// NodeStoreOwner is the owner identity of the node's own store (the
+// standalone node's storage.backend, opened by pkg/server/lifecycle). A
+// namespace recorded as the node's is never opened by any other owner, so a
+// database configured onto the node's bucket or path cannot read, overwrite
+// or reclaim the node's objects.
+const NodeStoreOwner = "node"
+
+// NamespaceInUseError is returned by New when the namespace it opens is held
+// by another owner: open in this process by an engine whose owner differs
+// (an unowned engine included), or recorded on the provider as the node's
+// own store (NodeStoreOwner).
+type NamespaceInUseError struct {
+	// Provider is the provider of the refused open.
+	Provider string
+	// Held is the owner holding the namespace; empty for an unowned engine.
+	Held string
+	// Want is the owner the refused open asked for.
+	Want string
+}
+
+func (e *NamespaceInUseError) Error() string {
+	return "objstore: " + strconv.Quote(e.Provider) + " namespace is in use by owner " + strconv.Quote(e.Held) +
+		", refused for " + strconv.Quote(e.Want)
+}
+
+// openNamespaces records, for each namespace identity (namespaceKey) open
+// in this process, its owner and how many engines hold it. Equal roots and
+// equal bucket settings meet here: a second open is shared only by the same
+// owner.
+var openNamespaces = struct {
+	mu    sync.Mutex
+	holds map[string]*namespaceHold
+}{holds: map[string]*namespaceHold{}}
+
+type namespaceHold struct {
+	owner string
+	count int
+}
+
+// sharesNamespace reports whether two engines of provider opened with these
+// settings reach one namespace. A provider with no location settings and no
+// settings at all (the memory provider) gives each engine its own store.
+func sharesNamespace(provider string, settings map[string]string) bool {
+	_, listed := locationSettings[provider]
+	return listed || len(settings) > 0
+}
+
+// registerNamespace refuses e's namespace when another owner holds it open
+// and otherwise records e as one of its holders. The check and the record
+// are one critical section, so two racing opens by different owners cannot
+// both pass.
+func registerNamespace(e *Engine) error {
+	openNamespaces.mu.Lock()
+	defer openNamespaces.mu.Unlock()
+	if h, held := openNamespaces.holds[e.namespace]; held {
+		if h.owner != e.owner {
+			return &NamespaceInUseError{Provider: e.provider, Held: h.owner, Want: e.owner}
+		}
+		h.count++
+	} else {
+		openNamespaces.holds[e.namespace] = &namespaceHold{owner: e.owner, count: 1}
+	}
+	e.namespaceHeld = true
+	return nil
+}
+
+// unregisterNamespace releases e's hold on its namespace, once.
+func unregisterNamespace(e *Engine) {
+	openNamespaces.mu.Lock()
+	defer openNamespaces.mu.Unlock()
+	if !e.namespaceHeld {
+		return
+	}
+	e.namespaceHeld = false
+	h := openNamespaces.holds[e.namespace]
+	if h == nil {
+		return
+	}
+	if h.count--; h.count == 0 {
+		delete(openNamespaces.holds, e.namespace)
+	}
 }
 
 // strictlyNested reports whether inner lies below outer, path component
@@ -476,6 +580,9 @@ func (e *Engine) claimOwner(owner string) error {
 		found, readErr := io.ReadAll(rc)
 		if readErr != nil {
 			return readErr
+		}
+		if string(found) == NodeStoreOwner && owner != NodeStoreOwner {
+			return &NamespaceInUseError{Provider: e.provider, Held: NodeStoreOwner, Want: owner}
 		}
 		if string(found) != owner {
 			return &NamespaceOwnedError{Provider: e.provider, Owner: string(found), Want: owner}
@@ -822,6 +929,7 @@ func (e *Engine) Close() error {
 	}
 	e.providersClosed = true
 	unregisterRoots(e)
+	unregisterNamespace(e)
 	return closeStores(e.store, e.journal)
 }
 

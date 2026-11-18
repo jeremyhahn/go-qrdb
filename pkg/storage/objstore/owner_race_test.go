@@ -1,7 +1,6 @@
 package objstore
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -42,9 +41,9 @@ func TestNew_OwnerClaimRace(t *testing.T) {
 			winner = i
 			continue
 		}
-		var owned *NamespaceOwnedError
-		require.True(t, errors.As(errs[i], &owned), "engine %d: got %v", i, errs[i])
-		assert.Equal(t, fmt.Sprintf("db-%d", i), owned.Want)
+		want, refused := ownerRefusal(errs[i])
+		require.True(t, refused, "engine %d: got %v", i, errs[i])
+		assert.Equal(t, fmt.Sprintf("db-%d", i), want)
 	}
 	require.NotEqual(t, -1, winner, "no engine claimed the namespace")
 	e := engines[winner]
@@ -95,8 +94,8 @@ func TestNew_OwnerClaimRaceAcrossAliases(t *testing.T) {
 			winner = i
 			continue
 		}
-		var owned *NamespaceOwnedError
-		require.True(t, errors.As(errs[i], &owned), "engine %d: got %v", i, errs[i])
+		_, refused := ownerRefusal(errs[i])
+		require.True(t, refused, "engine %d: got %v", i, errs[i])
 	}
 	require.NotEqual(t, -1, winner, "no engine claimed the namespace")
 	require.NoError(t, engines[winner].Close())

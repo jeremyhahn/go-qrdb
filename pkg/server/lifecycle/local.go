@@ -74,7 +74,10 @@ func NewLocalStorage(backendType database.BackendType, dataDir string, enc *atre
 		stg, err := objstore.New(provider, settings, objstore.WithCredentialFiles(objstore.CredentialFiles{
 			KeyFile:    objCfg.Credentials.KeyFile,
 			SecretFile: objCfg.Credentials.SecretFile,
-		}))
+		}),
+			// The node owns its store's namespace: no database is
+			// opened onto the node's bucket or path.
+			objstore.WithOwner(objstore.NodeStoreOwner))
 		if err != nil {
 			return nil, nil, &LocalStorageError{Backend: backendType, Err: err}
 		}

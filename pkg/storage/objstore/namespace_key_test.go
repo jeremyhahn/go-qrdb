@@ -1,7 +1,6 @@
 package objstore
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 
@@ -20,8 +19,8 @@ func TestNamespaceKey_LocationOnly(t *testing.T) {
 		defer func() { require.NoError(t, first.Close()) }()
 
 		_, err = openLocalOwned(t, map[string]string{"path": p}, "db-y")
-		var owned *NamespaceOwnedError
-		require.True(t, errors.As(err, &owned), "got %v", err)
+		_, refused := ownerRefusal(err)
+		require.True(t, refused, "got %v", err)
 	})
 	t.Run("two local paths two keys", func(t *testing.T) {
 		assert.NotEqual(t,
