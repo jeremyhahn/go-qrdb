@@ -524,12 +524,26 @@ group's committed log, which would already contain the new command. Gating on
 cluster-wide activation rather than a group's current membership is what
 keeps a half-upgraded cluster working and never diverging.
 
+While the upgrade is under way the cluster is **mixed**: some nodes run the
+old release (N) and some the new one (N+1). A mixed cluster serves every
+transport (REST, gRPC, QUIC, MCP, Unix socket) on every node, and a write sent
+to a follower is forwarded to the leader whichever release each of them runs:
+an N+1 follower forwards to an N leader and an N follower to an N+1 leader, so
+moving leadership during the upgrade (`qrdb admin member transfer-leadership`)
+is safe. An operation that needs the new feature takes the old path, or is
+refused as not yet active, until activation; nothing the N nodes cannot apply
+is proposed. Tenant barriers keep working too: a raft-isolated tenant created
+while the leader runs either release is served on every node under that node's
+own key.
+
 When every node advertises the feature, the cluster **activates** it, and
 activation is permanent. **After activation, no node may be started or added on
 an older release** -- neither an existing node rolled back nor a new one. A
 release that knows about feature activation refuses to start with an error
-naming the feature, and the cluster refuses to add a replica on a node that does
-not advertise it (see below), but a release without feature activation can do
+naming the feature (`featuregate.UnsupportedFeatureError`: "the cluster has
+activated feature ..., which this binary does not implement"); start the node
+on the new release again and it rejoins with its data. The cluster also
+refuses to add a replica on a node that does not advertise it (see below), but a release without feature activation can do
 neither; roll forward instead.
 
 A new node is added only once it advertises every feature the cluster uses.
