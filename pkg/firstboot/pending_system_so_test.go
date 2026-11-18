@@ -289,6 +289,69 @@ func TestClearPendingSystemSO_StoreFault(t *testing.T) {
 	assert.Equal(t, "clear system SO", storeErr.Op)
 }
 
+// TestConsumeEnrolledSystemSO_ConsumesTheExactRecord: the record the SO was
+// read from is marked consumed.
+func TestConsumeEnrolledSystemSO_ConsumesTheExactRecord(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	consumed, err := ConsumeEnrolledSystemSO(ctx, store, so)
+	require.NoError(t, err)
+	assert.True(t, consumed)
+	assert.True(t, SystemSOConsumed(ctx, store))
+}
+
+// TestConsumeEnrolledSystemSO_LeavesADifferentRecordPending: an SO whose
+// certificate or PIN record differs from the pending record's is not the SO
+// the record names, so the record stays pending.
+func TestConsumeEnrolledSystemSO_LeavesADifferentRecordPending(t *testing.T) {
+	ctx := context.Background()
+	store := newMemPendingAdminCertStore()
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	otherCert := *so
+	otherCert.CertPEM = append([]byte("other-"), so.CertPEM...)
+	otherPIN := *so
+	otherPIN.PINRecord = so.PINRecord + "-other"
+	otherUser := *so
+	otherUser.Username = so.Username + "-other"
+	for name, other := range map[string]*SOConfig{"cert": &otherCert, "pin record": &otherPIN, "username": &otherUser} {
+		consumed, err := ConsumeEnrolledSystemSO(ctx, store, other)
+		require.NoError(t, err, name)
+		assert.False(t, consumed, name)
+		assert.False(t, SystemSOConsumed(ctx, store), name)
+	}
+	still, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, still)
+	assert.Equal(t, so.Username, still.Username)
+}
+
+// TestConsumeEnrolledSystemSO_StoreFault: a store that cannot write the
+// consumed marker is a fault the caller sees.
+func TestConsumeEnrolledSystemSO_StoreFault(t *testing.T) {
+	ctx := context.Background()
+	store := &failingPutStore{memPendingAdminCertStore: newMemPendingAdminCertStore()}
+	require.NoError(t, WriteIssuedSystemSOIfAny(ctx, soCeremonyCore(t), store, nil))
+	so, err := PendingSystemSO(ctx, store)
+	require.NoError(t, err)
+	require.NotNil(t, so)
+
+	consumed, err := ConsumeEnrolledSystemSO(ctx, store, so)
+	var storeErr *PendingAdminCertStoreError
+	require.ErrorAs(t, err, &storeErr)
+	assert.Equal(t, "consume system SO", storeErr.Op)
+	assert.False(t, consumed)
+	assert.False(t, SystemSOConsumed(ctx, store))
+}
+
 // ceremonyCoreOver builds a ceremony core whose system barrier persists in
 // backend, unsealing it when an earlier core has initialised it: the same
 // node, started again.

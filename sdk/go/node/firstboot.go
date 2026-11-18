@@ -123,7 +123,8 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	deps.AdminCertPool = firstboot.AdminCertPoolFromCABundle(caBundlePEM)
 	deps.Binder = firstboot.UserCertBinder{Users: users}
 	// The system SO the ceremony recorded, unless the caller names one.
-	if deps.SO == nil {
+	soFromRecord := deps.SO == nil
+	if soFromRecord {
 		so, err := firstboot.PendingSystemSO(ctx, store)
 		if err != nil {
 			return nil, err
@@ -158,12 +159,25 @@ func (n *Node) FirstBootWithCeremony(ctx context.Context, store firstboot.Pendin
 	if err := firstboot.ClearPendingAdminCert(ctx, store); err != nil {
 		slog.Warn("node: failed to clear the pending admin credential record", "error", err)
 	}
-	// Only an enrolled SO's record is consumed, as cmd/qrdbd/start.go does:
-	// a record written after the read above (or one this run could not
-	// enrol) stays pending, so the next first boot enrols that SO.
+	// The record this run enrolled (or found enrolled and deleted since) is
+	// consumed before the node serves, and a failed write fails the boot, as
+	// cmd/qrdbd/start.go does: a record left pending would let the next first
+	// boot re-bind a key the SO's operator withdrew. Only that exact record
+	// is consumed; a record written after the read above stays pending, so
+	// the next first boot enrols that SO.
+	if soFromRecord && deps.SO != nil && (result.SOUserID != 0 || result.SORetired) {
+		if _, err := firstboot.ConsumeEnrolledSystemSO(ctx, store, deps.SO); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	soPINCheck, _ := deps.SOPINs.(firstboot.SOPINChecker)
 	if cleared, err := firstboot.ClearPendingSystemSOIfEnrolled(ctx, store, users, soPINCheck); err != nil {
-		slog.Warn("node: failed to clear the pending system SO record", "error", err)
+		var unverified *firstboot.SystemSOUnverifiedError
+		if !errors.As(err, &unverified) {
+			return nil, err
+		}
+		slog.Warn("node: the pending system SO record is not the enrolled SO's; keeping it", "error", err)
 	} else if !cleared {
 		slog.Warn("node: the pending system SO is not enrolled yet; keeping its record for the next first boot")
 	}
