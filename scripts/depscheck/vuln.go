@@ -53,6 +53,7 @@ func (g govulncheck) Scan(dir string) (map[string][]advisory, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), path, args...) //#nosec G204 -- the scanner and the tags come from the Makefile
 	cmd.Dir = run
+	cmd.Env = goEnv()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

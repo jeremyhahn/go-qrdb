@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -97,12 +98,21 @@ func (g goCommand) run(dir string, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), g.path, args...) //#nosec G204 -- the go command comes from the Makefile, the arguments from the go.mod under check
 	cmd.Dir = dir
+	cmd.Env = goEnv()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return nil, &GoCommandError{Dir: dir, Args: args, Stderr: stderr.String(), Err: err}
 	}
 	return stdout.Bytes(), nil
+}
+
+// goEnv is the environment of every go command the checker runs, and of
+// govulncheck: the caller's, with GOWORK=off appended so it wins. The
+// checker judges each go.mod on its own; a go.work above it would select
+// its other modules' versions and hide an outdated requirement.
+func goEnv() []string {
+	return append(os.Environ(), "GOWORK=off")
 }
 
 // decodeList decodes the stream of JSON objects `go list -json` prints,
