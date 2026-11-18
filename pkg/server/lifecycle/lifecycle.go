@@ -1768,12 +1768,22 @@ func (n *Node) buildSealServices(ctx context.Context, infra Infra, log *slog.Log
 				if infra.SealBarrier == nil {
 					return &NilSealBarrierError{}
 				}
-				credStore = infra.SealBarrier
+				if err := infra.CredentialCoreSvc.BindStore(ctx, infra.SealBarrier); err != nil {
+					return err
+				}
 			case infra.SealBarrier != nil:
+				// An earlier build of this node may have fallen back to the
+				// seal barrier: its credentials, rotation policies and
+				// history move onto the data plane before the switch, even
+				// when the core's node-local migration already ran.
 				credStore = sealGatedStore{Store: credStore, barrier: infra.SealBarrier}
-			}
-			if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
-				return err
+				if err := infra.CredentialCoreSvc.BindStoreFrom(ctx, credStore, infra.SealBarrier); err != nil {
+					return err
+				}
+			default:
+				if err := infra.CredentialCoreSvc.BindStore(ctx, credStore); err != nil {
+					return err
+				}
 			}
 		}
 		n.Credential = service.NewCredentialService(infra.CredentialCoreSvc, credentialServiceOptions(infra)...)

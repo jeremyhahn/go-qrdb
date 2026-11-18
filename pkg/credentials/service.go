@@ -96,6 +96,11 @@ type CredentialService struct {
 	// migratedBarriers records the barriers ForBarrier has migrated with no
 	// conflict left, keyed by *seal.StorageBarrier, so it migrates each once.
 	migratedBarriers sync.Map
+	// layoutMu guards layoutFrom: the store an earlier binding kept the
+	// replicated layout in, until BindStoreFrom has moved it into the
+	// bound store; nil when there is nothing to move.
+	layoutMu   sync.Mutex
+	layoutFrom Store
 
 	// testHooks are interleaving seams for this package's tests; every
 	// field is nil in production.

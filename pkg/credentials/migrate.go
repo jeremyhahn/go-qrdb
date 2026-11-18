@@ -183,6 +183,11 @@ func (s *CredentialService) BindStore(ctx context.Context, st Store) error {
 	if err := s.store.bind(st); err != nil {
 		return err
 	}
+	// A move an earlier BindStoreFrom left pending was into the store
+	// this binding replaces.
+	s.layoutMu.Lock()
+	s.layoutFrom = nil
+	s.layoutMu.Unlock()
 	if err := s.MigrateLegacy(ctx); err != nil {
 		s.logger.Error("credential migration from the node-local layout did not finish",
 			slog.String("error", err.Error()))
@@ -221,6 +226,9 @@ func (s *CredentialService) MigrateLegacy(ctx context.Context) error {
 // the node's own records have not reached. It takes migrateMu, so nothing
 // the migration or the resolve verbs call may call it.
 func (s *CredentialService) ensureMigrated(ctx context.Context) error {
+	if err := s.ensureLayoutMoved(ctx); err != nil {
+		return err
+	}
 	if s.legacy == nil || s.strategy != StrategyBarrier {
 		return nil
 	}
