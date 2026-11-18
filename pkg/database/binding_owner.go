@@ -55,6 +55,18 @@ func (m *Manager) ownerFor(cfg DatabaseConfig, provisioned bool) string {
 	return m.LocalNode()
 }
 
+// singleWriterRefusal refuses a single-writer backend (objstore) on a
+// clustered node when the database has no owning node: every node would
+// open, and write, one provider namespace. A standalone node (no
+// SetLocalNode) is the only writer and is never refused; a record owned by
+// another node is skipped before this (ownerRefusal).
+func (m *Manager) singleWriterRefusal(name string, backend BackendType, ownerNode string) error {
+	if backend != BackendObjstore || ownerNode != "" || m.LocalNode() == "" {
+		return nil
+	}
+	return &SingleWriterBackendError{Name: name, Backend: backend}
+}
+
 // ownerRefusal reports whether meta, key's catalog record, is held by
 // another node, and if so returns the refusal that sends its requests there:
 // a local binding's (placement.NotAReplicaError.LocalBinding), whose one

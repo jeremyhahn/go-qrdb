@@ -89,6 +89,24 @@ func (e *SealedNodeBackendError) Error() string {
 		" stores data outside the seal barrier and is refused on a sealed node"
 }
 
+// SingleWriterBackendError is returned when a clustered node (SetLocalNode)
+// is asked to create or open a database whose backend has a single writer
+// (backend objstore) and whose catalog record names no owning node
+// (DatabaseMeta.OwnerNode): a provisioned database, which every node would
+// create and open for itself. Each node would then write one provider
+// namespace with no coordination between them, so the database is refused;
+// a database created through the API records its creator as owner and opens
+// on that node alone.
+type SingleWriterBackendError struct {
+	Name    string
+	Backend BackendType
+}
+
+func (e *SingleWriterBackendError) Error() string {
+	return "database: " + strconv.Quote(e.Name) + ": backend " + strconv.Quote(string(e.Backend)) +
+		" is single-writer and needs an owning node in a cluster"
+}
+
 // ObjectStorageNotWiredError reports a `backend: objstore` database opened by
 // an EmbeddedBackendFactory built without WithObjectStorage, or a database
 // with an Objstore block created through a factory without

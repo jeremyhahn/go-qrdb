@@ -200,9 +200,12 @@ func TestManager_SecondDatabaseCannotReachAnothersNamespace(t *testing.T) {
 	}
 
 	_, err = mgr.Create(localObjstore("second", root))
+	// Open in this process by first, the namespace refuses second before
+	// its owner marker is read; either refusal keeps first's objects.
 	var owned *objstore.NamespaceOwnedError
-	if !errors.As(err, &owned) {
-		t.Fatalf("Create(second) on first's path = %v, want *objstore.NamespaceOwnedError", err)
+	var inUse *objstore.NamespaceInUseError
+	if !errors.As(err, &owned) && !errors.As(err, &inUse) {
+		t.Fatalf("Create(second) on first's path = %v, want an objstore owner refusal", err)
 	}
 	if _, err := mgr.Get("second"); err == nil {
 		t.Fatal("the refused database is served")

@@ -347,6 +347,9 @@ func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Cre
 	if m.sealedNode && cfg.Backend == BackendObjstore {
 		return nil, &SealedNodeBackendError{Name: cfg.Name, Backend: cfg.Backend}
 	}
+	if err := m.singleWriterRefusal(cfg.Name, cfg.Backend, m.ownerFor(cfg, shared)); err != nil {
+		return nil, err
+	}
 	// Shard IDs are issued by the cluster. A caller naming one could put a
 	// database on another database's Raft group, or on a reserved shard such
 	// as the system shard; nothing the caller supplies is checked against
@@ -662,6 +665,9 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	// rest store here. OpenAll logs the refusal and opens the rest.
 	if m.sealedNode && cfg.Backend == BackendObjstore {
 		return nil, &SealedNodeBackendError{Name: name, Backend: cfg.Backend}
+	}
+	if err := m.singleWriterRefusal(name, cfg.Backend, meta.OwnerNode); err != nil {
+		return nil, err
 	}
 	if err := m.validateDataDir(key.tenant, name, meta.DataDir); err != nil {
 		return nil, err
