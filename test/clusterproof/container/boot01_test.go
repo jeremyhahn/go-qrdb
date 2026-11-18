@@ -25,8 +25,9 @@ const (
 	logKeep = 200
 )
 
-// EnvKeep names the variable that, set to 1, leaves the booted cluster
-// running after a passing BOOT-01 so a soak can run against it.
+// EnvKeep names the variable that, set to 1, leaves the booted cluster's
+// containers after BOOT-01: running for the soak after a pass, and for the
+// full-log capture after a failure. Whoever sets it removes them.
 const EnvKeep = "PROOF_KEEP"
 
 // TestBOOT01 is BOOT-01 against real containers: a static bootstrap of the
@@ -79,8 +80,11 @@ func TestBOOT01(t *testing.T) {
 					n.Name, logKeep, logTail, dropped, err, logs)
 			}
 		}
-		if keep && !t.Failed() {
-			t.Logf("%s=1: leaving the cluster running for the soak", EnvKeep)
+		if keep {
+			// A failed boot keeps its containers too, so the caller
+			// (scripts/cluster-proof-ci.sh) can save each node's full log;
+			// its down removes them.
+			t.Logf("%s=1: leaving the cluster for the soak or the log capture", EnvKeep)
 			return
 		}
 		if err := c.Remove(ctx); err != nil {

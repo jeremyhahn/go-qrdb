@@ -34,6 +34,9 @@
 #                     leaving it running (PROOF_KEEP=1).
 #   down DIR          remove the containers and the network, then unmount
 #                     and delete the node filesystems.
+#   logs DIR          write every node's full `docker logs` to
+#                     DIR/bundle/logs/node-N.log; up does the same itself
+#                     when it exits non-zero (BOOT-01 failing included).
 #
 # Every fault runs locally through docker: no ssh, no unseal (PROOF_SEAL=none).
 # The fault container shares the node's network namespace and binds the
@@ -54,7 +57,7 @@ readonly trust_domain=qrdb.cluster
 readonly raft_port=63001
 
 usage() {
-	echo "usage: $0 render DIR IMAGE [FAULT_IMAGE] | up DIR | down DIR" >&2
+	echo "usage: $0 render DIR IMAGE [FAULT_IMAGE] | up DIR | down DIR | logs DIR" >&2
 	exit 2
 }
 
@@ -232,6 +235,10 @@ write_workload() {
 up() {
 	local dir
 	dir=$(absdir "$1")
+	# A failing up (BOOT-01 included) keeps every node's full log in the
+	# bundle the CI job uploads.
+	logs_dir=$dir
+	trap on_exit EXIT
 	mount_data "$dir"
 	if ! docker network inspect "$network" >/dev/null 2>&1; then
 		docker network create --subnet "$subnet" "$network" >/dev/null
@@ -278,6 +285,31 @@ umount_data() {
 	done
 }
 
+# save_logs DIR writes `docker logs` of every node, stdout and stderr, to
+# DIR/bundle/logs/node-N.log, so the uploaded clusterproof-bundle artifact
+# carries each node's whole log, not the tail a test prints.
+save_logs() {
+	local dir=$1 n
+	mkdir -p "$dir/bundle/logs"
+	for n in "${nodes[@]}"; do
+		docker logs "clusterproof-node-$n" >"$dir/bundle/logs/node-$n.log" 2>&1 || true
+	done
+	echo "$0: node logs in $dir/bundle/logs" >&2
+}
+
+# logs_dir is the cluster directory whose bundle a failing exit writes the
+# node logs to; empty, a failing exit writes none.
+logs_dir=""
+
+# on_exit is the EXIT trap: on a non-zero status it saves the node logs.
+on_exit() {
+	local rc=$?
+	if [ "$rc" -ne 0 ] && [ -n "$logs_dir" ]; then
+		save_logs "$logs_dir"
+	fi
+	exit "$rc"
+}
+
 down() {
 	local n dir=$1
 	for n in "${nodes[@]}"; do
@@ -299,6 +331,10 @@ up)
 down)
 	[[ $# -eq 2 ]] || usage
 	down "$2"
+	;;
+logs)
+	[[ $# -eq 2 ]] || usage
+	save_logs "$(absdir "$2")"
 	;;
 *) usage ;;
 esac

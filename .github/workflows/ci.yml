@@ -2167,6 +2167,13 @@ jobs:
       - name: Boot, soak and check (make cluster-proof-ci)
         run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
 
+      # A failure past boot (the soak, the check) leaves the containers to
+      # Tear down: save each node's full log into the bundle first. Under
+      # build/clusterproof-ci/bundle, so the upload below carries it.
+      - name: Keep every node's full log
+        if: failure()
+        run: scripts/cluster-proof-ci.sh logs "$CLUSTERPROOF_CI_DIR"
+
       - name: Upload the evidence bundle
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

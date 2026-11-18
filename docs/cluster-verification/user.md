@@ -189,8 +189,8 @@ make cluster-proof-boot PROOF_INVENTORY=$XDG_CONFIG_HOME/clusterproof/inventory.
 
 A pass prints one line per node and transport, all naming the same leader
 and mode `raft`. The containers are removed at the end; with `PROOF_KEEP=1`
-a passing run leaves them running, and the soak can run against that
-cluster. The containers are named `clusterproof-<name>`, and
+they stay: after a pass the soak can run against that cluster, and after
+a failure their full logs can be saved. The containers are named `clusterproof-<name>`, and
 that is the name the targets file's templates use.
 
 To rehearse on one machine:
@@ -228,9 +228,14 @@ scripts/cluster-proof-ci.sh down build/clusterproof-ci
   `CLUSTERPROOF_DISK_MB` (default 1024, so 1 GiB) on `DIR/node-N/data`, so
   disk-full fills only that node and never the runner's disk, then creates
   the network and runs `cluster-proof-boot` with `PROOF_KEEP=1`. The loop
-  mounts use `sudo` unless you run as root.
+  mounts use `sudo` unless you run as root. When `up` fails, BOOT-01
+  included, it writes every node's full `docker logs` to
+  `DIR/bundle/logs/node-N.log`.
 - `down DIR` removes the containers and the network, then unmounts and
   deletes the node filesystems.
+- `logs DIR` writes every node's full `docker logs` to
+  `DIR/bundle/logs/node-N.log`; the CI job runs it when the soak or the
+  check fails, so the uploaded `clusterproof-bundle` artifact carries them.
 
 `make cluster-proof-ci` runs `up`, then the soak under `PROOF_SEAL=none`,
 then `cluster-proof-check` on `build/clusterproof-ci/bundle`. Its default

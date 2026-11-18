@@ -32,13 +32,13 @@ Brings up a three-node cluster from the release image on the inventory's
 nodes. It takes every node through first boot, then checks BOOT-01 over
 QUIC, gRPC and REST
 ([architecture.md](architecture.md#bring-up-boot-01)). It removes the
-containers when it ends, unless `PROOF_KEEP=1` and BOOT-01 passed. It runs `TestBOOT01` under the tags
+containers when it ends, unless `PROOF_KEEP=1`. It runs `TestBOOT01` under the tags
 `codec_json,raft,clusterproof,clusterproof_container`.
 
 | Variable | Type | Default | Required | Meaning |
 |---|---|---|---|---|
 | `PROOF_INVENTORY` | path to a JSON file | — | yes | the image, the container runtime command, the network, the admin credential, the first-boot secrets and the nodes ([engineering.md](engineering.md#the-inventory)) |
-| `PROOF_KEEP` | `1` or unset | unset | no | `1` leaves the containers running after a pass, for a soak against them; a failed run removes them regardless |
+| `PROOF_KEEP` | `1` or unset | unset | no | `1` leaves the containers in place, after a pass for a soak against them and after a failure for a full-log capture; the caller removes them |
 
 Exit codes: `0` when BOOT-01 passed. Any other code is a failure, and that
 includes a missing `PROOF_INVENTORY`. The target never skips.
@@ -51,7 +51,8 @@ node-1 over quic: health ok, leader 2 (self false), raft 192.0.2.1:63001, system
 ```
 
 On a failure, the output gives the failing check and its reason, followed by
-the last 200 lines of every container's log.
+the last 200 lines of every container's log, leaving out the
+`resource=admin:status` audit lines of BOOT-01's own status poll.
 
 ```sh
 make cluster-proof-boot PROOF_INVENTORY=$XDG_CONFIG_HOME/clusterproof/inventory.json
@@ -59,8 +60,9 @@ make cluster-proof-boot PROOF_INVENTORY=$XDG_CONFIG_HOME/clusterproof/inventory.
 
 ## `make cluster-proof-ci`
 
-The whole proof on one machine, as the nightly `clusterproof-soak` CI job
-runs it. It boots the three nodes `scripts/cluster-proof-ci.sh render` wrote
+The whole proof on one machine, as the `clusterproof-soak` CI job runs it
+(nightly, and on a pull request that changes `scripts/cluster-proof-ci.sh`
+or `test/clusterproof/`). It boots the three nodes `scripts/cluster-proof-ci.sh render` wrote
 (`scripts/cluster-proof-ci.sh up`, which runs `cluster-proof-boot` with
 `PROOF_KEEP=1`), runs `cluster-proof` against them under `PROOF_SEAL=none`,
 then `cluster-proof-check` on the bundle. It leaves the cluster running;
