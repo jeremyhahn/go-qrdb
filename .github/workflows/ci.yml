@@ -1084,7 +1084,11 @@ jobs:
           scripts/ci-image.sh load "$RUNNER_TEMP/toolchain-image" "$IMAGE" "$ID"
           echo "TOOLCHAIN_IMAGE=$ID" >> "$GITHUB_ENV"
 
+      # Codex P2 on #1631: the runner-local Go caches are the hosted runner's.
+      # A pool's daemon cannot reach $RUNNER_TEMP, so on a pool leg
+      # scripts/in-toolchain-image.sh takes its named volumes instead.
       - name: Restore the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
@@ -1094,6 +1098,7 @@ jobs:
             go-coverage-${{ matrix.leg }}-
 
       - name: Point the stages at the Go caches
+        if: ${{ runner.environment == 'github-hosted' }}
         run: echo "CI_CACHE_DIR=$RUNNER_TEMP/ci-cache" >> "$GITHUB_ENV"
 
       # GOTEST_TIMEOUT is go test's per-package budget, the job's limit less 5
@@ -1116,7 +1121,7 @@ jobs:
           if-no-files-found: error
 
       - name: Save the Go caches (main)
-        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' }}
+        if: ${{ !cancelled() && env.CI_PUBLISH == 'true' && runner.environment == 'github-hosted' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ci-cache
