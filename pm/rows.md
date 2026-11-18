@@ -17,6 +17,7 @@ The row's PR closes its row issue and marks the row shipped in
 | arm64-release | #916 | in progress | 0 | none |
 | verifiable-log | #1613 | in progress | 0 | none |
 | release-readiness | #566 | planned | 1 | none |
+| rolling-upgrades | #1628 | planned | 1 | none |
 | multi-model-databases | #923 | future | 0 | none |
 | object-storage-lsm | #924 | future | 0 | none |
 | volume-pool-tenant-moves | #925 | future | 0 | none |
