@@ -398,6 +398,18 @@ func TestBump(t *testing.T) {
 		code, _, _ := runTools(t, toolset{src: fixtureSource{goproxy: "off"}}, "-bump", "testdata/fail")
 		assert.Equal(t, exitLookup, code)
 	})
+	t.Run("a module whose lookup failed stops the bump before any edit", func(t *testing.T) {
+		// testdata/fail has lags to move; testdata/lookup has a module
+		// whose latest version cannot be looked up. Neither is edited.
+		edit := &fakeEditor{}
+		code, stdout, stderr := runTools(t, toolset{src: fixtureSource{goproxy: "direct"}, edit: edit}, "-bump", "testdata/fail", "testdata/lookup")
+		assert.Equal(t, exitLookup, code)
+		assert.Empty(t, edit.gets, "no go get while a lookup failed")
+		assert.Equal(t, 0, edit.tidy)
+		assert.NotContains(t, stdout, "bumped")
+		assert.NotContains(t, stdout, "deps-bump: done")
+		assert.Contains(t, stderr, "cannot look up the latest version of github.com/jeremyhahn/go-private: git ls-remote -q origin: exit status 128")
+	})
 	for _, extra := range [][]string{{"-base", "abc"}, {"-vuln"}} {
 		t.Run("-bump with "+extra[0], func(t *testing.T) {
 			code, _, stderr := runTools(t, toolset{}, append(append([]string{"-bump"}, extra...), "testdata/fail")...)
