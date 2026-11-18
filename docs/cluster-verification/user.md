@@ -223,7 +223,11 @@ scripts/cluster-proof-ci.sh down build/clusterproof-ci
   `FAULT_IMAGE` (default `IMAGE`): the release image has no iptables, so
   pass the image `make cluster-proof-fault-image` builds from
   `test/clusterproof/fault.Dockerfile`, which carries the tools the default
-  partition and disk-full commands run.
+  partition and disk-full commands run. The partition, clock and slow-disk
+  faults join the node's network namespace (`exec`); disk-full fills and
+  frees through `disk_exec`, which mounts only the node's data directory, so
+  its heal still runs when the server has exited on a full disk, and then
+  restarts the node with `docker start`.
 - `up DIR` gives each node its own loop-mounted ext4 filesystem of
   `CLUSTERPROOF_DISK_MB` (default 1024, so 1 GiB) on `DIR/node-N/data`, so
   disk-full fills only that node and never the runner's disk, then creates

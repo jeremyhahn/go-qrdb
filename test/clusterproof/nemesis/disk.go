@@ -3,6 +3,8 @@
 package nemesis
 
 import (
+	"context"
+	"errors"
 	"path"
 	"strconv"
 	"strings"
@@ -39,7 +41,10 @@ type diskFullData struct {
 }
 
 // NewDiskFull returns the fault that fills each target's data filesystem and
-// frees it again.
+// frees it again. Fill and free run through [DiskExecer.DiskExec] when the
+// target has it, else through Exec. A server may exit on ENOSPC (fail-stop),
+// so the heal, after the free step, restarts a [Restarter] target (a no-op on
+// a running node) and unseals an [Unsealer] that has an unseal command.
 func NewDiskFull(cfg DiskFullConfig) (Nemesis, error) {
 	if err := checkAbsolute("disk-full path", cfg.Path); err != nil {
 		return nil, err
@@ -51,7 +56,56 @@ func NewDiskFull(cfg DiskFullConfig) (Nemesis, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &fault{name: "disk-full", plan: staticPlan(execStep(fill, data)), heal: execStep(free, data)}, nil
+	freeStep := diskExecStep(free, data)
+	heal := func(ctx context.Context, t Target) error {
+		if err := freeStep(ctx, t); err != nil {
+			return err
+		}
+		return restartAfterDiskFull(ctx, t)
+	}
+	return &fault{name: "disk-full", plan: staticPlan(diskExecStep(fill, data)), heal: heal}, nil
+}
+
+// diskExecStep is [execStep] through [DiskExecer.DiskExec] when the target
+// has it, so a disk command does not need the node's server to be running.
+func diskExecStep(tmpl *Template, data func(Target) (any, []string)) step {
+	return func(ctx context.Context, t Target) error {
+		d, inner := data(t)
+		argv, err := tmpl.Render(d, inner)
+		if err != nil {
+			return err
+		}
+		if de, ok := t.(DiskExecer); ok {
+			_, err = de.DiskExec(ctx, argv)
+		} else {
+			_, err = t.Exec(ctx, argv)
+		}
+		return err
+	}
+}
+
+// restartAfterDiskFull brings back a node whose server exited while its disk
+// was full: a fatal write error on ENOSPC is a legitimate fail-stop, so the
+// heal, not the server, restores the node. Restart is a no-op on a running
+// node; an [Unsealer] is unsealed after it, and a target with no unseal
+// command (ErrUnsupported) needs none. A target that cannot restart is left
+// as the free step left it.
+func restartAfterDiskFull(ctx context.Context, t Target) error {
+	r, ok := t.(Restarter)
+	if !ok {
+		return nil
+	}
+	if err := r.Restart(ctx); err != nil {
+		return err
+	}
+	u, ok := t.(Unsealer)
+	if !ok {
+		return nil
+	}
+	if err := u.Unseal(ctx); err != nil && !errors.Is(err, ErrUnsupported) {
+		return err
+	}
+	return nil
 }
 
 // DefaultDiskThrottle caps the node's block I/O through the cgroup v2

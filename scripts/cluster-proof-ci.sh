@@ -188,6 +188,10 @@ write_targets() {
 		# word: the wrapper runs without a shell, so one quoted string
 		# would reach docker as a single executable name.
 		printf '           "{{.Vars.fault_image}}", "$@"],\n'
+		# disk-full fills and frees through disk_exec: the data volume only, no
+		# --net=container, so the heal still runs when the node exited on ENOSPC.
+		printf '  "disk_exec": ["docker", "run", "--rm", "--privileged",\n'
+		printf '                "-v", "{{.Vars.data_dir}}:/data", "{{.Vars.fault_image}}", "$@"],\n'
 		printf '  "signal": ["docker", "kill", "--signal={{.Signal}}", "{{.Vars.container}}"],\n'
 		printf '  "restart": ["docker", "start", "{{.Vars.container}}"],\n'
 		printf '  "nodes": {\n'

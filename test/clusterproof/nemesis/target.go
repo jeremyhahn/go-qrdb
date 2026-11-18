@@ -28,6 +28,16 @@ type Restarter interface {
 	Restart(ctx context.Context) error
 }
 
+// DiskExecer is a Target that runs a disk command outside the node's runtime
+// namespaces: on the node's data directory but without joining its network
+// namespace, so the command runs whether or not the server process is up. A
+// disk-full heal uses it to free a node whose server exited on ENOSPC.
+// DiskExec falls back to Exec when no disk command is configured.
+type DiskExecer interface {
+	Target
+	DiskExec(ctx context.Context, argv []string) ([]byte, error)
+}
+
 // Unsealer is a Restarter whose node comes back sealed: a barrier that holds
 // its key only in memory refuses every read and write after a restart until
 // the node's own credential unseals it. Unseal unseals the node and is a
