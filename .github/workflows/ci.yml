@@ -2174,8 +2174,10 @@ jobs:
         run: make cluster-proof-ci CLUSTERPROOF_CI_DIR="$CLUSTERPROOF_CI_DIR" PROOF_DURATION=30m
 
       # A failure past boot (the soak, the check) leaves the containers to
-      # Tear down: save each node's full log into the bundle first. Under
-      # build/clusterproof-ci/bundle, so the upload below carries it.
+      # Tear down: save each node's full log first, to
+      # build/clusterproof-ci/logs, beside the bundle and never inside it
+      # (the bundle's manifest checksums every file under bundle/). Its own
+      # artifact, clusterproof-node-logs, carries them.
       - name: Keep every node's full log
         if: failure()
         run: scripts/cluster-proof-ci.sh logs "$CLUSTERPROOF_CI_DIR"
@@ -2192,6 +2194,15 @@ jobs:
             build/clusterproof-ci/targets.json
             build/clusterproof-ci/workload.json
           if-no-files-found: warn
+
+      - name: Upload every node's full log
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: clusterproof-node-logs
+          # Written by the logs step or a failing up; none on a green run.
+          path: build/clusterproof-ci/logs
+          if-no-files-found: ignore
 
       - name: Tear down
         if: always()

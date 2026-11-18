@@ -35,7 +35,8 @@
 #   down DIR          remove the containers and the network, then unmount
 #                     and delete the node filesystems.
 #   logs DIR          write every node's full `docker logs` to
-#                     DIR/bundle/logs/node-N.log; up does the same itself
+#                     DIR/logs/node-N.log (beside DIR/bundle, outside the
+#                     checksummed bundle); up does the same itself
 #                     when it exits non-zero (BOOT-01 failing included).
 #
 # Every fault runs locally through docker: no ssh, no unseal (PROOF_SEAL=none).
@@ -235,8 +236,8 @@ write_workload() {
 up() {
 	local dir
 	dir=$(absdir "$1")
-	# A failing up (BOOT-01 included) keeps every node's full log in the
-	# bundle the CI job uploads.
+	# A failing up (BOOT-01 included) keeps every node's full log in
+	# DIR/logs, which the CI job uploads beside the bundle.
 	logs_dir=$dir
 	trap on_exit EXIT
 	mount_data "$dir"
@@ -286,19 +287,21 @@ umount_data() {
 }
 
 # save_logs DIR writes `docker logs` of every node, stdout and stderr, to
-# DIR/bundle/logs/node-N.log, so the uploaded clusterproof-bundle artifact
-# carries each node's whole log, not the tail a test prints.
+# DIR/logs/node-N.log, beside DIR/bundle and never inside it: the bundle's
+# manifest checksums every file under bundle/, and a log it does not list
+# fails the check. CI uploads DIR/logs as the clusterproof-node-logs
+# artifact, so each node's whole log survives, not the tail a test prints.
 save_logs() {
 	local dir=$1 n
-	mkdir -p "$dir/bundle/logs"
+	mkdir -p "$dir/logs"
 	for n in "${nodes[@]}"; do
-		docker logs "clusterproof-node-$n" >"$dir/bundle/logs/node-$n.log" 2>&1 || true
+		docker logs "clusterproof-node-$n" >"$dir/logs/node-$n.log" 2>&1 || true
 	done
-	echo "$0: node logs in $dir/bundle/logs" >&2
+	echo "$0: node logs in $dir/logs" >&2
 }
 
-# logs_dir is the cluster directory whose bundle a failing exit writes the
-# node logs to; empty, a failing exit writes none.
+# logs_dir is the cluster directory under whose logs/ (beside bundle/) a
+# failing exit writes the node logs; empty, a failing exit writes none.
 logs_dir=""
 
 # on_exit is the EXIT trap: on a non-zero status it saves the node logs.

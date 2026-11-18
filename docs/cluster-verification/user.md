@@ -230,12 +230,14 @@ scripts/cluster-proof-ci.sh down build/clusterproof-ci
   the network and runs `cluster-proof-boot` with `PROOF_KEEP=1`. The loop
   mounts use `sudo` unless you run as root. When `up` fails, BOOT-01
   included, it writes every node's full `docker logs` to
-  `DIR/bundle/logs/node-N.log`.
+  `DIR/logs/node-N.log`, beside `DIR/bundle` and never inside it: the
+  bundle's manifest checksums every file under `bundle/`.
 - `down DIR` removes the containers and the network, then unmounts and
   deletes the node filesystems.
 - `logs DIR` writes every node's full `docker logs` to
-  `DIR/bundle/logs/node-N.log`; the CI job runs it when the soak or the
-  check fails, so the uploaded `clusterproof-bundle` artifact carries them.
+  `DIR/logs/node-N.log`; the CI job runs it when the soak or the check
+  fails and uploads them as the `clusterproof-node-logs` artifact, beside
+  the `clusterproof-bundle` artifact.
 
 `make cluster-proof-ci` runs `up`, then the soak under `PROOF_SEAL=none`,
 then `cluster-proof-check` on `build/clusterproof-ci/bundle`. Its default
