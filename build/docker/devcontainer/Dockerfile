@@ -77,10 +77,12 @@ RUN set -eu; \
 # stage has git and base does not.
 FROM ${GO_IMAGE} AS modules
 ARG GO_BUILD_PROXY
-# Ruling 886: the pool's LAN apk cache, empty on a hosted runner.
-ARG APK_MIRROR=
+# Ruling 888: the pool's LAN apk cache reaches apk-mirror as the BuildKit
+# secret apk_mirror, empty on a hosted runner. A secret is in no layer and no
+# history entry; a build argument's value would be in both.
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOMODCACHE=/gomodcache GOPROXY=${GO_BUILD_PROXY}
 RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
     apk-mirror add --no-cache git
 WORKDIR /src
 
@@ -128,7 +130,6 @@ RUN set -eu; \
 
 # ---------------------------------------------------------------------------
 FROM ${GO_IMAGE} AS base
-ARG APK_MIRROR=
 # GOTOOLCHAIN=local: a go.mod asking for a newer Go fails instead of
 # downloading one. CGO for -race, and for go-mysql-server's MySQL REGEXP
 # engine (go-icu-regex): under the default build tags it is C++ linking the
@@ -145,6 +146,7 @@ ENV GOTOOLCHAIN=local \
     GOMODCACHE=/gomodcache \
     GOCACHE=/gocache
 RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
     set -eu; \
     apk-mirror upgrade --no-cache; \
     apk-mirror add --no-cache gcc g++ musl-dev icu-dev bash; \
@@ -163,9 +165,9 @@ ENV GOPROXY=off
 
 # ---------------------------------------------------------------------------
 FROM base AS toolchain
-ARG APK_MIRROR=
 ENV HOME=/tmp
 RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
     apk-mirror add --no-cache make git curl jq shellcheck \
       coreutils grep sed gawk findutils diffutils tar xz openssh-keygen; \
     git config --system --add safe.directory '*'
@@ -184,8 +186,8 @@ ARG IT_TAGS
 # here on, so the upgrade takes Alpine's latest packages, a CVE fix among
 # them; base and toolchain do not declare it, so their cache does not move.
 ARG APK_INDEX_SUM
-ARG APK_MIRROR=
 RUN --mount=type=bind,source=scripts/apk-mirror.sh,target=/usr/local/bin/apk-mirror \
+    --mount=type=secret,id=apk_mirror,env=APK_MIRROR \
     apk-mirror upgrade --no-cache
 WORKDIR /src
 # The whole source, filtered by .dockerignore, owned by root so the suite

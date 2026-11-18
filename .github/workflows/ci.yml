@@ -619,6 +619,16 @@ jobs:
             echo "it_id=$it_id"
           } >> "$GITHUB_OUTPUT"
 
+      # Ruling 888: neither image carries a private address in its history or
+      # config. Checked by the IDs the build read, before the push, so no pool
+      # leg runs and no registry holds an image that does.
+      - name: Check the devcontainer images carry no private address
+        if: ${{ runner.environment != 'github-hosted' && needs.preflight.outputs.docs_only != 'true' }}
+        env:
+          TOOLCHAIN_ID: ${{ steps.build.outputs.toolchain_id }}
+          IT_ID: ${{ steps.build.outputs.it_id }}
+        run: scripts/ci-image-history.sh "$TOOLCHAIN_ID" "$IT_ID"
+
       # #1593 and ruling 879: each image pushed by its ID, tagged
       # <run_id>-<run_attempt>; a refused or stalled push fails the job.
       - name: Push the devcontainer images to the LAN CI registry

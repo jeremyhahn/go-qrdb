@@ -4226,7 +4226,7 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
-	$(if $(DEVCACHE_APK_MIRROR),--build-arg APK_MIRROR="$(DEVCACHE_APK_MIRROR)") \
+	--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
 # concurrent-load follows a content-tagged image build. Two builds that miss

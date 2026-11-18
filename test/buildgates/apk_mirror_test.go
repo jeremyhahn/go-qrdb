@@ -24,14 +24,18 @@ import (
 )
 
 // Ruling 886: a pool build fetches its Alpine packages through the LAN apk
-// cache (DEVCACHE_APK_MIRROR on the pool, APK_MIRROR in the build), a hosted
-// build from dl-cdn.alpinelinux.org as before, and no image keeps the
-// mirror's address. scripts/apk-mirror.sh does the switch; every apk call of
-// the devcontainer Dockerfile goes through it.
+// cache (DEVCACHE_APK_MIRROR on the pool), a hosted build from
+// dl-cdn.alpinelinux.org as before. scripts/apk-mirror.sh does the switch;
+// every apk call of the devcontainer Dockerfile goes through it. Ruling 888:
+// the mirror reaches the build as the BuildKit secret apk_mirror, which each
+// RUN mounts as APK_MIRROR, never as a build argument, whose value BuildKit
+// records in the image history; no layer and no history entry keeps it.
 
 const (
 	apkMirrorScript = "scripts/apk-mirror.sh"
 	apkMirrorMount  = "--mount=type=bind,source=" + apkMirrorScript + ",target=/usr/local/bin/apk-mirror"
+	apkMirrorSecret = "--mount=type=secret,id=apk_mirror,env=APK_MIRROR"
+	apkMirrorFlag   = "--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR"
 	apkRepos        = "https://dl-cdn.alpinelinux.org/alpine/v3.22/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.22/community\n"
 )
 
@@ -125,15 +129,21 @@ func devcontainerApkProblems(dockerfile string) []string {
 		if len(calls) == 0 {
 			continue
 		}
-		if !regexp.MustCompile(`(?m)^ARG APK_MIRROR\b`).MatchString(stage) {
-			problems = append(problems, "stage "+firstLine(stage)+" calls apk-mirror without ARG APK_MIRROR: the build argument would not reach it")
-		}
 		for _, run := range regexp.MustCompile(`(?ms)^RUN .*?[^\\]$`).FindAllString(stage, -1) {
-			if apkMirror.MatchString(run) && !strings.Contains(run, apkMirrorMount) {
+			if !apkMirror.MatchString(run) {
+				continue
+			}
+			if !strings.Contains(run, apkMirrorMount) {
 				problems = append(problems, "stage "+firstLine(stage)+" runs apk-mirror without "+apkMirrorMount+": the script is bind-mounted, never copied into the image")
+			}
+			if !strings.Contains(run, apkMirrorSecret) {
+				problems = append(problems, "stage "+firstLine(stage)+" runs apk-mirror without "+apkMirrorSecret+": the mirror would not reach it")
 			}
 		}
 		_ = i
+	}
+	if regexp.MustCompile(`(?m)^ARG APK_MIRROR\b`).MatchString(dockerfile) {
+		problems = append(problems, "the Dockerfile declares ARG APK_MIRROR: a build argument's value is recorded in the image history (ruling 888); the mirror is the secret apk_mirror")
 	}
 	return problems
 }
@@ -149,15 +159,17 @@ func TestDevcontainerApkGoesThroughTheMirror(t *testing.T) {
 	for _, p := range devcontainerApkProblems(string(data)) {
 		t.Error(p)
 	}
-	good := "FROM x AS a\nARG APK_MIRROR=\nRUN " + apkMirrorMount + " apk-mirror add --no-cache git\n"
+	mounts := apkMirrorMount + " " + apkMirrorSecret
+	good := "FROM x AS a\nRUN " + mounts + " \\\n    apk-mirror add --no-cache git\n"
 	if p := devcontainerApkProblems(good); len(p) != 0 {
 		t.Fatalf("a correct stage fails the check: %v", p)
 	}
 	for name, bad := range map[string]string{
-		"a bare apk add":     "FROM x AS a\nARG APK_MIRROR=\nRUN apk add --no-cache git\n",
-		"a bare apk upgrade": "FROM x AS a\nARG APK_MIRROR=\nRUN " + apkMirrorMount + " apk-mirror add git; apk upgrade\n",
-		"no ARG":             "FROM x AS a\nRUN " + apkMirrorMount + " apk-mirror add --no-cache git\n",
-		"no bind mount":      "FROM x AS a\nARG APK_MIRROR=\nRUN apk-mirror add --no-cache git\n",
+		"a bare apk add":            "FROM x AS a\nRUN apk add --no-cache git\n",
+		"a bare apk upgrade":        "FROM x AS a\nRUN " + mounts + " apk-mirror add git; apk upgrade\n",
+		"no secret mount":           "FROM x AS a\nRUN " + apkMirrorMount + " apk-mirror add --no-cache git\n",
+		"no bind mount":             "FROM x AS a\nRUN " + apkMirrorSecret + " apk-mirror add --no-cache git\n",
+		"the mirror as a build arg": "FROM x AS a\nARG APK_MIRROR=\nRUN " + mounts + " apk-mirror add --no-cache git\n",
 	} {
 		if p := devcontainerApkProblems(bad); len(p) == 0 {
 			t.Errorf("%s passed the check", name)
@@ -165,9 +177,10 @@ func TestDevcontainerApkGoesThroughTheMirror(t *testing.T) {
 	}
 }
 
-// TestDevcontainerBuildPassesTheApkMirror: the build takes the pool's mirror
-// as APK_MIRROR, takes none without it, and the toolchain tag hashes the
-// script, since it shapes the image.
+// TestDevcontainerBuildPassesTheApkMirror: the build always passes the
+// secret apk_mirror from DEVCACHE_APK_MIRROR (unset on a hosted runner, the
+// secret is empty and apk goes to dl-cdn), never a build argument, and the
+// toolchain tag hashes the script, since it shapes the image.
 func TestDevcontainerBuildPassesTheApkMirror(t *testing.T) {
 	root := repoRoot(t)
 	run := func(extra ...string) string {
@@ -181,11 +194,13 @@ func TestDevcontainerBuildPassesTheApkMirror(t *testing.T) {
 		}
 		return string(out)
 	}
-	if out := run("DEVCACHE_APK_MIRROR=http://cache.example:3143/alpine"); !strings.Contains(out, `--build-arg APK_MIRROR="http://cache.example:3143/alpine"`) {
-		t.Errorf("with DEVCACHE_APK_MIRROR set, the build passes no APK_MIRROR:\n%s", out)
-	}
-	if out := run(); strings.Contains(out, "APK_MIRROR") {
-		t.Errorf("with DEVCACHE_APK_MIRROR unset, the build still passes APK_MIRROR:\n%s", out)
+	for _, out := range []string{run("DEVCACHE_APK_MIRROR=http://cache.example:3143/alpine"), run()} {
+		if !strings.Contains(out, apkMirrorFlag) {
+			t.Errorf("the build does not pass %s:\n%s", apkMirrorFlag, out)
+		}
+		if strings.Contains(out, "--build-arg APK_MIRROR") || strings.Contains(out, "cache.example") {
+			t.Errorf("the build passes the mirror as a build argument or in its command line:\n%s", out)
+		}
 	}
 	mk, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {

@@ -2,11 +2,13 @@
 # scripts/apk-mirror.sh: apk through the LAN apk cache when the build has one
 # (Tenant Agent ruling 886). On a pool runner DEVCACHE_APK_MIRROR names the
 # cache (dept-infra hosts/ci-runners/build-package-caches.md), and the
-# Makefile passes it to the build as APK_MIRROR; on a GitHub-hosted runner it
-# is unset and apk goes to dl-cdn.alpinelinux.org as before. A Dockerfile RUN
-# bind-mounts this script (never COPYs it), so nothing of it, and no LAN
-# address, is left in the image: the repositories file is restored however
-# apk ends. apk still checks the signed APKINDEX and every package's hash.
+# Makefile passes it to the build as the BuildKit secret apk_mirror, which
+# each RUN mounts as APK_MIRROR (ruling 888); on a GitHub-hosted runner it is
+# unset, the secret is empty and apk goes to dl-cdn.alpinelinux.org as
+# before. A Dockerfile RUN bind-mounts this script (never COPYs it) and the
+# repositories file is restored however apk ends, so no layer keeps the
+# mirror; a secret, unlike a build argument, is in no history entry either.
+# apk still checks the signed APKINDEX and every package's hash.
 #
 #   usage (in a Dockerfile RUN): apk-mirror <apk arguments...>
 #
