@@ -987,14 +987,7 @@ jobs:
   # slowdown, the slowest fits the 180-minute limit.
   coverage:
     name: Unit [make coverage-leg ${{ matrix.leg }}]
-    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
-    # while the Docker pool had room, so this matrix splits by leg: nine of the
-    # twelve legs run on the bigdisk-docker pool for a push to main and a
-    # same-repository pull request; the three shortest measured legs (tenant,
-    # seal, server), and every leg of a fork's pull request, run on
-    # ubuntu-latest. Tuned from measured queues; coverage
-    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
-    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","service","auth","rest","api-keys","sdk","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ (needs.preflight.outputs.docs_only != 'true' && needs.docker-build.outputs.it_image != '') && !github.event.pull_request.draft }}   # ruling 214; v1.29.2
     needs: [preflight, docker-build]
     timeout-minutes: 180
@@ -1591,10 +1584,7 @@ jobs:
   # slowdown it fits the 120-minute limit.
   integration-features:
     name: Integration (shard ${{ matrix.shard }})
-    # Ruling 841, tuned: the hosted slots sat at the 40-job ceiling while
-    # the Docker pool had room, so this long job runs on the pool for a push
-    # to main and a same-repository pull request (a fork's stays hosted).
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1703,10 +1693,7 @@ jobs:
   # teardown, and `make integration-down` removes the run's image.
   integration-standalone:
     name: Integration (standalone stack)
-    # Ruling 841, tuned: the hosted slots sat at the 40-job ceiling while
-    # the Docker pool had room, so this long job runs on the pool for a push
-    # to main and a same-repository pull request (a fork's stays hosted).
-    runs-on: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build, test-typescript, preflight]
     timeout-minutes: 120
@@ -1769,14 +1756,7 @@ jobs:
   # repository's cache storage is bounded.
   fips:
     name: FIPS 140-3 (${{ matrix.leg }})
-    # Ruling 841 (phase 2 option C of ruling 834): the 40 hosted slots filled
-    # while the Docker pool had room, so this matrix splits by leg: nine of the
-    # twelve legs run on the bigdisk-docker pool for a push to main and a
-    # same-repository pull request; the three shortest measured legs (tenant,
-    # seal, server), and every leg of a fork's pull request, run on
-    # ubuntu-latest. Tuned from measured queues; coverage
-    # and fips keep one split (test/buildgates TestCISplitsTheLargeMatrices).
-    runs-on: ${{ contains(fromJSON('["tenant-lifecycle","seal-barrier","server-raft","service","auth","rest","api-keys","sdk","sdk-transport"]'), matrix.leg) && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted","linux","x64","bigdisk-docker"]') || 'ubuntu-latest' }}  # self-hosted: overflow split, ruling 834
+    runs-on: ubuntu-latest
     if: ${{ ((github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')) || contains(github.event.pull_request.labels.*.name, 'ci:full')) && !github.event.pull_request.draft }}   # ruling 214
     needs: [docker-build]
     strategy:
