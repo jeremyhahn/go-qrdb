@@ -7,7 +7,9 @@
 # deps-bump-dispatch job dispatches it from the nightly schedule run on
 # main, and a person may dispatch it by hand), it runs the shared depscheck's `make deps-bump` in the
 # toolchain image,
-# verifies with `make deps-check` (the full gate, no base) and `make build`,
+# verifies with `make deps-check` (the full gate, no base) and `make build-server
+# build-cli-headless` (the native targets CI's build job runs in the image;
+# the plain build target needs docker compose through build-client),
 # and lands the go.mod and go.sum changes as ONE commit on the fixed branch
 # ci/deps-bump, with ONE pull request into main labelled `code-review` and
 # `task:ready`, so the normal review and auto-merge land it.
@@ -175,14 +177,14 @@ jobs:
       # in-toolchain-image.sh runs on a copy of the checkout, so the bump,
       # the full deps-check and the build run in one container, their output
       # on stderr, and the go.mod and go.sum diff comes back on stdout.
-      - name: make deps-bump, then make deps-check and make build
+      - name: make deps-bump, then make deps-check and make build-server build-cli-headless
         env:
           IN_IMAGE_NETWORK: bridge
         run: |
           set -euo pipefail
           # shellcheck disable=SC2016 # expands in the container
           scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
-            '{ make deps-bump && make deps-check && make build; } >&2 && git -c safe.directory="*" diff --binary -- ":(glob)**/go.mod" ":(glob)**/go.sum" | base64 -w0' \
+            '{ make deps-bump && make deps-check && make build-server build-cli-headless; } >&2 && git -c safe.directory="*" diff --binary -- ":(glob)**/go.mod" ":(glob)**/go.sum" | base64 -w0' \
             > "$RUNNER_TEMP/bump.b64"
           base64 -d "$RUNNER_TEMP/bump.b64" > "$RUNNER_TEMP/bump.patch"
           if [ ! -s "$RUNNER_TEMP/bump.patch" ]; then
@@ -232,7 +234,7 @@ jobs:
           if [ -z "$PR" ]; then
             # shellcheck disable=SC2016 # backquotes are markdown, not a command
             body=$(printf '%s\n\n%s\n' \
-              'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest, then `make deps-check` and `make build` passed.' \
+              'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest, then `make deps-check` and `make build-server build-cli-headless` passed.' \
               "Changed: $CHANGED")
             PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number)
             echo "opened #$PR"
