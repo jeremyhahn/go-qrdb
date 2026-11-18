@@ -15,6 +15,7 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/fips140"
 	"errors"
@@ -51,6 +52,35 @@ func (m *soMemKV) Get(_ context.Context, k string) ([]byte, error) {
 	v := m.data[k]
 	m.mu.RUnlock()
 	return v, nil
+}
+func (m *soMemKV) PutIfAbsent(_ context.Context, k string, v []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.data[k]; ok {
+		return false, nil
+	}
+	m.data[k] = append([]byte(nil), v...)
+	return true, nil
+}
+func (m *soMemKV) CompareAndDelete(_ context.Context, k string, expected []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[k]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	delete(m.data, k)
+	return true, nil
+}
+func (m *soMemKV) CompareAndSwap(_ context.Context, k string, expected, next []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, ok := m.data[k]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	m.data[k] = append([]byte(nil), next...)
+	return true, nil
 }
 func (m *soMemKV) Delete(_ context.Context, k string) error {
 	m.mu.Lock()
@@ -155,6 +185,18 @@ func (f *failingPutKV) Put(ctx context.Context, k string, v []byte) error {
 		return errors.New("simulated store put failure")
 	}
 	return f.soMemKV.Put(ctx, k, v)
+}
+func (f *failingPutKV) PutIfAbsent(ctx context.Context, k string, v []byte) (bool, error) {
+	if f.failPut {
+		return false, errors.New("simulated store put failure")
+	}
+	return f.soMemKV.PutIfAbsent(ctx, k, v)
+}
+func (f *failingPutKV) CompareAndSwap(ctx context.Context, k string, expected, next []byte) (bool, error) {
+	if f.failPut {
+		return false, errors.New("simulated store put failure")
+	}
+	return f.soMemKV.CompareAndSwap(ctx, k, expected, next)
 }
 
 func hasOutcome(outcomes []string, want string) bool {

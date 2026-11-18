@@ -80,7 +80,8 @@ func TestSOPINReads_StoreErrorIsOperationError(t *testing.T) {
 	checks := map[string]error{}
 	_, checks["SOPINCommitted"] = a.SOPINCommitted(ctx, "t1")
 	_, checks["SOPINRecordMatches"] = a.SOPINRecordMatches(ctx, "t1", record)
-	checks["CommitSOPINRecord"] = a.CommitSOPINRecord(ctx, "t1", record)
+	// CommitSOPINRecord reads nothing: its once-only check is the store's
+	// conditional create (TestCommitSOPINRecord_ConcurrentCommitHasOneWinner).
 
 	for name, err := range checks {
 		var opErr *auth.OperationError
