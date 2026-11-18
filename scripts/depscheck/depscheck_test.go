@@ -138,15 +138,17 @@ func TestDependenciesSkipsReplacedRequires(t *testing.T) {
 
 	deps := dependencies("go.mod", directives)
 
-	// A replace scoped to v1.0.0 leaves a require of another version alone.
-	directives[3].Version = "v1.5.0"
-	again := dependencies("go.mod", directives)
-
-	require.Len(t, deps, 2)
+	// A replace with no left-hand version drops its require; a replace
+	// scoped to v1.0.0 leaves the require for the selected version to
+	// judge, whatever version go.mod declares.
+	require.Len(t, deps, 3)
 	assert.Equal(t, kindReplace, deps[0].Kind)
-	assert.Equal(t, "example.com/other", deps[1].Path)
-	require.Len(t, again, 3)
-	assert.Equal(t, "example.com/one", again[1].Path)
+	assert.Equal(t, "example.com/one", deps[1].Path)
+	assert.Equal(t, []string{"v1.0.0"}, deps[1].ReplacedAt)
+	assert.False(t, applies(deps[1], "v1.0.0"), "MVS selects the replaced version")
+	assert.True(t, applies(deps[1], "v1.2.0"), "MVS selects past the replaced version")
+	assert.Equal(t, "example.com/other", deps[2].Path)
+	assert.Empty(t, deps[2].ReplacedAt)
 }
 
 // listingSource lists fixed modules for any directory.

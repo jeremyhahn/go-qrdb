@@ -217,7 +217,7 @@ func requiredModules(src moduleSource, dir string) (map[string]bool, error) {
 		}
 		// A selection the go command cannot tell counts as active: a
 		// replacement govulncheck reports is in the build.
-		if mod, ok := listing[d.Path]; !ok || mod.Version == "" || mod.Version == d.Version {
+		if selected, ok := selectedVersion(listing, d.Path); !ok || selected == d.Version {
 			out[d.NewPath] = true
 		}
 	}

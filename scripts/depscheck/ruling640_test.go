@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The tests below cover -base, -vuln and -bump (ruling 640): fake git,
@@ -574,6 +575,45 @@ func TestRequiredModulesReplacementActivatedByMVS(t *testing.T) {
 	findings := vulnFindings(dir, hits, got)
 	require.Len(t, findings, 1)
 	assert.True(t, findings[0].Required, "a vulnerable replacement MVS activates fails the gate")
+}
+
+// A version-specific replace of the version go.mod declares does not take
+// the require out of the build when MVS selects another version: the
+// require is checked at the selected version, so its lag fails the gate.
+func TestCheckModuleRequireKeptPastInactiveReplace(t *testing.T) {
+	dir := t.TempDir()
+	gomod := "module example.com/m\n\ngo 1.25\n\n" +
+		"require example.com/a v1.0.0\n\n" +
+		"replace example.com/a v1.0.0 => example.com/a v1.1.0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+	writeList := func(list string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "list.json"), []byte(list), 0o600))
+	}
+	requires := func() []finding {
+		findings, err := checkModule(proxied, dir, "", time.Now())
+		require.NoError(t, err)
+		var out []finding
+		for _, f := range findings {
+			if f.Dep.Kind == kindRequire {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+
+	writeList(`{"Path":"example.com/a","Version":"v1.2.0","Time":"2020-01-01T00:00:00Z","Update":{"Version":"v1.3.0","Time":"2020-02-01T00:00:00Z"}}` + "\n")
+	got := requires()
+	require.Len(t, got, 1, "MVS selects past the replaced version: the require is in the build")
+	assert.Equal(t, "example.com/a", got[0].Dep.Module)
+	assert.Equal(t, "v1.3.0", got[0].Latest)
+	assert.True(t, got[0].Behind, "an old update of the selected version fails deps-check")
+	assert.True(t, bumpable(got[0]), "deps-bump moves it")
+
+	writeList(`{"Path":"example.com/a","Version":"v1.0.0","Time":"2020-01-01T00:00:00Z"}` + "\n")
+	assert.Empty(t, requires(), "MVS selects the replaced version: the replacement stands in for the require")
+
+	writeList("")
+	assert.Len(t, requires(), 1, "an unknown selection keeps the require checked")
 }
 
 // TestScanDir: a module scan runs in a package directory of the module,

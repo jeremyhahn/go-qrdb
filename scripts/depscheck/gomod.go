@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -171,7 +172,11 @@ type dependency struct {
 	// Replaces is a replace's left-hand version: the one version of Module
 	// it applies to. Empty, it applies to every version.
 	Replaces string
-	Reason   string
+	// ReplacedAt lists, for a require, the left-hand versions of the
+	// version-specific replaces of Module: the require is out of the build
+	// only when MVS selects one of them.
+	ReplacedAt []string
+	Reason     string
 }
 
 // applies reports whether dep is in effect when the build selects version
@@ -179,7 +184,22 @@ type dependency struct {
 // version is too, and a version-specific replace only when its version is
 // the one selected.
 func applies(dep dependency, selected string) bool {
-	return dep.Kind != kindReplace || dep.Replaces == "" || dep.Replaces == selected
+	if dep.Kind == kindReplace {
+		return dep.Replaces == "" || dep.Replaces == selected
+	}
+	return !slices.Contains(dep.ReplacedAt, selected)
+}
+
+// selectedVersion is the version of path MVS selects in a go list -m
+// listing; ok is false when the go command cannot tell, and a caller then
+// fails closed: it treats a replace as in the build and keeps a require
+// checked.
+func selectedVersion(listing map[string]listedModule, path string) (version string, ok bool) {
+	mod, listed := listing[path]
+	if !listed || mod.Version == "" {
+		return "", false
+	}
+	return mod.Version, true
 }
 
 // dependencies selects what deps-check compares: every direct require that
@@ -187,22 +207,31 @@ func applies(dep dependency, selected string) bool {
 // requires follow from the direct ones, and a local-directory replace (the
 // intra-repo sdk/go reference) has no published version to be behind.
 func dependencies(file string, directives []directive) []dependency {
-	replaced := make(map[string]bool)
+	// A replace with no left-hand version takes its module out of the build
+	// whatever version is selected; a version-specific one only when MVS
+	// selects that version, which go.mod alone cannot tell, so the require
+	// stays and carries the versions for the caller to judge.
+	replacedAll := make(map[string]bool)
+	replacedAt := make(map[string][]string)
 	var deps []dependency
 	for _, d := range directives {
 		if d.Kind != kindReplace {
 			continue
 		}
-		replaced[d.Path+"@"+d.Version] = true
+		if d.Version == "" {
+			replacedAll[d.Path] = true
+		} else {
+			replacedAt[d.Path] = append(replacedAt[d.Path], d.Version)
+		}
 		if d.NewVersion != "" {
 			deps = append(deps, dependency{File: file, Kind: kindReplace, Line: d.Line, Module: d.Path, Path: d.NewPath, Version: d.NewVersion, Replaces: d.Version, Reason: d.Comment})
 		}
 	}
 	for _, d := range directives {
-		if d.Kind != kindRequire || d.Indirect || replaced[d.Path+"@"] || replaced[d.Path+"@"+d.Version] {
+		if d.Kind != kindRequire || d.Indirect || replacedAll[d.Path] {
 			continue
 		}
-		deps = append(deps, dependency{File: file, Kind: kindRequire, Line: d.Line, Module: d.Path, Path: d.Path, Version: d.Version, Reason: d.Comment})
+		deps = append(deps, dependency{File: file, Kind: kindRequire, Line: d.Line, Module: d.Path, Path: d.Path, Version: d.Version, ReplacedAt: replacedAt[d.Path], Reason: d.Comment})
 	}
 	return deps
 }
