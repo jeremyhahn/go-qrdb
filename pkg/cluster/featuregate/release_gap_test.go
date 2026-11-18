@@ -65,3 +65,24 @@ func TestAdmitReplica_AcceptsAdjacentAndUnannounced(t *testing.T) {
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n3:7000"))
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n1:7000"), "this node admits itself")
 }
+
+// TestAdmitReplica_RefusesGapToAnyMember: admission through the 0.59
+// member of a mixed {0.58, 0.59} cluster refuses a 0.60 candidate, which is
+// adjacent to the admitting node but not to the 0.58 member, and admits a
+// 0.59 candidate.
+func TestAdmitReplica_RefusesGapToAnyMember(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	store.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.60.0-alpha")
+	store.advertiseRelease(t, 4, "n4:7000", "0.59.1-alpha")
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+
+	var gap *release.GapError
+	require.ErrorAs(t, g.AdmitReplica(dedicatedShard, "n3:7000"), &gap)
+	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
+	require.ErrorAs(t, g.AdmitReplica(systemShard, "n3:7000"), &gap)
+	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n4:7000"))
+	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n2:7000"))
+}
