@@ -111,6 +111,7 @@ The cluster engine and database system for every project in the stack: embedded,
 - **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
 - **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
 - **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729), [docs/databases/](docs/databases/) — in progress
+- **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), [docs/rolling-upgrades/](docs/rolling-upgrades/) — planned
 
 ## Next
 

@@ -1,0 +1,127 @@
+# Rolling Upgrades — Engineering
+
+> **Status: NORMATIVE (draft for review)** · Scope: go-qrdb · Last verified: 2026-11-18
+> Conflicts with this document are defects. Fix them here first.
+
+<!--
+Copyright 2026 Jeremy Hahn
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+This document goes with the SPEC row `rolling-upgrades` ([SPEC.md](../SPEC.md),
+issue #1628, owner decision 224). It records the current state, reviews the row
+against the standards it cites, lists the questions the review must answer, and
+states the test plan. It designs nothing beyond the SPEC row. Wire formats,
+message layouts and package changes come with the implementation lanes, after
+review.
+
+## Current state
+
+| Channel | Version today | Where |
+|---|---|---|
+| Raft transport (go-quicraft) | ALPN `quicraft`; `WireVersion = 1`, pinned for all pre-release; `PreviousWireVersion`, `WireWindow{Current, Previous}`, `ErrUnsupportedVersion`; `MessageBatch.MaxBinVer`; the leader proposes `UpdateWireVersion` | go-quicraft `pkg/proto/constants.go` |
+| Replica forwarding over QUIC | ALPN `qrdb-quic/3` (`wire.ProtocolV3`), the only protocol offered | `pkg/api/quic/wire/wire.go` |
+| REST, gRPC and MCP forwarding | no version (MCP carries its own protocol version only) | `pkg/api/*` |
+| Forward assertion | JSON with no version field | `pkg/auth/forward/assertion.go` |
+| Cluster enrolment | first frame is version ‖ suite, version `0x01`, checked on receipt; `JoinRequest.Features` | `pkg/cluster/clusterenroll` |
+| Key delivery | no version in the envelope; `qrdb/keydelivery/v1` appears only in the HPKE info string and the URL | `pkg/cluster/keydelivery` |
+| Raft command encoding | `[op:1][payload]`, no version; an unknown opcode is `InvalidOpcodeError`, and a mixed group diverges | `pkg/protocol` |
+| Cluster feature gate | 21 features advertised per replica; enabled per group when all its replicas advertise it, activated permanently when all nodes do; `UnsupportedFeatureError` refuses a binary that lacks an activated feature | `pkg/cluster/featuregate` |
+| Node release version | `VERSION` passed as `-X main.version` (default `dev`), shown only by `qrdbd version`; peers do not exchange it | `cmd/qrdbd` |
+| Capabilities RPC | 19 booleans, no server version | `CapabilitiesResponse` |
+| SDK user create | no TTL field | `sdk/go/transport` |
+| Test infrastructure | the clusterproof inventory has one image for the whole cluster; nothing builds an older release | `test/clusterproof` |
+
+Documents that say version equality is required today and change with this row:
+[clustering/user.md](../clustering/user.md) "Upgrading a cluster",
+[release/architecture.md](../release/architecture.md) "Version equality is the
+compatibility statement", [api-server/api.md](../api-server/api.md) "Version
+skew", and [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
+"No backward-compatibility code".
+
+## Standards review
+
+- **Semantic Versioning 2.0.0** ([reference copy](../reference/semver-2.0.0.md)).
+  Item 4 says that under major version zero "anything may change at any time".
+  SemVer therefore gives no compatibility promise between 0.y releases. The row
+  must define "adjacent" itself (Q1); it cannot rely on SemVer for that.
+- **RFC 7301 (ALPN)** ([reference copy](../reference/rfc7301.txt)). A client
+  offers its protocol list and the server picks one. If none match, the server
+  sends the `no_application_protocol` (120) alert (§3.2). Offering the current
+  and the previous identifier, as an ordered list, is how a TLS channel
+  negotiates under the standard. The identifiers are opaque byte strings. The
+  version is not parsed out of them.
+- **RFC 9000 / RFC 8446** (already indexed). QUIC carries ALPN in the TLS 1.3
+  handshake, and QUIC connections without an agreed ALPN fail. Replica
+  forwarding and the Raft transport inherit this.
+- Non-TLS framing (the enrolment first frame, the Raft `WireWindow`) has no
+  external standard. It follows the same rule: the receiver states its range, and
+  a value outside it is a typed refusal.
+
+## Questions for review
+
+Each question has a recommendation. The owner rules on Q4. The others are
+settled by convention (ruling 109) unless the review objects.
+
+1. **What "adjacent" means before 1.0.** Recommendation: consecutive minor
+   releases, 0.y.z and 0.(y+1).z, with any patch levels. From 1.0 on: consecutive
+   minor releases within one major, plus the last minor of major M to the first
+   of M+1.
+2. **Rollback.** Recommendation: N+1 back to N is supported only while no
+   feature that N+1 introduced has been activated. After activation, the N
+   binary refuses to start (`UnsupportedFeatureError`, which exists today).
+3. **The go-quicraft seam.** The Raft wire version is pinned at 1 for
+   pre-release. Recommendation: open a seam issue in go-quicraft to lift the pin
+   and bump `WireVersion` per release that changes the Raft wire. The go-qrdb
+   side consumes `WireWindow` and adds no Raft-level negotiation of its own.
+4. **SPEC Boundaries ban on compatibility shims** ([SPEC.md](../SPEC.md)
+   Boundaries; [multi-tenancy/architecture.md](../multi-tenancy/architecture.md)
+   "No backward-compatibility code"). Speaking release N's wire from N+1 is
+   compatibility code. Recommendation for the owner: scope the ban. Code that
+   speaks exactly one previous release's wire, behind the version negotiation and
+   deleted in the release after, is allowed. Any other shim stays banned.
+5. **How a client learns what a server supports** (the #1601 TTL case). Left
+   open for review. The options are a server release version in the capabilities
+   response, a per-feature capability bit, or a typed refusal from the server.
+   The SPEC row requires only that the field is never silently dropped.
+
+## Test plan
+
+All tests are CLI multi-protocol end-to-end tests, with no sleeps (waits are on
+observed state), under the cluster suites. **N** is the first release that
+carries this row. Until two such releases exist, the matrix builds N+1 from the
+same tree with a synthetic higher release and wire version. The clusterproof
+inventory needs a per-node image to run them.
+
+| Test | What it proves |
+|---|---|
+| T1 | Roll a three-node cluster N → N+1 one node at a time under the clusterproof workload. The linearizability check passes, and no write is lost. |
+| T2 | Mid-upgrade clusters, 2×N + 1×(N+1) and 1×N + 2×(N+1). Every transport (gRPC, REST, QUIC, MCP, SQL wires) serves through the CLI on every node, and forwarding works in both directions (N → N+1 leader and N+1 → N leader). |
+| T3 | Roll back N+1 → N before activation. Data written during the mixed phase reads back. |
+| T4 | After activation, an N binary refuses to start, with the typed error naming the feature. |
+| T5 | Version-gap refusal (N and N+2) on every channel: enrolment returns the typed refusal, ALPN ends in alert 120, the Raft `WireWindow` refuses. The node logs both versions, and the cluster does not diverge. |
+| T6 | Enrolment across versions: an N+1 node joins an N cluster, and an N node joins an N+1 cluster before activation. |
+| T7 | Key delivery across versions, in both directions. |
+| T8 | SDK N+1 → server N: TTL user create is refused with the typed error and no user is created. SDK N → server N+1 works. This is the first case (#1601). |
+
+## Delivery
+
+The row PR carries this document and the SPEC row only. Implementation follows
+in lanes after review:
+
+1. Release version announcement, gap refusal, and ALPN lists on the QUIC
+   channels.
+2. The go-quicraft seam (Q3).
+3. SDK field negotiation (Q5) with the #1601 TTL create.
+4. The matrix harness (per-node images, synthetic N+1) and tests T1–T8.
