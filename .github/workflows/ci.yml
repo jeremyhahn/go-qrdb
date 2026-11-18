@@ -2361,16 +2361,22 @@ jobs:
           # a docs-only PR (the preflight job's docs_only, false off
           # pull_request and on ci:full).
           DOCS_ONLY: ${{ needs.preflight.outputs.docs_only }}
+          # #1619: preflight's clusterproof output, true on a PR changing the
+          # cluster proof's script or harness, false off pull_request. A
+          # `clusterproof` job's skip is excused only when neither it nor
+          # NIGHTLY selects the job.
+          CLUSTERPROOF: ${{ needs.preflight.outputs.clusterproof }}
         run: |
           if [ "$DRAFT" = "true" ]; then
             echo "FAIL draft pull request: no CI runs on a draft. Mark it ready, then push an empty commit to start its run."
             exit 1
           fi
           BAD=0
-          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}"
-          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY or DOCS_ONLY
-          # cannot say which skips to excuse, so it fails closed. DOCS_ONLY is
-          # empty only when preflight did not succeed, which fails the gate too.
+          echo "full tier selected: ${FULL_TIER}; nightly selected: ${NIGHTLY}; docs-only pull request: ${DOCS_ONLY}; cluster proof selected: ${CLUSTERPROOF}"
+          # CUSTOMIZE (go-qrdb): an unreadable FULL_TIER, NIGHTLY, DOCS_ONLY or
+          # CLUSTERPROOF cannot say which skips to excuse, so it fails closed.
+          # DOCS_ONLY and CLUSTERPROOF are empty only when preflight did not
+          # succeed, which fails the gate too.
           case "${DOCS_ONLY}" in
             true|false) ;;
             *) echo "FAIL: DOCS_ONLY is unreadable ('${DOCS_ONLY}')"; BAD=1;;
@@ -2383,7 +2389,11 @@ jobs:
             true|false) ;;
             *) echo "FAIL: NIGHTLY is unreadable ('${NIGHTLY}')"; BAD=1;;
           esac
-          check() { # <job> <result> <pr|code|full|nightly>
+          case "${CLUSTERPROOF}" in
+            true|false) ;;
+            *) echo "FAIL: CLUSTERPROOF is unreadable ('${CLUSTERPROOF}')"; BAD=1;;
+          esac
+          check() { # <job> <result> <pr|code|full|nightly|clusterproof>
             case "$2" in
               success) echo "OK   $1";;
               skipped)
@@ -2391,6 +2401,8 @@ jobs:
                   echo "SKIP $1 (full tier not selected)"
                 elif [ "$3" = nightly ] && [ "${NIGHTLY}" != true ]; then
                   echo "SKIP $1 (nightly and dispatch only)"
+                elif [ "$3" = clusterproof ] && [ "${NIGHTLY}" != true ] && [ "${CLUSTERPROOF}" != true ]; then
+                  echo "SKIP $1 (nightly, dispatch or a PR changing the cluster proof only)"
                 elif [ "$3" = code ] && [ "${DOCS_ONLY}" = true ]; then
                   echo "SKIP $1 (docs-only pull request)"
                 else
@@ -2401,8 +2413,10 @@ jobs:
           }
           # CUSTOMIZE: one line per job in needs above. A job gated to the
           # full tier by its `if:` is marked full, one gated to schedule and
-          # workflow_dispatch is nightly, one skipped on a docs-only PR
-          # (go-qrdb, DS-3160) is code; every other job is pr.
+          # workflow_dispatch is nightly, one gated to schedule, dispatch or
+          # preflight's clusterproof selection (#1619) is clusterproof, one
+          # skipped on a docs-only PR (go-qrdb, DS-3160) is code; every other
+          # job is pr.
           check preflight "$RESULT_PREFLIGHT" pr
           check docker-build "$RESULT_DOCKER_BUILD" pr
           check lint "$RESULT_LINT" pr
@@ -2420,6 +2434,6 @@ jobs:
           check integration-features "$RESULT_INTEGRATION_FEATURES" full
           check fips "$RESULT_FIPS" full
           check soak "$RESULT_SOAK" nightly
-          check clusterproof-soak "$RESULT_CLUSTERPROOF_SOAK" nightly
+          check clusterproof-soak "$RESULT_CLUSTERPROOF_SOAK" clusterproof
           check signatures "$RESULT_SIGNATURES" pr
           exit $BAD
