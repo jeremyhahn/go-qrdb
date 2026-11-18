@@ -68,7 +68,7 @@ func baseVersions(file string, data []byte) (map[string]string, error) {
 	}
 	out := make(map[string]string)
 	for _, d := range dependencies(file, directives) {
-		out[d.Kind+" "+d.Module] = d.Path + "@" + d.Version
+		out[d.Kind+" "+d.Module] = baseKey(d)
 	}
 	return out, nil
 }
@@ -80,5 +80,16 @@ func touched(dep dependency, base map[string]string) bool {
 		return true
 	}
 	was, ok := base[dep.Kind+" "+dep.Module]
-	return !ok || was != dep.Path+"@"+dep.Version
+	return !ok || was != baseKey(dep)
+}
+
+// baseKey is what the base comparison keys a line on: its target, plus a
+// replace's left-hand version, since changing which version a replace
+// applies to can make an outdated replacement active.
+func baseKey(dep dependency) string {
+	key := dep.Path + "@" + dep.Version
+	if dep.Replaces != "" {
+		key += " replaces " + dep.Replaces
+	}
+	return key
 }

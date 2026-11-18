@@ -188,6 +188,42 @@ func TestTouched(t *testing.T) {
 	}
 }
 
+// TestTouchedReplaceLeftHandVersion: a replace whose target stays the same
+// but whose left-hand version changes (making it active) counts as touched.
+func TestTouchedReplaceLeftHandVersion(t *testing.T) {
+	const head = "module example.com/m\n\ngo 1.22\n\nrequire example.com/a v1.5.0\n\nreplace example.com/a v1.5.0 => example.com/a v1.1.0\n"
+	deps := dependencies("go.mod", mustParse(t, head))
+	var rep dependency
+	for _, d := range deps {
+		if d.Kind == kindReplace {
+			rep = d
+		}
+	}
+	require.Equal(t, "v1.5.0", rep.Replaces)
+	cases := []struct {
+		name string
+		base string
+		want bool
+	}{
+		{"left-hand version changed", "module example.com/m\n\ngo 1.22\n\nrequire example.com/a v1.5.0\n\nreplace example.com/a v1.0.0 => example.com/a v1.1.0\n", true},
+		{"unchanged", head, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := baseVersions("go.mod", []byte(tc.base))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, touched(rep, base))
+		})
+	}
+}
+
+func mustParse(t *testing.T, data string) []directive {
+	t.Helper()
+	d, err := parseGoMod("go.mod", []byte(data))
+	require.NoError(t, err)
+	return d
+}
+
 func TestGitBase(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
