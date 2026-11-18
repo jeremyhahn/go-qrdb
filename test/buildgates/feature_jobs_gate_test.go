@@ -467,7 +467,7 @@ func TestIntegrationFeatureCoverage_DownKeepsTheImage(t *testing.T) {
 	}
 }
 
-// buildRaceDocker is a stub docker for docker-build-it: `buildx version`
+// buildRaceDocker is a stub docker for docker-build-it and docker-build-toolchain: `buildx version`
 // succeeds, `buildx build` records that it ran and fails with status 17 the
 // way the second of two concurrent --load builds of one tag does, and `image
 // inspect` finds the image only once a build has run and STUB_LOADED is 1.
@@ -486,20 +486,27 @@ echo "stub docker: unexpected $*" >&2
 exit 99
 `
 
-// Two legs that miss the image together on one daemon both build it, and the
+// Two builds that miss the image together on one daemon both build it, and the
 // second --load fails because the first already tagged it (run 57133). The
 // loser must succeed when the daemon then holds the content-tagged image, and
-// any other failed build must still fail with the build's own status.
+// any other failed build must still fail with the build's own status. The
+// toolchain target is held to the same rule: pool-images runs it on a daemon
+// that independent PR and main runs share (#1631).
 func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 	root := repoRoot(t)
-	for _, tc := range []struct {
+	type buildCase struct {
 		name    string
 		loaded  string
 		wantErr bool
-	}{
-		{name: "a concurrent leg loaded the image", loaded: "1", wantErr: false},
-		{name: "the build failed and no image is held", loaded: "0", wantErr: true},
-	} {
+	}
+	var cases []buildCase
+	for _, target := range []string{"docker-build-it", "docker-build-toolchain"} {
+		cases = append(cases,
+			buildCase{name: target + ": a concurrent build loaded the image", loaded: "1", wantErr: false},
+			buildCase{name: target + ": the build failed and no image is held", loaded: "0", wantErr: true})
+	}
+	for _, tc := range cases {
+		target, _, _ := strings.Cut(tc.name, ":")
 		t.Run(tc.name, func(t *testing.T) {
 			stub := t.TempDir()
 			if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(buildRaceDocker), 0o700); err != nil { // #nosec G306 -- the stub must be executable
@@ -509,7 +516,7 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			if err := os.WriteFile(envFile, []byte("GIT_CONFIG_KEY_0=stub\n"), 0o600); err != nil {
 				t.Fatalf("write module env: %v", err)
 			}
-			cmd := exec.Command("make", "-s", "docker-build-it", "IT_IMAGE=qrdb-ci-it:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
+			cmd := exec.Command("make", "-s", target, "IT_IMAGE=qrdb-ci-it:test", "TOOLCHAIN_IMAGE=qrdb-ci-toolchain:test", "MODULE_ENV_FILE="+envFile) // #nosec G204 -- a fixed target and a tempdir path
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"STUB_DIR="+stub, "STUB_LOADED="+tc.loaded)
@@ -518,19 +525,19 @@ func TestIntegrationFeatureCoverage_BuildSurvivesAConcurrentLoad(t *testing.T) {
 			cmd.Stderr = &out
 			err := cmd.Run()
 			if _, statErr := os.Stat(filepath.Join(stub, "built")); statErr != nil {
-				t.Fatalf("make docker-build-it never ran the build:\n%s", out.String())
+				t.Fatalf("make %s never ran the build:\n%s", target, out.String())
 			}
 			if !tc.wantErr {
 				if err != nil {
-					t.Fatalf("make docker-build-it: %v; want success once a concurrent leg loaded the image:\n%s", err, out.String())
+					t.Fatalf("make %s: %v; want success once a concurrent leg loaded the image:\n%s", target, err, out.String())
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("make docker-build-it succeeded with no image held; want the build's failure:\n%s", out.String())
+				t.Fatalf("make %s succeeded with no image held; want the build's failure:\n%s", target, out.String())
 			}
 			if !strings.Contains(out.String(), "Error 17") {
-				t.Fatalf("make docker-build-it failed without the build's status 17:\n%s", out.String())
+				t.Fatalf("make %s failed without the build's status 17:\n%s", target, out.String())
 			}
 		})
 	}

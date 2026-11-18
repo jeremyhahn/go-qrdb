@@ -4229,6 +4229,15 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	$(if $(DEVCACHE_APK_MIRROR),--build-arg APK_MIRROR="$(DEVCACHE_APK_MIRROR)") \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
 
+# concurrent-load follows a content-tagged image build. Two builds that miss
+# together on one daemon both build, and only the first --load can tag the
+# result: the second fails with "image ... already exists" (run 57133). That
+# loser finds the image held once its build fails, and the tag is the
+# content, so it succeeds; any other failed build fails with the build's
+# status. docker-build-toolchain and docker-build-it both use it: pool-images
+# builds on a daemon that independent runs share (#1631).
+concurrent-load = || { status=$$?; docker image inspect '$(1)' >/dev/null 2>&1 || exit $$status; echo "==> a concurrent build loaded $(1) first"; }
+
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
 
@@ -4250,17 +4259,13 @@ docker-build-toolchain:
 		:; \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . && \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . $(call concurrent-load,$(TOOLCHAIN_IMAGE)); \
 		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Two builds that miss together on one daemon both build, and only the
-# first --load can tag the result: the second fails with "image ... already
-# exists" (run 57133). That loser finds the image held once its build fails,
-# and the tag is the content, so it succeeds; any other failed build fails
-# with the build's status.
+# tree's. Its build recovers from a concurrent load (concurrent-load).
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
@@ -4273,11 +4278,7 @@ docker-build-it:
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-			--target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-		}; \
+			--target integration -t $(IT_IMAGE) . $(call concurrent-load,$(IT_IMAGE)); \
 		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
