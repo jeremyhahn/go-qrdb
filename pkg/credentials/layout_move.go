@@ -18,12 +18,14 @@ import (
 // version, a staged rotation, and the migration claims.
 var layoutPrefixes = []string{credentialPrefix, MetaKeyPrefix, VersionKeyPrefix, StagedKeyPrefix, MigrationClaimPrefix}
 
-// layoutMovedPrefix keys the move marker a layout move writes into the
+// LayoutMovedPrefix keys the move marker a layout move writes into the
 // destination store in the same guarded batch as a credential's records:
 // it says the copy there is this move's, so a pass that stopped before
 // the source records were deleted is finished, not reported as a
 // conflict. No layout prefix matches it, and the marker carries no secret.
-const layoutMovedPrefix = "__sys:credential-layout-moved/"
+// pkg/service hard-confines it: a forged marker would make a move pass
+// delete the source records without copying them.
+const LayoutMovedPrefix = "__sys:credential-layout-moved/"
 
 // layoutMovedValue is the fixed value of a move marker.
 const layoutMovedValue = "moved"
@@ -127,7 +129,7 @@ func layoutSetOf(prefix, key string) (name, enc string) {
 // moved: both copies stay where they are and the name is reported in a
 // *LayoutConflictError once every other name has moved. Every other name's
 // records are written in one guarded batch that requires each destination
-// key absent and writes the name's move marker (layoutMovedPrefix) with
+// key absent and writes the name's move marker (LayoutMovedPrefix) with
 // them. Only a batch that applied deletes its source records, and the
 // marker goes last: a move cut short before the batch copies again next
 // time, and one cut short after it finds the marker and only deletes the
@@ -164,12 +166,12 @@ func moveLayout(ctx context.Context, from, to Store) error {
 			conflicts = append(conflicts, name)
 		}
 	}
-	markers, err := to.List(ctx, layoutMovedPrefix)
+	markers, err := to.List(ctx, LayoutMovedPrefix)
 	if err != nil {
 		return err
 	}
 	for _, marker := range markers {
-		if _, ok := sets[strings.TrimPrefix(marker, layoutMovedPrefix)]; ok {
+		if _, ok := sets[strings.TrimPrefix(marker, LayoutMovedPrefix)]; ok {
 			continue
 		}
 		if err := to.Delete(ctx, marker); err != nil {
@@ -189,7 +191,7 @@ func moveLayout(ctx context.Context, from, to Store) error {
 // holds the marker, an earlier pass committed the set: its remaining
 // source records and then the marker are deleted, and nothing is copied.
 func moveLayoutSet(ctx context.Context, from, to Store, set *layoutSet) (bool, error) {
-	marker := layoutMovedPrefix + set.name
+	marker := LayoutMovedPrefix + set.name
 	marked, err := holdsKey(ctx, to, marker)
 	if err != nil {
 		return false, err
@@ -245,7 +247,7 @@ func finishLayoutSet(ctx context.Context, from, to Store, set *layoutSet) error 
 			return err
 		}
 	}
-	return to.Delete(ctx, layoutMovedPrefix+set.name)
+	return to.Delete(ctx, LayoutMovedPrefix+set.name)
 }
 
 // holdsKey reports whether st holds exactly key.

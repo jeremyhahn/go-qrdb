@@ -237,7 +237,7 @@ func requireMovedAndClean(t *testing.T, from, to Store, name string, keys []stri
 		requireValue(t, to, key, "old@"+key)
 		requireAbsent(t, from, key)
 	}
-	markers, err := to.List(context.Background(), layoutMovedPrefix)
+	markers, err := to.List(context.Background(), LayoutMovedPrefix)
 	require.NoError(t, err)
 	assert.Empty(t, markers, "the move marker of %s is gone", name)
 }
@@ -252,7 +252,7 @@ func TestMoveLayout_CrashAfterCommitIsFinished(t *testing.T) {
 
 	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
 	require.True(t, from.fired)
-	requireValue(t, to, layoutMovedPrefix+"db", layoutMovedValue)
+	requireValue(t, to, LayoutMovedPrefix+"db", layoutMovedValue)
 	for _, key := range keys {
 		requireValue(t, from, key, "old@"+key)
 	}
@@ -284,11 +284,11 @@ func TestMoveLayout_LeftoverMarkerIsRemoved(t *testing.T) {
 	ctx := context.Background()
 	from, mem := seal.NewMemoryBackend(), seal.NewMemoryBackend()
 	keys := putLayout(t, from, "db", "old")
-	to := &faultyStore{Store: mem, op: "delete", key: layoutMovedPrefix + "db"}
+	to := &faultyStore{Store: mem, op: "delete", key: LayoutMovedPrefix + "db"}
 
 	require.ErrorIs(t, moveLayout(ctx, from, to), errInjected)
 	require.True(t, to.fired)
-	requireValue(t, to, layoutMovedPrefix+"db", layoutMovedValue)
+	requireValue(t, to, LayoutMovedPrefix+"db", layoutMovedValue)
 
 	require.NoError(t, moveLayout(ctx, from, to))
 	requireMovedAndClean(t, from, to, "db", keys)
@@ -310,7 +310,7 @@ func TestMoveLayout_UnmarkedDestinationStillConflicts(t *testing.T) {
 		requireValue(t, from, key, "old@"+key)
 	}
 	requireValue(t, to, credentialPrefix+"db", "new")
-	requireAbsent(t, to, layoutMovedPrefix+"db")
+	requireAbsent(t, to, LayoutMovedPrefix+"db")
 }
 
 // A credential deleted after a move that stopped before its source records

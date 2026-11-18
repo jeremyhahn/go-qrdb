@@ -247,6 +247,13 @@ func TestHardConfinedKeys_TheCredentialSidecarPrefixesAreConfinedWhole(t *testin
 	}
 }
 
+// A forged store-move marker would make the next move pass delete the
+// source credential records without copying them.
+func TestHardConfinedKeys_TheCredentialLayoutMoveMarkerIsConfinedWhole(t *testing.T) {
+	root := InternalKeyPrefixSystem + "credential-layout-moved/"
+	requireConfinedWhole(t, root, root+"0123abcd/db-pass")
+}
+
 // requireConfinedWhole asserts key, a record under root, is refused to the
 // embedded KV, transaction and watch surfaces and filtered from broad reads.
 func requireConfinedWhole(t *testing.T, root, key string) {

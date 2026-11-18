@@ -121,12 +121,18 @@ var hardConfinedMaterialPrefixes = []string{
 // self-scan of one tenant's policies (ListDelegationPolicies) stays
 // visible through FilterInternalMap's owner escape, exactly as
 // CACertPEMs' certificate scan does (isHardConfinedKeyForScan).
+// credentials.LayoutMovedPrefix holds the store-move markers: a marker
+// tells a later move pass the destination copy of a credential is
+// committed, so the pass deletes the source records without copying
+// them, and a marker forged through the embedded KV would destroy the
+// only copy.
 var hardConfinedWholePrefixes = []string{
 	InternalKeyPrefixSystem + "credentials/",
 	credentials.MigrationClaimPrefix,
 	credentials.MetaKeyPrefix,
 	credentials.VersionKeyPrefix,
 	credentials.StagedKeyPrefix,
+	credentials.LayoutMovedPrefix,
 	delegationPolicyConfinedPrefix,
 }
 
