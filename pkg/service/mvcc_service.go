@@ -226,6 +226,9 @@ func (s *MVCCKVService) Put(ctx context.Context, key string, value []byte) error
 	if encErr != nil {
 		return &EncodeRequestError{Err: encErr}
 	}
+	if cmd, encErr = upgradeProbeCommand(s.host, s.shardID, key, value, cmd); encErr != nil {
+		return &EncodeRequestError{Err: encErr}
+	}
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)

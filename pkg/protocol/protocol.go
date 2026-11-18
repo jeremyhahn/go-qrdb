@@ -308,6 +308,14 @@ const frameSize = FrameSize
 
 // EncodeMVCCPut creates a binary MVCC Put command.
 // Format: [op:1][keyLen:2 LE][key][leaseID:8 LE][value].
+// OpUpgradeProbe is reserved for the rolling-upgrade matrix's synthetic
+// "N+1" command. Only binaries built with the test-only qrdb_upgrade_probe
+// tag apply it (as an MVCC put); every other binary refuses it as an
+// invalid opcode, exactly as a binary of the previous release refuses a
+// command it does not know. No production opcode may take this value.
+// Payload: the EncodeMVCCPut payload.
+const OpUpgradeProbe byte = 0xF0
+
 func EncodeMVCCPut(key, value []byte, leaseID int64) ([]byte, error) {
 	if err := checkUint16Len(len(key), "key"); err != nil {
 		return nil, err

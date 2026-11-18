@@ -424,6 +424,9 @@ func (s *KVService) Put(ctx context.Context, key string, value []byte) error {
 	if err != nil {
 		return &EncodeRequestError{Err: err}
 	}
+	if cmd, err = upgradeProbeCommand(s.host, s.shardID, key, value, cmd); err != nil {
+		return &EncodeRequestError{Err: err}
+	}
 	result, err := propose(ctx, s.host, s.shardID, cmd)
 	if err != nil {
 		return translateProposeError(err)
