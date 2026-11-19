@@ -223,6 +223,11 @@ func (m *Manager) release(ctx context.Context, cat Catalog, key dbKey, db *Datab
 // the claim because the listing is a snapshot: a local drop that failed
 // without rolling its fence back may have committed the fence since.
 func (m *Manager) clearDropFence(ctx context.Context, cat Catalog, key dbKey, db *Database) {
+	// A fence a failed KeepFenceOnFailure drop pinned stays until the
+	// retried drop lands, though the catalog records the database live.
+	if db.dropFenceKept() {
+		return
+	}
 	if _, dropping := m.dropping.LoadOrStore(key, struct{}{}); dropping {
 		return
 	}

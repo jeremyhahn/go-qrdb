@@ -80,6 +80,12 @@ type Database struct {
 	// Manager.Drop's own explicit rollback on a failed reclaim.
 	dropping atomic.Bool
 
+	// fenceKept is set when a drop run under KeepFenceOnFailure failed
+	// before its durable claim committed: the catalog still records the
+	// database live, but the in-memory fence must stay up until a retried
+	// drop lands, so the catalog reconcile does not lift it.
+	fenceKept atomic.Bool
+
 	// obsolete is set when the catalog no longer records this incarnation
 	// and the entry could not yet be released. An obsolete entry is never
 	// served: the manager refuses it with StaleDatabaseError until a release
@@ -285,6 +291,19 @@ func (d *Database) Dropping() bool {
 // a failed drop is retryable rather than stuck permanently refusing.
 func (d *Database) SetDropping(dropping bool) {
 	d.dropping.Store(dropping)
+}
+
+// keepDropFence pins the drop fence of a database whose KeepFenceOnFailure
+// drop failed: the catalog reconcile never clears it, whatever the catalog
+// records, until a retried drop removes the database.
+func (d *Database) keepDropFence() {
+	d.dropping.Store(true)
+	d.fenceKept.Store(true)
+}
+
+// dropFenceKept reports whether keepDropFence pinned the drop fence.
+func (d *Database) dropFenceKept() bool {
+	return d.fenceKept.Load()
 }
 
 // BarrierEnabled reports whether this database has barrier encryption enabled.

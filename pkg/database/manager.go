@@ -885,8 +885,12 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	if err := m.claimDrop(ctx, db, claim); err != nil {
 		// A rollback that must keep the database unservable leaves the
 		// in-memory fence up: the database refuses every caller here until
-		// a retried drop lands (KeepFenceOnFailure).
-		if !keepFenceOnFailure(ctx) {
+		// a retried drop lands (KeepFenceOnFailure). The claim did not
+		// commit, so the catalog still records the database live: the
+		// fence is pinned, or the catalog reconcile would lift it.
+		if keepFenceOnFailure(ctx) {
+			db.keepDropFence()
+		} else {
 			db.SetDropping(false)
 		}
 		return &LocalFenceError{Name: name, Err: err}

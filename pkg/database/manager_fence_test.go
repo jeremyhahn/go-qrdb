@@ -321,3 +321,47 @@ func TestManager_GetForTenantIgnoringFence(t *testing.T) {
 	_, err = mgr.GetForTenantIgnoringFence(context.Background(), "billing")
 	assert.ErrorAs(t, err, &systemNotFound)
 }
+
+// claimFaultCatalog refuses every catalog Update, so a drop's durable claim
+// never commits.
+type claimFaultCatalog struct {
+	Catalog
+	updateErr error
+}
+
+func (c *claimFaultCatalog) Update(context.Context, string, string, string, func(*DatabaseMeta) error) error {
+	return c.updateErr
+}
+
+// TestManager_Drop_KeptFenceSurvivesReconcileAfterAFailedClaim proves a drop
+// run under KeepFenceOnFailure whose durable claim failed to commit keeps
+// the database refused: the catalog still records it live, and the
+// reconcile a GetOwned runs must not lift the pinned fence.
+func TestManager_Drop_KeptFenceSurvivesReconcileAfterAFailedClaim(t *testing.T) {
+	mgr, _ := newReclaimManager(t, "orders")
+	owner := tenant.WithTenantID(context.Background(), "acme")
+	_, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+
+	cat, err := mgr.catalog("test")
+	require.NoError(t, err)
+	mgr.SetCatalog(&claimFaultCatalog{Catalog: cat, updateErr: errors.New("injected: claim refused")})
+	err = mgr.DropForTenant(KeepFenceOnFailure(owner), "billing")
+	require.Error(t, err, "the drop must fail when its claim cannot commit")
+	mgr.SetCatalog(cat)
+
+	meta, err := cat.Get(context.Background(), "acme", "billing")
+	require.NoError(t, err)
+	require.False(t, meta.Dropping, "the claim did not commit: the catalog still records the database live")
+
+	var dropping *DroppingError
+	_, err = mgr.GetOwned("billing", "acme")
+	assert.ErrorAs(t, err, &dropping, "the reconcile must keep the pinned fence until a retried drop lands")
+	_, err = mgr.GetForTenant(owner, "billing")
+	assert.ErrorAs(t, err, &dropping)
+
+	require.NoError(t, mgr.DropForTenant(KeepFenceOnFailure(owner), "billing"), "the retried drop lands")
+	var notFound *NotFoundError
+	_, err = mgr.GetOwned("billing", "acme")
+	assert.ErrorAs(t, err, &notFound)
+}
