@@ -59,6 +59,32 @@ func TestUpsertVector_MetadataKeepsJSONTypes(t *testing.T) {
 	}
 }
 
+// TestListVectors_MetadataKeepsJSONTypes pins that ListVectors decodes the
+// stored JSON metadata like GetVector does: a string comes back without its
+// JSON quotes, a number as float64 and a bool as bool.
+func TestListVectors_MetadataKeepsJSONTypes(t *testing.T) {
+	svc := newTypedMetadataService(t)
+	ctx := context.Background()
+	meta := map[string]interface{}{
+		"doc_id": "doc-kept",
+		"score":  float64(3),
+		"live":   true,
+	}
+	if _, err := svc.UpsertVector(ctx, &UpsertVectorRequest{Namespace: "typed", ID: 1, Vector: []float32{1, 0}, Metadata: meta}); err != nil {
+		t.Fatalf("UpsertVector: %v", err)
+	}
+	resp, err := svc.ListVectors(ctx, &ListVectorsRequest{Namespace: "typed", IncludeMetadata: true})
+	if err != nil {
+		t.Fatalf("ListVectors: %v", err)
+	}
+	if len(resp.Vectors) != 1 {
+		t.Fatalf("ListVectors returned %d vectors, want 1", len(resp.Vectors))
+	}
+	if got := resp.Vectors[0].Metadata; !reflect.DeepEqual(got, meta) {
+		t.Fatalf("metadata = %#v, want %#v", got, meta)
+	}
+}
+
 // TestUpsertVector_ReportsCreated proves the first upsert of an ID reports
 // created and a second upsert of the same ID does not.
 func TestUpsertVector_ReportsCreated(t *testing.T) {

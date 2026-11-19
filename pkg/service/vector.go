@@ -3117,10 +3117,7 @@ func (v *vectorService) ListVectors(ctx context.Context, req *ListVectorsRequest
 	for i, vec := range vectors {
 		var metadata map[string]interface{}
 		if req.IncludeMetadata && vec.Metadata != nil {
-			metadata = make(map[string]interface{})
-			for k, val := range vec.Metadata {
-				metadata[k] = val
-			}
+			metadata = convertFromStringMap(vec.Metadata)
 		}
 
 		var embeddingData []float32
