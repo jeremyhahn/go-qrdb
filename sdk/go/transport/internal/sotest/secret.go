@@ -200,6 +200,25 @@ func RunBarrierSecretTLS(t *testing.T, transportName string, plaintext, overTLS 
 	}
 }
 
+// RunHTTPAddressRefused asserts that every call in SecretCalls, issued with
+// its secret on a client whose address carries an explicit http:// scheme,
+// is refused with transportName's typed TLS refusal and never reaches the
+// server, whatever the client's TLS configuration says (#1639).
+func RunHTTPAddressRefused(t *testing.T, transportName string, httpAddr SecretTarget) {
+	for _, call := range SecretCalls() {
+		t.Run(call.Name, func(t *testing.T) {
+			before := httpAddr.Reached()
+			err := issue(call, httpAddr.Client, true)
+			if !refusedAs(err, transportName, call.Kind) {
+				t.Fatalf("got %s, want the %s transport's TLS refusal for the %s", describe(err), transportName, kindName(call.Kind))
+			}
+			if n := httpAddr.Reached() - before; n != 0 {
+				t.Fatalf("a refused request reached the server %d times", n)
+			}
+		})
+	}
+}
+
 func issue(call SecretCall, c SecretClient, secret bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()

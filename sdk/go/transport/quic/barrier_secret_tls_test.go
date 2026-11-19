@@ -17,11 +17,29 @@ package quic
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	quicserver "github.com/jeremyhahn/go-qrdb/pkg/api/quic"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
 )
+
+// TestBarrierSecret_HTTPAddressRefusesEverySecretCall: every call in
+// sotest.SecretCalls, issued with its secret on a client whose address
+// carries an explicit http:// scheme, is refused with the typed TLS refusal
+// before the client sends a single frame (#1639). The frame sender counts what
+// would have gone on the wire.
+func TestBarrierSecret_HTTPAddressRefusesEverySecretCall(t *testing.T) {
+	var frames atomic.Int64
+	tr := NewFrameTransport("", func(context.Context, string, string, []byte) (uint16, []byte, error) {
+		frames.Add(1)
+		return 0, nil, errors.New("the frame was sent")
+	})
+	tr.config.Address = "http://127.0.0.1:1"
+	tr.config.TLSEnabled = true
+	sotest.RunHTTPAddressRefused(t, "quic", sotest.SecretTarget{Client: tr, Reached: func() int { return int(frames.Load()) }})
+}
 
 // TestBarrierSecret_HTTPAddressIsRefused: an address configured with an
 // explicit http:// scheme refuses every secret-carrying call (#1639), and the
