@@ -4225,6 +4225,15 @@ docker-build: docker-build-toolchain docker-build-it
 TOOLCHAIN_IIDFILE ?=
 IT_IIDFILE ?=
 
+# ci-image-shared-lock holds scripts/ci-image.sh's image lock shared (fd 9) for
+# the rest of the recipe's shell, so a concurrent `ci-image.sh prune` (which
+# holds it exclusive) cannot remove the image between the target's check, its
+# reuse, pull or build, and its push (#1596). A reused image's tag time is
+# refreshed under it, so the image stays younger than the prune bound for the
+# rest of the job. Without flock(1) or a writable lock file it holds nothing.
+ci-image-shared-lock = lock=$$(scripts/ci-image.sh lock-file) && \
+	if command -v flock >/dev/null 2>&1 && : >>"$$lock" 2>/dev/null; then exec 9>>"$$lock" && flock -s 9; fi;
+
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
@@ -4236,9 +4245,10 @@ docker-build-toolchain:
 	@# record (an earlier push failed) is pushed again (registry-push
 	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
 	@# call does nothing.
-	@$(if $(TOOLCHAIN_IIDFILE),rm -f '$(TOOLCHAIN_IIDFILE)';) \
+	@$(ci-image-shared-lock) $(if $(TOOLCHAIN_IIDFILE),rm -f '$(TOOLCHAIN_IIDFILE)';) \
 	if id=$$(docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' 2>/dev/null); then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		docker tag '$(TOOLCHAIN_IMAGE)' '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1 || :; \
 		$(if $(TOOLCHAIN_IIDFILE),printf '%s\n' "$$id" > '$(TOOLCHAIN_IIDFILE)';) \
 		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
@@ -4257,9 +4267,10 @@ docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): an image ID names a loaded image" >&2; exit 1 ;; esac
-	@$(if $(IT_IIDFILE),rm -f '$(IT_IIDFILE)';) \
+	@$(ci-image-shared-lock) $(if $(IT_IIDFILE),rm -f '$(IT_IIDFILE)';) \
 	if id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null); then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		docker tag '$(IT_IMAGE)' '$(IT_IMAGE)' >/dev/null 2>&1 || :; \
 		$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
 		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
 	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \

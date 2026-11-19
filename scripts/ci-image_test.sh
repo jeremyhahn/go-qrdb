@@ -37,6 +37,11 @@ cat > "$D/bin/docker" <<'STUB'
 set -eu
 s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
+# STUB_PROBE_LOCK=<file>: each call records whether a process holds the image
+# lock (an exclusive try on a fresh open fails while anyone holds it).
+if [ -n "${STUB_PROBE_LOCK:-}" ]; then
+  if flock -x -n "$STUB_PROBE_LOCK" true; then echo "free $*"; else echo "held $*"; fi >> "$s/lockprobe"
+fi
 key() { printf '%s' "${1//[^A-Za-z0-9._-]/_}"; }
 resolve() {
   case $1 in
@@ -190,7 +195,7 @@ run() {
   while [ $# -gt 0 ] && [ "$1" != -- ]; do args+=("$1"); shift; done
   [ $# -eq 0 ] || shift
   rc=0
-  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org CI_IMAGE_IDS="$D/no-ids" \
+  env PATH="$D/bin:$PATH" STUB_STATE="$D/state" GITHUB_REPOSITORY_OWNER=Example-Org CI_IMAGE_IDS="$D/no-ids" CI_IMAGE_LOCK="$D/image.lock" \
     GITHUB_RUN_ID=77 GITHUB_RUN_ATTEMPT=2 "$@" \
     "$here/ci-image.sh" "${args[@]}" > "$D/out" 2> "$D/err" || rc=$?
 }
@@ -529,6 +534,41 @@ if [ "$rc" = 0 ] && [ -z "$tags" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] &&
   ! grep -q 'refused' "$D/err"; then
   ok "prune reclaims an old image that also carries its per-run or pushed tags"
 else bad "prune reclaims an old image that also carries its per-run or pushed tags (rc=$rc, left: $tags)"; cat "$D/err"; fi
+# 12a7. Codex P1 (#1597 round 1): a concurrent producer reuses an image past
+# the bound (the Make targets' already-built path) and inspects or pushes it.
+# It holds the image lock shared while it does, so prune, which needs the
+# lock exclusive, removes nothing; once the producer lets go, prune reclaims
+# the image. Without flock(1) on this host the case cannot run.
+if command -v flock >/dev/null 2>&1; then
+  reset
+  mkdir -p "$D/state/created"
+  tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa "$id_b"
+  echo "$old" > "$D/state/created/${id_b#sha256:}"
+  exec 8>>"$D/image.lock"
+  flock -s 8
+  run prune 24 -- CI_IMAGE_LOCK_WAIT=0
+  exec 8>&-
+  if [ "$rc" = 0 ] && [ -e "$D/state/ids/${id_b#sha256:}" ] && [ -f "$D/state/tags/qrdb-ci-it_aaaaaaaaaaaaaaaa" ] &&
+    ! called '^image rm ' && grep -q 'another job holds the image lock' "$D/err"; then
+    ok "prune leaves an expired image while a concurrent producer holds the image lock"
+  else bad "prune leaves an expired image while a concurrent producer holds the image lock (rc=$rc)"; cat "$D/err"; fi
+  run prune 24 -- CI_IMAGE_LOCK_WAIT=0
+  if [ "$rc" = 0 ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ]; then
+    ok "prune reclaims the image once the producer releases the image lock"
+  else bad "prune reclaims the image once the producer releases the image lock (rc=$rc)"; cat "$D/err"; fi
+  # A producer step (load) waits for a prune that holds the lock exclusive,
+  # and fails rather than run unprotected once the wait runs out.
+  reset
+  exec 8>>"$D/image.lock"
+  flock -x 8
+  run load "$D/art" "$tc" "$id_a" -- CI_IMAGE_LOCK_WAIT=0
+  exec 8>&-
+  if [ "$rc" = 1 ] && grep -q 'still held exclusive' "$D/err" && ! called '^load '; then
+    ok "a producer step refuses to run while a prune holds the image lock"
+  else bad "a producer step refuses to run while a prune holds the image lock (rc=$rc)"; cat "$D/err"; fi
+else
+  echo "SKIP: flock(1) is not installed, the image lock cases need it"
+fi
 # 12b. A malformed bound is refused before any removal.
 reset
 run prune 0
@@ -781,7 +821,7 @@ mk() {
   shift
   rc=0
   env -u GIT_CONFIG_KEY_0 -u MODULE_ENV_FILE -u CI_IMAGE_REGISTRY -u CI_IMAGE_DIGEST_DIR -u MAKEFLAGS -u MAKELEVEL \
-    PATH="$D/bin:$PATH" STUB_STATE="$D/state" "$@" \
+    PATH="$D/bin:$PATH" STUB_STATE="$D/state" CI_IMAGE_LOCK="$D/image.lock" "$@" \
     make -s --no-print-directory -C "$here/.." "$target" TOOLCHAIN_IMAGE="$tc" IT_IMAGE="$it" \
     > "$D/out" 2> "$D/err" || rc=$?
 }
@@ -851,9 +891,24 @@ for target in docker-build-toolchain docker-build-it; do
   # 27. A held image with a record is not pushed (nor pulled, nor built).
   reset; rec_for "$img" "$dig"
   mk "$target" "${r[@]}"
-  if [ "$rc" = 0 ] && ! called '^push ' && ! called '^pull ' && ! called '^tag ' && ! called '^buildx build ' && [ ! -s "$D/err" ]; then
-    ok "$target: a held image with a record is not pushed"
-  else bad "$target: a held image with a record is not pushed (rc=$rc)"; cat "$D/err"; fi
+  if [ "$rc" = 0 ] && ! called '^push ' && ! called '^pull ' && ! called '^buildx build ' && [ ! -s "$D/err" ] &&
+    [ "$(grep '^tag ' "$D/state/calls")" = "tag $img $img" ]; then
+    ok "$target: a held image with a record is not pushed, only its tag time refreshed"
+  else bad "$target: a held image with a record is not pushed, only its tag time refreshed (rc=$rc)"; cat "$D/err"; fi
+
+  # 27a. Codex P1 (#1597 round 1): the reuse runs under the image lock, held
+  # shared from the check through the refresh and the push (the buildx probe
+  # before it touches no image), so a concurrent
+  # prune cannot remove the reused image (a prune cannot take it exclusive).
+  if command -v flock >/dev/null 2>&1; then
+    reset; rec_for "$img"
+    mk "$target" "${r[@]}" STUB_PROBE_LOCK="$D/image.lock"
+    if [ "$rc" = 0 ] && grep -q "^held image inspect -f {{.Id}} $img$" "$D/state/lockprobe" &&
+      grep -q "^held tag $img $img$" "$D/state/lockprobe" && grep -q "^held push " "$D/state/lockprobe" &&
+      [ "$(grep '^free ' "$D/state/lockprobe")" = "free buildx version" ]; then
+      ok "$target: the reuse of a held image holds the image lock through its push"
+    else bad "$target: the reuse of a held image holds the image lock through its push (rc=$rc)"; cat "$D/err" "$D/state/lockprobe"; fi
+  fi
 
   # 28. Registry unset: a held image is today's one inspect and one line; a
   # missing one is built with no registry call.
@@ -863,7 +918,7 @@ for target in docker-build-toolchain docker-build-it; do
   reset; fresh
   mk "$target"
   if [ "$unset_out" = "==> $img is already built on this daemon" ] && [ -z "$unset_err" ] &&
-    [ "$unset_calls" = "$(printf 'buildx version\nimage inspect -f {{.Id}} %s' "$img")" ] &&
+    [ "$unset_calls" = "$(printf 'buildx version\nimage inspect -f {{.Id}} %s\ntag %s %s' "$img" "$img" "$img")" ] &&
     [ "$rc" = 0 ] && called '^buildx build ' && ! called '^pull ' && ! called '^push ' && ! called '^tag '; then
     ok "$target: an unset registry changes nothing"
   else bad "$target: an unset registry changes nothing (rc=$rc)"; printf '%s\n%s\n' "$unset_out" "$unset_calls"; cat "$D/err"; fi

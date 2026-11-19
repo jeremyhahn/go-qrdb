@@ -283,7 +283,13 @@ which are thrown away). `prune` removes each go-qrdb CI image tag
 (`qrdb-toolchain`, `qrdb-ci-it`, `*/go-qrdb-toolchain`, `*/go-qrdb-ci-it`)
 whose newer of creation and last tag time is older than the bound, and keeps
 any image a running container uses; `load` re-tags the image so a recent
-load counts as a use. `ci_image_id_handoff_test.go` requires the prune step,
+load counts as a use. Prune and the jobs that acquire an image share a
+daemon-wide image lock (`scripts/ci-image.sh lock-file`, `CI_IMAGE_LOCK`,
+flock): `pin`, `save`, `load` and `make docker-build-toolchain` /
+`docker-build-it` (check, reuse, pull or build, push) hold it shared, and the
+make targets refresh a reused image's tag time under it; `prune` holds it
+exclusive and removes nothing while any job holds it, and keeps an image
+tagged since its check. `ci_image_id_handoff_test.go` requires the prune step,
 after the job's last save or load, under `always()` on self-hosted runners,
 with a bound of at most 72 hours.
 

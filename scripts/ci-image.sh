@@ -26,6 +26,7 @@
 #   ci-image.sh untag <image>...                   removes save's per-run tags
 #   ci-image.sh prune [hours]                      self-hosted retention of the CI images
 #   ci-image.sh check-ref <ref>...                 validates digest references
+#   ci-image.sh lock-file                          prints the image lock file prune and the producers share
 #   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
 #   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
 #   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
@@ -110,6 +111,7 @@ run_tag() { printf '%s-run-%s\n' "$1" "$(run_suffix)"; }
 pin() {
 	[ $# -eq 2 ] || die "usage: pin <image> <iidfile>"
 	local image=$1 iidfile=$2 id rtag got
+	producer_lock
 	check_image "$image"
 	# The ID is the one the build itself wrote (docker build --iidfile), never
 	# a lookup of the shared tag: another job on this daemon can retag that
@@ -128,6 +130,7 @@ pin() {
 save() {
 	[ $# -eq 2 ] || die "usage: save <image> <dir>"
 	local image=$1 dir=$2 id rtag got
+	producer_lock
 	check_image "$image"
 	rtag=$(run_tag "$image")
 	# The ID comes from the per-run tag pin set at the build, never from the
@@ -156,6 +159,7 @@ untag() {
 load() {
 	[ $# -eq 3 ] || die "usage: load <dir> <image> <id>"
 	local dir=$1 image=$2 want=$3 got out loaded="" l
+	producer_lock
 	check_image "$image"
 	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
 	[ -s "$dir/image.tar" ] || die "$dir/image.tar is missing or empty: the docker-build artifact did not download"
@@ -290,6 +294,40 @@ epoch() {
 	printf '%s\n' "$t"
 }
 
+# The image lock (#1596) coordinates prune with every job that acquires an
+# image on the same daemon. A producer (pin, save, load, and the Makefile's
+# docker-build targets, which reuse, pull or build the image and push it)
+# holds it shared while it adds a tag or reuses a held image, and refreshes
+# the reused image's tag time under it, so the image is younger than any
+# prune bound for the rest of the job. prune holds it exclusive from its
+# snapshot to its last removal, so no image is acquired between the check
+# and the removal. CI_IMAGE_LOCK names the file (one per daemon host: the
+# default is in the host's temp dir, which every runner on it shares).
+lock_file() { printf '%s\n' "${CI_IMAGE_LOCK:-${TMPDIR:-/tmp}/qrdb-ci-image.lock}"; }
+
+# lock -s|-x takes the image lock on fd 9 until the process exits, waiting
+# at most CI_IMAGE_LOCK_WAIT seconds (default 600). It fails when the wait
+# runs out; without flock(1) it returns 2 and holds nothing.
+lock() {
+	local f wait=${CI_IMAGE_LOCK_WAIT:-600}
+	[[ $wait =~ ^(0|[1-9][0-9]{0,4})$ ]] || die "CI_IMAGE_LOCK_WAIT must be a whole number of seconds (at most 99999)"
+	command -v flock >/dev/null 2>&1 || return 2
+	f=$(lock_file)
+	exec 9>>"$f" || die "cannot open the image lock $f"
+	flock "$1" -w "$wait" 9
+}
+
+# producer_lock holds the image lock shared for a producer step; a producer
+# never runs unprotected past a prune that still holds it.
+producer_lock() {
+	local rc=0
+	lock -s || rc=$?
+	case $rc in
+	0 | 2) ;;
+	*) die "the image lock $(lock_file) is still held exclusive (a prune) after ${CI_IMAGE_LOCK_WAIT:-600}s" ;;
+	esac
+}
+
 # prune is the self-hosted retention of the CI images. A pool daemon outlives
 # every job, and each commit's integration image has its own tag, so without
 # it the images accumulate. It removes each image whose every tag is a CI
@@ -302,13 +340,29 @@ epoch() {
 # leaves it. Run-unique tags (per-run, pushed) and all but one content-hash
 # tag are untagged by name first, each checked to still name the image, so
 # a tag the daemon counts never keeps an expired image. An image that also
-# carries a tag of any other image family is not touched.
+# carries a tag of any other image family is not touched. All of it runs under
+# the image lock held exclusive (see lock_file): while a job holds it shared,
+# prune removes nothing.
 prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
-	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest
+	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest added
 	local -a hashed=() force=()
 	local -A refs=() foreign=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
+	# Exclusive, or nothing at all: a job acquiring or reusing an image
+	# holds the lock shared, and an image it reuses may be past the bound
+	# until it refreshes the tag time under that lock.
+	local lrc=0
+	lock -x || lrc=$?
+	case $lrc in
+	0) ;;
+	2)
+		echo "==> prune: kept every image, flock(1) is missing, so a concurrent job's image cannot be told apart" >&2
+		return 0 ;;
+	*)
+		echo "==> prune: kept every image, another job holds the image lock $(lock_file) (acquiring or reusing an image)" >&2
+		return 0 ;;
+	esac
 	now=$(date +%s)
 	cutoff=$((now - hours * 3600))
 	while IFS= read -r c; do
@@ -360,6 +414,18 @@ prune() {
 		# refuses a plain removal by ID for them; --force then untags only
 		# the references that name this ID at removal time, so a tag moved
 		# to a fresh image keeps it. A running container was ruled out above.
+		# A tag added to this ID since the snapshot (a producer that does
+		# not take the lock, or a developer) means the image is wanted:
+		# it is kept, and --force never untags a reference it did not check.
+		added=""
+		while read -r c r; do
+			[ "$c" = "$id" ] || continue
+			case " $ref " in *" $r "*) ;; *) added+=" $r" ;; esac
+		done < <(docker image ls --no-trunc --format '{{.ID}} {{.Repository}}:{{.Tag}}')
+		if [ -n "$added" ]; then
+			echo "==> prune: kept $ref ($id), it was tagged$added since the check" >&2
+			continue
+		fi
 		force=()
 		[ "${#hashed[@]}" -le 1 ] || force=(--force)
 		if docker image rm "${force[@]}" "$id" >/dev/null 2>&1 || ! docker image inspect "$id" >/dev/null 2>&1; then
@@ -381,6 +447,10 @@ main() {
 	push) push "$@" ;;
 	untag) untag "$@" ;;
 	prune) prune "$@" ;;
+	lock-file)
+		[ $# -eq 0 ] || die "usage: lock-file"
+		lock_file
+		;;
 	registry-pull | registry-push)
 		# registry-push --unrecorded <image>: the image is already held (built
 		# or pulled earlier), so it is published again only when no usable
