@@ -698,7 +698,8 @@ func freshHeaderBytes(t *testing.T, b barrierKEK, name string) []byte {
 	if len(img) < fixedHeaderSize {
 		t.Fatalf("header is %d bytes, under the fixed %d", len(img), fixedHeaderSize)
 	}
-	return img
+	// A framed file's commit slots follow the header: return the header only.
+	return img[:int(img[offHeaderSize])|int(img[offHeaderSize+1])<<8]
 }
 
 // TestPowerCut_FreshFramedHeaderTornOpensEmpty cuts a fresh WAL and a fresh

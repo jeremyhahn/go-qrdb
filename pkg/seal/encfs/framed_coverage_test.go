@@ -107,10 +107,26 @@ func le32(n uint32) []byte { return binary.LittleEndian.AppendUint32(nil, n) }
 func TestFramed_ScanFramesTails(t *testing.T) {
 	b := newFakeBarrier(t)
 	a, c := bytes.Repeat([]byte{'a'}, 100), bytes.Repeat([]byte{'c'}, 60)
+	ac := append(bytes.Clone(a), c...)
 	raw, frames := writeFramedLog(t, b, filepath.Join(t.TempDir(), "000001.log"), a, c)
 	last := frames[1].phys
 	flipLast := bytes.Clone(raw)
 	flipLast[last+frameLenSize+10] ^= 0x01
+	hsz := int64(raw[offHeaderSize]) | int64(raw[offHeaderSize+1])<<8
+	slot := func(img []byte, i int64) []byte {
+		img = bytes.Clone(img)
+		img[hsz+i*commitSlotSize+5] ^= 0x01
+		return img
+	}
+	withLen := func(n uint32) []byte {
+		img := bytes.Clone(raw)
+		copy(img[frames[0].phys:], le32(n))
+		return img
+	}
+	// c written after the last Sync: its frame is past the commit boundary.
+	unsynced, uframes := writeUnsyncedTail(t, b, a, c)
+	flipUnsynced := bytes.Clone(unsynced)
+	flipUnsynced[uframes[1].phys+frameLenSize+10] ^= 0x01
 
 	cases := []struct {
 		name    string
@@ -118,16 +134,23 @@ func TestFramed_ScanFramesTails(t *testing.T) {
 		want    []byte
 		wantErr error
 	}{
-		{"clean", raw, append(bytes.Clone(a), c...), nil},
-		{"torn length prefix", append(bytes.Clone(raw), 1, 2), append(bytes.Clone(a), c...), nil},
-		{"zero length prefix", append(bytes.Clone(raw), 0, 0, 0, 0), append(bytes.Clone(a), c...), nil},
-		{"zero fill past last write", append(bytes.Clone(raw), make([]byte, 5000)...), append(bytes.Clone(a), c...), nil},
-		{"zero length then data", append(bytes.Clone(raw), 0, 0, 0, 0, 7), nil, ErrAuthFailed},
-		{"length over BlockSize", append(append(bytes.Clone(raw), le32(BlockSize+1)...), 9, 9, 9, 9), nil, ErrAuthFailed},
-		{"torn final frame", append(bytes.Clone(raw), append(le32(50), 1, 2, 3)...), append(bytes.Clone(a), c...), nil},
-		{"unauthentic final frame", flipLast, a, nil},
-		{"unauthentic final frame, zero fill", append(bytes.Clone(flipLast), make([]byte, 64)...), a, nil},
-		{"unauthentic final frame, data after", append(bytes.Clone(flipLast), 0, 0, 1), nil, ErrAuthFailed},
+		{"clean", raw, ac, nil},
+		{"torn length prefix", append(bytes.Clone(raw), 1, 2), ac, nil},
+		{"zero length prefix", append(bytes.Clone(raw), 0, 0, 0, 0), ac, nil},
+		{"zero fill past last write", append(bytes.Clone(raw), make([]byte, 5000)...), ac, nil},
+		{"unsynced garbage past the boundary", append(bytes.Clone(raw), 0, 0, 0, 0, 7), ac, nil},
+		{"length over BlockSize past the boundary", append(append(bytes.Clone(raw), le32(BlockSize+1)...), 9, 9, 9, 9), ac, nil},
+		{"torn frame past the boundary", append(bytes.Clone(raw), append(le32(50), 1, 2, 3)...), ac, nil},
+		{"unsynced final frame unauthentic", flipUnsynced, a, nil},
+		{"unsynced final frame whole", unsynced, ac, nil},
+		{"newest commit slot torn", slot(raw, 1), ac, nil},
+		{"synced final frame corrupted", flipLast, nil, ErrAuthFailed},
+		{"synced final frame corrupted, zero fill", append(bytes.Clone(flipLast), make([]byte, 64)...), nil, ErrAuthFailed},
+		{"synced final frame truncated", raw[:len(raw)-5], nil, ErrAuthFailed},
+		{"first length enlarged past the file", withLen(BlockSize), nil, ErrAuthFailed},
+		{"first length enlarged within the file", withLen(150), nil, ErrAuthFailed},
+		{"first length zeroed", withLen(0), nil, ErrAuthFailed},
+		{"both commit slots corrupted", slot(slot(raw, 0), 1), nil, ErrAuthFailed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,17 +158,22 @@ func TestFramed_ScanFramesTails(t *testing.T) {
 			if err := os.WriteFile(path, tc.file, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := readAllAt(t, New(filesys.Default, b), path)
+			fsys := New(filesys.Default, b)
+			got, err := readAllAt(t, fsys, path)
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
 				}
-				w, err := New(filesys.Default, b).OpenReadWrite(path)
+				w, err := fsys.OpenReadWrite(path)
 				if !errors.Is(err, tc.wantErr) {
 					if w != nil {
 						_ = w.Close()
 					}
 					t.Fatalf("OpenReadWrite err = %v, want %v", err, tc.wantErr)
+				}
+				img, rerr := os.ReadFile(path) // #nosec G304 -- test file under t.TempDir
+				if rerr != nil || !bytes.Equal(img, tc.file) {
+					t.Fatalf("a refused open changed the file (err %v)", rerr)
 				}
 				return
 			}
@@ -154,6 +182,115 @@ func TestFramed_ScanFramesTails(t *testing.T) {
 			}
 			if !bytes.Equal(got, tc.want) {
 				t.Fatalf("read %d bytes, want %d", len(got), len(tc.want))
+			}
+			// The recovered log takes appends that survive a reopen.
+			w, err := fsys.OpenReadWrite(path)
+			if err != nil {
+				t.Fatalf("OpenReadWrite: %v", err)
+			}
+			if _, err := w.Write([]byte("zz")); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if err := w.Sync(); err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			got, err = readAllAt(t, fsys, path)
+			if want := append(bytes.Clone(tc.want), 'z', 'z'); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("after append: read %d bytes (err %v), want %d", len(got), err, len(want))
+			}
+		})
+	}
+}
+
+// writeUnsyncedTail writes first and syncs it, then writes rest and closes
+// without a Sync, so rest's frame is on disk past the commit boundary.
+func writeUnsyncedTail(t *testing.T, b barrierKEK, first, rest []byte) ([]byte, []frameRef) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "000001.log")
+	f, err := New(filesys.Default, b).Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(first); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if _, err := f.Write(rest); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	ef := f.(*encryptedFile)
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if ef.durable != 1 || len(ef.frames) != 2 {
+		t.Fatalf("durable %d of %d frames, want 1 of 2", ef.durable, len(ef.frames))
+	}
+	raw, err := os.ReadFile(path) // #nosec G304 -- test file under t.TempDir
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw, ef.frames
+}
+
+// TestFramed_StatMatchesReads: FS.Stat, File.Stat and the bytes a read
+// returns agree on a framed log, a recovered torn tail included.
+func TestFramed_StatMatchesReads(t *testing.T) {
+	b := newFakeBarrier(t)
+	rec := bytes.Repeat([]byte{'s'}, 100)
+	raw, _ := writeFramedLog(t, b, filepath.Join(t.TempDir(), "000005.log"), rec, rec)
+	unsynced, uframes := writeUnsyncedTail(t, b, rec, rec)
+	flipUnsynced := bytes.Clone(unsynced)
+	flipUnsynced[uframes[1].phys+frameLenSize+3] ^= 0x01
+	for _, tc := range []struct {
+		name string
+		file []byte
+		want int64
+	}{
+		{"two synced writes", raw, 200},
+		{"torn tail", append(bytes.Clone(raw), append(le32(80), 1, 2, 3)...), 200},
+		{"unsynced tail unauthentic", flipUnsynced, 100},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "000005.log")
+			if err := os.WriteFile(path, tc.file, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fsys := New(filesys.Default, b)
+			fi, err := fsys.Stat(path)
+			if err != nil {
+				t.Fatalf("FS.Stat: %v", err)
+			}
+			f, err := fsys.Open(path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			ffi, err := f.Stat()
+			_ = f.Close()
+			if err != nil {
+				t.Fatalf("File.Stat: %v", err)
+			}
+			got, err := readAllAt(t, fsys, path)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if fi.Size() != tc.want || ffi.Size() != tc.want || int64(len(got)) != tc.want {
+				t.Fatalf("FS.Stat %d, File.Stat %d, read %d, want %d", fi.Size(), ffi.Size(), len(got), tc.want)
+			}
+			// Recovery through OpenReadWrite keeps the same size.
+			w, err := fsys.OpenReadWrite(path)
+			if err != nil {
+				t.Fatalf("OpenReadWrite: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if fi, err := fsys.Stat(path); err != nil || fi.Size() != tc.want {
+				t.Fatalf("after recovery FS.Stat = %v (err %v), want %d", fi, err, tc.want)
 			}
 		})
 	}
@@ -200,8 +337,8 @@ func TestFramed_ReadAtFaultsSurface(t *testing.T) {
 	}{
 		{"frames", raw, nil},
 		{"zero fill", append(bytes.Clone(raw), make([]byte, 9000)...), nil},
-		{"bad length, data after", append(bytes.Clone(raw), 0, 0, 0, 0, 1), ErrAuthFailed},
-		{"unauthentic final frame, zero fill", append(bytes.Clone(flipLast), make([]byte, 8)...), nil},
+		{"bad length past the boundary, data after", append(bytes.Clone(raw), 0, 0, 0, 0, 1), nil},
+		{"synced final frame unauthentic, zero fill", append(bytes.Clone(flipLast), make([]byte, 8)...), ErrAuthFailed},
 		{"short torn header", hdr[:3], nil},
 		{"torn header past the fixed part", hdr[:fixedHeaderSize+2], nil},
 	}

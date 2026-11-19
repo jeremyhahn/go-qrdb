@@ -52,6 +52,9 @@ type encryptedFile struct {
 	tail        []byte     // bytes after flushedSize that may still grow before next full-block flush
 	frames      []frameRef // framed layout: every frame on disk, in order
 	physEnd     int64      // framed layout: physical offset the next frame is written at
+	commitSeq   int64      // framed layout: seq of the newest commit slot
+	durable     int64      // framed layout: frames the newest commit slot records as synced
+	freshSlots  bool       // framed layout: Create crashed before its commit slots were on disk
 }
 
 // frameRef locates one frame of a framed file.
@@ -65,20 +68,35 @@ type frameRef struct {
 // configured for sequential writes. The base file MUST be empty; the
 // header is written immediately.
 func newWriteFile(base filesys.File, h *header) (*encryptedFile, error) {
-	if _, err := base.Write(h.marshal()); err != nil {
-		return nil, err
-	}
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
 		return nil, err
 	}
-	return &encryptedFile{
+	f := &encryptedFile{
 		base:       base,
 		crypto:     crypto,
 		headerSize: int64(h.totalSize()),
 		framed:     h.framed(),
-		physEnd:    int64(h.totalSize()),
-	}, nil
+	}
+	hdr := h.marshal()
+	if f.framed {
+		// A framed log starts with its commit slots, synced with the
+		// header so a later open can tell a crash inside Create (slots
+		// missing, no frames) from a corrupted log.
+		f.headerSize = framedDataStart(h)
+		f.commitSeq = commitSlots - 1
+		hdr = append(hdr, crypto.freshCommitSlots(f.headerSize)...)
+	}
+	if _, err := base.Write(hdr); err != nil {
+		return nil, err
+	}
+	if f.framed {
+		if err := base.Sync(); err != nil {
+			return nil, err
+		}
+	}
+	f.physEnd = f.headerSize
+	return f, nil
 }
 
 // newReadFile wraps an existing base file in an encryptedFile
@@ -102,6 +120,7 @@ func newReadFile(base filesys.File, h *header, physicalSize int64, appendLog boo
 		if payload < 0 {
 			return nil, &NegativePayloadLengthError{Length: payload}
 		}
+		f.headerSize = framedDataStart(h)
 		if err := f.scanFrames(physicalSize); err != nil {
 			return nil, err
 		}
@@ -125,49 +144,51 @@ func newReadFile(base filesys.File, h *header, physicalSize int64, appendLog boo
 // fails authentication with bytes after it (other than zero fill) is tamper
 // or corruption, not a tear, and refuses the open with ErrAuthFailed.
 func (f *encryptedFile) scanFrames(physicalSize int64) error {
-	pos := f.headerSize
+	start := f.headerSize
+	f.physEnd = start
+	rec, ok, err := f.readCommit(physicalSize)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if physicalSize <= start {
+			// Create syncs the header with its commit slots before it
+			// returns, so slots that are not both on disk mean a crash
+			// inside Create: no frame was ever written.
+			f.freshSlots = true
+			return nil
+		}
+		return fmt.Errorf("%w: framed log has no authentic commit slot", ErrAuthFailed)
+	}
+	f.commitSeq, f.durable = rec.seq, rec.count
+	if rec.count == 0 && rec.end != start {
+		return fmt.Errorf("%w: commit slot ends at %d with no frames", ErrAuthFailed, rec.end)
+	}
+	pos := start
 	var logical int64
 	for pos < physicalSize {
-		rem := physicalSize - pos
-		if rem < frameLenSize {
-			break // torn length prefix
-		}
-		var lb [frameLenSize]byte
-		if _, err := f.base.ReadAt(lb[:], pos); err != nil {
+		idx := int64(len(f.frames))
+		durable := idx < rec.count
+		frame, size, ok, err := f.scanFrame(pos, physicalSize, idx)
+		if err != nil {
 			return err
 		}
-		n := int(binary.LittleEndian.Uint32(lb[:]))
-		if n <= 0 || n > BlockSize {
-			zero, err := f.zeroFrom(pos, physicalSize)
-			if err != nil {
-				return err
+		if !ok {
+			if durable {
+				return fmt.Errorf("%w: synced frame %d at offset %d", ErrAuthFailed, idx, pos)
 			}
-			if zero {
-				break // zero fill past the last write
-			}
-			return ErrAuthFailed
+			break // torn or unsealed bytes past the last Sync
 		}
-		size := int64(frameLenSize + BlockOverhead + n)
-		if size > rem {
-			break // torn final frame
+		if idx == rec.count-1 && pos+size != rec.end {
+			return fmt.Errorf("%w: synced frame %d ends at %d, commit slot says %d", ErrAuthFailed, idx, pos+size, rec.end)
 		}
-		sealed := make([]byte, BlockOverhead+n)
-		if _, err := f.base.ReadAt(sealed, pos+frameLenSize); err != nil {
-			return err
-		}
-		if _, err := f.crypto.openFrame(sealed, int64(len(f.frames)), n); err != nil {
-			zero, zerr := f.zeroFrom(pos+size, physicalSize)
-			if zerr != nil {
-				return zerr
-			}
-			if zero {
-				break // unauthenticated final frame
-			}
-			return err
-		}
-		f.frames = append(f.frames, frameRef{phys: pos, logical: logical, n: n})
-		logical += int64(n)
+		frame.logical = logical
+		f.frames = append(f.frames, frame)
+		logical += int64(frame.n)
 		pos += size
+	}
+	if int64(len(f.frames)) < rec.count {
+		return fmt.Errorf("%w: %d synced frames, %d on disk", ErrAuthFailed, rec.count, len(f.frames))
 	}
 	f.logicalSize = logical
 	f.flushedSize = logical
@@ -175,28 +196,159 @@ func (f *encryptedFile) scanFrames(physicalSize int64) error {
 	return nil
 }
 
-// zeroFrom reports whether every byte of the base file in [from, to) is
-// zero (true for an empty range).
-func (f *encryptedFile) zeroFrom(from, to int64) (bool, error) {
-	buf := make([]byte, 4096)
-	for from < to {
-		n := int64(len(buf))
-		if n > to-from {
-			n = to - from
-		}
-		if _, err := f.base.ReadAt(buf[:n], from); err != nil {
-			return false, err
-		}
-		for _, c := range buf[:n] {
-			if c != 0 {
-				return false, nil
-			}
-		}
-		from += n
+// scanFrame reads and authenticates the frame at pos as frame idx. ok is
+// false when the bytes there are not a whole authentic frame (a length
+// prefix cut short, out of range, running past the file, or a seal that
+// does not open); err is an I/O error only.
+func (f *encryptedFile) scanFrame(pos, physicalSize, idx int64) (frameRef, int64, bool, error) {
+	rem := physicalSize - pos
+	if rem < frameLenSize {
+		return frameRef{}, 0, false, nil
 	}
-	return true, nil
+	var lb [frameLenSize]byte
+	if _, err := f.base.ReadAt(lb[:], pos); err != nil {
+		return frameRef{}, 0, false, err
+	}
+	n := int(binary.LittleEndian.Uint32(lb[:]))
+	if n <= 0 || n > BlockSize {
+		return frameRef{}, 0, false, nil
+	}
+	size := int64(frameLenSize + BlockOverhead + n)
+	if size > rem {
+		return frameRef{}, 0, false, nil
+	}
+	sealed := make([]byte, BlockOverhead+n)
+	if _, err := f.base.ReadAt(sealed, pos+frameLenSize); err != nil {
+		return frameRef{}, 0, false, err
+	}
+	if _, err := f.crypto.openFrame(sealed, idx, n); err != nil {
+		return frameRef{}, 0, false, nil
+	}
+	return frameRef{phys: pos, n: n}, size, true, nil
 }
 
+// commitRecord is the content of a commit slot: the durable boundary of a
+// framed log. Frames [0, count) end at physical offset end and were synced;
+// only bytes past end may be torn.
+type commitRecord struct {
+	seq   int64 // increments on every commit; slot seq%commitSlots holds it
+	count int64
+	end   int64
+}
+
+const (
+	// commitSlots is the number of alternating commit slots between a
+	// framed header and its first frame. A commit overwrites the older
+	// slot, so a commit torn by a power cut leaves the other one whole.
+	commitSlots = 2
+	// commitPlainSize is the plaintext of a commit slot: seq, count, end.
+	commitPlainSize = 24
+	// commitSlotSize is the on-disk size of one sealed commit slot.
+	commitSlotSize = BlockOverhead + commitPlainSize
+)
+
+// commitAAD is the additional data a commit slot is sealed with. Its length
+// differs from frameAAD's, so a slot never opens as a frame or the reverse.
+func commitAAD(slot int64) []byte {
+	return append([]byte("encfs-commit"), byte(slot))
+}
+
+// sealCommit seals r for its slot.
+func (c *blockCrypto) sealCommit(r commitRecord) []byte {
+	var pt [commitPlainSize]byte
+	binary.LittleEndian.PutUint64(pt[0:], uint64(r.seq))   // #nosec G115 -- non-negative
+	binary.LittleEndian.PutUint64(pt[8:], uint64(r.count)) // #nosec G115 -- non-negative
+	binary.LittleEndian.PutUint64(pt[16:], uint64(r.end))  // #nosec G115 -- non-negative
+	// #nosec G407 -- the nonce argument MUST be nil: this AEAD is cipher.NewGCMWithRandomNonce (see sealFrame).
+	return c.aead.Seal(nil, nil, pt[:], commitAAD(r.seq%commitSlots))
+}
+
+// openCommit authenticates the commit slot at index slot.
+func (c *blockCrypto) openCommit(sealed []byte, slot int64) (commitRecord, bool) {
+	pt, err := c.aead.Open(nil, nil, sealed, commitAAD(slot))
+	if err != nil || len(pt) != commitPlainSize {
+		return commitRecord{}, false
+	}
+	r := commitRecord{
+		seq:   int64(binary.LittleEndian.Uint64(pt[0:])),  // #nosec G115 -- range checked below
+		count: int64(binary.LittleEndian.Uint64(pt[8:])),  // #nosec G115 -- range checked below
+		end:   int64(binary.LittleEndian.Uint64(pt[16:])), // #nosec G115 -- range checked below
+	}
+	if r.seq < 0 || r.count < 0 || r.end < 0 || r.seq%commitSlots != slot {
+		return commitRecord{}, false
+	}
+	return r, true
+}
+
+// framedDataStart is the physical offset of the first frame of a framed
+// file with header h: the header, then its commit slots.
+func framedDataStart(h *header) int64 {
+	return int64(h.totalSize()) + commitSlots*commitSlotSize
+}
+
+// freshCommitSlots returns both commit slots of a framed log with no
+// frames whose data starts at start.
+func (c *blockCrypto) freshCommitSlots(start int64) []byte {
+	out := make([]byte, 0, commitSlots*commitSlotSize)
+	for seq := int64(0); seq < commitSlots; seq++ {
+		out = append(out, c.sealCommit(commitRecord{seq: seq, end: start})...)
+	}
+	return out
+}
+
+// readCommit returns the newest authentic commit slot, if any.
+func (f *encryptedFile) readCommit(physicalSize int64) (commitRecord, bool, error) {
+	var best commitRecord
+	found := false
+	base := f.headerSize - commitSlots*commitSlotSize
+	for slot := int64(0); slot < commitSlots; slot++ {
+		off := base + slot*commitSlotSize
+		if off+commitSlotSize > physicalSize {
+			continue
+		}
+		buf := make([]byte, commitSlotSize)
+		if _, err := f.base.ReadAt(buf, off); err != nil {
+			return commitRecord{}, false, err
+		}
+		if r, ok := f.crypto.openCommit(buf, slot); ok && (!found || r.seq > best.seq) {
+			best, found = r, true
+		}
+	}
+	return best, found, nil
+}
+
+// writeFreshSlotsLocked writes both commit slots of a framed log with no
+// durable frames and syncs them, for a file whose Create crashed before
+// they were on disk.
+func (f *encryptedFile) writeFreshSlotsLocked() error {
+	if _, err := f.base.WriteAt(f.crypto.freshCommitSlots(f.headerSize), f.headerSize-commitSlots*commitSlotSize); err != nil {
+		return err
+	}
+	if err := f.base.Sync(); err != nil {
+		return err
+	}
+	f.freshSlots = false
+	f.commitSeq, f.durable = commitSlots-1, 0
+	return nil
+}
+
+// commitLocked records every frame on disk as durable in the older commit
+// slot and syncs it. The frames themselves must already be synced.
+func (f *encryptedFile) commitLocked() error {
+	r := commitRecord{seq: f.commitSeq + 1, count: int64(len(f.frames)), end: f.physEnd}
+	off := f.headerSize - commitSlots*commitSlotSize + (r.seq%commitSlots)*commitSlotSize
+	if _, err := f.base.WriteAt(f.crypto.sealCommit(r), off); err != nil {
+		return err
+	}
+	if err := f.base.Sync(); err != nil {
+		return err
+	}
+	f.commitSeq, f.durable = r.seq, r.count
+	return nil
+}
+
+// zeroFrom reports whether every byte of the base file in [from, to) is
+// zero (true for an empty range).
 // fixedLogLogicalSize is physicalToLogicalSize for a WAL or MANIFEST in the
 // fixed-size block layout, written before the framed layout existed. That
 // layout re-encrypts the trailing partial block and rewrites it in place on
@@ -505,6 +657,13 @@ func (f *encryptedFile) flushTailLocked() error {
 // Sync starts a new frame. A power cut can therefore tear only bytes no
 // Sync acknowledged. Logical offsets are found through the frame index
 // built on open (scanFrames), not by fixed-size arithmetic.
+//
+// Two sealed commit slots sit between the header and the first frame. A
+// Sync that wrote frames syncs them, then records the frame count and
+// their physical end in the older slot and syncs again: that is the
+// durable boundary. On open every frame inside the boundary must
+// authenticate and end where the slot says, or the log is refused as
+// corrupt; only bytes past it (never acknowledged) are dropped as torn.
 func (f *encryptedFile) writeFrameLocked() error {
 	if len(f.tail) == 0 {
 		return nil
@@ -538,7 +697,15 @@ func (f *encryptedFile) Sync() error {
 	if err := f.flushTailLocked(); err != nil {
 		return err
 	}
-	return f.base.Sync()
+	if err := f.base.Sync(); err != nil {
+		return err
+	}
+	if !f.framed || int64(len(f.frames)) == f.durable {
+		return nil
+	}
+	// The frames are on disk: only now record them as durable, so a
+	// frame torn by a power cut is never inside the commit boundary.
+	return f.commitLocked()
 }
 
 // Stat returns a FileInfo whose Size reports the logical (plaintext)

@@ -260,19 +260,24 @@ func (fs *FS) freshOverTornHeader(base filesys.File, h *header, physicalSize int
 		// never write over, or past, bytes beyond it.
 		return nil, ErrTruncatedHeader
 	}
-	if _, err := base.WriteAt(hdr, 0); err != nil {
-		return nil, err
-	}
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
+		return nil, err
+	}
+	start := framedDataStart(h)
+	if _, err := base.WriteAt(append(hdr, crypto.freshCommitSlots(start)...), 0); err != nil {
+		return nil, err
+	}
+	if err := base.Sync(); err != nil {
 		return nil, err
 	}
 	return &encryptedFile{
 		base:       base,
 		crypto:     crypto,
-		headerSize: int64(len(hdr)),
+		headerSize: start,
 		framed:     true,
-		physEnd:    int64(len(hdr)),
+		physEnd:    start,
+		commitSeq:  commitSlots - 1,
 	}, nil
 }
 
@@ -321,8 +326,15 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog b
 		// Frames are sealed: appends start a new frame at the end of the
 		// last authentic one. Zero a torn final frame first, so the next
 		// scan reads it as zero fill rather than a frame with bytes after.
+		// Only bytes past the commit boundary reach here (scanFrames
+		// refuses a log whose synced frames do not authenticate).
 		if torn := physicalSize - rf.physEnd; torn > 0 {
 			if _, err := base.WriteAt(make([]byte, torn), rf.physEnd); err != nil {
+				return nil, err
+			}
+		}
+		if rf.freshSlots {
+			if err := rf.writeFreshSlotsLocked(); err != nil {
 				return nil, err
 			}
 		}
@@ -430,6 +442,17 @@ func (fs *FS) Stat(name string) (os.FileInfo, error) {
 	headerSize := int(uint16(fixed[offHeaderSize]) | uint16(fixed[offHeaderSize+1])<<8)
 	if headerSize < fixedHeaderSize || headerSize > maxHeaderSize {
 		return fi, nil
+	}
+	if fixed[offFlags]&headerFlagFramed != 0 {
+		// A framed file's size is the sum of its authentic frames:
+		// open it as a read does, so Stat agrees with File.Stat and
+		// with the bytes a read returns, torn tail excluded.
+		ef, err := fs.Open(name)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = ef.Close() }()
+		return ef.Stat()
 	}
 	logicalSize, err := physicalToLogicalSize(physicalSize - int64(headerSize))
 	if err != nil {
