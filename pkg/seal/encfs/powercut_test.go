@@ -172,6 +172,16 @@ func (p *powerCutFS) record(name string, off int64, data []byte) {
 	}
 }
 
+// writes reports how many writes name has had since its last Sync.
+func (p *powerCutFS) writes(name string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if st, ok := p.files[name]; ok {
+		return len(st.pending)
+	}
+	return 0
+}
+
 func (p *powerCutFS) synced(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -546,7 +556,7 @@ func TestFramed_ReopenAppendsAfterTornTail(t *testing.T) {
 // the MANIFEST, and reopens the image: pebble.Open must succeed and every
 // key whose Set returned must read back.
 func TestPowerCut_PebbleKeepsEveryAckedKey(t *testing.T) {
-	for _, target := range []string{"wal", "manifest"} {
+	for _, target := range []string{"wal", "manifest", "wal-header", "manifest-header"} {
 		for seed := uint64(0); seed < 6; seed++ {
 			t.Run(fmt.Sprintf("%s/seed=%d", target, seed), func(t *testing.T) {
 				powerCutPebbleRun(t, target, seed)
@@ -557,7 +567,7 @@ func TestPowerCut_PebbleKeepsEveryAckedKey(t *testing.T) {
 
 func powerCutTargets(target, name string) bool {
 	base := filepath.Base(name)
-	if target == "wal" {
+	if strings.HasPrefix(target, "wal") {
 		return strings.HasSuffix(base, ".log")
 	}
 	return strings.HasPrefix(base, "MANIFEST-")
@@ -588,7 +598,15 @@ func powerCutPebbleRun(t *testing.T, target string, seed uint64) {
 	)
 	skip.Store(int64(seed % 3))
 	pc.hook = func(name string, syncs int) {
-		if !armed.Load() || syncs == 0 || done.Load() || !powerCutTargets(target, name) {
+		if !armed.Load() || done.Load() || !powerCutTargets(target, name) {
+			return
+		}
+		if strings.HasSuffix(target, "-header") {
+			// Cut while the fresh file's header is its only write.
+			if syncs != 0 || pc.writes(name) != 1 {
+				return
+			}
+		} else if syncs == 0 {
 			return
 		}
 		if skip.Add(-1) >= 0 {
@@ -604,6 +622,11 @@ func powerCutPebbleRun(t *testing.T, target string, seed uint64) {
 		cutAcked.Store(a)
 	}
 
+	if target == "manifest-header" {
+		// Rotate the MANIFEST on every version edit, so fresh ones are
+		// created (and their headers written) while keys are acked.
+		opts.MaxManifestFileSize = 1
+	}
 	db, err := pebble.Open(src, opts)
 	if err != nil {
 		t.Fatalf("pebble.Open: %v", err)
@@ -653,4 +676,150 @@ func powerCutPebbleRun(t *testing.T, target string, seed uint64) {
 			t.Fatalf("acknowledged key %d has a wrong value", i)
 		}
 	}
+}
+
+// freshHeaderBytes returns the on-disk header encfs writes for a new file
+// called name: the bytes a power cut can tear before its first Sync.
+func freshHeaderBytes(t *testing.T, b barrierKEK, name string) []byte {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	f, err := New(filesys.Default, b).Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	img, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	if len(img) < fixedHeaderSize {
+		t.Fatalf("header is %d bytes, under the fixed %d", len(img), fixedHeaderSize)
+	}
+	return img
+}
+
+// TestPowerCut_FreshFramedHeaderTornOpensEmpty cuts a fresh WAL and a fresh
+// MANIFEST inside their header, at every byte offset. No record can have
+// been acknowledged, so both opens yield an empty file, and a read-write
+// open takes appends that survive a reopen.
+func TestPowerCut_FreshFramedHeaderTornOpensEmpty(t *testing.T) {
+	b := newFakeBarrier(t)
+	for _, name := range []string{"000007.log", "MANIFEST-000003"} {
+		hdr := freshHeaderBytes(t, b, name)
+		for cut := 0; cut < len(hdr); cut++ {
+			t.Run(fmt.Sprintf("%s/cut=%d", name, cut), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), name)
+				if err := os.WriteFile(path, hdr[:cut], 0o600); err != nil {
+					t.Fatalf("write torn header: %v", err)
+				}
+				fsys := New(filesys.Default, b)
+				r, err := fsys.Open(path)
+				if err != nil {
+					t.Fatalf("Open torn header: %v", err)
+				}
+				fi, err := r.Stat()
+				if err != nil {
+					t.Fatalf("Stat: %v", err)
+				}
+				got, err := io.ReadAll(r)
+				_ = r.Close()
+				if err != nil {
+					t.Fatalf("read: %v", err)
+				}
+				if fi.Size() != 0 || len(got) != 0 {
+					t.Fatalf("torn header opened with size %d, read %d bytes; want empty", fi.Size(), len(got))
+				}
+
+				w, err := fsys.OpenReadWrite(path)
+				if err != nil {
+					t.Fatalf("OpenReadWrite torn header: %v", err)
+				}
+				if fi, err := w.Stat(); err != nil || fi.Size() != 0 {
+					t.Fatalf("read-write open of torn header: size %v err %v; want 0", fi, err)
+				}
+				rec := []byte("first record after the cut")
+				if _, err := w.Write(rec); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				if err := w.Sync(); err != nil {
+					t.Fatalf("Sync: %v", err)
+				}
+				if err := w.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+				r2, err := fsys.Open(path)
+				if err != nil {
+					t.Fatalf("reopen: %v", err)
+				}
+				defer func() { _ = r2.Close() }()
+				got, err = io.ReadAll(r2)
+				if err != nil {
+					t.Fatalf("read after reopen: %v", err)
+				}
+				if !bytes.Equal(got, rec) {
+					t.Fatalf("after reopen read %q, want %q", got, rec)
+				}
+			})
+		}
+	}
+}
+
+// TestPowerCut_HeaderRefusalsStay keeps the typed refusals the torn-header
+// rule must not swallow: a complete framed header that fails to
+// authenticate, and a short header on a file that is not an append log.
+func TestPowerCut_HeaderRefusalsStay(t *testing.T) {
+	b := newFakeBarrier(t)
+	fsys := New(filesys.Default, b)
+	open := func(t *testing.T, path string) (error, error) {
+		t.Helper()
+		var errs [2]error
+		for i, o := range []func(string) (filesys.File, error){fsys.Open, fsys.OpenReadWrite} {
+			f, err := o(path)
+			if err == nil {
+				_ = f.Close()
+			}
+			errs[i] = err
+		}
+		return errs[0], errs[1]
+	}
+
+	t.Run("framed/corrupt-dek", func(t *testing.T) {
+		hdr := bytes.Clone(freshHeaderBytes(t, b, "000009.log"))
+		hdr[len(hdr)-1] ^= 0x5a
+		path := filepath.Join(t.TempDir(), "000009.log")
+		if err := os.WriteFile(path, hdr, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		ro, rw := open(t, path)
+		if ro == nil || rw == nil {
+			t.Fatalf("corrupt framed header opened: Open %v, OpenReadWrite %v", ro, rw)
+		}
+	})
+	t.Run("framed/bad-version", func(t *testing.T) {
+		hdr := bytes.Clone(freshHeaderBytes(t, b, "MANIFEST-000009"))
+		hdr[offVersion]++
+		path := filepath.Join(t.TempDir(), "MANIFEST-000009")
+		if err := os.WriteFile(path, hdr, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		ro, rw := open(t, path)
+		if !errors.Is(ro, ErrUnsupportedVersion) || !errors.Is(rw, ErrUnsupportedVersion) {
+			t.Fatalf("bad-version framed header: Open %v, OpenReadWrite %v; want ErrUnsupportedVersion", ro, rw)
+		}
+	})
+	t.Run("sstable/short", func(t *testing.T) {
+		hdr := freshHeaderBytes(t, b, "000011.sst")
+		for cut := fixedHeaderSize; cut < len(hdr); cut++ {
+			path := filepath.Join(t.TempDir(), "000011.sst")
+			if err := os.WriteFile(path, hdr[:cut], 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			ro, rw := open(t, path)
+			if !errors.Is(ro, ErrTruncatedHeader) || !errors.Is(rw, ErrTruncatedHeader) {
+				t.Fatalf("cut=%d short sstable header: Open %v, OpenReadWrite %v; want ErrTruncatedHeader", cut, ro, rw)
+			}
+		}
+	})
 }
