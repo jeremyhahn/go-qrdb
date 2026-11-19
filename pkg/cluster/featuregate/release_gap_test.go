@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -194,6 +195,76 @@ func TestStart_RefusesExistingMemberRestartAcrossAGap(t *testing.T) {
 			assert.True(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
 		})
 	}
+}
+
+// releaseUnreadableKV fails every read of the recorded releases, local or
+// through the leader, while failing is set: a replica whose applied state is
+// briefly unreadable at startup and cannot reach a leader either.
+type releaseUnreadableKV struct {
+	*memKV
+	failing atomic.Bool
+}
+
+func (k *releaseUnreadableKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	if prefix == ReleasePrefix && k.failing.Load() {
+		return nil, errors.New("applied state unreadable")
+	}
+	return k.memKV.ListStale(ctx, prefix)
+}
+
+func (k *releaseUnreadableKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	if prefix == ReleasePrefix && k.failing.Load() {
+		return nil, errors.New("no leader")
+	}
+	return k.memKV.ListAll(ctx, prefix)
+}
+
+// TestStart_UnreadableReleaseHistoryRefusesRestart: committed member 1, last
+// run on 0.58, restarts on a 0.60 binary while its recorded release history
+// is briefly unreadable and no member advertises live. The restart check
+// must not read the failure as an empty history: Start refuses with a
+// *StoreError, and the 0.58 record survives for the retry to judge by.
+func TestStart_UnreadableReleaseHistoryRefusesRestart(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	store, mem := newLeaseStore(), newMemKV()
+	for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
+		rel := "0.59.0-alpha"
+		if id == 1 {
+			rel = "0.58.0-alpha"
+		}
+		_, err := mem.PutIfAbsent(context.Background(), ReleasePrefix+strconv.FormatUint(id, 10)+"/"+rel, []byte(addr))
+		require.NoError(t, err)
+	}
+	kv := &releaseUnreadableKV{memKV: mem}
+	kv.failing.Store(true)
+	g := newGate(t, threeNodes())
+
+	var storeErr *StoreError
+	require.ErrorAs(t, g.Start(context.Background(), kv, store), &storeErr)
+	assert.Contains(t, storeErr.Error(), "list releases")
+	assert.True(t, mem.has(ReleasePrefix+"1/0.58.0-alpha"), "the release last run survives the refused start")
+	assert.False(t, mem.has(ReleasePrefix+"1/0.60.0-alpha"), "a refused binary records no release")
+
+	// The retry, once the history is readable, refuses the gap.
+	kv.failing.Store(false)
+	var gap *release.GapError
+	require.ErrorAs(t, g.Start(context.Background(), kv, store), &gap)
+	assert.Equal(t, "0.58.0-alpha", gap.Peer)
+}
+
+// TestStart_UnreadableMembershipRefusesRestart: a system-shard membership
+// read failure is not "not yet a member": Start refuses rather than skipping
+// the restart check.
+func TestStart_UnreadableMembershipRefusesRestart(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	kv := newMemKV()
+	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.58.0-alpha", []byte("n1:7000"))
+	require.NoError(t, err)
+	members := threeNodes()
+	members.err = errors.New("membership unavailable")
+	g := newGate(t, members)
+	assert.ErrorIs(t, g.Start(context.Background(), kv, newLeaseStore()), members.err)
+	assert.False(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"))
 }
 
 // TestStart_AcceptsExistingMemberRestartOnTheNextRelease: committed member 1

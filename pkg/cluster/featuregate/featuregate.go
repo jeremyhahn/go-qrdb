@@ -61,6 +61,7 @@ package featuregate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"maps"
 	"slices"
@@ -803,20 +804,30 @@ func parseReleases(keys []string) map[uint64][]string {
 // release it recorded or still advertises. A member with neither, or whose record
 // predates release announcement, is skipped: a cold restart of a cluster
 // whose members have not recorded a release yet must still come up. A node
-// that is not yet a member is left to admission.
+// that is not yet a member is left to admission. A membership or recorded
+// release history this node cannot read refuses the start (a *StoreError
+// for the history) rather than reading as no history: Start is retried, and
+// a skipped-release restart must not pass on a transient read failure and
+// then replace the release it last recorded.
 func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
 	if _, err := g.AdvertisedSelf(); err != nil {
-		return nil
+		var notMember *NotAMemberError
+		if errors.As(err, &notMember) {
+			return nil
+		}
+		return err
 	}
 	system, err := g.members.GroupMembership(g.systemShard)
 	if err != nil {
 		return err
 	}
-	// Unreadable applied state leaves the live advertisements to judge by,
-	// as recordRelease leaves it to the refresh.
+	// A replica without readable applied state (a witness) reads the
+	// history through the leader instead.
 	keys, err := kv.ListStale(ctx, ReleasePrefix)
 	if err != nil {
-		g.logger.Warn("feature gate: recorded releases unreadable; judging the restart by advertisements", "error", err)
+		if keys, err = kv.ListAll(ctx, ReleasePrefix); err != nil {
+			return &StoreError{Op: "list releases", Err: err}
+		}
 	}
 	recorded := parseReleases(keys)
 	view := *g.view.Load()
