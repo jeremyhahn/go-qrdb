@@ -198,6 +198,7 @@ func (p *powerCutFS) synced(name string) {
 func (p *powerCutFS) cut(dst string, seed uint64, inflight string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewPCG(seed, 0x9e3779b97f4a7c15))
 	for name, st := range p.files {
 		img := bytes.Clone(st.durable)
@@ -298,6 +299,7 @@ func powerCutFileRun(t *testing.T, b *fakeBarrier, name string, seed uint64) {
 	pc := newPowerCutFS(filesys.Default, src)
 	efs := New(pc, b)
 	path := filepath.Join(src, name)
+	// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 	rng := rand.New(rand.NewPCG(seed, 7))
 
 	f, err := efs.Create(path)
@@ -382,6 +384,7 @@ func TestPowerCut_FixedLayoutLogTearOpensOrRefuses(t *testing.T) {
 			src, dst := t.TempDir(), t.TempDir()
 			pc := newPowerCutFS(filesys.Default, src)
 			path := filepath.Join(src, "000002.log")
+			// #nosec G404 -- deterministic test fixture: the seed is fixed so the case is reproducible, and no key, nonce, token or identifier derives from these values.
 			rng := rand.New(rand.NewPCG(seed, 11))
 			base, err := pc.Create(path)
 			if err != nil {
@@ -483,6 +486,7 @@ func TestFramed_TamperIsNotATear(t *testing.T) {
 	for _, flip := range []int64{second + frameLenSize + 20, second} {
 		bad := bytes.Clone(raw)
 		bad[flip] ^= 0x01
+		// #nosec G703 -- path names a file under t.TempDir() that this test created; no component comes from outside the test.
 		if err := os.WriteFile(path, bad, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -497,6 +501,7 @@ func TestFramed_TamperIsNotATear(t *testing.T) {
 	size := int64(frameLenSize + BlockOverhead + a.n)
 	copy(swapped[a.phys:a.phys+size], raw[c.phys:c.phys+size])
 	copy(swapped[c.phys:c.phys+size], raw[a.phys:a.phys+size])
+	// #nosec G703 -- path names a file under t.TempDir() that this test created; no component comes from outside the test.
 	if err := os.WriteFile(path, swapped, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -530,6 +535,7 @@ func TestFramed_ReopenAppendsAfterTornTail(t *testing.T) {
 		t.Fatal(err)
 	}
 	torn := append(bytes.Clone(raw), 0x40, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef)
+	// #nosec G703 -- path names a file under t.TempDir() that this test created; no component comes from outside the test.
 	if err := os.WriteFile(path, torn, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -870,6 +876,7 @@ func TestFramed_CorruptHeaderSizeKeepsFile(t *testing.T) {
 			if _, err := readHeader(bytes.NewReader(img), b); !errors.Is(err, ErrTruncatedHeader) {
 				t.Fatalf("corrupted header reads as %v; the test needs ErrTruncatedHeader", err)
 			}
+			// #nosec G703 -- path names a file under t.TempDir() that this test created; no component comes from outside the test.
 			if err := os.WriteFile(path, img, 0o600); err != nil {
 				t.Fatalf("write corrupted header: %v", err)
 			}

@@ -615,6 +615,7 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 			t.Fatal(err)
 		}
 		raw[len(raw)-tagSize-1] ^= 0x01
+		// #nosec G703 -- path names a file under t.TempDir() that this test created; no component comes from outside the test.
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
