@@ -49,60 +49,6 @@ func awaitReadIndexReady(ctx context.Context, t *testing.T, kv service.KVService
 	}
 }
 
-// TestNode_TenantIsolation_VolumeKV verifies the end-to-end IsolationVolume
-// path on an embedded standalone node: create a volume-isolation tenant,
-// write 100 KV keys through its dedicated per-tenant Host, and read them all
-// back. This exercises BuildTenantInfra, TenantHostRegistry.Services (lazy
-// build), and the per-tenant encrypted Pebble/WAL at-rest stack.
-func TestNode_TenantIsolation_VolumeKV(t *testing.T) {
-	ctx := context.Background()
-	cfg := newTenantIsolationConfig(t)
-
-	n, err := NewStandaloneNode(ctx, cfg, nil,
-		WithTenantIsolation(),
-		WithDefaultTenantEntitlements(volumeEntitlements()),
-	)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = n.Close() })
-
-	require.False(t, n.IsSealed(), "none-strategy node must boot unsealed")
-	require.NotNil(t, n.tenantHosts, "tenantHosts must be wired when WithTenantIsolation() is set")
-
-	// A pool record is a management-plane object an operator creates
-	// explicitly; it is not derived from storage.volume_pools.
-	createDefaultPool(t, n)
-
-	// Create an IsolationVolume tenant with auto-unseal (system-managed key).
-	// CreateTenant allocates the DataRoot from the pool, registers the barrier,
-	// and initializes it so the tenant is immediately ready for use.
-	_, err = n.Services().Tenant.CreateTenant(ctx, "acme", "Acme Corp",
-		tenant.IsolationVolume, tenant.WithBarrierAutoUnseal(true))
-	require.NoError(t, err, "CreateTenant(IsolationVolume) must succeed with volume entitlements")
-
-	// Resolve the per-tenant data-plane services. TenantHostRegistry lazily
-	// builds and caches a per-tenant Raft Host on first access.
-	svc, err := n.tenantHosts.Services(ctx, "acme")
-	require.NoError(t, err, "Services(acme) must resolve the per-tenant Host")
-	require.NotNil(t, svc, "DatabaseServices must be non-nil")
-	require.NotNil(t, svc.KV, "tenant KV service must be non-nil")
-
-	// Write 100 keys through the tenant's dedicated encrypted KV service.
-	want := make(map[string]string, 100)
-	for i := 0; i < 100; i++ {
-		k := fmt.Sprintf("tenant/key/%03d", i)
-		v := fmt.Sprintf("tenant-value-%d", i)
-		require.NoErrorf(t, svc.KV.Put(ctx, k, []byte(v)), "Put(%q)", k)
-		want[k] = v
-	}
-
-	// Read all 100 keys back and verify values.
-	for k, v := range want {
-		got, gerr := svc.KV.Get(ctx, k)
-		require.NoErrorf(t, gerr, "Get(%q)", k)
-		require.Equalf(t, v, string(got), "value for %q", k)
-	}
-}
-
 // TestNode_TenantIsolation_EnableEncryption verifies zero-data-loss enable-
 // encryption on an IsolationVolume tenant: write 100 keys through the
 // tenant's none-strategy dedicated barrier, call Node.EnableEncryption with

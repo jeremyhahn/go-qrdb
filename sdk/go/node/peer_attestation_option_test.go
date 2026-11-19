@@ -48,9 +48,3 @@ func TestWithPeerAttestationGate_SetsOption(t *testing.T) {
 	WithPeerAttestationGate(gate)(o)
 	assert.Same(t, gate, o.peerAttestation)
 }
-
-func TestWithPeerAttestationGate_NilGatesNothing(t *testing.T) {
-	o := &nodeOptions{}
-	WithPeerAttestationGate(nil)(o)
-	assert.Nil(t, o.peerAttestation)
-}

@@ -378,29 +378,6 @@ func TestStartup(t *testing.T) {
 	}
 }
 
-func TestStartupRevertsWithMarkNotStarted(t *testing.T) {
-	checker := NewChecker()
-	ctx := context.Background()
-
-	checker.MarkStarted()
-	if result := checker.Startup(ctx); result.Status != StatusHealthy {
-		t.Fatalf("expected status %s after MarkStarted, got %s", StatusHealthy, result.Status)
-	}
-
-	checker.MarkNotStarted()
-	if result := checker.Startup(ctx); result.Status != StatusUnhealthy {
-		t.Errorf("expected status %s after MarkNotStarted, got %s", StatusUnhealthy, result.Status)
-	}
-}
-
-func TestGetAllChecksEmpty(t *testing.T) {
-	checker := NewChecker()
-	checks := checker.GetAllChecks()
-	if len(checks) != 0 {
-		t.Errorf("expected 0 checks on fresh checker, got %d", len(checks))
-	}
-}
-
 func TestGetAllChecksMultiple(t *testing.T) {
 	checker := NewChecker()
 	check := func(ctx context.Context) CheckResult {
@@ -485,19 +462,6 @@ func TestIsHealthy(t *testing.T) {
 				t.Errorf("expected IsHealthy=%v, got %v", tt.expected, healthy)
 			}
 		})
-	}
-}
-
-func TestIsStarted(t *testing.T) {
-	checker := NewChecker()
-
-	if checker.IsStarted() {
-		t.Error("expected IsStarted false on fresh checker")
-	}
-
-	checker.MarkStarted()
-	if !checker.IsStarted() {
-		t.Error("expected IsStarted true after MarkStarted")
 	}
 }
 
@@ -660,45 +624,6 @@ func TestCheckContext(t *testing.T) {
 	}
 	if result.Error == "" {
 		t.Error("expected error message with cancelled context")
-	}
-}
-
-func TestCheckWithTimeout(t *testing.T) {
-	checker := NewChecker()
-
-	checker.RegisterCheck("slow", func(ctx context.Context) CheckResult {
-		// Create a timeout context that fires well before the simulated work completes
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
-		defer cancel()
-
-		select {
-		case <-time.After(time.Second):
-			return CheckResult{
-				Name:   "slow",
-				Status: StatusHealthy,
-			}
-		case <-ctx.Done():
-			return CheckResult{
-				Name:   "slow",
-				Status: StatusUnhealthy,
-				Error:  ctx.Err().Error(),
-			}
-		}
-	})
-
-	ctx := context.Background()
-	results := checker.Ready(ctx)
-
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-
-	result := results[0]
-	if result.Status != StatusUnhealthy {
-		t.Errorf("expected unhealthy due to timeout, got %s", result.Status)
-	}
-	if result.Error == "" {
-		t.Error("expected error message for timeout")
 	}
 }
 

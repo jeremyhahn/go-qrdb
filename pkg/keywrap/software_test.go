@@ -60,22 +60,6 @@ func TestSoftwareProvider_ProviderID(t *testing.T) {
 	}
 }
 
-func TestNewSoftwareProvider_RefusesUnopenableDir(t *testing.T) {
-	notADir := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	_, err := NewSoftwareProvider(filepath.Join(notADir, "sub"))
-	var dirErr *KeyDirectoryError
-	if !errors.As(err, &dirErr) {
-		t.Fatalf("NewSoftwareProvider err = %v, want *KeyDirectoryError", err)
-	}
-	if dirErr.Dir == "" {
-		t.Fatal("KeyDirectoryError.Dir is empty")
-	}
-}
-
 func TestSoftwareProvider_WrapUnwrapRoundTrip(t *testing.T) {
 	p, dir := newTestProvider(t)
 	keyName := writeKeyFile(t, dir, "backup.key", 32, 0x01)

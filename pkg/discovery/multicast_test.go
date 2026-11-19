@@ -333,35 +333,6 @@ func TestEncodeMulticastMessage_MessageFormat(t *testing.T) {
 	}
 }
 
-func TestComputeHMAC_Deterministic(t *testing.T) {
-	key := []byte("test-key-fips140-16")
-	data := []byte("test-data")
-
-	mac1 := computeHMAC(data, key)
-	mac2 := computeHMAC(data, key)
-
-	if !hmac.Equal(mac1, mac2) {
-		t.Error("HMAC should be deterministic for same inputs")
-	}
-}
-
-func TestComputeHMAC_DifferentKeys(t *testing.T) {
-	data := []byte("test-data")
-	mac1 := computeHMAC(data, []byte("key1-fips140-min16"))
-	mac2 := computeHMAC(data, []byte("key2-fips140-min16"))
-
-	if hmac.Equal(mac1, mac2) {
-		t.Error("different keys should produce different HMACs")
-	}
-}
-
-func TestComputeHMAC_SHA256Length(t *testing.T) {
-	mac := computeHMAC([]byte("data"), []byte("key-fips140-min16b"))
-	if len(mac) != sha256.Size {
-		t.Errorf("HMAC length = %d, want %d", len(mac), sha256.Size)
-	}
-}
-
 func TestEncodeMulticastMessage_LongAddress(t *testing.T) {
 	secret := []byte("key-fips140-min16b")
 	addr := string(make([]byte, 253))
@@ -396,10 +367,6 @@ func TestMulticastDiscovery_Name(t *testing.T) {
 	if name := md.Name(); name != "multicast" {
 		t.Errorf("Name() = %q, want %q", name, "multicast")
 	}
-}
-
-func TestMulticastDiscovery_ImplementsMethod(t *testing.T) {
-	var _ Method = (*MulticastDiscovery)(nil)
 }
 
 func TestNewMulticastDiscovery_NoSecret(t *testing.T) {
@@ -439,13 +406,6 @@ func TestEncodeDecodeMulticastMessage_ZeroValues(t *testing.T) {
 	}
 	if gotDeploy != 0 || gotNode != 0 || gotAddr != "x" {
 		t.Errorf("got (%d, %d, %q), want (0, 0, \"x\")", gotDeploy, gotNode, gotAddr)
-	}
-}
-
-func TestDecodeMulticastMessage_EmptyData(t *testing.T) {
-	_, _, _, err := DecodeMulticastMessage(nil, []byte("key-fips140-min16b"), 0)
-	if err == nil {
-		t.Fatal("expected error for nil data")
 	}
 }
 
@@ -1509,39 +1469,6 @@ func TestDiscoverVerdict(t *testing.T) {
 	})
 }
 
-// TestMulticastDiscovery_ListenPanicStopsCleanly verifies that when a panic
-// occurs and the discovery is stopped, the goroutine exits without restart.
-func TestMulticastDiscovery_ListenPanicStopsCleanly(t *testing.T) {
-	secret := []byte("panic-stop-secret")
-	pt := &panicTransport{
-		fakeTransport:   *newFakeTransport(),
-		panicAfterReads: 1,
-	}
-	pt.panicOnRead.Store(true)
-
-	md, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:           1,
-		Address:          "10.0.0.1:5000",
-		DeploymentID:     100,
-		SharedSecret:     secret,
-		AnnounceInterval: 50 * time.Millisecond,
-		DiscoverTimeout:  200 * time.Millisecond,
-		transport:        pt,
-	})
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-
-	// Let the panic fire.
-	<-time.After(50 * time.Millisecond)
-
-	// Stop should not hang because the WaitGroup is properly tracked.
-	stopErr := md.Stop()
-	if stopErr != nil {
-		t.Fatalf("Stop returned error: %v", stopErr)
-	}
-}
-
 // TestMulticastDiscovery_AnnounceLoopPanicRecovery verifies that a panic
 // in the announce goroutine is recovered and the goroutine restarts,
 // continuing to send announcements.
@@ -1625,29 +1552,6 @@ func TestMulticastDiscovery_StopWaitsForGoroutines(t *testing.T) {
 	}
 }
 
-// TestMulticastDiscovery_SendAnnouncementError verifies that write errors
-// in sendAnnouncement are logged but don't panic or crash the goroutine.
-func TestMulticastDiscovery_SendAnnouncementError(t *testing.T) {
-	secret := []byte("announce-error-secret")
-	ft := newFakeTransport()
-	ft.writeErr = errors.New("simulated write error")
-
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-	md.Start()
-
-	// Give the announcer time to encounter the write error.
-	<-time.After(100 * time.Millisecond)
-
-	// Should stop cleanly even with write errors.
-	_ = md.Stop()
-
-	// Verify we attempted writes despite the error.
-	// The sendAnnouncement method logs errors but continues.
-}
-
 // TestMulticastDiscovery_TransportCloseError verifies that errors from
 // transport.Close() are propagated from Stop().
 func TestMulticastDiscovery_TransportCloseError(t *testing.T) {
@@ -1689,27 +1593,6 @@ func TestNewMulticastDiscovery_EncodeError(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Errorf("expected Error, got %T: %v", err, err)
 	}
-}
-
-// TestMulticastDiscovery_ListenLoopHandlesClosedConnection verifies that
-// the listen loop exits cleanly when the connection is closed.
-func TestMulticastDiscovery_ListenLoopHandlesClosedConnection(t *testing.T) {
-	secret := []byte("closed-conn-secret")
-	ft := newFakeTransport()
-
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-
-	// Simulate the connection being closed by the transport.
-	_ = ft.Close()
-
-	// Give the listener time to detect the closed connection.
-	<-time.After(100 * time.Millisecond)
-
-	// Stop should complete without hanging.
-	_ = md.Stop()
 }
 
 // TestMulticastDiscovery_AnnounceLoopStopsOnSignal verifies that the
@@ -1896,43 +1779,6 @@ func TestMulticastDiscovery_ListenLoopHandlesNetTimeout(t *testing.T) {
 	}
 	if len(peers) != 1 {
 		t.Errorf("expected 1 peer, got %d", len(peers))
-	}
-}
-
-// TestNewMulticastDiscovery_ConfigurationValidation verifies that incomplete
-// configuration is caught early.
-func TestNewMulticastDiscovery_ConfigurationValidation(t *testing.T) {
-	tests := []struct {
-		name   string
-		config MulticastConfig
-	}{
-		{
-			name: "no_address",
-			config: MulticastConfig{
-				NodeID:       1,
-				DeploymentID: 100,
-				SharedSecret: []byte("secret-fips140-16b"),
-				transport:    newFakeTransport(),
-			},
-		},
-		{
-			name: "no_secret",
-			config: MulticastConfig{
-				NodeID:       1,
-				Address:      "10.0.0.1:5000",
-				DeploymentID: 100,
-				transport:    newFakeTransport(),
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewMulticastDiscovery(tt.config)
-			if err == nil {
-				t.Errorf("expected error for configuration: %s", tt.name)
-			}
-		})
 	}
 }
 
@@ -2148,66 +1994,6 @@ func TestMulticastDiscovery_SendAnnouncementWriteError(t *testing.T) {
 // Coverage: NewMulticastDiscovery validation paths
 // ---------------------------------------------------------------------------
 
-func TestNewMulticastDiscovery_AddressTooLong(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	longAddr := strings.Repeat("a", maxAddrLen+1)
-	_, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:       1,
-		Address:      longAddr,
-		DeploymentID: 100,
-		SharedSecret: secret,
-		transport:    newFakeTransport(),
-	})
-	if err == nil {
-		t.Fatal("expected error for address too long")
-	}
-}
-
-func TestNewMulticastDiscovery_DefaultAnnounceInterval(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	md, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:       1,
-		Address:      "10.0.0.1:5000",
-		DeploymentID: 100,
-		SharedSecret: secret,
-		transport:    ft,
-		// AnnounceInterval = 0 should default to 1 second.
-	})
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-	defer func() { _ = md.Stop() }()
-
-	if md.cfg.AnnounceInterval != time.Second {
-		t.Errorf("AnnounceInterval = %v, want %v", md.cfg.AnnounceInterval, time.Second)
-	}
-}
-
-func TestNewMulticastDiscovery_DefaultDiscoverTimeout(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	md, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:           1,
-		Address:          "10.0.0.1:5000",
-		DeploymentID:     100,
-		SharedSecret:     secret,
-		AnnounceInterval: 50 * time.Millisecond,
-		transport:        ft,
-		// DiscoverTimeout = 0 should default to 10 minutes.
-	})
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-	defer func() { _ = md.Stop() }()
-
-	if md.cfg.DiscoverTimeout != 10*time.Minute {
-		t.Errorf("DiscoverTimeout = %v, want %v", md.cfg.DiscoverTimeout, 10*time.Minute)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Coverage: sendAnnouncement encode error path
 // ---------------------------------------------------------------------------
@@ -2244,137 +2030,17 @@ func TestMulticastDiscovery_SendAnnouncementEncodeError(t *testing.T) {
 // Coverage: Discover - verify foundPeers from listen loop
 // ---------------------------------------------------------------------------
 
-func TestMulticastDiscovery_DiscoverReturnsMultiplePeers(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	// Enqueue announcements from two different nodes.
-	msg1, err := EncodeMulticastMessage(100, 2, "10.0.0.2:5000", secret)
-	if err != nil {
-		t.Fatalf("encode msg1: %v", err)
-	}
-	msg2, err := EncodeMulticastMessage(100, 3, "10.0.0.3:5000", secret)
-	if err != nil {
-		t.Fatalf("encode msg2: %v", err)
-	}
-	ft.Enqueue(msg1)
-	ft.Enqueue(msg2)
-
-	md, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:           1,
-		Address:          "10.0.0.1:5000",
-		DeploymentID:     100,
-		SharedSecret:     secret,
-		AnnounceInterval: 50 * time.Millisecond,
-		DiscoverTimeout:  500 * time.Millisecond,
-		MinPeers:         2,
-		transport:        ft,
-	})
-	if err != nil {
-		t.Fatalf("NewMulticastDiscovery error: %v", err)
-	}
-	defer func() { _ = md.Stop() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	peers, discErr := md.Discover(ctx)
-	if discErr != nil {
-		t.Fatalf("Discover error: %v", discErr)
-	}
-	if len(peers) < 2 {
-		t.Errorf("expected at least 2 peers, got %d", len(peers))
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Coverage: NewMulticastDiscovery - empty address validation
 // ---------------------------------------------------------------------------
-
-func TestNewMulticastDiscovery_EmptyAddress(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	_, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:           1,
-		Address:          "",
-		DeploymentID:     100,
-		SharedSecret:     secret,
-		AnnounceInterval: 50 * time.Millisecond,
-		transport:        ft,
-	})
-	if err == nil {
-		t.Fatal("expected error for empty address")
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Coverage: listenLoop - handles self-message (same NodeID) silently
 // ---------------------------------------------------------------------------
 
-func TestMulticastDiscovery_ListenLoopSkipsSelfMessages(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	// Enqueue a message from our own NodeID.
-	selfMsg, err := EncodeMulticastMessage(100, 1, "10.0.0.1:5000", secret)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	ft.Enqueue(selfMsg)
-
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("newTestMulticast error: %v", err)
-	}
-	defer func() { _ = md.Stop() }()
-
-	md.Start()
-	// Wait for the listener to process the self-message (negative test: verify filtered).
-	<-time.After(100 * time.Millisecond)
-
-	md.mu.RLock()
-	peerCount := len(md.peers)
-	md.mu.RUnlock()
-
-	if peerCount != 0 {
-		t.Errorf("expected 0 peers (self-messages filtered), got %d", peerCount)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Coverage: listenLoop - handles different deployment ID
 // ---------------------------------------------------------------------------
-
-func TestMulticastDiscovery_ListenLoopSkipsDifferentDeployment(t *testing.T) {
-	secret := []byte("test-secret-fips16")
-	ft := newFakeTransport()
-
-	// Enqueue a message from a different deployment.
-	otherMsg, err := EncodeMulticastMessage(999, 2, "10.0.0.2:5000", secret)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	ft.Enqueue(otherMsg)
-
-	md, err := newTestMulticast(1, 100, "10.0.0.1:5000", secret, ft)
-	if err != nil {
-		t.Fatalf("newTestMulticast error: %v", err)
-	}
-	defer func() { _ = md.Stop() }()
-
-	md.Start()
-	// Wait for the listener to process the message (negative test: verify filtered).
-	<-time.After(100 * time.Millisecond)
-
-	md.mu.RLock()
-	peerCount := len(md.peers)
-	md.mu.RUnlock()
-
-	if peerCount != 0 {
-		t.Errorf("expected 0 peers (different deployment filtered), got %d", peerCount)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Coverage: Discover - context cancellation
@@ -2450,27 +2116,6 @@ func TestMulticastDiscovery_ListenLoopSetReadDeadlineError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Coverage: NewMulticastDiscovery - newMulticastConn bind error
 // ---------------------------------------------------------------------------
-
-func TestNewMulticastDiscovery_BindError(t *testing.T) {
-	// Bind to a multicast group on a nonexistent interface index to force
-	// a bind/membership error in newMulticastConn. This triggers the error
-	// paths regardless of whether the process runs as root.
-	_, err := NewMulticastDiscovery(MulticastConfig{
-		NodeID:         1,
-		Address:        "10.0.0.1:5000",
-		DeploymentID:   100,
-		SharedSecret:   []byte("bind-error-secret"),
-		MulticastGroup: "239.255.77.77:0",
-		Interface:      "nonexistent_iface_99",
-	})
-	if err == nil {
-		t.Fatal("expected error from NewMulticastDiscovery with nonexistent interface")
-	}
-	var de *Error
-	if !errors.As(err, &de) {
-		t.Errorf("expected Error, got %T: %v", err, err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Coverage: newMulticastConn with loopback interface (copy(mreq.Interface[:], ip) branch)

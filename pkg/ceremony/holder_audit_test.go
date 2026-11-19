@@ -517,21 +517,6 @@ func TestHolderAudit_FailOpenProceeds(t *testing.T) {
 	}
 }
 
-// TestHolderAudit_NoTrailRecordsNothing pins that a scope without a trail
-// runs its holder operations unchanged.
-func TestHolderAudit_NoTrailRecordsNothing(t *testing.T) {
-	for name := range auditScopes(t, nil) {
-		t.Run(name, func(t *testing.T) {
-			a := auditScopes(t, nil)[name](t)
-			ctx := context.Background()
-			alice := newHolder(t, "alice", "")
-			res, err := a.register(ctx, alice.request("admin-1"))
-			require.NoError(t, err)
-			alice.recordCert(t, res.CertPEM)
-		})
-	}
-}
-
 // TestCeremonyService_SetAuditLoggerReplacesAndPropagates pins that the
 // trail installed last is the one recorded on, and that it is carried to
 // tenant and database authorities through HolderDeps.

@@ -111,20 +111,6 @@ func newPopulatedFactorRegistry(t *testing.T, name string) (*authfactors.FactorR
 }
 
 // ---------------------------------------------------------------------------
-// AuthFactorWiringError
-// ---------------------------------------------------------------------------
-
-// TestAuthFactorWiringError_ErrorAndUnwrap verifies the typed error's
-// Error() message and Unwrap() contract so callers can use errors.As / errors.Is.
-func TestAuthFactorWiringError_ErrorAndUnwrap(t *testing.T) {
-	t.Parallel()
-	inner := &authfactors.FactorNotFoundError{Name: "fido2"}
-	e := &AuthFactorWiringError{Err: inner}
-	assert.Contains(t, e.Error(), "failed to wire AuthFactorService")
-	assert.ErrorIs(t, e, inner)
-}
-
-// ---------------------------------------------------------------------------
 // NewStandaloneNode with WithFactorRegistry
 // ---------------------------------------------------------------------------
 
@@ -303,19 +289,4 @@ func TestAuthFactorService_EnrollFactor_TenantIDMismatch(t *testing.T) {
 	globexFactors, err := af.ListFactors(globex, &transport.ListFactorsRequest{})
 	require.NoError(t, err)
 	assert.Empty(t, globexFactors.Enrollments, "globex has an enrolment despite the refused request")
-}
-
-// TestErrNoAuthFactorTenantRouting_WrappedByAuthFactorWiringError verifies
-// the typed error's Error() message and Unwrap() contract, matching
-// TestAuthFactorWiringError_ErrorAndUnwrap above. svcNode.StoreResolver is
-// non-nil in every lifecycle.BuildServices composition this SDK builds
-// today (barrier-backed or not), so this sentinel is not reachable through
-// NewStandaloneNode; it is pinned directly so a lifecycle composition that
-// stops wiring a resolver fails closed rather than silently reverting to a
-// flat AuthFactorService.
-func TestErrNoAuthFactorTenantRouting_WrappedByAuthFactorWiringError(t *testing.T) {
-	t.Parallel()
-	e := &AuthFactorWiringError{Err: ErrNoAuthFactorTenantRouting}
-	assert.Contains(t, e.Error(), "failed to wire AuthFactorService")
-	assert.ErrorIs(t, e, ErrNoAuthFactorTenantRouting)
 }

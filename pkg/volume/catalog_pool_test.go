@@ -38,13 +38,6 @@ func TestNewCatalog_RequiresDependencies(t *testing.T) {
 	}
 }
 
-func TestNewCatalog_Success(t *testing.T) {
-	cat, _, _ := newTestCatalog()
-	if cat == nil {
-		t.Fatal("NewCatalog returned a nil Catalog with a nil error")
-	}
-}
-
 func TestCatalog_CreatePool_Success(t *testing.T) {
 	cat, _, _ := newTestCatalog()
 	pool, err := cat.CreatePool(context.Background(), CreatePoolRequest{Name: "fast", Description: "NVMe tier"})

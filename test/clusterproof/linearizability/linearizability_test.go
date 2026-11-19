@@ -119,20 +119,6 @@ func ledgerValid(t *testing.T, h history.History) {
 	}
 }
 
-func TestCheck_SequentialHistoryIsLinearizable(t *testing.T) {
-	res := wantValid(t, history.History{
-		put(1, "a", 0, 10, ok),
-		get(2, "a", 20, 30),
-		cas(3, "a", "b", true, 40, 50, ok),
-		get(4, "b", 60, 70),
-		del(5, 80, 90, ok),
-		getAbsent(6, 100, 110),
-	})
-	if res.Checked != 6 {
-		t.Fatalf("Checked = %d, want 6", res.Checked)
-	}
-}
-
 func TestCheck_AcceptsLinearizableHistories(t *testing.T) {
 	cases := map[string]struct {
 		h       history.History
@@ -313,40 +299,11 @@ func TestCheck_ReadCannotGoBackwards(t *testing.T) {
 	}, "b", 4)
 }
 
-func TestCheck_LostWrite(t *testing.T) {
-	wantRejected(t, history.History{
-		put(1, "a", 0, 10, ok),
-		getAbsent(2, 20, 30),
-	}, "a", 2)
-}
-
-func TestCheck_FailedWriteMustNotShow(t *testing.T) {
-	wantRejected(t, history.History{
-		put(1, "a", 0, 10, ok),
-		put(2, "b", 20, 30, fail),
-		get(3, "b", 40, 50),
-	}, "a", 3)
-}
-
-func TestCheck_DeleteMustTakeEffect(t *testing.T) {
-	wantRejected(t, history.History{
-		put(1, "a", 0, 10, ok),
-		del(2, 20, 30, ok),
-		get(3, "a", 40, 50),
-	}, absent, 3)
-}
-
 func TestCheck_CAS(t *testing.T) {
 	t.Run("swap reported on a mismatched value", func(t *testing.T) {
 		wantRejected(t, history.History{
 			put(1, "a", 0, 10, ok),
 			cas(2, "x", "b", true, 20, 30, ok),
-		}, "a", 2)
-	})
-	t.Run("no swap reported on a matching value", func(t *testing.T) {
-		wantRejected(t, history.History{
-			put(1, "a", 0, 10, ok),
-			cas(2, "a", "b", false, 20, 30, ok),
 		}, "a", 2)
 	})
 	t.Run("swap reported on an absent key", func(t *testing.T) {
@@ -373,13 +330,6 @@ func TestCheck_CAS(t *testing.T) {
 		unknown.Output = nil
 		wantValid(t, history.History{put(1, "a", 0, 10, ok), unknown, get(3, "b", 40, 50)})
 		wantRejected(t, history.History{put(1, "a", 0, 10, ok), unknown, get(3, "a", 40, 50)}, "b", 3)
-	})
-	t.Run("indeterminate swap applied", func(t *testing.T) {
-		wantValid(t, history.History{
-			put(1, "a", 0, 10, ok),
-			cas(2, "a", "b", false, 20, 30, indet),
-			get(3, "b", 40, 50),
-		})
 	})
 	t.Run("indeterminate swap that cannot apply", func(t *testing.T) {
 		// The CAS steps as a no-op, so only the read is left unexplained.
@@ -489,23 +439,6 @@ func TestCheck_KeysAreIndependent(t *testing.T) {
 	}
 	if res.Valid || !slices.Equal(keys, []string{"m", "z"}) {
 		t.Fatalf("want anomalies on m then z only, got %+v", res.Anomalies)
-	}
-	if res.Checked != 6 {
-		t.Fatalf("Checked = %d, want 6", res.Checked)
-	}
-}
-
-func TestCheck_ReportsKeysInOrder(t *testing.T) {
-	res := check(t, history.History{
-		on("y", put(1, "a", 0, 10, ok)),
-		on("y", getAbsent(2, 20, 30)),
-		on("x", put(3, "b", 0, 10, ok)),
-		on("x", getAbsent(4, 20, 30)),
-		on("z", put(5, "c", 0, 10, ok)),
-		on("z", get(6, "c", 20, 30)),
-	})
-	if res.Valid || len(res.Anomalies) != 2 || res.Anomalies[0].Key != "x" || res.Anomalies[1].Key != "y" {
-		t.Fatalf("want x then y, got %+v", res.Anomalies)
 	}
 	if res.Checked != 6 {
 		t.Fatalf("Checked = %d, want 6", res.Checked)

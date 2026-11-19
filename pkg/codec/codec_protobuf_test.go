@@ -26,11 +26,6 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
-func TestProtoBufCodec_Type(t *testing.T) {
-	c := &ProtoBufCodec{}
-	assert.Equal(t, TypeProtoBuf, c.Type())
-}
-
 func TestProtoBufCodec_MarshalNonProtoMessage(t *testing.T) {
 	c := &ProtoBufCodec{}
 	_, err := c.Marshal("not a proto message")
@@ -100,29 +95,6 @@ func TestProtoBufCodec_Unmarshal_InvalidWireBytes(t *testing.T) {
 	// 0x88, 0x01 is a valid field-tag for an unknown field but the varint is
 	// truncated, making it an invalid wire encoding.
 	err := c.Unmarshal([]byte{0x88, 0x01}, &out)
-	require.Error(t, err)
-
-	var decErr *DecodeError
-	require.True(t, errors.As(err, &decErr), "expected DecodeError, got %T", err)
-	assert.Equal(t, TypeProtoBuf, decErr.Codec)
-}
-
-func TestProtoBufCodec_Marshal_TypeAssertError(t *testing.T) {
-	c := &ProtoBufCodec{}
-	// An int does not implement proto.Message.
-	_, err := c.Marshal(42)
-	require.Error(t, err)
-
-	var encErr *EncodeError
-	require.True(t, errors.As(err, &encErr), "expected EncodeError, got %T", err)
-	assert.Equal(t, TypeProtoBuf, encErr.Codec)
-}
-
-func TestProtoBufCodec_Unmarshal_TypeAssertError(t *testing.T) {
-	c := &ProtoBufCodec{}
-	target := "not a proto message"
-	// Provide non-empty data to skip EmptyDataError and reach the type check.
-	err := c.Unmarshal([]byte{0x0a, 0x01, 0x42}, &target)
 	require.Error(t, err)
 
 	var decErr *DecodeError

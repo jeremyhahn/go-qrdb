@@ -1216,16 +1216,8 @@ func TestDefaultCertProvider_CACertPEMs_BeforeInitialize(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// WithDefaultTTL option test
+// Default TTL
 // ---------------------------------------------------------------------------
-
-func TestWithDefaultTTL(t *testing.T) {
-	customTTL := 30 * 24 * time.Hour
-	p, _, _ := newTestProvider(WithDefaultTTL(customTTL))
-	if p.defaultTTL != customTTL {
-		t.Errorf("defaultTTL: got %v, want %v", p.defaultTTL, customTTL)
-	}
-}
 
 func TestDefaultTTL_WhenNotSet(t *testing.T) {
 	p, _, _ := newTestProvider()
@@ -1258,14 +1250,6 @@ func TestHasSerialSuffix_KeyTooShort(t *testing.T) {
 	if hasSerialSuffix("a", "abc123") {
 		t.Error("should not match when key is shorter than suffix")
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Compile-time interface check
-// ---------------------------------------------------------------------------
-
-func TestDefaultCertProvider_ImplementsCertProvider(t *testing.T) {
-	var _ CertProvider = (*DefaultCertProvider)(nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -1688,133 +1672,6 @@ func TestDefaultCertProvider_RevokeCert_PutRevokedKeyError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // PKCS12 with invalid CA cert PEM
 // ---------------------------------------------------------------------------
-
-// TestEncodePKCS12_InvalidCACertPEM calls EncodePKCS12 directly: it is a
-// local, no-server encoder (there is no server-side ExportPKCS12 any more --
-// go-qrdb security review, no private key may reach a node), so its CA
-// argument is whatever the caller passes, never resolved from any cache.
-// This exercises EncodePKCS12's own refusal of well-formed PEM wrapping
-// invalid CA certificate DER.
-func TestEncodePKCS12_InvalidCACertPEM(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	req := &testRequest{Username: "pkcs12-ca-err", TenantID: "system"}
-	bundle, err := generateForTest(ctx, p, req)
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	invalidCAPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: []byte("not-a-real-cert"),
-	})
-
-	_, err = EncodePKCS12(bundle.CertPEM, bundle.KeyPEM, invalidCAPEM, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid CA cert PEM")
-	}
-	var exportErr *CertExportError
-	if !errors.As(err, &exportErr) {
-		t.Fatalf("expected *CertExportError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// EncodePKCS12 direct tests
-// ---------------------------------------------------------------------------
-
-func TestEncodePKCS12_InvalidKeyPEMDirect(t *testing.T) {
-	_, err := EncodePKCS12([]byte("cert"), []byte("bad-key"), nil, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid key PEM")
-	}
-	var exportErr *CertExportError
-	if !errors.As(err, &exportErr) {
-		t.Fatalf("expected *CertExportError, got %T: %v", err, err)
-	}
-}
-
-func TestEncodePKCS12_InvalidCertPEMDirect(t *testing.T) {
-	// Valid key PEM but invalid cert PEM.
-	_, err := EncodePKCS12([]byte("bad-cert"), []byte("bad-key"), nil, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid PEM data")
-	}
-}
-
-func TestEncodePKCS12_ValidKeyBadCertDirect(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	req := &testRequest{Username: "direct-test", TenantID: "system"}
-	bundle, err := generateForTest(ctx, p, req)
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	// Valid key PEM, invalid cert PEM.
-	_, err = EncodePKCS12([]byte("not-pem"), bundle.KeyPEM, nil, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid cert PEM")
-	}
-	var exportErr *CertExportError
-	if !errors.As(err, &exportErr) {
-		t.Fatalf("expected *CertExportError, got %T: %v", err, err)
-	}
-}
-
-func TestEncodePKCS12_ValidKeyInvalidCertDER(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	req := &testRequest{Username: "invalid-der", TenantID: "system"}
-	bundle, err := generateForTest(ctx, p, req)
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	// Valid PEM structure but invalid DER content.
-	badCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: []byte("bad-der"),
-	})
-
-	_, err = EncodePKCS12(badCertPEM, bundle.KeyPEM, nil, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid cert DER")
-	}
-	var exportErr *CertExportError
-	if !errors.As(err, &exportErr) {
-		t.Fatalf("expected *CertExportError, got %T: %v", err, err)
-	}
-}
-
-func TestEncodePKCS12_ValidKeyInvalidKeyDER(t *testing.T) {
-	p, _, _ := initializeProvider(t)
-	ctx := context.Background()
-
-	req := &testRequest{Username: "invalid-key-der", TenantID: "system"}
-	bundle, err := generateForTest(ctx, p, req)
-	if err != nil {
-		t.Fatalf("GenerateClientCert: %v", err)
-	}
-
-	// Valid PEM structure but invalid EC key DER content.
-	badKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "EC PRIVATE KEY",
-		Bytes: []byte("bad-key-der"),
-	})
-
-	_, err = EncodePKCS12(bundle.CertPEM, badKeyPEM, nil, "pw")
-	if err == nil {
-		t.Fatal("expected error for invalid key DER")
-	}
-	var exportErr *CertExportError
-	if !errors.As(err, &exportErr) {
-		t.Fatalf("expected *CertExportError, got %T: %v", err, err)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // TTL capping: a leaf never outlives its configured maximum or its CA

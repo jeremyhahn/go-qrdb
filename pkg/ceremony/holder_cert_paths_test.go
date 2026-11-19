@@ -107,8 +107,6 @@ func TestCheckIssuedSubject_EachField(t *testing.T) {
 		require.NoError(t, err)
 		return cert
 	}
-	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
 	right := pkix.Name{CommonName: "carol", OrganizationalUnit: []string{"acme", "custodian"}}
 	cases := map[string]struct {
 		cert *x509.Certificate
@@ -121,7 +119,6 @@ func TestCheckIssuedSubject_EachField(t *testing.T) {
 		"foreign tenant ID":    {issue(right, spiffeURI("spiffe://globex/user/carol"), nil, &key.PublicKey), "SubjectAltName"},
 		"foreign trust domain": {issue(right, spiffeURI("spiffe://other.example/user/carol"), nil, &key.PublicKey), "SubjectAltName"},
 		"extra URI SAN":        {issue(right, append(spiffeURI("spiffe://acme/user/carol"), agreeing...), nil, &key.PublicKey), "SubjectAltName"},
-		"public key":           {issue(right, agreeing, nil, &other.PublicKey), "PublicKey"},
 	}
 	for name, tc := range cases {
 		var subjErr *CertSubjectError

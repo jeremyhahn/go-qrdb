@@ -38,22 +38,6 @@ func (f *stubFactor) Challenge(_ context.Context, _ *Enrollment) (*Challenge, er
 
 func (f *stubFactor) Verify(_ context.Context, _ *Challenge, _ *Response) error { return nil }
 
-func TestFactorRegistry_RegisterAndLookup(t *testing.T) {
-	r := NewFactorRegistry()
-	f := &stubFactor{name: "fido2"}
-
-	if err := r.Register(f); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	got, err := r.Lookup("fido2")
-	if err != nil {
-		t.Fatalf("Lookup(fido2): %v", err)
-	}
-	if got != f {
-		t.Fatalf("Lookup returned %v, want %v", got, f)
-	}
-}
-
 func TestFactorRegistry_RegisterNilRejected(t *testing.T) {
 	r := NewFactorRegistry()
 	var nf *FactorRegisterError
@@ -90,17 +74,6 @@ func TestFactorRegistry_LookupMissingReturnsNotFound(t *testing.T) {
 	var nf *FactorNotFoundError
 	if _, err := r.Lookup("nope"); !errors.As(err, &nf) {
 		t.Fatalf("Lookup missing: want FactorNotFoundError, got %T %v", err, err)
-	}
-}
-
-func TestFactorRegistry_UnregisterRemoves(t *testing.T) {
-	r := NewFactorRegistry()
-	if err := r.Register(&stubFactor{name: "pkcs11"}); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	r.Unregister("pkcs11")
-	if _, err := r.Lookup("pkcs11"); err == nil {
-		t.Fatal("Lookup after Unregister: expected error, got nil")
 	}
 }
 

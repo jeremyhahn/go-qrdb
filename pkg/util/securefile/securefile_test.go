@@ -16,6 +16,7 @@ package securefile
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -299,8 +300,8 @@ func TestCreateExclusive_RefusesAnExistingDirectory(t *testing.T) {
 // unwrapped rather than swallowed.
 func TestWriteFileAtomic_CreateTempFailurePropagates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-subdir", "out")
-	if err := WriteFileAtomic(path, []byte("x"), 0o600); err == nil {
-		t.Fatal("expected a CreateTemp failure over a missing directory")
+	if err := WriteFileAtomic(path, []byte("x"), 0o600); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("WriteFileAtomic over a missing directory = %v, want the CreateTemp fs.ErrNotExist", err)
 	}
 }
 
@@ -310,8 +311,8 @@ func TestWriteFileAtomic_CreateTempFailurePropagates(t *testing.T) {
 func TestCreateExclusive_OpenFailurePropagates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing-subdir", "out")
 	err := CreateExclusive(path, []byte("x"), 0o600)
-	if err == nil {
-		t.Fatal("expected an OpenFile failure over a missing directory")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("CreateExclusive over a missing directory = %v, want the OpenFile fs.ErrNotExist", err)
 	}
 	var existsErr *FileExistsError
 	if errors.As(err, &existsErr) {
@@ -456,14 +457,16 @@ func TestCreateExclusive_CloseFailureRemovesTheFile(t *testing.T) {
 
 func TestSymlinkRefusedError_Error(t *testing.T) {
 	err := &SymlinkRefusedError{Path: "/tmp/x"}
-	if got := err.Error(); got == "" {
-		t.Fatal("Error() returned an empty string")
+	const want = `securefile: refusing to write through a symlink at "/tmp/x"`
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
 
 func TestFileExistsError_Error(t *testing.T) {
 	err := &FileExistsError{Path: "/tmp/x"}
-	if got := err.Error(); got == "" {
-		t.Fatal("Error() returned an empty string")
+	const want = `securefile: "/tmp/x" already exists`
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }

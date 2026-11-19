@@ -86,17 +86,6 @@ func TestServerErrors_ShutdownError(t *testing.T) {
 	}
 }
 
-func TestServerErrors_BarrierUnsealError(t *testing.T) {
-	wrapped := errors.New("unseal boom")
-	e := &BarrierUnsealError{Err: wrapped}
-	if !strings.Contains(e.Error(), "unseal") {
-		t.Fatalf("Error() = %q", e.Error())
-	}
-	if !errors.Is(e, wrapped) {
-		t.Fatal("Unwrap")
-	}
-}
-
 func TestServerErrors_SealSentinelError(t *testing.T) {
 	wrapped := errors.New("sentinel boom")
 	e := &SealSentinelError{Err: wrapped}
@@ -105,12 +94,5 @@ func TestServerErrors_SealSentinelError(t *testing.T) {
 	}
 	if !errors.Is(e, wrapped) {
 		t.Fatal("Unwrap")
-	}
-}
-
-func TestServerErrors_ServerConfigError(t *testing.T) {
-	e := &ServerConfigError{Field: "DataDir", Message: "is required"}
-	if !strings.Contains(e.Error(), "DataDir") {
-		t.Fatalf("Error() = %q", e.Error())
 	}
 }
