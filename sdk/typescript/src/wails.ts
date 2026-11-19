@@ -327,13 +327,31 @@ function wrapBindings(
             const fn = target[prop];
             if (typeof fn !== 'function') return fn;
             return (...args: unknown[]) =>
-                fn.apply(target, args).then((result: unknown) =>
-                    result === undefined || result === null
-                        ? result
-                        : fromSnake(result),
+                fn.apply(target, args).then(
+                    (result: unknown) =>
+                        result === undefined || result === null
+                            ? result
+                            : fromSnake(result),
+                    (err: unknown) => {
+                        throw toError(err);
+                    },
                 );
         },
     });
+}
+
+/**
+ * Normalizes a binding rejection to an Error. The Wails runtime rejects a
+ * Go method's error as its message string, not an Error, so callers that
+ * test `instanceof Error` would otherwise lose the server's message.
+ */
+export function toError(err: unknown): Error {
+    if (err instanceof Error) return err;
+    if (typeof err === 'string') return new Error(err);
+    if (typeof err === 'object' && err !== null && typeof (err as { message?: unknown }).message === 'string') {
+        return new Error((err as { message: string }).message);
+    }
+    return new Error(String(err));
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,16 +1242,16 @@ export class WailsClient implements Client {
                 return b.UpdateCompaction(name, req) as Promise<DatabaseInfo>;
             },
             updateRaft: async (name: string, raft: DatabaseRaftConfig): Promise<DatabaseInfo> => {
-                return b.UpdateRaft(name, raft) as Promise<DatabaseInfo>;
+                return b.UpdateRaft(name, { raft }) as Promise<DatabaseInfo>;
             },
             updateBarrier: async (name: string, barrier: DatabaseBarrierConfig): Promise<DatabaseInfo> => {
-                return b.UpdateBarrier(name, barrier) as Promise<DatabaseInfo>;
+                return b.UpdateBarrier(name, { barrier }) as Promise<DatabaseInfo>;
             },
             barrierStatus: async (name: string): Promise<DatabaseBarrierStatus> => {
                 return normalizeDatabaseBarrierStatus(await b.BarrierStatus(name) as DatabaseBarrierStatus);
             },
             updateConnection: async (name: string, connection: DatabaseConnectionConfig): Promise<DatabaseInfo> => {
-                return b.UpdateConnection(name, connection) as Promise<DatabaseInfo>;
+                return b.UpdateConnection(name, { connection }) as Promise<DatabaseInfo>;
             },
             scale: async (name: string, targetReplicas: number): Promise<DatabaseInfo> => {
                 return b.Scale(name, targetReplicas) as Promise<DatabaseInfo>;

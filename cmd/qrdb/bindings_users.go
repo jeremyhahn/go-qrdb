@@ -168,6 +168,71 @@ func (b *UserBinding) Disable(id string) error {
 	return nil
 }
 
+// GetByCertThumbprint returns the user whose mTLS certificate binding
+// carries the given SHA-256 thumbprint.
+func (b *UserBinding) GetByCertThumbprint(thumbprint string) (*transport.User, error) {
+	b.logger.Debug("GetByCertThumbprint called")
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("GetByCertThumbprint failed", "error", err)
+		return nil, err
+	}
+	user, err := cl.Users().GetUserByCertThumbprint(context.Background(), thumbprint)
+	if err != nil {
+		b.logger.Error("GetByCertThumbprint failed", "error", err)
+		return nil, err
+	}
+	b.logger.Debug("GetByCertThumbprint completed", "id", user.ID)
+	return user, nil
+}
+
+// AddCertBinding enrols an mTLS certificate binding (SHA-256 thumbprint)
+// on a user, as `qrdb users cert-binding add` does. notAfterUnix is the
+// binding's expiry in Unix seconds; 0 leaves it without one.
+func (b *UserBinding) AddCertBinding(id, thumbprint string, notAfterUnix int64) (*transport.User, error) {
+	b.logger.Debug("AddCertBinding called", "id", id)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("AddCertBinding failed", "error", err)
+		return nil, err
+	}
+	uid, err := parseUserID(id)
+	if err != nil {
+		b.logger.Error("AddCertBinding failed", "id", id, "error", err)
+		return nil, err
+	}
+	user, err := cl.Users().AddCertBinding(context.Background(), uid, thumbprint, notAfterUnix)
+	if err != nil {
+		b.logger.Error("AddCertBinding failed", "id", id, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("AddCertBinding completed", "id", id)
+	return user, nil
+}
+
+// RemoveCertBinding withdraws an mTLS certificate binding from a user, as
+// `qrdb users cert-binding remove` does.
+func (b *UserBinding) RemoveCertBinding(id, thumbprint string) (*transport.User, error) {
+	b.logger.Debug("RemoveCertBinding called", "id", id)
+	cl, err := b.conn.loadClient()
+	if err != nil {
+		b.logger.Error("RemoveCertBinding failed", "error", err)
+		return nil, err
+	}
+	uid, err := parseUserID(id)
+	if err != nil {
+		b.logger.Error("RemoveCertBinding failed", "id", id, "error", err)
+		return nil, err
+	}
+	user, err := cl.Users().RemoveCertBinding(context.Background(), uid, thumbprint)
+	if err != nil {
+		b.logger.Error("RemoveCertBinding failed", "id", id, "error", err)
+		return nil, err
+	}
+	b.logger.Debug("RemoveCertBinding completed", "id", id)
+	return user, nil
+}
+
 // Suspend moves an active user account to suspended.
 func (b *UserBinding) Suspend(id string) error {
 	b.logger.Debug("Suspend called", "id", id)

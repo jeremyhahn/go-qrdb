@@ -129,8 +129,8 @@ const SECRET_CASES: readonly SecretCase[] = [
     },
     {
         name: 'databases.updateRaft with a multicast shared secret',
-        request: 'PATCH /databases/db/raft',
-        answers: { 'PATCH /databases/db/raft': {} },
+        request: 'PATCH /v1/databases/db/raft',
+        answers: { 'PATCH /v1/databases/db/raft': {} },
         call: (c) => c.database.updateRaft('db', { clusterMode: 'multi', multicast: { sharedSecret: 'hmac' } }),
     },
     {

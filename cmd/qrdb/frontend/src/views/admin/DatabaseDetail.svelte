@@ -19,8 +19,10 @@
   import { ChevronLeft, Server, HardDrive, MemoryStick, Network } from "lucide-svelte";
   import { onMount } from "svelte";
   import { showToast } from "$stores/toast.svelte.ts";
+  import { updateDatabase } from "$stores/database.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
   import DatabaseHoldersPanel from "../../components/DatabaseHoldersPanel.svelte";
+  import DatabaseSettingsForms from "../../components/database/DatabaseSettingsForms.svelte";
 
   let {
     client,
@@ -441,6 +443,16 @@
         sharesRequired={existingDb.barrier.sharesRequired ?? 0}
       />
     {/if}
+
+    <DatabaseSettingsForms
+      {client}
+      database={existingDb}
+      sections={["sql", "compaction", "raft", "barrier", "connection"]}
+      onUpdated={(db) => {
+        existingDb = db;
+        updateDatabase(db);
+      }}
+    />
 
     <!-- SQL Wire Protocol Toggles -->
     <div class="card bg-base-200 shadow">

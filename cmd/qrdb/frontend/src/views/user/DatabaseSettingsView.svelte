@@ -29,6 +29,11 @@
   import { showToast } from "../../stores/toast.svelte.ts";
   import { updateDatabase } from "../../stores/database.svelte.ts";
   import StatusBadge from "../../components/StatusBadge.svelte";
+  import DatabaseSettingsForms from "../../components/database/DatabaseSettingsForms.svelte";
+  import type { SettingsSection } from "../../components/database/DatabaseSettingsForms.svelte";
+
+  /** Settings forms the user role may change on its own database. */
+  const USER_SECTIONS: readonly SettingsSection[] = ["sql", "compaction"];
 
   // ---------------------------------------------------------------------------
   // Props
@@ -204,5 +209,17 @@
       </div>
     </div>
   </div>
+
+  <!-- Database-scoped tuning: the user role may change SQL concurrency and
+       scheduled compaction; Raft, barrier and connection stay admin-only. -->
+  <DatabaseSettingsForms
+    {client}
+    {database}
+    sections={USER_SECTIONS}
+    onUpdated={(db) => {
+      database = db;
+      updateDatabase(db);
+    }}
+  />
 
 </div>

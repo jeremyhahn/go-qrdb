@@ -49,6 +49,11 @@ type mockUserService struct {
 	disableFn   func(ctx context.Context, id uint64) error
 	suspendFn   func(ctx context.Context, id uint64) error
 	unsuspendFn func(ctx context.Context, id uint64) error
+	// byThumbFn, addCertFn and removeCertFn back the certificate-binding
+	// verbs the GUI's UserBinding exposes; nil gives the default user.
+	byThumbFn    func(ctx context.Context, thumbprint string) (*user.User, error)
+	addCertFn    func(ctx context.Context, id uint64, thumbprint string, notAfterUnix int64) (*user.User, error)
+	removeCertFn func(ctx context.Context, id uint64, thumbprint string) (*user.User, error)
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req *user.CreateUserRequest) (*user.User, error) {
@@ -135,16 +140,31 @@ func (m *mockUserService) UnsuspendUser(ctx context.Context, id uint64) error {
 	return nil
 }
 
-func (m *mockUserService) UserByCertThumbprint(_ context.Context, _ string) (*user.User, error) {
-	return nil, nil
+func (m *mockUserService) UserByCertThumbprint(ctx context.Context, thumbprint string) (*user.User, error) {
+	if m.byThumbFn != nil {
+		return m.byThumbFn(ctx, thumbprint)
+	}
+	return &user.User{ID: 1001, Username: "testuser", TenantID: "system", Lifecycle: user.LifecycleActive,
+		CertBindings: []user.CertBinding{{Thumbprint: thumbprint}}}, nil
 }
 
-func (m *mockUserService) AddCertBinding(_ context.Context, _ uint64, _ string, _ int64) (*user.User, error) {
-	return nil, nil
+func (m *mockUserService) AddCertBinding(ctx context.Context, id uint64, thumbprint string, notAfterUnix int64) (*user.User, error) {
+	if m.addCertFn != nil {
+		return m.addCertFn(ctx, id, thumbprint, notAfterUnix)
+	}
+	b := user.CertBinding{Thumbprint: thumbprint}
+	if notAfterUnix > 0 {
+		b.NotAfter = time.Unix(notAfterUnix, 0).UTC()
+	}
+	return &user.User{ID: id, Username: "testuser", TenantID: "system", Lifecycle: user.LifecycleActive,
+		CertBindings: []user.CertBinding{b}}, nil
 }
 
-func (m *mockUserService) RemoveCertBinding(_ context.Context, _ uint64, _ string) (*user.User, error) {
-	return nil, nil
+func (m *mockUserService) RemoveCertBinding(ctx context.Context, id uint64, thumbprint string) (*user.User, error) {
+	if m.removeCertFn != nil {
+		return m.removeCertFn(ctx, id, thumbprint)
+	}
+	return &user.User{ID: id, Username: "testuser", TenantID: "system", Lifecycle: user.LifecycleActive}, nil
 }
 
 // ---------------------------------------------------------------------------
