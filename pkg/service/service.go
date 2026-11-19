@@ -1284,9 +1284,15 @@ func (s *AdminService) requestAdd(ctx context.Context, shardID, replicaID uint64
 // -- see admin_join_token.go. An observer added this way is promoted to a
 // voter later with PromoteMember; it is caught up by replaying the group's
 // log exactly as a voter is, so the same feature-advertisement admission
-// check (admitReplica) applies.
+// check (admitReplica) applies. The addition is bound to the system-shard
+// configuration admission checked, exactly as AddMember's: a membership
+// change committed in between makes go-quicraft refuse it with
+// ErrStaleConfigChange, and it is admitted once more against the new
+// configuration and retried once, so an observer and a concurrent voter
+// of non-adjacent releases cannot both land.
 func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string) error {
-	if _, err := admitReplica(s.host, shardID, raftAddr); err != nil {
+	configChangeID, err := admitReplica(s.host, shardID, raftAddr)
+	if err != nil {
 		return err
 	}
 	if err := s.awaitShardLeader(ctx, "add-observer", shardID); err != nil {
@@ -1296,15 +1302,28 @@ func (s *AdminService) AddObserverMember(ctx context.Context, shardID, replicaID
 	if err != nil {
 		return err
 	}
-	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, resolved, 0)
+	err = s.requestAddObserver(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+	if configChangeID == 0 || !errors.Is(err, quicraft.ErrStaleConfigChange) {
+		return err
+	}
+	// The membership changed after admission: admit once more against the
+	// new configuration (a refusal now is the release gap) and retry once.
+	if configChangeID, err = admitReplica(s.host, shardID, raftAddr); err != nil {
+		return err
+	}
+	return s.requestAddObserver(ctx, shardID, replicaID, raftAddr, resolved, configChangeID)
+}
+
+// requestAddObserver proposes the observer addition bound to configChangeID
+// and waits for its result, as requestAdd does for a voter.
+func (s *AdminService) requestAddObserver(ctx context.Context, shardID, replicaID uint64, raftAddr, identity string, configChangeID uint64) error {
+	rs, err := s.host.RequestAddObserverWithIdentity(ctx, shardID, replicaID, raftAddr, identity, configChangeID)
 	if err != nil {
 		return s.translateMembershipError("add-observer", err)
 	}
-
 	if _, err := rs.Result(); err != nil {
 		return s.translateMembershipError("add-observer", err)
 	}
-
 	return nil
 }
 

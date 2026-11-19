@@ -107,6 +107,13 @@ func (h *bindingHost) RequestAddNodeWithIdentity(_ context.Context, shardID, rep
 	return newCompletedRequestState(quicraft.RequestResult{}), nil
 }
 
+// RequestAddObserverWithIdentity applies the same stale-configuration check
+// as RequestAddNodeWithIdentity: an observer is a member of the group's
+// configuration, so adding one advances its change ID just as a voter does.
+func (h *bindingHost) RequestAddObserverWithIdentity(ctx context.Context, shardID, replicaID uint64, addr, identity string, configChangeIndex uint64) (*quicraft.RequestState, error) {
+	return h.RequestAddNodeWithIdentity(ctx, shardID, replicaID, addr, identity, configChangeIndex)
+}
+
 func (h *bindingHost) member(replicaID uint64) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -152,19 +159,29 @@ func newBindingHost(t *testing.T, candidates ...cluster.Member) *bindingHost {
 // admission until first has committed, and returns second's result.
 func raceAdds(t *testing.T, h *bindingHost, first, second cluster.Member) error {
 	t.Helper()
-	svc := NewAdminService(h)
+	return raceAddsVia(t, h, first, second, (*AdminService).AddMember, (*AdminService).AddMember)
+}
+
+// raceAddsVia is raceAdds with the admin call each addition goes through, so
+// an observer addition can race a voter addition.
+func raceAddsVia(t *testing.T, h *bindingHost, first, second cluster.Member, addFirst, addSecond func(*AdminService, context.Context, uint64, uint64, string, string) error) error {
+	t.Helper()
+	svc, ok := NewAdminService(h).(*AdminService)
+	if !ok {
+		t.Fatal("NewAdminService did not return *AdminService")
+	}
 	h.pauseAddr = second.Address
 	done := make(chan error, 1)
 	go func() {
-		done <- svc.AddMember(context.Background(), bindingSystemShard, second.NodeID, second.Address, "")
+		done <- addSecond(svc, context.Background(), bindingSystemShard, second.NodeID, second.Address, "")
 	}()
 	select {
 	case <-h.admitted:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the second add never reached admission")
 	}
-	if err := svc.AddMember(context.Background(), bindingSystemShard, first.NodeID, first.Address, ""); err != nil {
-		t.Fatalf("first AddMember = %v, want admitted", err)
+	if err := addFirst(svc, context.Background(), bindingSystemShard, first.NodeID, first.Address, ""); err != nil {
+		t.Fatalf("first add = %v, want admitted", err)
 	}
 	close(h.resume)
 	select {
@@ -209,6 +226,50 @@ func TestAdminService_AddMemberReleaseAdmissionRetriesOnceOnStale(t *testing.T) 
 
 	if err := raceAdds(t, h, a, b); err != nil {
 		t.Fatalf("second AddMember = %v, want admitted on the retry", err)
+	}
+	if !h.member(4) || !h.member(5) {
+		t.Fatalf("members = %v, want n4 and n5", h.members)
+	}
+	want := []uint64{7, 7, 8}
+	if len(h.indexes) != len(want) || h.indexes[0] != want[0] || h.indexes[1] != want[1] || h.indexes[2] != want[2] {
+		t.Fatalf("configChangeIndex per add = %v, want %v", h.indexes, want)
+	}
+}
+
+// TestAdminService_AddObserverMemberReleaseAdmissionBindsTheCheckedConfiguration
+// pauses a 0.58 observer addition after admission in an all-0.59 cluster,
+// commits a concurrent 0.60 voter addition, then resumes the observer: the
+// observer addition is bound to the configuration admission checked, so it
+// is refused stale, re-admitted against the new configuration and refused
+// with the release gap (docs/SPEC.md non-adjacent releases).
+func TestAdminService_AddObserverMemberReleaseAdmissionBindsTheCheckedConfiguration(t *testing.T) {
+	voter := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	observer := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.58.0-alpha"}
+	h := newBindingHost(t, voter, observer)
+
+	err := raceAddsVia(t, h, voter, observer, (*AdminService).AddMember, (*AdminService).AddObserverMember)
+	var gap *release.GapError
+	if !errors.As(err, &gap) {
+		t.Fatalf("AddObserverMember = %v, want *release.GapError", err)
+	}
+	if !h.member(4) || h.member(5) {
+		t.Fatalf("members = %v, want voter n4 added and observer n5 refused", h.members)
+	}
+	if len(h.indexes) != 2 || h.indexes[0] != 7 || h.indexes[1] != 7 {
+		t.Fatalf("configChangeIndex per add = %v, want both bound to the admitted configuration 7", h.indexes)
+	}
+}
+
+// TestAdminService_AddObserverMemberReleaseAdmissionRetriesOnceOnStale races
+// two same-release additions, the paused one an observer: its stale refusal
+// is re-admitted against the new configuration and retried once, bound to it.
+func TestAdminService_AddObserverMemberReleaseAdmissionRetriesOnceOnStale(t *testing.T) {
+	voter := cluster.Member{NodeID: 4, Address: "n4:1", ReleaseVersion: "0.60.0-alpha"}
+	observer := cluster.Member{NodeID: 5, Address: "n5:1", ReleaseVersion: "0.60.0-alpha"}
+	h := newBindingHost(t, voter, observer)
+
+	if err := raceAddsVia(t, h, voter, observer, (*AdminService).AddMember, (*AdminService).AddObserverMember); err != nil {
+		t.Fatalf("AddObserverMember = %v, want admitted on the retry", err)
 	}
 	if !h.member(4) || !h.member(5) {
 		t.Fatalf("members = %v, want n4 and n5", h.members)
