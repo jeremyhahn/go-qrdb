@@ -73,6 +73,10 @@ var (
 	// The sender requires it to authenticate each recipient's delivery cert.
 	ErrNilCAPool = errors.New("clusterkeys: cluster CA pool must not be nil")
 
+	// ErrNoClusterCA indicates the receiver has no cluster CA to verify a
+	// sender's node certificate against, so it accepts no delivery.
+	ErrNoClusterCA = errors.New("clusterkeys: no cluster CA to verify the sender's node certificate")
+
 	// ErrEmptyTrustDomain indicates no pinned trust domain was provided to the
 	// Sender, which it needs to bind a recipient cert's node SPIFFE identity.
 	ErrEmptyTrustDomain = errors.New("clusterkeys: pinned trust domain must not be empty")

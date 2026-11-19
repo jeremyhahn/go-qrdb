@@ -35,6 +35,9 @@ var _ transport.TenantClient = (*Transport)(nil)
 
 // CreateTenant creates a new tenant via the QUIC tenant.Create handler.
 func (t *Transport) CreateTenant(ctx context.Context, req *transport.CreateTenantRequest) (*transport.CreateTenantResponse, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -457,6 +460,9 @@ func (t *Transport) tlsState() *tls.ConnectionState {
 // possession of req.Signer's key over this transport's one connection. Share
 // material is never returned.
 func (t *Transport) TenantBarrierInit(ctx context.Context, req *transport.TenantBarrierInitRequest) (*transport.TenantBarrierInitResponse, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}
 	}
@@ -555,6 +561,9 @@ func (t *Transport) TenantBarrierSignedInitBegin(ctx context.Context, req *trans
 // TenantBarrierSignedInitComplete initializes a tenant barrier under the
 // begun statement and the signature over it: tenant.BarrierSignedInitComplete.
 func (t *Transport) TenantBarrierSignedInitComplete(ctx context.Context, req *transport.TenantBarrierSignedInitCompleteRequest) (*transport.TenantBarrierInitResponse, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if req == nil {
 		return nil, &transport.RequestError{Method: "TenantBarrierSignedInitComplete", Err: &nilTenantBarrierRequestError{Method: "TenantBarrierSignedInitComplete"}}
 	}
@@ -598,6 +607,9 @@ func (t *Transport) tenantBarrierSignedInitCall(ctx context.Context, method, msg
 // TenantBarrierUnseal unseals a per-tenant barrier via the QUIC
 // tenant.BarrierUnseal handler.
 func (t *Transport) TenantBarrierUnseal(ctx context.Context, req *transport.TenantBarrierUnsealRequest) error {
+	if err := t.requireTLS(req); err != nil {
+		return err
+	}
 	if t.closed.Load() {
 		return &transport.ClosedError{}
 	}
@@ -827,6 +839,9 @@ func (t *Transport) TenantBarrierQuorumBegin(ctx context.Context, req *transport
 
 // TenantBarrierQuorumSubmit submits one authenticated tenant holder's share.
 func (t *Transport) TenantBarrierQuorumSubmit(ctx context.Context, req *transport.TenantQuorumSubmitRequest) (*transport.QuorumOutcome, error) {
+	if err := t.requireTLS(req); err != nil {
+		return nil, err
+	}
 	if err := tenantHolderRequest("TenantBarrierQuorumSubmit", req == nil); err != nil {
 		return nil, err
 	}

@@ -200,6 +200,44 @@ func RunBarrierSecretTLS(t *testing.T, transportName string, plaintext, overTLS 
 	}
 }
 
+// HTTPAddressCalls is SecretCalls plus the secret-carrying operations whose
+// http:// address guard has no plaintext-target counterpart in
+// RunBarrierSecretTLS: the passphrase change, with the current and the next
+// passphrase each on its own, and the signed tenant barrier init completion.
+func HTTPAddressCalls() []SecretCall {
+	return append(SecretCalls(),
+		SecretCall{"BarrierChangePassphrase current passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
+			return c.BarrierChangePassphrase(ctx, &transport.BarrierChangePassphraseRequest{Current: secretBytes(on)})
+		}},
+		SecretCall{"BarrierChangePassphrase next passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
+			return c.BarrierChangePassphrase(ctx, &transport.BarrierChangePassphraseRequest{Next: secretBytes(on)})
+		}},
+		SecretCall{"TenantBarrierSignedInitComplete passphrase", transport.BarrierSecretPassphrase, func(ctx context.Context, c SecretClient, on bool) error {
+			_, err := c.TenantBarrierSignedInitComplete(ctx, &transport.TenantBarrierSignedInitCompleteRequest{TenantID: "acme", Reference: []byte("ref"), Signature: []byte("sig"), Passphrase: secretBytes(on)})
+			return err
+		}},
+	)
+}
+
+// RunHTTPAddressRefused asserts that every call in HTTPAddressCalls, issued
+// with its secret on a client whose address carries an explicit http://
+// scheme, is refused with transportName's typed TLS refusal and never reaches
+// the server, whatever the client's TLS configuration says (#1639).
+func RunHTTPAddressRefused(t *testing.T, transportName string, httpAddr SecretTarget) {
+	for _, call := range HTTPAddressCalls() {
+		t.Run(call.Name, func(t *testing.T) {
+			before := httpAddr.Reached()
+			err := issue(call, httpAddr.Client, true)
+			if !refusedAs(err, transportName, call.Kind) {
+				t.Fatalf("got %s, want the %s transport's TLS refusal for the %s", describe(err), transportName, kindName(call.Kind))
+			}
+			if n := httpAddr.Reached() - before; n != 0 {
+				t.Fatalf("a refused request reached the server %d times", n)
+			}
+		})
+	}
+}
+
 func issue(call SecretCall, c SecretClient, secret bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
