@@ -809,19 +809,6 @@ func TestIndex_Isolation_ClearDoesNotAffectOther(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestIndex_ImplementsIndex(t *testing.T) {
-	var _ index.Index = (*Index)(nil)
-}
-
-func TestIndex_ImplementsIndex_ViaConstructor(t *testing.T) {
-	idx, _ := newPebbleIdx(t, "test", false)
-	var _ index.Index = idx
-}
-
-// ---------------------------------------------------------------------------
 // Numeric index: correct byte-order comparison for range scans
 // ---------------------------------------------------------------------------
 

@@ -15,6 +15,9 @@ are not reconstructed here — their history is in the git log.
 
 ### Changed
 
+- CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
+- `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
+
 - **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
 - **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
 
@@ -363,6 +366,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A standalone node no longer acknowledges writes that a crash can lose
+  (#1617). `pkg/storage/pebble.DefaultConfig` set `SyncWrites: false` on the
+  premise that the Raft WAL provides durability, so every write went through
+  `pebble.NoSync`; a standalone node has no Raft WAL, and a Put acknowledged
+  just before a SIGKILL was gone after the restart. `DefaultConfig` now sets
+  `SyncWrites: true`: a store may turn it off only when another log already
+  fsyncs the write before it is acknowledged. The `sdk/go/node` SIGKILL test
+  now asserts that every acknowledged key reads back after the restart.
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
@@ -832,6 +843,10 @@ are not reconstructed here — their history is in the git log.
   (docs/typescript-sdk/api.md, "Secret-bearing calls"). The QUIC SO gate reads
   only `so_pin` from a passphrase-change payload, so the current and next
   passphrases are never decoded a second time.
+
+### Removed
+
+- The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
 
 ## [0.58.0-alpha] - 2026-10-27
 
