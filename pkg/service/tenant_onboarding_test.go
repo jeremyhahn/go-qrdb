@@ -874,6 +874,49 @@ func TestEmitPendingOnboardAudit_UncertainAppendWaitsForAppendOnce(t *testing.T)
 	}
 }
 
+// TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce pins the
+// production composition: the tenant trail is the OptInAuditLogger wrapping
+// the replicated trail, and the wrapper forwards append-once, so a retry of
+// an uncertain first proposal is held while AuditAppendOnce is disabled.
+func TestEmitPendingOnboardAudit_OptInWrapperWaitsForAppendOnce(t *testing.T) {
+	ctx := context.Background()
+	identity := kvstore.NewMemoryKVStore()
+	trail := &uncertainTrail{RingBuffer: audit.NewRingBuffer(32), failNext: true}
+	wrapped := NewOptInAuditLogger(trail, &fakeEntitlementLookup{enabled: map[string]bool{"acme": true}}, false)
+	deps := newOnboardingDeps(t)
+	deps.PendingAudit = tenantadmin.NewAuditKVStore(identity)
+	deps.TenantTrail = wrapped
+	svc := NewTenantOnboardingService(deps)
+	pendingAudit := tenantadmin.NewAuditKVStore(identity)
+
+	record, err := json.Marshal(audit.AuditEvent{Action: ActionTenantOnboard, TenantID: "acme", RequestID: "req-1", Timestamp: time.Unix(1700000000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pendingAudit.Create(ctx, "acme", record); err != nil {
+		t.Fatalf("pending audit Create: %v", err)
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err == nil {
+		t.Fatal("first EmitPendingOnboardAudit: want the delayed proposal's error")
+	}
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry with audit-append-once disabled: %v", err)
+	}
+	if trail.emits != 1 {
+		t.Fatalf("wrapped trail saw %d emits with audit-append-once disabled, want 1 (no re-send)", trail.emits)
+	}
+	if left, err := pendingAudit.Get(ctx, "acme"); err != nil || left == nil {
+		t.Fatalf("pending record = %q, %v; want it kept", left, err)
+	}
+	trail.appendOnce = true
+	if err := svc.EmitPendingOnboardAudit(ctx, "acme"); err != nil {
+		t.Fatalf("retry after audit-append-once: %v", err)
+	}
+	if trail.emits != 2 {
+		t.Fatalf("wrapped trail saw %d emits, want 2", trail.emits)
+	}
+}
+
 // queryFailingTrail is a trail that cannot be read.
 type queryFailingTrail struct{ *audit.RingBuffer }
 
