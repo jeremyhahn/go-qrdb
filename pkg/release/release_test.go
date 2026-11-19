@@ -33,11 +33,11 @@ func TestAdjacent(t *testing.T) {
 		{"0.60.0-alpha", "0.58.0-alpha", false},
 		{"1.4.0", "1.5.2", true},
 		{"1.4.0", "1.6.0", false},
-		{"1.4.0", "2.0.0", true},
-		{"2.0.3", "1.9.0", true},
-		{"1.4.0", "2.1.0", false},
+		// No major boundary has shipped: every cross-major pair is refused.
+		{"1.4.0", "2.0.0", false},
+		{"2.0.3", "1.9.0", false},
+		{"0.58.0", "1.0.0", false},
 		{"1.4.0", "3.0.0", false},
-		{"0.9.0", "1.0.0", true},
 		{"v0.58.0", "0.59.0+build.7", true},
 		{"0.58.0", "", false},
 		{"0.58.0", "0.58", false},
@@ -51,6 +51,32 @@ func TestAdjacent(t *testing.T) {
 	for _, c := range cases {
 		if got := Adjacent(c.a, c.b); got != c.want {
 			t.Errorf("Adjacent(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// TestAdjacent_MajorBoundary checks Q1's major boundary against a declared
+// table: only the declared last minor of M meets (M+1).0; an older minor of M,
+// a later minor of M+1 and an undeclared boundary are refused.
+func TestAdjacent_MajorBoundary(t *testing.T) {
+	last := map[uint64]uint64{0: 60, 1: 9}
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.9.0", "2.0.0", true},
+		{"2.0.3", "1.9.4", true},
+		{"0.60.1-alpha", "1.0.0", true},
+		{"1.4.0", "2.0.0", false},
+		{"2.0.0", "1.8.9", false},
+		{"0.59.0", "1.0.0", false},
+		{"1.9.0", "2.1.0", false},
+		{"1.9.0", "3.0.0", false},
+		{"2.7.0", "3.0.0", false}, // boundary 2 -> 3 undeclared
+	}
+	for _, c := range cases {
+		if got := adjacent(c.a, c.b, last); got != c.want {
+			t.Errorf("adjacent(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
 }
@@ -158,8 +184,8 @@ func TestCheck_RefusalsAndAcceptance(t *testing.T) {
 		{"patch differs", "1.4.2", "1.4.9", false},
 		{"adjacent minor up", "1.4.2", "1.5.0", false},
 		{"adjacent minor down", "1.5.0", "1.4.2", false},
-		{"major boundary up", "1.9.3", "2.0.0", false},
-		{"major boundary down", "2.0.1", "1.9.3", false},
+		{"undeclared major boundary up", "1.9.3", "2.0.0", true},
+		{"undeclared major boundary down", "2.0.1", "1.9.3", true},
 		{"pre-release adjacent", "1.4.2", "1.5.0-rc.1", false},
 		{"pre-release of same release", "1.5.0-rc.1", "1.5.0", false},
 		{"gap two minors up", "1.4.2", "1.6.0", true},

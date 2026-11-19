@@ -127,13 +127,26 @@ func numeric(s string) bool {
 	return true
 }
 
+// lastMinor declares, for each major M whose successor M+1 has shipped, the
+// last minor release of M: the only minor of M that may run in one cluster
+// with (M+1).0. It is release data, extended by the release that cuts a new
+// major. No major boundary has shipped yet (every release so far is 0.y), so
+// it is empty and every cross-major pair is refused until one is declared.
+var lastMinor = map[uint64]uint64{}
+
 // Adjacent reports whether releases a and b may run in one cluster
 // (engineering note Q1): the same major.minor with any patch levels;
 // consecutive minor releases within one major (0.y and 0.(y+1) included);
-// and the last minor of major M with the first minor, (M+1).0, of the next
-// major, in either direction. Pre-release and build metadata are ignored.
-// A version that is not Semantic Versioning 2.0.0 is adjacent to nothing.
+// and the last minor of major M, as declared in lastMinor, with the first
+// minor, (M+1).0, of the next major, in either direction. An undeclared major
+// boundary is refused. Pre-release and build metadata are ignored. A version
+// that is not Semantic Versioning 2.0.0 is adjacent to nothing.
 func Adjacent(a, b string) bool {
+	return adjacent(a, b, lastMinor)
+}
+
+// adjacent is Adjacent against the given major-boundary table.
+func adjacent(a, b string, last map[uint64]uint64) bool {
 	x, okA := parse(a)
 	y, okB := parse(b)
 	if !okA || !okB {
@@ -146,8 +159,8 @@ func Adjacent(a, b string) bool {
 	case x.major == y.major:
 		return y.minor-x.minor <= 1
 	case y.major == x.major+1:
-		// Any minor of M may be the last one; the first of M+1 is .0.
-		return y.minor == 0
+		m, declared := last[x.major]
+		return declared && x.minor == m && y.minor == 0
 	default:
 		return false
 	}
