@@ -17,6 +17,8 @@ type graphEditor struct {
 	graph map[string]map[string]string
 	gets  []string
 	tidy  int
+	// tidied lists the directories tidied, in order.
+	tidied []string
 }
 
 func (g *graphEditor) Get(dir, pathAtVersion string) error {
@@ -56,8 +58,9 @@ func (g *graphEditor) Get(dir, pathAtVersion string) error {
 	return f.Close()
 }
 
-func (g *graphEditor) Tidy(string) error {
+func (g *graphEditor) Tidy(dir string) error {
 	g.tidy++
+	g.tidied = append(g.tidied, dir)
 	return nil
 }
 
@@ -102,7 +105,7 @@ func TestBumpNeverMovesAHeldRequirement(t *testing.T) {
 		behindFinding("example.com/c", "v1.0.0", "v1.1.0"),
 	}
 	var stdout bytes.Buffer
-	require.NoError(t, bumpModule(edit, dir, findings, &stdout))
+	require.NoError(t, bumpModules(edit, []moduleFindings{{dir: dir, found: findings}}, &stdout))
 
 	assert.Equal(t, "v1.0.0", requiredVersion(t, dir, "example.com/b"), "the held requirement stays where its reason holds it")
 	assert.Equal(t, "v1.0.0", requiredVersion(t, dir, "example.com/a"), "the bump that raised the held requirement is reverted")
@@ -127,7 +130,7 @@ func TestBumpSkipsAllWhenEveryBumpMovesAHold(t *testing.T) {
 		"example.com/a@v1.1.0": {"example.com/b": "v1.1.0"},
 	}}
 	var stdout bytes.Buffer
-	require.NoError(t, bumpModule(edit, dir, []finding{behindFinding("example.com/a", "v1.0.0", "v1.1.0")}, &stdout))
+	require.NoError(t, bumpModules(edit, []moduleFindings{{dir: dir, found: []finding{behindFinding("example.com/a", "v1.0.0", "v1.1.0")}}}, &stdout))
 
 	got, err := os.ReadFile(filepath.Join(dir, "go.mod")) //#nosec G304 -- t.TempDir
 	require.NoError(t, err)
@@ -135,4 +138,30 @@ func TestBumpSkipsAllWhenEveryBumpMovesAHold(t *testing.T) {
 	_, err = os.Stat(filepath.Join(dir, "go.sum"))
 	assert.True(t, os.IsNotExist(err), "a go.sum the reverted bump created is removed")
 	assert.Equal(t, 0, edit.tidy, "nothing moved, nothing to tidy")
+}
+
+func TestBumpTidiesALocallyReplacedModuleWithNoBumpOfItsOwn(t *testing.T) {
+	root := t.TempDir()
+	fixture, err := os.ReadFile(filepath.Join("testdata", "heldgraph", "go.mod"))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), fixture, 0o600))
+	// sdk replaces the root with a local directory and requires nothing the
+	// bump moves directly: only the root's upgrade changes its graph.
+	sdk := filepath.Join(root, "sdk")
+	require.NoError(t, os.Mkdir(sdk, 0o750))
+	sdkMod := "module example.com/root/sdk\n\ngo 1.22\n\nrequire example.com/root v0.0.0\n\nreplace example.com/root => ../\n"
+	require.NoError(t, os.WriteFile(filepath.Join(sdk, "go.mod"), []byte(sdkMod), 0o600))
+
+	edit := &graphEditor{graph: map[string]map[string]string{}}
+	var stdout bytes.Buffer
+	// The dependent is listed first: it is still tidied after the root.
+	mods := []moduleFindings{
+		{dir: sdk},
+		{dir: root, found: []finding{behindFinding("example.com/c", "v1.0.0", "v1.1.0")}},
+	}
+	require.NoError(t, bumpModules(edit, mods, &stdout))
+
+	assert.Equal(t, []string{"example.com/c@v1.1.0"}, edit.gets)
+	assert.Equal(t, []string{root, sdk}, edit.tidied, "the locally replaced module is tidied after the module it replaces")
+	assert.Contains(t, stdout.String(), "bumped example.com/c v1.0.0 -> v1.1.0")
 }

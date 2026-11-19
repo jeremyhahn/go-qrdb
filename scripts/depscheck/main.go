@@ -142,19 +142,8 @@ func runWith(args []string, tools toolset, now time.Time, stdout, stderr io.Writ
 		}
 	}
 	if *bump {
-		// Every module is looked up before any is edited: a lookup failure
-		// in one stops the bump with the tree untouched.
-		var all []finding
-		for _, b := range bumps {
-			all = append(all, b.found...)
-		}
-		if err := bumpLookupErrors(all); err != nil {
+		if err := bumpModules(tools.edit, bumps, stdout); err != nil {
 			return fail(err)
-		}
-		for _, b := range bumps {
-			if err := bumpModule(tools.edit, b.dir, b.found, stdout); err != nil {
-				return fail(err)
-			}
 		}
 		if _, err := fmt.Fprintf(stdout, "deps-bump: done; re-run deps-check to verify (%s)\n", version); err != nil {
 			return exitOutput
