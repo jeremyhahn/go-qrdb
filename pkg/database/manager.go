@@ -696,6 +696,12 @@ func (m *Manager) openMeta(key dbKey, meta DatabaseMeta) (*Database, error) {
 	if meta.Dropping {
 		db.SetDropping(true)
 	}
+	// A failed drop whose claim never reached the catalog left the fence
+	// pinned on this node's disk instead: the record reads live, but the
+	// database reopens fenced until a retried drop removes it.
+	if m.keptFenceHolds(key.tenant, name, meta.Incarnation) {
+		db.keepDropFence()
+	}
 	db.incarnation = meta.Incarnation
 	db.id = meta.ID
 	db.ownerNode = meta.OwnerNode
@@ -887,9 +893,16 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 		// in-memory fence up: the database refuses every caller here until
 		// a retried drop lands (KeepFenceOnFailure). The claim did not
 		// commit, so the catalog still records the database live: the
-		// fence is pinned, or the catalog reconcile would lift it.
+		// fence is pinned, or the catalog reconcile would lift it, and
+		// recorded on this node's disk, or a restart would reopen the
+		// database from its live record and serve it.
 		if keepFenceOnFailure(ctx) {
 			db.keepDropFence()
+			if recErr := m.recordKeptFence(db); recErr != nil {
+				m.logger.Warn("failed to record the kept drop fence: it holds in memory only until a retried drop lands",
+					slog.String("name", name), slog.Any("error", recErr))
+				err = errors.Join(err, recErr)
+			}
 		} else {
 			db.SetDropping(false)
 		}
@@ -988,8 +1001,14 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 
 	// 5. The in-memory mirror of the record removed in step 4. Last, and
 	//    adjacent to it, so the window in which the two disagree is as narrow
-	//    as it can be made without a persisted marker (go-qrdb#425).
+	//    as it can be made without a persisted marker (go-qrdb#425). A
+	//    fence an earlier failed attempt pinned on this node's disk goes
+	//    with the record it fenced.
 	m.databases.CompareAndDelete(key, db)
+	if err := m.forgetKeptFence(key.tenant, name); err != nil {
+		m.logger.Warn("failed to remove the kept drop fence record of a dropped database",
+			slog.String("name", name), slog.Any("error", err))
+	}
 
 	m.logger.Info("database dropped", slog.String("name", name))
 	return nil

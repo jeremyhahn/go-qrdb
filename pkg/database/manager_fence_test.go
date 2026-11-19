@@ -365,3 +365,42 @@ func TestManager_Drop_KeptFenceSurvivesReconcileAfterAFailedClaim(t *testing.T) 
 	_, err = mgr.GetOwned("billing", "acme")
 	assert.ErrorAs(t, err, &notFound)
 }
+
+// TestManager_Drop_KeptFenceSurvivesRestartAfterAFailedClaim pins Codex
+// round at 62983c9a9f, P1: a strict-refused create whose rollback claim
+// fails is fenced on disk as well as in memory, so a node restarted from the
+// catalog's live record reopens it fenced until a retried drop lands, and a
+// database created later under the name opens unfenced.
+func TestManager_Drop_KeptFenceSurvivesRestartAfterAFailedClaim(t *testing.T) {
+	mgr, store := newReclaimManager(t, "orders")
+	owner := tenant.WithTenantID(context.Background(), "acme")
+	_, err := mgr.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+
+	cat, err := mgr.catalog("test")
+	require.NoError(t, err)
+	mgr.SetCatalog(&claimFaultCatalog{Catalog: cat, updateErr: errors.New("injected: claim refused")})
+	err = mgr.DropForTenant(KeepFenceOnFailure(owner), "billing")
+	require.Error(t, err, "the drop must fail when its claim cannot commit")
+	mgr.SetCatalog(cat)
+	require.NoError(t, mgr.Close())
+
+	// The node restarts over its data directory; the shared store and the
+	// catalog are the cluster's and outlive it.
+	restarted := newCatalogManager(nil, mgr.DataDir())
+	restarted.SetKeyspaceReclaimer(store)
+	t.Cleanup(func() { _ = restarted.Close() })
+	require.NoError(t, restarted.OpenAll(context.Background()))
+
+	var dropping *DroppingError
+	_, err = restarted.GetOwned("billing", "acme")
+	require.ErrorAs(t, err, &dropping, "a restart must reopen the refused create fenced")
+	_, err = restarted.GetForTenant(owner, "billing")
+	require.ErrorAs(t, err, &dropping)
+
+	require.NoError(t, restarted.DropForTenant(KeepFenceOnFailure(owner), "billing"), "the retried drop lands")
+	_, err = restarted.CreateForTenant(owner, DatabaseConfig{Name: "billing", Backend: BackendMemory})
+	require.NoError(t, err)
+	_, err = restarted.GetForTenant(owner, "billing")
+	require.NoError(t, err, "a database created after the drop is not fenced")
+}
