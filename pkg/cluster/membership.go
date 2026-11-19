@@ -244,7 +244,9 @@ type MemberChangeHook func(ctx context.Context, m Member, joined bool)
 // WithMemberChangeHook registers a hook fired once per new peer join and
 // once per peer leave; never for the local node or a re-registration of a
 // known member. The hook runs on its own goroutine so it never blocks the
-// membership event loop; Close waits for running hooks to return.
+// membership event loop; Close waits for running hooks to return. With a
+// Reconfigurer, a join's hook runs once the join is in the group (the
+// leader's after its AddMember change commits), so it sees the new member.
 func WithMemberChangeHook(h MemberChangeHook) MembershipOption {
 	return func(m *MembershipManager) {
 		m.onChange = h
@@ -524,8 +526,12 @@ func (m *MembershipManager) handleJoin(member Member) {
 		return
 	}
 	m.logger.Info("member joined", "node_id", member.NodeID, "address", member.Address)
+	// With reconfiguration on, the join hook fires from the reconfiguration
+	// worker once the AddMember change has committed (applyReconfig), so a
+	// hook reading the shard's roster sees the joined member.
 	if m.reconfig != nil {
 		m.enqueueReconfig(reconfigIntent{member: member, remove: false})
+		return
 	}
 	m.fireChange(member, true)
 }
@@ -625,9 +631,19 @@ func (m *MembershipManager) reconfigWorker(runCtx context.Context) {
 // applyReconfig validates and applies a single reconfiguration intent. All
 // leader/membership/quorum checks happen here, at execution time, so a stale
 // queued intent re-validates against current state before mutating the group.
+//
+// A join's member-change hook fires here, after the join is in the group:
+// once AddMember has committed, or at once when the member is already
+// present. A follower does not reconfigure and fires it at once; the
+// leader's hook is the one that runs after the commit. An add that does not
+// commit fires no hook: the member is not in the group.
 func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if !m.isLeader() {
-		return // only the leader reconfigures; nothing to do as a follower
+		// Only the leader reconfigures; nothing to do as a follower.
+		if !intent.remove {
+			m.fireChange(intent.member, true)
+		}
+		return
 	}
 	member := intent.member
 
@@ -635,6 +651,11 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if err != nil {
 		m.logger.Warn("membership probe failed; deferring reconfiguration",
 			"node_id", member.NodeID, "error", err)
+		if !intent.remove {
+			// The group's state is unknown: fire the join hook rather
+			// than lose it; its reconcile re-reads the roster.
+			m.fireChange(member, true)
+		}
 		return
 	}
 
@@ -659,11 +680,15 @@ func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	}
 
 	if present {
-		return // already in the group (e.g. initial bootstrap members)
+		// Already in the group (e.g. initial bootstrap members).
+		m.fireChange(member, true)
+		return
 	}
-	m.reconfigWithRetry("add", member, func(ctx context.Context) error {
+	if m.reconfigWithRetry("add", member, func(ctx context.Context) error {
 		return m.reconfig.AddMember(ctx, m.shardID, member.NodeID, member.Address)
-	})
+	}) {
+		m.fireChange(member, true)
+	}
 }
 
 // isLeader reports whether the local node is the shard leader.
@@ -678,7 +703,9 @@ func (m *MembershipManager) isLeader() bool {
 // reconfigWithRetry runs op up to MaxRetries times with capped exponential
 // backoff, aborting if the manager closes. It runs only on the worker
 // goroutine, so reconfiguration is never concurrent.
-func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op func(context.Context) error) {
+//
+// It reports whether op succeeded.
+func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op func(context.Context) error) bool {
 	for attempt := 1; attempt <= m.cfg.MaxRetries; attempt++ {
 		// Derive the op context from runCtx so Close aborts an in-flight
 		// reconfiguration instead of blocking up to the full timeout.
@@ -688,7 +715,7 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		if err == nil {
 			m.logger.Info("raft reconfiguration succeeded",
 				"op", kind, "node_id", member.NodeID, "shard_id", m.shardID)
-			return
+			return true
 		}
 
 		m.logger.Warn("raft reconfiguration failed",
@@ -696,7 +723,7 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		if attempt >= m.cfg.MaxRetries {
 			m.logger.Error("raft reconfiguration exhausted retries",
 				"op", kind, "node_id", member.NodeID, "shard_id", m.shardID)
-			return
+			return false
 		}
 
 		delay := m.cfg.RetryBaseDelay * time.Duration(1<<uint(attempt-1))
@@ -706,9 +733,10 @@ func (m *MembershipManager) reconfigWithRetry(kind string, member Member, op fun
 		select {
 		case <-time.After(delay):
 		case <-m.runCtx.Done():
-			return
+			return false
 		}
 	}
+	return false
 }
 
 // Members returns a snapshot of the currently tracked members.

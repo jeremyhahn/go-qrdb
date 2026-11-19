@@ -246,6 +246,74 @@ func TestMembershipManager_JoinAsLeaderAddsToRaft(t *testing.T) {
 	}
 }
 
+// TestMembershipManager_JoinHookRunsAfterTheAddCommits proves the
+// member-change hook of a join runs only once the AddMember change has
+// committed, so a hook that reads the shard's roster sees the joined member
+// -- even when the first add attempt fails and is retried.
+func TestMembershipManager_JoinHookRunsAfterTheAddCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := newFakeReconfigurer(1) // self (node 1) is leader
+	reconf.addFails = 1
+	type seen struct {
+		id     uint64
+		member bool
+	}
+	hookCh := make(chan seen, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if !joined {
+			return
+		}
+		present, _ := reconf.IsMember(100, member.NodeID)
+		hookCh <- seen{id: member.NodeID, member: present}
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 20 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberJoined, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	added := false
+	for {
+		select {
+		case id := <-reconf.addCh:
+			if id != 2 {
+				t.Fatalf("AddMember replicaID = %d, want 2", id)
+			}
+			added = true
+		case s := <-hookCh:
+			if s.id != 2 {
+				t.Fatalf("join hook member = %d, want 2", s.id)
+			}
+			if !s.member {
+				t.Fatal("join hook ran before the AddMember change committed")
+			}
+			if !added {
+				// The hook saw the member; the add's notification is
+				// still in flight.
+				select {
+				case <-reconf.addCh:
+				case <-deadline:
+					t.Fatal("timed out waiting for AddMember")
+				}
+			}
+			return
+		case <-deadline:
+			t.Fatalf("timed out waiting for the join hook (added %v)", added)
+		}
+	}
+}
+
 func TestMembershipManager_JoinAsFollowerSkipsRaft(t *testing.T) {
 	store := newFakeStore()
 	reconf := newFakeReconfigurer(99) // someone else is leader
