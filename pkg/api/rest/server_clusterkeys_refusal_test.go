@@ -33,7 +33,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/clustertls"
 	"github.com/jeremyhahn/go-qrdb/pkg/keydelivery"
 	"github.com/jeremyhahn/go-qrdb/pkg/placement"
-	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
 // refusingPlacements answers every lookup with an error: a request that gets
@@ -74,10 +73,7 @@ func newKeyDeliveryFixture(t *testing.T) *keyDeliveryFixture {
 	if err != nil {
 		t.Fatalf("keydelivery.NewReceiver: %v", err)
 	}
-	// Every request these tests send is answered before the barrier
-	// registry is reached (401 at the certificate, 403 at the placement
-	// gate), so an empty registry stands in for one.
-	rcv, err := clusterkeys.NewReceiver(kd, new(seal.BarrierRegistry), refusingPlacements{},
+	rcv, err := clusterkeys.NewReceiver(kd, refusingPlacements{},
 		"cluster.local", "follower-node-1", pool, nil, []byte("delivery cert"), nil)
 	if err != nil {
 		t.Fatalf("clusterkeys.NewReceiver: %v", err)
