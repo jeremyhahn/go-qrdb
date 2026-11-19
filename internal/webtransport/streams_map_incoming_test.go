@@ -1,0 +1,201 @@
+package webtransport
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestIncomingStreamsMapAddStreamAfterCloseSession(t *testing.T) {
+	ctx := context.Background()
+	clientConn, serverConn := newConnPair(t, newUDPConnLocalhost(t), newUDPConnLocalhost(t))
+	streams := newIncomingStreamsMap[*Stream](maxStreamsLimit, nil)
+	uniStreams := newIncomingStreamsMap[*ReceiveStream](maxStreamsLimit, nil)
+
+	serverStr, err := serverConn.OpenStream()
+	require.NoError(t, err)
+	_, err = serverStr.Write([]byte("x"))
+	require.NoError(t, err)
+	clientStr, err := clientConn.AcceptStream(ctx)
+	require.NoError(t, err)
+	streamID := clientStr.StreamID()
+	require.NoError(t, streams.AddStream(streamID, newStream(clientStr, nil, nil, nil, nil, nil, func() { streams.RemoveStream(streamID) }, 0)))
+
+	str, err := streams.AcceptStream(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, str)
+
+	sessionErr := &SessionError{ErrorCode: 42, Message: "bye"}
+	streams.CloseSession(sessionErr)
+	uniStreams.CloseSession(sessionErr)
+	_, err = streams.AcceptStream(ctx)
+	require.ErrorIs(t, err, sessionErr)
+
+	serverStr, err = serverConn.OpenStream()
+	require.NoError(t, err)
+	_, err = serverStr.Write([]byte("x"))
+	require.NoError(t, err)
+	clientStr, err = clientConn.AcceptStream(ctx)
+	require.NoError(t, err)
+	streamID = clientStr.StreamID()
+	require.NoError(t, streams.AddStream(streamID, newStream(clientStr, nil, nil, nil, nil, nil, func() { streams.RemoveStream(streamID) }, 0)))
+
+	select {
+	case <-serverStr.Context().Done():
+		require.ErrorIs(t,
+			context.Cause(serverStr.Context()),
+			&quic.StreamError{Remote: true, StreamID: serverStr.StreamID(), ErrorCode: WTSessionGoneErrorCode},
+		)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+
+	serverUniStr, err := serverConn.OpenUniStream()
+	require.NoError(t, err)
+	_, err = serverUniStr.Write([]byte("x"))
+	require.NoError(t, err)
+	clientUniStr, err := clientConn.AcceptUniStream(ctx)
+	require.NoError(t, err)
+	uniStreamID := clientUniStr.StreamID()
+	require.NoError(t,
+		uniStreams.AddStream(
+			uniStreamID,
+			newReceiveStream(clientUniStr, 0, func() { uniStreams.RemoveStream(uniStreamID) }, nil, nil),
+		),
+	)
+
+	select {
+	case <-serverUniStr.Context().Done():
+		require.ErrorIs(t,
+			context.Cause(serverUniStr.Context()),
+			&quic.StreamError{Remote: true, StreamID: serverUniStr.StreamID(), ErrorCode: WTSessionGoneErrorCode},
+		)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestIncomingStreamsMapCloseSessionUnblocksAcceptStream(t *testing.T) {
+	streams := newIncomingStreamsMap[*Stream](maxStreamsLimit, nil)
+	sessionErr := &SessionError{ErrorCode: 42, Message: "bye"}
+
+	errChan := make(chan error, 1)
+	go func() {
+		_, err := streams.AcceptStream(t.Context())
+		errChan <- err
+	}()
+
+	streams.CloseSession(sessionErr)
+	select {
+	case err := <-errChan:
+		require.ErrorIs(t, err, sessionErr)
+	case <-time.After(time.Second):
+		t.Fatal("timeout")
+	}
+}
+
+func TestIncomingStreamsMapQueuesMaxStreamsOnRemove(t *testing.T) {
+	var capsules []uint64
+	streams := newIncomingStreamsMap[*ReceiveStream](3, func(limit uint64) {
+		capsules = append(capsules, limit)
+	})
+
+	require.NoError(t, streams.AddStream(1, newReceiveStream(nil, 0, nil, nil, nil)))
+	require.NoError(t, streams.AddStream(2, newReceiveStream(nil, 0, nil, nil, nil)))
+
+	streams.RemoveStream(1)
+	require.Equal(t, []uint64{4}, capsules)
+
+	streams.RemoveStream(2)
+	require.Equal(t, []uint64{4, 5}, capsules)
+}
+
+func TestIncomingStreamsMapMaxStreamsLimit(t *testing.T) {
+	var capsules []uint64
+	streams := newIncomingStreamsMap[*ReceiveStream](maxStreamsLimit-1, func(limit uint64) {
+		capsules = append(capsules, limit)
+	})
+
+	require.NoError(t, streams.AddStream(1, newReceiveStream(nil, 0, nil, nil, nil)))
+	require.NoError(t, streams.AddStream(2, newReceiveStream(nil, 0, nil, nil, nil)))
+
+	streams.RemoveStream(1)
+	require.Equal(t, []uint64{maxStreamsLimit}, capsules)
+
+	streams.RemoveStream(2)
+	require.Equal(t, []uint64{maxStreamsLimit}, capsules)
+}
+
+func TestIncomingStreamsMapRejectsStreamOverLimit(t *testing.T) {
+	streams := newIncomingStreamsMap[*ReceiveStream](1, nil)
+	require.NoError(t, streams.AddStream(1, newReceiveStream(nil, 0, nil, nil, nil)))
+	err := streams.AddStream(2, newReceiveStream(nil, 0, nil, nil, nil))
+	require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCode(WTFlowControlErrorCode)})
+	require.ErrorContains(t, err, "peer opened more than 1 streams")
+}
+
+func TestIncomingStreamsMapConcurrentAcceptors(t *testing.T) {
+	t.Run("bidirectional", func(t *testing.T) {
+		testIncomingStreamsMapConcurrentAcceptors(t, func() *Stream { return &Stream{} })
+	})
+	t.Run("unidirectional", func(t *testing.T) {
+		testIncomingStreamsMapConcurrentAcceptors(t, func() *ReceiveStream { return &ReceiveStream{} })
+	})
+}
+
+// testIncomingStreamsMapConcurrentAcceptors holds two acceptors at the wait
+// point while the queue is empty, queues two streams, and requires each
+// acceptor to return one of them.
+func testIncomingStreamsMapConcurrentAcceptors[T incomingStream](t *testing.T, newStream func() T) {
+	m := newIncomingStreamsMap[T](10, nil)
+
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	var waitersMx sync.Mutex
+	var waiters int
+	m.beforeAcceptWait = func() {
+		waitersMx.Lock()
+		waiters++
+		hold := waiters <= 2
+		waitersMx.Unlock()
+		if hold {
+			arrived <- struct{}{}
+			<-release
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		str T
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			str, err := m.AcceptStream(ctx)
+			results <- result{str, err}
+		}()
+	}
+	<-arrived
+	<-arrived
+
+	first, second := newStream(), newStream()
+	require.NoError(t, m.AddStream(quic.StreamID(0), first))
+	require.NoError(t, m.AddStream(quic.StreamID(4), second))
+	close(release)
+
+	accepted := make(map[T]bool)
+	for range 2 {
+		r := <-results
+		require.NoError(t, r.err, "an acceptor missed a queued stream")
+		accepted[r.str] = true
+	}
+	require.Equal(t, map[T]bool{first: true, second: true}, accepted)
+}

@@ -16,6 +16,7 @@ package buildgates
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,29 @@ func composerImportViolations(t *testing.T, dir string) (violations []string, fi
 		}
 	}
 	return violations, files
+}
+
+// modReplace is one replace directive as `go mod edit -json` prints it.
+type modReplace struct {
+	Old struct{ Path, Version string }
+	New struct{ Path, Version string }
+}
+
+// fileReplaces returns the replace directives of the module in dir whose
+// target is a directory rather than a module version.
+func fileReplaces(t *testing.T, dir string) []modReplace {
+	t.Helper()
+	var mod struct{ Replace []modReplace }
+	if err := json.Unmarshal([]byte(runGo(t, dir, "mod", "edit", "-json")), &mod); err != nil {
+		t.Fatalf("parse go mod edit -json in %s: %v", dir, err)
+	}
+	var out []modReplace
+	for _, r := range mod.Replace {
+		if r.New.Version == "" {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // writeComposerModule turns dir into a module that requires sdk/go: it starts
@@ -141,6 +165,36 @@ func TestSDK_ExternalComposerReachesEverySeam(t *testing.T) {
 	out := runGo(t, dir, "test", "-count=1", "-v", "-tags", strings.Join(fullBuildTags(t), ","), "./...")
 	if passed := strings.Count(out, "--- PASS: "); passed < minComposerTests {
 		t.Fatalf("the composer module passed %d tests, want at least %d:\n%s", passed, minComposerTests, out)
+	}
+}
+
+// TestSDK_ComposerModuleResolvesEveryDirectoryReplace holds the composer
+// module to the replaces an embedder writes itself, sdk/go and go-qrdb at
+// this tree, so the gate builds what an embedder builds and does not inject
+// a replace sdk/go would carry (#1244).
+func TestSDK_ComposerModuleResolvesEveryDirectoryReplace(t *testing.T) {
+	root := repoRoot(t)
+	dir := t.TempDir()
+	writeComposerModule(t, root, dir)
+	replaces := fileReplaces(t, dir)
+	// An embedder has only its own replaces: those of sdk/go and go-qrdb,
+	// pointing at this checkout. Anything else would build the composer
+	// against code an embedder does not get.
+	want := map[string]string{
+		sdkModulePrefix: filepath.Join(root, "sdk", "go"),
+		localModule:     root,
+	}
+	if len(replaces) != len(want) {
+		t.Errorf("the composer module has %d directory replaces, want only sdk/go and go-qrdb: %+v", len(replaces), replaces)
+	}
+	for _, r := range replaces {
+		if dst, ok := want[r.Old.Path]; !ok || r.New.Path != dst {
+			t.Errorf("replace %s => %s, want only %s => %s and %s => %s", r.Old.Path, r.New.Path, sdkModulePrefix, want[sdkModulePrefix], localModule, root)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(r.New.Path, "go.mod")); err != nil {
+			t.Errorf("replace %s => %s: %v", r.Old.Path, r.New.Path, err)
+		}
 	}
 }
 

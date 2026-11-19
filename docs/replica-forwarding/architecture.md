@@ -160,7 +160,9 @@ target unreachable rather than writing into a connection nobody answers.
 server-streaming or bidirectional call refuses with `NotAReplicaError`, which
 carries the replica set, and the client redials a replica. Proxying a
 long-lived stream would tie the stream's life to an intermediate node that
-holds no data for it.
+holds no data for it. A REST `CONNECT` (the WebTransport upgrade, RFC 9220)
+bypasses forwarding altogether: the session is a tunnel on the caller's own
+HTTP/3 connection to this node, so it is served where it lands.
 
 ## Data flow, end to end
 

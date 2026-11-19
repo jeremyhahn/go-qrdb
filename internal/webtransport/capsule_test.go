@@ -1,0 +1,296 @@
+package webtransport
+
+import (
+	"bytes"
+	"encoding/binary"
+	"io"
+	"strings"
+	"testing"
+
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/quic-go/quicvarint"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseCloseSessionCapsuleRejectsMalformedMessage(t *testing.T) {
+	for name, msg := range map[string]string{
+		"oversized":            strings.Repeat("b", maxCloseCapsuleErrorMsgLen+500),
+		"one byte over":        strings.Repeat("b", maxCloseCapsuleErrorMsgLen+1),
+		"invalid UTF-8":        "b\xffb",
+		"truncated multi-byte": "b\xe2\x82",
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := make([]byte, 4+len(msg))
+			binary.BigEndian.PutUint32(payload[:4], uint32(1337))
+			copy(payload[4:], msg)
+
+			var b bytes.Buffer
+			require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+
+			_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+			require.ErrorIs(t, err, &http3.Error{ErrorCode: http3.ErrCodeMessageError})
+		})
+	}
+}
+
+func TestParseCloseSessionCapsuleAcceptsLongestMessage(t *testing.T) {
+	msg := strings.Repeat("é", maxCloseCapsuleErrorMsgLen/2)
+	payload := make([]byte, 4+len(msg))
+	binary.BigEndian.PutUint32(payload[:4], uint32(1337))
+	copy(payload[4:], msg)
+
+	var b bytes.Buffer
+	require.NoError(t, http3.WriteCapsule(quicvarint.NewWriter(&b), closeSessionCapsuleType, payload))
+
+	c, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	require.NoError(t, err)
+	require.Equal(t, closeSessionCapsule{ErrorCode: 1337, Message: msg}, c)
+}
+
+func TestAppendCloseSessionCapsuleMessageTruncation(t *testing.T) {
+	var b bytes.Buffer
+	b.Write((closeSessionCapsule{ErrorCode: 42, Message: strings.Repeat("a", maxCloseCapsuleErrorMsgLen+500)}).Append(nil))
+
+	typ, r, err := http3.NewCapsuleParser(&b).Next()
+	require.NoError(t, err)
+	require.Equal(t, closeSessionCapsuleType, typ)
+
+	payload, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.Len(t, payload, 4+maxCloseCapsuleErrorMsgLen)
+	require.Equal(t, uint32(42), binary.BigEndian.Uint32(payload[:4]))
+	require.Equal(t, strings.Repeat("a", maxCloseCapsuleErrorMsgLen), string(payload[4:]))
+}
+
+func TestCloseSessionCapsuleRoundTrip(t *testing.T) {
+	var b bytes.Buffer
+	b.Write((closeSessionCapsule{ErrorCode: 42, Message: "all good"}).Append(nil))
+
+	c, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	require.NoError(t, err)
+	require.Equal(t, closeSessionCapsule{ErrorCode: 42, Message: "all good"}, c)
+}
+
+func TestDataBlockedCapsuleRoundTrip(t *testing.T) {
+	var b bytes.Buffer
+	c := dataBlockedCapsule{MaximumData: 1337}
+	b.Write(c.Append(nil))
+
+	typ, r, err := http3.NewCapsuleParser(&b).Next()
+	require.NoError(t, err)
+	require.Equal(t, dataBlockedCapsuleType, typ)
+	maxData, err := quicvarint.Read(r)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1337), maxData)
+
+	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))))
+	require.NoError(t, err)
+	require.Equal(t, c, parsed)
+}
+
+func TestMaxDataCapsuleRoundTrip(t *testing.T) {
+	var b bytes.Buffer
+	c := maxDataCapsule{MaximumData: 1337}
+	b.Write(c.Append(nil))
+
+	typ, r, err := http3.NewCapsuleParser(&b).Next()
+	require.NoError(t, err)
+	require.Equal(t, maxDataCapsuleType, typ)
+	maxData, err := quicvarint.Read(r)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1337), maxData)
+
+	parsed, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(c.Append(nil))))
+	require.NoError(t, err)
+	require.Equal(t, c, parsed)
+}
+
+func TestMaxStreamsCapsuleRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		c    capsule
+		typ  http3.CapsuleType
+		max  uint64
+	}{
+		{
+			name: "bidirectional",
+			c:    maxStreamsBidiCapsule{MaximumStreams: 42},
+			typ:  maxStreamsBidiCapsuleType,
+			max:  42,
+		},
+		{
+			name: "unidirectional",
+			c:    maxStreamsUniCapsule{MaximumStreams: 1337},
+			typ:  maxStreamsUniCapsuleType,
+			max:  1337,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			b.Write(tc.c.Append(nil))
+
+			typ, r, err := http3.NewCapsuleParser(&b).Next()
+			require.NoError(t, err)
+			require.Equal(t, tc.typ, typ)
+			maxStreams, err := quicvarint.Read(r)
+			require.NoError(t, err)
+			require.Equal(t, tc.max, maxStreams)
+
+			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))))
+			require.NoError(t, err)
+			require.Equal(t, tc.c, c)
+		})
+	}
+}
+
+func TestStreamsBlockedCapsuleRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		c    capsule
+		typ  http3.CapsuleType
+		max  uint64
+	}{
+		{
+			name: "bidirectional",
+			c:    streamsBlockedBidiCapsule{MaximumStreams: 42},
+			typ:  streamsBlockedBidiCapsuleType,
+			max:  42,
+		},
+		{
+			name: "unidirectional",
+			c:    streamsBlockedUniCapsule{MaximumStreams: 1337},
+			typ:  streamsBlockedUniCapsuleType,
+			max:  1337,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b bytes.Buffer
+			b.Write(tc.c.Append(nil))
+
+			typ, r, err := http3.NewCapsuleParser(&b).Next()
+			require.NoError(t, err)
+			require.Equal(t, tc.typ, typ)
+			maxStreams, err := quicvarint.Read(r)
+			require.NoError(t, err)
+			require.Equal(t, tc.max, maxStreams)
+
+			c, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.c.Append(nil))))
+			require.NoError(t, err)
+			require.Equal(t, tc.c, c)
+		})
+	}
+}
+
+func TestParseMaxStreamsCapsuleTooLarge(t *testing.T) {
+	var b bytes.Buffer
+	b.Write((maxStreamsBidiCapsule{MaximumStreams: maxStreamsLimit + 1}).Append(nil))
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	require.ErrorContains(t, err, "value too large")
+}
+
+func TestParseStreamsBlockedCapsuleTooLarge(t *testing.T) {
+	var b bytes.Buffer
+	b.Write((streamsBlockedBidiCapsule{MaximumStreams: maxStreamsLimit + 1}).Append(nil))
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(&b))
+	require.ErrorContains(t, err, "WT_STREAMS_BLOCKED value too large")
+}
+
+func TestParseDataBlockedCapsuleTrailingData(t *testing.T) {
+	b := quicvarint.Append(nil, uint64(dataBlockedCapsuleType))
+	b = quicvarint.Append(b, uint64(quicvarint.Len(42)+1))
+	b = quicvarint.Append(b, 42)
+	b = append(b, 0)
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	require.ErrorContains(t, err, "WT_DATA_BLOCKED capsule has trailing data")
+}
+
+func TestParseMaxDataCapsuleTrailingData(t *testing.T) {
+	b := quicvarint.Append(nil, uint64(maxDataCapsuleType))
+	b = quicvarint.Append(b, uint64(quicvarint.Len(42)+1))
+	b = quicvarint.Append(b, 42)
+	b = append(b, 0)
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	require.ErrorContains(t, err, "WT_MAX_DATA capsule has trailing data")
+}
+
+func TestParseMaxStreamsCapsuleTrailingData(t *testing.T) {
+	b := quicvarint.Append(nil, uint64(maxStreamsBidiCapsuleType))
+	b = quicvarint.Append(b, uint64(quicvarint.Len(42)+1))
+	b = quicvarint.Append(b, 42)
+	b = append(b, 0)
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	require.ErrorContains(t, err, "trailing data")
+}
+
+func TestParseStreamsBlockedCapsuleTrailingData(t *testing.T) {
+	b := quicvarint.Append(nil, uint64(streamsBlockedUniCapsuleType))
+	b = quicvarint.Append(b, uint64(quicvarint.Len(42)+1))
+	b = quicvarint.Append(b, 42)
+	b = append(b, 0)
+
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(b)))
+	require.ErrorContains(t, err, "WT_STREAMS_BLOCKED capsule has trailing data")
+}
+
+// shortCapsuleBodies returns known capsules whose declared body ends before
+// the capsule's first field: a declared length of 0 for each type, and a
+// WT_MAX_DATA body of one byte that announces a two-byte varint.
+func shortCapsuleBodies() []struct {
+	name string
+	b    []byte
+} {
+	empty := func(typ http3.CapsuleType) []byte {
+		return quicvarint.Append(quicvarint.Append(nil, uint64(typ)), 0)
+	}
+	shortVarint := quicvarint.Append(quicvarint.Append(nil, uint64(maxDataCapsuleType)), 1)
+	shortVarint = append(shortVarint, 0x40)
+	return []struct {
+		name string
+		b    []byte
+	}{
+		{"WT_CLOSE_SESSION length 0", empty(closeSessionCapsuleType)},
+		{"WT_MAX_DATA length 0", empty(maxDataCapsuleType)},
+		{"WT_MAX_STREAMS bidi length 0", empty(maxStreamsBidiCapsuleType)},
+		{"WT_MAX_STREAMS uni length 0", empty(maxStreamsUniCapsuleType)},
+		{"WT_DATA_BLOCKED length 0", empty(dataBlockedCapsuleType)},
+		{"WT_STREAMS_BLOCKED bidi length 0", empty(streamsBlockedBidiCapsuleType)},
+		{"WT_STREAMS_BLOCKED uni length 0", empty(streamsBlockedUniCapsuleType)},
+		{"WT_MAX_DATA length 1 short varint", shortVarint},
+	}
+}
+
+func TestParseNextCapsuleShortBodyIsNotEOF(t *testing.T) {
+	for _, tc := range shortCapsuleBodies() {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(tc.b)))
+			require.Error(t, err)
+			require.NotErrorIs(t, err, io.EOF)
+		})
+	}
+}
+
+func TestParseNextCapsuleEndOfStreamIsEOF(t *testing.T) {
+	_, err := parseNextCapsule(http3.NewCapsuleParser(bytes.NewReader(nil)))
+	require.Equal(t, io.EOF, err)
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	input := "Go 🚀"
+	require.Len(t, input, 7)
+
+	require.Equal(t, "Go 🚀", truncateUTF8(input, 100))
+	require.Equal(t, "Go 🚀", truncateUTF8(input, 7))
+	require.Equal(t, "Go ", truncateUTF8(input, 6))
+	require.Equal(t, "Go ", truncateUTF8(input, 5))
+	require.Equal(t, "Go ", truncateUTF8(input, 4))
+	require.Equal(t, "Go ", truncateUTF8(input, 3))
+	require.Equal(t, "Go", truncateUTF8(input, 2))
+	require.Equal(t, "G", truncateUTF8(input, 1))
+	require.Equal(t, "", truncateUTF8(input, 0))
+}

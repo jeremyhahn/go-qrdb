@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/x509"
+	"errors"
 	"net/url"
 
 	"google.golang.org/protobuf/proto"
@@ -33,6 +34,7 @@ import (
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	qrdbv1 "github.com/jeremyhahn/go-qrdb/sdk/go/proto/qrdb/v1"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
 // ClusterCAKey is the cluster CA key (Key A) held in the composer's custody.
@@ -202,4 +204,36 @@ func InvoicePermission(perm string) (string, error) {
 	md := fd.Services().ByName("InvoiceService").Methods().ByName("Issue")
 	got, _ := proto.GetExtension(md.Options(), qrdbv1.E_Permission).(string)
 	return got, nil
+}
+
+// CloseWebTransport ends a WebTransport session with an application error
+// code the composer holds as a plain uint32.
+func CloseWebTransport(sess *server.WebTransportSession, code uint32, msg string) error {
+	return sess.CloseWithError(server.WebTransportSessionErrorCode(code), msg)
+}
+
+// WebTransportStreamErrorCode reads the application error code out of a
+// stream error, and whether the peer sent it.
+func WebTransportStreamErrorCode(err error) (code uint32, remote, ok bool) {
+	var se *server.WebTransportStreamError
+	if !errors.As(err, &se) {
+		return 0, false, false
+	}
+	return uint32(se.ErrorCode), se.Remote, true
+}
+
+// WebTransportSessionErrorCode reads the application error code out of a
+// session error.
+func WebTransportSessionErrorCode(err error) (uint32, bool) {
+	var se *server.WebTransportSessionError
+	if !errors.As(err, &se) {
+		return 0, false
+	}
+	return uint32(se.ErrorCode), true
+}
+
+// WebTransportStreamCancel builds the stream error code a handler passes to
+// CancelRead or CancelWrite.
+func WebTransportStreamCancel(code uint32) server.WebTransportStreamErrorCode {
+	return server.WebTransportStreamErrorCode(code)
 }

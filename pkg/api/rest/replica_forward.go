@@ -42,7 +42,8 @@ import (
 // WithReplicaForwarding makes this listener forward a request it refuses
 // because the node holds no replica of the database to a node that does, on
 // the caller's behalf (docs/replica-forwarding). Without it the listener
-// answers the refusal. The watch stream is never forwarded.
+// answers the refusal. The watch stream and a CONNECT (the WebTransport
+// upgrade) are never forwarded.
 func WithReplicaForwarding(cfg replicaforward.Config) ServerOption {
 	return func(s *Server) {
 		c := cfg
@@ -123,7 +124,10 @@ func restForwardedIn(r *http.Request) bool {
 // has been admitted here before anything is forwarded.
 func (f *restReplicaForwarder) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if restForwardedIn(r) || restStreams[r.Method+" "+r.URL.Path] {
+		// A CONNECT (the WebTransport upgrade, RFC 9220) opens a tunnel on
+		// this node's own connection: it is never forwarded, and the upgrade
+		// needs the HTTP/3 ResponseWriter itself, not a wrapper.
+		if restForwardedIn(r) || r.Method == http.MethodConnect || restStreams[r.Method+" "+r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
