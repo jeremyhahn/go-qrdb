@@ -201,9 +201,12 @@ func TestCreateTenant_ConcurrentCreatesHaveOneWinner(t *testing.T) {
 // invariant at every quiescent point: never a tombstone beside a live record.
 // Exactly one of the two outcomes the issue names must hold -- the id is
 // retired, and the create was refused.
+// The commit-time window is pinned deterministically by
+// TestCreateTenant_RefusedWhenADeleteRetiresTheIdMidCreate; this loop runs
+// the real goroutines so the race detector sees concurrent Create/Delete.
 func TestCreateTenant_ConcurrentCreateAndDeleteNeverResurrect(t *testing.T) {
 	ctx := context.Background()
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 10; i++ {
 		store := seal.NewMemoryBackend()
 		svc, _ := newTestServiceWithStore(t, store)
 		if _, err := svc.CreateTenant(ctx, "acme", "Acme", IsolationPrefix); err != nil {

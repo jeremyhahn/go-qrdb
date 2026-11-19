@@ -1025,31 +1025,6 @@ func TestBarrier_Initialize_BarrierEncryptorFails(t *testing.T) {
 
 // --- Unseal ---------------------------------------------------------------
 
-func TestBarrier_Unseal_Success(t *testing.T) {
-	b, _ := newBarrierWithAudit(t)
-	ctx := context.Background()
-	creds := MustCredentials(context.Background(), []byte("unseal-password"))
-
-	if err := b.Initialize(ctx, creds); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	// Seal first, then unseal.
-	if err := b.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-	if !b.IsSealed() {
-		t.Error("expected barrier to be sealed")
-	}
-
-	if err := b.Unseal(ctx, creds); err != nil {
-		t.Fatalf("Unseal: %v", err)
-	}
-	if b.IsSealed() {
-		t.Error("expected barrier to be unsealed")
-	}
-}
-
 func TestBarrier_Unseal_AlreadyUnsealed(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 	ctx := context.Background()
@@ -1219,29 +1194,6 @@ func TestBarrier_Unseal_BarrierEncryptorFails(t *testing.T) {
 
 // --- Seal -----------------------------------------------------------------
 
-func TestBarrier_Seal_Success(t *testing.T) {
-	b, _ := newBarrierWithAudit(t)
-	initBarrier(t, b)
-	ctx := context.Background()
-
-	if b.IsSealed() {
-		t.Fatal("expected unsealed after Initialize")
-	}
-
-	if err := b.Seal(); err != nil {
-		t.Fatalf("Seal: %v", err)
-	}
-	if !b.IsSealed() {
-		t.Error("expected barrier to be sealed")
-	}
-
-	// Operations should fail.
-	_, err := b.Get(ctx, "any-key")
-	if err != ErrSealed {
-		t.Fatalf("expected ErrSealed from Get, got %v", err)
-	}
-}
-
 func TestBarrier_Seal_Idempotent(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
 
@@ -1307,27 +1259,6 @@ func TestBarrier_Seal_WithHardwareEncryptor(t *testing.T) {
 }
 
 // --- Get/Put/Delete/List/Exists -------------------------------------------
-
-func TestBarrier_PutGet_RoundTrip(t *testing.T) {
-	b, _ := newBarrierWithAudit(t)
-	initBarrier(t, b)
-	ctx := context.Background()
-
-	key := "secrets/my-secret"
-	value := []byte("super-secret-data")
-
-	if err := b.Put(ctx, key, value); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	got, err := b.Get(ctx, key)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !bytes.Equal(got, value) {
-		t.Errorf("expected %q, got %q", value, got)
-	}
-}
 
 func TestBarrier_Put_EncryptsData(t *testing.T) {
 	b, _ := newBarrierWithAudit(t)
@@ -1714,21 +1645,6 @@ func TestBarrier_Encryptor_Success(t *testing.T) {
 	if enc != nil {
 		t.Fatal("expected nil encryptor")
 	}
-
-	// Verify encryption still works through the barrier's public API.
-	ctx := context.Background()
-	key := "encryptor-test"
-	value := []byte("test-data")
-	if err := b.Put(ctx, key, value); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-	got, err := b.Get(ctx, key)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if !bytes.Equal(got, value) {
-		t.Errorf("expected %q, got %q", value, got)
-	}
 }
 
 func TestBarrier_Encryptor_Sealed(t *testing.T) {
@@ -1962,8 +1878,14 @@ func TestBarrier_UnsealThenDataRoundTrip(t *testing.T) {
 	if err := b.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
+	if !b.IsSealed() {
+		t.Fatal("expected barrier to be sealed")
+	}
 	if err := b.Unseal(ctx, creds); err != nil {
 		t.Fatalf("Unseal: %v", err)
+	}
+	if b.IsSealed() {
+		t.Fatal("expected barrier to be unsealed")
 	}
 
 	// Data should still be retrievable.

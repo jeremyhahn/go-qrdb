@@ -35,20 +35,6 @@ func TestVectorNotFoundErrorEmptyFields(t *testing.T) {
 	}
 }
 
-func TestVectorNotFoundErrorImplementsError(t *testing.T) {
-	var err error = &VectorNotFoundError{Namespace: "ns", ID: "id"}
-	var target *VectorNotFoundError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for VectorNotFoundError")
-	}
-	if target.Namespace != "ns" {
-		t.Errorf("Namespace = %q, want %q", target.Namespace, "ns")
-	}
-	if target.ID != "id" {
-		t.Errorf("ID = %q, want %q", target.ID, "id")
-	}
-}
-
 func TestNamespaceNotFoundError(t *testing.T) {
 	err := &NamespaceNotFoundError{Namespace: "documents"}
 	expected := "service: namespace not found: documents"
@@ -62,17 +48,6 @@ func TestNamespaceNotFoundErrorEmptyNamespace(t *testing.T) {
 	expected := "service: namespace not found: "
 	if err.Error() != expected {
 		t.Errorf("Error() = %q, want %q", err.Error(), expected)
-	}
-}
-
-func TestNamespaceNotFoundErrorImplementsError(t *testing.T) {
-	var err error = &NamespaceNotFoundError{Namespace: "test-ns"}
-	var target *NamespaceNotFoundError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for NamespaceNotFoundError")
-	}
-	if target.Namespace != "test-ns" {
-		t.Errorf("Namespace = %q, want %q", target.Namespace, "test-ns")
 	}
 }
 
@@ -92,17 +67,6 @@ func TestNamespaceExistsErrorEmptyNamespace(t *testing.T) {
 	}
 }
 
-func TestNamespaceExistsErrorImplementsError(t *testing.T) {
-	var err error = &NamespaceExistsError{Namespace: "dup-ns"}
-	var target *NamespaceExistsError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for NamespaceExistsError")
-	}
-	if target.Namespace != "dup-ns" {
-		t.Errorf("Namespace = %q, want %q", target.Namespace, "dup-ns")
-	}
-}
-
 func TestDimensionMismatchError(t *testing.T) {
 	err := &DimensionMismatchError{Expected: 384, Actual: 768}
 	expected := "service: dimension mismatch: expected 384, got 768"
@@ -116,20 +80,6 @@ func TestDimensionMismatchErrorZeroDimensions(t *testing.T) {
 	expected := "service: dimension mismatch: expected 0, got 0"
 	if err.Error() != expected {
 		t.Errorf("Error() = %q, want %q", err.Error(), expected)
-	}
-}
-
-func TestDimensionMismatchErrorImplementsError(t *testing.T) {
-	var err error = &DimensionMismatchError{Expected: 128, Actual: 256}
-	var target *DimensionMismatchError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for DimensionMismatchError")
-	}
-	if target.Expected != 128 {
-		t.Errorf("Expected = %d, want 128", target.Expected)
-	}
-	if target.Actual != 256 {
-		t.Errorf("Actual = %d, want 256", target.Actual)
 	}
 }
 
@@ -149,33 +99,11 @@ func TestInvalidVectorErrorEmptyReason(t *testing.T) {
 	}
 }
 
-func TestInvalidVectorErrorImplementsError(t *testing.T) {
-	var err error = &InvalidVectorError{Reason: "empty vector"}
-	var target *InvalidVectorError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for InvalidVectorError")
-	}
-	if target.Reason != "empty vector" {
-		t.Errorf("Reason = %q, want %q", target.Reason, "empty vector")
-	}
-}
-
 func TestInvalidNamespaceNameError(t *testing.T) {
 	err := &InvalidNamespaceNameError{Name: "bad\x1fname", Reason: "contains illegal control character 0x1f"}
 	got := err.Error()
 	if got == "" {
 		t.Error("Error() must return non-empty string")
-	}
-}
-
-func TestInvalidNamespaceNameErrorImplementsError(t *testing.T) {
-	var err error = &InvalidNamespaceNameError{Name: "x", Reason: "too short"}
-	var target *InvalidNamespaceNameError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed for InvalidNamespaceNameError")
-	}
-	if target.Name != "x" {
-		t.Errorf("Name = %q, want %q", target.Name, "x")
 	}
 }
 

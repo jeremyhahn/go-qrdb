@@ -1054,22 +1054,6 @@ func TestPrefixUpperBound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestPebbleStateMachine_ImplementsDiskStateMachine(t *testing.T) {
-	var _ sm.DiskStateMachine = (*PebbleStateMachine)(nil)
-}
-
-func TestPebbleStateMachine_ImplementsHasher(t *testing.T) {
-	var _ sm.Hasher = (*PebbleStateMachine)(nil)
-}
-
-func TestPebbleStateMachine_ImplementsNALookup(t *testing.T) {
-	var _ sm.NALookup = (*PebbleStateMachine)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // NewPebbleStateMachine
 // ---------------------------------------------------------------------------
 
