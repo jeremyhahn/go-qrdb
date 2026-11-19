@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RestClient } from '../src/rest.js';
 import { ConfigError, TransportError } from '../src/errors.js';
+import type { CreateTenantRequest } from '../src/types.js';
 
 const HTTPS = 'https://localhost:63002';
 const HTTP = 'http://localhost:63002';
@@ -104,6 +105,12 @@ const SECRET_CASES: readonly SecretCase[] = [
         call: (c) => c.tenants.barrierInit({
             tenantId: 'acme', strategy: 'passphrase', passphrase: 'pass', threshold: 1, shares: 1,
         }),
+    },
+    {
+        name: 'tenants.create with an SO PIN',
+        request: 'POST /v1/tenants',
+        answers: { 'POST /v1/tenants': { id: 'acme', name: 'Acme', admin: {} } },
+        call: (c) => c.tenants.create({ id: 'acme', name: 'Acme', soPin: 'SO123' } as unknown as CreateTenantRequest),
     },
     {
         name: 'tenants.barrierUnseal',
@@ -233,6 +240,10 @@ describe('a call whose optional secret is absent is not guarded', () => {
             name: 'databases.create with no secret',
             call: (c) => c.database.create({ name: 'db', backend: 'memory' }),
         },
+        {
+            name: 'tenants.create with no SO PIN',
+            call: (c) => c.tenants.create({ id: 'acme', name: 'Acme' } as unknown as CreateTenantRequest),
+        },
     ];
 
     it.each(cases)('$name is sent over http://', async (tc) => {
@@ -240,6 +251,7 @@ describe('a call whose optional secret is absent is not guarded', () => {
         const sent = installFetch({
             'POST /v1/barrier/rekey/start': {},
             'POST /v1/databases': {},
+            'POST /v1/tenants': { id: 'acme', name: 'Acme', admin: {} },
         });
 
         await expect(tc.call(client)).resolves.not.toBeInstanceOf(Error);

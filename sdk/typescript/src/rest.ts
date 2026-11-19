@@ -2674,13 +2674,15 @@ export class RestClient implements Client {
                 // top level and adds an "admin" key (the Go handler's
                 // createTenantResponse anonymously embeds *tenantResponse);
                 // split them apart to match the SDK's {tenant, admin} contract.
-                const raw = await this.fetchJSON<TenantInfo & {
+                // An SO PIN in the body is a secret: it goes over HTTPS with
+                // redirects refused, like every other PIN-bearing call.
+                const raw = await this.fetchSecretJSON<TenantInfo & {
                     admin: TenantAdminCredential;
                     so?: TenantAdminCredential;
                 }>('/v1/tenants', {
                     method: 'POST',
                     ...jsonBody(req),
-                });
+                }, Boolean(req.soPin));
                 const { admin, so, ...tenant } = raw;
                 return so === undefined ? { tenant, admin } : { tenant, admin, so };
             },
