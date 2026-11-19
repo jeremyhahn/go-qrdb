@@ -114,12 +114,16 @@ case $1 in
     # STUB_PULL: hit pulls the digest asked for (STUB_PULL_SERVES: another
     # one), whose repo digest `image inspect` then reports; hang never answers
     # (a registry that accepts the connection and stalls); anything else is a
-    # miss.
+    # miss. -q (the LAN registry pull's) is dropped.
+    [ "$2" != -q ] || set -- "$1" "${@:3}"
     case ${STUB_PULL:-miss} in
       hit)
         d=${STUB_PULL_SERVES:-${2#*@}}
         settag "$2" "${STUB_PULL_ID:-sha256:pulled}"
         printf '%s@%s\n' "${2%@*}" "$d" > "$s/pulled"
+        # STUB_PULL_THEN_PRUNE: another runner's prune on this daemon runs
+        # the moment the pull returns, before the caller checks or tags.
+        [ -z "${STUB_PULL_THEN_PRUNE:-}" ] || "$STUB_CI_IMAGE" prune 24 > "$s/then.err" 2>&1 || true
         echo 'Status: Downloaded newer image'; echo "Digest: $d" ;;
       hang) exec sleep 30 ;;
       refused) echo "dial tcp registry.test:5000: connect: connection refused" >&2; exit 1 ;;
@@ -566,6 +570,59 @@ if command -v flock >/dev/null 2>&1; then
   if [ "$rc" = 1 ] && grep -q 'still held exclusive' "$D/err" && ! called '^load '; then
     ok "a producer step refuses to run while a prune holds the image lock"
   else bad "a producer step refuses to run while a prune holds the image lock (rc=$rc)"; cat "$D/err"; fi
+  # 12a7b. Codex P1 (#1597 round 2): two pool runners are containers with
+  # their own temp dirs that share one Docker daemon and the host's data
+  # array. Runner 1 holds the default image lock shared; runner 2's prune
+  # must find it held, so the default is on the data array, never the temp
+  # dir. A pool runner with no data array and no CI_IMAGE_LOCK keeps every
+  # image; a hosted runner keeps its temp dir.
+  reset
+  mkdir -p "$D/state/created" "$D/r1tmp" "$D/r2tmp" "$D/host/gh-runner-cache"
+  tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa "$id_b"
+  echo "$old" > "$D/state/created/${id_b#sha256:}"
+  pool=(CI_IMAGE_LOCK= GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted CI_CACHE_ROOT="$D/host")
+  run lock-file -- "${pool[@]}" TMPDIR="$D/r1tmp"
+  lock1=$(cat "$D/out")
+  [ -n "$lock1" ] && exec 8>>"$lock1" && flock -s 8
+  run prune 24 -- "${pool[@]}" TMPDIR="$D/r2tmp" CI_IMAGE_LOCK_WAIT=0
+  exec 8>&-
+  if [ "$rc" = 0 ] && [ "$lock1" = "$D/host/gh-runner-cache/qrdb-ci-image.lock" ] &&
+    [ -e "$D/state/ids/${id_b#sha256:}" ] && ! called '^image rm ' && grep -q 'another job holds the image lock' "$D/err"; then
+    ok "two pool runners with their own temp dirs share the image lock on the host's data array"
+  else bad "two pool runners with their own temp dirs share the image lock on the host's data array (rc=$rc, lock=$lock1)"; cat "$D/err"; fi
+  run prune 24 -- "${pool[@]}" CI_CACHE_ROOT="$D/nohost" TMPDIR="$D/r2tmp" CI_IMAGE_LOCK_WAIT=0
+  if [ "$rc" = 0 ] && [ -e "$D/state/ids/${id_b#sha256:}" ] && ! called '^image rm ' && grep -q 'no host-shared image lock' "$D/err"; then
+    ok "a pool runner with no host-shared image lock keeps every image"
+  else bad "a pool runner with no host-shared image lock keeps every image (rc=$rc)"; cat "$D/err"; fi
+  run lock-file -- "${pool[@]}" RUNNER_ENVIRONMENT=github-hosted TMPDIR="$D/r1tmp"
+  if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "$D/r1tmp/qrdb-ci-image.lock" ]; then
+    ok "a hosted runner's image lock is in its temp dir"
+  else bad "a hosted runner's image lock is in its temp dir (rc=$rc)"; cat "$D/out" "$D/err"; fi
+  # 12a7c. Codex P1 (#1597 round 2): a pool leg pulls its image from the LAN
+  # CI registry, checks its ID and tags it. Another runner's prune that runs
+  # the moment the pull returns (the stub runs it from inside the pull) finds
+  # the image lock held shared and removes nothing, so the check and the tag
+  # find the pulled image, though it was built past the bound.
+  reset
+  mkdir -p "$D/state/created"
+  echo "$old" > "$D/state/created/${id_b#sha256:}"
+  lanref=registry.test:5000/go-qrdb/toolchain-image:1111111111111111
+  run lan-pull registry.test:5000 "$lanref" "$id_b" "$tc" -- STUB_PULL=hit STUB_PULL_ID="$id_b" \
+    STUB_PULL_THEN_PRUNE=1 STUB_CI_IMAGE="$here/ci-image.sh" CI_IMAGE_LOCK_WAIT=0
+  if [ "$rc" = 0 ] && [ "$(resolve "$tc")" = "$id_b" ] && [ "$(resolve "$lanref")" = "$id_b" ] &&
+    grep -q 'another job holds the image lock' "$D/state/then.err" && ! called '^image rm '; then
+    ok "a LAN registry pull, its ID check and its tag hold the image lock against a concurrent prune"
+  else bad "a LAN registry pull, its ID check and its tag hold the image lock against a concurrent prune (rc=$rc)"; cat "$D/err" "$D/state/then.err" 2>/dev/null; fi
+  # A LAN pull waits for a prune that holds the lock exclusive, and fails
+  # rather than pull unprotected once the wait runs out.
+  reset
+  exec 8>>"$D/image.lock"
+  flock -x 8
+  run lan-pull registry.test:5000 "$lanref" "$id_b" "$tc" -- STUB_PULL=hit STUB_PULL_ID="$id_b" CI_IMAGE_LOCK_WAIT=0
+  exec 8>&-
+  if [ "$rc" = 1 ] && grep -q 'still held exclusive' "$D/err" && ! called '^pull '; then
+    ok "a LAN registry pull refuses to run while a prune holds the image lock"
+  else bad "a LAN registry pull refuses to run while a prune holds the image lock (rc=$rc)"; cat "$D/err"; fi
   # 12a8. The toolchain image's flock is BusyBox's, which knows only -s -x
   # -u -n (#1597 Lint Gates: "flock: unrecognized option: w"). A shim that
   # refuses -w as BusyBox does stands in for it; the lock still works.

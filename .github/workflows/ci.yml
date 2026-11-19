@@ -1135,8 +1135,7 @@ jobs:
           HANDOFF=TOOLCHAIN_IMAGE
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
-             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+             scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"; then
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
@@ -1737,8 +1736,7 @@ jobs:
           HANDOFF=IT_IMAGE
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
-             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+             scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"; then
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
@@ -1949,8 +1947,7 @@ jobs:
           HANDOFF=TOOLCHAIN_IMAGE
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
-             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+             scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"; then
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"

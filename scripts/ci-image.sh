@@ -27,6 +27,7 @@
 #   ci-image.sh prune [hours]                      self-hosted retention of the CI images
 #   ci-image.sh check-ref <ref>...                 validates digest references
 #   ci-image.sh lock-file                          prints the image lock file prune and the producers share
+#   ci-image.sh lan-pull <registry> <ref> <id> <image>  pulls <ref> from the LAN CI registry, checks it is <id> and tags it <image>, under the image lock
 #   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
 #   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
 #   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
@@ -301,13 +302,36 @@ epoch() {
 # the reused image's tag time under it, so the image is younger than any
 # prune bound for the rest of the job. prune holds it exclusive from its
 # snapshot to its last removal, so no image is acquired between the check
-# and the removal. CI_IMAGE_LOCK names the file (one per daemon host: the
-# default is in the host's temp dir, which every runner on it shares).
-lock_file() { printf '%s\n' "${CI_IMAGE_LOCK:-${TMPDIR:-/tmp}/qrdb-ci-image.lock}"; }
+# and the removal. The lock is one file every job on the daemon's host opens.
+# CI_IMAGE_LOCK names it. Otherwise, on a self-hosted pool runner it is on the
+# host's data array, the one directory the pool's runner containers share
+# (scripts/ci-cache-dir.sh: $CI_CACHE_ROOT/gh-runner-cache, else
+# $CI_CACHE_ROOT): each runner container has its own temp dir and shares only
+# the Docker daemon, so a temp-dir lock there would let prune remove an image
+# another runner holds (#1597 Codex round 2). A pool runner with neither has no
+# shared lock: lock_file prints nothing, and prune keeps every image. A hosted
+# runner or a developer's machine has its own daemon and one temp dir, which is
+# the default there.
+lock_file() {
+	if [ -n "${CI_IMAGE_LOCK:-}" ]; then
+		printf '%s\n' "$CI_IMAGE_LOCK"
+	elif [ "${GITHUB_ACTIONS:-}" = true ] && [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ]; then
+		local root=${CI_CACHE_ROOT:-/mnt/raid0} d
+		for d in "$root/gh-runner-cache" "$root"; do
+			if [ -d "$d" ] && [ -w "$d" ]; then
+				printf '%s\n' "$d/qrdb-ci-image.lock"
+				return 0
+			fi
+		done
+	else
+		printf '%s\n' "${TMPDIR:-/tmp}/qrdb-ci-image.lock"
+	fi
+}
 
 # lock -s|-x takes the image lock on fd 9 until the process exits, waiting
 # at most CI_IMAGE_LOCK_WAIT seconds (default 600). It returns 1 when the
-# wait runs out; without flock(1) it returns 2 and holds nothing. It polls
+# wait runs out; without flock(1) or a host-shared lock file it returns 2 and
+# holds nothing. It polls
 # flock -n rather than calling flock -w: the toolchain image's BusyBox flock
 # knows only -s -x -u -n. A flock that fails rather than finds the lock busy
 # (it prints why; a busy -n prints nothing) is an error, never a timeout.
@@ -316,6 +340,7 @@ lock() {
 	[[ $wait =~ ^(0|[1-9][0-9]{0,4})$ ]] || die "CI_IMAGE_LOCK_WAIT must be a whole number of seconds (at most 99999)"
 	command -v flock >/dev/null 2>&1 || return 2
 	f=$(lock_file)
+	[ -n "$f" ] || return 2
 	exec 9>>"$f" || die "cannot open the image lock $f"
 	deadline=$((SECONDS + wait))
 	while :; do
@@ -337,6 +362,24 @@ producer_lock() {
 	0 | 2) ;;
 	*) die "the image lock $(lock_file) is still held exclusive (a prune) after ${CI_IMAGE_LOCK_WAIT:-600}s" ;;
 	esac
+}
+
+# lan_pull <registry> <ref> <id> <image> pulls <ref> from the LAN CI registry
+# (#1593), checks it is image <id> and tags it <image>, all under the image
+# lock held shared, as load does: prune, which holds it exclusive, cannot
+# remove the pulled image between the pull, the check and the tag (#1597 Codex
+# round 2). The tag refreshes the image's tag time, so it stays younger than
+# any prune bound for the rest of the job. Status 1 when the pull fails or
+# names another image; the caller takes no other (ruling 879).
+lan_pull() {
+	[ $# -eq 4 ] || die "usage: lan-pull <registry> <ref> <id> <image>"
+	local reg=$1 ref=$2 want=$3 image=$4
+	producer_lock
+	check_image "$image"
+	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
+	ci_registry_pull_id "$reg" "$ref" "$want" || return 1
+	docker tag "$want" "$image" >/dev/null 2>&1 || return 1
+	echo "==> $image is $want, pulled from the LAN CI registry" >&2
 }
 
 # prune is the self-hosted retention of the CI images. A pool daemon outlives
@@ -363,6 +406,10 @@ prune() {
 	# Exclusive, or nothing at all: a job acquiring or reusing an image
 	# holds the lock shared, and an image it reuses may be past the bound
 	# until it refreshes the tag time under that lock.
+	if [ -z "$(lock_file)" ]; then
+		echo "==> prune: kept every image, this pool runner has no host-shared image lock (set CI_IMAGE_LOCK to a file every runner on the daemon's host opens)" >&2
+		return 0
+	fi
 	local lrc=0
 	lock -x || lrc=$?
 	case $lrc in
@@ -448,7 +495,7 @@ prune() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|push|untag|prune|check-ref|registry-pull|registry-push ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|lan-pull|push|untag|prune|check-ref|registry-pull|registry-push ..."
 	local cmd=$1
 	shift
 	case $cmd in
@@ -458,6 +505,7 @@ main() {
 	push) push "$@" ;;
 	untag) untag "$@" ;;
 	prune) prune "$@" ;;
+	lan-pull) lan_pull "$@" ;;
 	lock-file)
 		[ $# -eq 0 ] || die "usage: lock-file"
 		lock_file

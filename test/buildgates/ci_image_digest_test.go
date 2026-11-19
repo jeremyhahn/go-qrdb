@@ -506,12 +506,13 @@ lan_push "$TOOLCHAIN_ID" toolchain-image toolchain_tag
 lan_push "$IT_ID" it-image it_tag`
 	// lanPullID is the pull of pool-images's image (ruling 915): up to three
 	// bounded attempts, each checked against "$ID", in scripts/image-registry.sh
-	// (registry_pull_test.go holds its behaviour); it leaves the outage marker
-	// itself when the registry stalls.
-	lanPullID  = `ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID"`
+	// (registry_pull_test.go holds its behaviour; it leaves the outage marker
+	// itself when the registry stalls), then the tag of the verified "$ID",
+	// all under the image lock prune takes exclusive (#1597 Codex round 2;
+	// scripts/ci-image_test.sh holds lan-pull's behaviour).
+	lanPullID  = `scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"`
 	lanPullRun = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-   ` + lanPullID + ` &&
-   docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+   ` + lanPullID + `; then
   echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
 else
   echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not ` + poolProducer + `'s image: a pool leg takes no other (ruling 879)"
@@ -690,16 +691,14 @@ var lanTransfer = regexp.MustCompile(`(?m)^.*?docker (pull|push)\s`)
 // registry docker pull, push, tag and rmi discards it.
 func lanScriptProblems(where, run string, pull bool) (problems []string) {
 	if pull {
-		inspect := strings.Index(run, lanPullID)
-		tag := strings.Index(run, "docker tag ")
-		switch {
-		case inspect < 0:
-			problems = append(problems, where+` never pulls through `+lanPullID+`, which checks the pulled "$REF" against "$ID" and retries a lost race (ruling 915)`)
-		case tag >= 0 && tag < inspect:
-			problems = append(problems, where+` tags before it checks the pulled "$REF" against "$ID": a rejected pull moves the tag`)
+		// #1597 Codex round 2: prune on the shared daemon may remove an image
+		// between a pull, its check and its tag unless all three hold the
+		// image lock, so the step pulls and tags only through lan-pull.
+		if !strings.Contains(run, lanPullID) {
+			problems = append(problems, where+` never pulls through `+lanPullID+`, which checks the pulled "$REF" against "$ID", retries a lost race (ruling 915) and tags the verified "$ID" under the image lock`)
 		}
-		if !strings.Contains(run, `docker tag "$ID" "$IMAGE"`) || strings.Contains(run, `docker tag "$REF"`) {
-			problems = append(problems, where+` tags something other than the verified "$ID": want docker tag "$ID" "$IMAGE"`)
+		if strings.Contains(run, "docker pull ") || strings.Contains(run, "docker tag ") || strings.Contains(run, "ci_registry_pull_id ") {
+			problems = append(problems, where+` pulls, checks or tags outside lan-pull, without the image lock prune takes (#1597)`)
 		}
 		// Codex P1 on #1631: the pool daemon is shared, and sibling legs of the
 		// run pull the same "$REF"; a leg that removes it can take it from a
@@ -1212,8 +1211,7 @@ jobs:
           HANDOFF=TOOLCHAIN_IMAGE
           REF="$CI_REGISTRY/go-qrdb/toolchain-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
-             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+             scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"; then
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
@@ -1262,8 +1260,7 @@ jobs:
           HANDOFF=IT_IMAGE
           REF="$CI_REGISTRY/go-qrdb/it-image:$TAG"
           if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&
-             ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&
-             docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then
+             scripts/ci-image.sh lan-pull "$CI_REGISTRY" "$REF" "$ID" "$IMAGE"; then
             echo "$HANDOFF=$ID" >> "$GITHUB_ENV"
           else
             echo "::error::the pull of $IMAGE from the LAN CI registry failed or is not pool-images's image: a pool leg takes no other (ruling 879)"
@@ -1512,21 +1509,26 @@ func TestCIImageDigest_LANVerifyBeforeTag(t *testing.T) {
 	}
 	const (
 		skip  = `if ! ci_registry_skip "$CI_REGISTRY" "${REF#"$CI_REGISTRY"/}" &&`
-		pull  = lanPullID + ` &&`
+		pull  = lanPullID + `; then`
 		tagID = `docker tag "$ID" "$IMAGE" >/dev/null 2>&1; then`
+		nl    = "\n             "
 	)
 	regressions := []struct{ name, old, new string }{
-		{name: "the pre-#1595 tag-then-check pull", old: pull + "\n             " + tagID,
-			new: `docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + "\n             " +
+		{name: "the pre-#1595 tag-then-check pull", old: pull,
+			new: `docker pull -q "$REF" >/dev/null && docker tag "$REF" "$IMAGE" &&` + nl +
 				`[ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$ID" ]; then`},
-		{name: "a tag of the registry ref", old: tagID, new: `docker tag "$REF" "$IMAGE" >/dev/null 2>&1; then`},
-		{name: "a tag before the check", old: pull, new: `docker tag "$ID" "$IMAGE" >/dev/null 2>&1 && ` + pull},
-		{name: "a check of the tagged image", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 && [ "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" = "$ID" ] &&`},
-		{name: "a single unretried pull", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 && [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&`},
-		{name: "a pull printing its stderr", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null &&`},
-		{name: "a pull with no timeout", old: pull, new: `docker pull -q "$REF" >/dev/null 2>&1 &&`},
-		{name: "a pull bounded by a timeout of its own", old: pull, new: `timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&`},
-		{name: "a tag printing its stderr", old: tagID, new: `docker tag "$ID" "$IMAGE"; then`},
+		// #1597 Codex round 2: the pull, its check and its tag outside the
+		// image lock, as before lan-pull.
+		{name: "the pre-#1597 pull and tag outside the image lock", old: pull,
+			new: `ci_registry_pull_id "$CI_REGISTRY" "$REF" "$ID" &&` + nl + tagID},
+		{name: "a tag of the registry ref after lan-pull", old: pull, new: lanPullID + ` &&` + nl + `docker tag "$REF" "$IMAGE" >/dev/null 2>&1; then`},
+		{name: "a tag before lan-pull", old: pull, new: `docker tag "$ID" "$IMAGE" >/dev/null 2>&1 && ` + pull},
+		{name: "a check of the tagged image", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 && [ "$(docker image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null)" = "$ID" ] &&` + nl + tagID},
+		{name: "a single unretried pull", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null 2>&1 && [ "$(docker image inspect -f '{{.Id}}' "$REF" 2>/dev/null)" = "$ID" ] &&` + nl + tagID},
+		{name: "a pull printing its stderr", old: pull, new: lanTimeout + `docker pull -q "$REF" >/dev/null &&` + nl + tagID},
+		{name: "a pull with no timeout", old: pull, new: `docker pull -q "$REF" >/dev/null 2>&1 &&` + nl + tagID},
+		{name: "a pull bounded by a timeout of its own", old: pull, new: `timeout 99999 docker pull -q "$REF" >/dev/null 2>&1 &&` + nl + tagID},
+		{name: "a tag printing its stderr", old: pull, new: lanPullID + ` &&` + nl + `docker tag "$ID" "$IMAGE"; then`},
 		{name: "a removal of the registry tag a sibling leg checks", old: `  echo "$HANDOFF=$ID" >> "$GITHUB_ENV"`, new: `  docker rmi "$REF" >/dev/null 2>&1 || true` + "\n" + `  echo "$HANDOFF=$ID" >> "$GITHUB_ENV"`},
 	}
 	for _, family := range []string{"toolchain", "it"} {

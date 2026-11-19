@@ -285,11 +285,16 @@ whose newer of creation and last tag time is older than the bound, and keeps
 any image a running container uses; `load` re-tags the image so a recent
 load counts as a use. Prune and the jobs that acquire an image share a
 daemon-wide image lock (`scripts/ci-image.sh lock-file`, `CI_IMAGE_LOCK`,
-flock): `pin`, `save`, `load` and `make docker-build-toolchain` /
-`docker-build-it` (check, reuse, pull or build, push) hold it shared, and the
-make targets refresh a reused image's tag time under it; `prune` holds it
-exclusive and removes nothing while any job holds it, and keeps an image
-tagged since its check. `ci_image_id_handoff_test.go` requires the prune step,
+flock): `pin`, `save`, `load`, `lan-pull` (the LAN CI registry pull, its ID
+check and tag) and `make docker-build-toolchain` / `docker-build-it` (check,
+reuse, pull or build, push) hold it shared, and the make targets refresh a
+reused image's tag time under it; `prune` holds it exclusive and removes
+nothing while any job holds it, and keeps an image tagged since its check. The
+lock file must be one every runner on the daemon's host opens: pool runner
+containers share the daemon but not a temp dir, so on a self-hosted runner the
+default is on the data array (`$CI_CACHE_ROOT/gh-runner-cache`, else
+`$CI_CACHE_ROOT`), and with neither and no `CI_IMAGE_LOCK` prune keeps every
+image. `ci_image_id_handoff_test.go` requires the prune step,
 after the job's last save or load, under `always()` on self-hosted runners,
 with a bound of at most 72 hours.
 
