@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -771,6 +772,140 @@ func TestPhysicalToLogicalSize_TypedErrors(t *testing.T) {
 	}
 	if want := fmt.Sprintf("encfs: trailing block too short (%d bytes)", short); err.Error() != want {
 		t.Errorf("Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// tornFile is a base file whose WriteAt, once tear is set, writes the first
+// half of the buffer and fails with ENOSPC: a disk filling up in the middle
+// of flushTailLocked's in-place rewrite of the trailing block.
+type tornFile struct {
+	filesys.File
+	tear bool
+}
+
+func (f *tornFile) WriteAt(p []byte, off int64) (int, error) {
+	if !f.tear {
+		return f.File.WriteAt(p, off)
+	}
+	n, err := f.File.WriteAt(p[:len(p)/2], off)
+	if err != nil {
+		return n, err
+	}
+	return n, syscall.ENOSPC
+}
+
+// tornFS hands out tornFile from Create and keeps the last one.
+type tornFS struct {
+	filesys.FS
+	file *tornFile
+}
+
+func (fs *tornFS) Create(name string) (filesys.File, error) {
+	f, err := fs.FS.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	fs.file = &tornFile{File: f}
+	return fs.file, nil
+}
+
+// writeTornFile writes three full blocks plus a synced partial block, then
+// extends the partial block and tears its rewrite with ENOSPC. It returns
+// the plaintext of the three full blocks.
+func writeTornFile(t *testing.T, mem filesys.FS, b *fakeBarrier, name string) []byte {
+	t.Helper()
+	tfs := &tornFS{FS: mem}
+	f, err := New(tfs, b).Create(name)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	full := make([]byte, 3*BlockSize)
+	for i := range full {
+		full[i] = byte(i % 251)
+	}
+	if _, err := f.Write(append(bytes.Clone(full), bytes.Repeat([]byte("t"), 100)...)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	tfs.file.tear = true
+	if _, err := f.Write(bytes.Repeat([]byte("u"), 200)); err != nil {
+		t.Fatalf("Write extension: %v", err)
+	}
+	if err := f.Sync(); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("torn Sync err = %v, want ENOSPC", err)
+	}
+	_ = f.Close()
+	return full
+}
+
+// TestEncFile_TornFinalBlockIsEndOfFile: a trailing block torn by ENOSPC
+// mid-rewrite reads as end of file; every earlier block still reads back.
+func TestEncFile_TornFinalBlockIsEndOfFile(t *testing.T) {
+	mem := newBaseFS()
+	b := newFakeBarrier(t)
+	full := writeTornFile(t, mem, b, "torn.log")
+
+	r, err := New(mem, b).Open("torn.log")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	got := make([]byte, len(full))
+	if n, err := r.ReadAt(got, 0); err != nil || n != len(full) || !bytes.Equal(got, full) {
+		t.Fatalf("ReadAt full blocks: n=%d err=%v equal=%v", n, err, bytes.Equal(got, full))
+	}
+	if _, err := r.ReadAt(make([]byte, 1), int64(len(full))); !errors.Is(err, io.EOF) {
+		t.Fatalf("ReadAt torn final block: err = %v, want io.EOF", err)
+	}
+}
+
+// TestEncFile_TamperedMiddleBlockStaysFatal: only the final block may be
+// dropped as torn; a non-final block that fails authentication is still
+// ErrAuthFailed.
+func TestEncFile_TamperedMiddleBlockStaysFatal(t *testing.T) {
+	mem, b, fs := newMemFS(t)
+	f, err := fs.Create("mid.dat")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.Write(make([]byte, 3*BlockSize+100)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	raw, err := mem.OpenReadWrite("mid.dat")
+	if err != nil {
+		t.Fatalf("raw OpenReadWrite: %v", err)
+	}
+	var hs [2]byte
+	if _, err := raw.ReadAt(hs[:], offHeaderSize); err != nil {
+		t.Fatalf("raw ReadAt header size: %v", err)
+	}
+	headerSize := int64(hs[0]) | int64(hs[1])<<8
+	off := headerSize + int64(CiphertextBlockSize) + int64(inlineNonceSize) + 5
+	var one [1]byte
+	if _, err := raw.ReadAt(one[:], off); err != nil {
+		t.Fatalf("raw ReadAt: %v", err)
+	}
+	one[0] ^= 0xFF
+	if _, err := raw.WriteAt(one[:], off); err != nil {
+		t.Fatalf("raw WriteAt: %v", err)
+	}
+	_ = raw.Close()
+
+	r, err := New(mem, b).Open("mid.dat")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := r.ReadAt(make([]byte, BlockSize), 0); err != nil {
+		t.Fatalf("ReadAt block 0: %v", err)
+	}
+	if _, err := r.ReadAt(make([]byte, 1), int64(BlockSize)); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("ReadAt tampered block 1: err = %v, want ErrAuthFailed", err)
 	}
 }
 

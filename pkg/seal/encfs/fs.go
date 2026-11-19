@@ -146,7 +146,14 @@ func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newReadFile(base, h, physicalSize)
+	rf, err := newReadFile(base, h, physicalSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := rf.dropTornTail(); err != nil {
+		return nil, err
+	}
+	return rf, nil
 }
 
 // openEncryptedRW reads the header for a non-empty file opened with
