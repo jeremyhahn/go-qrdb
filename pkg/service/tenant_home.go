@@ -228,12 +228,17 @@ func (s *DatabaseService) readmitHomeReplicas(ctx context.Context, view HomeGrou
 // cluster (absent from the topology, not merely unhealthy). A grown home
 // that keeps departed voters loses quorum once enough of them retire, so
 // each is removed while the replicas on known nodes are still a majority
-// of the group: only then can the removal commit.
+// of the group: only then can the removal commit. A removal never takes
+// the home below its replication factor, the cluster size it is placed
+// and grown to (ProvisionTenantHome, growHome): a departed replica whose
+// replacement is not yet placed (the new node unhealthy, or not admitted)
+// stays until growth has placed one.
 func (s *DatabaseService) shedDepartedHomeReplicas(ctx context.Context, home *placement.Placement) (*placement.Placement, error) {
 	known := s.placementScheduler.KnownRaftAddrs()
 	if len(known) == 0 {
 		return home, nil
 	}
+	rf := max(s.placementScheduler.ClusterSize(), 1)
 	current := home
 	for _, r := range home.Replicas {
 		if known[r.RaftAddr] {
@@ -245,7 +250,7 @@ func (s *DatabaseService) shedDepartedHomeReplicas(ctx context.Context, home *pl
 				live++
 			}
 		}
-		if live == 0 || live*2 <= len(current.Replicas) {
+		if live == 0 || live*2 <= len(current.Replicas) || len(current.Replicas)-1 < rf {
 			return current, nil
 		}
 		updated, _, err := removeReplicaFromGroup(ctx, s.raftHost, s.placementStore, current, r.ReplicaID)

@@ -143,3 +143,28 @@ func TestReconcileTenantHomes_KeepsDepartedReplicasWithoutQuorum(t *testing.T) {
 		t.Fatalf("RemoveFollowerNode calls = %d, want 0", len(host.removeCalls))
 	}
 }
+
+// TestReconcileTenantHomes_KeepsDepartedReplicaAtTheReplicationFactor pins
+// the replication-factor floor: a home at exactly the cluster size, one of
+// whose nodes has departed while its replacement is unhealthy (so growth
+// places nothing), keeps the departed replica rather than shrink below the
+// factor, although the known replicas are a majority.
+func TestReconcileTenantHomes_KeepsDepartedReplicaAtTheReplicationFactor(t *testing.T) {
+	svc, store, topo := homeOnTopology(t, healthyNodes("n1", "n2", "n3"))
+	host := withHomeView(t, svc, store, true)
+	replacement := placement.NodeLoad{NodeID: "n4", RaftAddr: "n4:1", Healthy: false}
+	topo.nodes = append(healthyNodes("n1", "n2"), replacement)
+
+	if err := svc.ReconcileTenantHomes(context.Background()); err != nil {
+		t.Fatalf("ReconcileTenantHomes: %v", err)
+	}
+	if homeReplicaOn(t, store, "n3:1") == nil {
+		t.Fatal("home shed its replica on departed n3 below the replication factor")
+	}
+	if n := len(loadHome(t, store).Replicas); n != 3 {
+		t.Fatalf("home spans %d replicas, want 3", n)
+	}
+	if len(host.removeCalls) != 0 {
+		t.Fatalf("RemoveFollowerNode calls = %d, want 0", len(host.removeCalls))
+	}
+}
