@@ -540,7 +540,15 @@ func TestBlockCrypto_FrameBounds(t *testing.T) {
 // log (a file written before the framed layout) and returns its path.
 func writeFixedLog(t *testing.T, b barrierKEK, data []byte) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "000010.log")
+	return writeFixedLogNamed(t, b, "000010.log", data)
+}
+
+// writeFixedLogNamed writes data through the fixed-size block layout (no
+// framed flag) to a file called name under t.TempDir(), syncing before it
+// closes, and returns the file's path.
+func writeFixedLogNamed(t *testing.T, b barrierKEK, name string, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
 	base, err := filesys.Default.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -556,10 +564,67 @@ func writeFixedLog(t *testing.T, b barrierKEK, data []byte) string {
 	if _, err := f.Write(data); err != nil {
 		t.Fatal(err)
 	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// TestFixedLog_ShortTrailingBlockRefused: the fixed-size block layout
+// records no durable boundary, so a final block shorter than BlockOverhead
+// cannot be told from a synced record whose ciphertext was truncated later.
+// Opening such a WAL or MANIFEST, read-only or for recovery, refuses with
+// TrailingBlockTooShortError instead of dropping the acknowledged record,
+// and leaves the file as it was.
+func TestFixedLog_ShortTrailingBlockRefused(t *testing.T) {
+	b := newFakeBarrier(t)
+	record := []byte("synced record")
+	const short = BlockOverhead - 1
+	for _, name := range []string{"000010.log", "MANIFEST-000001"} {
+		t.Run(name, func(t *testing.T) {
+			path := writeFixedLogNamed(t, b, name, record)
+			fi, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cipherStart := fi.Size() - int64(len(record)+BlockOverhead)
+			if err := os.Truncate(path, cipherStart+short); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fsys := New(filesys.Default, b)
+			opens := []struct {
+				name string
+				open func(string) (filesys.File, error)
+			}{
+				{"Open", fsys.Open},
+				{"OpenReadWrite", fsys.OpenReadWrite},
+			}
+			for _, o := range opens {
+				f, err := o.open(path)
+				if err == nil {
+					_ = f.Close()
+				}
+				var trailing *TrailingBlockTooShortError
+				if !errors.As(err, &trailing) || trailing.Bytes != short {
+					t.Fatalf("%s err = %v, want *TrailingBlockTooShortError{Bytes: %d}", o.name, err, short)
+				}
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, raw) {
+				t.Fatal("a refused open changed the file")
+			}
+		})
+	}
 }
 
 func TestFixedLog_LogicalSize(t *testing.T) {
@@ -567,19 +632,21 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 	block := bytes.Repeat([]byte{'b'}, BlockSize)
 	tail := []byte("tail record")
 	cases := []struct {
-		name string
-		data []byte
-		cut  int // bytes cut off the end of the file
-		want []byte
-		auth bool // the open must fail with ErrAuthFailed
+		name  string
+		data  []byte
+		cut   int // bytes cut off the end of the file
+		want  []byte
+		auth  bool // the open must fail with ErrAuthFailed
+		short bool // the open must fail with TrailingBlockTooShortError
 	}{
-		{"empty", nil, 0, nil, false},
-		{"one whole block", block, 0, block, false},
-		{"block and tail", append(bytes.Clone(block), tail...), 0, append(bytes.Clone(block), tail...), false},
-		{"tail torn below the AEAD overhead", append(bytes.Clone(block), tail...), len(tail) + 1, block, false},
+		{"empty", nil, 0, nil, false, false},
+		{"one whole block", block, 0, block, false, false},
+		{"block and tail", append(bytes.Clone(block), tail...), 0, append(bytes.Clone(block), tail...), false, false},
 		// The old layout records no durable boundary: a final block that
-		// fails authentication may hold synced data, so it refuses.
-		{"tail torn inside the ciphertext", append(bytes.Clone(block), tail...), 1, nil, true},
+		// is too short or fails authentication may hold synced data, so
+		// it refuses.
+		{"tail torn below the AEAD overhead", append(bytes.Clone(block), tail...), len(tail) + 1, nil, false, true},
+		{"tail torn inside the ciphertext", append(bytes.Clone(block), tail...), 1, nil, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -597,6 +664,13 @@ func TestFixedLog_LogicalSize(t *testing.T) {
 			if tc.auth {
 				if !errors.Is(err, ErrAuthFailed) {
 					t.Fatalf("open err = %v, want ErrAuthFailed", err)
+				}
+				return
+			}
+			if tc.short {
+				var trailing *TrailingBlockTooShortError
+				if !errors.As(err, &trailing) {
+					t.Fatalf("open err = %v, want *TrailingBlockTooShortError", err)
 				}
 				return
 			}

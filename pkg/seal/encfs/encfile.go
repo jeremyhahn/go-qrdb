@@ -357,8 +357,9 @@ func (f *encryptedFile) commitLocked() error {
 // content, and no reader can bring it back (which is why WALs and
 // MANIFESTs are now framed). The layout records no durable boundary, so
 // nothing tells a torn rewrite from corruption of synced data: a final
-// block shorter than BlockOverhead (no complete block was ever that short)
-// is the end of the log, but a final block that fails authentication
+// block shorter than BlockOverhead may be a synced record whose ciphertext
+// was later truncated, so it refuses the open with
+// TrailingBlockTooShortError; a final block that fails authentication
 // refuses the open with ErrAuthFailed, and an earlier block that fails
 // authentication fails its read with ErrAuthFailed.
 func (f *encryptedFile) fixedLogLogicalSize(payload int64) (int64, error) {
@@ -374,7 +375,10 @@ func (f *encryptedFile) fixedLogLogicalSize(payload int64) (int64, error) {
 		last, lastLen = last-1, int64(CiphertextBlockSize)
 	}
 	if lastLen < int64(BlockOverhead) {
-		return last * int64(BlockSize), nil
+		// The old layout records no durable boundary, so a short final
+		// block may be a synced record truncated later: refuse it rather
+		// than drop acknowledged records.
+		return 0, &TrailingBlockTooShortError{Bytes: lastLen}
 	}
 	buf := make([]byte, lastLen)
 	if _, err := f.base.ReadAt(buf, f.physicalOffsetForBlock(last)); err != nil {
