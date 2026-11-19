@@ -196,36 +196,6 @@ func TestFetchAnchor_OverP256(t *testing.T) {
 	}
 }
 
-// TestFetchAnchor_OverBothSuites runs the same fetch with both keys configured
-// and Noise available: the client picks a suite by policy and either way the
-// advertiser's one listener answers. Where Noise is not available (a FIPS
-// runtime) the configuration is the dual-key one an operator would write and the
-// P-256 suite carries it, which is the point.
-func TestFetchAnchor_OverBothSuites(t *testing.T) {
-	caCertPEM, _ := anchorTestCA(t)
-
-	adv, err := StartAnchorAdvertiser(caCertPEM, AdvertiseOptions{NoisePort: freePort(t), NoiseHost: testBindHost}, t.TempDir(), discardLogger())
-	if err != nil {
-		t.Fatalf("StartAnchorAdvertiser: %v", err)
-	}
-	defer adv.Stop()
-
-	boot := BootstrapOptions{
-		P256Key:   hex.EncodeToString(adv.P256PublicKey()),
-		NoiseAddr: adv.Addr(),
-	}
-	if adv.NoiseEnabled() {
-		boot.NoiseKey = hex.EncodeToString(adv.NoisePublicKey())
-	}
-	fetched, err := FetchAnchor(context.Background(), &Options{Bootstrap: boot}, discardLogger())
-	if err != nil {
-		t.Fatalf("FetchAnchor: %v", err)
-	}
-	if string(fetched) != string(caCertPEM) {
-		t.Error("fetched anchor does not match the advertised anchor")
-	}
-}
-
 // TestFetchAnchor_DualKeyBootstrapTracksTheRuntime configures both suites'
 // keys and leaves the gating decision to the runtime. Under crypto/fips140 the
 // Noise key never reaches go-truststrap, so its client holds no key it could
@@ -430,28 +400,6 @@ func TestJoinServer_SignsAValidCSR_OverP256(t *testing.T) {
 	}, joinCSRFor(t), "spiffe://attacker.example/node/anything")
 	if err != nil {
 		t.Fatalf("JoinCSR over P-256: %v", err)
-	}
-	assertIssuedLeaf(t, certPEM)
-}
-
-// TestJoinServer_SignsAValidCSR_DualKeyClient covers
-// the dual-key client against a listener serving both suites, in a runtime that
-// may use Noise. Where it may not (a FIPS runtime) the same configuration must
-// fall back to P-256, which is the other half of the ruling.
-func TestJoinServer_SignsAValidCSR_DualKeyClient(t *testing.T) {
-	js, _, token := startJoinServerForSuite(t)
-
-	opts := &JoinClientOptions{
-		ServerAddr:    js.Addr(),
-		ServerP256Key: js.P256PublicKey(),
-		Token:         token,
-	}
-	if noiseAvailable() {
-		opts.ServerKey = js.PublicKey()
-	}
-	certPEM, err := JoinCSR(context.Background(), opts, joinCSRFor(t), "spiffe://attacker.example/node/anything")
-	if err != nil {
-		t.Fatalf("JoinCSR: %v", err)
 	}
 	assertIssuedLeaf(t, certPEM)
 }

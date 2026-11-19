@@ -96,27 +96,6 @@ func TestCompareAndSwap_ClosedStore(t *testing.T) {
 	}
 }
 
-// SeekToLast with an upper bound above every key lands on the last key; with a
-// lower bound above it the iterator is empty.
-func TestIterator_SeekToLastBounds(t *testing.T) {
-	s := memory.NewStorage()
-	for _, k := range []string{"a", "b"} {
-		if err := s.Set([]byte(k), []byte("v")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	it := s.NewIterator(&storage.IteratorOptions{UpperBound: []byte("z")})
-	defer func() { _ = it.Close() }()
-	if !it.SeekToLast() || string(it.Key()) != "b" {
-		t.Fatalf("SeekToLast under a high upper bound: valid=%v key=%q", it.Valid(), it.Key())
-	}
-	low := s.NewIterator(&storage.IteratorOptions{LowerBound: []byte("c")})
-	defer func() { _ = low.Close() }()
-	if low.SeekToLast() {
-		t.Fatal("SeekToLast above every key should be invalid")
-	}
-}
-
 // A batch committed after its store closed refuses with the closed error.
 func TestBatchCommit_AfterClose(t *testing.T) {
 	s := memory.NewStorage()

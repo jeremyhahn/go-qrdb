@@ -20,6 +20,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/dao"
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -104,6 +105,16 @@ func NewRoutingService(resolver tenant.StoreResolver, idgen dao.IDGenerator, opt
 		// router builds maintains the index the router reads.
 		opts: append(append([]Option(nil), opts...), WithIdentityIndex(index)),
 	}, nil
+}
+
+// PendingTTLActive implements PendingTTLGated with the gate the router's
+// options install on every per-tenant store (WithPendingTTLGate).
+func (r *routingUserService) PendingTTLActive() error {
+	var probe kvUserStore
+	for _, o := range r.opts {
+		o(&probe)
+	}
+	return probe.PendingTTLActive()
 }
 
 // targetTenant returns the tenant whose store holds the user with this id.
@@ -407,6 +418,60 @@ func (r *routingUserService) ActivateWithCertBinding(ctx context.Context, userID
 		return nil, &StoreError{Op: "activate_with_cert_binding", Detail: "store", Err: ErrActivationUnsupported}
 	}
 	return activator.ActivateWithCertBinding(ctx, userID, thumbprint, notAfterUnix)
+}
+
+// DeleteExpiredPending routes to the store of the tenant that holds userID,
+// under that tenant's isolation, like every other per-user operation.
+func (r *routingUserService) DeleteExpiredPending(ctx context.Context, userID uint64, now time.Time) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "delete expired pending user")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "delete_expired_pending", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.DeleteExpiredPending(ctx, userID, now)
+}
+
+// ClaimExpiredPending routes to the store of the tenant that holds userID,
+// under that tenant's isolation, like DeleteExpiredPending.
+func (r *routingUserService) ClaimExpiredPending(ctx context.Context, userID uint64, now time.Time) (*User, error) {
+	target, err := r.targetTenant(ctx, userID, "claim expired pending user")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "claim_expired_pending", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.ClaimExpiredPending(ctx, userID, now)
+}
+
+// ListExpiryClaims routes to the named tenant's store under the caller's
+// isolation, exactly like ListUsers.
+func (r *routingUserService) ListExpiryClaims(ctx context.Context, tenantID string) ([]uint64, error) {
+	eff, err := tenant.EffectiveTenant(ctx, tenantID, "list expiry claims")
+	if err != nil {
+		return nil, err
+	}
+	svc, err := r.storeFor(ctx, eff)
+	if err != nil {
+		return nil, err
+	}
+	expirer, ok := svc.(PendingExpirer)
+	if !ok {
+		return nil, &StoreError{Op: "list_expiry_claims", Detail: "store", Err: ErrPendingExpiryUnsupported}
+	}
+	return expirer.ListExpiryClaims(ctx, eff)
 }
 
 // RemoveCertBinding routes on the tenant that holds the user id, exactly as

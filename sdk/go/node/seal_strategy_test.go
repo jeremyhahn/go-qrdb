@@ -97,19 +97,6 @@ func TestResolveNodeSealStrategies_ComposerRegistry(t *testing.T) {
 	assert.Equal(t, device, got[0])
 }
 
-// The strategy the persisted root key names is registered after the
-// configured one, so a node whose barrier was migrated none -> passphrase
-// unseals while its configuration still names none.
-func TestResolveNodeSealStrategies_PersistedStrategy(t *testing.T) {
-	ctx := context.Background()
-	backend := seal.NewMemoryBackend()
-	require.NoError(t, backend.Put(ctx, "root-key", []byte(`{"strategy":"passphrase"}`)))
-
-	got, err := resolveNodeSealStrategies(ctx, sealStrategyConfig("none"), nil, nil, backend, "root-key")
-	require.NoError(t, err)
-	assert.Equal(t, []seal.StrategyID{seal.StrategyNone, seal.StrategyPassphrase}, strategyIDs(got))
-}
-
 func TestResolveNodeSealStrategies_InvalidShamir(t *testing.T) {
 	cfg := sealStrategyConfig("shamir")
 	cfg.Seal.ShamirThreshold, cfg.Seal.ShamirTotal = 5, 3

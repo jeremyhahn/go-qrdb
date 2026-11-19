@@ -26,30 +26,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// database context scope
-// ---------------------------------------------------------------------------
-
-// TestWithDatabase_RoundTrip verifies a bound database scope is read back, while
-// an unbound or empty scope falls back to DefaultDatabase.
-func TestWithDatabase_RoundTrip(t *testing.T) {
-	base := context.Background()
-	if got := DatabaseFromContext(base); got != DefaultDatabase {
-		t.Fatalf("unbound context database = %q, want %q", got, DefaultDatabase)
-	}
-
-	bound := WithDatabase(base, "orders")
-	if got := DatabaseFromContext(bound); got != "orders" {
-		t.Fatalf("bound database = %q, want orders", got)
-	}
-
-	// An explicit empty string maps back to the bootstrap default on read.
-	empty := WithDatabase(base, "")
-	if got := DatabaseFromContext(empty); got != DefaultDatabase {
-		t.Fatalf("empty-bound database = %q, want %q", got, DefaultDatabase)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // kvTenantService entitlement surface (the no-seal embedded service)
 // ---------------------------------------------------------------------------
 

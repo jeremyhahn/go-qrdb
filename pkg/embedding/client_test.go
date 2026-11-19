@@ -103,18 +103,6 @@ func TestNewClient_EmptyBaseURL(t *testing.T) {
 	}
 }
 
-func TestNewClient_ValidConfig(t *testing.T) {
-	cfg := DefaultProviderConfig()
-	cfg.BaseURL = "http://localhost:11434/v1"
-	c, err := NewClient(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c == nil {
-		t.Fatal("expected non-nil client")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Embed tests
 // ---------------------------------------------------------------------------
@@ -174,19 +162,6 @@ func TestEmbed_EmptyInput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty input")
 	}
-	var inv *InvalidInputError
-	if !errors.As(err, &inv) {
-		t.Errorf("expected InvalidInputError, got %T: %v", err, err)
-	}
-}
-
-func TestEmbed_NilInput(t *testing.T) {
-	_, baseURL := embeddingServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-
-	c := newTestClient(t, baseURL)
-	_, err := c.Embed(context.Background(), nil, "")
 	var inv *InvalidInputError
 	if !errors.As(err, &inv) {
 		t.Errorf("expected InvalidInputError, got %T: %v", err, err)

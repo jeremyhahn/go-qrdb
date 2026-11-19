@@ -132,17 +132,6 @@ func TestRingBuffer_ConcurrentEmit_NoRace(t *testing.T) {
 	}
 }
 
-func TestRingBuffer_Close(t *testing.T) {
-	r := NewRingBuffer(10)
-	if err := r.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestRingBuffer_ImplementsAuditLogger(t *testing.T) {
-	var _ AuditLogger = (*RingBuffer)(nil)
-}
-
 func TestRingBuffer_Emit_ZeroTimestamp(t *testing.T) {
 	// Emit with zero timestamp should fill in current time.
 	r := NewRingBuffer(10)

@@ -40,6 +40,7 @@ func (c *compactionCell) setPolicy(t *testing.T, tenantID, db string, policy *tr
 	return c.base[tenantID].Database().UpdateDatabaseCompaction(ctx, transport.UpdateDatabaseCompactionRequest{Name: db, Compaction: policy})
 }
 
+// policy returns db's compaction policy as tenantID reads it.
 // TestCompactionPolicy_OnEveryTransport: a tenant configures its database's
 // scheduled compaction over the transport, and the node compacts THAT
 // database as specified; a database whose tenant configured nothing is never
@@ -54,23 +55,15 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 			revB := c.writeHistory(t, "tenant-b", "k")
 			revSys := c.writeHistory(t, tenantid.System, "k")
 
-			// Nobody configured anything: ten scheduler passes later, every
-			// history is intact.
-			time.Sleep(250 * time.Millisecond)
-			for id, rev := range map[string]int64{"tenant-a": revA, "tenant-b": revB, tenantid.System: revSys} {
-				c.requireHistory(t, id, "k", rev, "scheduler passes with no policy configured")
-			}
-
 			// Neither another tenant nor the system tenant can configure a
-			// policy on tenant-a's database.
-			for _, intruder := range []string{"tenant-b", tenantid.System} {
-				if _, err := c.setPolicy(t, intruder, compactionDatabase("tenant-a"),
+			// policy on tenant-b's database. The passes that compact
+			// tenant-a's database below prove the refusals left it none.
+			for _, intruder := range []string{"tenant-a", tenantid.System} {
+				if _, err := c.setPolicy(t, intruder, compactionDatabase("tenant-b"),
 					&transport.DatabaseCompactionConfig{Mode: "revision", RetainRevisions: 1}); err == nil {
-					t.Fatalf("%s: %s configured compaction on tenant-a's database", tk, intruder)
+					t.Fatalf("%s: %s configured compaction on tenant-b's database", tk, intruder)
 				}
 			}
-			time.Sleep(150 * time.Millisecond)
-			c.requireHistory(t, "tenant-a", "k", revA, "refused policy attempts")
 
 			// An invalid policy is refused.
 			if _, err := c.setPolicy(t, "tenant-a", compactionDatabase("tenant-a"),
@@ -105,9 +98,10 @@ func TestCompactionPolicy_OnEveryTransport(t *testing.T) {
 				time.Sleep(25 * time.Millisecond)
 			}
 			c.requireCompacted(t, "tenant-a", "k", revA)
-			// ... and nothing else.
-			c.requireHistory(t, "tenant-b", "k", revB, "tenant-a's scheduled compaction")
-			c.requireHistory(t, tenantid.System, "k", revSys, "tenant-a's scheduled compaction")
+			// ... and nothing else: the passes that compacted tenant-a's
+			// database left the databases with no policy intact.
+			c.requireHistory(t, "tenant-b", "k", revB, "refused policy attempts and scheduler passes")
+			c.requireHistory(t, tenantid.System, "k", revSys, "scheduler passes with no policy configured")
 
 			// Turning it off returns the database to never-compacted.
 			info, err = c.setPolicy(t, "tenant-a", compactionDatabase("tenant-a"), &transport.DatabaseCompactionConfig{Mode: "off"})

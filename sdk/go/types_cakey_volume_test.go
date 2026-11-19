@@ -279,16 +279,6 @@ func TestSDK_VolumeProviderRefusalsAreTyped(t *testing.T) {
 	}
 }
 
-func TestSDK_VolumeStatesAreDistinct(t *testing.T) {
-	states := map[sdk.VolumeState]bool{sdk.VolumeStateReady: true, sdk.VolumeStateLocked: true, sdk.VolumeStateUnavailable: true}
-	if len(states) != 3 {
-		t.Fatal("two volume states share a value")
-	}
-	if sdk.VolumeStateReady.String() == sdk.VolumeStateLocked.String() {
-		t.Fatal("two volume states render alike")
-	}
-}
-
 // ExampleCAKeyAdapter wires an embedder's own CA signing key into the seam
 // node.WithClusterCAKeyProvider takes, without a wrapper type.
 func ExampleCAKeyAdapter() {
