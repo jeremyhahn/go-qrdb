@@ -7,7 +7,11 @@
 # deps-bump-dispatch job dispatches it from the nightly schedule run on
 # main, and a person may dispatch it by hand), it runs the shared depscheck's `make deps-bump` in the
 # toolchain image,
-# verifies with `make deps-check` (the full gate, no base) and `make build-server
+# verifies with `make deps-check DEPS_CHECK_BASE=HEAD` (every vulnerability
+# check, and the lag rule on the requirements the bump moved: HEAD is the
+# pre-bump commit, so a requirement the bump skipped, because upgrading it
+# would raise a documented hold, stays behind without failing the run and
+# discarding the independent upgrades) and `make build-server
 # build-cli-headless` (the native targets CI's build job runs in the image;
 # the plain build target needs docker compose through build-client),
 # and lands the go.mod and go.sum changes as ONE commit on the fixed branch
@@ -188,7 +192,10 @@ jobs:
       # on stderr, and the go.mod and go.sum diff comes back on stdout. The
       # container's sh has no pipefail, so the diff goes to a file and its
       # own status fails the step: a failed diff piped to base64 would come
-      # back empty and pass as "nothing moved".
+      # back empty and pass as "nothing moved". deps-check runs against
+      # HEAD, the commit before the bump: the bump edits only the work tree,
+      # so a requirement it skipped for a hold is untouched and does not
+      # fail the run, while every vulnerability check still does.
       - name: make deps-bump, then make deps-check and make build-server build-cli-headless
         env:
           IN_IMAGE_NETWORK: bridge
@@ -196,7 +203,7 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2016 # expands in the container
           scripts/in-toolchain-image.sh "$TOOLCHAIN_IMAGE" \
-            '{ make deps-bump && make deps-check && make build-server build-cli-headless; } >&2 && patch=$(mktemp) && git -c safe.directory="*" diff --binary -- ":(glob)**/go.mod" ":(glob)**/go.sum" > "$patch" && base64 -w0 "$patch"' \
+            '{ make deps-bump && make deps-check DEPS_CHECK_BASE=HEAD && make build-server build-cli-headless; } >&2 && patch=$(mktemp) && git -c safe.directory="*" diff --binary -- ":(glob)**/go.mod" ":(glob)**/go.sum" > "$patch" && base64 -w0 "$patch"' \
             > "$RUNNER_TEMP/bump.b64"
           base64 -d "$RUNNER_TEMP/bump.b64" > "$RUNNER_TEMP/bump.patch"
           if [ ! -s "$RUNNER_TEMP/bump.patch" ]; then
@@ -280,7 +287,7 @@ jobs:
           if [ -z "$PR" ]; then
             # shellcheck disable=SC2016 # backquotes are markdown, not a command
             body=$(printf '%s\n\n%s\n' \
-              'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest, then `make deps-check` and `make build-server build-cli-headless` passed.' \
+              'The daily dependency bump (deps-bump.yml, ruling 640): every go.mod requirement behind its latest release, with no reason comment and past the 7-day window, moved to latest unless the move would raise a documented hold, then `make deps-check DEPS_CHECK_BASE=HEAD` (against the pre-bump commit) and `make build-server build-cli-headless` passed.' \
               "Changed: $CHANGED")
             if PR=$(jq -n --arg t "$PR_TITLE" --arg h "$BRANCH" --arg b "$body" '{title: $t, head: $h, base: "main", body: $b}' | gh api "repos/$REPO/pulls" --input - --jq .number); then
               echo "opened #$PR"
