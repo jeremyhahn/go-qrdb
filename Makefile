@@ -4124,7 +4124,8 @@ DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
 	test/performance/qrdb test/performance/tikv test/vanguardprobe
-TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+APK_MIRROR_SCRIPT = scripts/apk-mirror.sh
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(APK_MIRROR_SCRIPT) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
 # The integration image and its compose project (#813). The image tag is
@@ -4199,7 +4200,19 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
+	--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
+
+# concurrent-load follows a content-tagged image build. Two builds that miss
+# together on one daemon both build, and only the first --load can tag the
+# result: the second fails with "image ... already exists" (run 57133). That
+# loser finds the image held once its build fails, and the tag is the
+# content, so it succeeds; any other failed build fails with the build's
+# status. docker-build-toolchain and docker-build-it both use it: pool-images
+# builds on a daemon that independent runs share (#1631).
+# Its optional second argument is the build's IID file: the loser writes the
+# ID its one check saw (#1597).
+concurrent-load = || { status=$$?; id=$$(docker image inspect -f '{{.Id}}' '$(1)' 2>/dev/null) || exit $$status; echo "==> a concurrent build loaded $(1) first"; $(if $(2),printf '%s\n' "$$id" > '$(2)';) }
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
@@ -4216,24 +4229,30 @@ docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
-	@# image this tree would build.
+	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
+	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, by
+	@# the digest recorded in CI_IMAGE_DIGEST_DIR only, and a build is pushed
+	@# to it and its digest recorded. An image already held with no usable
+	@# record (an earlier push failed) is pushed again (registry-push
+	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
+	@# call does nothing.
 	@$(if $(TOOLCHAIN_IIDFILE),rm -f '$(TOOLCHAIN_IIDFILE)';) \
 	if id=$$(docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' 2>/dev/null); then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
 		$(if $(TOOLCHAIN_IIDFILE),printf '%s\n' "$$id" > '$(TOOLCHAIN_IIDFILE)';) \
+		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
+		:; $(if $(TOOLCHAIN_IIDFILE),docker image inspect -f '{{.Id}}' '$(TOOLCHAIN_IMAGE)' > '$(TOOLCHAIN_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) $(if $(TOOLCHAIN_IIDFILE),--iidfile '$(TOOLCHAIN_IIDFILE)') \
-			--target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+			--target toolchain -t $(TOOLCHAIN_IMAGE) . $(call concurrent-load,$(TOOLCHAIN_IMAGE),$(TOOLCHAIN_IIDFILE)); \
+		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Two builds that miss together on one daemon both build, and only the
-# first --load can tag the result: the second fails with "image ... already
-# exists" (run 57133). That loser finds the image held once its build fails,
-# and the tag is the content, so it succeeds; any other failed build fails
-# with the build's status.
+# tree's. Its build recovers from a concurrent load (concurrent-load).
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
@@ -4242,16 +4261,15 @@ docker-build-it:
 	if id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null); then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
 		$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
+		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
+		:; $(if $(IT_IIDFILE),docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' > '$(IT_IIDFILE)';) \
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) $(if $(IT_IIDFILE),--iidfile '$(IT_IIDFILE)') \
 			--build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-			--target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			id=$$(docker image inspect -f '{{.Id}}' '$(IT_IMAGE)' 2>/dev/null) || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-			$(if $(IT_IIDFILE),printf '%s\n' "$$id" > '$(IT_IIDFILE)';) \
-		}; \
+			--target integration -t $(IT_IMAGE) . $(call concurrent-load,$(IT_IMAGE),$(IT_IIDFILE)); \
+		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
 # docker-down-it removes an integration-test run's compose project, never its

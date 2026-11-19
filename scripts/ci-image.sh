@@ -21,12 +21,20 @@
 # still take the artifact, so one code path is exercised on every event.
 #
 #   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
-#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks it is <id>, tags <image>
-#   ci-image.sh adopt <image> <id>                 after a LAN pull: checks <image> is <id>, records it
+#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks it is <id>, tags <image>, prints <id>
 #   ci-image.sh push <local-image> <name> <id>     prints ghcr.io/<owner>/<name>@sha256:<hex>
 #   ci-image.sh untag <image>...                   removes save's per-run tags
 #   ci-image.sh prune [hours]                      self-hosted retention of the CI images
 #   ci-image.sh check-ref <ref>...                 validates digest references
+#   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
+#   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
+#   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
+#
+# registry-pull and registry-push are the pull-or-build path through the CI
+# image registry the runner's environment names in CI_IMAGE_REGISTRY (#1609,
+# scripts/image-registry.sh): make docker-build-toolchain and docker-build-it
+# pull before they build and push what they built. Unset, both make no docker
+# call; a failed or hung pull or push never fails the job.
 #
 # save resolves the content-hash tag to its image ID once and archives that
 # ID under a per-run tag (<image>-run-<run id>-<attempt>) created from it, so
@@ -35,6 +43,10 @@
 # after checking the per-run tag still names it. load fails unless the
 # archive's per-run tag names the ID docker-build recorded, so a truncated or
 # substituted artifact is refused rather than run.
+# load prints the ID: the consumer launches its stages by that ID, never by
+# the tag. The tag names the build's inputs, and self-hosted runs share a
+# daemon, so another run's load, pull or tag can move it between the check
+# and a stage's start.
 #
 # push logs in to GHCR with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, which the
 # workflow step supplies from the run's actor and GITHUB_TOKEN (packages:
@@ -56,6 +68,9 @@ readonly registry=ghcr.io
 readonly ref_re='^[^@ ]+@sha256:[0-9a-f]{64}$'
 readonly id_re='^sha256:[0-9a-f]{64}$'
 readonly image_re='^qrdb-(toolchain|ci-it):[0-9a-f]{16}$'
+
+# shellcheck source=scripts/image-registry.sh
+. "$(dirname "${BASH_SOURCE[0]}")/image-registry.sh"
 
 die() {
 	echo "::error::ci-image: $*" >&2
@@ -163,22 +178,6 @@ load() {
 	# another job can load different bytes under it after this check. The ID
 	# is recorded in the job's own directory, where scripts/in-toolchain-image.sh
 	# swaps it in for the tag, and printed for a caller that runs it directly.
-	record_id "$image" "$want"
-	echo "$want"
-}
-
-# adopt is load for a job that pulled the image from the LAN CI registry, so
-# downloaded no artifact: it checks the pulled tag names docker-build's ID and
-# records that ID as load does, so the stages run the verified ID and never
-# the tag, which another job on the shared daemon can move after the pull.
-adopt() {
-	[ $# -eq 2 ] || die "usage: adopt <image> <id>"
-	local image=$1 want=$2 got
-	check_image "$image"
-	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
-	got=$(image_id "$image")
-	[ "$got" = "$want" ] || die "$image names $got, not $want, the image docker-build built"
-	echo "==> $image is $want, the image docker-build built (pulled)" >&2
 	record_id "$image" "$want"
 	echo "$want"
 }
@@ -371,17 +370,46 @@ prune() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|adopt|push|untag|prune|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh pin|save|load|push|untag|prune|check-ref|registry-pull|registry-push ..."
 	local cmd=$1
 	shift
 	case $cmd in
 	pin) pin "$@" ;;
 	save) save "$@" ;;
 	load) load "$@" ;;
-	adopt) adopt "$@" ;;
 	push) push "$@" ;;
 	untag) untag "$@" ;;
 	prune) prune "$@" ;;
+	registry-pull | registry-push)
+		# registry-push --unrecorded <image>: the image is already held (built
+		# or pulled earlier), so it is published again only when no usable
+		# digest record names it -- an earlier push that failed is retried
+		# and its record written. Never fails the caller either.
+		local unrecorded=""
+		if [ "$cmd" = registry-push ] && [ "${1:-}" = --unrecorded ]; then
+			unrecorded=1
+			shift
+		fi
+		[ $# -eq 1 ] || die "usage: $cmd [--unrecorded] <image>"
+		# Unset, nothing at all: the caller builds as it always has. An
+		# image that is not a CI content-hash tag (a developer's own tag) is
+		# never pulled or pushed, and a push never fails the build.
+		[ -n "${CI_IMAGE_REGISTRY:-}" ] || { [ "$cmd" = registry-push ]; return; }
+		if ! [[ $1 =~ $image_re ]]; then
+			echo "ci-image: '$1' is not a content-hash tag of qrdb-toolchain or qrdb-ci-it; the CI image registry is skipped" >&2
+			[ "$cmd" = registry-push ]
+			return
+		fi
+		if [ "$cmd" = registry-pull ]; then
+			ci_registry_pull "$1"
+		elif [ -z "$unrecorded" ]; then
+			ci_registry_push "$1"
+		elif [ -n "${CI_IMAGE_DIGEST_DIR:-}" ] && ! ci_registry_recorded "$1" >/dev/null; then
+			# Without CI_IMAGE_DIGEST_DIR nothing could be recorded, and no
+			# pull trusts an unrecorded image: a retry would only push again.
+			ci_registry_push "$1" "held, unrecorded"
+		fi
+		;;
 	check-ref)
 		[ $# -ge 1 ] || die "usage: check-ref <ref>..."
 		local r

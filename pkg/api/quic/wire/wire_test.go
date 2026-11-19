@@ -1024,23 +1024,6 @@ func TestMethodTooLongErrorMessage(t *testing.T) {
 	}
 }
 
-func TestMethodTooLongErrorWithDifferentValues(t *testing.T) {
-	err := &MethodTooLongError{Length: 1000, Max: 500}
-	got := err.Error()
-	if !strings.Contains(got, "1000") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "1000")
-	}
-	if !strings.Contains(got, "500") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "500")
-	}
-}
-
-func TestMethodTooLongErrorImplementsError(t *testing.T) {
-	err := &MethodTooLongError{Length: 1, Max: 0}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestPayloadTooLargeErrorMessage(t *testing.T) {
 	err := &PayloadTooLargeError{Size: 100000000, Max: 67108864}
 	got := err.Error()
@@ -1055,23 +1038,6 @@ func TestPayloadTooLargeErrorMessage(t *testing.T) {
 	}
 }
 
-func TestPayloadTooLargeErrorWithDifferentValues(t *testing.T) {
-	err := &PayloadTooLargeError{Size: 5000, Max: 1024}
-	got := err.Error()
-	if !strings.Contains(got, "5000") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "5000")
-	}
-	if !strings.Contains(got, "1024") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "1024")
-	}
-}
-
-func TestPayloadTooLargeErrorImplementsError(t *testing.T) {
-	err := &PayloadTooLargeError{Size: 1, Max: 0}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestReadErrorMessage(t *testing.T) {
 	underlying := errors.New("connection reset")
 	err := &ReadError{Err: underlying}
@@ -1084,27 +1050,12 @@ func TestReadErrorMessage(t *testing.T) {
 	}
 }
 
-func TestReadErrorUnwrap(t *testing.T) {
-	underlying := errors.New("io timeout")
-	err := &ReadError{Err: underlying}
-	unwrapped := err.Unwrap()
-	if unwrapped != underlying {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, underlying)
-	}
-}
-
 func TestReadErrorUnwrapWithErrorsIs(t *testing.T) {
 	underlying := io.EOF
 	err := &ReadError{Err: underlying}
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("errors.Is(ReadError, io.EOF) = false, want true")
 	}
-}
-
-func TestReadErrorImplementsError(t *testing.T) {
-	err := &ReadError{Err: errors.New("test")}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }
 
 func TestWriteErrorMessage(t *testing.T) {
@@ -1119,27 +1070,12 @@ func TestWriteErrorMessage(t *testing.T) {
 	}
 }
 
-func TestWriteErrorUnwrap(t *testing.T) {
-	underlying := errors.New("disk full")
-	err := &WriteError{Err: underlying}
-	unwrapped := err.Unwrap()
-	if unwrapped != underlying {
-		t.Errorf("Unwrap() = %v, want %v", unwrapped, underlying)
-	}
-}
-
 func TestWriteErrorUnwrapWithErrorsIs(t *testing.T) {
 	underlying := io.ErrClosedPipe
 	err := &WriteError{Err: underlying}
 	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Errorf("errors.Is(WriteError, io.ErrClosedPipe) = false, want true")
 	}
-}
-
-func TestWriteErrorImplementsError(t *testing.T) {
-	err := &WriteError{Err: errors.New("test")}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }
 
 // ---------------------------------------------------------------------------

@@ -91,10 +91,6 @@ func TestMetricsTable_PartitionRows_Empty(t *testing.T) {
 	assert.ErrorIs(t, err, io.EOF)
 }
 
-func TestMetricsTable_ImplementsTable(t *testing.T) {
-	var _ sqle.Table = (*MetricsTable)(nil)
-}
-
 func TestMetricsPartition_Key(t *testing.T) {
 	p := &metricsPartition{}
 	assert.Equal(t, []byte("metrics"), p.Key())

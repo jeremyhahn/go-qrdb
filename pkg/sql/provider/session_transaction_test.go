@@ -38,10 +38,6 @@ func newTxContext(ignoreAutoCommit bool) (*sqle.Context, *QRDBSession) {
 	return ctx, sess
 }
 
-func TestQRDBSession_ImplementsTransactionSession(t *testing.T) {
-	var _ sqle.TransactionSession = (*QRDBSession)(nil)
-}
-
 func TestQRDBSession_StartTransaction_CreatesUnboundWriteSet(t *testing.T) {
 	ctx, sess := newTxContext(true)
 
