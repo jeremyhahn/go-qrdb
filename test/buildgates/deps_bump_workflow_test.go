@@ -2,6 +2,7 @@ package buildgates
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -249,6 +250,119 @@ func TestDepsBumpBranchDeleteProblems_CanFail(t *testing.T) {
 			p := depsBumpBranchDeleteProblems(strings.Replace(good, tc.from, tc.to, 1))
 			if len(p) == 0 || !strings.Contains(strings.Join(p, "\n"), tc.want) {
 				t.Fatalf("want a problem naming %q, got %v", tc.want, p)
+			}
+		})
+	}
+}
+
+// depsBumpCommitStep is the commit step's name in deps-bump.yml.
+const depsBumpCommitStep = "      - name: Commit to ci/deps-bump\n"
+
+// depsBumpStepScript returns the dedented `run: |` script of the step that
+// starts with header.
+func depsBumpStepScript(t *testing.T, src, header string) string {
+	t.Helper()
+	i := strings.Index(src, header)
+	if i < 0 {
+		t.Fatalf("%s has no step %q", depsBumpWorkflowName, strings.TrimSpace(header))
+	}
+	step := src[i+len(header):]
+	if j := strings.Index(step, "\n      - name:"); j >= 0 {
+		step = step[:j]
+	}
+	const run = "        run: |\n"
+	k := strings.Index(step, run)
+	if k < 0 {
+		t.Fatalf("step %q has no run: | block", strings.TrimSpace(header))
+	}
+	var b strings.Builder
+	for _, l := range strings.Split(step[k+len(run):], "\n") {
+		b.WriteString(strings.TrimPrefix(l, "          "))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// depsBumpFakeGH answers the commit step's gh calls: the branch is missing
+// unless GH_BRANCH_EXISTS is set, the mutation returns a commit, and the
+// commits lookup prints GH_VERIFIED, or fails as an API error when it is
+// unset. Every call is logged to GH_LOG.
+const depsBumpFakeGH = `#!/bin/sh
+echo "$*" >> "$GH_LOG"
+case "$*" in
+  *"-X DELETE"*) exit 0 ;;
+  *"git/ref/heads/"*) [ -n "${GH_BRANCH_EXISTS:-}" ] && exit 0; exit 1 ;;
+  *"git/refs"*) exit 0 ;;
+  *graphql*) cat >/dev/null; echo c0ffee; exit 0 ;;
+  *"/commits/"*) if [ -n "${GH_VERIFIED:-}" ]; then echo "$GH_VERIFIED"; exit 0; fi; echo "HTTP 502" >&2; exit 1 ;;
+esac
+echo "fake gh: unexpected call: $*" >&2
+exit 2
+`
+
+// TestDepsBumpCommitStepDeletesCreatedBranchOnFailure runs the commit step
+// with a mocked gh: when the signed-commit check fails, by an API error or
+// an unverified commit, the step exits non-zero and deletes the branch it
+// created, so ci/deps-bump is not left to strand the next daily run.
+func TestDepsBumpCommitStepDeletesCreatedBranchOnFailure(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", depsBumpWorkflowName))
+	if err != nil {
+		t.Fatalf("read %s: %v", depsBumpWorkflowName, err)
+	}
+	script := depsBumpStepScript(t, string(b), depsBumpCommitStep)
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	const del = "api -X DELETE repos/o/r/git/refs/heads/ci/deps-bump"
+	for name, tc := range map[string]struct {
+		verified, exists string
+		wantOK, wantDel  bool
+		wantLookups      int
+	}{
+		"lookup fails":             {wantLookups: 3, wantDel: true},
+		"unverified":               {verified: "false", wantLookups: 3, wantDel: true},
+		"verified":                 {verified: "true", wantOK: true, wantLookups: 1},
+		"lookup fails, pre-exists": {exists: "1", wantLookups: 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "bin")
+			if err := os.Mkdir(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for tool, body := range map[string]string{
+				"gh":    depsBumpFakeGH,
+				"git":   "#!/bin/sh\necho ' go.mod | 2 +-'\n",
+				"jq":    "#!/bin/sh\ncase \" $* \" in *\" -n\"*) ;; *) cat >/dev/null ;; esac\necho '{}'\n",
+				"sleep": "#!/bin/sh\nexit 0\n",
+			} {
+				if err := os.WriteFile(filepath.Join(bin, tool), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			log := filepath.Join(dir, "gh.log")
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-e", "-c", script)
+			cmd.Dir = dir
+			cmd.Env = []string{
+				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"REPO=o/r", "BRANCH=ci/deps-bump", "BASE_SHA=abc123", "CHANGED=go.mod",
+				"RUNNER_TEMP=" + dir, "GITHUB_ENV=" + filepath.Join(dir, "github.env"),
+				"GH_LOG=" + log, "GH_VERIFIED=" + tc.verified, "GH_BRANCH_EXISTS=" + tc.exists,
+			}
+			out, runErr := cmd.CombinedOutput()
+			calls, _ := os.ReadFile(log)
+			if (runErr == nil) != tc.wantOK {
+				t.Fatalf("step error = %v, want ok=%v\noutput:\n%s\ngh calls:\n%s", runErr, tc.wantOK, out, calls)
+			}
+			if got := strings.Count(string(calls), "repos/o/r/commits/c0ffee"); got != tc.wantLookups {
+				t.Errorf("commits lookups = %d, want %d\ngh calls:\n%s", got, tc.wantLookups, calls)
+			}
+			if got := strings.Contains(string(calls), del); got != tc.wantDel {
+				t.Errorf("branch DELETE issued = %v, want %v\noutput:\n%s\ngh calls:\n%s", got, tc.wantDel, out, calls)
 			}
 		})
 	}

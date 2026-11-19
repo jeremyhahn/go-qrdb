@@ -210,7 +210,8 @@ jobs:
       # commit POST /git/commits makes). expectedHeadOid is the commit the
       # bump was built on, so a branch that moved meanwhile refuses the
       # commit. A missing branch is first created at that commit, and
-      # deleted again if the mutation fails, so no PR-less branch is left.
+      # deleted again if the mutation or the verification check fails (an
+      # EXIT trap covers every command), so no PR-less branch is left.
       - name: Commit to ci/deps-bump
         if: ${{ env.CHANGED != '' }}
         env:
@@ -231,6 +232,9 @@ jobs:
             fi
           done
           created=
+          # Any failure from here on (set -e included) deletes a branch this
+          # run created, so no PR-less ci/deps-bump strands the next daily run.
+          trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -n "$created" ]; then gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true; fi' EXIT
           if ! gh api "repos/$REPO/git/ref/heads/$BRANCH" >/dev/null 2>&1; then
             gh api "repos/$REPO/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$BASE_SHA" >/dev/null
             created=1
@@ -245,17 +249,19 @@ jobs:
                 --arg s "$stat" --slurpfile add "$add" --slurpfile del "$del" \
                 '{query: $q, variables: {in: {branch: {repositoryNameWithOwner: $r, branchName: $b}, expectedHeadOid: $h, message: {headline: "deps: bump dependencies to latest (ruling 640)", body: $s}, fileChanges: {additions: $add, deletions: $del}}}}' \
               | gh api graphql --input - --jq '.data.createCommitOnBranch.commit.oid // empty') || [ -z "$commit" ]; then
-            if [ -n "$created" ]; then
-              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
-            fi
             echo "::error::createCommitOnBranch on $BRANCH (expected head $BASE_SHA) made no commit"
             exit 1
           fi
-          verified=$(gh api "repos/$REPO/commits/$commit" --jq .commit.verification.verified)
-          if [ "$verified" != true ]; then
-            if [ -n "$created" ]; then
-              gh api -X DELETE "repos/$REPO/git/refs/heads/$BRANCH" >/dev/null || true
+          # Verification can lag the commit: look it up to 3 times, and treat
+          # a failed lookup like an unverified commit (the EXIT trap cleans up).
+          verified=
+          for attempt in 1 2 3; do
+            if verified=$(gh api "repos/$REPO/commits/$commit" --jq .commit.verification.verified) && [ "$verified" = true ]; then
+              break
             fi
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
+          done
+          if [ "$verified" != true ]; then
             echo "::error::$commit on $BRANCH is not a verified (signed) commit; CI's Signatures job would reject it"
             exit 1
           fi
