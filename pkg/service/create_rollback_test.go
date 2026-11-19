@@ -132,3 +132,70 @@ func TestCreateForTenant_StrictRefusedCreateStaysFencedWhenItsRollbackDropFails(
 		t.Fatalf("reservations not released after the drop landed (%d -> %d)", releasedBefore, got)
 	}
 }
+
+// TestRetryCreateRollbacks_SameNameReplacementSurvives proves a pending
+// create rollback is bound to the refused database's incarnation: once the
+// refused database is gone and another database is created under the same
+// name, the retry clears the entry and releases its reservations without
+// dropping the replacement.
+func TestRetryCreateRollbacks_SameNameReplacementSurvives(t *testing.T) {
+	strict := looseRaftTenant()
+	strict.IsolationPolicy = tenant.TenantIsolationPolicyStrict
+	l := &tighteningLookup{info: looseRaftTenant(), afterFirst: strict}
+
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := claimingManager(t, logger, dir)
+	t.Cleanup(func() { _ = mgr.Close() })
+	reclaimer := &failingFenceReclaimer{}
+	reclaimer.fail.Store(true)
+	mgr.SetKeyspaceReclaimer(reclaimer)
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+	svc := NewDatabaseService(mgr,
+		WithEntitlementChecker(&mockEntitlementChecker{}),
+		WithTenantInfoLookup(&fakeTenantInfoLookup{info: l.info}),
+		WithQuotaChecker(newReplicaQuotaChecker(t, f)),
+		WithQuotaUsageRecorder(f),
+	).(*DatabaseService)
+	svc.tenantInfo = l
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	_, err := svc.CreateForTenant(ctx, testDBConfig("app"))
+	var incomplete *database.CreateRollbackIncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("CreateForTenant with a failing rollback drop = %v, want *CreateRollbackIncompleteError", err)
+	}
+	if svc.PendingCreateRollbacks() != 1 {
+		t.Fatalf("pending create rollbacks = %d, want 1", svc.PendingCreateRollbacks())
+	}
+	releasedBefore := f.decTotal + f.decRaft + f.decWAL
+
+	// The refused database's drop lands by another path, and a new
+	// database is created under the same name.
+	reclaimer.fail.Store(false)
+	if err := mgr.DropForTenant(ctx, "app"); err != nil {
+		t.Fatalf("DropForTenant of the refused database: %v", err)
+	}
+	replacement, err := mgr.CreateForTenant(ctx, testDBConfig("app"))
+	if err != nil {
+		t.Fatalf("CreateForTenant of the replacement: %v", err)
+	}
+
+	if err := svc.RetryCreateRollbacks(context.Background()); err != nil {
+		t.Fatalf("RetryCreateRollbacks: %v", err)
+	}
+	if svc.PendingCreateRollbacks() != 0 {
+		t.Fatalf("pending create rollbacks after the retry = %d, want 0", svc.PendingCreateRollbacks())
+	}
+	got, err := mgr.GetForTenant(ctx, "app")
+	if err != nil {
+		t.Fatalf("read of the replacement after the retry = %v, want it to survive", err)
+	}
+	if got.ID() != replacement.ID() || got.Incarnation() != replacement.Incarnation() {
+		t.Fatalf("database after the retry = %s/%s, want the replacement %s/%s",
+			got.ID(), got.Incarnation(), replacement.ID(), replacement.Incarnation())
+	}
+	if got := f.decTotal + f.decRaft + f.decWAL; got <= releasedBefore {
+		t.Fatalf("reservations not released after the retry cleared the entry (%d -> %d)", releasedBefore, got)
+	}
+}

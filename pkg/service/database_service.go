@@ -1994,7 +1994,7 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 			rbCtx, cancel := database.DropRollbackContext(database.KeepFenceOnFailure(ctx))
 			defer cancel()
 			if rbErr := s.rollBackCreate(rbCtx, db, err); rbErr != nil {
-				s.holdCreateRollback(db.TenantID(), db.Name(), releaseReservations)
+				s.holdCreateRollback(db, releaseReservations)
 				return nil, &database.CreateRollbackIncompleteError{Name: db.Name(), TenantID: db.TenantID(), Cause: err, Err: rbErr}
 			}
 			releaseReservations()

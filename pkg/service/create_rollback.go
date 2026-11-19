@@ -29,10 +29,12 @@ import (
 // dropping -- and the quota reservations its create took stay held, so a
 // fenced database never frees capacity it still occupies. The drop is
 // retried by RetryCreateRollbacks, which releases the reservations once it
-// lands.
+// lands. Each entry is bound to the refused database's ID and incarnation:
+// a database created later under the same name is a different database and
+// is never dropped by the retry.
 type createRollbackLedger struct {
 	mu      sync.Mutex
-	pending map[createRollbackKey]func()
+	pending map[createRollbackKey]createRollbackEntry
 }
 
 type createRollbackKey struct {
@@ -40,16 +42,28 @@ type createRollbackKey struct {
 	name     string
 }
 
-// holdCreateRollback records a failed strict-refusal rollback and the
-// release of its reservations.
-func (s *DatabaseService) holdCreateRollback(tenantID, name string, release func()) {
+// createRollbackEntry is the refused database's identity and the release of
+// its reservations.
+type createRollbackEntry struct {
+	id          string
+	incarnation string
+	release     func()
+}
+
+// holdCreateRollback records a failed strict-refusal rollback of the
+// database db and the release of its reservations.
+func (s *DatabaseService) holdCreateRollback(db *database.Database, release func()) {
 	l := &s.createRollbacks
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.pending == nil {
-		l.pending = make(map[createRollbackKey]func())
+		l.pending = make(map[createRollbackKey]createRollbackEntry)
 	}
-	l.pending[createRollbackKey{tenantID: tenantID, name: name}] = release
+	l.pending[createRollbackKey{tenantID: db.TenantID(), name: db.Name()}] = createRollbackEntry{
+		id:          db.ID(),
+		incarnation: db.Incarnation(),
+		release:     release,
+	}
 }
 
 // PendingCreateRollbacks reports how many strict-refused creates still wait
@@ -64,8 +78,11 @@ func (s *DatabaseService) PendingCreateRollbacks() int {
 // RetryCreateRollbacks retries the drop of every strict-refused create whose
 // rollback drop failed, keeping the fence up on another failure, and
 // releases a create's reservations once its drop lands (or the database is
-// already gone). It returns the joined errors of the drops that failed
-// again; those stay pending.
+// already gone). An entry whose database is gone or was replaced by another
+// database of the same name (a different ID or incarnation) is cleared
+// without a drop: the refused database no longer exists, and the replacement
+// is not the retry's to drop. It returns the joined errors of the drops that
+// failed again; those stay pending.
 func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 	l := &s.createRollbacks
 	l.mu.Lock()
@@ -77,21 +94,52 @@ func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 
 	var errs []error
 	for _, k := range keys {
-		dropCtx := database.KeepFenceOnFailure(tenant.WithTenantID(ctx, k.tenantID))
-		if err := s.manager.DropForTenant(dropCtx, k.name); err != nil {
-			var notFound *database.NotFoundError
-			if !errors.As(err, &notFound) {
-				errs = append(errs, err)
-				continue
+		l.mu.Lock()
+		entry, ok := l.pending[k]
+		l.mu.Unlock()
+		if !ok {
+			continue
+		}
+		current, err := s.createRollbackTargetCurrent(k, entry)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if current {
+			dropCtx := database.KeepFenceOnFailure(tenant.WithTenantID(ctx, k.tenantID))
+			if err := s.manager.DropForTenant(dropCtx, k.name); err != nil {
+				var notFound *database.NotFoundError
+				if !errors.As(err, &notFound) {
+					errs = append(errs, err)
+					continue
+				}
 			}
 		}
 		l.mu.Lock()
-		release := l.pending[k]
 		delete(l.pending, k)
 		l.mu.Unlock()
-		if release != nil {
-			release()
+		if entry.release != nil {
+			entry.release()
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// createRollbackTargetCurrent reports whether the database the tenant holds
+// under the entry's name is still the refused database the entry records. A
+// database that is gone is not current; any other lookup failure is
+// returned, and the entry stays pending.
+func (s *DatabaseService) createRollbackTargetCurrent(k createRollbackKey, entry createRollbackEntry) (bool, error) {
+	db, err := s.manager.GetOwnedIgnoringFence(k.name, k.tenantID)
+	if err != nil {
+		var notFound *database.NotFoundError
+		if errors.As(err, &notFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if db == nil {
+		return false, nil
+	}
+	return db.ID() == entry.id && db.Incarnation() == entry.incarnation, nil
 }
