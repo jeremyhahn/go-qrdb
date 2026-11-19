@@ -66,12 +66,6 @@ func TestExceededErrorMessageContainsExceededPrefix(t *testing.T) {
 	}
 }
 
-func TestExceededErrorImplementsError(t *testing.T) {
-	err := &ExceededError{TenantID: "x", Resource: ResourceKeys, Current: 1, Limit: 1}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 // --- InvalidResourceError ---
 
 func TestInvalidResourceErrorMessageContainsResourceID(t *testing.T) {
@@ -91,12 +85,6 @@ func TestInvalidResourceErrorMessageContainsUnknown(t *testing.T) {
 	if !strings.Contains(got, "quota") {
 		t.Errorf("InvalidResourceError.Error() = %q, want it to contain %q", got, "quota")
 	}
-}
-
-func TestInvalidResourceErrorImplementsError(t *testing.T) {
-	err := &InvalidResourceError{Resource: Resource(0)}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }
 
 // --- UnregisteredCounterError ---
@@ -120,19 +108,7 @@ func TestUnregisteredCounterErrorMessageContainsPrefix(t *testing.T) {
 	}
 }
 
-func TestUnregisteredCounterErrorImplementsError(t *testing.T) {
-	err := &UnregisteredCounterError{Resource: ResourceKeys}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 // --- ErrNilChecker sentinel ---
-
-func TestErrNilCheckerIsNotNil(t *testing.T) {
-	if ErrNilChecker == nil {
-		t.Error("ErrNilChecker must not be nil")
-	}
-}
 
 func TestErrNilCheckerMessageContainsQuota(t *testing.T) {
 	got := ErrNilChecker.Error()

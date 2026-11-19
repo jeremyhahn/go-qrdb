@@ -42,7 +42,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/ceremony"
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
-	"github.com/jeremyhahn/go-qrdb/pkg/service"
+	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	sdkserver "github.com/jeremyhahn/go-qrdb/sdk/go/server"
 )
 
@@ -64,19 +64,16 @@ func newSealedHost(t *testing.T, strategy string) *sealedHost {
 		cfg.Seal.ShamirThreshold = 2
 		cfg.Seal.ShamirTotal = 3
 	}
-	n, err := NewStandaloneNode(context.Background(), cfg, nil)
+	// The ceremony signs officer CSRs with the node's ceremony CA, which the
+	// embedder supplies through server.WithCeremonyCA (qrdbd does the same).
+	n, err := NewStandaloneNode(context.Background(), cfg,
+		[]server.ServerOption{server.WithCeremonyCA(testCeremonyCA(t))})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = n.Close() })
 	require.True(t, n.IsSealed())
 
 	svc := n.Services()
 	require.NotNil(t, svc, "a sealed node exposes its seal-layer services")
-	// The ceremony signs officer CSRs with the node's ceremony CA, which
-	// qrdbd sets on the ceremony core at boot (lifecycle.Infra.CeremonyCA);
-	// the SDK node has no option for it, so the test sets it the same way.
-	core, ok := service.CeremonyServiceCore(svc.Ceremony)
-	require.True(t, ok)
-	core.SetCA(testCeremonyCA(t))
 	probe := sdkserver.NewSealedWindowListenerProbe(n.barrier.Load(), svc.Ceremony)
 
 	mux := http.NewServeMux()

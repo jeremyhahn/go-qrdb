@@ -12276,9 +12276,13 @@ type CreateUserRequest struct {
 	Lifecycle string `protobuf:"bytes,9,opt,name=lifecycle,proto3" json:"lifecycle,omitempty"`
 	// pending is the shorthand for lifecycle "pending". Setting both is
 	// refused unless they agree.
-	Pending       bool `protobuf:"varint,10,opt,name=pending,proto3" json:"pending,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Pending bool `protobuf:"varint,10,opt,name=pending,proto3" json:"pending,omitempty"`
+	// pending_ttl_seconds is how long a pending account may wait for
+	// activation before the reaper deletes it. Only valid with a pending
+	// create; zero means no expiry; negative is refused.
+	PendingTtlSeconds int64 `protobuf:"varint,11,opt,name=pending_ttl_seconds,json=pendingTtlSeconds,proto3" json:"pending_ttl_seconds,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CreateUserRequest) Reset() {
@@ -12372,6 +12376,13 @@ func (x *CreateUserRequest) GetPending() bool {
 		return x.Pending
 	}
 	return false
+}
+
+func (x *CreateUserRequest) GetPendingTtlSeconds() int64 {
+	if x != nil {
+		return x.PendingTtlSeconds
+	}
+	return 0
 }
 
 // GetUserRequest retrieves a user by ID.
@@ -13293,8 +13304,13 @@ type UserResponse struct {
 	MfaEnabled    bool     `protobuf:"varint,19,opt,name=mfa_enabled,json=mfaEnabled,proto3" json:"mfa_enabled,omitempty"`
 	MfaMethods    []string `protobuf:"bytes,20,rep,name=mfa_methods,json=mfaMethods,proto3" json:"mfa_methods,omitempty"`
 	MfaEnrolledAt string   `protobuf:"bytes,21,opt,name=mfa_enrolled_at,json=mfaEnrolledAt,proto3" json:"mfa_enrolled_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// pending_expires_at_unix is when a pending account that was never
+	// activated is deleted by the reaper, seconds since the epoch UTC. Zero
+	// when the account has no expiry (any non-pending account, or a pending
+	// one created without a TTL).
+	PendingExpiresAtUnix int64 `protobuf:"varint,22,opt,name=pending_expires_at_unix,json=pendingExpiresAtUnix,proto3" json:"pending_expires_at_unix,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *UserResponse) Reset() {
@@ -13458,6 +13474,13 @@ func (x *UserResponse) GetMfaEnrolledAt() string {
 		return x.MfaEnrolledAt
 	}
 	return ""
+}
+
+func (x *UserResponse) GetPendingExpiresAtUnix() int64 {
+	if x != nil {
+		return x.PendingExpiresAtUnix
+	}
+	return 0
 }
 
 // CertBinding is one mTLS key enrolled on a user.
@@ -36721,7 +36744,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\x03log\x18\x01 \x01(\tR\x03log\x12D\n" +
 	"\x10signing_key_type\x18\x02 \x01(\x0e2\x1a.qrdb.v1.VlogSignatureTypeR\x0esigningKeyType\"?\n" +
 	"\x15VlogRotateKeyResponse\x12&\n" +
-	"\x03key\x18\x01 \x01(\v2\x14.qrdb.v1.VlogHeadKeyR\x03key\"\xb4\x02\n" +
+	"\x03key\x18\x01 \x01(\v2\x14.qrdb.v1.VlogHeadKeyR\x03key\"\xe4\x02\n" +
 	"\x11CreateUserRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x19\n" +
@@ -36732,7 +36755,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\fauth_methods\x18\b \x03(\tR\vauthMethods\x12\x1c\n" +
 	"\tlifecycle\x18\t \x01(\tR\tlifecycle\x12\x18\n" +
 	"\apending\x18\n" +
-	" \x01(\bR\apendingJ\x04\b\a\x10\bR\tgroup_ids\"=\n" +
+	" \x01(\bR\apending\x12.\n" +
+	"\x13pending_ttl_seconds\x18\v \x01(\x03R\x11pendingTtlSecondsJ\x04\b\a\x10\bR\tgroup_ids\"=\n" +
 	"\x0eGetUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"S\n" +
@@ -36797,7 +36821,7 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"C\n" +
 	"\x14UnsuspendUserRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
-	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"\x92\x06\n" +
+	"\ttenant_id\x18\x02 \x01(\tR\btenantId\"\xc9\x06\n" +
 	"\fUserResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1a\n" +
@@ -36824,7 +36848,8 @@ const file_pkg_api_grpc_proto_qrdbv1_qrdb_proto_rawDesc = "" +
 	"mfaEnabled\x12\x1f\n" +
 	"\vmfa_methods\x18\x14 \x03(\tR\n" +
 	"mfaMethods\x12&\n" +
-	"\x0fmfa_enrolled_at\x18\x15 \x01(\tR\rmfaEnrolledAt\x1a=\n" +
+	"\x0fmfa_enrolled_at\x18\x15 \x01(\tR\rmfaEnrolledAt\x125\n" +
+	"\x17pending_expires_at_unix\x18\x16 \x01(\x03R\x14pendingExpiresAtUnix\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06J\x04\b\f\x10\rR\aenabledR\tgroup_ids\"g\n" +

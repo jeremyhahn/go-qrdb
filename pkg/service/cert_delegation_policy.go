@@ -13,6 +13,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
+	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
@@ -240,6 +241,14 @@ func (s *CertEnrollmentService) MintDelegation(ctx context.Context, req *MintDel
 	}
 	if !found {
 		return nil, &DelegationPolicyNotFoundError{TenantID: own, Principal: principal}
+	}
+	if policy.Tenant != own || policy.Principal != principal {
+		return nil, &DelegationDeniedError{Reason: "the stored policy does not name this tenant and principal"}
+	}
+	// A renewal is the delegation minting for itself: the policy that stands
+	// now has to allow it, whatever the certificate presented still carries.
+	if _, delegated := auth.DelegationOf(auth.IdentityFromContext(ctx)); delegated && !slices.Contains(policy.Scope, string(permission.CertsDelegate)) {
+		return nil, &DelegationDeniedError{Reason: "the tenant's delegation policy does not allow a renewal"}
 	}
 	g, ttl, err := policy.Bound(req.Scope, req.TTL)
 	if err != nil {

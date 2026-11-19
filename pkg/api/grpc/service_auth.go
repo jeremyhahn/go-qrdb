@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -66,6 +67,7 @@ func (s *qrdbServiceServer) CreateUser(ctx context.Context, req *pb.CreateUserRe
 		AuthMethods:          req.GetAuthMethods(),
 		Lifecycle:            user.Lifecycle(req.GetLifecycle()),
 		Pending:              req.GetPending(),
+		PendingTTL:           pendingTTLFromSeconds(req.GetPendingTtlSeconds()),
 	})
 	if err != nil {
 		return nil, mapServiceError(err)
@@ -1083,16 +1085,17 @@ func userToProto(ctx context.Context, lister user.FactorLister, u *user.User) (*
 		// Seconds rather than RFC 3339 because this is a point in time a client
 		// compares and orders, not one it displays; zero says "never
 		// authenticated" without a second presence field.
-		LastAuthUnix:  lastAuthUnix(u.LastAuth),
-		CertBindings:  certBindingsToProto(u.CertBindings),
-		RoleBindings:  roleBindingsToProto(u.RoleBindings),
-		Attributes:    u.Attributes,
-		Factors:       factorsToProto(factors.Factors),
-		MfaEnabled:    factors.MFAEnabled,
-		MfaMethods:    factors.MFAMethods,
-		MfaEnrolledAt: factors.MFAEnrolledAt,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+		LastAuthUnix:         lastAuthUnix(u.LastAuth),
+		PendingExpiresAtUnix: lastAuthUnix(u.PendingExpiresAt),
+		CertBindings:         certBindingsToProto(u.CertBindings),
+		RoleBindings:         roleBindingsToProto(u.RoleBindings),
+		Attributes:           u.Attributes,
+		Factors:              factorsToProto(factors.Factors),
+		MfaEnabled:           factors.MFAEnabled,
+		MfaMethods:           factors.MFAMethods,
+		MfaEnrolledAt:        factors.MFAEnrolledAt,
+		CreatedAt:            u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:            u.UpdatedAt.Format(time.RFC3339),
 	}, nil
 }
 
@@ -1202,4 +1205,18 @@ func lastAuthUnix(at *time.Time) int64 {
 		return 0
 	}
 	return at.UTC().Unix()
+}
+
+// pendingTTLFromSeconds converts the wire TTL to a duration. A value too large
+// for time.Duration saturates rather than wrapping into a negative (refused)
+// or short TTL; a negative one passes through for the service to refuse.
+func pendingTTLFromSeconds(secs int64) time.Duration {
+	const maxSecs = int64(math.MaxInt64 / int64(time.Second))
+	if secs > maxSecs {
+		return time.Duration(math.MaxInt64)
+	}
+	if secs < -maxSecs {
+		return -time.Second
+	}
+	return time.Duration(secs) * time.Second
 }

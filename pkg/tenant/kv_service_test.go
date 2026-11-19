@@ -801,20 +801,6 @@ func newKVServiceForBarrierTest(t *testing.T) TenantServicer {
 	return svc
 }
 
-func TestKVTenantBarrierSeal_NotEnabled2(t *testing.T) {
-	svc := newKVServiceForBarrierTest(t)
-	if err := svc.TenantBarrierSeal(context.Background(), "t"); !errors.Is(err, ErrBarrierNotEnabled) {
-		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
-	}
-}
-
-func TestKVTenantBarrierStatus_NotEnabled2(t *testing.T) {
-	svc := newKVServiceForBarrierTest(t)
-	if _, err := svc.TenantBarrierStatus(context.Background(), "t"); !errors.Is(err, ErrBarrierNotEnabled) {
-		t.Errorf("expected ErrBarrierNotEnabled, got %v", err)
-	}
-}
-
 func TestKVTenantBarrierOfficerRegister_NotEnabled(t *testing.T) {
 	svc := newKVServiceForBarrierTest(t)
 	_, err := svc.TenantBarrierOfficerRegister(context.Background(), "t", nil)

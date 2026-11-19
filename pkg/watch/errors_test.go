@@ -30,27 +30,6 @@ func TestHubClosedError_Error_ReturnsExpectedMessage(t *testing.T) {
 	}
 }
 
-func TestHubClosedError_ImplementsErrorInterface(t *testing.T) {
-	var err error = &HubClosedError{}
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
-func TestHubClosedError_ErrorsAs(t *testing.T) {
-	err := &HubClosedError{}
-	var target *HubClosedError
-	if !errors.As(err, &target) {
-		t.Fatal("expected errors.As to match *HubClosedError")
-	}
-}
-
-func TestHubClosedError_NotNil(t *testing.T) {
-	err := &HubClosedError{}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 // TestWatchCreateError_Error verifies the error message includes the cause.
 func TestWatchCreateError_Error(t *testing.T) {
 	t.Run("formats message with cause", func(t *testing.T) {

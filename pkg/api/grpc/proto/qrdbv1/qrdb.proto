@@ -3288,6 +3288,10 @@ message CreateUserRequest {
     // pending is the shorthand for lifecycle "pending". Setting both is
     // refused unless they agree.
     bool pending = 10;
+    // pending_ttl_seconds is how long a pending account may wait for
+    // activation before the reaper deletes it. Only valid with a pending
+    // create; zero means no expiry; negative is refused.
+    int64 pending_ttl_seconds = 11;
 }
 
 // GetUserRequest retrieves a user by ID.
@@ -3496,6 +3500,11 @@ message UserResponse {
     bool mfa_enabled = 19;
     repeated string mfa_methods = 20;
     string mfa_enrolled_at = 21;
+    // pending_expires_at_unix is when a pending account that was never
+    // activated is deleted by the reaper, seconds since the epoch UTC. Zero
+    // when the account has no expiry (any non-pending account, or a pending
+    // one created without a TTL).
+    int64 pending_expires_at_unix = 22;
 }
 
 // CertBinding is one mTLS key enrolled on a user.

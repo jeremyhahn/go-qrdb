@@ -58,6 +58,10 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 			return nil, err
 		}
 	}
+	ttl, err := req.PendingTTLDuration()
+	if err != nil {
+		return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+	}
 	u, err := t.userSvc.CreateUser(ctx, &user.CreateUserRequest{
 		Username:             req.Username,
 		Email:                req.Email,
@@ -68,6 +72,7 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		AuthMethods:          req.AuthMethods,
 		Lifecycle:            user.Lifecycle(req.Lifecycle),
 		Pending:              req.Pending,
+		PendingTTL:           ttl,
 	})
 	if err != nil {
 		return nil, err
@@ -821,25 +826,26 @@ func userToTransport(ctx context.Context, lister user.FactorLister, u *user.User
 		return nil, err
 	}
 	return &transport.User{
-		ID:            u.ID,
-		Username:      u.Username,
-		Email:         u.Email,
-		Name:          u.Name,
-		TenantID:      u.TenantID,
-		RoleIDs:       roleIDs,
-		System:        u.System,
-		Lifecycle:     string(u.Lifecycle),
-		AuthMethods:   u.AuthMethods,
-		LastAuth:      formatLastAuth(u.LastAuth),
-		CertBindings:  user.WireCertBindings(u.CertBindings),
-		RoleBindings:  user.WireRoleBindings(u.RoleBindings),
-		Attributes:    u.Attributes,
-		Factors:       factors.Factors,
-		MFAEnabled:    factors.MFAEnabled,
-		MFAMethods:    factors.MFAMethods,
-		MFAEnrolledAt: factors.MFAEnrolledAt,
-		CreatedAt:     u.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:     u.UpdatedAt.Format(time.RFC3339),
+		ID:               u.ID,
+		Username:         u.Username,
+		Email:            u.Email,
+		Name:             u.Name,
+		TenantID:         u.TenantID,
+		RoleIDs:          roleIDs,
+		System:           u.System,
+		Lifecycle:        string(u.Lifecycle),
+		AuthMethods:      u.AuthMethods,
+		LastAuth:         formatLastAuth(u.LastAuth),
+		PendingExpiresAt: formatLastAuth(u.PendingExpiresAt),
+		CertBindings:     user.WireCertBindings(u.CertBindings),
+		RoleBindings:     user.WireRoleBindings(u.RoleBindings),
+		Attributes:       u.Attributes,
+		Factors:          factors.Factors,
+		MFAEnabled:       factors.MFAEnabled,
+		MFAMethods:       factors.MFAMethods,
+		MFAEnrolledAt:    factors.MFAEnrolledAt,
+		CreatedAt:        u.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:        u.UpdatedAt.Format(time.RFC3339),
 	}, nil
 }
 

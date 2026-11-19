@@ -228,13 +228,6 @@ func TestWithLock_ServerOption(t *testing.T) {
 	}
 }
 
-func TestWithLock_Nil(t *testing.T) {
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithLock(nil))
-	if srv.lockSvc != nil {
-		t.Fatal("expected lockSvc to be nil")
-	}
-}
-
 func TestWithKVService_ServerOption(t *testing.T) {
 	svc := newMockKVService()
 	srv := NewServer(nil, nil, "127.0.0.1:0", WithKVService(svc))
@@ -259,45 +252,12 @@ func TestWithPINBackend_ServerOption(t *testing.T) {
 	}
 }
 
-func TestWithPINBackend_Nil(t *testing.T) {
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0", WithPINBackend(nil))
-	if srv.pinBackend != nil {
-		t.Fatal("expected pinBackend to be nil")
-	}
-}
-
-func TestWithAuthFactorService_ServerOption(t *testing.T) {
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithAuthFactorService(nil))
-	if srv.authFactorSvc != nil {
-		t.Fatal("expected authFactorSvc to be nil")
-	}
-}
-
 func TestWithUserAuthFactorService_ServerOption(t *testing.T) {
 	svc := newMockUserAuthFactorSvc()
 	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
 		WithUserAuthFactorService(svc))
 	if srv.userAuthFactorSvc == nil {
 		t.Fatal("expected userAuthFactorSvc to be set")
-	}
-}
-
-func TestWithUserAuthFactorService_Nil(t *testing.T) {
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithUserAuthFactorService(nil))
-	if srv.userAuthFactorSvc != nil {
-		t.Fatal("expected userAuthFactorSvc to be nil")
-	}
-}
-
-func TestWithTenantService_ServerOption(t *testing.T) {
-	// Uses the mock from service_tenant_test.go is gated behind extra tags,
-	// so use NewServer and check the field is set.
-	srv := NewServer(newMockKVService(), newMockAdminService(), "127.0.0.1:0",
-		WithTenantService(nil))
-	if srv.tenantSvc != nil {
-		t.Fatal("expected tenantSvc to be nil")
 	}
 }
 

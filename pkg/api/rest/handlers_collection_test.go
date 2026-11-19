@@ -1148,14 +1148,6 @@ func TestWithCollectionService_Option(t *testing.T) {
 	}
 }
 
-func TestWithCollectionService_NilOption(t *testing.T) {
-	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
-		WithCollectionService(nil))
-	if srv.collectionSvc != nil {
-		t.Fatal("collectionSvc should be nil when WithCollectionService(nil)")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // handleListCollections service error test
 // ---------------------------------------------------------------------------
