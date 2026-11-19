@@ -269,10 +269,14 @@ push() {
 
 # ci_ref reports whether the reference $1 is one of the CI images: a local
 # qrdb-toolchain or qrdb-ci-it tag (content-hash or per-run), or a pushed
-# go-qrdb-toolchain or go-qrdb-ci-it tag.
+# go-qrdb-toolchain or go-qrdb-ci-it tag, or a pool job's pull from the LAN
+# CI registry ($CI_REGISTRY/go-qrdb/toolchain-image or .../it-image, under
+# whatever registry CI_REGISTRY names), which stays beside the local
+# content-hash tag the job adds.
 ci_ref() {
 	case ${1%:*} in
 	qrdb-toolchain | qrdb-ci-it | */go-qrdb-toolchain | */go-qrdb-ci-it) return 0 ;;
+	*/go-qrdb/toolchain-image | */go-qrdb/it-image) return 0 ;;
 	esac
 	return 1
 }
