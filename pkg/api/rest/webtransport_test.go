@@ -888,15 +888,24 @@ func TestWebTransport_NegotiationFailureOpensNoSession(t *testing.T) {
 			}
 		}
 	}
+	// malformed is the CONNECT stream reset with H3_MESSAGE_ERROR
+	// (draft-ietf-webtrans-http3-16 section 3.1, RFC 9114 section 4.1.2).
+	malformed := func(t *testing.T, status int, body string, err error) {
+		var streamErr *quic.StreamError
+		if !errors.As(err, &streamErr) || streamErr.ErrorCode != quic.StreamErrorCode(http3.ErrCodeMessageError) || !streamErr.Remote {
+			t.Fatalf("status %d (%s), err %v; want the server's H3_MESSAGE_ERROR stream reset", status, body, err)
+		}
+	}
 	for name, tc := range map[string]struct {
 		hs   wtHandshake
 		want func(*testing.T, int, string, error)
 	}{
 		"other protocol":      {broken(func(hs *wtHandshake) { hs.protocol = "connect-udp" }), refusal("unexpected protocol")},
 		"unsupported version": {broken(func(hs *wtHandshake) { hs.protocol = "webtransport-h4" }), refusal("unexpected protocol")},
-		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), refusal("did not send SETTINGS_WT_ENABLED")},
+		"legacy protocol":     {broken(func(hs *wtHandshake) { hs.protocol = "webtransport" }), refusal("unexpected protocol")},
+		"no WT_ENABLED":       {broken(func(hs *wtHandshake) { hs.wtEnabled = false }), malformed},
 		"no H3_DATAGRAM":      {broken(func(hs *wtHandshake) { hs.h3Datagram = false }), refusal("datagram")},
-		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), refusal("did not send the reset_stream_at transport parameter")},
+		"no reset_stream_at":  {broken(func(hs *wtHandshake) { hs.resetStreamAt = false }), malformed},
 		// quic-go's http3.Server closes the connection: SETTINGS_H3_DATAGRAM
 		// without the max_datagram_frame_size transport parameter is
 		// H3_SETTINGS_ERROR (RFC 9297 section 2.1.1).

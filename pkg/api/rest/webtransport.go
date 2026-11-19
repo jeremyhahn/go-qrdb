@@ -100,7 +100,16 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := webTransportClientRequirementsMet(w, r, deadline); err != nil {
 		if errors.Is(err, errWebTransportSettingsTimeout) {
-			rejectWebTransportRequest(w)
+			rejectWebTransportRequest(w, http3.ErrCodeRequestRejected)
+			return
+		}
+		// A CONNECT from a client that did not send SETTINGS_WT_ENABLED or
+		// the reset_stream_at transport parameter is malformed
+		// (draft-ietf-webtrans-http3-16 section 3.1): RFC 9114 section 4.1.2
+		// has the request stream reset with H3_MESSAGE_ERROR.
+		var reqErr *WebTransportClientRequirementError
+		if errors.As(err, &reqErr) {
+			rejectWebTransportRequest(w, http3.ErrCodeMessageError)
 			return
 		}
 		writeErrorJSON(w, http.StatusBadRequest, &WebTransportUpgradeError{Err: err})
@@ -109,7 +118,7 @@ func (s *Server) serveWebTransport(w http.ResponseWriter, r *http.Request) {
 	// What we rely on from webtransport-go v0.13.0 (server.go):
 	// Server.Upgrade returns an error, having written no response and
 	// opened no session, unless the request is CONNECT, its :protocol is
-	// "webtransport-h3" (or the pre-draft-15 "webtransport"), CheckOrigin
+	// "webtransport-h3" (the only accepted token), CheckOrigin
 	// accepts it, and the client's SETTINGS enable HTTP/3 datagrams. We set
 	// no CheckOrigin, so its default applies: an Origin header, when sent,
 	// must name the request's Host. Authentication is not Upgrade's job; the
@@ -184,7 +193,7 @@ var errWebTransportSettingsTimeout = errors.New("rest: the client's HTTP/3 SETTI
 // SETTINGS: both directions of the request stream are reset with
 // H3_REQUEST_REJECTED (RFC 9114 section 8.1), which tells the client the
 // request was not processed, and no session handler runs.
-func rejectWebTransportRequest(w http.ResponseWriter) {
+func rejectWebTransportRequest(w http.ResponseWriter, code http3.ErrCode) {
 	streamer, ok := w.(http3.HTTPStreamer)
 	if !ok {
 		return
@@ -195,8 +204,8 @@ func rejectWebTransportRequest(w http.ResponseWriter) {
 	if err != nil {
 		return
 	}
-	str.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
-	str.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestRejected))
+	str.CancelRead(quic.StreamErrorCode(code))
+	str.CancelWrite(quic.StreamErrorCode(code))
 }
 
 // webTransportHandshakeTimeout bounds how long a CONNECT waits for the
