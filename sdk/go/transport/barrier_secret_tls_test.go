@@ -352,7 +352,8 @@ func TestBarrierSecretHopError(t *testing.T) {
 		want func(error) bool
 	}{
 		{"first hop https", BarrierSecretUnsealKey, redirected(t, "https://db.example.com/v1"), isNil},
-		{"same-host redirect", BarrierSecretUnsealKey, redirected(t, "https://db.example.com/moved", "https://db.example.com/v1"), isNil},
+		{"same-host redirect", BarrierSecretUnsealKey, redirected(t, "https://db.example.com/moved", "https://db.example.com/v1"), isAs[*BarrierSecretRedirectError]},
+		{"same-host redirect, SO PIN", soPINSecret, redirected(t, "https://db.example.com/moved", "https://db.example.com/v1"), isAs[*SOPINRedirectError]},
 		{"first hop http", BarrierSecretUnsealKey, redirected(t, "http://db.example.com/v1"), isAs[*BarrierSecretRequiresTLSError]},
 		{"redirect to http", BarrierSecretShare, redirected(t, "http://db.example.com/v1", "https://db.example.com/v1"), isAs[*BarrierSecretRequiresTLSError]},
 		{"redirect to another port", BarrierSecretPassphrase, redirected(t, "https://db.example.com:9443/v1", "https://db.example.com/v1"), isAs[*BarrierSecretForeignHostError]},

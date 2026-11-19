@@ -151,6 +151,47 @@ func TestSOPIN_RedirectToAnotherHostNeverCarriesThePIN(t *testing.T) {
 	}
 }
 
+// TestSOPIN_SameHostRedirectNeverCarriesThePIN: a redirect to the configured
+// host itself is refused too (#1639); the redirect target never sees a request.
+func TestSOPIN_SameHostRedirectNeverCarriesThePIN(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			originRec, movedRec := &pinRecorder{}, &pinRecorder{}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+			mux.HandleFunc("/v1/barrier/rekey/start", func(w http.ResponseWriter, r *http.Request) {
+				originRec.record(r)
+				http.Redirect(w, r, "/moved/v1/barrier/rekey/start", status)
+			})
+			mux.HandleFunc("/moved/", func(w http.ResponseWriter, r *http.Request) {
+				movedRec.record(r)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"domain":"unseal","op":"rekey","required":2,"submitted":0}`))
+			})
+			srv := httptest.NewTLSServer(mux)
+			defer srv.Close()
+
+			err := rekeyWithPIN(t, connectREST(t, srv.URL, trusting(srv)))
+			if !originRec.sawPIN() {
+				t.Fatal("the configured host did not receive the PIN; the test proves nothing")
+			}
+			movedRec.mu.Lock()
+			hits := movedRec.hits
+			movedRec.mu.Unlock()
+			if hits != 0 {
+				t.Fatalf("the redirect target saw %d requests, want none", hits)
+			}
+			var redirErr *transport.SOPINRedirectError
+			if !errors.As(err, &redirErr) {
+				t.Fatalf("err = %v, want *transport.SOPINRedirectError", err)
+			}
+			if want := (transport.SOPINRedirectError{Transport: "rest", Status: status}); *redirErr != want {
+				t.Fatalf("err = %+v, want %+v", *redirErr, want)
+			}
+		})
+	}
+}
+
 func TestSOPIN_RedirectToHTTPNeverCarriesThePIN(t *testing.T) {
 	plainRec := &pinRecorder{}
 	plain := httptest.NewServer(pinServer(plainRec))

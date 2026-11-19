@@ -115,8 +115,10 @@ curl -k https://db.example.com/v1/ca/bootstrap     # only if configured
 ```
 
 Everything else needs a certificate. The cluster key routes
-(`/v1/cluster/nodekey`, `/v1/cluster/keydelivery`) also take no credential, but
-they serve joining nodes and run their own certificate and placement checks.
+(`/v1/cluster/nodekey`, `/v1/cluster/keydelivery`) take no user credential and
+run their own checks. `/v1/cluster/nodekey` serves joining nodes.
+`/v1/cluster/keydelivery` answers 401 unless the TLS connection carries a node
+certificate issued by the cluster CA, then applies the placement check.
 
 `qrdb admin health` works with no certificate and no token on every transport
 — REST, gRPC, QUIC, MCP and Unix — and prints the node's status. Any other
