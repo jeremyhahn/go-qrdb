@@ -17,6 +17,7 @@ package featuregate
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,16 +42,17 @@ func TestAdmitReplica_RefusesVersionGap(t *testing.T) {
 	t.Cleanup(release.SetForTesting("0.58.0-alpha"))
 	store, kv := newLeaseStore(), newMemKV()
 	store.advertiseRelease(t, 2, "n2:7000", "0.59.0-alpha")
-	store.advertiseRelease(t, 3, "n3:7000", "0.60.0-alpha")
+	store.advertiseRelease(t, 3, "n3:7000", "0.59.0-alpha")
+	store.advertiseRelease(t, 4, "n4:7000", "0.60.0-alpha")
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.Start(context.Background(), kv, store))
 
 	var gap *release.GapError
-	err := g.AdmitReplica(dedicatedShard, "n3:7000")
+	err := g.AdmitReplica(dedicatedShard, "n4:7000")
 	require.ErrorAs(t, err, &gap)
 	assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.58.0-alpha", Peer: "0.60.0-alpha"}, *gap)
 	// The system shard admits on features alone, but never across a gap.
-	require.ErrorAs(t, g.AdmitReplica(systemShard, "n3:7000"), &gap)
+	require.ErrorAs(t, g.AdmitReplica(systemShard, "n4:7000"), &gap)
 	assert.NoError(t, g.AdmitReplica(dedicatedShard, "n2:7000"))
 }
 
@@ -154,6 +156,57 @@ func TestGate_RecordsOwnRelease(t *testing.T) {
 	store, kv := newLeaseStore(), newMemKV()
 	_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+"1/0.58.0-alpha", []byte("n1:7000"))
 	require.NoError(t, err)
+	g := newGate(t, threeNodes())
+	require.NoError(t, g.Start(context.Background(), kv, store))
+	assert.True(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"))
+	assert.False(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
+}
+
+// TestStart_RefusesExistingMemberRestartAcrossAGap: committed member 1 of a
+// 0.59 cluster, last run on 0.58, restarts its data directory on a 0.60
+// binary -- an upgrade that skips 0.59. Admission never sees it (it is no
+// membership addition), so Start refuses it with the admission's typed gap
+// error naming the release it last ran, whether the other members' release
+// comes from a live advertisement or, offline, from the release they
+// recorded -- and records nothing for the refused binary.
+func TestStart_RefusesExistingMemberRestartAcrossAGap(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	for name, live := range map[string]bool{"live advertisement": true, "recorded release": false} {
+		t.Run(name, func(t *testing.T) {
+			store, kv := newLeaseStore(), newMemKV()
+			for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
+				rel := "0.59.0-alpha"
+				if id == 1 {
+					rel = "0.58.0-alpha"
+				}
+				_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+strconv.FormatUint(id, 10)+"/"+rel, []byte(addr))
+				require.NoError(t, err)
+				if live && id != 1 {
+					store.advertiseRelease(t, id, addr, rel)
+				}
+			}
+			g := newGate(t, threeNodes())
+
+			var gap *release.GapError
+			require.ErrorAs(t, g.Start(context.Background(), kv, store), &gap)
+			assert.Equal(t, release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}, *gap)
+			assert.False(t, kv.has(ReleasePrefix+"1/0.60.0-alpha"), "a refused binary records no release")
+			assert.True(t, kv.has(ReleasePrefix+"1/0.58.0-alpha"))
+		})
+	}
+}
+
+// TestStart_AcceptsExistingMemberRestartOnTheNextRelease: committed member 1
+// of an all-0.58 cluster restarting on the adjacent 0.59 starts, and
+// replaces its recorded release.
+func TestStart_AcceptsExistingMemberRestartOnTheNextRelease(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.59.0-alpha"))
+	store, kv := newLeaseStore(), newMemKV()
+	for id, addr := range map[uint64]string{1: "n1:7000", 2: "n2:7000", 3: "n3:7000"} {
+		_, err := kv.PutIfAbsent(context.Background(), ReleasePrefix+strconv.FormatUint(id, 10)+"/0.58.0-alpha", []byte(addr))
+		require.NoError(t, err)
+	}
+	store.advertiseRelease(t, 2, "n2:7000", "0.58.0-alpha")
 	g := newGate(t, threeNodes())
 	require.NoError(t, g.Start(context.Background(), kv, store))
 	assert.True(t, kv.has(ReleasePrefix+"1/0.59.0-alpha"))

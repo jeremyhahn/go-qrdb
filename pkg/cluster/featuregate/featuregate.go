@@ -770,6 +770,14 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 			return &StoreError{Op: "list releases", Err: err}
 		}
 	}
+	releases := parseReleases(keys)
+	g.releases.Store(&releases)
+	return nil
+}
+
+// parseReleases maps each replica ID to the releases recorded for it by
+// release record keys "{ReleasePrefix}{replicaID}/{release}".
+func parseReleases(keys []string) map[uint64][]string {
 	releases := make(map[uint64][]string, len(keys))
 	for _, k := range keys {
 		idText, rel, ok := strings.Cut(strings.TrimPrefix(k, ReleasePrefix), "/")
@@ -779,7 +787,64 @@ func (g *Gate) recordRelease(ctx context.Context, kv ActivationKV) error {
 		}
 		releases[id] = append(releases[id], rel)
 	}
-	g.releases.Store(&releases)
+	return releases
+}
+
+// checkRestartRelease refuses, with the *release.GapError admission
+// returns (Channel "raft-membership", Local this binary's release, Peer the
+// member's), to start this node when it is already a committed system-shard
+// member and its binary's release is not adjacent to the release of every
+// committed member, or to the release this node itself last recorded.
+// Admission judges a node only when it is added; a member restarting its
+// data directory on a new binary -- 0.58 to 0.60 in an all-0.59 cluster, an
+// upgrade that skips a release -- is judged here, before it records its
+// release or serves. Another member's release is its live advertisement's,
+// else the releases it recorded under ReleasePrefix; this node's is every
+// release it recorded or still advertises. A member with neither, or whose record
+// predates release announcement, is skipped: a cold restart of a cluster
+// whose members have not recorded a release yet must still come up. A node
+// that is not yet a member is left to admission.
+func (g *Gate) checkRestartRelease(ctx context.Context, kv ActivationKV) error {
+	if _, err := g.AdvertisedSelf(); err != nil {
+		return nil
+	}
+	system, err := g.members.GroupMembership(g.systemShard)
+	if err != nil {
+		return err
+	}
+	// Unreadable applied state leaves the live advertisements to judge by,
+	// as recordRelease leaves it to the refresh.
+	keys, err := kv.ListStale(ctx, ReleasePrefix)
+	if err != nil {
+		g.logger.Warn("feature gate: recorded releases unreadable; judging the restart by advertisements", "error", err)
+	}
+	recorded := parseReleases(keys)
+	view := *g.view.Load()
+	own := release.Version()
+	for _, m := range committedMembers(system) {
+		rels := recorded[m.id]
+		if rec := liveRecord(view, m.id, m.addr); m.id == g.self.ReplicaID {
+			// This node's own record is the release its data directory
+			// last ran: the upgrade itself must be to an adjacent release.
+			if rec != nil && rec.ReleaseVersion != "" {
+				rels = append(slices.Clone(rels), rec.ReleaseVersion)
+			}
+		} else if rec != nil {
+			if rec.ReleaseVersion == "" {
+				continue
+			}
+			rels = []string{rec.ReleaseVersion}
+		}
+		for _, rel := range rels {
+			if !releasesAdjacent(own, rel) {
+				g.logger.Error("feature gate: refusing to start on a release gap to a member",
+					"release", own,
+					"member", m.addr,
+					"member_release", rel)
+				return &release.GapError{Channel: releaseChannel, Local: own, Peer: rel}
+			}
+		}
+	}
 	return nil
 }
 
@@ -926,7 +991,9 @@ type sourcedEvent struct {
 // registrations when dynamic membership keeps them -- and starts the
 // background loop that follows advertisement changes and activates
 // features. It fails -- and the node must not start -- when the cluster has
-// activated a feature this binary lacks.
+// activated a feature this binary lacks, or when this node is a committed
+// member restarting on a release not adjacent to another member's
+// (checkRestartRelease).
 func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.MembershipStore) error {
 	if kv == nil || len(adverts) == 0 || slices.Contains(adverts, nil) {
 		return &ConfigError{Field: "store"}
@@ -955,6 +1022,10 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 			cancel()
 			return err
 		}
+	}
+	if err := g.checkRestartRelease(ctx, kv); err != nil {
+		cancel()
+		return err
 	}
 	if err := g.recordRelease(ctx, kv); err != nil {
 		g.logger.Warn("feature gate: release record failed; retrying on refresh", "error", err)
