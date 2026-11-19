@@ -50,6 +50,28 @@ func (e *TLSUnavailableError) Error() string {
 		"qrdb transports are TLS-only"
 }
 
+// AutoTLSClientCAError is returned by a transport start path when the
+// ceremony CA issued the auto-provisioned server certificate but its own
+// certificate, the listener's ClientCAs, could not be read. The listener
+// does not start without client-certificate requests: a key delivery
+// authenticates its sender by that certificate. The failure is not cached,
+// so the next start attempt asks the ceremony CA again.
+type AutoTLSClientCAError struct {
+	// Transport names the protocol server that could not be started.
+	Transport string
+	// Err is the ceremony CA's CACertificate error.
+	Err error
+}
+
+// Error returns a human-readable description.
+func (e *AutoTLSClientCAError) Error() string {
+	return "server: cannot start " + e.Transport +
+		" transport: ceremony CA certificate unavailable for client verification: " + e.Err.Error()
+}
+
+// Unwrap returns the ceremony CA's error.
+func (e *AutoTLSClientCAError) Unwrap() error { return e.Err }
+
 // resolveTransportTLS returns the TLS configuration a transport listener must
 // use. qrdb transports never accept a plaintext connection, so this method
 // always returns either a non-nil *tls.Config or an error:
@@ -92,7 +114,10 @@ func (s *Server) resolveTransportTLS(transport string, extraSANs ...string) (*tl
 	// listener takes the node posture of ListenerClientAuth: it requests a
 	// client certificate and verifies one if given, which a key delivery
 	// (POST /v1/cluster/keydelivery) needs whatever the user-auth posture.
-	clientCAs := s.autoTLSClientCAs()
+	clientCAs, err := s.autoTLSClientCAs()
+	if err != nil {
+		return nil, &AutoTLSClientCAError{Transport: transport, Err: err}
+	}
 	cfg.ClientAuth = ListenerClientAuth(false, clientCAs != nil)
 	cfg.ClientCAs = clientCAs
 	if s.opts.autoTLSClientTrust != nil {
@@ -129,22 +154,29 @@ func ListenerClientAuth(authEnabled, nodeIdentity bool) tls.ClientAuthType {
 // pool). WithCACertPool is deliberately absent: it only verifies peer servers
 // for the REST forwarding client, and its CAs must not issue client
 // identities here. Nil when the ceremony CA yields no certificate.
-func (s *Server) autoTLSClientCAs() *x509.CertPool {
-	s.autoClientCAs.once.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), autoTLSCATimeout)
-		defer cancel()
-		caCert, err := s.opts.ceremonyCA.CACertificate(ctx)
-		if err != nil {
-			s.logger.Warn("auto-provisioned TLS: ceremony CA certificate unavailable for client verification",
-				"error", err)
-			return
-		}
-		if caCert == nil {
-			return
-		}
+//
+// Only an answer is cached: a lookup that fails or times out returns its
+// error and leaves the cache empty, so a later resolve retries rather than
+// starting every listener without client-certificate requests.
+func (s *Server) autoTLSClientCAs() (*x509.CertPool, error) {
+	s.autoClientCAs.mu.Lock()
+	defer s.autoClientCAs.mu.Unlock()
+	if s.autoClientCAs.done {
+		return s.autoClientCAs.pool, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), autoTLSCATimeout)
+	defer cancel()
+	caCert, err := s.opts.ceremonyCA.CACertificate(ctx)
+	if err != nil {
+		// Not cached: a failed lookup is not an absent CA, and the
+		// next resolve asks the ceremony CA again.
+		return nil, err
+	}
+	if caCert != nil {
 		pool := x509.NewCertPool()
 		pool.AddCert(caCert)
 		s.autoClientCAs.pool = pool
-	})
-	return s.autoClientCAs.pool
+	}
+	s.autoClientCAs.done = true
+	return s.autoClientCAs.pool, nil
 }

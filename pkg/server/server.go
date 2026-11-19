@@ -152,7 +152,8 @@ type Server struct {
 	// autoClientCAs is the one ClientCAs pool every auto-provisioned
 	// listener configuration shares; see autoTLSClientCAs.
 	autoClientCAs struct {
-		once sync.Once
+		mu   sync.Mutex
+		done bool
 		pool *x509.CertPool
 	}
 

@@ -258,6 +258,51 @@ func TestAutoProvision_RequestsNodeClientCert(t *testing.T) {
 	}
 }
 
+// flakyCACertCA is the test ceremony CA whose CACertificate fails while
+// failing is set; issuance is untouched.
+type flakyCACertCA struct {
+	ceremony.CeremonyCA
+	failing atomic.Bool
+}
+
+var errCACertTransient = errors.New("ceremony CA certificate lookup timed out")
+
+func (c *flakyCACertCA) CACertificate(ctx context.Context) (*x509.Certificate, error) {
+	if c.failing.Load() {
+		return nil, errCACertTransient
+	}
+	return c.CeremonyCA.CACertificate(ctx)
+}
+
+// A CA certificate lookup that fails after the server certificate was
+// issued fails the listener start, and is not cached as an absent CA: once
+// the ceremony CA answers, the next resolve requests client certificates.
+func TestAutoProvision_CALookupFailureNotCached(t *testing.T) {
+	ca := &flakyCACertCA{CeremonyCA: testServerCA}
+	ca.failing.Store(true)
+	srv := New(testConfig(t, false, true), newMockKVService(), &mockAdminService{},
+		WithCeremonyCA(ca))
+
+	cfg, err := srv.resolveTransportTLS("REST")
+	var caErr *AutoTLSClientCAError
+	if !errors.As(err, &caErr) || !errors.Is(err, errCACertTransient) {
+		t.Fatalf("resolveTransportTLS with failing CA lookup = (%v, %v), want *AutoTLSClientCAError wrapping the lookup error", cfg, err)
+	}
+	if caErr.Transport != "REST" {
+		t.Fatalf("AutoTLSClientCAError.Transport = %q, want REST", caErr.Transport)
+	}
+
+	ca.failing.Store(false)
+	cfg, err = srv.resolveTransportTLS("gRPC")
+	if err != nil {
+		t.Fatalf("resolveTransportTLS after CA recovery: %v", err)
+	}
+	if cfg.ClientAuth != tls.VerifyClientCertIfGiven || cfg.ClientCAs == nil {
+		t.Fatalf("after CA recovery ClientAuth = %v, ClientCAs nil = %v; want VerifyClientCertIfGiven with a pool",
+			cfg.ClientAuth, cfg.ClientCAs == nil)
+	}
+}
+
 // TestAutoProvision_ForwardingCAPoolNotClientTrust proves WithCACertPool,
 // which only verifies peer servers for the REST forwarding client, does not
 // let its CAs issue client identities on an auto-provisioned listener: a
