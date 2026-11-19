@@ -25,7 +25,13 @@ import { createHash, X509Certificate } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startDaemon, stopDaemon, UI_BASE_URL, type DomDaemon } from "./fixtures/dom-daemon.ts";
+import {
+  startDaemon,
+  stopDaemon,
+  UI_BASE_URL,
+  waitForHealthy,
+  type DomDaemon,
+} from "./fixtures/dom-daemon.ts";
 
 const LOAD_TIMEOUT = 15_000;
 
@@ -46,6 +52,7 @@ test.beforeEach(async ({ request }) => {
     data: { so_pin: "user-detail-so-pin", user_pin: "user-detail-user-pin", admin_generate: true },
   });
   expect(resp.ok(), `ceremony initialize: ${resp.status()} ${await resp.text()}`).toBeTruthy();
+  await waitForHealthy(daemon);
 });
 
 test.afterEach(async () => {
