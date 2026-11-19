@@ -345,6 +345,44 @@ func TestDiskFullHealRestartsAfterFreeAndUnsealsASealedNode(t *testing.T) {
 	assertCalls(t, u.fakeTarget, nil)
 }
 
+// TestDiskFullHealReportsAFailClosedStore: a node whose store refuses the open
+// after ENOSPC (a torn final encrypted block) fails the heal with a
+// FailClosedStoreError naming the node; the fault stays pending so the soak
+// reports it as unhealed instead of crashing.
+func TestDiskFullHealReportsAFailClosedStore(t *testing.T) {
+	ctx := context.Background()
+	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, u := newRestarter("n1"), newUnsealer("n2")
+	if err := d.Inject(ctx, targets[Target](r, u)); err != nil {
+		t.Fatal(err)
+	}
+	r.take()
+	u.take()
+	r.fail("restart", errBoom)
+	u.fail("unseal", errBoom)
+	err = d.Heal(ctx)
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("heal of a fail-closed store = %v, want errBoom", err)
+	}
+	var fc *FailClosedStoreError
+	if !errors.As(err, &fc) || (fc.Node != "n1" && fc.Node != "n2") {
+		t.Fatalf("heal error = %v, want *FailClosedStoreError naming n1 or n2", err)
+	}
+	for _, node := range []string{"n1", "n2"} {
+		if !strings.Contains(err.Error(), "node "+node+" store failed closed") {
+			t.Errorf("heal error %q does not report node %s as failed closed", err, node)
+		}
+	}
+	r.fail("restart", nil)
+	u.fail("unseal", nil)
+	if err := d.Heal(ctx); err != nil {
+		t.Fatalf("retried heal after the store opens = %v, want nil", err)
+	}
+}
+
 func TestSlowDisk(t *testing.T) {
 	ctx := context.Background()
 	cfg := SlowDiskConfig{Device: "259:0", Cgroup: "/sys/fs/cgroup/system.slice/qrdb.service", BytesPerSecond: 1 << 20}

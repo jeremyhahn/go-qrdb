@@ -96,17 +96,33 @@ func restartAfterDiskFull(ctx context.Context, t Target) error {
 		return nil
 	}
 	if err := r.Restart(ctx); err != nil {
-		return err
+		return &FailClosedStoreError{Node: t.Name(), Err: err}
 	}
 	u, ok := t.(Unsealer)
 	if !ok {
 		return nil
 	}
 	if err := u.Unseal(ctx); err != nil && !errors.Is(err, ErrUnsupported) {
-		return err
+		return &FailClosedStoreError{Node: t.Name(), Err: err}
 	}
 	return nil
 }
+
+// FailClosedStoreError is the disk-full heal's finding when a node does not
+// come back after its disk was freed. ENOSPC can tear the in-place rewrite of
+// an encrypted file's final block; that block may hold synced records, so the
+// store refuses the open rather than drop them. The soak records it as an
+// unhealed fault in the bundle; it is reported, not recovered.
+type FailClosedStoreError struct {
+	Node string
+	Err  error
+}
+
+func (e *FailClosedStoreError) Error() string {
+	return "disk-full: node " + e.Node + " store failed closed after the disk was freed (a torn final encrypted block refuses the open): " + e.Err.Error()
+}
+
+func (e *FailClosedStoreError) Unwrap() error { return e.Err }
 
 // DefaultDiskThrottle caps the node's block I/O through the cgroup v2
 // io.max file of the server's cgroup: arguments device, bytes per second,
