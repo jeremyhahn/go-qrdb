@@ -16,7 +16,28 @@
 
 package embedded
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
+)
+
+// With a database service the SQL service is built on first use and the
+// same instance is reused on every later call, so its engine cache (and the
+// analyzer catalog behind it) survives across queries.
+func TestEmbeddedSQL_ServiceIsCachedAfterFirstUse(t *testing.T) {
+	dbSvc := service.NewDatabaseService(databasetest.NewManager(nil, t.TempDir()))
+	tr := newExtTransport(t, WithDatabaseService(dbSvc))
+
+	first := tr.sqlSvc()
+	if first == nil {
+		t.Fatal("sqlSvc() = nil, want a SQL service over the configured database service")
+	}
+	if second := tr.sqlSvc(); second != first {
+		t.Fatalf("second sqlSvc() = %p, want the cached instance %p", second, first)
+	}
+}
 
 // Without a database service there is nothing to build a SQL service over.
 func TestEmbeddedSQL_NoDatabaseServiceNoSQLService(t *testing.T) {

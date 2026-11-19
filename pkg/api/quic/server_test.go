@@ -263,6 +263,7 @@ func TestBuildHandlers_RegistersAllMethods_NoExtras(t *testing.T) {
 		"role.ReconcileBuiltInAllTenants": true,
 		// Certificate management
 		"cert.Issue": true, "cert.Enroll": true, "cert.Delegate": true,
+		"cert.DelegationPolicyPut": true, "cert.DelegationPolicyList": true, "cert.DelegationPolicyDelete": true,
 		"cert.Revoke": true, "cert.List": true,
 		// Collection
 		"collection.Create": true, "collection.Drop": true,

@@ -275,26 +275,9 @@ COMPOSE_FILE  := .devcontainer/docker-compose.yml
 # ---------------------------------------------------------------------------
 # Module credentials for EVERY entrypoint that builds .devcontainer/Dockerfile
 # ---------------------------------------------------------------------------
-# The forge's address, GITEA_HOST (host:port), in ONE place -- and that place
-# is NOT a tracked file. Everything tracked publishes, so the internal forge's
-# address lives in the gitignored .devcontainer/.env beside the token that
-# already lives there (.devcontainer/.env.example documents both), or in the
-# environment, which wins over the file. `make check-public-releasable` rejects
-# the literal anywhere in the tree.
-#
-# It is one name for every consumer: stage-gomodauth below sources the .env
-# file, and docker compose reads the same file for .devcontainer/docker-compose.yml.
-# It used to be a Makefile default, and before that the same URL was written
-# out three times; the forge moved once (2026-09-07) and broke every
-# devcontainer target that resolves a first-party module.
-#
-# There is deliberately no default. A .env that carries a token and no host is
-# an error that names the variable, not a silent fall-through to the public
-# proxy, because that combination is a half-configured forge rather than a
-# machine without one.
-
-# go.mod pins first-party modules published only to the internal Gitea, and a
-# docker build inherits nothing from its caller's environment. The four
+# First-party github.com/jeremyhahn/* modules resolve from the public proxy
+# by default. A docker build inherits nothing from its caller's environment,
+# so when a caller does supply module credentials, the four
 # variables from dependency-resolution.md section 6 therefore reach the single
 # `go mod download` as a BuildKit secret.
 #
@@ -370,16 +353,8 @@ if [ -n "$${GIT_CONFIG_KEY_0:-}" ]; then \
   GOMODAUTH="export GOPRIVATE='$${GOPRIVATE:-}'; export GIT_CONFIG_COUNT='$${GIT_CONFIG_COUNT:-}'; export GIT_CONFIG_KEY_0='$${GIT_CONFIG_KEY_0}'; export GIT_CONFIG_VALUE_0='$${GIT_CONFIG_VALUE_0:-}'"; \
   export GOMODAUTH; \
   echo "==> module credentials: from $$gomodauth_src"; \
-elif [ -f $(CURDIR)/.devcontainer/.env ]; then \
-  gitea_host_env="$${GITEA_HOST:-}"; \
-  . $(CURDIR)/.devcontainer/.env; \
-  GITEA_HOST="$${gitea_host_env:-$${GITEA_HOST:-}}"; \
-  [ -n "$$GITEA_HOST" ] || { echo "ERROR: $(CURDIR)/.devcontainer/.env exists but GITEA_HOST is unset. Add GITEA_HOST=<host:port> of the module forge to it (see .devcontainer/.env.example), or export it." >&2; exit 1; }; \
-  GOMODAUTH="export GOPRIVATE='github.com/jeremyhahn/*'; export GIT_CONFIG_COUNT='1'; export GIT_CONFIG_KEY_0='url.http://x:$${MODULE_FORGE_TOKEN}@$${GITEA_HOST}/jeremyhahn/.insteadOf'; export GIT_CONFIG_VALUE_0='https://github.com/jeremyhahn/'"; \
-  export GOMODAUTH; \
-  echo "==> module credentials: from $(CURDIR)/.devcontainer/.env"; \
 else \
-  echo "==> no Gitea credentials here; resolving from the public proxy"; \
+  echo "==> no module credentials set; resolving from the public proxy"; \
 fi;
 endef
 
@@ -713,6 +688,58 @@ release-cross:
 	@case "$(PLATFORM)" in */*) ;; *) echo "release-cross: set PLATFORM=<goos>/<goarch>, e.g. make release-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
 	@mkdir -p $(RELEASE_DIR)
 	$(call release-platform,$(PLATFORM))
+
+# test-cross compiles and links the release test binaries of ONE platform,
+# plain and FIPS, and runs none of them:
+#   make test-cross PLATFORM=linux/arm64
+# -exec /bin/true hands each linked binary to /bin/true instead of running
+# it, so an arm64-only compile failure surfaces on an amd64 host before the
+# once-before-RC arm64 integration run (docs/release/engineering.md).
+# GOFIPS140 picks the variant exactly as release-platform does. A `go test
+# ./...` stops at a nested go.mod, so each module is compiled from its own
+# directory, with the tags of the target that tests it:
+#   .                  RELEASE_TAGS (the unit tests), then RELEASE_TAGS plus
+#                      integration (every integration-tagged test, the
+#                      test/integration suites included);
+#   $(SDK_DIR)         the same two tag sets: test-sdk's BUILD_TAGS plus the
+#                      gms_pure_go a CGO_ENABLED=0 build of the SDK's embedded
+#                      MySQL engine needs, then with integration (the SDK's
+#                      integration-tagged tests);
+#   test/clusterproof  MIN_TAGS,clusterproof as test-clusterproof runs it.
+# test-test-cross (below, in LINT_GATES) pins this module selection, the
+# FIPS matrix, the tags and environment and the failure propagation.
+# The other nested modules are out: test/performance/* and test/vanguardprobe
+# are benchmarks and an upstream probe run by hand, and
+# sdk/go/gorm/conformance is the GORM conformance harness; no release test
+# target runs any of them.
+.PHONY: test-cross
+test-cross:
+	@case "$(PLATFORM)" in */*) ;; *) echo "test-cross: set PLATFORM=<goos>/<goarch>, e.g. make test-cross PLATFORM=linux/arm64" >&2; exit 2 ;; esac
+	@set -e; os=$(word 1,$(subst /, ,$(PLATFORM))); arch=$(word 2,$(subst /, ,$(PLATFORM))); \
+	for fips in off $(RELEASE_FIPS_MODULE); do \
+		for tags in '$(RELEASE_TAGS)' '$(RELEASE_TAGS) integration'; do \
+			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips . tags=$$tags"; \
+			GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+				$(GO) test -count=1 -vet=off -exec /bin/true -tags "$$tags" ./...; \
+		done; \
+		for tags in '$(RELEASE_TAGS)' '$(RELEASE_TAGS) integration'; do \
+			echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips $(SDK_DIR) tags=$$tags"; \
+			(cd $(SDK_DIR) && GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+				$(GO) test -count=1 -vet=off -exec /bin/true -tags "$$tags" ./...); \
+		done; \
+		echo "==> test-cross $(PLATFORM) GOFIPS140=$$fips test/clusterproof tags=$(MIN_TAGS),clusterproof"; \
+		(cd test/clusterproof && GOOS=$$os GOARCH=$$arch GOFIPS140=$$fips CGO_ENABLED=0 \
+			$(GO) test -count=1 -vet=off -exec /bin/true -tags "$(MIN_TAGS),clusterproof" ./...); \
+	done
+	@echo "==> test-cross $(PLATFORM): root, $(SDK_DIR) and test/clusterproof test binaries compiled, plain and FIPS"
+
+# test-test-cross is test-cross's regression test (in LINT_GATES): a recording
+# stub GO checks the three modules, both variants, their tags and environment,
+# -exec /bin/true, the PLATFORM refusal and that a failed compilation fails
+# make. It compiles nothing.
+.PHONY: test-test-cross
+test-test-cross:
+	@./scripts/test-cross_test.sh
 
 # release-artifacts builds every RELEASE_PLATFORMS entry into a clean
 # $(RELEASE_DIR) and writes SHA256SUMS over the result; release.yml's publish
@@ -1952,7 +1979,7 @@ endef
 # the gate with nothing to check against.
 COVER_BASELINE     := test/coverage-baseline.txt
 COVER_TOLERANCE    := 1.0
-COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/pkg/database/databasetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest
+COVER_EXCLUDE_PKGS := github.com/jeremyhahn/go-qrdb/pkg/sql/internal/sqltest,github.com/jeremyhahn/go-qrdb/pkg/index/indextest,github.com/jeremyhahn/go-qrdb/pkg/seal/sealtest,github.com/jeremyhahn/go-qrdb/pkg/auth/authtest,github.com/jeremyhahn/go-qrdb/pkg/api/grpc/grpctest,github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest,github.com/jeremyhahn/go-qrdb/pkg/service/servicetest,github.com/jeremyhahn/go-qrdb/pkg/pin/pintest,github.com/jeremyhahn/go-qrdb/pkg/authfactors/factortest,github.com/jeremyhahn/go-qrdb/pkg/ceremony/ceremonytest,github.com/jeremyhahn/go-qrdb/pkg/clusterseal/clustersealtest,github.com/jeremyhahn/go-qrdb/pkg/replicaforward/replicaforwardtest,github.com/jeremyhahn/go-qrdb/pkg/volume/volumetest,github.com/jeremyhahn/go-qrdb/pkg/cert/certtest,github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest,github.com/jeremyhahn/go-qrdb/pkg/dek/dektest,github.com/jeremyhahn/go-qrdb/pkg/initproof/initprooftest,github.com/jeremyhahn/go-qrdb/pkg/syncwatch/syncwatchtest,github.com/jeremyhahn/go-qrdb/pkg/store/storetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/dbholdertest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest,github.com/jeremyhahn/go-qrdb/pkg/database/databasetest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/vlogtest,github.com/jeremyhahn/go-qrdb/sdk/go/transport/closedidletest
 #
 # THE BASELINE IS MEASURED UNDER BUILD_TAGS, the default feature set, and says
 # so in its `# build-tags:` line. A package's coverage depends on which of its
@@ -2607,7 +2634,7 @@ LINT_GATES := test-require-tool check-bundled-gosec test-bundled-gosec \
 	check-publication-bound test-publication-bound test-public-releasable \
 	check-iface-sweep-findings test-iface-sweep-findings check-artifact-paths \
 	test-artifact-paths check-generated check-mod-tidy test-mod-tidy test-vet-modules \
-	test-release-alpha fmt vet test-secure-analyzer vet-sdk lint-sdk
+	test-release-alpha test-test-cross fmt vet test-secure-analyzer vet-sdk lint-sdk
 LINT_SWEEPS := vet-tags secure-analyzer
 
 .PHONY: lint-gates
@@ -4094,7 +4121,8 @@ DEVCONTAINER_COMPOSE := $(DEVCONTAINER_DIR)/compose.yaml
 DEVCONTAINER_MODULES := . sdk/go sdk/go/gorm/conformance test/clusterproof \
 	test/performance/cmd/kvcompare test/performance/etcd-benchmark \
 	test/performance/qrdb test/performance/tikv test/vanguardprobe
-TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
+APK_MIRROR_SCRIPT = scripts/apk-mirror.sh
+TOOLCHAIN_TAG   = $(shell cat $(DEVCONTAINER_DIR)/Dockerfile $(TOOL_PINS) $(APK_MIRROR_SCRIPT) $(foreach m,$(DEVCONTAINER_MODULES),$(m)/go.mod $(m)/go.sum) | sha256sum | cut -c1-16)
 TOOLCHAIN_IMAGE = qrdb-toolchain:$(TOOLCHAIN_TAG)
 
 # The integration image and its compose project (#813). The image tag is
@@ -4166,7 +4194,17 @@ DEVCONTAINER_BUILD = DOCKER_BUILDKIT=1 docker buildx build --load \
 	--build-arg TRIVY_IMAGE=$(TRIVY_IMAGE) \
 	--build-arg IT_TAGS="$(INT_FEATURE_TAGS)" \
 	$(if $(GO_BUILD_PROXY),--build-arg GO_BUILD_PROXY="$(GO_BUILD_PROXY)",$(if $(GOPROXY),--build-arg GO_BUILD_PROXY="$$GOPROXY")) \
+	--secret id=apk_mirror,env=DEVCACHE_APK_MIRROR \
 	-f $(DEVCONTAINER_DIR)/Dockerfile
+
+# concurrent-load follows a content-tagged image build. Two builds that miss
+# together on one daemon both build, and only the first --load can tag the
+# result: the second fails with "image ... already exists" (run 57133). That
+# loser finds the image held once its build fails, and the tag is the
+# content, so it succeeds; any other failed build fails with the build's
+# status. docker-build-toolchain and docker-build-it both use it: pool-images
+# builds on a daemon that independent runs share (#1631).
+concurrent-load = || { status=$$?; docker image inspect '$(1)' >/dev/null 2>&1 || exit $$status; echo "==> a concurrent build loaded $(1) first"; }
 
 .PHONY: docker-build docker-build-toolchain docker-build-it toolchain-image docker-run
 docker-build: docker-build-toolchain docker-build-it
@@ -4175,35 +4213,41 @@ docker-build-toolchain:
 	$(REQUIRE_BUILDX)
 	@# ci-template v1.30: the tag is the content hash, so an image already on
 	@# this daemon (built here, or loaded by scripts/ci-image.sh) is the
-	@# image this tree would build.
+	@# image this tree would build. CUSTOMIZE (go-qrdb, #1609): with
+	@# CI_IMAGE_REGISTRY set, the image is pulled from it before a build, by
+	@# the digest recorded in CI_IMAGE_DIGEST_DIR only, and a build is pushed
+	@# to it and its digest recorded. An image already held with no usable
+	@# record (an earlier push failed) is pushed again (registry-push
+	@# --unrecorded); no push ever fails the target. Unset, every ci-image.sh
+	@# call does nothing.
 	@if docker image inspect '$(TOOLCHAIN_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(TOOLCHAIN_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(TOOLCHAIN_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(TOOLCHAIN_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
-		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) .; \
+		$(DEVCONTAINER_BUILD) --target toolchain -t $(TOOLCHAIN_IMAGE) . $(call concurrent-load,$(TOOLCHAIN_IMAGE)); \
+		scripts/ci-image.sh registry-push '$(TOOLCHAIN_IMAGE)'; \
 	fi
 
 # docker-build-it builds the integration image only when the daemon does not
 # already hold IT_IMAGE: the tag is the content, so a held image is this
-# tree's. Two builds that miss together on one daemon both build, and only the
-# first --load can tag the result: the second fails with "image ... already
-# exists" (run 57133). That loser finds the image held once its build fails,
-# and the tag is the content, so it succeeds; any other failed build fails
-# with the build's status.
+# tree's. Its build recovers from a concurrent load (concurrent-load).
 docker-build-it:
 	$(REQUIRE_BUILDX)
 	@# CUSTOMIZE (go-qrdb): a digest reference names a pushed image; building one would mint a different image under its name (DS-3516)
 	@case '$(IT_IMAGE)' in *@sha256:*) echo "ERROR: docker-build-it builds a tag, not $(IT_IMAGE): a digest reference names a pushed image" >&2; exit 1 ;; esac
 	@if docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1; then \
 		echo "==> $(IT_IMAGE) is already built on this daemon"; \
+		scripts/ci-image.sh registry-push --unrecorded '$(IT_IMAGE)' || :; \
+	elif scripts/ci-image.sh registry-pull '$(IT_IMAGE)'; then \
+		:; \
 	else \
 		$(stage-gomodauth) \
 		$(DEVCONTAINER_BUILD) --build-arg APK_INDEX_SUM='$(APK_INDEX_SUM)' \
-			--target integration -t $(IT_IMAGE) . || { \
-			status=$$?; \
-			docker image inspect '$(IT_IMAGE)' >/dev/null 2>&1 || exit $$status; \
-			echo "==> a concurrent build loaded $(IT_IMAGE) first"; \
-		}; \
+			--target integration -t $(IT_IMAGE) . $(call concurrent-load,$(IT_IMAGE)); \
+		scripts/ci-image.sh registry-push '$(IT_IMAGE)'; \
 	fi
 
 # docker-down-it removes an integration-test run's compose project, never its

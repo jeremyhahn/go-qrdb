@@ -218,11 +218,33 @@ func (c *connCapture) TLSState() *tls.ConnectionState {
 // transport's own t.client. A non-nil capture pins the network client to one
 // connection and records its TLS state (connCapture); an in-process client
 // has no connection, and capture records nothing.
+// idleConnTimeout is how long the client keeps an idle keep-alive
+// connection for reuse. It must stay below the server's idle timeout
+// (go-qrdb's MCP server: 120 s): a connection the server closes while the
+// client is reusing it fails the request, and net/http never resends a
+// non-idempotent POST -- every MCP tool call, CompareAndSwap included --
+// that raced the close. With the client's window the shorter one, the
+// client always retires an idle connection first. 90 s is net/http's
+// DefaultTransport value, set here explicitly so the constraint is stated
+// and tested rather than inherited.
+const idleConnTimeout = 90 * time.Second
+
+// newHTTPTransport is the client's network transport for the Streamable
+// HTTP connection: net/http's DefaultTransport settings, with the idle
+// window above and tlsCfg when the address is https.
+func newHTTPTransport(tlsCfg *tls.Config) *http.Transport {
+	base := http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck,forcetypeassert // net/http always installs a *http.Transport as DefaultTransport
+	base.IdleConnTimeout = idleConnTimeout
+	if tlsCfg != nil {
+		base.TLSClientConfig = tlsCfg
+	}
+	return base
+}
+
 func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCapture) (*mcpclient.Client, error) {
 	var (
-		client   *mcpclient.Client
-		err      error
-		refusals *initializeRefusalCapture
+		client *mcpclient.Client
+		err    error
 	)
 
 	if t.mcpServer != nil {
@@ -240,10 +262,7 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 				Err:     tlsErr,
 			}
 		}
-		base := http.DefaultTransport.(*http.Transport).Clone() //nolint:errcheck,forcetypeassert // net/http always installs a *http.Transport as DefaultTransport
-		if tlsCfg != nil {
-			base.TLSClientConfig = tlsCfg
-		}
+		base := newHTTPTransport(tlsCfg)
 		// A call made with a context bound by transport.WithSOPIN carries the
 		// SO PIN in the X-QRDB-SO-PIN header of its HTTP request -- over
 		// https to the configured host only, on every hop including
@@ -254,8 +273,7 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 			capture.next = rt
 			rt = capture
 		}
-		refusals = newInitializeRefusalCapture(rt)
-		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: refusals}))
+		client = mcpclient.NewClient(mcphttp.New(address, &http.Client{Transport: &refusalCapture{next: transport.RetryServerClosedIdle(rt)}}))
 	}
 	if err != nil {
 		return nil, &transport.ConnectionError{
@@ -281,20 +299,16 @@ func (t *Transport) dialMCP(ctx context.Context, address string, capture *connCa
 	}
 
 	initCtx, cancel := t.callContext(ctx)
+	initCtx, refusals := withRefusalSlot(initCtx, "initialize")
 	_, err = client.Initialize(initCtx, initReq)
 	cancel()
-	if refusals != nil {
-		refusals.disarm()
-	}
 	if err != nil {
 		_ = client.Close()
 		// The auth chain refused the caller's credential: its typed refusal
 		// is the answer, as on every other transport, not a connection
 		// failure.
-		if refusals != nil {
-			if refusal := refusals.Refusal(); refusal != nil {
-				return nil, refusal
-			}
+		if refusal := refusals.Refusal(); refusal != nil {
+			return nil, refusal
 		}
 		return nil, &transport.ConnectionError{
 			Address: address,
@@ -1139,8 +1153,16 @@ func callToolOn(ctx context.Context, client *mcpclient.Client, tool string, args
 		req.Params.Arguments = args
 	}
 
+	ctx, refusals := withRefusalSlot(ctx, tool)
 	result, err := client.CallTool(ctx, req)
 	if err != nil {
+		// The auth chain refused the caller's credential at this call (a
+		// server serving no-login tools answers initialize and refuses at
+		// the first tool that needs an identity): its typed refusal is the
+		// answer.
+		if refusal := refusals.Refusal(); refusal != nil {
+			return "", refusal
+		}
 		return "", &transport.RequestError{Method: tool, Err: &toolCallError{Tool: tool, Err: err}}
 	}
 

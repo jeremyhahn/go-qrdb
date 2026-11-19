@@ -1501,6 +1501,9 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// A strict tenant's CA lives in its home store; the system store holds
 	// only the published copy relying parties trust, which goes with it.
 	put("__sys:cert_ca_pub/acme/certificate")
+	// A shared tenant's standing delegation policies: left behind, one
+	// would still mint for the deleted tenant (go-qrdb#1187).
+	put("__sys:cert_delegation_policy/acme/billing")
 
 	// Must survive.
 	put(tenant.IdentityNamespace("other") + "user/bob")
@@ -1514,6 +1517,7 @@ func tenantPopulatedStore() *memoryKVSvc {
 	// segment at all): neither belongs to acme's reclamation.
 	put("__sys:cert_ca/other/material")
 	put("__sys:cert_ca_pub/acme2/certificate")
+	put("__sys:cert_delegation_policy/acme2/billing")
 	put("__sys:cluster_ca/material")
 	return kv
 }
@@ -1524,6 +1528,7 @@ func tenantSurvivors() []string {
 	keep := []string{
 		"__sys:cert_ca/other/material",
 		"__sys:cert_ca_pub/acme2/certificate",
+		"__sys:cert_delegation_policy/acme2/billing",
 		"__sys:cluster_ca/material",
 		"__sys:roles/admin",
 		CollectionWorkPrefix + "acme2/reports/events",
@@ -1700,6 +1705,7 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		// leaf naming acme could still authenticate against).
 		"__sys:cert_ca/acme/material",
 		"__sys:cert_ca_pub/acme/certificate",
+		"__sys:cert_delegation_policy/acme/billing",
 	}
 	for _, key := range owned {
 		assert.True(t, hasAnyPrefix(key, prefixes), "no tenant prefix covers %q", key)
@@ -1719,6 +1725,7 @@ func TestTenantKeyPrefixes_CoverEveryOwnedShape(t *testing.T) {
 		"__sys:cert_ca/acme2/material",
 		"__sys:cert_ca_pub/other/certificate",
 		"__sys:cert_ca_pub/acme2/certificate",
+		"__sys:cert_delegation_policy/acme2/billing",
 		"__sys:cluster_ca/material",
 	}
 	for _, key := range notOwned {

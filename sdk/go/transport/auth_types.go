@@ -15,6 +15,9 @@
 package transport
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
 )
@@ -51,6 +54,9 @@ type User struct {
 	// LastAuth is the last successful authentication, RFC 3339. Empty when the
 	// account has never authenticated.
 	LastAuth string `json:"last_auth,omitempty"`
+	// PendingExpiresAt is when an unactivated pending account is deleted,
+	// RFC 3339. Empty when the account has no expiry.
+	PendingExpiresAt string `json:"pending_expires_at,omitempty"`
 	// CertBindings are the mTLS keys enrolled on the account, in the order
 	// they were enrolled. The set is what decides the account's mTLS
 	// admission: once it is non-empty, only a certificate matching one of
@@ -180,6 +186,107 @@ type CreateUserRequest struct {
 	// Pending is the shorthand for lifecycle "pending". Setting both is
 	// refused unless they agree.
 	Pending bool `json:"pending,omitempty"`
+	// PendingTTL is how long a pending account may wait for activation
+	// before the leader's reaper deletes it, a Go duration ("15m", "24h").
+	// Only valid with a pending create; empty or zero means no expiry.
+	PendingTTL string `json:"pending_ttl,omitempty"`
+}
+
+// PendingTTLDuration parses PendingTTL. An empty string is zero (no expiry).
+// A negative duration is refused with *NegativePendingTTLError here, before
+// any transport converts it: the gRPC and unix wires carry whole seconds, and
+// a negative sub-second value ("-500ms") would otherwise truncate to 0 and
+// create an account that never expires.
+func (r *CreateUserRequest) PendingTTLDuration() (time.Duration, error) {
+	if r == nil || r.PendingTTL == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(r.PendingTTL)
+	if err != nil {
+		return 0, err
+	}
+	if d < 0 {
+		return 0, &NegativePendingTTLError{Value: r.PendingTTL}
+	}
+	return d, nil
+}
+
+// NegativePendingTTLError reports a CreateUserRequest.PendingTTL below zero.
+type NegativePendingTTLError struct {
+	Value string
+}
+
+func (e *NegativePendingTTLError) Error() string {
+	return "pending_ttl " + strconv.Quote(e.Value) + " is negative"
+}
+
+// PendingTTLSeconds is PendingTTLDuration in the whole seconds the gRPC and
+// unix wires carry, where 0 means no expiry. A positive TTL that is not a
+// whole number of seconds is refused with *FractionalPendingTTLError before
+// the request is sent: truncating it would expire the account early (or, under
+// one second, never), while the other transports keep the full duration.
+func (r *CreateUserRequest) PendingTTLSeconds() (int64, error) {
+	d, err := r.PendingTTLDuration()
+	if err != nil {
+		return 0, err
+	}
+	if d > 0 && d%time.Second != 0 {
+		return 0, &FractionalPendingTTLError{Value: r.PendingTTL}
+	}
+	return int64(d / time.Second), nil
+}
+
+// FractionalPendingTTLError reports a positive CreateUserRequest.PendingTTL
+// that is not a whole number of seconds, the resolution of the gRPC and unix
+// wires.
+type FractionalPendingTTLError struct {
+	Value string
+}
+
+func (e *FractionalPendingTTLError) Error() string {
+	return "pending_ttl " + strconv.Quote(e.Value) + " is not a whole number of seconds"
+}
+
+// pendingTTLCleanupTimeout bounds the rollback delete EnforcePendingTTL
+// issues. The delete runs detached from the caller's context, so a cancelled
+// caller still undoes the unexpiring account; this deadline keeps a stalled
+// delete (a transport with no timeout of its own) from blocking the create
+// indefinitely. A variable so tests can shorten it.
+var pendingTTLCleanupTimeout = 30 * time.Second
+
+// EnforcePendingTTL refuses a create whose pending-user TTL the server did
+// not honour. An older server drops the unknown TTL field and creates a
+// pending account that never expires while reporting success; a current one
+// either sets PendingExpiresAt or refuses the create. So a TTL-bearing create
+// answered with no PendingExpiresAt is undone: the account is deleted through
+// del and *CapabilityUnsupportedError returned, never success. Any other
+// create passes through unchanged.
+func EnforcePendingTTL(ctx context.Context, req *CreateUserRequest, u *User, del func(context.Context, uint64) error) (*User, error) {
+	if req == nil || u == nil || u.PendingExpiresAt != "" {
+		return u, nil
+	}
+	d, err := req.PendingTTLDuration()
+	if err == nil && d <= 0 {
+		return u, nil
+	}
+	// An unparseable TTL never reports success: the transports refuse it
+	// before sending, and a create that got through anyway is undone.
+	var refusal error = &CapabilityUnsupportedError{
+		Message: "server ignored pending_ttl " + strconv.Quote(req.PendingTTL) +
+			": it cannot expire pending users; upgrade the server",
+	}
+	if err != nil {
+		refusal = &RequestError{Method: "CreateUser", Err: err}
+	}
+	// Detached so a cancelled caller still rolls back, bounded so a stalled
+	// delete cannot hold the create open.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pendingTTLCleanupTimeout)
+	defer cancel()
+	if delErr := del(cleanupCtx, u.ID); delErr != nil {
+		return nil, errors.Join(refusal,
+			fmt.Errorf("delete of the unexpiring pending user %d: %w", u.ID, delErr))
+	}
+	return nil, refusal
 }
 
 // UpdateUserRequest holds parameters for updating a user.
@@ -451,6 +558,27 @@ type IssuedDelegation struct {
 	CertPEM   string    `json:"certPEM"`
 	Serial    string    `json:"serial"`
 	NotAfter  time.Time `json:"notAfter"`
+}
+
+// DelegationPolicyRequest writes the caller's own tenant's standing
+// delegation policy for Principal: while it stands, the node mints
+// delegation certificates to Principal, on its own request, within Scope and
+// TTL (#1186).
+type DelegationPolicyRequest struct {
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	// TTL is a Go duration, the longest a minted certificate may live; empty
+	// is the delegation default of one hour, and more than 24h is refused.
+	TTL string `json:"ttl,omitempty"`
+}
+
+// DelegationPolicy is a tenant's standing delegation policy.
+type DelegationPolicy struct {
+	TenantID  string   `json:"tenantID"`
+	Principal string   `json:"principal"`
+	Scope     []string `json:"scope"`
+	// TTL is the policy's lifetime as a Go duration.
+	TTL string `json:"ttl"`
 }
 
 // CertRecord is the metadata for an issued certificate.

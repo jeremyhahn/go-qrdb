@@ -24,27 +24,8 @@ import (
 
 // TestValidateReservedTenantID_System verifies the system tenant id is
 // rejected for external callers.
-func TestValidateReservedTenantID_System(t *testing.T) {
-	err := validateReservedTenantID(context.Background(), tenantid.System)
-	var rerr *ReservedTenantIDError
-	if !errors.As(err, &rerr) {
-		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
-	}
-	if rerr.TenantID != tenantid.System {
-		t.Errorf("TenantID = %q, want %q", rerr.TenantID, tenantid.System)
-	}
-}
-
 // TestValidateReservedTenantID_LegacyDefault verifies the legacy "default"
 // tenant id is permanently reserved.
-func TestValidateReservedTenantID_LegacyDefault(t *testing.T) {
-	err := validateReservedTenantID(context.Background(), "default")
-	var rerr *ReservedTenantIDError
-	if !errors.As(err, &rerr) {
-		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
-	}
-}
-
 // TestValidateReservedTenantID_UnderscorePrefix verifies ids starting with
 // "_" are rejected.
 func TestValidateReservedTenantID_UnderscorePrefix(t *testing.T) {

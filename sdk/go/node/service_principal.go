@@ -139,3 +139,23 @@ func (n *Node) DelegatedContext(ctx context.Context, chain []*x509.Certificate) 
 	}
 	return srv.AuthenticateDelegation(ctx, chain)
 }
+
+// MintDelegation mints, as this node's service principal, a delegation
+// certificate under the standing policy the tenant req.TenantID wrote for
+// that principal (sdk.DelegationPolicy, #1186): the scope and lifetime are
+// the policy's, narrowed by req, and the tenant's own login CA signs it. It
+// is the first mint, and it is refused when no policy stands. The principal
+// then presents the certificate (DelegatedContext, or mTLS on any transport)
+// and renews it through IssueDelegation, within the same policy, until the
+// tenant deletes the policy.
+func (n *Node) MintDelegation(ctx context.Context, req *service.MintDelegationRequest) (*service.IssuedDelegation, error) {
+	sctx, err := n.ServiceContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	srv := n.srv.Load()
+	if srv == nil {
+		return nil, &service.DataPlaneRecyclingError{Service: "delegation mint"}
+	}
+	return srv.MintDelegation(sctx, req)
+}

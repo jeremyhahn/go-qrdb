@@ -26,8 +26,15 @@ group — identity is a certificate.
 | `--without-email-login-key` | bool | create an identity with **no** email login key — certificate-only or bootstrap. It cannot be resolved by email |
 | `--tenant-id` | string | tenant (maps to certificate OU) |
 | `--roles` | string | comma-separated **role IDs** to assign |
+| `--pending` | bool | create the account `pending`: it cannot log in until `qrdb users enable` activates it |
+| `--pending-ttl` | duration | with `--pending`, delete the account if it is not activated within this time (`15m`, `24h`); `0` = never. Refused without `--pending` or when negative |
 
 ```bash
+# A pending account the reaper deletes unless it is activated within a day.
+qrdb users create --username bob --email bob@acme.com --tenant-id acme \
+  --pending --pending-ttl 24h
+qrdb users enable "$BOB_ID"   # activates it and clears the expiry
+
 # An ordinary user: the email is the login key.
 qrdb users create --username alice --email alice@acme.com --name "Alice" \
   --tenant-id acme --roles "$OPERATOR_ROLE_ID"
@@ -551,6 +558,14 @@ delegation certificate with `qrdb ca delegate` — see
 [../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate).
 What that principal can then do is the delegated scope intersected with the
 grants the application gives it, so no `roles assign` is involved.
+
+For work the application runs on its own, write the grant down once with
+`qrdb ca delegate policy put --principal <p> --scope ... --ttl ...`: the
+delegation then renews itself within that policy, and
+`qrdb ca delegate policy delete <p>` revokes it (the next mint is refused) — see
+[../certificate-authority/cli.md](../certificate-authority/cli.md#qrdb-ca-delegate-policy).
+`qrdb ca delegate policy list` shows your tenant's policies, never another
+tenant's.
 
 ## A complete enrolment
 

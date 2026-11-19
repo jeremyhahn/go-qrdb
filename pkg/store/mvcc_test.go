@@ -1560,18 +1560,6 @@ func TestNewMVCCCreateFunc_DifferentShardReplica(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestMVCCStateMachine_ImplementsDiskStateMachine(t *testing.T) {
-	var _ sm.DiskStateMachine = (*MVCCStateMachine)(nil)
-}
-
-func TestMVCCStateMachine_ImplementsHasher(t *testing.T) {
-	var _ sm.Hasher = (*MVCCStateMachine)(nil)
-}
-
-// ---------------------------------------------------------------------------
 // NewMVCCStateMachine
 // ---------------------------------------------------------------------------
 

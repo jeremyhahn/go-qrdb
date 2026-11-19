@@ -246,60 +246,84 @@ func TestCoalescing_ConcurrentPuts(t *testing.T) {
 }
 
 func TestCoalescing_WindowFlush(t *testing.T) {
-	const window = 20 * time.Millisecond
-	ct, mock := newCoalescing(WithBatchWindow(window))
-	defer ct.Close()
+	synctest.Test(t, func(t *testing.T) {
+		// A window well above the 1ms default: a no-op WithBatchWindow would
+		// flush long before it elapses.
+		const window = 50 * time.Millisecond
+		ct, mock := newCoalescing(WithBatchWindow(window))
+		defer ct.Close()
 
-	done := make(chan error, 1)
-	go func() {
-		done <- ct.Put(context.Background(), "wk", []byte("wv"))
-	}()
+		done := make(chan error, 1)
+		go func() {
+			done <- ct.Put(context.Background(), "wk", []byte("wv"))
+		}()
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Put error: %v", err)
+		// Just before the window elapses: queued, not flushed.
+		time.Sleep(window - time.Millisecond)
+		synctest.Wait()
+		if got := mock.callCount(); got != 0 {
+			t.Fatalf("expected no ExecuteBatch call before the window elapsed, got %d", got)
 		}
-	case <-time.After(window * 10):
-		t.Fatal("Put did not complete within expected window")
-	}
-	if mock.callCount() != 1 {
-		t.Errorf("expected 1 ExecuteBatch call after window, got %d", mock.callCount())
-	}
+		select {
+		case err := <-done:
+			t.Fatalf("Put returned before the window elapsed: %v", err)
+		default:
+		}
+
+		// The window elapses: exactly one flush, and the Put completes.
+		time.Sleep(time.Millisecond)
+		synctest.Wait()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Put error: %v", err)
+			}
+		default:
+			t.Fatal("Put did not complete once the window elapsed")
+		}
+		if got := mock.callCount(); got != 1 {
+			t.Errorf("expected 1 ExecuteBatch call after the window, got %d", got)
+		}
+	})
 }
 
 func TestCoalescing_BatchSizeTrigger(t *testing.T) {
-	const maxBatch = 4
-	ct, mock := newCoalescing(
-		WithMaxBatchSize(maxBatch),
-		// Use a very long window so the only flush trigger is the size limit.
-		WithBatchWindow(10*time.Second),
-	)
-	defer ct.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const maxBatch = 4
+		ct, mock := newCoalescing(
+			WithMaxBatchSize(maxBatch),
+			// A very long window so the only flush trigger is the size limit.
+			WithBatchWindow(10*time.Second),
+		)
+		defer ct.Close()
 
-	var wg sync.WaitGroup
-	var errCount atomic.Int32
-	wg.Add(maxBatch)
-	for i := 0; i < maxBatch; i++ {
-		go func() {
-			defer wg.Done()
-			if err := ct.Put(context.Background(), "bk", []byte("bv")); err != nil {
-				errCount.Add(1)
-				t.Logf("Put error: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
+		var completed, errCount atomic.Int32
+		for i := 0; i < maxBatch; i++ {
+			go func() {
+				if err := ct.Put(context.Background(), "bk", []byte("bv")); err != nil {
+					errCount.Add(1)
+					t.Logf("Put error: %v", err)
+				}
+				completed.Add(1)
+			}()
+		}
 
-	if errCount.Load() != 0 {
-		t.Fatalf("%d Put calls failed", errCount.Load())
-	}
-	if mock.callCount() < 1 {
-		t.Error("expected at least 1 ExecuteBatch call triggered by batch size")
-	}
-	if got := len(mock.allOps()); got != maxBatch {
-		t.Errorf("expected %d ops, got %d", maxBatch, got)
-	}
+		// No fake-clock advance: the batch must flush because it reached
+		// the configured size, not because the window elapsed.
+		synctest.Wait()
+		if got := completed.Load(); got != maxBatch {
+			t.Fatalf("expected %d Puts done by the size trigger before the window, got %d", maxBatch, got)
+		}
+		if errCount.Load() != 0 {
+			t.Fatalf("%d Put calls failed", errCount.Load())
+		}
+		if got := mock.callCount(); got != 1 {
+			t.Errorf("expected 1 ExecuteBatch call triggered by batch size, got %d", got)
+		}
+		if got := len(mock.allOps()); got != maxBatch {
+			t.Errorf("expected %d ops, got %d", maxBatch, got)
+		}
+	})
 }
 
 func TestCoalescing_ContextCancellation(t *testing.T) {

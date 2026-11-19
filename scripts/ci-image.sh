@@ -21,13 +21,25 @@
 # still take the artifact, so one code path is exercised on every event.
 #
 #   ci-image.sh save <image> <dir>                 writes <dir>/image.tar and <dir>/image.id
-#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <image> is <id>
+#   ci-image.sh load <dir> <image> <id>            loads <dir>/image.tar, checks <id> is held, prints <id>
 #   ci-image.sh push <local-image> <name>          prints ghcr.io/<owner>/<name>@sha256:<hex>
 #   ci-image.sh check-ref <ref>...                 validates digest references
+#   ci-image.sh registry-pull <image>              pulls <image> from CI_IMAGE_REGISTRY by the digest recorded in CI_IMAGE_DIGEST_DIR (status 1 on a miss)
+#   ci-image.sh registry-push <image>              pushes a build to CI_IMAGE_REGISTRY and records its digest (never fails)
+#   ci-image.sh registry-push --unrecorded <image> the same for a held image, only when CI_IMAGE_DIGEST_DIR has no usable record of it
+#
+# registry-pull and registry-push are the pull-or-build path through the CI
+# image registry the runner's environment names in CI_IMAGE_REGISTRY (#1609,
+# scripts/image-registry.sh): make docker-build-toolchain and docker-build-it
+# pull before they build and push what they built. Unset, both make no docker
+# call; a failed or hung pull or push never fails the job.
 #
 # save prints the image ID, the content address of the image's config; load
-# fails unless the tag it loaded names that same ID, so a truncated or
-# substituted artifact is refused rather than run.
+# fails unless the daemon holds that same ID once the artifact is loaded, so a
+# truncated or substituted artifact is refused rather than run, and prints the
+# ID: the consumer launches its stages by that ID, never by the tag. The tag
+# names the build's inputs, and self-hosted runs share a daemon, so another
+# run's load, pull or tag can move it between the check and a stage's start.
 #
 # push logs in to GHCR with CI_REGISTRY_USER and CI_REGISTRY_TOKEN, which the
 # workflow step supplies from the run's actor and GITHUB_TOKEN (packages:
@@ -44,6 +56,9 @@ readonly registry=ghcr.io
 readonly ref_re='^[^@ ]+@sha256:[0-9a-f]{64}$'
 readonly id_re='^sha256:[0-9a-f]{64}$'
 readonly image_re='^qrdb-(toolchain|ci-it):[0-9a-f]{16}$'
+
+# shellcheck source=scripts/image-registry.sh
+. "$(dirname "${BASH_SOURCE[0]}")/image-registry.sh"
 
 die() {
 	echo "::error::ci-image: $*" >&2
@@ -83,10 +98,17 @@ load() {
 	[[ $want =~ $id_re ]] || die "'$want' is not an image ID"
 	[ -s "$dir/image.tar" ] || die "$dir/image.tar is missing or empty: the docker-build artifact did not download"
 	docker load -i "$dir/image.tar" >&2 || die "cannot load $dir/image.tar"
-	got=$(image_id "$image")
-	[ "$got" = "$want" ] || die "$image loaded as $got, not $want, the image docker-build built"
+	# The check and the hand-off go by the ID, never the tag: on a shared
+	# daemon another run's load, pull or tag can move the content-hash tag
+	# (its inputs, not its image, are what the tag names) at any moment, so
+	# the tag may name another run's image by the time a stage starts.
+	if [ "$(image_id "$want" 2>/dev/null)" != "$want" ]; then
+		got=$(image_id "$image" 2>/dev/null) || got="nothing"
+		die "$image loaded as $got, not $want, the image docker-build built"
+	fi
 	rm -f "$dir/image.tar"
 	echo "==> $image is $want, the image docker-build built" >&2
+	printf '%s\n' "$want"
 }
 
 # registry_owner prints the repository owner, lowercased, the namespace the
@@ -153,13 +175,43 @@ push() {
 }
 
 main() {
-	[ $# -ge 1 ] || die "usage: ci-image.sh save|load|push|check-ref ..."
+	[ $# -ge 1 ] || die "usage: ci-image.sh save|load|push|check-ref|registry-pull|registry-push ..."
 	local cmd=$1
 	shift
 	case $cmd in
 	save) save "$@" ;;
 	load) load "$@" ;;
 	push) push "$@" ;;
+	registry-pull | registry-push)
+		# registry-push --unrecorded <image>: the image is already held (built
+		# or pulled earlier), so it is published again only when no usable
+		# digest record names it -- an earlier push that failed is retried
+		# and its record written. Never fails the caller either.
+		local unrecorded=""
+		if [ "$cmd" = registry-push ] && [ "${1:-}" = --unrecorded ]; then
+			unrecorded=1
+			shift
+		fi
+		[ $# -eq 1 ] || die "usage: $cmd [--unrecorded] <image>"
+		# Unset, nothing at all: the caller builds as it always has. An
+		# image that is not a CI content-hash tag (a developer's own tag) is
+		# never pulled or pushed, and a push never fails the build.
+		[ -n "${CI_IMAGE_REGISTRY:-}" ] || { [ "$cmd" = registry-push ]; return; }
+		if ! [[ $1 =~ $image_re ]]; then
+			echo "ci-image: '$1' is not a content-hash tag of qrdb-toolchain or qrdb-ci-it; the CI image registry is skipped" >&2
+			[ "$cmd" = registry-push ]
+			return
+		fi
+		if [ "$cmd" = registry-pull ]; then
+			ci_registry_pull "$1"
+		elif [ -z "$unrecorded" ]; then
+			ci_registry_push "$1"
+		elif [ -n "${CI_IMAGE_DIGEST_DIR:-}" ] && ! ci_registry_recorded "$1" >/dev/null; then
+			# Without CI_IMAGE_DIGEST_DIR nothing could be recorded, and no
+			# pull trusts an unrecorded image: a retry would only push again.
+			ci_registry_push "$1" "held, unrecorded"
+		fi
+		;;
 	check-ref)
 		[ $# -ge 1 ] || die "usage: check-ref <ref>..."
 		local r

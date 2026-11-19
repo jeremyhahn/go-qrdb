@@ -24,6 +24,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -2019,6 +2020,10 @@ type fakeCertEnrollTool struct {
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnrollTool)(nil)
@@ -2372,6 +2377,9 @@ func TestEnrollmentTools_Registration(t *testing.T) {
 		"qrdb_cert_issue",
 		"qrdb_cert_enroll",
 		"qrdb_cert_delegate",
+		"qrdb_cert_delegation_policy_put",
+		"qrdb_cert_delegation_policy_list",
+		"qrdb_cert_delegation_policy_delete",
 		"qrdb_trust_anchor_add",
 		"qrdb_trust_anchor_list",
 		"qrdb_trust_anchor_remove",
@@ -2814,6 +2822,72 @@ func TestUserCreateTool_CarriesIdentityFields(t *testing.T) {
 	}
 	if got.Lifecycle != user.LifecyclePending {
 		t.Errorf("Lifecycle = %q, want %q", got.Lifecycle, user.LifecyclePending)
+	}
+}
+
+// TestUserCreateTool_PendingTTL carries pending_ttl into the domain request,
+// projects pendingExpiresAt on reads, and refuses a TTL that is not a duration.
+func TestUserCreateTool_PendingTTL(t *testing.T) {
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			return &user.User{ID: 1001}, nil
+		},
+	}
+	handler := handleUserCreate(svc, nil, nil, nil)
+	if _, err := handler(context.Background(), makeReq(map[string]any{
+		"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": "15m",
+	})); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil || got.PendingTTL != 15*time.Minute || !got.Pending {
+		t.Fatalf("request = %+v", got)
+	}
+
+	got = nil
+	res, err := handler(context.Background(), makeReq(map[string]any{
+		"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": "soon",
+	}))
+	if err != nil || res == nil || !res.IsError || got != nil {
+		t.Fatalf("bad TTL: res %+v err %v, service called %v", res, err, got != nil)
+	}
+
+	expires := time.Date(2026, 11, 14, 12, 15, 0, 0, time.UTC)
+	rec, err := userToRecord(context.Background(), nil, &user.User{ID: 1, PendingExpiresAt: &expires})
+	if err != nil {
+		t.Fatalf("userToRecord: %v", err)
+	}
+	if rec.PendingExpiresAt != "2026-11-14T12:15:00Z" {
+		t.Fatalf("pendingExpiresAt = %q", rec.PendingExpiresAt)
+	}
+}
+
+// TestUserCreateTool_PendingTTLRefusesNonString refuses a pending_ttl that is
+// not a string. ParseString would read an array or object as "", creating a
+// pending account with no expiry; the tool must refuse before CreateUser.
+func TestUserCreateTool_PendingTTLRefusesNonString(t *testing.T) {
+	for name, ttl := range map[string]any{
+		"array":  []any{"15m"},
+		"object": map[string]any{"d": "15m"},
+		"number": 900,
+		"bool":   true,
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			svc := &mockUserService{
+				createUserFn: func(_ context.Context, _ *user.CreateUserRequest) (*user.User, error) {
+					called = true
+					return &user.User{ID: 1001}, nil
+				},
+			}
+			res, err := handleUserCreate(svc, nil, nil, nil)(context.Background(), makeReq(map[string]any{
+				"username": "pam", "email": "pam@example.com", "pending": true, "pending_ttl": ttl,
+			}))
+			if err != nil || res == nil || !res.IsError || called {
+				t.Fatalf("pending_ttl %v: res %+v err %v, service called %v", ttl, res, err, called)
+			}
+		})
 	}
 }
 

@@ -43,6 +43,9 @@ var fwdGrant = delegation.Grant{Tenant: "acme", Principal: "embedded-fwd-test", 
 type fwdRevoked struct{}
 
 func (fwdRevoked) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) { return true, nil }
+func (fwdRevoked) IsCertRevokedUncached(context.Context, *x509.Certificate) (bool, error) {
+	return true, nil
+}
 
 // received is what the receiving node makes of a forwarded caller: the
 // forwarder carries it into the assertion it signs (forward.SignCaller), and

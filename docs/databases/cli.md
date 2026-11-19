@@ -18,7 +18,7 @@ There is no `--engine` flag; passing one is an unknown-flag error. Every databas
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--backend` | string | `pebble` | `pebble \| memory \| file \| raft \| objstore` — see below |
+| `--backend` | string | node default (`database_defaults.backend`, else the run mode's) | `pebble \| memory \| file \| raft \| objstore` — see below |
 | `--data-dir` | string | — | dedicated data directory; **required for a per-database barrier**. Honoured for the system tenant only |
 | `--cluster-mode` | string | unset (server applies `local`) | `local \| distributed` — **raft backend only** |
 | `--replicas` | int | unset (server applies `1`) | replication factor — **raft backend only** |
@@ -61,7 +61,7 @@ These rows are not yet implemented.
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `--backend` | string | `pebble` | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
+| `--backend` | string | node default (`database_defaults.backend`, else the run mode's) | `memory \| file \| pebble \| raft \| objstore` — where **every** engine of the database stores its data |
 | `--data-dir` | string | under the tenant's data root | the database's store directory; for volume and raft tenants it must lie under the tenant's root |
 | `--cluster-mode` | string | node default | `local \| distributed` — **raft backend only**, refused otherwise |
 | `--replicas` | int | node default | replication factor — **raft backend only**, refused otherwise |

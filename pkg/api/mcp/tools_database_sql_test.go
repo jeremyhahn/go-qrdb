@@ -22,6 +22,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/api/dbwire/dbwiretest"
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
@@ -32,6 +33,7 @@ func newRealDatabaseService(t *testing.T) service.DatabaseServicer {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	mgr := databasetest.NewManager(logger, t.TempDir())
+	dbwiretest.ClaimShards(t, mgr)
 	t.Cleanup(func() { _ = mgr.Close() })
 	return servicetest.NewDatabaseService(t, mgr)
 }

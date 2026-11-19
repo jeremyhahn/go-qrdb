@@ -92,6 +92,9 @@ type Manager struct {
 	catalogRef atomic.Pointer[catalogRef]
 	reclaimer  KeyspaceReclaimer
 	localNode  atomic.Pointer[string] // see SetLocalNode
+	// defaults are the node's database_defaults, filled into a new
+	// database's record at create (WithDefaults).
+	defaults Defaults
 
 	// dropping holds the name of every database with a Drop in flight, so
 	// two concurrent drops of one database cannot both report success. Drop
@@ -301,6 +304,10 @@ func (m *Manager) Provision(ctx context.Context, cfg DatabaseConfig) (*Database,
 // create is CreateWithCredentials and Provision. shared selects the empty,
 // node-shared incarnation (see Provision).
 func (m *Manager) create(ctx context.Context, cfg DatabaseConfig, creds seal.Credentials, shared bool) (*Database, error) {
+	// The node's defaults are filled in once, here, and recorded with the
+	// rest of the config; opening the database never consults them again.
+	// Boot provisioning (shared) never synthesizes a raft block: see fillFor.
+	m.defaults.fillFor(&cfg, !shared)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -1119,6 +1126,17 @@ func (m *Manager) updateRaft(db *Database, raft *DatabaseRaftConfig) error {
 	}
 	kept := *raft
 	kept.ShardID = issued
+	// The Raft state storage is recorded at create and opens the database
+	// from then on: an update that omits it keeps the recorded one, and one
+	// naming another is refused.
+	var recorded BackendType
+	if prev := db.config.Load().Raft; prev != nil {
+		recorded = prev.StateStorage
+	}
+	if raft.StateStorage != "" && raft.StateStorage != recorded {
+		return &StateStorageUpdateError{Name: name, Recorded: recorded, Requested: raft.StateStorage}
+	}
+	kept.StateStorage = recorded
 	if err := keepStoredSecrets(&kept, db.Config().Raft); err != nil {
 		return err
 	}

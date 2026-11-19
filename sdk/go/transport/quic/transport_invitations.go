@@ -57,12 +57,10 @@ func (t *Transport) InviteUser(ctx context.Context, req *transport.InviteUserReq
 }
 
 // RedeemInvitation redeems a one-time token via the PUBLIC invitation.Redeem
-// frame method -- the one QUIC method with no registered permission at all
-// (QUICMethodRegistry.RegisterPublic). It dials its own connection when none
-// exists yet rather than requiring Connect first (see
-// transport.InvitationClient): Connect's health probe fails closed for an
-// uncredentialed caller (see reachableButUnauthorized), which is exactly
-// what the redeemer is.
+// frame method, a no-login verb (pkg/api/publicverbs). It dials its own
+// connection when none exists yet rather than requiring Connect first (see
+// transport.InvitationClient): the redeemer holds no credential and needs
+// no health round trip before it redeems.
 func (t *Transport) RedeemInvitation(ctx context.Context, req *transport.RedeemInvitationRequest) (*transport.EnrolledCert, error) {
 	if t.closed.Load() {
 		return nil, &transport.ClosedError{}

@@ -562,7 +562,10 @@ for example [../key-value/architecture.md](../key-value/architecture.md#data-flo
   it. A name containing `/` is not addressable through a single-segment route
   (`/v1/databases/{name}` and the like); a wildcard route (`/kv/*`) receives
   the decoded key.
-- **Public routes are explicit and few** — `GET /health`,
+- **Public routes are explicit and few** — Health on every transport (`GET /health`,
+  gRPC / Unix `Health`, QUIC `admin.Health`, MCP `qrdb_health`, one
+  `pkg/api/publicverbs.Table` row, rate-limited before serving under the
+  `admin:health` dimension by caller address), invitation redemption,
   `GET /v1/config/initialized`, `GET /v1/ca/bootstrap` when configured, the
   two cluster key routes when a receiver is wired (they authorize the peer
   node themselves), and the MCP protected-resource metadata document when
@@ -573,13 +576,20 @@ for example [../key-value/architecture.md](../key-value/architecture.md#data-flo
   authentication configured, every request to the MCP endpoint is
   authenticated at the HTTP layer, so `initialize`, `ping` and `tools/list`
   are not answered anonymously, and every request body is bounded. The one
-  exception is the embedder's declared first-contact surface: a module that
-  implements `MCPPublicToolLister` names tools — health, liveness, readiness,
-  login begin/finish — served without credentials, and while any exist an
+  exception is the public tools: the built-in `qrdb_health` (a
+  `publicverbs.Table` verb, whenever the admin service is on) and the
+  embedder's declared first-contact surface — a module that implements
+  `MCPPublicToolLister` names tools such as liveness, readiness and login
+  begin/finish. They are served without credentials, and while any exist an
   anonymous caller may also `initialize` and `tools/list`, which lists the
   public set only. `ping` and every other tool still answer `401`.
+- **The SDK connects without a credential.** `Connect` on every Go SDK
+  network transport probes Health, which is public, so a client with no
+  credential connects and is refused with the typed `Unauthenticated` error
+  at its first authenticated call (ruling 264(b)); over MCP one refusal
+  capture types the refusal of `initialize` and of every `tools/call` alike.
 - **A public MCP tool cannot reach data.** A declared tool that carries any
-  permission but `admin:health` — a KV, SQL, document, vector, admin, IAM or
+  permission but `identity:public` — a KV, SQL, document, vector, admin, IAM or
   seal verb — is refused with `PublicMCPToolRefusedError`, and a declared name
   no tool answers with `UnknownPublicToolError`; either stops the MCP server
   from starting.

@@ -15,6 +15,9 @@ bad() { fail=$((fail + 1)); printf 'FAIL %s\n' "$1"; }
 
 D=$(mktemp -d)
 trap 'rm -rf "$D"' EXIT
+# The registry's outage marker goes to the job's temporary directory: here
+# the stub's state, so reset clears it between cases.
+export RUNNER_TEMP="$D/state"
 mkdir -p "$D/bin"
 
 # The stub's daemon: $s/id is the ID the image under test has once loaded or
@@ -30,17 +33,48 @@ s=$STUB_STATE
 printf '%s\n' "$*" >> "$s/calls"
 case $1 in
   image)
-    [ -f "$s/id" ] || exit 1
+    ref=${!#}
+    if [[ $ref == sha256:* ]]; then
+      grep -qxF -- "$ref" "$s/held" 2>/dev/null || exit 1
+      printf '%s\n' "$ref"
+      exit 0
+    fi
+    # A pulled image is on the daemon too.
+    [ -f "$s/id" ] || [ -f "$s/pulled" ] || exit 1
     case $* in
       *RepoDigests*)
-        [ -n "${STUB_NO_DIGEST:-}" ] || printf '%s\n' "other.example/x@sha256:$(printf 'a%.0s' $(seq 64))" "$(cat "$s/pushed")@sha256:$(printf 'b%.0s' $(seq 64))" ;;
+        if [ -z "${STUB_NO_DIGEST:-}" ]; then
+          printf '%s\n' "other.example/x@sha256:$(printf 'a%.0s' $(seq 64))"
+          [ ! -f "$s/pushed" ] || printf '%s@sha256:%s\n' "$(cat "$s/pushed")" "$(printf 'b%.0s' $(seq 64))"
+          [ ! -f "$s/pulled" ] || cat "$s/pulled"
+        fi ;;
       *) cat "$s/id" ;;
     esac ;;
   save) printf 'tar-of-%s' "$(cat "$s/id")" > "$3" ;;
-  load) printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" > "$s/id"; echo "Loaded image" ;;
+  load)
+    printf '%s\n' "${STUB_LOAD_ID:-$(sed 's/^tar-of-//' "$3")}" | tee "$s/id" >> "$s/held"
+    # Another run on the same daemon loads its own build under the same
+    # content-hash tag the moment this load returns.
+    [ -z "${STUB_RACE_ID:-}" ] || printf '%s\n' "$STUB_RACE_ID" | tee "$s/id" >> "$s/held"
+    echo "Loaded image" ;;
   login) cat > "$s/password"; printf '%s\n' "${DOCKER_CONFIG:-}" > "$s/config" ;;
   tag) ;;
+  pull)
+    # STUB_PULL: hit pulls the digest asked for (STUB_PULL_SERVES: another
+    # one), whose repo digest `image inspect` then reports; hang never answers
+    # (a registry that accepts the connection and stalls); anything else is a
+    # miss.
+    case ${STUB_PULL:-miss} in
+      hit)
+        d=${STUB_PULL_SERVES:-${2#*@}}
+        printf '%s@%s\n' "${2%@*}" "$d" > "$s/pulled"
+        echo 'Status: Downloaded newer image'; echo "Digest: $d" ;;
+      hang) exec sleep 30 ;;
+      refused) echo "dial tcp registry.test:5000: connect: connection refused" >&2; exit 1 ;;
+      *) echo 'manifest unknown' >&2; exit 1 ;;
+    esac ;;
   push)
+    [ -z "${STUB_PUSH_HANG:-}" ] || exec sleep 30
     n=$(($(cat "$s/push-tries" 2>/dev/null || echo 0) + 1))
     printf '%s\n' "$n" > "$s/push-tries"
     if [ "$n" -le "${STUB_PUSH_FAILS:-0}" ]; then
@@ -48,6 +82,18 @@ case $1 in
       exit 1
     fi
     printf '%s\n' "${2%:*}" > "$s/pushed" ;;
+  buildx)
+    # The make targets' build (DEVCONTAINER_BUILD): it loads the image, or
+    # with STUB_BUILD_FAILS fails; STUB_BUILD_RACE loads it first, as a
+    # concurrent build on the same daemon does.
+    case $2 in
+      version) ;;
+      build)
+        [ -z "${STUB_BUILD_RACE:-}" ] || printf 'sha256:raced\n' > "$s/id"
+        [ -z "${STUB_BUILD_FAILS:-}" ] || exit 7
+        printf 'sha256:built\n' > "$s/id" ;;
+      *) exit 1 ;;
+    esac ;;
   *) exit 1 ;;
 esac
 STUB
@@ -60,8 +106,12 @@ tc=qrdb-toolchain:0123456789abcdef
 reset() {
   rm -rf "$D/state" "$D/art"
   mkdir -p "$D/state"
-  printf '%s\n' "$id_a" > "$D/state/id"
+  printf '%s\n' "$id_a" | tee "$D/state/id" > "$D/state/held"
 }
+# fresh: the consumer's daemon, which holds no image until the load.
+fresh() { rm -f "$D/state/id" "$D/state/held"; }
+# resolve <ref>: the ID the stub daemon launches for <ref>.
+resolve() { env STUB_STATE="$D/state" "$D/bin/docker" image inspect -f '{{.Id}}' "$1" 2>/dev/null; }
 # run <args...> [-- env...]: the script, its status in $rc, stdout in $D/out,
 # stderr in $D/err.
 run() {
@@ -92,15 +142,17 @@ else bad "save refuses an image that is not a content-hash tag (rc=$rc)"; fi
 # 3. load accepts the image docker-build built and removes the tar.
 reset
 run save "$tc" "$D/art"
-rm -f "$D/state/id"
+fresh
 run load "$D/art" "$tc" "$id_a"
-if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err"; then
+if [ "$rc" = 0 ] && [ ! -e "$D/art/image.tar" ] && grep -q "is $id_a, the image docker-build built" "$D/err" &&
+  [ "$(cat "$D/out")" = "$id_a" ]; then
   ok "load accepts the image docker-build built"
 else bad "load accepts the image docker-build built (rc=$rc)"; cat "$D/err"; fi
 
 # 4. load refuses an image whose ID is not the one docker-build recorded.
 reset
 run save "$tc" "$D/art"
+fresh
 run load "$D/art" "$tc" "$id_a" -- STUB_LOAD_ID="$id_b"
 if [ "$rc" = 1 ] && grep -q "loaded as $id_b, not $id_a" "$D/err"; then
   ok "load refuses a substituted image"
@@ -192,6 +244,324 @@ run check-ref "ghcr.io/example-org/go-qrdb-toolchain:0123456789abcdef-main"
 if [ "$rc" = 1 ] && grep -q 'is not a digest reference' "$D/err"; then
   ok "check-ref refuses a tag reference"
 else bad "check-ref refuses a tag reference (rc=$rc)"; fi
+
+# 15a. Two interleaved hand-offs on one daemon, two builds with different IDs
+# under the same content-hash tag: run B loads its image the moment run A's
+# load returns, moving the tag. Each load still passes and hands its consumer
+# its own producer's ID, which the daemon launches as that image while the
+# tag names the other run's.
+reset
+run save "$tc" "$D/art"
+mv "$D/art" "$D/art-a"
+printf '%s\n' "$id_b" > "$D/state/id"
+run save "$tc" "$D/art"
+mv "$D/art" "$D/art-b"
+fresh
+run load "$D/art-a" "$tc" "$id_a" -- STUB_RACE_ID="$id_b"
+rc_a=$rc ref_a=$(cat "$D/out")
+run load "$D/art-b" "$tc" "$id_b"
+rc_b=$rc ref_b=$(cat "$D/out")
+if [ "$rc_a" = 0 ] && [ "$rc_b" = 0 ] && [ "$ref_a" = "$id_a" ] && [ "$ref_b" = "$id_b" ] &&
+  [ "$(resolve "$ref_a")" = "$id_a" ] && [ "$(resolve "$ref_b")" = "$id_b" ] &&
+  [ "$(resolve "$tc")" = "$id_b" ]; then
+  ok "interleaved hand-offs under one tag each launch their own producer's ID"
+else bad "interleaved hand-offs under one tag each launch their own producer's ID (rc=$rc_a/$rc_b, refs $ref_a $ref_b)"; cat "$D/err"; fi
+
+# 16-21. registry-pull and registry-push, the CI image registry path (#1609):
+# docker-build-toolchain and docker-build-it try `registry-pull` before they
+# build and `registry-push` after. The registry is a fake value; a real one is
+# never written into a file.
+reg=registry.test:5000
+it=qrdb-ci-it:fedcba9876543210
+dig="sha256:$(printf 'd%.0s' $(seq 64))"
+
+# 16. Unset: no docker call, no output; a pull is a miss and a push a no-op.
+reset
+run registry-pull "$it"
+pull_rc=$rc
+run registry-push "$it"
+if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ ! -e "$D/state/calls" ] && [ ! -s "$D/out" ] && [ ! -s "$D/err" ]; then
+  ok "registry: unset makes no docker call and logs nothing"
+else bad "registry: unset makes no docker call and logs nothing (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# The digest records (P1, Codex): a registry pull is trusted only by the digest
+# the producer's push recorded under CI_IMAGE_DIGEST_DIR (a GitHub cache entry
+# in CI), one file per content-hash tag, never by the tag alone.
+itrepo=$reg/qrdb-ci-it
+pushdig="sha256:$(printf 'b%.0s' $(seq 64))"
+rec="$D/records"
+records() { rm -rf "$rec"; mkdir -p "$rec"; [ $# -eq 0 ] || printf '%s\n' "$1" > "$rec/qrdb-ci-it_fedcba9876543210"; }
+
+# 17. Hit with a record: pulled by digest, the pulled image's digest checked,
+# tagged to the local name, one line.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$rc" = 0 ] && called "^pull $itrepo@$dig$" && ! called "^pull $reg/$it$" &&
+  called "^image inspect .*RepoDigests.* $itrepo@$dig$" && called "^tag $itrepo@$dig $it$" &&
+  [ "$(cat "$D/err")" = "pulled $itrepo@$dig" ] && ! called '^push ' && ! called '^login '; then
+  ok "registry: a hit with a record is pulled by digest, checked and tagged"
+else bad "registry: a hit with a record is pulled by digest, checked and tagged (rc=$rc)"; cat "$D/err"; fi
+
+# 17a. Hit without a record (no file, or no record directory at all): no pull,
+# a silent miss, so the caller builds.
+reset
+records
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+norec_rc=$rc norec_err=$(cat "$D/err")
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
+if [ "$norec_rc" = 1 ] && [ -z "$norec_err" ] && [ "$rc" = 1 ] && [ ! -s "$D/err" ] &&
+  ! called '^pull ' && ! called '^tag '; then
+  ok "registry: a hit without a record is not pulled"
+else bad "registry: a hit without a record is not pulled (rc=$norec_rc/$rc)"; cat "$D/err"; fi
+
+# 17b. A record that is not a sha256 digest is no record.
+reset
+records latest
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$rc" = 1 ] && ! called '^pull ' && [ ! -s "$D/err" ]; then
+  ok "registry: a malformed record is not pulled"
+else bad "registry: a malformed record is not pulled (rc=$rc)"; cat "$D/err"; fi
+
+# 17c. Digest mismatch: the registry serves another digest; it is not tagged,
+# one line says so, and the caller builds.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit \
+  STUB_PULL_SERVES="sha256:$(printf 'e%.0s' $(seq 64))"
+if [ "$rc" = 1 ] && ! called "^tag .* $it$" &&
+  [ "$(cat "$D/err")" = "miss, $itrepo@$dig does not match its record" ]; then
+  ok "registry: a digest mismatch is a miss"
+else bad "registry: a digest mismatch is a miss (rc=$rc)"; cat "$D/err"; fi
+
+# 18. Miss: the pull fails silently (the caller builds), the push tags and
+# pushes the build, records its repo digest and logs one line.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=miss
+pull_rc=$rc pull_err=$(cat "$D/err")
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec"
+if [ "$pull_rc" = 1 ] && [ -z "$pull_err" ] && [ "$rc" = 0 ] && called "^tag $it $reg/$it$" &&
+  called "^push $reg/$it$" && [ "$(cat "$D/err")" = "miss, built and pushed $itrepo@$pushdig" ] &&
+  [ "$(cat "$rec/qrdb-ci-it_fedcba9876543210")" = "$pushdig" ] && ! called '^login '; then
+  ok "registry: a miss pushes the build, records its digest and logs one line"
+else bad "registry: a miss pushes the build, records its digest and logs one line (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 18a. A push the registry reports no digest for records nothing.
+reset
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_NO_DIGEST=1
+if [ "$rc" = 0 ] && [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ] &&
+  [ "$(cat "$D/err")" = "miss, built and pushed $reg/$it, no digest to record" ]; then
+  ok "registry: a push with no digest records nothing"
+else bad "registry: a push with no digest records nothing (rc=$rc)"; cat "$D/err"; fi
+
+# 19. Unreachable: a pull and a push that stall are cut off by the timeout;
+# the pull is a miss, the push failure is logged, nothing is recorded and
+# neither fails.
+reset
+records "$dig"
+start=$SECONDS
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=1
+pull_rc=$rc
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=1
+if [ "$pull_rc" = 1 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 20 ] && called "^pull $itrepo@$dig$" &&
+  ! called '^push ' && [ "$(cat "$D/err")" = "registry unavailable, skipped $reg/$it" ] &&
+  [ ! -e "$rec/qrdb-ci-it_fedcba9876543210" ]; then
+  ok "registry: a stalled pull times out, falls back and the push skips"
+else bad "registry: a stalled pull times out, falls back and the push skips (pull rc=$pull_rc, push rc=$rc)"; cat "$D/err"; fi
+
+# 19a. One outage budget per job: the first stalled pull leaves one marker,
+# named by the registry's hash, and the second pull and both pushes skip at
+# once without calling docker, each with the status a failed transfer has.
+reset
+records "$dig"
+start=$SECONDS
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=2
+r1=$rc
+markers=$(cd "$D/state" && echo ci-image-registry-outage-*)
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hang CI_IMAGE_REGISTRY_TIMEOUT=2
+r2=$rc e2=$(cat "$D/err")
+records
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=2
+r3=$rc e3=$(cat "$D/err")
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PUSH_HANG=1 CI_IMAGE_REGISTRY_TIMEOUT=2
+if [ "$r1" = 1 ] && [ "$r2" = 1 ] && [ "$r3" = 0 ] && [ "$rc" = 0 ] && [ $((SECONDS - start)) -lt 10 ] &&
+  [ "$(grep -c '^pull ' "$D/state/calls")" = 1 ] && ! called '^push ' && ! called '^tag ' &&
+  [ "$e2" = "registry unavailable, skipped $itrepo@$dig" ] &&
+  [ "$e3" = "registry unavailable, skipped $reg/$it" ] && [ "$(cat "$D/err")" = "$e3" ] &&
+  [[ $markers =~ ^ci-image-registry-outage-[0-9a-f]{16}$ ]] && [[ $markers != *registry.test* ]]; then
+  ok "registry: the first stalled transfer spends the job's outage budget, the rest skip"
+else bad "registry: the first stalled transfer spends the job's outage budget, the rest skip ($r1 $r2 $r3 $rc, $markers)"; printf '%s\n%s\n' "$e2" "$e3"; fi
+
+# 19b. A registry that cannot be reached at all spends the budget too; a fast
+# not-found (test 18) and an HTTP error (test 20) do not.
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=refused
+r1=$rc
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$r1" = 1 ] && [ "$rc" = 1 ] && [ "$(grep -c '^pull ' "$D/state/calls")" = 1 ] &&
+  [ "$(cat "$D/err")" = "registry unavailable, skipped $itrepo@$dig" ]; then
+  ok "registry: a refused connection spends the job's outage budget"
+else bad "registry: a refused connection spends the job's outage budget (rc=$r1/$rc)"; cat "$D/err"; fi
+reset
+records "$dig"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=miss
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_FAILS=1
+miss_left=$(cd "$D/state" && echo ci-image-registry-outage-*)
+run registry-pull "$it" -- CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_PULL=hit
+if [ "$miss_left" = 'ci-image-registry-outage-*' ] && [ "$rc" = 0 ] && [ "$(grep -c '^pull ' "$D/state/calls")" = 2 ]; then
+  ok "registry: a not-found pull and an HTTP error leave no outage marker"
+else bad "registry: a not-found pull and an HTTP error leave no outage marker (rc=$rc, $miss_left)"; cat "$D/err"; fi
+
+# 19c. The per-call bound defaults to 300 s; a value that is not a count of
+# seconds falls back to it.
+t_default=$(unset CI_IMAGE_REGISTRY_TIMEOUT; . "$here/image-registry.sh"; ci_registry_timeout)
+t_bad=$(CI_IMAGE_REGISTRY_TIMEOUT=abc; . "$here/image-registry.sh"; ci_registry_timeout)
+t_set=$(CI_IMAGE_REGISTRY_TIMEOUT=42; . "$here/image-registry.sh"; ci_registry_timeout)
+if [ "$t_default" = 300 ] && [ "$t_bad" = 300 ] && [ "$t_set" = 42 ]; then
+  ok "registry: the per-call bound defaults to 300 s"
+else bad "registry: the per-call bound defaults to 300 s (got $t_default, $t_bad, $t_set)"; fi
+
+# 20. Unreachable: a refused push (closed port) is logged, never retried, never fatal.
+reset
+run registry-push "$it" -- CI_IMAGE_REGISTRY="$reg" STUB_PUSH_FAILS=9
+if [ "$rc" = 0 ] && [ "$(grep -c '^push ' "$D/state/calls")" = 1 ] && [ "$(cat "$D/err")" = "miss, built, push failed" ]; then
+  ok "registry: a refused push is logged once and does not fail"
+else bad "registry: a refused push is logged once and does not fail (rc=$rc)"; cat "$D/err"; fi
+
+# 21. The registry path takes only the CI content-hash tags (another tag is
+# skipped, and its push never fails the build), and a value that is not
+# host[:port] is never handed to docker.
+reset
+run registry-pull qrdb-toolchain:latest -- CI_IMAGE_REGISTRY="$reg" STUB_PULL=hit
+bad_tag_rc=$rc bad_tag_err=$(cat "$D/err")
+run registry-push qrdb-toolchain:latest -- CI_IMAGE_REGISTRY="$reg"
+[ "$rc" = 0 ] || bad_tag_rc="push rc=$rc"
+run registry-pull "$it" -- CI_IMAGE_REGISTRY='registry.test:5000/x y' STUB_PULL=hit
+if [ "$bad_tag_rc" = 1 ] && [[ $bad_tag_err == *'is not a content-hash tag'* ]] && [ "$rc" = 1 ] && ! called '^pull '; then
+  ok "registry: a non-CI tag or a malformed registry value is refused before docker"
+else bad "registry: a non-CI tag or a malformed registry value is refused before docker (rc=$bad_tag_rc/$rc)"; cat "$D/err"; fi
+
+# 21a. registry-push --unrecorded without CI_IMAGE_DIGEST_DIR pushes nothing
+# (nothing could be recorded), and with the registry unset does nothing.
+reset
+run registry-push --unrecorded "$it" -- CI_IMAGE_REGISTRY="$reg"
+nodir_rc=$rc
+run registry-push --unrecorded "$it"
+if [ "$nodir_rc" = 0 ] && [ "$rc" = 0 ] && [ ! -e "$D/state/calls" ] && [ ! -s "$D/err" ]; then
+  ok "registry: --unrecorded with no record directory or no registry pushes nothing"
+else bad "registry: --unrecorded with no record directory or no registry pushes nothing (rc=$nodir_rc/$rc)"; cat "$D/err"; fi
+
+# 22-28. The Make targets themselves (P1, Codex): make docker-build-toolchain
+# and docker-build-it run on the stub docker, whose buildx stands in for the
+# build, through the real scripts/ci-image.sh. A target that stopped calling
+# the registry fails these, where the cases above would still pass.
+# mk <target> [env...]: the target, its status in $rc, stdout in $D/out,
+# stderr in $D/err.
+mk() {
+  local target=$1
+  shift
+  rc=0
+  env -u GIT_CONFIG_KEY_0 -u MODULE_ENV_FILE -u CI_IMAGE_REGISTRY -u CI_IMAGE_DIGEST_DIR -u MAKEFLAGS -u MAKELEVEL \
+    PATH="$D/bin:$PATH" STUB_STATE="$D/state" "$@" \
+    make -s --no-print-directory -C "$here/.." "$target" TOOLCHAIN_IMAGE="$tc" IT_IMAGE="$it" \
+    > "$D/out" 2> "$D/err" || rc=$?
+}
+# before <a> <b>: the first call matching <a> precedes the first matching <b>.
+before() {
+  local a b
+  a=$(grep -n -m1 -- "$1" "$D/state/calls" | cut -d: -f1)
+  b=$(grep -n -m1 -- "$2" "$D/state/calls" | cut -d: -f1)
+  [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+# rec_for <image> [digest]: an empty record directory, or one holding <digest>
+# for <image>.
+rec_for() { rm -rf "$rec"; mkdir -p "$rec"; [ $# -lt 2 ] || printf '%s\n' "$2" > "$rec/${1//:/_}"; }
+
+for target in docker-build-toolchain docker-build-it; do
+  case $target in
+  docker-build-toolchain) img=$tc stage=toolchain ;;
+  *) img=$it stage=integration ;;
+  esac
+  repo=$reg/${img%:*}
+  r=(CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec")
+
+  # 22. A registry hit skips the build.
+  reset; rm -f "$D/state/id"; rec_for "$img" "$dig"
+  mk "$target" "${r[@]}" STUB_PULL=hit
+  if [ "$rc" = 0 ] && called "^pull $repo@$dig$" && ! called '^buildx build ' && ! called '^push '; then
+    ok "$target: a registry hit skips the build"
+  else bad "$target: a registry hit skips the build (rc=$rc)"; cat "$D/err"; fi
+
+  # 23. A miss builds, then pushes and records the digest.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PULL=miss
+  if [ "$rc" = 0 ] && called "^buildx build .*--target $stage -t $img " && before '^buildx build ' "^push $reg/$img$" &&
+    [ "$(cat "$rec/${img//:/_}")" = "$pushdig" ] && grep -qx "miss, built and pushed $repo@$pushdig" "$D/err"; then
+    ok "$target: a miss builds, then pushes"
+  else bad "$target: a miss builds, then pushes (rc=$rc)"; cat "$D/err"; fi
+
+  # 24. A failed push still exits 0.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PUSH_FAILS=9
+  if [ "$rc" = 0 ] && called '^buildx build ' && called "^push $reg/$img$" && grep -qx 'miss, built, push failed' "$D/err"; then
+    ok "$target: a failed push still exits 0"
+  else bad "$target: a failed push still exits 0 (rc=$rc)"; cat "$D/err"; fi
+
+  # 25. A failed build exits non-zero and pushes nothing.
+  reset; rm -f "$D/state/id"; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_BUILD_FAILS=1
+  if [ "$rc" != 0 ] && called '^buildx build ' && ! called '^push '; then
+    ok "$target: a failed build exits non-zero"
+  else bad "$target: a failed build exits non-zero (rc=$rc)"; cat "$D/err"; fi
+
+  # 26. P2: a held image with no usable record is published again, and the
+  # record written; a failed retry still exits 0.
+  reset; rec_for "$img"
+  mk "$target" "${r[@]}"
+  held_rc=$rc held_err=$(cat "$D/err")
+  held_rec=$(cat "$rec/${img//:/_}" 2>/dev/null || :)
+  held_build=$(grep -c '^buildx build ' "$D/state/calls" || :)
+  reset; rec_for "$img"
+  mk "$target" "${r[@]}" STUB_PUSH_FAILS=9
+  if [ "$held_rc" = 0 ] && [ "$held_err" = "held, unrecorded and pushed $repo@$pushdig" ] &&
+    [ "$held_rec" = "$pushdig" ] && [ "$held_build" = 0 ] &&
+    [ "$rc" = 0 ] && called "^push $reg/$img$" && [ "$(cat "$D/err")" = "held, unrecorded, push failed" ]; then
+    ok "$target: a held image with no record is published again"
+  else bad "$target: a held image with no record is published again (rc=$held_rc/$rc)"; printf '%s\n' "$held_err"; cat "$D/err"; fi
+
+  # 27. A held image with a record is not pushed (nor pulled, nor built).
+  reset; rec_for "$img" "$dig"
+  mk "$target" "${r[@]}"
+  if [ "$rc" = 0 ] && ! called '^push ' && ! called '^pull ' && ! called '^tag ' && ! called '^buildx build ' && [ ! -s "$D/err" ]; then
+    ok "$target: a held image with a record is not pushed"
+  else bad "$target: a held image with a record is not pushed (rc=$rc)"; cat "$D/err"; fi
+
+  # 28. Registry unset: a held image is today's one inspect and one line; a
+  # missing one is built with no registry call.
+  reset; rec_for "$img"
+  mk "$target" CI_IMAGE_DIGEST_DIR="$rec"
+  unset_out=$(cat "$D/out") unset_err=$(cat "$D/err") unset_calls=$(cat "$D/state/calls")
+  reset; rm -f "$D/state/id"
+  mk "$target"
+  if [ "$unset_out" = "==> $img is already built on this daemon" ] && [ -z "$unset_err" ] &&
+    [ "$unset_calls" = "$(printf 'buildx version\nimage inspect %s' "$img")" ] &&
+    [ "$rc" = 0 ] && called '^buildx build ' && ! called '^pull ' && ! called '^push ' && ! called '^tag '; then
+    ok "$target: an unset registry changes nothing"
+  else bad "$target: an unset registry changes nothing (rc=$rc)"; printf '%s\n%s\n' "$unset_out" "$unset_calls"; cat "$D/err"; fi
+done
+
+# 29. docker-build-it: a build that fails because a concurrent build loaded
+# the image first succeeds, and the image is pushed.
+reset; rm -f "$D/state/id"; rec_for "$it"
+mk docker-build-it CI_IMAGE_REGISTRY="$reg" CI_IMAGE_DIGEST_DIR="$rec" STUB_BUILD_FAILS=1 STUB_BUILD_RACE=1
+if [ "$rc" = 0 ] && grep -q "a concurrent build loaded $it first" "$D/out" && called "^push $reg/$it$"; then
+  ok "docker-build-it: a build a concurrent build beat still succeeds"
+else bad "docker-build-it: a build a concurrent build beat still succeeds (rc=$rc)"; cat "$D/err"; fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

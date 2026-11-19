@@ -40,11 +40,13 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/quota"
+	"github.com/jeremyhahn/go-qrdb/pkg/role"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 	"github.com/jeremyhahn/go-qrdb/pkg/volume"
+	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/node"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
@@ -157,6 +159,15 @@ func (ca *loginCA) sign(t *testing.T, g delegation.Grant, notBefore time.Time, l
 // CA.
 func newDelegatingNode(t *testing.T, principal string, opts ...node.NodeOption) (*node.Node, loginCAs) {
 	t.Helper()
+	n, cas, _ := newDelegatingNodeWithTrail(t, principal, opts...)
+	return n, cas
+}
+
+// newDelegatingNodeWithTrail is newDelegatingNode that also returns the
+// node's audit trail, for tests that assert where a delegated call is
+// recorded.
+func newDelegatingNodeWithTrail(t *testing.T, principal string, opts ...node.NodeOption) (*node.Node, loginCAs, audit.AuditLogger) {
+	t.Helper()
 	cfg := qrdbconfig.DefaultConfig()
 	cfg.Raft.DataDir = t.TempDir()
 	cfg.Databases = []qrdbconfig.DatabaseConfig{{Name: "default", Backend: string(database.BackendMemory)}}
@@ -165,8 +176,9 @@ func newDelegatingNode(t *testing.T, principal string, opts ...node.NodeOption) 
 	cfg.Seal.Enabled = true
 	cfg.Seal.Strategy = "none"
 	cfg.Storage.VolumePools = []qrdbconfig.VolumePoolConfig{{Name: "default", Path: t.TempDir()}}
-	// A revocation is read on the very next use, not after a cache window.
-	cfg.Auth.RevocationCacheTTL = "0s"
+	// The default auth.revocation_cache_ttl stays: a delegation's
+	// revocation is read on the very next use even inside the cache window.
+	cfg.Auth.RevocationCacheTTL = ""
 
 	// Every use of a delegation is recorded in the delegating tenant's trail.
 	trail, err := audit.OpenTrailIn(cfg.Raft.DataDir, audit.DefaultTrailFile)
@@ -213,8 +225,41 @@ func newDelegatingNode(t *testing.T, principal string, opts ...node.NodeOption) 
 		}); err != nil {
 			t.Fatalf("OnboardTenant(%s): %v", id, err)
 		}
+		// OnboardTenant answers once the tenant is committed; the admin's
+		// account is a chain of raft writes it completes alongside the
+		// answer, not before it (service.TenantOnboardingService). A barrier
+		// status read runs the same guarded completion synchronously
+		// (tenant.WithBarrierReadyHook), so once it returns the account
+		// exists, whichever of the two finished it.
+		if _, err := n.Services().Tenant.TenantBarrierStatus(context.Background(), id); err != nil {
+			t.Fatalf("TenantBarrierStatus(%s): %v", id, err)
+		}
 	}
-	return n, cas
+	for _, id := range []string{delegatingTenant, otherTenant} {
+		awaitTenantAdmin(t, n, id)
+	}
+	return n, cas, trail
+}
+
+// awaitTenantAdmin waits for a barrier tenant's admin account. OnboardTenant
+// answers once the tenant is committed; the admin account is completed
+// after that answer (and retried), so a lookup straight after onboarding
+// can find no user yet.
+func awaitTenantAdmin(t *testing.T, n *node.Node, tenantID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(tenant.WithTenantID(context.Background(), tenantID), 30*time.Second)
+	defer cancel()
+	for {
+		_, err := n.Services().User.GetUserByUsername(ctx, tenantID, tenantID+"-admin")
+		if err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("admin account of %s never completed: %v", tenantID, err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 // issueDelegation has the delegating tenant issue a delegation to principal
@@ -422,4 +467,272 @@ func TestDelegatedContext_NoServicePrincipal(t *testing.T) {
 			}
 		})
 	}
+}
+
+// consumerScope is the grant an embedder needs to run its four server-owned
+// operations inside a tenant (#1187): role and effective-permission reads
+// for one account, role-binding writes for federated login, and the
+// tenant barrier's seal and officer list.
+var consumerScope = []permission.Permission{
+	permission.RolesRead, permission.UsersRead, permission.PermissionsResolve,
+	permission.RolesAssign, permission.RolesUnassign,
+	permission.TenantBarrierOfficerList, permission.TenantBarrierSeal,
+}
+
+// TestMintDelegation_ConsumerOperations runs the four embedder operations
+// under a delegation minted from tenant A's standing policy: each succeeds
+// in A and is audited there, each is refused in B and in the system tenant,
+// no policy means no mint, and deleting the policy and revoking the live
+// serial refuses the next call.
+// otherTenantReader returns a context acting under a users:read delegation
+// tenant B grants the same principal, so a test can name B's accounts
+// without stepping outside the delegation model.
+func otherTenantReader(t *testing.T, n *node.Node, principal string) context.Context {
+	t.Helper()
+	if _, err := n.Services().CertEnrollment.PutDelegationPolicy(tenant.WithTenantID(context.Background(), otherTenant),
+		&service.DelegationPolicyRequest{Principal: principal, Scope: []string{string(permission.UsersRead)}, TTL: time.Hour}); err != nil {
+		t.Fatalf("PutDelegationPolicy in %s: %v", otherTenant, err)
+	}
+	return mintedContext(t, n, otherTenant, principal)
+}
+
+// mintedContext mints a delegation from tenantID's standing policy for
+// principal and returns a context acting under it.
+func mintedContext(t *testing.T, n *node.Node, tenantID, principal string) context.Context {
+	t.Helper()
+	return scopedMintedContext(t, n, tenantID, principal)
+}
+
+func TestMintDelegation_ConsumerOperations(t *testing.T) {
+	principal := uniquePrincipal("consumer")
+	permission.RegisterRoleGrant(principal, consumerScope...)
+	n, _, trail := newDelegatingNodeWithTrail(t, principal)
+	adminCtx := tenant.WithTenantID(context.Background(), delegatingTenant)
+
+	_, csrPEM, err := certtest.NewCSR(principal)
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+	var notFound *sdk.DelegationPolicyNotFoundError
+	if _, err := n.MintDelegation(context.Background(), &service.MintDelegationRequest{TenantID: delegatingTenant, CSRPEM: csrPEM}); !errors.As(err, &notFound) {
+		t.Fatalf("MintDelegation with no policy = %v; want *sdk.DelegationPolicyNotFoundError", err)
+	}
+
+	scope := make([]string, 0, len(consumerScope))
+	for _, p := range consumerScope {
+		scope = append(scope, string(p))
+	}
+	if _, err := n.Services().CertEnrollment.PutDelegationPolicy(adminCtx,
+		&service.DelegationPolicyRequest{Principal: principal, Scope: scope, TTL: time.Hour}); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	issued, err := n.MintDelegation(context.Background(), &service.MintDelegationRequest{TenantID: delegatingTenant, CSRPEM: csrPEM})
+	if err != nil {
+		t.Fatalf("MintDelegation: %v", err)
+	}
+	block, _ := pem.Decode(issued.CertPEM)
+	if block == nil {
+		t.Fatal("MintDelegation returned no PEM certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse the minted delegation: %v", err)
+	}
+	ctx, err := n.DelegatedContext(context.Background(), []*x509.Certificate{leaf})
+	if err != nil {
+		t.Fatalf("DelegatedContext: %v", err)
+	}
+	sealCtx := mintedContext(t, n, delegatingTenant, principal)
+
+	roles, users := n.Client().Roles(), n.Client().Users()
+	account := delegatingTenant + "-admin"
+
+	// 1. Role and effective-permission reads for one account.
+	user, err := users.GetUserByUsername(ctx, delegatingTenant, account)
+	if err != nil {
+		t.Fatalf("GetUserByUsername in %s: %v", delegatingTenant, err)
+	}
+	userRole, err := roles.GetRoleByName(ctx, &transport.GetRoleByNameRequest{TenantID: delegatingTenant, Name: role.RoleNameUser})
+	if err != nil {
+		t.Fatalf("GetRoleByName(%s) in %s: %v", role.RoleNameUser, delegatingTenant, err)
+	}
+	resolved, err := roles.ResolvePermissions(ctx, &transport.ResolvePermissionsRequest{RoleIDs: []string{userRole.ID}})
+	if err != nil || len(resolved.Permissions) == 0 {
+		t.Fatalf("ResolvePermissions(%s) = %+v, %v; want the role's permissions", role.RoleNameUser, resolved, err)
+	}
+
+	// 2. Role-binding writes for federated login.
+	auditor, err := roles.GetRoleByName(ctx, &transport.GetRoleByNameRequest{TenantID: delegatingTenant, Name: role.RoleNameAuditor})
+	if err != nil {
+		t.Fatalf("GetRoleByName(%s): %v", role.RoleNameAuditor, err)
+	}
+	if err := roles.AssignRole(ctx, user.ID, auditor.ID); err != nil {
+		t.Fatalf("AssignRole in %s: %v", delegatingTenant, err)
+	}
+	if err := roles.UnassignRole(ctx, user.ID, auditor.ID); err != nil {
+		t.Fatalf("UnassignRole in %s: %v", delegatingTenant, err)
+	}
+
+	// 3. The tenant barrier's officer list and seal.
+	if _, err := n.Client().Tenants().TenantBarrierOfficerList(ctx, delegatingTenant); err != nil {
+		t.Fatalf("TenantBarrierOfficerList in %s: %v", delegatingTenant, err)
+	}
+
+	// Every operation is refused outside the delegating tenant.
+	for _, other := range []string{otherTenant, tenantid.System} {
+		if _, err := users.GetUserByUsername(ctx, other, other+"-admin"); err == nil {
+			t.Errorf("GetUserByUsername in %s admitted a delegation from %s", other, delegatingTenant)
+		}
+		if _, err := roles.GetRoleByName(ctx, &transport.GetRoleByNameRequest{TenantID: other, Name: role.RoleNameAuditor}); err == nil {
+			t.Errorf("GetRoleByName in %s admitted a delegation from %s", other, delegatingTenant)
+		}
+		if _, err := n.Client().Tenants().TenantBarrierOfficerList(ctx, other); err == nil {
+			t.Errorf("TenantBarrierOfficerList in %s admitted a delegation from %s", other, delegatingTenant)
+		}
+		if err := n.Client().Tenants().TenantBarrierSeal(ctx, &transport.TenantBarrierSealRequest{TenantID: other}); err == nil {
+			t.Errorf("TenantBarrierSeal in %s admitted a delegation from %s", other, delegatingTenant)
+		}
+	}
+	otherUser, err := users.GetUserByUsername(otherTenantReader(t, n, principal), otherTenant, otherTenant+"-admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername(%s) under its own delegation: %v", otherTenant, err)
+	}
+	if err := roles.AssignRole(ctx, otherUser.ID, auditor.ID); err == nil {
+		t.Errorf("AssignRole on a %s account admitted a delegation from %s", otherTenant, delegatingTenant)
+	}
+	if err := roles.UnassignRole(ctx, otherUser.ID, otherUser.RoleIDs[0]); err == nil {
+		t.Errorf("UnassignRole on a %s account admitted a delegation from %s", otherTenant, delegatingTenant)
+	}
+
+	// Deleting the policy stops any further mint; the serial already out
+	// stays live until it is revoked.
+	if err := n.Services().CertEnrollment.DeleteDelegationPolicy(adminCtx, delegatingTenant, principal); err != nil {
+		t.Fatalf("DeleteDelegationPolicy: %v", err)
+	}
+	if _, err := n.MintDelegation(context.Background(), &service.MintDelegationRequest{TenantID: delegatingTenant, CSRPEM: csrPEM}); !errors.As(err, &notFound) {
+		t.Fatalf("MintDelegation after the policy delete = %v; want *service.DelegationPolicyNotFoundError", err)
+	}
+
+	// Revoking the live serial refuses the next call.
+	if _, err := n.Services().CertProv.RevokeCert(adminCtx, issued.Serial); err != nil {
+		t.Fatalf("RevokeCert: %v", err)
+	}
+	if _, err := n.Client().Tenants().TenantBarrierOfficerList(ctx, delegatingTenant); !errors.Is(err, auth.ErrCertificateRevoked) {
+		t.Fatalf("TenantBarrierOfficerList after the revocation = %v; want auth.ErrCertificateRevoked", err)
+	}
+
+	// A second delegation minted while the policy stood is still live:
+	// the seal runs under it.
+	if err := n.Client().Tenants().TenantBarrierSeal(sealCtx, &transport.TenantBarrierSealRequest{TenantID: delegatingTenant}); err != nil {
+		t.Fatalf("TenantBarrierSeal in %s: %v", delegatingTenant, err)
+	}
+
+	// Each allowed call is recorded under the delegating tenant.
+	for _, p := range consumerScope {
+		page, err := trail.Query(context.Background(), audit.Filter{TenantID: delegatingTenant, Action: "auth.authorize", Resource: string(p), Outcome: "success"})
+		if err != nil {
+			t.Fatalf("Query(%s): %v", p, err)
+		}
+		if len(page.Events) == 0 {
+			t.Errorf("no %s authorization recorded under %s", p, delegatingTenant)
+		}
+	}
+}
+
+// TestMintDelegation_ConsumerOperationsWithoutTheGrant pins that a
+// delegation the tenant did not grant an operation is refused it with the
+// typed permission error: each consumer operation in the delegating tenant
+// fails under a delegation minted on the same policy but narrowed to an
+// unrelated permission, and none falls back to the principal's own grants
+// or to the system tenant.
+func TestMintDelegation_ConsumerOperationsWithoutTheGrant(t *testing.T) {
+	principal := uniquePrincipal("ungranted")
+	permission.RegisterRoleGrant(principal, append([]permission.Permission{permission.RolesList}, consumerScope...)...)
+	n, _, _ := newDelegatingNodeWithTrail(t, principal)
+	adminCtx := tenant.WithTenantID(context.Background(), delegatingTenant)
+
+	scope := []string{string(permission.RolesList)}
+	for _, p := range consumerScope {
+		scope = append(scope, string(p))
+	}
+	if _, err := n.Services().CertEnrollment.PutDelegationPolicy(adminCtx,
+		&service.DelegationPolicyRequest{Principal: principal, Scope: scope, TTL: time.Hour}); err != nil {
+		t.Fatalf("PutDelegationPolicy: %v", err)
+	}
+	granted := scopedMintedContext(t, n, delegatingTenant, principal)
+	ungranted := scopedMintedContext(t, n, delegatingTenant, principal, string(permission.RolesList))
+
+	roles, users, tenants := n.Client().Roles(), n.Client().Users(), n.Client().Tenants()
+	user, err := users.GetUserByUsername(granted, delegatingTenant, delegatingTenant+"-admin")
+	if err != nil {
+		t.Fatalf("GetUserByUsername under the granted delegation: %v", err)
+	}
+	auditor, err := roles.GetRoleByName(granted, &transport.GetRoleByNameRequest{TenantID: delegatingTenant, Name: role.RoleNameAuditor})
+	if err != nil {
+		t.Fatalf("GetRoleByName under the granted delegation: %v", err)
+	}
+
+	for what, call := range map[string]func() error{
+		"GetUserByUsername": func() error {
+			_, err := users.GetUserByUsername(ungranted, delegatingTenant, delegatingTenant+"-admin")
+			return err
+		},
+		"GetRoleByName": func() error {
+			_, err := roles.GetRoleByName(ungranted, &transport.GetRoleByNameRequest{TenantID: delegatingTenant, Name: role.RoleNameAuditor})
+			return err
+		},
+		"ResolvePermissions": func() error {
+			_, err := roles.ResolvePermissions(ungranted, &transport.ResolvePermissionsRequest{RoleIDs: []string{auditor.ID}})
+			return err
+		},
+		"AssignRole":   func() error { return roles.AssignRole(ungranted, user.ID, auditor.ID) },
+		"UnassignRole": func() error { return roles.UnassignRole(ungranted, user.ID, user.RoleIDs[0]) },
+		"TenantBarrierOfficerList": func() error {
+			_, err := tenants.TenantBarrierOfficerList(ungranted, delegatingTenant)
+			return err
+		},
+		"TenantBarrierSeal": func() error {
+			return tenants.TenantBarrierSeal(ungranted, &transport.TenantBarrierSealRequest{TenantID: delegatingTenant})
+		},
+	} {
+		var denied *sdk.PermissionDeniedError
+		if err := call(); !errors.As(err, &denied) {
+			t.Errorf("%s under a delegation without the grant = %v (%T); want *sdk.PermissionDeniedError", what, err, err)
+		}
+	}
+
+	// The refusals left tenant A's barrier unsealed: the granted
+	// delegation still lists its officers.
+	if _, err := tenants.TenantBarrierOfficerList(granted, delegatingTenant); err != nil {
+		t.Fatalf("TenantBarrierOfficerList under the granted delegation after the refusals: %v", err)
+	}
+}
+
+// scopedMintedContext mints a delegation in tenantID narrowed to scope
+// (empty is the policy's whole scope) and returns its delegated context.
+func scopedMintedContext(t *testing.T, n *node.Node, tenantID, principal string, scope ...string) context.Context {
+	t.Helper()
+	_, csrPEM, err := certtest.NewCSR(principal)
+	if err != nil {
+		t.Fatalf("NewCSR: %v", err)
+	}
+	// The embedder's view: the request and the result are sdk/go types.
+	var issued *sdk.IssuedDelegation
+	issued, err = n.MintDelegation(context.Background(), &sdk.MintDelegationRequest{TenantID: tenantID, Scope: scope, CSRPEM: csrPEM})
+	if err != nil {
+		t.Fatalf("MintDelegation in %s with scope %v: %v", tenantID, scope, err)
+	}
+	block, _ := pem.Decode(issued.CertPEM)
+	if block == nil {
+		t.Fatal("MintDelegation returned no PEM certificate")
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse the minted delegation: %v", err)
+	}
+	ctx, err := n.DelegatedContext(context.Background(), []*x509.Certificate{leaf})
+	if err != nil {
+		t.Fatalf("DelegatedContext in %s: %v", tenantID, err)
+	}
+	return ctx
 }

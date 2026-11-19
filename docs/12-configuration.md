@@ -141,6 +141,8 @@ auth:
   # The window during which a REVOKED certificate still authenticates.
   revocation_cache_ttl: "30s"
   separation_of_duties: false
+  # How often the leader deletes pending users past their TTL; "off" disables.
+  pending_user_sweep_interval: "1m"
   # What to do when a GATING audit record cannot be written -- the
   # authorization decision AND the Security Officer's PIN verification, on this
   # one setting. "fail-closed" (default) refuses the request; "fail-open"
@@ -467,6 +469,43 @@ omitted. Ignored for a single-node cluster.
 
 ---
 
+### database_defaults
+
+The node's defaults for a new database
+([databases architecture](databases/architecture.md#what-stays-node-level)).
+Each is filled into a database's record at creation when the caller left
+that field empty, and is never consulted again for that database: changing
+a default affects only databases created afterwards. The record stores the
+values resolved at creation: the backend (from `backend`, else the node's
+run mode), and for a raft database a `raft` block with its cluster mode,
+`state_storage` and issued shard ID, added when the request carried none.
+
+```yaml
+database_defaults:
+  backend: raft
+  replicas: 3
+  raft:
+    clusterMode: distributed
+    state_storage: pebble
+```
+
+| Field                | Type   | Default | Required | Description |
+|----------------------|--------|---------|----------|-------------|
+| `backend`            | string | `""`    | no       | Backend of a database created without one; empty selects the run mode's default (raft in raft mode, pebble in standalone mode) |
+| `replicas`           | int    | `0`     | no       | Replication factor of a raft database created without one; zero selects one |
+| `raft.clusterMode`   | string | `""`    | no       | Cluster mode recorded in a raft database's `raft` block when it names none; empty records `none` in a block the request did not carry |
+| `raft.state_storage` | string | `""`    | no       | State storage recorded in a raft database's `raft` block (`raft.state_storage`) when it names none; empty selects `pebble` at binding |
+
+**Validation rules:**
+
+- `backend`, when non-empty, must be one of: `memory`, `file`, `pebble`, `raft`, `objstore`.
+- `replicas` must not be negative (>= 0).
+- `raft.clusterMode`, when non-empty, must be one of: `none`, `local`, `distributed`.
+- `raft.state_storage`, when non-empty, must be one of: `pebble`, `file`, `memory`.
+- `replicas` and `raft.*` apply only to a database whose backend is `raft`.
+
+---
+
 ### storage
 
 Configures the underlying storage backend.
@@ -779,6 +818,7 @@ Configures authentication and role-based access control (RBAC).
 | `perm_cache_ttl`   | int    | `30`        | no       | N/A                | Permission cache TTL in seconds              |
 | `revocation_cache_ttl` | string | `"30s"` | no       | N/A                | **The window during which a revoked certificate still authenticates.** See the note below |
 | `separation_of_duties` | bool | `false`   | no       | N/A                | Enforce strict FIPS/PCI role separation      |
+| `pending_user_sweep_interval` | duration | `1m` | no | N/A | How often the leader deletes pending users past their TTL; `off` disables the reaper |
 | `audit_failure_policy` | string | `"fail-closed"` | no | N/A         | **What happens when a gating decision cannot be audited** — the authorization decision and the SO PIN verification alike. See the note below |
 | `cluster_trust_domain` | string | `"qrdb.cluster"` | no | `--cluster-trust-domain` | The cluster's SPIFFE trust domain: the one its node certificates are under (`spiffe://<trust-domain>/node/<raft-address>`), the one the mTLS authenticator **pins**, and the one no tenant may be. The same value on every node. See the note below |
 | `mtls_binding_policy` | string | `"required"` | no     | N/A                | **Whether every certificate login must present an enrolled key** (`"required"`, the default) or only accounts that enrolled one are held to it (`"enrolled"`). See the note below |
@@ -975,26 +1015,30 @@ written. See [audit/architecture.md](audit/architecture.md),
 
 Cross-Origin Resource Sharing settings for the REST API (`config.CORSConfig`).
 
-| Field             | Type     | Default                              | Required | Description                            |
-|-------------------|----------|--------------------------------------|----------|----------------------------------------|
-| `allowed_origins` | []string | `["*"]`                              | no       | Allowed origins for CORS               |
-| `allowed_headers` | []string | `["Authorization", "Content-Type"]`  | no       | Allowed request headers                |
-| `max_age`         | int      | `3600`                               | no       | Preflight cache duration in seconds    |
+| Field               | Type     | Default                              | Required | Description                            |
+|---------------------|----------|--------------------------------------|----------|----------------------------------------|
+| `allowed_origins`   | []string | none (CORS off)                      | no       | Allowed origins for CORS               |
+| `allowed_headers`   | []string | `["Authorization", "Content-Type"]`  | no       | Allowed request headers                |
+| `max_age`           | int      | `3600`                               | no       | Preflight cache duration in seconds    |
+| `allow_credentials` | bool     | `false`                              | no       | Let cross-origin calls carry credentials |
 
 **Validation rules:**
 
 - `max_age` must not be negative (>= 0).
+- `allow_credentials: true` cannot be combined with the `"*"` origin
+  (the Fetch standard forbids it); the pair fails validation on
+  `cors.allow_credentials`.
 
 **Notes:**
 
-- `qrdbd` loads and validates this block but does not apply it: the REST
-  server adds CORS headers only when built with the `rest.WithCORS` option,
-  which an embedding program passes. Without it, the REST API sends no CORS
-  headers.
-- With `rest.WithCORS`, `["*"]` answers every origin with
-  `Access-Control-Allow-Origin: *`; any other list admits exactly those
-  origins. `max_age` sets `Access-Control-Max-Age` on preflight (OPTIONS)
-  responses.
+- With no `allowed_origins` the REST API sends no CORS headers.
+- `["*"]` answers every origin with `Access-Control-Allow-Origin: *`; any
+  other list admits exactly those origins, echoing the request's origin.
+  `max_age` sets `Access-Control-Max-Age` on preflight (OPTIONS) responses.
+- `allow_credentials: true` adds `Access-Control-Allow-Credentials: true`
+  to the preflight answer and to every response for an admitted origin, so
+  a browser may send cookies, a TLS client certificate or an
+  `Authorization` header it manages.
 
 ---
 

@@ -43,6 +43,7 @@ import (
 	"github.com/jeremyhahn/go-qrdb/internal/netport"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/connlimit"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/grpcweb"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/sealedwindow"
 	"github.com/jeremyhahn/go-qrdb/pkg/apimodule"
 	"github.com/jeremyhahn/go-qrdb/pkg/audit"
@@ -1326,6 +1327,7 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 		Handler:      handler,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
 	}
 
 	return s
@@ -1334,6 +1336,17 @@ func NewServer(kvSvc service.KVServicer, adminSvc service.AdminServicer, addr st
 // serverWriteTimeout is the http.Server WriteTimeout: the longest a handler
 // may take before its response can no longer be written.
 const serverWriteTimeout = 30 * time.Second
+
+// serverIdleTimeout is the http.Server IdleTimeout: how long a keep-alive
+// connection may sit idle before the server closes it. It is set
+// explicitly because net/http falls back to ReadTimeout (5 s) when it is
+// zero, and a server that closes an idle connection the client is reusing
+// at that moment fails the client's request: net/http never resends a
+// non-idempotent POST (CompareAndSwap, CompareAndDelete) that raced the
+// close. Clients keep idle connections for less than this (the Go SDK's
+// REST transport keeps them 90 s, net/http's DefaultTransport value), so
+// the client always retires an idle connection before the server does.
+const serverIdleTimeout = 120 * time.Second
 
 // Start begins listening and serving HTTP requests in the background.
 // When TLS is configured, the listener is wrapped with tls.NewListener
@@ -1735,6 +1748,24 @@ func (s *Server) publicIf(enabled bool, method, pattern string, h http.HandlerFu
 	s.recordStaticRoute(method, pattern, h)
 }
 
+// publicVerb registers a built-in no-login verb under the REST route
+// publicverbs.Table gives it; the table, not this transport, decides which
+// built-in routes are public. A verb with a RateLimit dimension draws that
+// bucket by caller address before h runs (AuthMiddleware.LimitPublicHTTP).
+func (s *Server) publicVerb(enabled bool, v publicverbs.Verb, h http.HandlerFunc) {
+	method, pattern := publicverbs.RESTRoute(v)
+	if limit := publicverbs.Table[v].RateLimit; limit != "" {
+		serve := h
+		h = func(w http.ResponseWriter, r *http.Request) {
+			if !s.authMW.LimitPublicHTTP(w, r, limit) {
+				return
+			}
+			serve(w, r)
+		}
+	}
+	s.publicIf(enabled, method, pattern, h)
+}
+
 // authenticatedIf registers a route that requires an authenticated caller
 // but no specific permission (e.g. /metrics for Prometheus scraping). The
 // marker is recorded unconditionally, the router registration is gated on
@@ -1947,7 +1978,7 @@ func (s *Server) registerRoutes() {
 	adminOn := s.adminSvc != nil
 	s.routeIf(adminOn, http.MethodGet, "/status", permission.AdminStatus, s.handleStatus)
 	s.routeIf(adminOn, http.MethodGet, "/peers", permission.AdminPeers, s.handlePeers)
-	s.publicIf(adminOn, http.MethodGet, "/health", s.handleHealth)
+	s.publicVerb(adminOn, publicverbs.VerbHealth, s.handleHealth)
 	s.routeIf(adminOn, http.MethodPost, "/drain", permission.AdminDrain, s.handleDrain)
 	s.routeIf(adminOn, http.MethodGet, "/capabilities", permission.AdminCapabilities, s.handleCapabilities)
 	s.routeIf(adminOn, http.MethodPost, "/membership/add", permission.AdminAddMember, s.handleMembershipAdd)
@@ -2421,6 +2452,9 @@ func (s *Server) registerRoutes() {
 	s.routeIf(enrollOn, http.MethodPost, "/certs/issue", permission.CertsIssue, s.handleIssueCert)
 	s.routeIf(enrollOn, http.MethodPost, "/certs/enroll", permission.CertsEnroll, s.handleEnrollCert)
 	s.routeIf(enrollOn, http.MethodPost, "/certs/delegate", permission.CertsDelegate, s.handleIssueDelegation)
+	s.routeIf(enrollOn, http.MethodPost, "/certs/delegate/policies", permission.CertsDelegate, s.handlePutDelegationPolicy)
+	s.routeIf(enrollOn, http.MethodGet, "/certs/delegate/policies", permission.CertsDelegate, s.handleListDelegationPolicies)
+	s.routeIf(enrollOn, http.MethodDelete, "/certs/delegate/policies/{principal}", permission.CertsDelegate, s.handleDeleteDelegationPolicy)
 	s.routeIf(certsOn, http.MethodPost, "/certs/revoke", permission.CertsRevoke, s.handleRevokeCert)
 	s.routeIf(certsOn, http.MethodGet, "/certs/list", permission.CertsList, s.handleListCerts)
 
@@ -2429,7 +2463,7 @@ func (s *Server) registerRoutes() {
 	// and the redeemer holds no credential to authenticate with.
 	invitationsOn := s.invitations != nil
 	s.routeIf(invitationsOn, http.MethodPost, "/users/invite", permission.UsersInvite, s.handleInviteUser)
-	s.publicIf(invitationsOn, http.MethodPost, "/invitations/redeem", s.handleRedeemInvitation)
+	s.publicVerb(invitationsOn, publicverbs.VerbInvitationRedeem, s.handleRedeemInvitation)
 
 	// CA bootstrap endpoint (public, no auth required: joining nodes fetch
 	// the trust anchor before they hold credentials).

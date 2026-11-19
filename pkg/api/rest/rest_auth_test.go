@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/auth/delegation"
 	"github.com/jeremyhahn/go-qrdb/pkg/cert"
 	"github.com/jeremyhahn/go-qrdb/pkg/permission"
 	"github.com/jeremyhahn/go-qrdb/pkg/role"
@@ -330,6 +331,10 @@ type fakeCertEnroll struct {
 	listFn   func(ctx context.Context, tenantID string) ([]trustanchor.Anchor, error)
 	removeFn func(ctx context.Context, tenantID, fingerprint string) error
 	delegFn  func(ctx context.Context, req *service.IssueDelegationRequest) (*service.IssuedDelegation, error)
+
+	policyPutFn    func(ctx context.Context, req *service.DelegationPolicyRequest) (*delegation.Policy, error)
+	policyListFn   func(ctx context.Context, tenantID string) ([]delegation.Policy, error)
+	policyDeleteFn func(ctx context.Context, tenantID, principal string) error
 }
 
 var _ service.CertEnrollmentServicer = (*fakeCertEnroll)(nil)
@@ -3344,6 +3349,48 @@ func TestHandleCreateUser_CarriesIdentityFields(t *testing.T) {
 	}
 	if got.Lifecycle != user.LifecyclePending {
 		t.Errorf("Lifecycle = %q, want %q", got.Lifecycle, user.LifecyclePending)
+	}
+}
+
+// TestHandleCreateUser_PendingTTL carries pending_ttl into the domain request,
+// writes pending_expires_at back, and refuses a TTL that is not a duration.
+func TestHandleCreateUser_PendingTTL(t *testing.T) {
+	expires := time.Date(2026, 11, 14, 12, 15, 0, 0, time.UTC)
+	var got *user.CreateUserRequest
+	svc := &mockUserService{
+		createUserFn: func(_ context.Context, req *user.CreateUserRequest) (*user.User, error) {
+			got = req
+			u := testUser()
+			u.Lifecycle = user.LifecyclePending
+			u.PendingExpiresAt = &expires
+			return u, nil
+		},
+	}
+	srv := newAuthServer(svc, nil, nil)
+
+	body := `{"username":"pam","email":"pam@example.com","pending":true,"pending_ttl":"15m"}`
+	w := httptest.NewRecorder()
+	srv.dispatch(w, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body)))
+	if got == nil {
+		t.Fatalf("the service was never called: %d %s", w.Code, w.Body.String())
+	}
+	if got.PendingTTL != 15*time.Minute || !got.Pending {
+		t.Fatalf("PendingTTL = %v, Pending = %v", got.PendingTTL, got.Pending)
+	}
+	var resp userResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.PendingExpiresAt != "2026-11-14T12:15:00Z" {
+		t.Fatalf("pending_expires_at = %q", resp.PendingExpiresAt)
+	}
+
+	got = nil
+	w = httptest.NewRecorder()
+	bad := `{"username":"pam","email":"pam@example.com","pending":true,"pending_ttl":"soon"}`
+	srv.dispatch(w, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(bad)))
+	if w.Code != http.StatusBadRequest || got != nil {
+		t.Fatalf("bad TTL: code %d, service called %v", w.Code, got != nil)
 	}
 }
 

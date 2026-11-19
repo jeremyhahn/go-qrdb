@@ -121,6 +121,11 @@ func (h *hardConfinedKV) List(ctx context.Context, prefix string) ([]string, err
 }
 
 func (h *hardConfinedKV) ListAll(ctx context.Context, prefix string) ([]string, error) {
+	// A root under a whole-confined prefix would list its records' names,
+	// which filterHardConfinedKeys leaves to a scan rooted that narrowly.
+	if isHardConfinedWholeKey(prefix) {
+		return nil, &HardConfinedKeyError{Key: prefix}
+	}
 	keys, err := h.KVServicer.ListAll(ctx, prefix)
 	if err != nil {
 		return nil, err

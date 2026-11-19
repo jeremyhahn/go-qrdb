@@ -872,6 +872,19 @@ type CertClient interface {
 	// its own grants. The system tenant and a delegated caller are refused.
 	IssueDelegation(ctx context.Context, req *IssueDelegationRequest) (*IssuedDelegation, error)
 
+	// PutDelegationPolicy writes the caller's own tenant's standing
+	// delegation policy for a service principal, replacing any it holds.
+	// It takes certs:delegate and is audited; a delegated caller is refused.
+	PutDelegationPolicy(ctx context.Context, req *DelegationPolicyRequest) (*DelegationPolicy, error)
+
+	// ListDelegationPolicies lists the caller's own tenant's standing
+	// delegation policies.
+	ListDelegationPolicies(ctx context.Context) ([]DelegationPolicy, error)
+
+	// DeleteDelegationPolicy revokes the caller's own tenant's standing
+	// delegation policy for principal: nothing is minted under it again.
+	DeleteDelegationPolicy(ctx context.Context, principal string) error
+
 	// RevokeCert marks a certificate serial as revoked and reports what the
 	// target node found: RevokeResult.RecordFound distinguishes a
 	// certificate the target holds a record for from a deny-by-serial

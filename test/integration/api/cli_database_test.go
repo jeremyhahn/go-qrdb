@@ -245,6 +245,81 @@ func TestCLIMultiProtocolDatabaseUpdateEtcdDisable(t *testing.T) {
 	}
 }
 
+// TestCLIMultiProtocolDatabaseUpdateBarrier tests creating a database and
+// updating its encryption barrier configuration across all protocols.
+func TestCLIMultiProtocolDatabaseUpdateBarrier(t *testing.T) {
+	cfg := LoadTestConfig()
+	requireCLI(t, cfg)
+
+	for _, proto := range AllProtocols() {
+		t.Run(string(proto), func(t *testing.T) {
+			if !cfg.IsProtocolAvailable(t, proto) {
+				t.Fatalf("server not available for protocol %s", proto)
+			}
+
+			dbName := fmt.Sprintf("db-barrier-%s-%d", proto, testTimestamp())
+
+			// Register cleanup to drop the database in case of early failure.
+			t.Cleanup(func() {
+				execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
+			})
+
+			// Step 1: Create a database on the shared pebble store. The
+			// backend is named: a create without one records the node run
+			// mode's backend, which on a raft node serves the data from its
+			// raft group rather than from a shared store.
+			stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, "database", "create", dbName,
+				"--backend", "pebble")
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] database create failed: %v", proto, err)
+			}
+			assertContains(t, stdout, "Name:",
+				fmt.Sprintf("[%s] database create should contain 'Name:'", proto))
+
+			// Step 2: Enabling a barrier on a SHARED-store database fails
+			// closed. This database was created on the shared system store, where a per-database barrier would be
+			// crypto theater (data stays under the shared store's DEK), so
+			// the server rejects it with a typed "requires a dedicated store"
+			// error. The happy path (barrier on a dedicated-store database)
+			// is covered by the cluster-lane TestDatabaseBarrier* tests.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"database", "update-barrier", dbName, "--enabled")
+			if err == nil {
+				t.Fatalf("[%s] update-barrier --enabled on a shared-store database must fail closed, got success (stdout: %s)",
+					proto, stdout)
+			}
+			assertContains(t, strings.ToLower(stdout+stderr+err.Error()), "dedicated store",
+				fmt.Sprintf("[%s] shared-store barrier rejection should name the dedicated-store requirement", proto))
+
+			// Step 3: Disabling a barrier is always allowed (idempotent no-op
+			// on a database that never had one).
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
+				"database", "update-barrier", dbName, "--disabled")
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] database update-barrier --disabled failed: %v", proto, err)
+			}
+			assertNotEmpty(t, stdout+stderr,
+				fmt.Sprintf("[%s] database update-barrier --disabled produced no output", proto))
+
+			// Step 4: Drop the database.
+			stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
+			if err != nil {
+				t.Logf("stdout: %s", stdout)
+				t.Logf("stderr: %s", stderr)
+				t.Fatalf("[%s] database drop failed: %v", proto, err)
+			}
+			assertContains(t, stdout, "OK",
+				fmt.Sprintf("[%s] database drop should output 'OK'", proto))
+
+			t.Logf("[%s] database update-barrier lifecycle passed for: %s", proto, dbName)
+		})
+	}
+}
+
 // TestCLIMultiProtocolDatabaseUpdateProtocolPostgreSQL tests creating a database
 // and updating its wire protocol to PostgreSQL across all protocols.
 func TestCLIMultiProtocolDatabaseUpdateProtocolPostgreSQL(t *testing.T) {

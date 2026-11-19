@@ -86,8 +86,13 @@ func (s *CertEnrollmentService) IssueDelegation(ctx context.Context, req *IssueD
 	if tenantid.IsSystem(own) {
 		return nil, &DelegationDeniedError{Reason: "the system tenant cannot delegate"}
 	}
-	if _, delegated := auth.DelegationOf(auth.IdentityFromContext(ctx)); delegated {
-		return nil, &DelegationDeniedError{Reason: "a delegated caller cannot issue a delegation"}
+	if d, delegated := auth.DelegationOf(auth.IdentityFromContext(ctx)); delegated {
+		// A delegation renews itself only under the tenant's standing
+		// policy, within its bounds, and only for its own principal.
+		if req.Principal != "" && req.Principal != d.Principal {
+			return nil, &DelegationDeniedError{Reason: "a delegated caller cannot delegate to another principal"}
+		}
+		return s.MintDelegation(ctx, &MintDelegationRequest{TenantID: own, Scope: req.Scope, CSRPEM: req.CSRPEM, TTL: req.TTL})
 	}
 	g := delegation.Grant{Tenant: own, Principal: req.Principal, Scope: slices.Clone(req.Scope)}
 	if err := validateDelegationRequest(g, req.TTL); err != nil {

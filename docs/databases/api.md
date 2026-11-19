@@ -246,7 +246,13 @@ convention is the barrier tools' own
 The Go SDK's MCP client always sends `<name>_b64`.
 
 `DatabaseRaftConfig` fields: `clusterMode` (`none|local|distributed`),
-`replicaId`, `raftAddress`, `peers`, `localNodeCount`. **There is no
+`replicaId`, `raftAddress`, `peers`, `localNodeCount`, `stateStorage`
+(`pebble|file|memory`; gRPC `state_storage`, CLI `database create
+--state-storage`). `stateStorage` is set at create only: an unset value takes
+the node's `database_defaults` (else `pebble`), and is refused on update: an
+update that omits it keeps the stored value, and one naming a different store
+fails with `database.StateStorageUpdateError` (400 / `INVALID_ARGUMENT`), since
+a database's Raft state never moves. **There is no
 `shardId`**: the cluster issues a database's shard ID at create, it never
 changes, and it is reported only as `DatabaseInfo.shardId`. gRPC reserves
 field 2 (`shard_id`) of `DatabaseRaftConfig`; on the JSON transports the key is
@@ -265,11 +271,16 @@ arguments are named alike in both.
 | `raftAddress` | `raft_address` | `raft_address` |
 | `peers` | `raft_peers` (array) | `peers` (array) |
 | `localNodeCount` | `raft_local_node_count` | `local_node_count` |
+| `stateStorage` | `raft_state_storage` | `state_storage` |
 | `discovery` | `discovery_method` | `discovery_method` |
 | `static` | `static_peers` (array), `static_shared_secret` | same |
 | `multicast` | `multicast_shared_secret`, `multicast_group`, `multicast_interface`, `multicast_min_peers`, `multicast_announce_interval`, `multicast_discover_timeout` | same |
 | `dns` | `dns_domain`, `dns_service`, `dns_proto`, `dns_lookup_timeout` | same |
 | `token` | `token_endpoint`, `token_value`, `token_cluster_size`, `token_timeout` | same |
+
+The state storage is recorded at create. An update that leaves `state_storage`
+out keeps the recorded storage; one naming a storage other than the recorded
+one is refused with `StateStorageUpdateError` (InvalidArgument).
 
 A discovery block is sent when `discovery_method` names it or any of its
 arguments is given -- an empty string counts, which is how a block whose only
@@ -540,6 +551,7 @@ allow it `FailedPrecondition`.
 | Any request naming a dropped database once the drop has removed its catalog record, on any node | 404 | `NOT_FOUND` — the database does not exist; the catalog is replicated, so every node releases it |
 | `DROP DATABASE` of the default database (`system`) | 400 | `INVALID_ARGUMENT` — `database.DefaultDatabaseDropError`; it can never be dropped |
 | A create or Raft update that names a shard ID (reachable only through a library call; no transport carries one) | 400 | `INVALID_ARGUMENT` — `database.CallerShardIDError` |
+| A Raft update naming a state storage other than the recorded one | 400 | `INVALID_ARGUMENT` — `database.StateStorageUpdateError` |
 | A cluster-wide shard ID could not be claimed (store unavailable, sustained contention) | 503 | `UNAVAILABLE` — `database.ShardIDClaimError` / `shard.ClaimContentionError`; nothing was created, retry |
 | A create that did not finish within the server's create deadline (10 s, or the caller's own deadline when that is sooner) -- a consensus step met no leader or no quorum | 503 | `UNAVAILABLE` — `service.DatabaseCreateTimeoutError`; everything the create had done is rolled back, retry. A caller whose own deadline ran out first gets 504 / `DEADLINE_EXCEEDED` |
 | The replicated shard high-water mark is corrupt | 500 | `INTERNAL` — `shard.HighWaterCorruptError` |

@@ -18,6 +18,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -147,15 +148,26 @@ func (c *Cluster) Logs(ctx context.Context, n Node, tail int) (string, error) {
 }
 
 // Remove force-removes every node's container, whether or not it is
-// running or exists. It tries every node and returns the first failure.
+// running or exists: an absent container is not an error, so Remove is
+// safe on a fresh host. It tries every node and returns the first other
+// failure.
 func (c *Cluster) Remove(ctx context.Context) error {
 	var first error
 	for _, n := range c.inv.Nodes {
-		if _, err := c.run(ctx, n, "remove", []string{"rm", "-f", n.Container()}); err != nil && first == nil {
+		_, err := c.run(ctx, n, "remove", []string{"rm", "-f", n.Container()})
+		if err != nil && !containerAbsent(err) && first == nil {
 			first = err
 		}
 	}
 	return first
+}
+
+// containerAbsent reports whether err is docker's answer that the
+// container does not exist. The Docker template may run docker over a
+// remote shell, so the answer is matched by its text, not an exit code.
+func containerAbsent(err error) bool {
+	var ce *CommandError
+	return errors.As(err, &ce) && strings.Contains(ce.Output, "No such container")
 }
 
 // run renders argv through the Docker template for n and runs it.
