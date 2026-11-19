@@ -9,6 +9,7 @@
 package encfs
 
 import (
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -156,12 +157,12 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 	physicalSize := fi.Size()
 	if physicalSize < int64(fixedHeaderSize) {
 		if appendLog {
-			torn, err := tornHeaderPrefix(base, physicalSize)
+			fresh, err := fs.tornFramedHeader(base, physicalSize)
 			if err != nil {
 				return nil, err
 			}
-			if torn {
-				return fs.emptyFramedRO(base)
+			if fresh != nil {
+				return fs.emptyFramedRO(base, fresh)
 			}
 		}
 		// Too small to be encrypted; pass through.
@@ -178,24 +179,56 @@ func (fs *FS) openEncryptedRO(base filesys.File, appendLog bool) (filesys.File, 
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
 		if appendLog && errors.Is(err, ErrTruncatedHeader) {
-			return fs.emptyFramedRO(base)
+			fresh, terr := fs.tornFramedHeader(base, physicalSize)
+			if terr != nil {
+				return nil, terr
+			}
+			if fresh != nil {
+				return fs.emptyFramedRO(base, fresh)
+			}
 		}
 		return nil, err
 	}
 	return newReadFile(base, h, physicalSize, appendLog)
 }
 
-// tornHeaderPrefix reports whether a file of physicalSize bytes, shorter
-// than the fixed header, holds a prefix of an encfs header: a header torn
-// by a power cut before the file's first Sync returned. An empty file
-// counts as torn.
-func tornHeaderPrefix(base filesys.File, physicalSize int64) (bool, error) {
+// tornFramedHeader returns the fresh framed header an append log torn inside
+// its header opens with, or nil when the file's first physicalSize bytes are
+// not such a tear. A tear leaves a prefix of the real header: shorter than a
+// fresh header for this barrier, the magic, and, wherever the file reaches
+// them, a header size and wrapped-DEK length equal to that fresh header's. A
+// size field of any other in-bounds value is corruption, which refuses (its
+// file may hold synced records). When two fresh headers differ in size the
+// barrier's wrapped-DEK length is not deterministic, so the size a tear cut
+// from cannot be known: that refuses too, rather than guess.
+func (fs *FS) tornFramedHeader(base filesys.File, physicalSize int64) (*header, error) {
+	h, err := fs.freshFramedHeader()
+	if err != nil {
+		return nil, err
+	}
+	again, err := fs.freshFramedHeader()
+	if err != nil {
+		return nil, err
+	}
+	want := h.totalSize()
+	if again.totalSize() != want || physicalSize >= int64(want) {
+		return nil, nil
+	}
 	buf := make([]byte, physicalSize)
 	if _, err := base.ReadAt(buf, 0); err != nil && !errors.Is(err, io.EOF) {
-		return false, err
+		return nil, err
 	}
 	n := min(len(buf), lenMagic)
-	return string(buf[:n]) == headerMagic[:n], nil
+	if string(buf[:n]) != headerMagic[:n] {
+		return nil, nil
+	}
+	if len(buf) >= offHeaderSize+2 && int(binary.LittleEndian.Uint16(buf[offHeaderSize:])) != want {
+		return nil, nil
+	}
+	if len(buf) >= offWrappedDEKLen+4 && int(binary.LittleEndian.Uint32(buf[offWrappedDEKLen:])) != want-fixedHeaderSize {
+		return nil, nil
+	}
+	return h, nil
 }
 
 // freshFramedHeader is the header of a new append log (WAL or MANIFEST).
@@ -212,30 +245,23 @@ func (fs *FS) freshFramedHeader() (*header, error) {
 // header. The header is written before any record, and no record is
 // acknowledged before the file's first Sync, so such a file holds no
 // acknowledged record: it reads as a log of logical size 0.
-func (fs *FS) emptyFramedRO(base filesys.File) (*encryptedFile, error) {
-	h, err := fs.freshFramedHeader()
-	if err != nil {
-		return nil, err
-	}
+func (fs *FS) emptyFramedRO(base filesys.File, h *header) (*encryptedFile, error) {
 	return newReadFile(base, h, int64(h.totalSize()), true)
 }
 
 // freshOverTornHeader reopens for writing an append log torn inside its
-// header (see emptyFramedRO): it writes a fresh header over the torn bytes
-// and zeroes any that run past it, leaving an empty log that takes appends.
-func (fs *FS) freshOverTornHeader(base filesys.File, physicalSize int64) (*encryptedFile, error) {
-	h, err := fs.freshFramedHeader()
-	if err != nil {
-		return nil, err
-	}
+// header (see tornFramedHeader): it writes the fresh header h over the torn
+// bytes, which are all shorter than h, so no byte past h exists to zero;
+// the result is an empty log that takes appends.
+func (fs *FS) freshOverTornHeader(base filesys.File, h *header, physicalSize int64) (*encryptedFile, error) {
 	hdr := h.marshal()
+	if physicalSize >= int64(len(hdr)) {
+		// tornFramedHeader passed only a file shorter than the header;
+		// never write over, or past, bytes beyond it.
+		return nil, ErrTruncatedHeader
+	}
 	if _, err := base.WriteAt(hdr, 0); err != nil {
 		return nil, err
-	}
-	if extra := physicalSize - int64(len(hdr)); extra > 0 {
-		if _, err := base.WriteAt(make([]byte, extra), int64(len(hdr))); err != nil {
-			return nil, err
-		}
 	}
 	crypto, err := newBlockCrypto(h.DEK[:])
 	if err != nil {
@@ -258,12 +284,12 @@ func (fs *FS) freshOverTornHeader(base filesys.File, physicalSize int64) (*encry
 // tail so a subsequent Write extends it rather than replacing it.
 func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog bool) (*encryptedFile, error) {
 	if appendLog && physicalSize < int64(fixedHeaderSize) {
-		torn, err := tornHeaderPrefix(base, physicalSize)
+		fresh, err := fs.tornFramedHeader(base, physicalSize)
 		if err != nil {
 			return nil, err
 		}
-		if torn {
-			return fs.freshOverTornHeader(base, physicalSize)
+		if fresh != nil {
+			return fs.freshOverTornHeader(base, fresh, physicalSize)
 		}
 	}
 	var magic [lenMagic]byte
@@ -276,7 +302,13 @@ func (fs *FS) openEncryptedRW(base filesys.File, physicalSize int64, appendLog b
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
 		if appendLog && errors.Is(err, ErrTruncatedHeader) {
-			return fs.freshOverTornHeader(base, physicalSize)
+			fresh, terr := fs.tornFramedHeader(base, physicalSize)
+			if terr != nil {
+				return nil, terr
+			}
+			if fresh != nil {
+				return fs.freshOverTornHeader(base, fresh, physicalSize)
+			}
 		}
 		return nil, err
 	}
