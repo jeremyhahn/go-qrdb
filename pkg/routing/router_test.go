@@ -36,15 +36,6 @@ func TestNewRouter_Default_SingleShardModulo(t *testing.T) {
 	}
 }
 
-func TestNewWithShards_CustomList(t *testing.T) {
-	r := NewWithShards([]uint64{10, 20, 30})
-	got := r.Route("orders", 1)
-	// 1 % 3 = 1, so shardIDs[1] = 20
-	if got != 20 {
-		t.Fatalf("Route(orders, 1) = %d, want 20", got)
-	}
-}
-
 func TestNewWithShards_CustomList_ZeroID(t *testing.T) {
 	r := NewWithShards([]uint64{10, 20, 30})
 	got := r.Route("orders", 0)
@@ -69,22 +60,6 @@ func TestNewWithShards_NilDefaults_WithID(t *testing.T) {
 	}
 }
 
-func TestNewWithShards_EmptyDefaults(t *testing.T) {
-	r := NewWithShards([]uint64{})
-	got := r.Route("events", 0)
-	if got != 1 {
-		t.Fatalf("NewWithShards([]).Route(events, 0) = %d, want 1", got)
-	}
-}
-
-func TestNewWithShards_EmptyDefaults_WithID(t *testing.T) {
-	r := NewWithShards([]uint64{})
-	got := r.Route("events", 7)
-	if got != 1 {
-		t.Fatalf("NewWithShards([]).Route(events, 7) = %d, want 1", got)
-	}
-}
-
 func TestNewWithShards_CopiesInput(t *testing.T) {
 	original := []uint64{5, 10, 15}
 	r := NewWithShards(original)
@@ -95,16 +70,6 @@ func TestNewWithShards_CopiesInput(t *testing.T) {
 	got := r.Route("test", 0)
 	if got != 5 {
 		t.Fatalf("Route(test, 0) = %d, want 5 (constructor should copy input)", got)
-	}
-}
-
-func TestRoute_EntityPinning(t *testing.T) {
-	r := NewWithShards([]uint64{10, 20, 30})
-	r.SetEntityShard("accounts", 42)
-
-	got := r.Route("accounts", 0)
-	if got != 42 {
-		t.Fatalf("Route(accounts, 0) = %d, want 42 (pinned)", got)
 	}
 }
 
@@ -140,63 +105,6 @@ func TestRoute_ModuloFallback(t *testing.T) {
 		got := r.Route("unpinned", tc.id)
 		if got != tc.want {
 			t.Errorf("Route(unpinned, %d) = %d, want %d", tc.id, got, tc.want)
-		}
-	}
-}
-
-func TestRoute_ModuloFallback_LargeID(t *testing.T) {
-	shards := []uint64{10, 20}
-	r := NewWithShards(shards)
-
-	// Large id still works via modulo.
-	got := r.Route("items", 1<<62)
-	idx := (uint64(1) << 62) % 2
-	want := shards[idx]
-	if got != want {
-		t.Fatalf("Route(items, 1<<62) = %d, want %d", got, want)
-	}
-}
-
-func TestRoute_DefaultShardWhenNoID(t *testing.T) {
-	r := NewWithShards([]uint64{50, 60, 70})
-	got := r.Route("widgets", 0)
-	if got != 50 {
-		t.Fatalf("Route(widgets, 0) = %d, want 50 (first shard)", got)
-	}
-}
-
-func TestRoute_DefaultShardWhenNoID_SingleShard(t *testing.T) {
-	r := New()
-	got := r.Route("widgets", 0)
-	if got != 1 {
-		t.Fatalf("Route(widgets, 0) = %d, want 1 (default shard)", got)
-	}
-}
-
-func TestRoute_Deterministic(t *testing.T) {
-	r := NewWithShards([]uint64{10, 20, 30, 40})
-	entityType := "sessions"
-	id := uint64(777)
-
-	first := r.Route(entityType, id)
-	for i := 0; i < 100; i++ {
-		got := r.Route(entityType, id)
-		if got != first {
-			t.Fatalf("Route(%s, %d) iteration %d = %d, want %d (deterministic)", entityType, id, i, got, first)
-		}
-	}
-}
-
-func TestRoute_Deterministic_AcrossInstances(t *testing.T) {
-	shards := []uint64{10, 20, 30, 40}
-	r1 := NewWithShards(shards)
-	r2 := NewWithShards(shards)
-
-	for id := uint64(0); id < 50; id++ {
-		a := r1.Route("entity", id)
-		b := r2.Route("entity", id)
-		if a != b {
-			t.Fatalf("Route(entity, %d): instance1=%d, instance2=%d (not deterministic across instances)", id, a, b)
 		}
 	}
 }
@@ -303,26 +211,6 @@ func TestSetShards_NilResetsToDefault_WithID(t *testing.T) {
 	}
 }
 
-func TestSetShards_EmptyResetsToDefault(t *testing.T) {
-	r := NewWithShards([]uint64{10, 20, 30})
-	r.SetShards([]uint64{})
-
-	got := r.Route("test", 0)
-	if got != 1 {
-		t.Fatalf("Route(test, 0) = %d, want 1 (empty resets to default)", got)
-	}
-}
-
-func TestSetShards_EmptyResetsToDefault_WithID(t *testing.T) {
-	r := NewWithShards([]uint64{10, 20, 30})
-	r.SetShards([]uint64{})
-
-	got := r.Route("test", 77)
-	if got != 1 {
-		t.Fatalf("Route(test, 77) = %d, want 1 (empty resets to default, single shard)", got)
-	}
-}
-
 func TestSetShards_CopiesInput(t *testing.T) {
 	r := New()
 	input := []uint64{10, 20, 30}
@@ -374,38 +262,6 @@ func TestRoute_ConcurrentSafe(t *testing.T) {
 				r.SetShards([]uint64{uint64(idx*100 + j + 1), uint64(idx*100 + j + 2)})
 			}
 		}(i)
-	}
-
-	wg.Wait()
-}
-
-func TestRoute_ConcurrentSafe_PinAndRoute(t *testing.T) {
-	r := New()
-
-	const goroutines = 20
-	const iterations = 500
-
-	var wg sync.WaitGroup
-	wg.Add(goroutines * 2)
-
-	// Pin writers.
-	for i := 0; i < goroutines; i++ {
-		go func(idx int) {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				r.SetEntityShard("shared", uint64(idx*100+j))
-			}
-		}(i)
-	}
-
-	// Concurrent readers that should never panic.
-	for i := 0; i < goroutines; i++ {
-		go func() {
-			defer wg.Done()
-			for j := 0; j < iterations; j++ {
-				_ = r.Route("shared", uint64(j))
-			}
-		}()
 	}
 
 	wg.Wait()

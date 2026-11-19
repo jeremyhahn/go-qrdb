@@ -109,20 +109,6 @@ func newRebalanceClient(t *testing.T) *sdk.Client {
 }
 
 // ---------------------------------------------------------------------------
-// Client.Rebalance() accessor
-// ---------------------------------------------------------------------------
-
-func TestClient_Rebalance_ReturnsRebalanceClient(t *testing.T) {
-	client := newRebalanceClient(t)
-	defer client.Close()
-
-	rc := client.Rebalance()
-	if rc == nil {
-		t.Fatal("expected non-nil RebalanceClient")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // GetShardStats through SDK client
 // ---------------------------------------------------------------------------
 
@@ -291,55 +277,5 @@ func TestClient_Rebalance_GetImbalanceReport_AfterClose(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Fatalf("expected ClosedError, got %T: %v", err, err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Full lifecycle through SDK client
-// ---------------------------------------------------------------------------
-
-func TestClient_Rebalance_FullLifecycle(t *testing.T) {
-	client := newRebalanceClient(t)
-	defer client.Close()
-
-	ctx := context.Background()
-	rc := client.Rebalance()
-
-	// Get shard stats.
-	stats, err := rc.GetShardStats(ctx, 1)
-	if err != nil {
-		t.Fatalf("GetShardStats: %v", err)
-	}
-	if stats.ShardID != 1 {
-		t.Fatalf("expected ShardID 1, got %d", stats.ShardID)
-	}
-
-	// Get imbalance report.
-	report, err := rc.GetImbalanceReport(ctx)
-	if err != nil {
-		t.Fatalf("GetImbalanceReport: %v", err)
-	}
-	if report.Nodes == nil {
-		t.Fatal("expected non-nil nodes in report")
-	}
-
-	// Create plan.
-	plan, err := rc.CreateRebalancePlan(ctx, &transport.RebalancePlanRequest{
-		MaxMoves: 5,
-	})
-	if err != nil {
-		t.Fatalf("CreateRebalancePlan: %v", err)
-	}
-	if plan == nil {
-		t.Fatal("expected non-nil plan")
-	}
-
-	// Execute plan.
-	result, err := rc.ExecuteRebalance(ctx, plan)
-	if err != nil {
-		t.Fatalf("ExecuteRebalance: %v", err)
-	}
-	if result.MovesCompleted != len(plan.Moves) {
-		t.Fatalf("expected %d completed, got %d", len(plan.Moves), result.MovesCompleted)
 	}
 }

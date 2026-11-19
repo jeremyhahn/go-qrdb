@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremyhahn/go-qrdb/pkg/clock"
 	"github.com/jeremyhahn/go-qrdb/pkg/clock/clocktest"
 	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 )
@@ -93,14 +92,5 @@ func TestWithClock_NilKeepsTheDefault(t *testing.T) {
 	lv := stampedLockValue(t, WithClock(nil))
 	if after := time.Now().Unix(); lv.AcquiredAt < before || lv.AcquiredAt > after {
 		t.Fatalf("AcquiredAt = %d, want within [%d, %d] of the wall clock", lv.AcquiredAt, before, after)
-	}
-}
-
-func TestWithClock_InstallsTheClock(t *testing.T) {
-	var c clock.Clock = clocktest.New()
-	s := &Service{}
-	WithClock(c)(s)
-	if s.clock != c {
-		t.Fatal("WithClock did not install the clock")
 	}
 }

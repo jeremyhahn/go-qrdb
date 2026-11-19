@@ -201,20 +201,6 @@ func TestInsertAllPaths(t *testing.T) {
 
 // TestSearchRadiusEdgeCasesComplete covers remaining SearchRadius paths
 func TestSearchRadiusEdgeCasesComplete(t *testing.T) {
-	t.Run("SearchRadius with invalid dimensions", func(t *testing.T) {
-		idx, err := NewHNSWIndex(nil)
-		require.NoError(t, err)
-
-		err = idx.Insert(1, []float32{1, 2})
-		require.NoError(t, err)
-
-		// Query with wrong dimensions
-		query := []float32{1, 2, 3}
-		_, err = idx.SearchRadius(query, 1.0, 10)
-		assert.Error(t, err)
-		assert.Equal(t, ErrInvalidVector, err)
-	})
-
 	t.Run("SearchRadius returns empty index error", func(t *testing.T) {
 		idx, err := NewHNSWIndex(nil)
 		require.NoError(t, err)

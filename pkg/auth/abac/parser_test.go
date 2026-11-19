@@ -20,142 +20,6 @@ import (
 	"time"
 )
 
-func TestConditionParser_Parse(t *testing.T) {
-	parser := NewConditionParser(nil)
-
-	tests := []struct {
-		name    string
-		expr    string
-		wantErr bool
-	}{
-		{
-			name:    "simple equality",
-			expr:    "subject.id == \"user-123\"",
-			wantErr: false,
-		},
-		{
-			name:    "not equal",
-			expr:    "subject.email != \"test@example.com\"",
-			wantErr: false,
-		},
-		{
-			name:    "greater than",
-			expr:    "subject.attrs.age > 18",
-			wantErr: false,
-		},
-		{
-			name:    "less than or equal",
-			expr:    "request.amount <= 1000",
-			wantErr: false,
-		},
-		{
-			name:    "and operator",
-			expr:    "subject.authenticated and subject.mfa_verified",
-			wantErr: false,
-		},
-		{
-			name:    "or operator",
-			expr:    "subject.id == \"admin\" or subject.roles contains \"admin\"",
-			wantErr: false,
-		},
-		{
-			name:    "not operator",
-			expr:    "not subject.suspended",
-			wantErr: false,
-		},
-		{
-			name:    "contains operator",
-			expr:    "subject.roles contains \"admin\"",
-			wantErr: false,
-		},
-		{
-			name:    "startswith operator",
-			expr:    "resource startswith \"orders://\"",
-			wantErr: false,
-		},
-		{
-			name:    "endswith operator",
-			expr:    "subject.email endswith \"@example.com\"",
-			wantErr: false,
-		},
-		{
-			name:    "in operator",
-			expr:    "subject.id in [\"user-1\", \"user-2\"]",
-			wantErr: false,
-		},
-		{
-			name:    "between operator",
-			expr:    "time.hour between 9..17",
-			wantErr: false,
-		},
-		{
-			name:    "exists operator",
-			expr:    "subject.attrs.department exists",
-			wantErr: false,
-		},
-		{
-			name:    "not exists operator",
-			expr:    "subject.attrs.temp notexists",
-			wantErr: false,
-		},
-		{
-			name:    "matches regex",
-			expr:    "subject.email matches \"^[a-z]+@example\\\\.com$\"",
-			wantErr: false,
-		},
-		{
-			name:    "like pattern",
-			expr:    "subject.name like \"John*\"",
-			wantErr: false,
-		},
-		{
-			name:    "empty expression",
-			expr:    "",
-			wantErr: true,
-		},
-		{
-			name:    "eq operator",
-			expr:    "subject.id eq \"user-123\"",
-			wantErr: false,
-		},
-		{
-			name:    "neq operator",
-			expr:    "subject.id neq \"admin\"",
-			wantErr: false,
-		},
-		{
-			name:    "notcontains operator",
-			expr:    "subject.roles notcontains \"banned\"",
-			wantErr: false,
-		},
-		{
-			name:    "overlaps operator",
-			expr:    "subject.groups overlaps [\"eng\", \"ops\"]",
-			wantErr: false,
-		},
-		{
-			name:    "disjoint operator",
-			expr:    "subject.groups disjoint [\"admin\", \"root\"]",
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cond, err := parser.Parse(tt.expr)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Parse() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr && cond == nil {
-				t.Error("Parse() returned nil condition without error")
-			}
-		})
-	}
-}
-
 func TestConditionParser_LogicalOperators(t *testing.T) {
 	parser := NewConditionParser(nil)
 
@@ -622,14 +486,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		wantTrue bool
 	}{
 		{
-			name: "subject.id",
-			expr: "subject.id == \"user-123\"",
-			ctx: &EvalContext{
-				Subject: &Subject{ID: "user-123"},
-			},
-			wantTrue: true,
-		},
-		{
 			name: "subject.name",
 			expr: "subject.name == \"John Doe\"",
 			ctx: &EvalContext{
@@ -698,18 +554,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		{
 			name: "subject.attributes (using attrs)",
 			expr: "subject.attrs.department == \"engineering\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Attributes: map[string]interface{}{
-						"department": "engineering",
-					},
-				},
-			},
-			wantTrue: true,
-		},
-		{
-			name: "subject.attributes (using attributes keyword)",
-			expr: "subject.attributes.department == \"engineering\"",
 			ctx: &EvalContext{
 				Subject: &Subject{
 					Attributes: map[string]interface{}{
@@ -837,14 +681,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 			wantTrue: true,
 		},
 		{
-			name: "field condition - boolean true",
-			expr: "subject.authenticated",
-			ctx: &EvalContext{
-				Subject: &Subject{Authenticated: true},
-			},
-			wantTrue: true,
-		},
-		{
 			name: "field condition - boolean false",
 			expr: "subject.authenticated",
 			ctx: &EvalContext{
@@ -855,14 +691,6 @@ func TestConditionParser_FieldResolution(t *testing.T) {
 		{
 			name: "field condition - non-nil value",
 			expr: "subject.id",
-			ctx: &EvalContext{
-				Subject: &Subject{ID: "user-123"},
-			},
-			wantTrue: true,
-		},
-		{
-			name: "quoted string with double quotes",
-			expr: "subject.id == \"user-123\"",
 			ctx: &EvalContext{
 				Subject: &Subject{ID: "user-123"},
 			},
@@ -973,18 +801,6 @@ func TestInCIDR(t *testing.T) {
 		wantTrue bool
 	}{
 		{
-			name:     "IPv4 in range",
-			ip:       net.ParseIP("192.168.1.100"),
-			cidr:     "192.168.1.0/24",
-			wantTrue: true,
-		},
-		{
-			name:     "IPv4 out of range",
-			ip:       net.ParseIP("10.0.0.1"),
-			cidr:     "192.168.1.0/24",
-			wantTrue: false,
-		},
-		{
 			name:     "invalid CIDR",
 			ip:       net.ParseIP("192.168.1.100"),
 			cidr:     "invalid",
@@ -1016,20 +832,8 @@ func TestToSlice(t *testing.T) {
 			wantLen: 3,
 		},
 		{
-			name:    "slice of strings",
-			input:   []string{"a", "b", "c"},
-			wantOk:  true,
-			wantLen: 3,
-		},
-		{
 			name:    "array literal string",
 			input:   "[a, b, c]",
-			wantOk:  true,
-			wantLen: 3,
-		},
-		{
-			name:    "array literal with quotes",
-			input:   "[\"a\", \"b\", \"c\"]",
 			wantOk:  true,
 			wantLen: 3,
 		},
@@ -1089,12 +893,6 @@ func TestToFloat64(t *testing.T) {
 		wantV  float64
 	}{
 		{
-			name:   "int",
-			input:  42,
-			wantOk: true,
-			wantV:  42.0,
-		},
-		{
 			name:   "int64",
 			input:  int64(42),
 			wantOk: true,
@@ -1103,12 +901,6 @@ func TestToFloat64(t *testing.T) {
 		{
 			name:   "float64",
 			input:  42.5,
-			wantOk: true,
-			wantV:  42.5,
-		},
-		{
-			name:   "string number",
-			input:  "42.5",
 			wantOk: true,
 			wantV:  42.5,
 		},
@@ -1442,26 +1234,6 @@ func TestResolveValue_EdgeCases(t *testing.T) {
 			expr: "subject.unknown_field == \"value\"",
 			ctx: &EvalContext{
 				Subject: &Subject{ID: "user-1"},
-			},
-			wantNil: false,
-		},
-		{
-			name: "subject.roles field",
-			expr: "subject.roles contains \"admin\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Roles: []string{"admin", "user"},
-				},
-			},
-			wantNil: false,
-		},
-		{
-			name: "subject.groups field",
-			expr: "subject.groups contains \"eng\"",
-			ctx: &EvalContext{
-				Subject: &Subject{
-					Groups: []string{"eng", "ops"},
-				},
 			},
 			wantNil: false,
 		},

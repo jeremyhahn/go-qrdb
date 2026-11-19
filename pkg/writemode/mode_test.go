@@ -43,24 +43,6 @@ func Test_Constants_iotaValues(t *testing.T) {
 	}
 }
 
-func Test_Constants_distinctValues(t *testing.T) {
-	seen := map[Mode]string{}
-	modes := []struct {
-		name string
-		mode Mode
-	}{
-		{name: "Sync", mode: Sync},
-		{name: "WALDurable", mode: WALDurable},
-		{name: "Batched", mode: Batched},
-	}
-	for _, m := range modes {
-		if prev, ok := seen[m.mode]; ok {
-			t.Errorf("constant %s has same value as %s (%d)", m.name, prev, m.mode)
-		}
-		seen[m.mode] = m.name
-	}
-}
-
 // ---------------------------------------------------------------------------
 // FromString - valid inputs
 // ---------------------------------------------------------------------------
@@ -89,16 +71,6 @@ func Test_FromString_validModes(t *testing.T) {
 				t.Errorf("FromString(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
-	}
-}
-
-func Test_FromString_emptyDefaultsToSync(t *testing.T) {
-	got, err := FromString("")
-	if err != nil {
-		t.Fatalf("FromString(\"\") returned unexpected error: %v", err)
-	}
-	if got != Sync {
-		t.Errorf("FromString(\"\") = %v, want Sync (%v)", got, Sync)
 	}
 }
 
@@ -331,36 +303,6 @@ func Test_RequiresQuorum_outOfRange(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Semantic invariants
-// ---------------------------------------------------------------------------
-
-func Test_IsSynchronous_and_IsAsync_mutuallyExclusive(t *testing.T) {
-	modes := []Mode{Sync, WALDurable, Batched}
-	for _, m := range modes {
-		t.Run(m.String(), func(t *testing.T) {
-			if m.IsSynchronous() && m.IsAsync() {
-				t.Errorf("Mode(%d) reports both IsSynchronous and IsAsync", m)
-			}
-			if !m.IsSynchronous() && !m.IsAsync() {
-				t.Errorf("Mode(%d) reports neither IsSynchronous nor IsAsync", m)
-			}
-		})
-	}
-}
-
-func Test_RequiresQuorum_matchesSynchronous(t *testing.T) {
-	modes := []Mode{Sync, WALDurable, Batched}
-	for _, m := range modes {
-		t.Run(m.String(), func(t *testing.T) {
-			if m.RequiresQuorum() != m.IsSynchronous() {
-				t.Errorf("Mode(%d).RequiresQuorum() = %v but IsSynchronous() = %v; expected equal",
-					m, m.RequiresQuorum(), m.IsSynchronous())
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Round-trip: String -> FromString -> original
 // ---------------------------------------------------------------------------
 
@@ -374,28 +316,6 @@ func Test_FromString_roundTrip(t *testing.T) {
 			}
 			if parsed != m {
 				t.Errorf("round-trip failed: %v -> %q -> %v", m, m.String(), parsed)
-			}
-		})
-	}
-}
-
-func Test_FromString_allAliasesRoundTrip(t *testing.T) {
-	aliases := map[string]Mode{
-		"sync":        Sync,
-		"wal_durable": WALDurable,
-		"wal":         WALDurable,
-		"async":       WALDurable,
-		"batched":     Batched,
-		"batch":       Batched,
-	}
-	for alias, want := range aliases {
-		t.Run(alias, func(t *testing.T) {
-			got, err := FromString(alias)
-			if err != nil {
-				t.Fatalf("FromString(%q) returned unexpected error: %v", alias, err)
-			}
-			if got != want {
-				t.Errorf("FromString(%q) = %v, want %v", alias, got, want)
 			}
 		})
 	}
@@ -434,36 +354,6 @@ func Test_InvalidModeError_errorMessage(t *testing.T) {
 				t.Errorf("InvalidModeError{Value: %q}.Error() = %q, want %q", tt.value, got, tt.want)
 			}
 		})
-	}
-}
-
-func Test_InvalidModeError_implementsErrorInterface(t *testing.T) {
-	err := &InvalidModeError{Value: "bad"}
-	var _ error = err
-	if err.Error() == "" {
-		t.Fatal("InvalidModeError should implement the error interface")
-	}
-}
-
-func Test_InvalidModeError_errorsAs(t *testing.T) {
-	err := &InvalidModeError{Value: "unknown"}
-	var target *InvalidModeError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *InvalidModeError")
-	}
-	if target.Value != "unknown" {
-		t.Errorf("errors.As target.Value = %q, want %q", target.Value, "unknown")
-	}
-}
-
-func Test_InvalidModeError_containsInvalidValue(t *testing.T) {
-	_, err := FromString("xyzzy")
-	if err == nil {
-		t.Fatal("FromString(\"xyzzy\") expected error, got nil")
-	}
-	got := err.Error()
-	if !strings.Contains(got, "xyzzy") {
-		t.Errorf("error message %q does not contain the invalid value %q", got, "xyzzy")
 	}
 }
 

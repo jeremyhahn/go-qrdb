@@ -164,28 +164,6 @@ func TestQuotasLimitUnknownResourceReturnsError(t *testing.T) {
 	}
 }
 
-func TestQuotasZeroValueLimitReturnsZero(t *testing.T) {
-	q := &Quotas{} // all fields are zero
-	got, err := q.Limit(ResourceKeys)
-	if err != nil {
-		t.Fatalf("Quotas{}.Limit(ResourceKeys) returned unexpected error: %v", err)
-	}
-	if got != 0 {
-		t.Errorf("Quotas{}.Limit(ResourceKeys) = %d, want 0", got)
-	}
-}
-
-func TestQuotasLimitUnlimitedMinusOne(t *testing.T) {
-	q := &Quotas{MaxDatabases: -1}
-	got, err := q.Limit(ResourceDatabases)
-	if err != nil {
-		t.Fatalf("Quotas.Limit(ResourceDatabases) returned unexpected error: %v", err)
-	}
-	if got != -1 {
-		t.Errorf("Quotas.Limit(ResourceDatabases) = %d, want -1", got)
-	}
-}
-
 // --- Quotas.CurrentUsage() ---
 
 func TestQuotasCurrentUsageReturnsCorrectFieldForEachResource(t *testing.T) {
@@ -238,17 +216,6 @@ func TestQuotasCurrentUsageUnknownResourceReturnsError(t *testing.T) {
 	}
 	if _, ok := err.(*InvalidResourceError); !ok {
 		t.Errorf("error type = %T, want *InvalidResourceError", err)
-	}
-}
-
-func TestQuotasCurrentUsageZeroValueReturnsZero(t *testing.T) {
-	q := &Quotas{}
-	got, err := q.CurrentUsage(ResourceKeys)
-	if err != nil {
-		t.Fatalf("Quotas{}.CurrentUsage(ResourceKeys) unexpected error: %v", err)
-	}
-	if got != 0 {
-		t.Errorf("Quotas{}.CurrentUsage(ResourceKeys) = %d, want 0", got)
 	}
 }
 

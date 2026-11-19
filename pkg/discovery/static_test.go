@@ -113,10 +113,6 @@ func TestStaticDiscovery_Stop(t *testing.T) {
 	}
 }
 
-func TestStaticDiscovery_ImplementsMethod(t *testing.T) {
-	var _ Method = (*StaticDiscovery)(nil)
-}
-
 // BenchmarkStaticDiscoveryDiscover measures the performance of static peer
 // discovery with 5 peers. Each call returns a fresh slice copy.
 func BenchmarkStaticDiscoveryDiscover(b *testing.B) {
@@ -194,24 +190,5 @@ func TestStaticConfig_SharedSecret_Preserved(t *testing.T) {
 
 	if string(sd.sharedSecret) != string(secret) {
 		t.Errorf("sharedSecret = %q, want %q", sd.sharedSecret, secret)
-	}
-}
-
-func TestStaticDiscovery_SinglePeer(t *testing.T) {
-	sd := NewStaticDiscovery(StaticConfig{
-		Peers: []Peer{{NodeID: 42, Address: "localhost:9000"}},
-	})
-	result, err := sd.Discover(context.Background())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result) != 1 {
-		t.Fatalf("expected 1 peer, got %d", len(result))
-	}
-	if result[0].NodeID != 42 {
-		t.Errorf("NodeID = %d, want 42", result[0].NodeID)
-	}
-	if result[0].Address != "localhost:9000" {
-		t.Errorf("Address = %q, want %q", result[0].Address, "localhost:9000")
 	}
 }

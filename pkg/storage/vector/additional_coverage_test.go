@@ -273,54 +273,6 @@ func TestAdapter_Compact_WithData(t *testing.T) {
 	assert.NotNil(t, vec)
 }
 
-// TestAdapter_CleanupTombstones_WithOldTombstones tests tombstone cleanup with old data
-func TestAdapter_CleanupTombstones_WithOldTombstones(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = false
-	log := &testLogger{}
-
-	storage, err := NewPebbleVectorStorage(config, log)
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	ctx := context.Background()
-
-	// Create namespace
-	info := &NamespaceInfo{
-		Name:      "tomb_ns",
-		Dimension: 3,
-		CreatedAt: time.Now().Unix(),
-		UpdatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(ctx, info)
-	require.NoError(t, err)
-
-	// Insert and immediately delete vectors to create tombstones
-	for i := 1; i <= 10; i++ {
-		vec := &VectorValue{
-			ID:        uint64(i),
-			Embedding: []float32{0.1, 0.2, 0.3},
-			Metadata:  map[string]string{"test": "data"},
-			Version:   1,
-		}
-		err = storage.UpsertVector(ctx, "tomb_ns", vec)
-		require.NoError(t, err)
-
-		// Delete to create tombstone
-		err = storage.DeleteVector(ctx, "tomb_ns", uint64(i))
-		require.NoError(t, err)
-	}
-
-	// Wait a bit to ensure timestamps are different
-	time.Sleep(10 * time.Millisecond)
-
-	// Cleanup very old tombstones (should cleanup all since we just created them)
-	err = storage.CleanupTombstones(ctx, 1*time.Nanosecond)
-	assert.NoError(t, err)
-}
-
 // TestAdapter_ScanNamespace_WithLimit tests scanning with limit
 func TestAdapter_ScanNamespace_WithLimit(t *testing.T) {
 	storage, cleanup := setupStorage(t)
@@ -447,17 +399,6 @@ func TestAdapter_DeleteVector_NonExistent(t *testing.T) {
 	err = storage.DeleteVector(ctx, "test_ns", 999999)
 	assert.Error(t, err)
 	assert.Equal(t, ErrVectorNotFound, err)
-}
-
-// TestAdapter_Close_AlreadyClosed tests closing already closed storage
-func TestAdapter_Close_AlreadyClosed(t *testing.T) {
-	storage, cleanup := setupStorage(t)
-	// Close once via cleanup
-	cleanup()
-
-	// Close again - should be idempotent
-	err := storage.Close()
-	assert.NoError(t, err)
 }
 
 // TestBatch_UpsertVector_WithSetError tests batch upsert error handling

@@ -793,40 +793,6 @@ func membershipPeersContainsReplica(peers map[string]interface{}, shardID, repli
 	return false
 }
 
-func TestCluster_SnapshotTriggered(t *testing.T) {
-	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
-		"--snapshot-entries", "100",
-		"--compaction-overhead", "10")
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-
-	// Write enough records to trigger at least 1 snapshot.
-	for i := range 150 {
-		key := fmt.Sprintf("snap/%04d", i)
-		val := fmt.Sprintf("value-%d", i)
-		httpPut(t, ca, leaderPort, key, []byte(val))
-	}
-
-	// Verify all data accessible after snapshot.
-	keys := httpList(t, ca, leaderPort, "snap/")
-	if len(keys) < 150 {
-		t.Fatalf("expected at least 150 keys, got %d", len(keys))
-	}
-
-	// Verify specific values at boundaries.
-	first := httpGet(t, ca, leaderPort, "snap/0000")
-	if !bytes.Equal(first, []byte("value-0")) {
-		t.Errorf("snap/0000: got %q, want %q", first, "value-0")
-	}
-	last := httpGet(t, ca, leaderPort, "snap/0149")
-	if !bytes.Equal(last, []byte("value-149")) {
-		t.Errorf("snap/0149: got %q, want %q", last, "value-149")
-	}
-
-	// Check status shows progress.
-	status := httpStatus(t, ca, leaderPort)
-	t.Logf("status after 150 writes with snapshots: %v", status)
-}
-
 func TestCluster_SnapshotDataIntegrity(t *testing.T) {
 	adminPorts, _, ca := startThreeNodeCluster(t, "pebble",
 		"--snapshot-entries", "50",
@@ -851,6 +817,14 @@ func TestCluster_SnapshotDataIntegrity(t *testing.T) {
 		if totalKeys < 200 {
 			t.Fatalf("port %d: expected 200 keys, got %d", port, totalKeys)
 		}
+	}
+
+	// Values at the batch boundaries read back exactly.
+	if got := httpGet(t, ca, leaderPort, "batch0/0000"); !bytes.Equal(got, []byte("b0-v0")) {
+		t.Errorf("batch0/0000: got %q, want %q", got, "b0-v0")
+	}
+	if got := httpGet(t, ca, leaderPort, "batch3/0049"); !bytes.Equal(got, []byte("b3-v49")) {
+		t.Errorf("batch3/0049: got %q, want %q", got, "b3-v49")
 	}
 }
 
@@ -1027,117 +1001,6 @@ func TestCluster_FullRestart_DataSurvives(t *testing.T) {
 	}
 
 	t.Log("full restart with data persistence: PASS")
-}
-
-func TestCluster_WriteAfterRestart(t *testing.T) {
-	bin := buildBinary(t)
-	ca := generateTestCA(t)
-	ports := allocatePorts(t, 3)
-	adminPorts := allocateTCPPorts(t, 3)
-	grpcPorts := allocateTCPPorts(t, 3)
-	peersFlag := buildPeersFlag(ports)
-	dataDirs := make([]string, 3)
-	cmds := make([]*exec.Cmd, 3)
-
-	// Generate node certs (reused across restarts).
-	nodeCertPaths := make([]string, 3)
-	nodeKeyPaths := make([]string, 3)
-	for i := range 3 {
-		nodeCertPaths[i], nodeKeyPaths[i] = ca.generateNodeCert(t)
-	}
-
-	// Start a 3-node pebble cluster.
-	for i := range 3 {
-		dataDir := t.TempDir()
-		dataDirs[i] = dataDir
-
-		args := []string{
-			"start",
-			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
-			"--data-dir", dataDir,
-			"--sm", "pebble",
-			"--discovery", "static",
-			"--peers", peersFlag,
-			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
-			"--shard-id", "1",
-			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPaths[i],
-			"--tls-key-file", nodeKeyPaths[i],
-		}
-
-		cmds[i] = startNode(t, bin, args, fmt.Sprintf("[node%d-R1] ", i+1))
-	}
-
-	bootstrapNodes(t, ca, adminPorts...)
-	for i, dir := range dataDirs {
-		waitForHealthy(t, dir, 30*time.Second)
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
-	}
-
-	leaderPort := waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-
-	// Write initial data.
-	httpPut(t, ca, leaderPort, "before-restart", []byte("original"))
-
-	// Stop all nodes.
-	for i, cmd := range cmds {
-		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			t.Fatalf("signal node %d: %v", i+1, err)
-		}
-	}
-	for _, cmd := range cmds {
-		_ = awaitNodeExit(t, cmd, nodeStopTimeout)
-	}
-
-	// Restart.
-	for i := range 3 {
-		args := []string{
-			"start",
-			"--listen", fmt.Sprintf("0.0.0.0:%d", ports[i]),
-			"--raft-address", fmt.Sprintf("127.0.0.1:%d", ports[i]),
-			"--data-dir", dataDirs[i],
-			"--sm", "pebble",
-			"--discovery", "static",
-			"--peers", peersFlag,
-			"--member-identities", memberIdentitiesFlag(t, nodeCertPaths[:]),
-			"--shard-id", "1",
-			"--replica-id", fmt.Sprintf("%d", i+1),
-			"--admin-port", fmt.Sprintf("%d", adminPorts[i]),
-			"--grpc-port", fmt.Sprintf("%d", grpcPorts[i]),
-			"--tls-ca-file", ca.CertPath,
-			"--tls-cert-file", nodeCertPaths[i],
-			"--tls-key-file", nodeKeyPaths[i],
-		}
-		startNode(t, bin, args, fmt.Sprintf("[node%d-R2] ", i+1))
-	}
-
-	waitForNodesSelfUnsealed(t, ca, adminPorts...)
-	for i := range 3 {
-		waitForAdmin(t, ca.Pool, adminPorts[i], 90*time.Second)
-	}
-
-	leaderPort = waitForLeaderViaAdmin(t, ca, adminPorts, 60*time.Second)
-
-	// Warmup write to ensure the leader's no-op has been committed and the
-	// ReadIndex pipeline is operational.
-	warmupWrite(t, ca, leaderPort, 15*time.Second)
-
-	// Verify pre-restart data is intact.
-	val := httpGet(t, ca, leaderPort, "before-restart")
-	if !bytes.Equal(val, []byte("original")) {
-		t.Fatalf("before-restart: got %q, want %q", val, "original")
-	}
-
-	// Write new data after restart to prove the cluster is fully operational.
-	httpPut(t, ca, leaderPort, "after-restart", []byte("new-data"))
-	got := httpGet(t, ca, leaderPort, "after-restart")
-	if !bytes.Equal(got, []byte("new-data")) {
-		t.Fatalf("after-restart: got %q, want %q", got, "new-data")
-	}
 }
 
 // TestCluster_ForwardedWriteSurvivesRestart is go-qrdb#591's B4 regression

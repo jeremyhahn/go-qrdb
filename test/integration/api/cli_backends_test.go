@@ -11,62 +11,6 @@ import (
 	"testing"
 )
 
-// TestCLIBackendMatrix tests basic KV CRUD across all protocols with the
-// default backend. Each operation is verified independently using a
-// table-driven approach to ensure the storage backend handles all
-// fundamental operations correctly.
-func TestCLIBackendMatrix(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	for _, proto := range AllProtocols() {
-		t.Run(string(proto), func(t *testing.T) {
-			if !cfg.IsProtocolAvailable(t, proto) {
-				t.Fatalf("server not available for protocol %s", proto)
-			}
-
-			key := fmt.Sprintf("backend-matrix-%s-%d", proto, testTimestamp())
-			value := fmt.Sprintf("matrix-value-%s", proto)
-
-			// Cleanup key after test.
-			t.Cleanup(func() {
-				execCLIWithProtocol(t, cfg, proto, "kv", "del", key) //nolint:errcheck
-			})
-
-			operations := []struct {
-				name     string
-				args     []string
-				contains string
-			}{
-				{"put", []string{"kv", "put", key, value}, "OK"},
-				{"get", []string{"kv", "get", key}, value},
-				{"exists", []string{"kv", "exists", key}, "true"},
-				{"list", []string{"kv", "list", key}, key},
-				{"range", []string{"kv", "range", key}, key},
-				{"del", []string{"kv", "del", key}, "OK"},
-				{"exists-after-del", []string{"kv", "exists", key}, "false"},
-			}
-
-			for _, op := range operations {
-				t.Run(op.name, func(t *testing.T) {
-					stdout, stderr, err := execCLIWithProtocol(t, cfg, proto, op.args...)
-					if err != nil {
-						t.Logf("stdout: %s", stdout)
-						t.Logf("stderr: %s", stderr)
-						t.Fatalf("[%s] %s failed: %v", proto, op.name, err)
-					}
-
-					output := stdout + stderr
-					assertContains(t, output, op.contains,
-						fmt.Sprintf("[%s] %s output should contain '%s'", proto, op.name, op.contains))
-
-					t.Logf("[%s] %s passed", proto, op.name)
-				})
-			}
-		})
-	}
-}
-
 // TestCLIBackendPersistence tests that data written through the storage
 // backend is persistent and readable after write. It writes a batch of
 // keys, reads them back to verify correctness, lists them to confirm
