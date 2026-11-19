@@ -471,11 +471,18 @@ func TestConvertToStringMap(t *testing.T) {
 			"nil":    nil,
 		}
 		result := convertToStringMap(input)
-		assert.Equal(t, `"hello"`, result["string"])
-		assert.Equal(t, "42", result["int"])
-		assert.Equal(t, "3.14", result["float"])
-		assert.Equal(t, "true", result["bool"])
-		assert.Equal(t, "null", result["nil"])
+		require.Len(t, result, len(input))
+		for k, stored := range result {
+			assert.True(t, vector.IsEncodedMetadataValue(stored), "key %q stored without the version byte", k)
+		}
+		decoded := convertFromStringMap(result)
+		assert.Equal(t, "hello", decoded["string"])
+		assert.Equal(t, float64(42), decoded["int"])
+		assert.Equal(t, 3.14, decoded["float"])
+		assert.Equal(t, true, decoded["bool"])
+		v, ok := decoded["nil"]
+		assert.True(t, ok)
+		assert.Nil(t, v)
 	})
 }
 
@@ -1264,7 +1271,7 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify vector was updated in storage
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		assert.Equal(t, `"new_value"`, updatedVec.Metadata["new_key"])
+		assert.Equal(t, "new_value", vector.DecodeMetadataValue(updatedVec.Metadata["new_key"]))
 		// old_key should NOT be present since Merge=false
 		_, hasOldKey := updatedVec.Metadata["old_key"]
 		assert.False(t, hasOldKey)
@@ -1311,9 +1318,10 @@ func TestVectorStateMachine_HandleUpdateMetadata(t *testing.T) {
 		// Verify merged metadata
 		updatedVec, err := adapter.VectorStorage().GetVector(context.Background(), "test_ns", 1)
 		require.NoError(t, err)
-		assert.Equal(t, `"new_value"`, updatedVec.Metadata["new_key"])
-		assert.Equal(t, "old_value", updatedVec.Metadata["old_key"]) // Preserved
-		assert.Equal(t, `"updated"`, updatedVec.Metadata["keep"])    // Updated
+		decoded := convertFromStringMap(updatedVec.Metadata)
+		assert.Equal(t, "new_value", decoded["new_key"])
+		assert.Equal(t, "old_value", decoded["old_key"]) // Preserved (legacy string, verbatim)
+		assert.Equal(t, "updated", decoded["keep"])      // Updated
 	})
 
 	t.Run("update metadata on nonexistent vector returns error", func(t *testing.T) {
