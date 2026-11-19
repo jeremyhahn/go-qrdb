@@ -21,6 +21,7 @@ import (
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/database"
 	"github.com/jeremyhahn/go-qrdb/pkg/database/databasetest"
@@ -197,5 +198,85 @@ func TestRetryCreateRollbacks_SameNameReplacementSurvives(t *testing.T) {
 	}
 	if got := f.decTotal + f.decRaft + f.decWAL; got <= releasedBefore {
 		t.Fatalf("reservations not released after the retry cleared the entry (%d -> %d)", releasedBefore, got)
+	}
+}
+
+// reentrantReclaimer fails the store fence while fail is set, and runs
+// during once on the first reclaim of a drop: the hook a test uses to start
+// a second rollback retry while the first one's drop is in flight.
+type reentrantReclaimer struct {
+	failingFenceReclaimer
+	during func()
+	ran    atomic.Bool
+}
+
+func (r *reentrantReclaimer) ReclaimDatabaseKeyspace(context.Context, string, string, string, string) error {
+	if r.during != nil && r.ran.CompareAndSwap(false, true) {
+		r.during()
+	}
+	return nil
+}
+
+// TestRetryCreateRollbacks_ConcurrentRetriesReleaseOnce is the regression
+// for a rollback entry two retries both acted on: a retry that started while
+// another's drop was in flight read the same entry, found the database gone
+// and released the create's reservations a second time. An entry is now
+// claimed by one retry, so the reservations are released exactly once.
+func TestRetryCreateRollbacks_ConcurrentRetriesReleaseOnce(t *testing.T) {
+	strict := looseRaftTenant()
+	strict.IsolationPolicy = tenant.TenantIsolationPolicyStrict
+	l := &tighteningLookup{info: looseRaftTenant(), afterFirst: strict}
+
+	dir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	mgr := claimingManager(t, logger, dir)
+	t.Cleanup(func() { _ = mgr.Close() })
+	reclaimer := &reentrantReclaimer{}
+	reclaimer.fail.Store(true)
+	mgr.SetKeyspaceReclaimer(reclaimer)
+	f := &fakeReplicaQuota{q: &quota.Quotas{MaxTotalReplicas: 10, MaxDedicatedWALGroups: 5}}
+	svc := NewDatabaseService(mgr,
+		WithEntitlementChecker(&mockEntitlementChecker{}),
+		WithTenantInfoLookup(&fakeTenantInfoLookup{info: l.info}),
+		WithQuotaChecker(newReplicaQuotaChecker(t, f)),
+		WithQuotaUsageRecorder(f),
+	).(*DatabaseService)
+	svc.tenantInfo = l
+	ctx := tenant.WithTenantID(context.Background(), "rt")
+
+	_, err := svc.CreateForTenant(ctx, testDBConfig("app"))
+	var incomplete *database.CreateRollbackIncompleteError
+	if !errors.As(err, &incomplete) {
+		t.Fatalf("CreateForTenant with a failing rollback drop = %v, want *CreateRollbackIncompleteError", err)
+	}
+	if f.decTotal != 0 || f.decRaft != 0 || f.decWAL != 0 {
+		t.Fatalf("reservations released before the rollback drop landed (total %d, raft %d, wal %d)", f.decTotal, f.decRaft, f.decWAL)
+	}
+
+	var nestedErr error
+	reclaimer.during = func() { nestedErr = svc.RetryCreateRollbacks(context.Background()) }
+	reclaimer.fail.Store(false)
+	done := make(chan error, 1)
+	go func() { done <- svc.RetryCreateRollbacks(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RetryCreateRollbacks: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("RetryCreateRollbacks did not return: the nested retry blocked on the in-flight drop")
+	}
+	if !reclaimer.ran.Load() {
+		t.Fatal("the retry's drop never reached the reclaim, so no second retry ran")
+	}
+	if nestedErr != nil {
+		t.Fatalf("nested RetryCreateRollbacks: %v", nestedErr)
+	}
+	if svc.PendingCreateRollbacks() != 0 {
+		t.Fatalf("pending create rollbacks = %d, want 0", svc.PendingCreateRollbacks())
+	}
+	if f.decTotal != f.incTotal || f.decRaft != f.incRaft || f.decWAL != f.incWAL {
+		t.Fatalf("released total %d/%d, raft %d/%d, wal %d/%d (released/reserved): want each released exactly once",
+			f.decTotal, f.incTotal, f.decRaft, f.incRaft, f.decWAL, f.incWAL)
 	}
 }

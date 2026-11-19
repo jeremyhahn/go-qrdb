@@ -34,7 +34,7 @@ import (
 // is never dropped by the retry.
 type createRollbackLedger struct {
 	mu      sync.Mutex
-	pending map[createRollbackKey]createRollbackEntry
+	pending map[createRollbackKey]*createRollbackEntry
 }
 
 type createRollbackKey struct {
@@ -43,11 +43,14 @@ type createRollbackKey struct {
 }
 
 // createRollbackEntry is the refused database's identity and the release of
-// its reservations.
+// its reservations. claimed is set, under the ledger's lock, while one
+// retry owns the entry: a concurrent retry skips it, so the drop is tried
+// and the reservations released by one retry only.
 type createRollbackEntry struct {
 	id          string
 	incarnation string
 	release     func()
+	claimed     bool
 }
 
 // holdCreateRollback records a failed strict-refusal rollback of the
@@ -57,9 +60,9 @@ func (s *DatabaseService) holdCreateRollback(db *database.Database, release func
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.pending == nil {
-		l.pending = make(map[createRollbackKey]createRollbackEntry)
+		l.pending = make(map[createRollbackKey]*createRollbackEntry)
 	}
-	l.pending[createRollbackKey{tenantID: db.TenantID(), name: db.Name()}] = createRollbackEntry{
+	l.pending[createRollbackKey{tenantID: db.TenantID(), name: db.Name()}] = &createRollbackEntry{
 		id:          db.ID(),
 		incarnation: db.Incarnation(),
 		release:     release,
@@ -78,11 +81,12 @@ func (s *DatabaseService) PendingCreateRollbacks() int {
 // RetryCreateRollbacks retries the drop of every strict-refused create whose
 // rollback drop failed, keeping the fence up on another failure, and
 // releases a create's reservations once its drop lands (or the database is
-// already gone). An entry whose database is gone or was replaced by another
-// database of the same name (a different ID or incarnation) is cleared
-// without a drop: the refused database no longer exists, and the replacement
-// is not the retry's to drop. It returns the joined errors of the drops that
-// failed again; those stay pending.
+// already gone). The drop is bound to the refused database's ID and
+// incarnation: a name that now holds another database (the refused one was
+// dropped and the name created again) is not the retry's to drop, and the
+// entry is cleared without a drop. Each entry is claimed by one retry at a
+// time, so concurrent retries never drop or release it twice. It returns
+// the joined errors of the drops that failed again; those stay pending.
 func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 	l := &s.createRollbacks
 	l.mu.Lock()
@@ -94,10 +98,8 @@ func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 
 	var errs []error
 	for _, k := range keys {
-		l.mu.Lock()
-		entry, ok := l.pending[k]
-		l.mu.Unlock()
-		if !ok {
+		entry := l.claim(k)
+		if entry == nil {
 			continue
 		}
 		dropCtx := database.KeepFenceOnFailure(tenant.WithTenantID(ctx, k.tenantID))
@@ -105,16 +107,46 @@ func (s *DatabaseService) RetryCreateRollbacks(ctx context.Context) error {
 			var notFound *database.NotFoundError
 			var superseded *database.DropSupersededError
 			if !errors.As(err, &notFound) && !errors.As(err, &superseded) {
+				l.unclaim(entry)
 				errs = append(errs, err)
 				continue
 			}
 		}
-		l.mu.Lock()
-		delete(l.pending, k)
-		l.mu.Unlock()
+		l.settle(k, entry)
 		if entry.release != nil {
 			entry.release()
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// claim takes k's entry for one retry, or returns nil when it is gone or
+// another retry holds it.
+func (l *createRollbackLedger) claim(k createRollbackKey) *createRollbackEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry, ok := l.pending[k]
+	if !ok || entry.claimed {
+		return nil
+	}
+	entry.claimed = true
+	return entry
+}
+
+// unclaim hands entry back after a failed drop, for the next retry.
+func (l *createRollbackLedger) unclaim(entry *createRollbackEntry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry.claimed = false
+}
+
+// settle removes entry from the ledger once its drop has landed (or its
+// database is gone). An entry a later refusal recorded under k since is
+// not this one and stays.
+func (l *createRollbackLedger) settle(k createRollbackKey, entry *createRollbackEntry) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.pending[k] == entry {
+		delete(l.pending, k)
+	}
 }
