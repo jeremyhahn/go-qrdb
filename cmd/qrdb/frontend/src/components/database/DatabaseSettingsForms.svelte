@@ -295,11 +295,50 @@
     }
   }
 
+  /**
+   * The stored discovery blocks this form has no fields for, carried back
+   * unchanged so a save does not delete them (the server keeps the recorded
+   * state storage itself). A response never carries a write-only secret (it reports only
+   * sharedSecretSet / tokenSet), so each block goes back without one and the
+   * server keeps the stored secret.
+   */
+  function storedRaftExtras(info: DatabaseInfo["raft"]): Partial<DatabaseRaftConfig> {
+    if (info === undefined) return {};
+    const { static: st, multicast: mc, dns, token: tk } = info;
+    return {
+      ...(st === undefined ? {} : { static: st.peers === undefined ? {} : { peers: st.peers } }),
+      ...(mc === undefined
+        ? {}
+        : {
+            multicast: {
+              ...(mc.multicastGroup === undefined ? {} : { multicastGroup: mc.multicastGroup }),
+              ...(mc.interface === undefined ? {} : { interface: mc.interface }),
+              ...(mc.minPeers === undefined ? {} : { minPeers: mc.minPeers }),
+              ...(mc.announceInterval === undefined
+                ? {}
+                : { announceInterval: mc.announceInterval }),
+              ...(mc.discoverTimeout === undefined ? {} : { discoverTimeout: mc.discoverTimeout }),
+            },
+          }),
+      ...(dns === undefined ? {} : { dns }),
+      ...(tk === undefined
+        ? {}
+        : {
+            token: {
+              endpoint: tk.endpoint,
+              clusterSize: tk.clusterSize,
+              ...(tk.timeout === undefined ? {} : { timeout: tk.timeout }),
+            },
+          }),
+    };
+  }
+
   async function saveRaft(): Promise<void> {
     if (raftError !== "") return;
     raftOutcome = null;
     const peers = splitList(raftPeers);
     const raft: DatabaseRaftConfig = {
+      ...storedRaftExtras(database.raft),
       clusterMode: raftClusterMode,
       ...(isBlank(raftReplicaId) ? {} : { replicaId: raftReplicaId as number }),
       ...(raftAddress.trim() === "" ? {} : { raftAddress: raftAddress.trim() }),

@@ -187,3 +187,43 @@ test("updateRaft: raft configuration round-trips through the daemon", async ({ p
     discovery: "static",
   });
 });
+
+/** Writes a raft configuration straight to the daemon. */
+async function patchRaft(name: string, raft: Record<string, unknown>): Promise<void> {
+  const resp = await api!.patch(`/v1/databases/${name}/raft`, { data: raft });
+  expect(resp.ok(), await resp.text()).toBeTruthy();
+}
+
+/** Saves the raft form as loaded, without changing a field. */
+async function saveRaftUnchanged(page: Page): Promise<void> {
+  const main = await openDetail(page, RAFT_DB);
+  const form = main.getByTestId("db-settings-raft");
+  await form.getByRole("button", { name: "Save Raft Configuration" }).click();
+  await expect(form.getByTestId("outcome-success")).toHaveText("Raft configuration saved.");
+}
+
+// The form has no fields for the discovery blocks, so saving a database that
+// already has one must send it back unchanged: a static peer list and its
+// write-only shared secret survive, and a DNS-discovery database still
+// validates.
+test("updateRaft: saving keeps the stored discovery blocks and secrets", async ({ page }) => {
+  const base = { clusterMode: "distributed", replicaId: 1, raftAddress: "127.0.0.1:7100" };
+  await patchRaft(RAFT_DB, {
+    ...base,
+    discovery: "static",
+    static: { peers: ["127.0.0.1:7101"], sharedSecret: "static-discovery-shared-secret-0123" },
+  });
+  await saveRaftUnchanged(page);
+  expect((await storedDb(RAFT_DB)).raft).toMatchObject({
+    discovery: "static",
+    static: { peers: ["127.0.0.1:7101"], sharedSecretSet: true },
+  });
+
+  await patchRaft(RAFT_DB, { ...base, discovery: "dns", dns: { domain: "example.com" } });
+  await page.reload();
+  await saveRaftUnchanged(page);
+  expect((await storedDb(RAFT_DB)).raft).toMatchObject({
+    discovery: "dns",
+    dns: { domain: "example.com" },
+  });
+});
