@@ -401,6 +401,10 @@ type Gate struct {
 	// CheckActivated has found one; see Refusal.
 	refusal atomic.Pointer[UnsupportedFeatureError]
 
+	// releaseRefusal is the release gap Start refused a restart with; see
+	// Refusal.
+	releaseRefusal atomic.Pointer[release.GapError]
+
 	// loaded is set once CheckActivated has read the activations without
 	// finding one this binary lacks; see ActivationsLoaded.
 	loaded atomic.Bool
@@ -938,11 +942,16 @@ func (g *Gate) ActivationsLoaded() bool {
 }
 
 // Refusal returns the *UnsupportedFeatureError CheckActivated found -- the
-// cluster has activated a feature this binary lacks, so this node must not
-// serve -- or nil. A composer that cannot refuse to start reports it as a
-// degraded node.
+// cluster has activated a feature this binary lacks -- or the
+// *release.GapError Start refused a restart with -- this committed member's
+// binary is not adjacent to a member's release or the release it last ran
+// -- or nil. Either way this node must not serve: a composer that cannot
+// refuse to start reports it as a degraded node.
 func (g *Gate) Refusal() error {
 	if r := g.refusal.Load(); r != nil {
+		return r
+	}
+	if r := g.releaseRefusal.Load(); r != nil {
 		return r
 	}
 	return nil
@@ -1036,6 +1045,10 @@ func (g *Gate) Start(ctx context.Context, kv ActivationKV, adverts ...cluster.Me
 	}
 	if err := g.checkRestartRelease(ctx, kv); err != nil {
 		cancel()
+		var gap *release.GapError
+		if errors.As(err, &gap) {
+			g.releaseRefusal.Store(gap)
+		}
 		return err
 	}
 	if err := g.recordRelease(ctx, kv); err != nil {

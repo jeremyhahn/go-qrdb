@@ -22,6 +22,7 @@ import (
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/server"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/shard"
@@ -70,8 +71,7 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 					n.featureAdv.Store(adv)
 					return
 				}
-				var unsupported *featuregate.UnsupportedFeatureError
-				if errors.As(err, &unsupported) {
+				if featureGateRefused(err) {
 					logger := n.logger
 					if logger == nil {
 						logger = slog.Default()
@@ -86,6 +86,18 @@ func (n *Node) startFeatureGate(host leaderReporter, activations featuregate.Act
 			}
 		}
 	}()
+}
+
+// featureGateRefused reports whether a feature gate start failed because
+// this binary cannot run in the cluster -- an activated feature it lacks
+// (*featuregate.UnsupportedFeatureError), or a committed member restarted
+// across a release gap (*release.GapError). Neither passes on a retry, so
+// startFeatureGate stops and leaves the refusal, which the gate keeps in
+// Gate.Refusal, to the node's health. Any other failure is retried.
+func featureGateRefused(err error) bool {
+	var unsupported *featuregate.UnsupportedFeatureError
+	var gap *release.GapError
+	return errors.As(err, &unsupported) || errors.As(err, &gap)
 }
 
 // stopFeatureGate waits out startFeatureGate -- Close cancels its context

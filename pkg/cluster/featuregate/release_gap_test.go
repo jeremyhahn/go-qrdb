@@ -244,11 +244,15 @@ func TestStart_UnreadableReleaseHistoryRefusesRestart(t *testing.T) {
 	assert.Contains(t, storeErr.Error(), "list releases")
 	assert.True(t, mem.has(ReleasePrefix+"1/0.58.0-alpha"), "the release last run survives the refused start")
 	assert.False(t, mem.has(ReleasePrefix+"1/0.60.0-alpha"), "a refused binary records no release")
+	assert.NoError(t, g.Refusal(), "a read failure is retried, not a refusal")
 
-	// The retry, once the history is readable, refuses the gap.
+	// The retry, once the history is readable, refuses the gap, and the
+	// gate keeps the refusal for the node's health.
 	kv.failing.Store(false)
 	var gap *release.GapError
 	require.ErrorAs(t, g.Start(context.Background(), kv, store), &gap)
+	assert.Equal(t, "0.58.0-alpha", gap.Peer)
+	require.ErrorAs(t, g.Refusal(), &gap)
 	assert.Equal(t, "0.58.0-alpha", gap.Peer)
 }
 

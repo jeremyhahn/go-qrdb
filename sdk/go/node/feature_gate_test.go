@@ -17,6 +17,7 @@ package node
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 	"github.com/jeremyhahn/go-qrdb/pkg/server/lifecycle"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
@@ -103,6 +105,18 @@ func TestNode_StartFeatureGateNeverAdvertisesUnderAnUnknownActivation(t *testing
 	assert.ErrorAs(t, n.featureGate.Refusal(), &unsupported, "the refusal must be kept for the node's health")
 	n.bgCancel()
 	require.NoError(t, n.stopFeatureGate())
+}
+
+// TestFeatureGateRefused_RestartReleaseGapIsTerminal: the start loop stops
+// on a restart across a release gap as it does on an activated feature the
+// binary lacks, however the start wraps it, and retries a store failure.
+func TestFeatureGateRefused_RestartReleaseGapIsTerminal(t *testing.T) {
+	gap := &release.GapError{Channel: "raft-membership", Local: "0.60.0-alpha", Peer: "0.58.0-alpha"}
+	assert.True(t, featureGateRefused(gap))
+	assert.True(t, featureGateRefused(fmt.Errorf("start: %w", gap)))
+	assert.True(t, featureGateRefused(&featuregate.UnsupportedFeatureError{Feature: "future-opcode"}))
+	assert.False(t, featureGateRefused(&featuregate.StoreError{Op: "list releases", Err: errors.New("no leader")}))
+	assert.False(t, featureGateRefused(context.DeadlineExceeded))
 }
 
 // Each start attempt reads under a deadline: a ReadIndex the leader drops is

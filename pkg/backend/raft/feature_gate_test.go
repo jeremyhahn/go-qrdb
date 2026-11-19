@@ -18,8 +18,10 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +29,9 @@ import (
 	quicraft "github.com/jeremyhahn/go-quicraft/pkg"
 	quicraftconfig "github.com/jeremyhahn/go-quicraft/pkg/config"
 
+	"github.com/jeremyhahn/go-qrdb/pkg/cluster"
 	"github.com/jeremyhahn/go-qrdb/pkg/cluster/featuregate"
+	"github.com/jeremyhahn/go-qrdb/pkg/release"
 )
 
 // groups is a MembershipSource over fixed groups.
@@ -162,6 +166,48 @@ func TestHostAdapter_HealthIsDegradedUnderARefusal(t *testing.T) {
 	assert.Equal(t, "unhealthy", a.withGateVerdict(unhealthy).Status, "a worse verdict is never masked")
 	assert.Equal(t, host.HealthCheck().Status, a.HealthCheck().Status, "a host that is not ok stays as it is")
 	assert.Same(t, ok, New(host).withGateVerdict(ok), "an ungated adapter is unaffected")
+}
+
+// lastRanKV holds only the release member 1 last recorded.
+type lastRanKV struct{ rel string }
+
+func (lastRanKV) PutIfAbsent(context.Context, string, []byte) (bool, error) { return false, nil }
+
+func (k lastRanKV) ListAll(_ context.Context, prefix string) ([]string, error) {
+	if prefix != featuregate.ReleasePrefix {
+		return nil, nil
+	}
+	return []string{featuregate.ReleasePrefix + "1/" + k.rel}, nil
+}
+
+func (k lastRanKV) ListStale(ctx context.Context, prefix string) ([]string, error) {
+	return k.ListAll(ctx, prefix)
+}
+
+func (lastRanKV) Delete(context.Context, string) error { return nil }
+
+// noAdverts is a membership store no member advertises in.
+type noAdverts struct{}
+
+func (noAdverts) PutMember(context.Context, uint64, []byte, time.Duration) error { return nil }
+func (noAdverts) DeleteMember(context.Context, uint64) error                     { return nil }
+func (noAdverts) WatchMembers(context.Context) (<-chan cluster.MemberEvent, error) {
+	return nil, errors.New("watch unavailable")
+}
+func (noAdverts) ListMembers(context.Context) ([]cluster.Member, error) { return nil, nil }
+
+// TestHostAdapter_HealthIsDegradedAfterARestartReleaseGap: a member that
+// last ran 0.58 restarted on 0.60 is refused by the gate's start, and the
+// adapter's health reports the refusal rather than an ok node.
+func TestHostAdapter_HealthIsDegradedAfterARestartReleaseGap(t *testing.T) {
+	t.Cleanup(release.SetForTesting("0.60.0-alpha"))
+	gate := gateOver(t, groups{1: {ConfigChangeID: 1, Replicas: map[uint64]string{1: "n1"}}})
+	var gap *release.GapError
+	require.ErrorAs(t, gate.Start(context.Background(), lastRanKV{rel: "0.58.0-alpha"}, noAdverts{}), &gap)
+
+	a := New(nil, WithFeatureGate(gate))
+	got := a.withGateVerdict(&quicraft.HealthStatus{Status: "ok", DiskOK: true})
+	assert.Equal(t, "degraded", got.Status)
 }
 
 // The adapter admits a replica only where its gate does; without a gate no
