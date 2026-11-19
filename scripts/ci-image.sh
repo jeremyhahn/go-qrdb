@@ -302,7 +302,7 @@ epoch() {
 prune() {
 	[ $# -le 1 ] || die "usage: prune [hours]"
 	local hours=${1:-24} now cutoff running="" c id ref r t created tagged newest
-	local -a hashed=()
+	local -a hashed=() force=()
 	local -A refs=() foreign=()
 	[[ $hours =~ ^[1-9][0-9]{0,3}$ ]] || die "prune bound '$hours' is not a whole number of hours (1-9999)"
 	now=$(date +%s)
@@ -350,18 +350,15 @@ prune() {
 			docker rmi "$r" >/dev/null 2>&1 || true
 		done
 		# A content-hash tag is shared: another job can move it to a fresh
-		# image at any moment. One of them is never untagged by name, the
-		# removal by ID takes it. Several name one image when TOOLCHAIN_TAG
-		# changes but Docker reuses the ID, and the daemon would refuse the
-		# removal for them, so each but the first is untagged by name once it
-		# is checked, just before, to still name this image; a tag that names
-		# another image now is left alone, and the removal by ID never
-		# touches the fresh image a moved tag names.
-		for r in "${hashed[@]:1}"; do
-			[ "$(docker image inspect -f '{{.Id}}' "$r" 2>/dev/null)" = "$id" ] || continue
-			docker rmi "$r" >/dev/null 2>&1 || true
-		done
-		if docker image rm "$id" >/dev/null 2>&1 || ! docker image inspect "$id" >/dev/null 2>&1; then
+		# image at any moment, so none is ever removed by name (a check
+		# just before cannot hold until the removal). Several name one image
+		# when TOOLCHAIN_TAG changes but Docker reuses the ID, and the daemon
+		# refuses a plain removal by ID for them; --force then untags only
+		# the references that name this ID at removal time, so a tag moved
+		# to a fresh image keeps it. A running container was ruled out above.
+		force=()
+		[ "${#hashed[@]}" -le 1 ] || force=(--force)
+		if docker image rm "${force[@]}" "$id" >/dev/null 2>&1 || ! docker image inspect "$id" >/dev/null 2>&1; then
 			echo "==> prune: removed $ref ($id)" >&2
 		else
 			echo "==> prune: kept $ref ($id), the daemon refused its removal" >&2

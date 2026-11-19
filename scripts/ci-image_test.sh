@@ -67,7 +67,8 @@ case $1 in
           [ -f "$f" ] && [ "$(sed -n 1p "$f")" = "$id" ] || continue
           files+=("$f")
         done
-        [ "${#files[@]}" -le 1 ] || exit 1
+        # --force untags every reference that names the ID at this moment.
+        case " $* " in *" --force "*) ;; *) [ "${#files[@]}" -le 1 ] || exit 1 ;; esac
         rm -f "${files[@]}" "$s/ids/${id#sha256:}"; exit 0 ;;
     esac
     ref=${*: -1}
@@ -486,6 +487,24 @@ for moved in qrdb-ci-it:aaaaaaaaaaaaaaaa qrdb-toolchain:aaaaaaaaaaaaaaaa; do
     ok "prune keeps the moved content-hash tag $moved and reclaims the old image"
   else bad "prune keeps the moved content-hash tag $moved and reclaims the old image (rc=$rc, left: $(ls "$D/state/tags" | tr '\n' ' '))"; cat "$D/err"; fi
 done
+# 12a6. Codex P1 (#1596): another job moves the second content-hash tag to a
+# fresh image after prune inspected the old one, just before the removal
+# (STUB_RETAG_ON=rm; the daemon holds no other image, so that removal is the
+# old image's). Prune never removes a content-hash tag by name, so the fresh
+# tag still names the fresh image, and the old image goes by its ID.
+reset
+fresh
+mkdir -p "$D/state/created"
+tagimg qrdb-ci-it:aaaaaaaaaaaaaaaa "$id_b"
+tagimg qrdb-toolchain:aaaaaaaaaaaaaaaa "$id_b"
+for i in "$id_a" "$id_b"; do echo "$old" > "$D/state/created/${i#sha256:}"; done
+echo "$new" > "$D/state/created/${id_c#sha256:}"
+run prune 24 -- STUB_RETAG_ON=rm STUB_RETAG_TAG=qrdb-toolchain:aaaaaaaaaaaaaaaa STUB_RETAG_ID="$id_c"
+if [ "$rc" = 0 ] && [ "$(sed -n 1p "$D/state/tags/qrdb-toolchain_aaaaaaaaaaaaaaaa" 2>/dev/null)" = "$id_c" ] &&
+  [ -e "$D/state/ids/${id_c#sha256:}" ] && [ ! -e "$D/state/ids/${id_b#sha256:}" ] &&
+  [ ! -e "$D/state/tags/qrdb-ci-it_aaaaaaaaaaaaaaaa" ] && ! called '^rmi qrdb-'; then
+  ok "prune removes an expired image by ID and keeps a content-hash tag moved after its inspect"
+else bad "prune removes an expired image by ID and keeps a content-hash tag moved after its inspect (rc=$rc, left: $(ls "$D/state/tags" | tr '\n' ' '))"; cat "$D/err"; fi
 # 12a4. Codex P1 (fx1597g): load leaves the archive's per-run tag beside the
 # content-hash tag, and a push can leave its run's pushed tag. Two tag
 # references make the daemon refuse a removal by ID, so prune untags the
