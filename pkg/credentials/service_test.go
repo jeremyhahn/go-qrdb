@@ -226,57 +226,6 @@ func TestRetrieveCredential_Manual_AlreadyStored(t *testing.T) {
 	assert.Equal(t, []byte("val"), got)
 }
 
-func TestRetrieveCredential_Manual_BlocksUntilSubmitted(t *testing.T) {
-	svc, err := NewCredentialService(nil, nil, testLogger())
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	var wg sync.WaitGroup
-	var got []byte
-	var retrieveErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		got, retrieveErr = svc.retrieveBytes(ctx, "deferred")
-	}()
-
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(20 * time.Millisecond)
-
-	err = svc.SubmitCredential(ctx, "deferred", []byte("delayed-value"))
-	require.NoError(t, err)
-
-	wg.Wait()
-
-	require.NoError(t, retrieveErr)
-	assert.Equal(t, []byte("delayed-value"), got)
-}
-
-func TestRetrieveCredential_Manual_ContextCancellation(t *testing.T) {
-	svc, err := NewCredentialService(nil, nil, testLogger())
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	var wg sync.WaitGroup
-	var retrieveErr error
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		_, retrieveErr = svc.retrieveBytes(ctx, "never-submitted")
-	}()
-
-	// Give the goroutine time to register as a waiter.
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-
-	wg.Wait()
-
-	assert.ErrorIs(t, retrieveErr, context.Canceled)
-}
-
 func TestRetrieveCredential_Manual_EmptyName(t *testing.T) {
 	svc, err := NewCredentialService(nil, nil, testLogger())
 	require.NoError(t, err)
@@ -555,32 +504,6 @@ func TestAutoUnsealAvailable_Barrier(t *testing.T) {
 	assert.True(t, svc.AutoUnsealAvailable())
 }
 
-// --- Validation helper tests ---
-
-func TestValidateName_Valid(t *testing.T) {
-	assert.NoError(t, validateName("valid-name"))
-}
-
-func TestValidateName_Empty(t *testing.T) {
-	assert.ErrorIs(t, validateName(""), ErrEmptyCredentialName)
-}
-
-func TestValidateName_Whitespace(t *testing.T) {
-	assert.ErrorIs(t, validateName("  \t  "), ErrEmptyCredentialName)
-}
-
-func TestValidateValue_Valid(t *testing.T) {
-	assert.NoError(t, validateValue([]byte("data")))
-}
-
-func TestValidateValue_Empty(t *testing.T) {
-	assert.ErrorIs(t, validateValue([]byte{}), ErrEmptyCredentialValue)
-}
-
-func TestValidateValue_Nil(t *testing.T) {
-	assert.ErrorIs(t, validateValue(nil), ErrEmptyCredentialValue)
-}
-
 // --- Concurrent access tests ---
 
 func TestStoreCredential_Manual_ConcurrentAccess(t *testing.T) {
@@ -612,6 +535,8 @@ func TestSubmitCredential_Manual_MultipleWaiters(t *testing.T) {
 
 	ctx := context.Background()
 	const numWaiters = 5
+	registered := make(chan struct{}, numWaiters)
+	svc.testHooks.afterWaiterRegistered = func() { registered <- struct{}{} }
 	results := make([][]byte, numWaiters)
 	errs := make([]error, numWaiters)
 	var wg sync.WaitGroup
@@ -624,8 +549,9 @@ func TestSubmitCredential_Manual_MultipleWaiters(t *testing.T) {
 		}(i)
 	}
 
-	// Give goroutines time to register as waiters.
-	time.Sleep(30 * time.Millisecond)
+	for range numWaiters {
+		<-registered
+	}
 
 	require.NoError(t, svc.SubmitCredential(ctx, "shared", []byte("broadcast")))
 

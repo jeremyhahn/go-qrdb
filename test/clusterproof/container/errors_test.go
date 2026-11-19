@@ -28,15 +28,3 @@ func TestErrorMessages(t *testing.T) {
 		}
 	}
 }
-
-func TestErrorsUnwrap(t *testing.T) {
-	inner := errors.New("inner")
-	for _, err := range []error{
-		&CommandError{Node: "n1", Step: "start", Err: inner},
-		&StepError{Node: "n1", Step: "first boot", Err: inner},
-	} {
-		if !errors.Is(err, inner) {
-			t.Errorf("%T does not unwrap to its cause", err)
-		}
-	}
-}

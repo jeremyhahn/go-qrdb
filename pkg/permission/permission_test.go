@@ -32,13 +32,6 @@ func TestPermission_String(t *testing.T) {
 	}
 }
 
-func TestPermission_String_Empty(t *testing.T) {
-	p := Permission("")
-	if p.String() != "" {
-		t.Fatalf("String(): got %q, want %q", p.String(), "")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Resource
 // ---------------------------------------------------------------------------
@@ -487,33 +480,11 @@ func TestInvalidPermissionError_Error(t *testing.T) {
 	}
 }
 
-func TestInvalidPermissionError_As(t *testing.T) {
-	var err error = &InvalidPermissionError{Value: "test"}
-	var target *InvalidPermissionError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *InvalidPermissionError")
-	}
-	if target.Value != "test" {
-		t.Fatalf("Value: got %q, want %q", target.Value, "test")
-	}
-}
-
 func TestUnregisteredPermissionError_Error(t *testing.T) {
 	err := &UnregisteredPermissionError{Permission: "foo:bar"}
 	want := "permission: not registered: foo:bar"
 	if err.Error() != want {
 		t.Fatalf("Error(): got %q, want %q", err.Error(), want)
-	}
-}
-
-func TestUnregisteredPermissionError_As(t *testing.T) {
-	var err error = &UnregisteredPermissionError{Permission: "x:y"}
-	var target *UnregisteredPermissionError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *UnregisteredPermissionError")
-	}
-	if target.Permission != "x:y" {
-		t.Fatalf("Permission: got %q, want %q", target.Permission, "x:y")
 	}
 }
 

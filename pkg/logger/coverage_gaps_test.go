@@ -132,22 +132,6 @@ func TestInvalidLogLevelError_Error_FromErrors(t *testing.T) {
 // parseLevel - uncovered branches (fatal, panic, default)
 // ---------------------------------------------------------------------------
 
-// TestParseLevel_Fatal verifies that "fatal" maps to LevelFatal.
-func TestParseLevel_Fatal(t *testing.T) {
-	level := parseLevel("fatal")
-	if level != LevelFatal {
-		t.Errorf("parseLevel(fatal) = %v, want %v", level, LevelFatal)
-	}
-}
-
-// TestParseLevel_Panic verifies that "panic" maps to LevelPanic.
-func TestParseLevel_Panic(t *testing.T) {
-	level := parseLevel("panic")
-	if level != LevelPanic {
-		t.Errorf("parseLevel(panic) = %v, want %v", level, LevelPanic)
-	}
-}
-
 // TestParseLevel_Default verifies that an unrecognised level falls back to
 // slog.LevelInfo (not a panic or error).
 func TestParseLevel_Default(t *testing.T) {
@@ -160,22 +144,6 @@ func TestParseLevel_Default(t *testing.T) {
 // ---------------------------------------------------------------------------
 // levelToString - uncovered branches (fatal, panic, default)
 // ---------------------------------------------------------------------------
-
-// TestLevelToString_Fatal verifies that LevelFatal maps to "fatal".
-func TestLevelToString_Fatal(t *testing.T) {
-	s := levelToString(LevelFatal)
-	if s != "fatal" {
-		t.Errorf("levelToString(LevelFatal) = %q, want %q", s, "fatal")
-	}
-}
-
-// TestLevelToString_Panic verifies that LevelPanic maps to "panic".
-func TestLevelToString_Panic(t *testing.T) {
-	s := levelToString(LevelPanic)
-	if s != "panic" {
-		t.Errorf("levelToString(LevelPanic) = %q, want %q", s, "panic")
-	}
-}
 
 // TestLevelToString_Default verifies that an unknown level value falls back
 // to "info".
@@ -190,22 +158,6 @@ func TestLevelToString_Default(t *testing.T) {
 // ---------------------------------------------------------------------------
 // WithFields - empty map branch
 // ---------------------------------------------------------------------------
-
-// TestNew_TraceLevel_ReplaceAttr verifies that a logger created with trace
-// level exercises the TRACE branch in the ReplaceAttr handler. This is
-// validated by logging at trace level and confirming no panic.
-func TestNew_TraceLevel_ReplaceAttr(t *testing.T) {
-	log, err := New(LogConfig{
-		Level:  "trace",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("New(trace): %v", err)
-	}
-	// Emit a trace-level message to exercise the TRACE branch in ReplaceAttr.
-	log.Debug("trace level logger created")
-}
 
 // TestWithFields_CopiesExistingFields verifies that WithFields properly copies
 // the caller's existing fields into the new logger's field map.

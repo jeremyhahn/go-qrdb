@@ -19,6 +19,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // BarrierSecretKind names the kind of barrier secret a request carries in its
@@ -97,6 +98,15 @@ func IsHTTPS(address string) bool {
 	return err == nil && u.Scheme == "https"
 }
 
+// IsHTTP reports whether address names the plaintext http:// scheme
+// explicitly. The gRPC and QUIC transports treat such an address as not TLS
+// for barrier secrets and the SO PIN, whatever their TLS settings say: the
+// caller asked for plaintext.
+func IsHTTP(address string) bool {
+	u, err := url.Parse(address)
+	return err == nil && u.Scheme == "http"
+}
+
 // barrierSecretKey is the context key GuardBarrierSecret marks a request's
 // context with.
 type barrierSecretKey struct{}
@@ -148,7 +158,7 @@ func (e *BarrierSecretRequiresTLSError) Error() string {
 // a barrier secret in its body is redirected to a host other than the one it
 // was sent to. The redirected request is refused before it is sent, so a 307
 // or 308 does not resend the secret to that host. A redirect to the same host
-// is followed as before.
+// is refused too, with *BarrierSecretRedirectError.
 type BarrierSecretForeignHostError struct {
 	// Transport names the SDK transport that refused ("rest", "mcp").
 	Transport string
@@ -168,13 +178,15 @@ func (e *BarrierSecretForeignHostError) Error() string {
 
 // barrierSecretHopError returns the typed refusal for one hop of a request
 // whose body carries a secret of kind, or nil when the hop may be sent: a hop
-// that is not https is refused, and so is a redirect to a host other than the
-// one the request was first sent to.
+// that is not https is refused, and so is every redirect: to a host other than
+// the one the request was first sent to with the foreign-host error, to the
+// same host with *BarrierSecretRedirectError.
 func barrierSecretHopError(transportName string, kind BarrierSecretKind, req *http.Request) error {
 	if req.URL.Scheme != "https" {
 		return barrierSecretTLSError(transportName, kind)
 	}
-	if first := firstHop(req); first.URL.Host != req.URL.Host {
+	first := firstHop(req)
+	if first.URL.Host != req.URL.Host {
 		if kind == soPINSecret {
 			return &SOPINForeignHostError{Transport: transportName, Host: req.URL.Host}
 		}
@@ -185,7 +197,39 @@ func barrierSecretHopError(transportName string, kind BarrierSecretKind, req *ht
 			RedirectHost: req.URL.Host,
 		}
 	}
+	if req.Response != nil {
+		return barrierSecretRedirectError(transportName, kind, req.Response.StatusCode)
+	}
 	return nil
+}
+
+// barrierSecretRedirectError is the typed refusal for a redirect hop, to the
+// same host included, of a request carrying a secret of kind.
+func barrierSecretRedirectError(transportName string, kind BarrierSecretKind, status int) error {
+	if kind == soPINSecret {
+		return &SOPINRedirectError{Transport: transportName, Status: status}
+	}
+	return &BarrierSecretRedirectError{Transport: transportName, Kind: kind, Status: status}
+}
+
+// BarrierSecretRedirectError is returned when a REST or MCP request carrying a
+// barrier secret in its body is answered with a redirect, to the same host
+// included. The redirected request is refused before it is sent: a secret is
+// sent once, to the URL the caller configured, and never replayed to a path
+// the server names.
+type BarrierSecretRedirectError struct {
+	// Transport names the SDK transport that refused ("rest", "mcp").
+	Transport string
+	// Kind names the secret the request carried, never its value.
+	Kind BarrierSecretKind
+	// Status is the HTTP status of the redirect response (307, 308, ...).
+	Status int
+}
+
+// Error returns a description that never contains the secret.
+func (e *BarrierSecretRedirectError) Error() string {
+	return "transport: " + e.Transport + ": the " + string(e.Kind) + " is never resent on a redirect; refusing to follow a " +
+		strconv.Itoa(e.Status) + " " + http.StatusText(e.Status)
 }
 
 // firstHop returns the request an http.Client was first given, following the

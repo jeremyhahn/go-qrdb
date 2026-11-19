@@ -58,6 +58,8 @@ func TestCLIStorageMatrixLifecycle(t *testing.T) {
 					t.Logf("stderr: %s", stderr)
 					t.Fatalf("[%s] database info failed: %v", proto, err)
 				}
+				assertContains(t, stdout, "Backend:",
+					fmt.Sprintf("[%s] database info should contain 'Backend:'", proto))
 				assertContains(t, strings.ToLower(stdout), backend,
 					fmt.Sprintf("[%s] database info should contain backend '%s'", proto, backend))
 
@@ -226,7 +228,7 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 
 				// Update 4: update-barrier --enabled fails closed on this
 				// shared-store database (a per-database barrier is only real
-				// on a dedicated store; see cli_database_test.go). The
+				// on a dedicated store; see cli_database_barrier_test.go). The
 				// dedicated-store happy path lives in the cluster-lane
 				// TestDatabaseBarrier* tests.
 				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto,
@@ -275,69 +277,6 @@ func TestCLIStorageMatrixUpdateOperations(t *testing.T) {
 					fmt.Sprintf("[%s] database drop should output 'OK'", proto))
 
 				t.Logf("[%s] storage matrix update operations passed for backend=%s", proto, backend)
-			})
-		}
-	}
-}
-
-// TestCLIStorageMatrixBackendVerification verifies that the backend reported
-// by database info matches the backend requested at creation time. Each
-// backend type is tested across all protocols to ensure the backend value is
-// correctly persisted and reported.
-func TestCLIStorageMatrixBackendVerification(t *testing.T) {
-	cfg := LoadTestConfig()
-	requireCLI(t, cfg)
-
-	backends := []string{"memory", "file", "pebble"}
-
-	for _, backend := range backends {
-		for _, proto := range AllProtocols() {
-			t.Run(fmt.Sprintf("%s/%s", backend, proto), func(t *testing.T) {
-				if !cfg.IsProtocolAvailable(t, proto) {
-					t.Fatalf("server not available for protocol %s", proto)
-				}
-
-				dbName := fmt.Sprintf("bkv-%s-%s-%d", backend, proto, testTimestamp())
-
-				// Register cleanup before any mutations.
-				t.Cleanup(func() {
-					execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName) //nolint:errcheck
-				})
-
-				// Create database with specific backend.
-				stdout, stderr, err := execCLIWithProtocol(t, cfg, proto,
-					"database", "create", dbName,
-					"--backend", backend)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database create --backend %s failed: %v", proto, backend, err)
-				}
-				t.Logf("[%s] created database %s with backend=%s", proto, dbName, backend)
-
-				// Verify info shows the correct backend.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "info", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database info failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "Backend:",
-					fmt.Sprintf("[%s] database info should contain 'Backend:'", proto))
-				assertContains(t, strings.ToLower(stdout), backend,
-					fmt.Sprintf("[%s] database info Backend should be '%s'", proto, backend))
-
-				// Drop the database.
-				stdout, stderr, err = execCLIWithProtocol(t, cfg, proto, "database", "drop", dbName)
-				if err != nil {
-					t.Logf("stdout: %s", stdout)
-					t.Logf("stderr: %s", stderr)
-					t.Fatalf("[%s] database drop failed: %v", proto, err)
-				}
-				assertContains(t, stdout, "OK",
-					fmt.Sprintf("[%s] database drop should output 'OK'", proto))
-
-				t.Logf("[%s] backend verification passed for backend=%s", proto, backend)
 			})
 		}
 	}

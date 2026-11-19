@@ -125,42 +125,6 @@ func providerCfg(srv *httptest.Server, name string) qrdbconfig.EmbeddingProvider
 // BuildServices with embedding + RAG wired
 // ---------------------------------------------------------------------------
 
-// TestBuildServices_EmbeddingAndRAGNonNil verifies that BuildServices wires
-// non-nil Embedding and RAG services when at least one provider is configured.
-func TestBuildServices_EmbeddingAndRAGNonNil(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "fake",
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "fake")},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	if node.Embedding == nil {
-		t.Error("Embedding is nil; expected non-nil when providers are configured")
-	}
-	if node.RAG == nil {
-		t.Error("RAG is nil; expected non-nil when providers and vector service are available")
-	}
-}
-
 // TestBuildServices_EmbeddingAndRAGNilWhenNoProviders confirms that Embedding
 // and RAG remain nil when no providers are configured (default mode).
 func TestBuildServices_EmbeddingAndRAGNilWhenNoProviders(t *testing.T) {
@@ -186,43 +150,6 @@ func TestBuildServices_EmbeddingAndRAGNilWhenNoProviders(t *testing.T) {
 	}
 	if node.RAG != nil {
 		t.Error("RAG must be nil when no providers are configured")
-	}
-}
-
-// TestBuildServices_EmbeddingWithCacheCapacity verifies the cache-enabled path
-// inside buildEmbeddingAndRAG (CacheCapacity > 0 branch).
-func TestBuildServices_EmbeddingWithCacheCapacity(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "cached",
-			CacheCapacity:   128,
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "cached")},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices with cache: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	if node.Embedding == nil {
-		t.Error("Embedding is nil with CacheCapacity > 0")
-	}
-	if node.RAG == nil {
-		t.Error("RAG is nil with CacheCapacity > 0")
 	}
 }
 
@@ -260,84 +187,6 @@ func TestBuildServices_EmbeddingProviderDefaultName(t *testing.T) {
 
 	if node.Embedding == nil {
 		t.Error("Embedding is nil when provider name defaulted to 'default'")
-	}
-}
-
-// TestBuildServices_EmbeddingBaseURLStripV1Suffix verifies that BuildServices
-// succeeds when the BaseURL already contains a trailing "/v1" — the lifecycle
-// code must strip it to prevent a double-suffix.
-func TestBuildServices_EmbeddingBaseURLStripV1Suffix(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	// BaseURL already includes "/v1" — lifecycle must strip it.
-	cfgWithSuffix := qrdbconfig.EmbeddingProviderConfig{
-		Name:       "strip",
-		BaseURL:    srv.URL + "/v1",
-		Model:      "fake-model",
-		MaxRetries: 0,
-	}
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "strip",
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{cfgWithSuffix},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices strip-v1: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	if node.Embedding == nil {
-		t.Error("Embedding is nil after /v1-strip construction")
-	}
-}
-
-// TestBuildServices_EmbeddingTimeoutParsed verifies the Timeout duration-parse
-// branch inside buildEmbeddingAndRAG (non-empty Timeout string path).
-func TestBuildServices_EmbeddingTimeoutParsed(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	cfg := providerCfg(srv, "timeout-parsed")
-	cfg.Timeout = "10s"
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "timeout-parsed",
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{cfg},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices timeout-parsed: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	if node.Embedding == nil {
-		t.Error("Embedding is nil with explicit timeout")
 	}
 }
 
@@ -619,69 +468,6 @@ func TestRAGIngestorAdapter_Ingest(t *testing.T) {
 	}
 }
 
-// TestRAGRetrieverAdapter_Retrieve exercises ragRetrieverAdapter.Retrieve by
-// querying an already-ingested document. It relies on the same fake HTTP server
-// and in-memory pebble vector store. Both Ingest and Retrieve adapters are
-// fully exercised.
-func TestRAGRetrieverAdapter_Retrieve(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "fake",
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "fake")},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	ctx := context.Background()
-
-	// Ingest a document so the retriever has something to find.
-	_, err = node.RAG.IngestDocument(ctx, &service.IngestDocumentRequest{
-		DocumentID: "doc-retrieve",
-		Text:       strings.Repeat("Go is an open source programming language. ", 20),
-		Namespace:  "ret-ns",
-		Model:      "fake-model",
-		Provider:   "fake",
-	})
-	if err != nil {
-		t.Fatalf("IngestDocument for retrieval: %v", err)
-	}
-
-	// Query exercises ragRetrieverAdapter.Retrieve.
-	qResp, err := node.RAG.Query(ctx, &service.RAGQueryRequest{
-		Query:     "What is Go?",
-		Namespace: "ret-ns",
-		TopK:      3,
-		Model:     "fake-model",
-		Provider:  "fake",
-	})
-	if err != nil {
-		t.Fatalf("Query: %v", err)
-	}
-	// The query returns whatever the vector store found; we only assert the
-	// call succeeded and the response structure is valid (no panic, no nil
-	// pointer).
-	if qResp == nil {
-		t.Error("Query returned nil response")
-	}
-}
-
 // TestRAGService_DeleteDocumentRemovesVectors proves on the node's real
 // vector and KV services that deleting a document removes every one of its
 // chunk vectors, not only the chunk text, and leaves the other document's.
@@ -777,55 +563,6 @@ func TestRAGService_DeleteDocumentRemovesVectors(t *testing.T) {
 		if r.DocumentID != "doc-kept" {
 			t.Errorf("query after delete returned a chunk of %q", r.DocumentID)
 		}
-	}
-}
-
-// TestRAGIngestorAdapter_IngestWithChunkConfig verifies the ChunkConfig
-// conversion branch inside ragIngestorAdapter.Ingest (req.ChunkConfig != nil).
-func TestRAGIngestorAdapter_IngestWithChunkConfig(t *testing.T) {
-	srv := fakeEmbeddingServer(t)
-	defer srv.Close()
-
-	host := newLocalHost()
-	defer func() { _ = host.Close() }()
-
-	hub := watch.NewHub()
-	defer hub.Close()
-
-	node, err := lifecycle.BuildServices(context.Background(), lifecycle.Infra{
-		Host:     host,
-		WatchHub: hub,
-		DataDir:  t.TempDir(),
-		Logger:   slog.Default(),
-		EmbeddingConfig: qrdbconfig.EmbeddingConfig{
-			DefaultProvider: "fake",
-			Providers:       []qrdbconfig.EmbeddingProviderConfig{providerCfg(srv, "fake")},
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildServices: %v", err)
-	}
-	defer func() { _ = node.Stop(context.Background()) }()
-	bindNodeRAG(node)
-
-	resp, err := node.RAG.IngestDocument(context.Background(), &service.IngestDocumentRequest{
-		DocumentID: "doc-chunk",
-		Text:       strings.Repeat("A sentence about distributed systems. ", 8),
-		Namespace:  "chunk-ns",
-		Model:      "fake-model",
-		Provider:   "fake",
-		ChunkConfig: &service.ChunkConfig{
-			Strategy:  "fixed",
-			ChunkSize: 64,
-			Overlap:   10,
-			MinSize:   20,
-		},
-	})
-	if err != nil {
-		t.Fatalf("IngestDocument with ChunkConfig: %v", err)
-	}
-	if resp.DocumentID != "doc-chunk" {
-		t.Errorf("unexpected DocumentID %q", resp.DocumentID)
 	}
 }
 

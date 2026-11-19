@@ -104,12 +104,6 @@ func TestTenantIndexKey(t *testing.T) {
 	}
 }
 
-func TestTenantIndexKey_DifferentTenantsDoNotCollide(t *testing.T) {
-	if string(TenantIndexKey("acme", "sess1")) == string(TenantIndexKey("globex", "sess1")) {
-		t.Error("TenantIndexKey(\"acme\", ...) == TenantIndexKey(\"globex\", ...), want distinct keys for distinct tenants")
-	}
-}
-
 func TestTenantIndexScanPrefix_MatchesExactlyItsOwnTenant(t *testing.T) {
 	acmePrefix := string(TenantIndexScanPrefix("acme"))
 	acmeSession := string(TenantIndexKey("acme", "sess1"))

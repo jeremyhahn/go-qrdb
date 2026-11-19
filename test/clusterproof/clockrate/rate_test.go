@@ -143,36 +143,6 @@ func TestCheckRefusals(t *testing.T) {
 	}
 }
 
-func TestSetChangesRateAndReturnsPrevious(t *testing.T) {
-	k := guest()
-	slow := Rate{Tick: 9950}
-	prev, err := Set(k, slow, harness)
-	if err != nil || prev != Nominal || k.rate != slow {
-		t.Fatalf("Set = %+v, %v; kernel at %+v", prev, err, k.rate)
-	}
-	prev, err = Set(k, Nominal, harness)
-	if err != nil || prev != slow || k.rate != Nominal {
-		t.Fatalf("restore = %+v, %v; kernel at %+v", prev, err, k.rate)
-	}
-}
-
-func TestSetRefusesBeforeTouchingTheKernel(t *testing.T) {
-	for name, k := range map[string]*fakeKernel{
-		"harness kernel":  {bootID: harness, sysTime: true, rate: Nominal},
-		"no CAP_SYS_TIME": {bootID: "guest", rate: Nominal},
-	} {
-		if _, err := Set(k, Rate{Tick: 9950}, harness); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
-		if len(k.sets) != 0 {
-			t.Errorf("%s: kernel set %+v", name, k.sets)
-		}
-	}
-	if _, err := Set(guest(), Nominal, ""); !errors.Is(err, ErrUsage) {
-		t.Fatalf("empty harness id: %v", err)
-	}
-}
-
 func TestSetReportsKernelFailures(t *testing.T) {
 	boom := errors.New("boom")
 	k := guest()

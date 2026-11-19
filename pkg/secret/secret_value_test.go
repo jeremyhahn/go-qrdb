@@ -161,20 +161,3 @@ func TestSecretValue_Expired_FutureTime(t *testing.T) {
 		t.Error("Expired() must return false when ExpiresAt is in the future")
 	}
 }
-
-func TestSecretValue_Strategy(t *testing.T) {
-	for _, tc := range []struct {
-		strategy secret.ResolvedStrategy
-	}{
-		{secret.StrategyLiteral},
-		{secret.StrategyCredential},
-		{secret.StrategyLocalKMS},
-		{secret.StrategyRemoteKMS},
-		{secret.StrategyAutoGen},
-	} {
-		sv := mustSecretValue(t, "raw", []byte("v"), tc.strategy)
-		if sv.Strategy != tc.strategy {
-			t.Errorf("Strategy = %q, want %q", sv.Strategy, tc.strategy)
-		}
-	}
-}

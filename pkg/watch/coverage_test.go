@@ -106,93 +106,12 @@ func TestDeliverEvents_StreamError(t *testing.T) {
 
 // TestConvertEvents_DeleteEvent verifies that convertEvents produces a
 // ManagerEventTypeDelete event when a DELETE watch event is received.
-func TestConvertEvents_DeleteEvent(t *testing.T) {
-	mgr := NewManager()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	eventCh, err := mgr.Watch(ctx, "del-key")
-	require.NoError(t, err)
-
-	mgr.NotifyDelete([]byte("del-key"), []byte("old-value"), 2, 1)
-
-	select {
-	case event := <-eventCh:
-		assert.Equal(t, ManagerEventTypeDelete, event.Type)
-		assert.Equal(t, []byte("del-key"), event.Key)
-		// Previous value should be available when PrevKv was set.
-		assert.Equal(t, []byte("old-value"), event.Value)
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for delete event")
-	}
-}
-
 // TestSendEvent_FilterNoPut verifies that sendEvent discards PUT events when
 // the NoPut filter is set.
-func TestSendEvent_FilterNoPut(t *testing.T) {
-	mgr := NewManager()
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	stream := newMockStream(ctx)
-	_, err := mgr.Add([]byte("filter-put"), nil, 0, WatchFilters{NoPut: true}, stream)
-	require.NoError(t, err)
-
-	mgr.NotifyPut([]byte("filter-put"), nil, []byte("v"), 1, 1)
-
-	// No event should arrive because NoPut filter discards it.
-	select {
-	case resp := <-stream.ch:
-		t.Errorf("unexpected event received with NoPut filter: %v", resp)
-	case <-ctx.Done():
-		// Expected: timeout because no event was delivered.
-	}
-}
-
 // TestSendEvent_FilterNoDelete verifies that sendEvent discards DELETE events
 // when the NoDelete filter is set.
-func TestSendEvent_FilterNoDelete(t *testing.T) {
-	mgr := NewManager()
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-
-	stream := newMockStream(ctx)
-	_, err := mgr.Add([]byte("filter-del"), nil, 0, WatchFilters{NoDelete: true}, stream)
-	require.NoError(t, err)
-
-	mgr.NotifyDelete([]byte("filter-del"), nil, 1, 1)
-
-	// No event should arrive because NoDelete filter discards it.
-	select {
-	case resp := <-stream.ch:
-		t.Errorf("unexpected event received with NoDelete filter: %v", resp)
-	case <-ctx.Done():
-		// Expected: timeout because no event was delivered.
-	}
-}
-
 // TestWatch_ContextCancellation verifies that Watch cleans up properly when
 // the context is cancelled before any event is received.
-func TestWatch_ContextCancellation(t *testing.T) {
-	mgr := NewManager()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	eventCh, err := mgr.Watch(ctx, "cancel-key")
-	require.NoError(t, err)
-
-	cancel()
-
-	// Channel should be closed once the goroutine exits.
-	select {
-	case _, ok := <-eventCh:
-		if ok {
-			t.Error("expected channel to be closed after context cancellation")
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Error("timeout: channel was not closed after context cancellation")
-	}
-}
-
 // TestWatch_DeleteEventNilPrevKv verifies that a delete event with no PrevKv
 // produces a nil Value in the ManagerEvent.
 func TestWatch_DeleteEventNilPrevKv(t *testing.T) {

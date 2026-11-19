@@ -116,8 +116,8 @@ func NewSender(resolver AdminURLResolver, client *http.Client, caPool *x509.Cert
 // SAN equals expectedNodeID, AND it has not been revoked), and only then
 // returns the node's ECDSA P-256 delivery public key. This is the trust anchor for HPKE recipient-binding:
 // without it the leader would seal the root key to whatever key the network
-// returned (an on-path attacker's key under no-mTLS). Fails closed — unlike the
-// receiver's best-effort SAN skip, the sender has a concrete expected identity.
+// returned (an on-path attacker's key under no-mTLS). Fails closed: the sender
+// has a concrete expected identity, the node it delivers to.
 func (s *Sender) fetchNodeKey(ctx context.Context, adminURL, expectedNodeID string) (*ecdsa.PublicKey, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, adminURL+"/v1/cluster/nodekey", nil)
 	if err != nil {
