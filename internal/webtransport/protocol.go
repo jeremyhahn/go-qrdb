@@ -25,16 +25,14 @@ const (
 
 const (
 	// protocolHeader is the Extended-CONNECT :protocol value per
-	// draft-ietf-webtrans-http3-15 §3.2, §9.1.
+	// draft-ietf-webtrans-http3-16 §3.2, §9.1. It is the only value accepted.
 	protocolHeader = "webtransport-h3"
-	// protocolHeaderLegacy is the pre-draft-15 value. Accepted by the server
-	// (but not sent by the client) for compatibility with peers that have not yet
-	// migrated.
-	protocolHeaderLegacy = "webtransport"
 )
 
+// isWebTransportProtocol reports whether s is the draft-16 §3.2 :protocol
+// token "webtransport-h3". The pre-draft-15 "webtransport" token is refused.
 func isWebTransportProtocol(s string) bool {
-	return s == protocolHeader || s == protocolHeaderLegacy
+	return s == protocolHeader
 }
 
 // WebTransport session IDs are the stream IDs of the CONNECT requests that

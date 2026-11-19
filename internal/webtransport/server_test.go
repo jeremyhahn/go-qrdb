@@ -75,11 +75,11 @@ func TestUpgradeProtocolAcceptance(t *testing.T) {
 		require.EqualError(t, err, "webtransport: missing QUIC connection")
 	})
 
-	t.Run("accepts legacy webtransport", func(t *testing.T) {
+	t.Run("rejects legacy webtransport", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodConnect, "/webtransport", nil)
 		req.Proto = "webtransport"
 		_, err := s.Upgrade(httptest.NewRecorder(), req)
-		require.EqualError(t, err, "webtransport: missing QUIC connection")
+		require.EqualError(t, err, "unexpected protocol: webtransport")
 	})
 
 	t.Run("rejects unknown protocol", func(t *testing.T) {
