@@ -49,7 +49,7 @@
   type IconComponent = any;
   import { navStore, navigateToAdmin } from "../../stores/navigation.svelte.ts";
   import type { AdminView } from "../../stores/navigation.svelte.ts";
-  import { connManagerStore } from "../../stores/connection-manager.svelte.ts";
+  import { adminViewAllowed, hasAdminViews } from "../../stores/connection-manager.svelte.ts";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -93,9 +93,10 @@
     readonly items: readonly AdminItem[];
   }
 
-  // A server that refused the caller its admin topology (403) offers it no
-  // admin view: the caller is a user, not a server administrator.
-  const allSections: AdminSection[] = $derived.by(() => connManagerStore.nonAdminProfileIds.includes(profileId) ? [] : [
+  // Each admin view shows only when the server allowed the caller its own
+  // read route (connect-time probe); a refused (403) view is not offered,
+  // and a section left with no view is dropped.
+  const allSections: AdminSection[] = $derived.by(() => ([
     {
       title: 'Overview',
       items: [
@@ -133,7 +134,9 @@
         { id: 'settings' as AdminView,   label: 'Settings',   icon: SettingsIcon },
       ],
     },
-  ]);
+  ] as AdminSection[])
+    .map((s) => ({ ...s, items: s.items.filter((i) => adminViewAllowed(profileId, i.id)) }))
+    .filter((s) => hasAdminViews(profileId) && s.items.length > 0));
 
   // ---------------------------------------------------------------------------
   // Derived
