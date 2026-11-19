@@ -342,10 +342,16 @@ func (s *CredentialService) RotateDue(ctx context.Context, now time.Time) (int, 
 // rotateIfDue carries out one credential's policy if it is due at now. It
 // reports whether this call rotated the credential.
 func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now time.Time) (bool, error) {
-	claim, cleanup, err := s.claimRotation(ctx, name, now)
+	// The scheduler's context carries no deadline: the claim and the
+	// retention cleanup each get the attempt bound of their own, so a
+	// store that stops answering holds the pass no longer than a stalled
+	// rotation does.
+	cctx, ccancel := s.attemptContext(ctx)
+	claim, cleanup, err := s.claimRotation(cctx, name, now)
+	ccancel()
 	if claim == nil {
 		if cleanup != "" {
-			err = errors.Join(err, s.cleanupRotation(ctx, name, cleanup))
+			err = errors.Join(err, s.boundedCleanup(ctx, name, cleanup))
 		}
 		return false, err
 	}
@@ -374,13 +380,30 @@ func (s *CredentialService) rotateIfDue(ctx context.Context, name string, now ti
 		}
 		return false, err
 	}
-	if err := s.cleanupRotation(ctx, name, claim.ID); err != nil {
+	if err := s.boundedCleanup(ctx, name, claim.ID); err != nil {
 		return true, err
 	}
 	s.logger.Info("credential rotated on schedule",
 		slog.String("name", name),
 		slog.Time("next_rotation", next))
 	return true, nil
+}
+
+// attemptContext derives the context of one storage step of a scheduled
+// rotation (the claim, or the retention cleanup): ctx bounded by the
+// attempt timeout, which is fresh for each step.
+func (s *CredentialService) attemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if s.rotationAttemptTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, s.rotationAttemptTimeout)
+}
+
+// boundedCleanup runs cleanupRotation under its own attempt bound.
+func (s *CredentialService) boundedCleanup(ctx context.Context, name, id string) error {
+	cctx, cancel := s.attemptContext(ctx)
+	defer cancel()
+	return s.cleanupRotation(cctx, name, id)
 }
 
 // cleanupRotation carries out the retention of the completed scheduled

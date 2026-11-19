@@ -34,7 +34,10 @@ var errInjectedFault = errors.New("credentials test: injected storage fault")
 // a lost race, without writing, while casLosses is above zero.
 type faultBackend struct {
 	*seal.MemoryBackend
-	failGet    atomic.Pointer[string]
+	failGet atomic.Pointer[string]
+	// stallGet, when set, holds each Get of a key with this suffix until
+	// the caller's context ends.
+	stallGet   atomic.Pointer[string]
 	failPut    atomic.Pointer[string]
 	failDelete atomic.Pointer[string]
 	failList   atomic.Pointer[string]
@@ -65,6 +68,11 @@ var _ seal.StorageBackend = (*faultBackend)(nil)
 func (f *faultBackend) Get(ctx context.Context, key string) ([]byte, error) {
 	if s := f.failGet.Load(); s != nil && strings.HasSuffix(key, *s) {
 		return nil, errInjectedFault
+	}
+	if s := f.stallGet.Load(); s != nil && strings.HasSuffix(key, *s) {
+		// A store that never answers: the read ends only with its context.
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	value, err := f.MemoryBackend.Get(ctx, key)
 	if f.onGet != nil {

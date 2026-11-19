@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
@@ -1029,6 +1030,88 @@ func setFaultPolicy(t *testing.T, svc *CredentialService, name string, retain in
 	if err := svc.SetRotationPolicy(t.Context(), name, RotationPolicy{Enabled: true, Interval: time.Hour, RetainVersions: retain}); err != nil {
 		t.Fatalf("SetRotationPolicy: %v", err)
 	}
+}
+
+// requireAttemptBounded runs a RotateDue pass under the scheduler's context,
+// which carries no deadline, and asserts that the pass returned a's
+// attempt past its deadline, rotated nothing and took at most one attempt
+// bound. It runs inside a synctest bubble, so the bound is read on its clock.
+func requireAttemptBounded(t *testing.T, svc *CredentialService, now time.Time) {
+	t.Helper()
+	start := time.Now()
+	n, err := svc.RotateDue(t.Context(), now)
+	if n != 0 {
+		t.Fatalf("RotateDue rotated %d, want 0", n)
+	}
+	var rotErr *RotationError
+	if !errors.As(err, &rotErr) || rotErr.Name != "a" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RotateDue error = %v; want a's attempt past its deadline", err)
+	}
+	if spent := time.Since(start); spent > svc.rotationAttemptTimeout {
+		t.Fatalf("the stalled store held the pass for %v, want at most %v", spent, svc.rotationAttemptTimeout)
+	}
+}
+
+func TestRotateDue_StalledClaimIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, backend := newFaultRotationService(t)
+		setFaultPolicy(t, svc, "a", 5)
+		var calls atomic.Int32
+		countSource(svc, &calls)
+		key := metaKey("a")
+		backend.stallGet.Store(&key)
+
+		due := rotationEpoch.Add(time.Hour)
+		requireAttemptBounded(t, svc, due)
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("the source ran %d times without a claim, want 0", got)
+		}
+
+		backend.stallGet.Store(nil)
+		n, err := svc.RotateDue(t.Context(), due)
+		if n != 1 || err != nil {
+			t.Fatalf("RotateDue once the store answers = %d, %v; want 1, nil", n, err)
+		}
+	})
+}
+
+func TestRotateDue_StalledCleanupIsBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		svc, backend := newFaultRotationService(t)
+		setFaultPolicy(t, svc, "a", 5)
+		if err := svc.updateBarrierMeta(t.Context(), "a", "test", func(meta *credentialMeta) bool {
+			meta.PendingCleanup = "spent"
+			return true
+		}); err != nil {
+			t.Fatalf("seed pending cleanup: %v", err)
+		}
+		var calls atomic.Int32
+		countSource(svc, &calls)
+		// The claim's read answers; every later read of the record, the
+		// cleanup's, stalls.
+		key := metaKey("a")
+		backend.onGet = func(_ context.Context, got string) {
+			if strings.HasSuffix(got, key) {
+				backend.stallGet.Store(&key)
+			}
+		}
+
+		// Not due: the pass only runs the pending cleanup.
+		requireAttemptBounded(t, svc, rotationEpoch)
+
+		backend.onGet = nil
+		backend.stallGet.Store(nil)
+		if _, err := svc.RotateDue(t.Context(), rotationEpoch); err != nil {
+			t.Fatalf("RotateDue once the store answers: %v", err)
+		}
+		meta, err := svc.loadBarrierMeta(t.Context(), "a")
+		if err != nil || meta.PendingCleanup != "" {
+			t.Fatalf("pending cleanup = %q, %v; want it finished", meta.PendingCleanup, err)
+		}
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("the source ran %d times for a cleanup, want 0", got)
+		}
+	})
 }
 
 // countSource wraps svc's rotation source so calls counts its invocations.
