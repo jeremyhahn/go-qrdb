@@ -89,40 +89,43 @@ func diskExecStep(tmpl *Template, data func(Target) (any, []string)) step {
 // heal, not the server, restores the node. Restart is a no-op on a running
 // node; an [Unsealer] is unsealed after it, and a target with no unseal
 // command (ErrUnsupported) needs none. A target that cannot restart is left
-// as the free step left it.
+// as the free step left it. The node is expected to come back: the store
+// opens after a torn final write (a torn final WAL or MANIFEST frame is the
+// end of the log), and the soak's ledger then checks that no acknowledged
+// write was lost. A node that does not come back fails the heal with a
+// [NotRecoveredError].
 func restartAfterDiskFull(ctx context.Context, t Target) error {
 	r, ok := t.(Restarter)
 	if !ok {
 		return nil
 	}
 	if err := r.Restart(ctx); err != nil {
-		return &FailClosedStoreError{Node: t.Name(), Err: err}
+		return &NotRecoveredError{Node: t.Name(), Err: err}
 	}
 	u, ok := t.(Unsealer)
 	if !ok {
 		return nil
 	}
 	if err := u.Unseal(ctx); err != nil && !errors.Is(err, ErrUnsupported) {
-		return &FailClosedStoreError{Node: t.Name(), Err: err}
+		return &NotRecoveredError{Node: t.Name(), Err: err}
 	}
 	return nil
 }
 
-// FailClosedStoreError is the disk-full heal's finding when a node does not
-// come back after its disk was freed. ENOSPC can tear the in-place rewrite of
-// an encrypted file's final block; that block may hold synced records, so the
-// store refuses the open rather than drop them. The soak records it as an
-// unhealed fault in the bundle; it is reported, not recovered.
-type FailClosedStoreError struct {
+// NotRecoveredError is the disk-full heal's failure when a node does not come
+// back after its disk was freed. A node must recover from ENOSPC with every
+// acknowledged write intact, so this is a defect, never an expected outcome;
+// the fault stays pending and the soak reports it as unhealed.
+type NotRecoveredError struct {
 	Node string
 	Err  error
 }
 
-func (e *FailClosedStoreError) Error() string {
-	return "disk-full: node " + e.Node + " store failed closed after the disk was freed (a torn final encrypted block refuses the open): " + e.Err.Error()
+func (e *NotRecoveredError) Error() string {
+	return "disk-full: node " + e.Node + " did not recover after the disk was freed: " + e.Err.Error()
 }
 
-func (e *FailClosedStoreError) Unwrap() error { return e.Err }
+func (e *NotRecoveredError) Unwrap() error { return e.Err }
 
 // DefaultDiskThrottle caps the node's block I/O through the cgroup v2
 // io.max file of the server's cgroup: arguments device, bytes per second,

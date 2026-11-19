@@ -345,11 +345,12 @@ func TestDiskFullHealRestartsAfterFreeAndUnsealsASealedNode(t *testing.T) {
 	assertCalls(t, u.fakeTarget, nil)
 }
 
-// TestDiskFullHealReportsAFailClosedStore: a node whose store refuses the open
-// after ENOSPC (a torn final encrypted block) fails the heal with a
-// FailClosedStoreError naming the node; the fault stays pending so the soak
-// reports it as unhealed instead of crashing.
-func TestDiskFullHealReportsAFailClosedStore(t *testing.T) {
+// TestDiskFullHealExpectsTheNodeToRecover: after the disk is freed each node
+// must come back (restart, then unseal), since a torn final write no longer
+// stops the store from opening. A node that does not come back fails the heal
+// with a NotRecoveredError naming it, the fault stays pending so the soak
+// reports it as unhealed, and the heal passes once the node recovers.
+func TestDiskFullHealExpectsTheNodeToRecover(t *testing.T) {
 	ctx := context.Background()
 	d, err := NewDiskFull(DiskFullConfig{Path: "/data"})
 	if err != nil {
@@ -365,21 +366,24 @@ func TestDiskFullHealReportsAFailClosedStore(t *testing.T) {
 	u.fail("unseal", errBoom)
 	err = d.Heal(ctx)
 	if !errors.Is(err, errBoom) {
-		t.Fatalf("heal of a fail-closed store = %v, want errBoom", err)
+		t.Fatalf("heal of a node that did not come back = %v, want errBoom", err)
 	}
-	var fc *FailClosedStoreError
-	if !errors.As(err, &fc) || (fc.Node != "n1" && fc.Node != "n2") {
-		t.Fatalf("heal error = %v, want *FailClosedStoreError naming n1 or n2", err)
+	var nr *NotRecoveredError
+	if !errors.As(err, &nr) || (nr.Node != "n1" && nr.Node != "n2") {
+		t.Fatalf("heal error = %v, want *NotRecoveredError naming n1 or n2", err)
 	}
 	for _, node := range []string{"n1", "n2"} {
-		if !strings.Contains(err.Error(), "node "+node+" store failed closed") {
-			t.Errorf("heal error %q does not report node %s as failed closed", err, node)
+		if !strings.Contains(err.Error(), "node "+node+" did not recover") {
+			t.Errorf("heal error %q does not report node %s as not recovered", err, node)
+		}
+		if strings.Contains(err.Error(), "failed closed") {
+			t.Errorf("heal error %q treats a store that refuses the open as expected", err)
 		}
 	}
 	r.fail("restart", nil)
 	u.fail("unseal", nil)
 	if err := d.Heal(ctx); err != nil {
-		t.Fatalf("retried heal after the store opens = %v, want nil", err)
+		t.Fatalf("heal once the node recovers = %v, want nil", err)
 	}
 }
 
