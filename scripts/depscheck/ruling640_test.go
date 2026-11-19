@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +215,41 @@ func TestTouchedReplaceLeftHandVersion(t *testing.T) {
 			base, err := baseVersions("go.mod", []byte(tc.base))
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, touched(rep, base, requireVersions(mustParse(t, head))))
+		})
+	}
+}
+
+// TestTouchedTwoVersionSpecificReplaces: two version-specific replaces of one
+// module keep separate base entries, so an identical base and head touch
+// neither, and changing only the second's target touches only the second.
+func TestTouchedTwoVersionSpecificReplaces(t *testing.T) {
+	const gomod = "module example.com/m\n\ngo 1.22\n\nrequire example.com/a v1.0.0\n\nreplace example.com/a v1.0.0 => example.com/b v1.2.0\n\nreplace example.com/a v1.1.0 => example.com/c %s\n"
+	head := fmt.Sprintf(gomod, "v1.3.0")
+	var reps []dependency
+	for _, d := range dependencies("go.mod", mustParse(t, head)) {
+		if d.Kind == kindReplace {
+			reps = append(reps, d)
+		}
+	}
+	require.Len(t, reps, 2)
+	require.Equal(t, "v1.0.0", reps[0].Replaces)
+	require.Equal(t, "v1.1.0", reps[1].Replaces)
+	requires := requireVersions(mustParse(t, head))
+	cases := []struct {
+		name string
+		base string
+		want [2]bool
+	}{
+		{"identical", head, [2]bool{false, false}},
+		{"second target changed", fmt.Sprintf(gomod, "v1.2.0"), [2]bool{false, true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, err := baseVersions("go.mod", []byte(tc.base))
+			require.NoError(t, err)
+			for i, rep := range reps {
+				assert.Equal(t, tc.want[i], touched(rep, base, requires), "replace %s", rep.Replaces)
+			}
 		})
 	}
 }

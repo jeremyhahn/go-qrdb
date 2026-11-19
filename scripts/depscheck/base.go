@@ -68,7 +68,7 @@ func baseVersions(file string, data []byte) (map[string]string, error) {
 	}
 	out := make(map[string]string)
 	for _, d := range dependencies(file, directives) {
-		out[d.Kind+" "+d.Module] = baseKey(d)
+		out[depIdentity(d)] = baseKey(d)
 	}
 	for path, version := range requireVersions(directives) {
 		out[requiresKey+path] = version
@@ -98,7 +98,7 @@ func touched(dep dependency, base, requires map[string]string) bool {
 	if base == nil {
 		return true
 	}
-	was, ok := base[dep.Kind+" "+dep.Module]
+	was, ok := base[depIdentity(dep)]
 	if !ok || was != baseKey(dep) {
 		return true
 	}
@@ -110,6 +110,18 @@ func touched(dep dependency, base, requires map[string]string) bool {
 // baseKey is what the base comparison keys a line on: its target, plus a
 // replace's left-hand version, since changing which version a replace
 // applies to can make an outdated replacement active.
+// depIdentity is the key of a dependency in the base map. A go.mod may hold
+// several version-specific replaces of one module (replace A v1.0.0 => ...,
+// replace A v1.1.0 => ...), so a replace's identity includes its left-hand
+// version: each keeps its own base entry instead of overwriting the others.
+func depIdentity(dep dependency) string {
+	id := dep.Kind + " " + dep.Module
+	if dep.Replaces != "" {
+		id += "@" + dep.Replaces
+	}
+	return id
+}
+
 func baseKey(dep dependency) string {
 	key := dep.Path + "@" + dep.Version
 	if dep.Replaces != "" {
