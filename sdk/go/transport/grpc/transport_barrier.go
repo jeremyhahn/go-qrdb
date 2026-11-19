@@ -55,7 +55,7 @@ func (t *Transport) BarrierInitialize(ctx context.Context, req *transport.Barrie
 // is not TLS, before the request is built, exactly as the SO PIN interceptor
 // refuses the SO PIN.
 func (t *Transport) requireTLS(req transport.BarrierSecretCarrier) error {
-	return transport.RequireTLSForBarrierSecret("grpc", t.config.TLSEnabled, req)
+	return transport.RequireTLSForBarrierSecret("grpc", t.secretTLS(), req)
 }
 
 // BarrierUnseal unseals the barrier using the master key.

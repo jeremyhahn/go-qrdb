@@ -17,13 +17,17 @@ package grpc
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/internal/sotest"
 )
@@ -34,6 +38,108 @@ import (
 func TestBarrierSecret_RequiresTLS(t *testing.T) {
 	serverTLS, clientTLS := sotest.TLSPair(t)
 	sotest.RunBarrierSecretTLS(t, "grpc", secretTarget(t, nil, nil), secretTarget(t, serverTLS, clientTLS))
+}
+
+// TestBarrierSecret_HTTPAddressIsRefused: an address configured with an
+// explicit http:// scheme refuses every secret-carrying call in
+// sotest.SecretCalls, whatever the TLS config says (#1639), and the server
+// never sees the call.
+func TestBarrierSecret_HTTPAddressIsRefused(t *testing.T) {
+	serverTLS, clientTLS := sotest.TLSPair(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	probe := &sotest.SecretProbe{}
+	probe.Serve(t, lis, serverTLS)
+	tr, err := New(
+		transport.WithAddress("http://"+lis.Addr().String()),
+		transport.WithTimeout(sotest.RequestTimeout),
+		transport.WithTLSConfig(clientTLS),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	sotest.RunHTTPAddressRefused(t, "grpc", sotest.SecretTarget{Client: tr, Reached: probe.Reached})
+}
+
+// TestSOPIN_BoundPINRefusedOverHTTPAddress: a PIN bound on the context by
+// transport.WithSOPIN, on a unary and on a streaming RPC, is refused with
+// *transport.SOPINRequiresTLSError when the address names http:// explicitly,
+// even though the client is configured for TLS and the server serves TLS
+// (#1639). The request fields carry no secret, so only the client
+// interceptors stand between the PIN and the wire, and the server never sees
+// the PIN.
+func TestSOPIN_BoundPINRefusedOverHTTPAddress(t *testing.T) {
+	serverTLS, clientTLS := sotest.TLSPair(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var sawPIN atomic.Int64
+	record := func(ctx context.Context) {
+		if md, ok := metadata.FromIncomingContext(ctx); ok && len(md.Get(transport.SOPINMetadataKey)) > 0 {
+			sawPIN.Add(1)
+		}
+	}
+	srv := googlegrpc.NewServer(
+		googlegrpc.Creds(credentials.NewTLS(serverTLS)),
+		googlegrpc.ChainUnaryInterceptor(func(ctx context.Context, req any, _ *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
+			record(ctx)
+			return handler(ctx, req)
+		}),
+		googlegrpc.ChainStreamInterceptor(func(srv any, ss googlegrpc.ServerStream, _ *googlegrpc.StreamServerInfo, handler googlegrpc.StreamHandler) error {
+			record(ss.Context())
+			return handler(srv, ss)
+		}),
+	)
+	pb.RegisterQRDBServiceServer(srv, &sotest.Probe{})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	tr, err := New(
+		transport.WithAddress("http://"+lis.Addr().String()),
+		transport.WithTimeout(sotest.RequestTimeout),
+		transport.WithTLSConfig(clientTLS),
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = tr.Close() })
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	calls := map[string]func(ctx context.Context) error{
+		"unary/BarrierRekeyStart": func(ctx context.Context) error {
+			_, err := tr.BarrierRekeyStart(ctx, &transport.RekeyStartRequest{Domain: transport.DomainUnseal, Threshold: 2})
+			return err
+		},
+		"stream/Watch": func(ctx context.Context) error {
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			_, err := tr.Watch(ctx, "k", transport.WatchOptions{})
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			ctx, release := sotest.BindPIN(t, sotest.PIN)
+			defer release()
+			err := call(ctx)
+			var tlsErr *transport.SOPINRequiresTLSError
+			if !errors.As(err, &tlsErr) {
+				t.Fatalf("err = %v, want *transport.SOPINRequiresTLSError", err)
+			}
+			if n := sawPIN.Load(); n != 0 {
+				t.Fatalf("the SO PIN reached the server %d times over an http:// address", n)
+			}
+		})
+	}
 }
 
 // secretTarget serves a SecretProbe on loopback, over TLS when serverTLS is
