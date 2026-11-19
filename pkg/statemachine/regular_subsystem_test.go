@@ -51,7 +51,8 @@ func newRegularWithTS(ts TimeSeriesStore) *RegularStateMachine {
 // ---------------------------------------------------------------------------
 
 func TestRegularStateMachine_WithRegularLogger(t *testing.T) {
-	logger := slog.Default()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	rsm := NewRegularStateMachine(WithRegularLogger(logger))
 	if rsm.logger != logger {
 		t.Fatal("expected logger to be set via WithRegularLogger")
