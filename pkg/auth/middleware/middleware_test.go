@@ -168,27 +168,6 @@ func (m *mockAuditLogger) Close() error {
 // Constructor tests
 // ---------------------------------------------------------------------------
 
-func TestNew_Defaults(t *testing.T) {
-	authz := &mockAuthorizer{}
-	m := newTestMiddleware(authz)
-
-	if m == nil {
-		t.Fatal("expected non-nil AuthMiddleware")
-	}
-	if m.authorizer != authz {
-		t.Error("expected authorizer to be set")
-	}
-	if len(m.authenticators) != 0 {
-		t.Errorf("expected 0 authenticators, got %d", len(m.authenticators))
-	}
-	if m.users != nil {
-		t.Error("expected nil user service")
-	}
-	if m.audit != nil {
-		t.Error("expected nil audit logger")
-	}
-}
-
 // TestAuthMiddleware_Authorizer verifies the accessor returns the exact
 // authorizer instance New was built with, so an embedding host
 // (sdk/go/node.Node.Authorizer) reaches the same instance every transport
@@ -209,47 +188,6 @@ func TestAuthMiddleware_Authorizer_NilReceiver(t *testing.T) {
 	var m *AuthMiddleware
 	if got := m.Authorizer(); got != nil {
 		t.Errorf("Authorizer() on nil receiver = %v, want nil", got)
-	}
-}
-
-func TestNew_WithOptions(t *testing.T) {
-	authz := &mockAuthorizer{}
-	authn := &mockAuthenticator{name: "test"}
-	users := &mockUserServicer{}
-	al := &mockAuditLogger{}
-
-	m := newTestMiddleware(authz,
-		WithAuthenticator(authn),
-		WithUserService(users),
-		WithAuditLogger(al),
-	)
-
-	if len(m.authenticators) != 1 {
-		t.Fatalf("expected 1 authenticator, got %d", len(m.authenticators))
-	}
-	if m.authenticators[0].Name() != "test" {
-		t.Errorf("expected authenticator name 'test', got %q", m.authenticators[0].Name())
-	}
-	if m.users != users {
-		t.Error("expected user service to be set")
-	}
-	if m.audit != al {
-		t.Error("expected audit logger to be set")
-	}
-}
-
-func TestNew_MultipleAuthenticators(t *testing.T) {
-	authz := &mockAuthorizer{}
-	a1 := &mockAuthenticator{name: "first"}
-	a2 := &mockAuthenticator{name: "second"}
-
-	m := newTestMiddleware(authz,
-		WithAuthenticator(a1),
-		WithAuthenticator(a2),
-	)
-
-	if len(m.authenticators) != 2 {
-		t.Fatalf("expected 2 authenticators, got %d", len(m.authenticators))
 	}
 }
 

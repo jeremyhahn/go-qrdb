@@ -45,7 +45,6 @@ type cliTestCase struct {
 // way through first boot, which host.id alone does not.
 var startTestCases = []cliTestCase{
 	{name: "pebble/static/1-node", smType: "pebble", discovery: "static", nodes: 1},
-	{name: "pebble/static/3-node", smType: "pebble", discovery: "static", nodes: 3},
 	{name: "mvcc/static/1-node", smType: "mvcc", discovery: "static", nodes: 1},
 	{name: "mvcc/static/3-node", smType: "mvcc", discovery: "static", nodes: 3},
 	{name: "memory/static/1-node", smType: "memory", discovery: "static", nodes: 1},

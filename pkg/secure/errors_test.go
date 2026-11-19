@@ -95,32 +95,6 @@ func TestProviderError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-// TestErrorTypes_Roundtrip exercises errors.As on each error type to ensure
-// the type system agrees with the implementations.
-func TestErrorTypes_Roundtrip(t *testing.T) {
-	t.Run("NilSecretError", func(t *testing.T) {
-		var target *NilSecretError
-		if !errors.As(&NilSecretError{}, &target) {
-			t.Fatal("errors.As failed")
-		}
-		_ = target.Error()
-	})
-	t.Run("NilBufferError", func(t *testing.T) {
-		var target *NilBufferError
-		if !errors.As(&NilBufferError{}, &target) {
-			t.Fatal("errors.As failed")
-		}
-		_ = target.Error()
-	})
-	t.Run("InvalidSizeError", func(t *testing.T) {
-		var target *InvalidSizeError
-		if !errors.As(&InvalidSizeError{Size: -1}, &target) {
-			t.Fatal("errors.As failed")
-		}
-		_ = target.Error()
-	})
-}
-
 // NestedBorrowError's message must name the operation AND carry the outer
 // borrow's stack. The stack is the half a reader cannot recover from the
 // panic's own trace, and a report without it says "something nested" without

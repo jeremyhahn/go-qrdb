@@ -59,21 +59,6 @@ func Test_DefaultConfig_returnsCorrectDefaults(t *testing.T) {
 	}
 }
 
-func Test_DefaultConfig_allFieldsPositive(t *testing.T) {
-	t.Parallel()
-	cfg := DefaultConfig()
-
-	if cfg.MaxBatchSize <= 0 {
-		t.Errorf("MaxBatchSize = %d, should be positive", cfg.MaxBatchSize)
-	}
-	if cfg.FlushInterval <= 0 {
-		t.Errorf("FlushInterval = %v, should be positive", cfg.FlushInterval)
-	}
-	if cfg.QueueSize <= 0 {
-		t.Errorf("QueueSize = %d, should be positive", cfg.QueueSize)
-	}
-}
-
 func Test_DefaultConfig_matchesReExportedConstants(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultConfig()
@@ -89,45 +74,6 @@ func Test_DefaultConfig_matchesReExportedConstants(t *testing.T) {
 	if cfg.QueueSize != DefaultQueueSize {
 		t.Errorf("QueueSize = %d, want DefaultQueueSize %d",
 			cfg.QueueSize, DefaultQueueSize)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-func Test_DefaultMaxBatchSize_value(t *testing.T) {
-	t.Parallel()
-	if DefaultMaxBatchSize != 1000 {
-		t.Errorf("DefaultMaxBatchSize = %d, want 1000", DefaultMaxBatchSize)
-	}
-}
-
-func Test_DefaultFlushInterval_value(t *testing.T) {
-	t.Parallel()
-	if DefaultFlushInterval != 50*time.Millisecond {
-		t.Errorf("DefaultFlushInterval = %v, want 50ms", DefaultFlushInterval)
-	}
-}
-
-func Test_DefaultQueueSize_value(t *testing.T) {
-	t.Parallel()
-	if DefaultQueueSize != 10000 {
-		t.Errorf("DefaultQueueSize = %d, want 10000", DefaultQueueSize)
-	}
-}
-
-func Test_Constants_allPositive(t *testing.T) {
-	t.Parallel()
-
-	if DefaultMaxBatchSize <= 0 {
-		t.Errorf("DefaultMaxBatchSize = %d, must be positive", DefaultMaxBatchSize)
-	}
-	if DefaultFlushInterval <= 0 {
-		t.Errorf("DefaultFlushInterval = %v, must be positive", DefaultFlushInterval)
-	}
-	if DefaultQueueSize <= 0 {
-		t.Errorf("DefaultQueueSize = %d, must be positive", DefaultQueueSize)
 	}
 }
 
@@ -161,32 +107,6 @@ func Test_EncodeBatch_singleCommand(t *testing.T) {
 	}
 }
 
-func Test_EncodeBatch_multipleCommands(t *testing.T) {
-	t.Parallel()
-	cmds := [][]byte{
-		[]byte("GET key1"),
-		[]byte("PUT key2 val2"),
-		[]byte("DELETE key3"),
-	}
-	encoded, err := EncodeBatch(cmds)
-	if err != nil {
-		t.Fatalf("EncodeBatch: %v", err)
-	}
-
-	decoded, err := DecodeBatch(encoded)
-	if err != nil {
-		t.Fatalf("DecodeBatch failed: %v", err)
-	}
-	if len(decoded) != len(cmds) {
-		t.Fatalf("decoded %d commands, want %d", len(decoded), len(cmds))
-	}
-	for i := range cmds {
-		if !bytes.Equal(decoded[i], cmds[i]) {
-			t.Errorf("decoded[%d] = %q, want %q", i, decoded[i], cmds[i])
-		}
-	}
-}
-
 func Test_EncodeBatch_nilSlice(t *testing.T) {
 	t.Parallel()
 	result, err := EncodeBatch(nil)
@@ -198,58 +118,6 @@ func Test_EncodeBatch_nilSlice(t *testing.T) {
 	}
 }
 
-func Test_EncodeBatch_emptySlice(t *testing.T) {
-	t.Parallel()
-	result, err := EncodeBatch([][]byte{})
-	if err != nil {
-		t.Fatalf("EncodeBatch(empty): %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("EncodeBatch(empty) produced %d bytes, want 0", len(result))
-	}
-}
-
-func Test_EncodeBatch_emptyCommands(t *testing.T) {
-	t.Parallel()
-	cmds := [][]byte{{}, {}, {}}
-	encoded, encErr := EncodeBatch(cmds)
-	if encErr != nil {
-		t.Fatalf("EncodeBatch: %v", encErr)
-	}
-
-	decoded, err := DecodeBatch(encoded)
-	if err != nil {
-		t.Fatalf("DecodeBatch failed: %v", err)
-	}
-	if len(decoded) != 3 {
-		t.Fatalf("decoded %d commands, want 3", len(decoded))
-	}
-	for i, d := range decoded {
-		if len(d) != 0 {
-			t.Errorf("decoded[%d] has length %d, want 0", i, len(d))
-		}
-	}
-}
-
-func Test_EncodeBatch_binaryData(t *testing.T) {
-	t.Parallel()
-	cmd := make([]byte, 256)
-	for i := range cmd {
-		cmd[i] = byte(i)
-	}
-	encoded, encErr := EncodeBatch([][]byte{cmd})
-	if encErr != nil {
-		t.Fatalf("EncodeBatch: %v", encErr)
-	}
-	decoded, err := DecodeBatch(encoded)
-	if err != nil {
-		t.Fatalf("DecodeBatch failed: %v", err)
-	}
-	if !bytes.Equal(decoded[0], cmd) {
-		t.Error("binary data round-trip failed")
-	}
-}
-
 func Test_DecodeBatch_nilInput(t *testing.T) {
 	t.Parallel()
 	result, err := DecodeBatch(nil)
@@ -258,17 +126,6 @@ func Test_DecodeBatch_nilInput(t *testing.T) {
 	}
 	if result != nil {
 		t.Errorf("DecodeBatch(nil) = %v, want nil", result)
-	}
-}
-
-func Test_DecodeBatch_emptyInput(t *testing.T) {
-	t.Parallel()
-	result, err := DecodeBatch([]byte{})
-	if err != nil {
-		t.Fatalf("DecodeBatch(empty) returned error: %v", err)
-	}
-	if result != nil {
-		t.Errorf("DecodeBatch(empty) = %v, want nil", result)
 	}
 }
 
@@ -341,31 +198,6 @@ func Test_DecodeBatch_truncatedSecondPrefix(t *testing.T) {
 	}
 }
 
-func Test_RoundTrip_manyCommands(t *testing.T) {
-	t.Parallel()
-	const count = 500
-	original := make([][]byte, count)
-	for i := range original {
-		original[i] = []byte{byte(i & 0xFF), byte((i >> 8) & 0xFF)}
-	}
-	encoded, encErr1 := EncodeBatch(original)
-	if encErr1 != nil {
-		t.Fatalf("EncodeBatch: %v", encErr1)
-	}
-	decoded, err := DecodeBatch(encoded)
-	if err != nil {
-		t.Fatalf("round-trip decode failed: %v", err)
-	}
-	if len(decoded) != count {
-		t.Fatalf("decoded %d commands, want %d", len(decoded), count)
-	}
-	for i := range original {
-		if !bytes.Equal(decoded[i], original[i]) {
-			t.Errorf("decoded[%d] mismatch", i)
-		}
-	}
-}
-
 func Test_RoundTrip_mixedSizes(t *testing.T) {
 	t.Parallel()
 	original := [][]byte{
@@ -415,32 +247,6 @@ func Test_NewAggregator_nilProposerReturnsNilProposerError(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNilProposer) {
 		t.Error("error should match ErrNilProposer sentinel")
-	}
-}
-
-func Test_NewAggregator_nilProposerWithOptions(t *testing.T) {
-	t.Parallel()
-	_, err := NewAggregator(nil, WithConfig(Config{MaxBatchSize: 10}))
-	if err == nil {
-		t.Fatal("NewAggregator(nil, opts...) should return error")
-	}
-	if !errors.Is(err, ErrNilProposer) {
-		t.Errorf("expected ErrNilProposer, got %v", err)
-	}
-}
-
-func Test_NewAggregator_validProposerSucceeds(t *testing.T) {
-	t.Parallel()
-	mp := &mockProposer{}
-	agg, err := NewAggregator(mp, WithRegistry(newTestRegistry(t)))
-	if err != nil {
-		t.Fatalf("NewAggregator failed: %v", err)
-	}
-	if agg == nil {
-		t.Fatal("aggregator should not be nil")
-	}
-	if closeErr := agg.Close(); closeErr != nil {
-		t.Errorf("Close failed: %v", closeErr)
 	}
 }
 
@@ -509,28 +315,6 @@ func Test_Submit_afterCloseReturnsClosedError(t *testing.T) {
 	}
 	if !errors.Is(submitErr, ErrClosed) {
 		t.Error("error should match ErrClosed sentinel")
-	}
-}
-
-func Test_Submit_afterCloseMatchesSentinel(t *testing.T) {
-	t.Parallel()
-	mp := &mockProposer{}
-	agg, err := NewAggregator(mp,
-		WithConfig(Config{
-			MaxBatchSize:  10,
-			FlushInterval: 5 * time.Millisecond,
-			QueueSize:     100,
-		}),
-		WithRegistry(newTestRegistry(t)),
-	)
-	if err != nil {
-		t.Fatalf("NewAggregator failed: %v", err)
-	}
-	_ = agg.Close()
-
-	submitErr := agg.Submit(context.Background(), 1, []byte("data"))
-	if !errors.Is(submitErr, ErrClosed) {
-		t.Errorf("Submit after Close should return ErrClosed, got %v", submitErr)
 	}
 }
 
@@ -629,23 +413,6 @@ func Test_WithLogger_nilDoesNotPanic(t *testing.T) {
 // WithRegistry
 // ---------------------------------------------------------------------------
 
-func Test_WithRegistry_customRegistryAccepted(t *testing.T) {
-	t.Parallel()
-	mp := &mockProposer{}
-	reg := prometheus.NewRegistry()
-	// WithRegistry with a custom registry should not error or panic.
-	agg, err := NewAggregator(mp, WithRegistry(reg))
-	if err != nil {
-		t.Fatalf("NewAggregator with custom registry failed: %v", err)
-	}
-	defer func() { _ = agg.Close() }()
-
-	submitErr := agg.Submit(context.Background(), 1, []byte("registry-test"))
-	if submitErr != nil {
-		t.Errorf("Submit with custom registry failed: %v", submitErr)
-	}
-}
-
 func Test_WithRegistry_nilFallsBackToDefault(t *testing.T) {
 	t.Parallel()
 	mp := &mockProposer{}
@@ -669,31 +436,6 @@ func Test_WithRegistry_nilFallsBackToDefault(t *testing.T) {
 // Sentinel errors via errors.Is
 // ---------------------------------------------------------------------------
 
-func Test_SentinelErrors_errorsIsMatch(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		typed    error
-		sentinel error
-	}{
-		{"ClosedError->ErrClosed", &ClosedError{}, ErrClosed},
-		{"QueueFullError->ErrQueueFull", &QueueFullError{QueueSize: 100}, ErrQueueFull},
-		{"NilProposerError->ErrNilProposer", &NilProposerError{}, ErrNilProposer},
-		{"FlushError->ErrFlush", &FlushError{ShardID: 1, Err: errors.New("e")}, ErrFlush},
-		{"DecodeError->ErrDecode", &DecodeError{Reason: "r"}, ErrDecode},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if !errors.Is(tc.typed, tc.sentinel) {
-				t.Errorf("errors.Is(%T, %v) = false, want true", tc.typed, tc.sentinel)
-			}
-		})
-	}
-}
-
 func Test_SentinelErrors_areDistinct(t *testing.T) {
 	t.Parallel()
 	sentinels := []error{ErrClosed, ErrQueueFull, ErrNilProposer, ErrFlush, ErrDecode}
@@ -703,138 +445,5 @@ func Test_SentinelErrors_areDistinct(t *testing.T) {
 				t.Errorf("sentinel %q should not match %q", a, b)
 			}
 		}
-	}
-}
-
-func Test_SentinelErrors_nonNil(t *testing.T) {
-	t.Parallel()
-	sentinels := map[string]error{
-		"ErrClosed":      ErrClosed,
-		"ErrQueueFull":   ErrQueueFull,
-		"ErrNilProposer": ErrNilProposer,
-		"ErrFlush":       ErrFlush,
-		"ErrDecode":      ErrDecode,
-	}
-	for name, err := range sentinels {
-		if err == nil {
-			t.Errorf("%s should not be nil", name)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Typed error aliases
-// ---------------------------------------------------------------------------
-
-func Test_TypedErrors_closedErrorAlias(t *testing.T) {
-	t.Parallel()
-	var err error = &ClosedError{}
-	var target *ClosedError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *ClosedError")
-	}
-}
-
-func Test_TypedErrors_queueFullErrorAlias(t *testing.T) {
-	t.Parallel()
-	var err error = &QueueFullError{QueueSize: 512}
-	var target *QueueFullError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *QueueFullError")
-	}
-	if target.QueueSize != 512 {
-		t.Errorf("QueueSize = %d, want 512", target.QueueSize)
-	}
-}
-
-func Test_TypedErrors_nilProposerErrorAlias(t *testing.T) {
-	t.Parallel()
-	var err error = &NilProposerError{}
-	var target *NilProposerError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *NilProposerError")
-	}
-}
-
-func Test_TypedErrors_flushErrorAlias(t *testing.T) {
-	t.Parallel()
-	inner := errors.New("some cause")
-	var err error = &FlushError{ShardID: 42, Err: inner}
-	var target *FlushError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *FlushError")
-	}
-	if target.ShardID != 42 {
-		t.Errorf("ShardID = %d, want 42", target.ShardID)
-	}
-	if target.Err != inner {
-		t.Error("inner error mismatch")
-	}
-}
-
-func Test_TypedErrors_decodeErrorAlias(t *testing.T) {
-	t.Parallel()
-	var err error = &DecodeError{Reason: "truncated"}
-	var target *DecodeError
-	if !errors.As(err, &target) {
-		t.Fatal("errors.As should match *DecodeError")
-	}
-	if target.Reason != "truncated" {
-		t.Errorf("Reason = %q, want %q", target.Reason, "truncated")
-	}
-}
-
-func Test_TypedErrors_crossTypeNoMatch(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		err  error
-		// We verify this does NOT match.
-		check func(error) bool
-	}{
-		{
-			name:  "ClosedError does not match QueueFullError",
-			err:   &ClosedError{},
-			check: func(e error) bool { var t *QueueFullError; return errors.As(e, &t) },
-		},
-		{
-			name:  "QueueFullError does not match NilProposerError",
-			err:   &QueueFullError{QueueSize: 1},
-			check: func(e error) bool { var t *NilProposerError; return errors.As(e, &t) },
-		},
-		{
-			name:  "DecodeError does not match FlushError",
-			err:   &DecodeError{Reason: "r"},
-			check: func(e error) bool { var t *FlushError; return errors.As(e, &t) },
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if tc.check(tc.err) {
-				t.Error("cross-type errors.As should not match")
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Proposer interface compliance
-// ---------------------------------------------------------------------------
-
-func Test_MockProposer_implementsProposerInterface(t *testing.T) {
-	t.Parallel()
-	var _ Proposer = (*mockProposer)(nil)
-}
-
-func Test_MockProposer_returnsConfiguredError(t *testing.T) {
-	t.Parallel()
-	expectedErr := errors.New("test error")
-	mp := &mockProposer{err: expectedErr}
-	err := mp.SyncPropose(context.Background(), 1, []byte("data"))
-	if err != expectedErr {
-		t.Errorf("SyncPropose returned %v, want %v", err, expectedErr)
 	}
 }

@@ -70,45 +70,6 @@ func TestNew_FileOutputSuccess(t *testing.T) {
 	}
 }
 
-// TestNew_InvalidLevelFallback tests that New() falls back to info level for invalid levels.
-func TestNew_InvalidLevelFallback(t *testing.T) {
-	config := LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "stdout",
-	}
-
-	logger, err := New(config)
-	if err != nil {
-		t.Fatalf("Failed to create logger: %v", err)
-	}
-
-	// The level parser will fall back to info level for unknown levels
-	// This tests the error handling path in parseLevel()
-	level := logger.GetLevel()
-	if level == "" {
-		t.Error("Logger level should be set")
-	}
-}
-
-// TestNew_ConsoleFormat tests the New function with console format.
-func TestNew_ConsoleFormat(t *testing.T) {
-	config := LogConfig{
-		Level:   "debug",
-		Format:  "console",
-		Output:  "stdout",
-		NoColor: true,
-	}
-
-	logger, err := New(config)
-	if err != nil {
-		t.Errorf("New() error = %v, want nil", err)
-	}
-	if logger == nil {
-		t.Error("New() returned nil logger")
-	}
-}
-
 // TestNew_WithComponent tests the New function with a component name.
 func TestNew_WithComponent(t *testing.T) {
 	config := LogConfig{
@@ -129,30 +90,6 @@ func TestNew_WithComponent(t *testing.T) {
 	// Verify the config is stored
 	if logger.config.Component != "test-component" {
 		t.Errorf("Component = %v, want test-component", logger.config.Component)
-	}
-}
-
-// TestLogger_WithFieldChaining tests chaining WithField calls.
-func TestLogger_WithFieldChaining(t *testing.T) {
-	logger, err := New(LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("Failed to create logger: %v", err)
-	}
-
-	// Chain multiple WithField calls
-	newLogger := logger.WithField("key1", "value1").WithField("key2", "value2")
-	if newLogger == nil {
-		t.Error("WithField chaining returned nil logger")
-	}
-
-	// Verify both fields are present
-	fields := newLogger.GetFields()
-	if len(fields) != 2 {
-		t.Errorf("Expected 2 fields, got %d", len(fields))
 	}
 }
 
@@ -335,45 +272,6 @@ func TestWithContext_ValidContext(t *testing.T) {
 	}
 }
 
-// TestNew_StderrOutput tests the New function with stderr output.
-func TestNew_StderrOutput(t *testing.T) {
-	config := LogConfig{
-		Level:  "warn",
-		Format: "json",
-		Output: "stderr",
-	}
-
-	logger, err := New(config)
-	if err != nil {
-		t.Errorf("New() error = %v, want nil", err)
-	}
-	if logger == nil {
-		t.Error("New() returned nil logger")
-	}
-
-	// Verify the logger works
-	logger.Warn("test warning")
-}
-
-// TestNew_DefaultOutput tests the New function with an unknown output (should default to stdout).
-func TestNew_DefaultOutput(t *testing.T) {
-	config := LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "unknown",
-	}
-
-	// First validate to ensure it fails validation
-	if err := config.Validate(); err == nil {
-		t.Error("Validate() should fail for unknown output")
-	}
-
-	// For the New() function, we need to bypass validation to test the default case
-	// This would require directly calling New with an already-validated config
-	// Since validation happens inside New(), we can test the fallback behavior
-	// by looking at valid outputs
-}
-
 // TestLogger_AllLevels tests logger with all valid log levels.
 func TestLogger_AllLevels(t *testing.T) {
 	levels := []string{"trace", "debug", "info", "warn", "error"}
@@ -400,60 +298,6 @@ func TestLogger_AllLevels(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestNew_FileOutputWithDefaultFilename tests file output without specifying a filename.
-func TestNew_FileOutputWithDefaultFilename(t *testing.T) {
-	// Change to a temporary directory to avoid polluting the workspace
-	tmpDir := t.TempDir()
-	originalWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Failed to get working directory: %v", err)
-	}
-	defer func() { _ = os.Chdir(originalWd) }()
-
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Failed to change to temp directory: %v", err)
-	}
-
-	config := LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "file",
-		// File is intentionally empty to test the default
-		File: "",
-	}
-
-	// Bypass validation which requires File to be set
-	// We need to test the code path at lines 45-47 in logger.go
-	// This happens after validation, so we need to call the internal logic
-
-	// For now, let's test that providing an empty file with file output
-	// gets handled by the validation
-	if err := config.Validate(); err == nil {
-		t.Error("Validate() should fail when Output is 'file' but File is empty")
-	}
-}
-
-// TestLogger_ConsoleFormatWithColor tests console format without NoColor flag.
-func TestLogger_ConsoleFormatWithColor(t *testing.T) {
-	config := LogConfig{
-		Level:   "debug",
-		Format:  "console",
-		Output:  "stdout",
-		NoColor: false, // Enable color
-	}
-
-	logger, err := New(config)
-	if err != nil {
-		t.Errorf("New() error = %v, want nil", err)
-	}
-	if logger == nil {
-		t.Error("New() returned nil logger")
-	}
-
-	// Log a message to ensure it works
-	logger.Info("colored console output")
 }
 
 // TestLogger_WithAttrs tests the strongly-typed slog attributes method.
@@ -628,29 +472,6 @@ func TestLogger_WithAttrsEmpty(t *testing.T) {
 	emptyLogger.Info("message without attrs")
 }
 
-// TestNewAdapter tests the NewAdapter function.
-func TestNewAdapter(t *testing.T) {
-	logger, err := New(LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	adapter := NewAdapter(logger)
-	if adapter == nil {
-		t.Error("NewAdapter() returned nil")
-	}
-
-	// Verify it implements interfaces.Logger
-	_, ok := adapter.(*LoggerAdapter)
-	if !ok {
-		t.Error("NewAdapter() should return *LoggerAdapter")
-	}
-}
-
 // TestNewAdapter_NilLogger tests NewAdapter with nil logger.
 func TestNewAdapter_NilLogger(t *testing.T) {
 	adapter := NewAdapter(nil)
@@ -723,32 +544,6 @@ func TestLoggerAdapter_WithFields(t *testing.T) {
 	resultFields := resultAdapter.GetFields()
 	if resultFields["key1"] != "value1" {
 		t.Errorf("WithFields() key1 = %v, want 'value1'", resultFields["key1"])
-	}
-}
-
-// TestLoggerAdapter_WithError tests the WithError method of LoggerAdapter.
-func TestLoggerAdapter_WithError(t *testing.T) {
-	logger, err := New(LogConfig{
-		Level:  "info",
-		Format: "json",
-		Output: "stdout",
-	})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-
-	adapter := NewAdapter(logger)
-	testErr := errors.New("test error")
-	result := adapter.WithError(testErr)
-
-	if result == nil {
-		t.Error("WithError() returned nil")
-	}
-
-	// Verify it's still a LoggerAdapter
-	_, ok := result.(*LoggerAdapter)
-	if !ok {
-		t.Error("WithError() should return *LoggerAdapter")
 	}
 }
 

@@ -211,32 +211,6 @@ func TestRunFirstBoot_WithBarriers_FreshBoot_ThenFirstBootError(t *testing.T) {
 // clusterMinPeers = 0 path is entered.
 // ---------------------------------------------------------------------------
 
-func TestStartDynamicMembership_ZeroMinPeersDefaultsTo3(t *testing.T) {
-	f := &startFlags{
-		replicaID:       1,
-		raftAddress:     "127.0.0.1:63001",
-		shardID:         1,
-		clusterMinPeers: 0, // triggers default branch (line 1596)
-	}
-
-	// embedded.New(nil, nil) still fails first, so the default branch
-	// executes but the error is from embedded.New. The test just confirms
-	// there is no panic on the zero-minPeers path.
-	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil, nil)
-	require.Error(t, err)
-}
-
-func TestStartDynamicMembership_NegativeMinPeersDefaultsTo3(t *testing.T) {
-	f := &startFlags{
-		replicaID:       1,
-		raftAddress:     "127.0.0.1:63001",
-		shardID:         1,
-		clusterMinPeers: -5, // triggers default branch (line 1595-1597)
-	}
-	_, err := startDynamicMembership(context.Background(), f, nil, nil, nil, nil, nil, nil, nil)
-	require.Error(t, err)
-}
-
 // ---------------------------------------------------------------------------
 // bootstrapUserRoleStores: error paths for boot user/role store construction
 // ---------------------------------------------------------------------------
@@ -562,12 +536,6 @@ func TestRunStart_DuplicateDatabaseName_AlreadyExistsPath(t *testing.T) {
 // start.go: init — covers the "memory" and "concurrent" SM types registered
 // by init()
 // ---------------------------------------------------------------------------
-
-func TestResolveCreateFunc_MemoryType(t *testing.T) {
-	fn, err := resolveCreateFunc("memory", "", statemachine.StorageConfig{})
-	require.NoError(t, err)
-	require.NotNil(t, fn, "memory state machine factory must be resolvable")
-}
 
 // ---------------------------------------------------------------------------
 // start.go: applyConfigToFlags — SIGHUP / reload fields

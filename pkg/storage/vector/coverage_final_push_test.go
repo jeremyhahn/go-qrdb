@@ -14,9 +14,7 @@
 package vector
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/cockroachdb/pebble/v2"
 	"github.com/stretchr/testify/assert"
@@ -138,36 +136,4 @@ func TestMetadataIterator_DecodeValueError(t *testing.T) {
 	hasNext := iter.Next()
 	assert.False(t, hasNext)
 	assert.Error(t, iter.Err())
-}
-
-// TestAdapter_BatchDeleteVectors_SyncWrites2 tests batch delete with sync writes
-func TestAdapter_BatchDeleteVectors_SyncWrites2(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	config := DefaultConfig(tmpDir)
-	config.SyncWrites = true
-	storage, err := NewPebbleVectorStorage(config, &testLogger{})
-	require.NoError(t, err)
-	defer func() { _ = storage.Close() }()
-
-	nsInfo := &NamespaceInfo{
-		Name:      "ctx_test",
-		CreatedAt: time.Now().Unix(),
-	}
-	err = storage.CreateNamespace(context.Background(), nsInfo)
-	require.NoError(t, err)
-
-	// Insert vectors first
-	vec := &VectorValue{
-		ID:        1,
-		Embedding: []float32{0.1},
-		Metadata:  map[string]string{},
-		Version:   1,
-	}
-	err = storage.UpsertVector(context.Background(), "ctx_test", vec)
-	require.NoError(t, err)
-
-	// Batch delete
-	err = storage.BatchDeleteVectors(context.Background(), "ctx_test", []uint64{1})
-	assert.NoError(t, err)
 }

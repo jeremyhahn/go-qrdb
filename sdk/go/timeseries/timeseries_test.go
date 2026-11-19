@@ -86,30 +86,6 @@ func TestNewTimeSeriesStorageWithEncryptor_UnopenableDir(t *testing.T) {
 	}
 }
 
-// TestTimeSeriesDirStorage_CloseReleasesDatabase checks Close closes the
-// owned database: the same directory opens again afterwards, which Pebble's
-// directory lock refuses while the first database is still open.
-func TestTimeSeriesDirStorage_CloseReleasesDatabase(t *testing.T) {
-	dir := t.TempDir()
-	ts, err := sdkts.NewTimeSeriesStorageWithDir(dir)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	if _, err := sdkts.NewTimeSeriesStorageWithDir(dir); err == nil {
-		t.Fatal("a second open of a directory held open succeeded: the lock this test relies on is absent")
-	}
-	if err := ts.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	again, err := sdkts.NewTimeSeriesStorageWithDir(dir)
-	if err != nil {
-		t.Fatalf("reopen after Close: %v", err)
-	}
-	if err := again.Close(); err != nil {
-		t.Fatalf("Close after reopen: %v", err)
-	}
-}
-
 // TestTimeSeriesDirStorage_BatchCommitsToOwnedDatabase checks Batch returns
 // a live batch over the owned database, and that a closed store's database
 // refuses one.

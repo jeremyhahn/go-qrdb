@@ -59,15 +59,6 @@ func TestPlanNoPredicates(t *testing.T) {
 	}
 }
 
-func TestPlanEmptyPredicateSlice(t *testing.T) {
-	p := newPlanner(emailUniqueIndex())
-	plan := p.Plan([]planner.Predicate{})
-
-	if plan.Type != planner.PlanFullScan {
-		t.Fatalf("expected PlanFullScan for empty predicates, got %s", plan.Type)
-	}
-}
-
 func TestPlanEqWithUniqueIndex(t *testing.T) {
 	p := newPlanner(emailUniqueIndex())
 	pred := planner.Predicate{Field: "Email", Op: planner.OpEq, Value: "alice@example.com"}

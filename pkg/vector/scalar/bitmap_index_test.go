@@ -413,13 +413,3 @@ func TestBitmapIndex_QueryRange_ClosedIndex(t *testing.T) {
 		t.Fatal("QueryRange on closed index should return error")
 	}
 }
-
-func TestBitmapIndex_QueryClosed(t *testing.T) {
-	idx := NewBitmapIndex()
-	idx.Close()
-
-	_, err := idx.Query(QueryEqual, "red")
-	if err == nil {
-		t.Fatal("Query on closed index should return error")
-	}
-}

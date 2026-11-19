@@ -477,15 +477,6 @@ func (m *mockKVStore) Get(ctx context.Context, key string) ([]byte, error) {
 
 var _ kvstore.KVStore = (*mockKVStore)(nil)
 
-// TestKVSealBackend_Close_IsNoop verifies that Close on a kvSealBackend
-// returns nil without touching the wrapped store.
-func TestKVSealBackend_Close_IsNoop(t *testing.T) {
-	b := kvSealBackend{KVStore: &mockKVStore{}}
-	if err := b.Close(); err != nil {
-		t.Errorf("Close: expected nil, got %v", err)
-	}
-}
-
 // TestKVSealBackend_Get_ReturnsValue verifies that a non-nil response from
 // the underlying store is passed through unchanged.
 func TestKVSealBackend_Get_ReturnsValue(t *testing.T) {

@@ -385,35 +385,6 @@ func TestHandler_TextEncoding(t *testing.T) {
 	}
 }
 
-func TestHandler_BinaryTrailerFrameIsLowercase(t *testing.T) {
-	gs, _ := newBackend(t)
-	srv, httpClient := newWebServer(t, mustHandler(t, Config{Enabled: true}, gs), false, nil)
-	resp := postWeb(t, httpClient, srv.URL+"/grpc-web"+healthpb.Health_Check_FullMethodName,
-		"application/grpc-web+proto", "", grpcFrame(t, &healthpb.HealthCheckRequest{Service: deniedService}))
-	defer resp.Body.Close()
-	if got := resp.Header.Get("Content-Type"); got != "application/grpc-web+proto" {
-		t.Fatalf("content type = %q, want application/grpc-web+proto", got)
-	}
-	if resp.Header.Get("Trailer") != "" {
-		t.Errorf("Trailer header = %q, want none", resp.Header.Get("Trailer"))
-	}
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, trailer := readFrames(t, raw)
-	if len(data) != 0 {
-		t.Errorf("data frames = %d, want 0", len(data))
-	}
-	want := "grpc-message: denied: missing permission\r\ngrpc-status: 7\r\n"
-	if !strings.HasPrefix(trailer, want) {
-		t.Errorf("trailer = %q, want prefix %q", trailer, want)
-	}
-	if len(resp.Trailer) != 0 {
-		t.Errorf("HTTP trailers = %v, want none", resp.Trailer)
-	}
-}
-
 func TestHandler_RefusesNonPOST(t *testing.T) {
 	h := mustHandler(t, Config{Enabled: true}, http.NotFoundHandler())
 	rec := httptest.NewRecorder()

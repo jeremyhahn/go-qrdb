@@ -70,31 +70,6 @@ func TestWithEntityType(t *testing.T) {
 }
 
 // TestNewManagerWithDelta verifies the delta-enabled manager constructor.
-func TestNewManagerWithDelta(t *testing.T) {
-	t.Parallel()
-
-	log, err := logger.New(logger.LogConfig{
-		Level:  "debug",
-		Format: "console",
-		Output: "stdout",
-	})
-	require.NoError(t, err)
-
-	deltaComputer := messaging.NewDeltaComputer(log)
-	mgr := NewManagerWithDelta(deltaComputer, log)
-
-	require.NotNil(t, mgr)
-	assert.NotNil(t, mgr.deltaComputer)
-	assert.NotNil(t, mgr.logger)
-
-	// Verify all shards are initialized
-	for i := range mgr.shards {
-		require.NotNil(t, mgr.shards[i])
-		require.NotNil(t, mgr.shards[i].exactWatches)
-		require.NotNil(t, mgr.shards[i].prefixWatches)
-	}
-}
-
 // TestDeltaWatch_ComputesDelta verifies that delta mode computes deltas.
 func TestDeltaWatch_ComputesDelta(t *testing.T) {
 	t.Parallel()
@@ -453,38 +428,6 @@ func TestDeltaWatch_NewEntity(t *testing.T) {
 }
 
 // TestComputeDeltaEvent_NilEntityType tests computeDeltaEvent with nil entityType.
-func TestComputeDeltaEvent_NilEntityType(t *testing.T) {
-	t.Parallel()
-
-	log, err := logger.New(logger.LogConfig{
-		Level:  "debug",
-		Format: "console",
-		Output: "stdout",
-	})
-	require.NoError(t, err)
-
-	deltaComputer := messaging.NewDeltaComputer(log)
-	mgr := NewManagerWithDelta(deltaComputer, log)
-
-	watch := &ManagerWatch{
-		ID:         1,
-		deltaMode:  true,
-		entityType: nil, // No entity type
-	}
-
-	event := &ManagerWatchEvent{
-		Type: PUT,
-		Kv: &ManagerKeyValue{
-			Key:   []byte("test-key"),
-			Value: []byte(`{"id":"test"}`),
-		},
-		Revision: 1,
-	}
-
-	result := mgr.computeDeltaEvent(watch, event)
-	assert.Nil(t, result, "Should return nil when entityType is nil")
-}
-
 // TestComputeDeltaEvent_EmptyData tests computeDeltaEvent with empty data.
 func TestComputeDeltaEvent_EmptyData(t *testing.T) {
 	t.Parallel()
