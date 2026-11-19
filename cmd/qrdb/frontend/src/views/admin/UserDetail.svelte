@@ -44,6 +44,7 @@
 
   let username: string = $state("");
   let email: string = $state("");
+  let displayName: string = $state("");
   let tenantId: string = $state("");
   let selectedRoleIds: string[] = $state([]);
   let existingUser: User | null = $state(null);
@@ -53,7 +54,7 @@
   let saving: boolean = $state(false);
   let busy: boolean = $state(false);
   let confirmDelete: boolean = $state(false);
-  /** Thumbprints bound in this view; the User record does not list bindings. */
+  /** Thumbprints bound to the user, as the server lists them. */
   let certBindings: string[] = $state([]);
   let bindingThumbprint: string = $state("");
   let bindingExpiry: string = $state("");
@@ -110,10 +111,13 @@
         const user: User = await client.users.get(userId);
         existingUser = user;
         username = user.username;
+        email = user.email ?? "";
+        displayName = user.name ?? "";
         // Never allow tenantId to become undefined — TenantSelect's
         // $bindable has a fallback value which throws if bound to undefined.
         tenantId = user.tenantId ?? "default";
         selectedRoleIds = [...user.roleIds];
+        certBindings = boundThumbprints(user);
       }
     } catch (err: unknown) {
       const msg = errorText(err, "Failed to load user data");
@@ -145,6 +149,7 @@
           ...(email.trim() !== ""
             ? { email: email.trim() }
             : { withoutEmailLoginKey: true }),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           tenantId: tenantId.trim(),
           roleIds: selectedRoleIds,
         });
@@ -153,6 +158,8 @@
         await client.users.update({
           id: userId!,
           username: username.trim(),
+          ...(email.trim() === "" ? {} : { email: email.trim() }),
+          ...(displayName.trim() === "" ? {} : { name: displayName.trim() }),
           roleIds: selectedRoleIds,
         });
         showToast("success", `User "${username}" updated`);
@@ -193,6 +200,11 @@
     } else {
       selectedRoleIds = [...selectedRoleIds, roleId];
     }
+  }
+
+  /** Thumbprints of the bindings the server lists on a user record. */
+  function boundThumbprints(user: User): string[] {
+    return (user.certBindings ?? []).map((b) => b.thumbprint);
   }
 
   /** Enables or disables the existing user. */
@@ -245,7 +257,9 @@
     try {
       busy = true;
       existingUser = await client.users.addCertBinding(userId!, thumbprint, notAfterUnix);
-      if (!certBindings.includes(thumbprint)) {
+      if (existingUser.certBindings !== undefined) {
+        certBindings = boundThumbprints(existingUser);
+      } else if (!certBindings.includes(thumbprint)) {
         certBindings = [...certBindings, thumbprint];
       }
       bindingThumbprint = "";
@@ -266,7 +280,10 @@
     try {
       busy = true;
       existingUser = await client.users.removeCertBinding(userId!, tp);
-      certBindings = certBindings.filter((t) => t !== tp);
+      certBindings =
+        existingUser.certBindings !== undefined
+          ? boundThumbprints(existingUser)
+          : certBindings.filter((t) => t !== tp);
       if (bindingThumbprint.trim() === tp) bindingThumbprint = "";
       showToast("success", "Certificate binding removed");
     } catch (err: unknown) {
@@ -323,19 +340,30 @@
               />
             </label>
 
-            {#if isCreate}
-              <!-- Email (the user's email login key; blank = none) -->
-              <label class="form-control w-full">
-                <div class="label"><span class="label-text">Email</span></div>
-                <input
-                  type="email"
-                  class="input input-bordered input-sm w-full"
-                  placeholder="Enter email (blank: no email login)"
-                  data-testid="user-email"
-                  bind:value={email}
-                />
-              </label>
-            {/if}
+            <!-- Email (the user's email login key; blank at create = none) -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Email</span></div>
+              <input
+                type="email"
+                class="input input-bordered input-sm w-full"
+                placeholder="Enter email (blank: no email login)"
+                data-testid="user-email"
+                bind:value={email}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
+
+            <!-- Display name -->
+            <label class="form-control w-full">
+              <div class="label"><span class="label-text">Display Name</span></div>
+              <input
+                type="text"
+                class="input input-bordered input-sm w-full"
+                placeholder="Optional display name"
+                bind:value={displayName}
+                disabled={existingUser !== null && existingUser.system}
+              />
+            </label>
 
             <!-- Tenant ID -->
             <label class="form-control w-full" for="user-detail-tenant">

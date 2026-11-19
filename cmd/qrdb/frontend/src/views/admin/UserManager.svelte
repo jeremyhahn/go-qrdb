@@ -43,6 +43,7 @@
   let showInvite: boolean = $state(false);
   let searchThumbprint: string = $state("");
   let searching: boolean = $state(false);
+  let lookupNotFound: boolean = $state(false);
 
   // ---------------------------------------------------------------------------
   // Columns
@@ -134,20 +135,29 @@
     void fetchUsers();
   }
 
-  /** Looks up the user bound to a certificate thumbprint and opens it. */
+  /**
+   * Looks the account up by a bound certificate's thumbprint and opens it.
+   * A 404 means no account holds the binding; other refusals show the
+   * server's message.
+   */
   async function handleThumbprintSearch(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const thumbprint = searchThumbprint.trim();
     if (thumbprint === "") return;
     try {
       searching = true;
+      lookupNotFound = false;
       const user = await client.users.getUserByCertThumbprint(thumbprint);
       searchThumbprint = "";
       detailUserId = user.id;
       showDetail = true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "No user bound to that thumbprint";
-      showToast("error", msg);
+      if (err instanceof TransportError && err.statusCode === 404) {
+        lookupNotFound = true;
+      } else {
+        const msg = err instanceof Error ? err.message : "Failed to look up user";
+        showToast("error", msg);
+      }
     } finally {
       searching = false;
     }
@@ -213,6 +223,7 @@
           placeholder="Certificate thumbprint"
           data-testid="user-thumbprint-input"
           bind:value={searchThumbprint}
+          oninput={() => (lookupNotFound = false)}
         />
       </label>
       <button
@@ -223,6 +234,11 @@
       >
         Find
       </button>
+      {#if lookupNotFound}
+        <span class="text-warning text-sm" data-testid="user-lookup-not-found">
+          No user holds this certificate binding.
+        </span>
+      {/if}
     </form>
 
     <CrudTable
