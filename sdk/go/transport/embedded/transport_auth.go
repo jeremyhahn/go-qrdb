@@ -148,6 +148,12 @@ func (t *Transport) GetUserByCertThumbprint(ctx context.Context, thumbprint stri
 	if err := t.authorize(ctx, "GetUserByCertThumbprint"); err != nil {
 		return nil, err
 	}
+	// A tenant qualifier (WithTenantQualifier) is decided and recorded
+	// as on every other identity read: the operator-access policy
+	// decision and its dual trail.
+	if ctx, err = t.operatorAccess(ctx, "", permission.UsersGetByCertThumbprint); err != nil {
+		return nil, err
+	}
 	if t.userSvc == nil {
 		return nil, &transport.NotImplementedError{Method: "GetUserByCertThumbprint"}
 	}

@@ -128,3 +128,33 @@ func TestEmbeddedOperatorIdentityAccess_HonoursTheTenantQualifier(t *testing.T) 
 		t.Fatalf("unqualified CreateUser made a user in tenant %q, want the operator's own", own.TenantID)
 	}
 }
+
+// TestEmbeddedOperatorIdentityAccess_CertThumbprintLookupIsDecided is the
+// regression for GetUserByCertThumbprint skipping the operator-access
+// decision: a platform operator's qualified lookup into another tenant is
+// now decided and recorded on both trails like every other identity read.
+func TestEmbeddedOperatorIdentityAccess_CertThumbprintLookupIsDecided(t *testing.T) {
+	gen, err := dao.NewSnowflakeGenerator(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := user.NewStore(kvstore.NewMemoryKVStore(), gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := authtest.BuiltInRoles(t, tenantid.System, "acme", "globex")
+	platform, tenantTrail := audit.NewRingBuffer(64), audit.NewRingBuffer(64)
+	mw := authmw.New(rbac.New(roles), authmw.WithRoleResolver(roles), authmw.WithUserService(users),
+		authmw.WithAuditLogger(audit.NewDecisionLogger(platform)), authmw.WithOperatorAccessTenantTrail(tenantTrail),
+		authmw.WithIsolationPolicyReader(isolationPolicies{}))
+	tr := newAuthTransport(t, WithUserService(users), WithRoleService(role.NewGrantGuard(roles, mw.Authorizer())),
+		WithAuthMiddleware(mw))
+
+	operator := ctxFor(authtest.GrantedAdminIdentity(t, roles, tenantid.System, "operator", permission.UsersGetByCertThumbprint))
+	before := len(tenantTrail.Snapshot())
+	_, lookupErr := tr.GetUserByCertThumbprint(transport.WithTenantQualifier(operator, "acme"), "AABBCC")
+	if got := len(tenantTrail.Snapshot()); got <= before {
+		t.Fatalf("qualified GetUserByCertThumbprint (err %v) recorded no operator access on the tenant trail (%d -> %d)",
+			lookupErr, before, got)
+	}
+}

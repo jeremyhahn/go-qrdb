@@ -139,6 +139,7 @@ func qualifiedTenant(ctx context.Context, explicit string) string {
 // roles:read:tenant or roles:write:tenant.
 func tenantQualifiedPermission(perm permission.Permission) permission.Permission {
 	read := perm == permission.UsersRead || perm == permission.UsersList || perm == permission.UserAuthFactorsList ||
+		perm == permission.UsersGetByCertThumbprint ||
 		perm == permission.RolesRead || perm == permission.RolesList
 	switch {
 	case permission.Resource(perm) == permission.Resource(permission.RolesRead) && read:
