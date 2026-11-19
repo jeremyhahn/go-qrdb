@@ -4230,9 +4230,12 @@ IT_IIDFILE ?=
 # holds it exclusive) cannot remove the image between the target's check, its
 # reuse, pull or build, and its push (#1596). A reused image's tag time is
 # refreshed under it, so the image stays younger than the prune bound for the
-# rest of the job. Without flock(1) or a writable lock file it holds nothing.
-ci-image-shared-lock = lock=$$(scripts/ci-image.sh lock-file) && \
-	if command -v flock >/dev/null 2>&1 && : >>"$$lock" 2>/dev/null; then exec 9>>"$$lock" && flock -s 9; fi;
+# rest of the job. Without flock(1) or a writable lock file, or when lock-file
+# prints no path, it holds nothing and the recipe goes on: the writability probe
+# runs in a subshell because a failed redirect on the special builtin ':' would
+# exit dash, the recipe shell.
+ci-image-shared-lock = lock=$$(scripts/ci-image.sh lock-file 2>/dev/null) || lock=; \
+	if [ -n "$$lock" ] && command -v flock >/dev/null 2>&1 && (: >>"$$lock") 2>/dev/null; then exec 9>>"$$lock" && flock -s 9; fi;
 
 docker-build-toolchain:
 	$(REQUIRE_BUILDX)

@@ -1024,6 +1024,21 @@ for target in docker-build-toolchain docker-build-it; do
     [ "$rc" = 0 ] && called '^buildx build ' && ! called '^pull ' && ! called '^push ' && ! called '^tag '; then
     ok "$target: an unset registry changes nothing"
   else bad "$target: an unset registry changes nothing (rc=$rc)"; printf '%s\n%s\n' "$unset_out" "$unset_calls"; cat "$D/err"; fi
+
+  # 28a. #1597 CI: a self-hosted runner with no writable cache dir gets no
+  # lock path from lock-file, and a lock path whose directory is missing
+  # cannot be created. Either way the recipe shell (/bin/sh, dash in the
+  # toolchain image, where a failed redirect on ':' exits the shell) holds
+  # nothing and the target goes on.
+  for lockenv in "CI_IMAGE_LOCK= GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted CI_CACHE_ROOT=$D/nolockroot" \
+    "CI_IMAGE_LOCK=$D/nolockdir/image.lock"; do
+    reset; rec_for "$img"
+    # shellcheck disable=SC2086 # word-split the env assignments on purpose
+    mk "$target" CI_IMAGE_DIGEST_DIR="$rec" $lockenv
+    if [ "$rc" = 0 ] && [ "$(cat "$D/out")" = "==> $img is already built on this daemon" ] && [ ! -s "$D/err" ]; then
+      ok "$target: no usable lock path holds nothing and the target goes on ($lockenv)"
+    else bad "$target: no usable lock path holds nothing and the target goes on ($lockenv, rc=$rc)"; cat "$D/err"; fi
+  done
 done
 
 # 29. docker-build-it: a build that fails because a concurrent build loaded
