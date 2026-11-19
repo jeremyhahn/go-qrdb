@@ -1003,7 +1003,9 @@ func (s *DatabaseService) createWithCredentials(ctx context.Context, cfg databas
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
 		rbCtx, cancel := database.DropRollbackContext(ctx)
 		defer cancel()
-		s.rollBackCreate(rbCtx, db, err)
+		if rbErr := s.rollBackCreate(rbCtx, db, err); rbErr != nil {
+			return nil, errors.Join(err, rbErr)
+		}
 		return nil, err
 	}
 	info := db.Info()
@@ -1972,8 +1974,11 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	if err := s.clearPredecessorSeal(ctx, db); err != nil {
 		rbCtx, cancel := database.DropRollbackContext(ctx)
 		defer cancel()
-		s.rollBackCreate(rbCtx, db, err)
+		rbErr := s.rollBackCreate(rbCtx, db, err)
 		releaseReservations()
+		if rbErr != nil {
+			return nil, errors.Join(err, rbErr)
+		}
 		return nil, err
 	}
 	// Every database whose data lands on a node-keyed log takes part in the
