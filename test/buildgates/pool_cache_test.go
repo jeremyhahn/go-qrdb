@@ -136,3 +136,49 @@ func TestInToolchainImageRefusesARunnerPathOnThePool(t *testing.T) {
 		t.Fatalf("a CI_CACHE_DIR on a hosted runner is refused:\n%s", out)
 	}
 }
+
+// TestInToolchainImageAcceptsTheSelectedPoolCache: on a self-hosted runner the
+// launcher takes the shared generation scripts/ci-cache-dir.sh selects on the
+// data array (Codex P1 on #1597), and still refuses any other path, including
+// one under the same root.
+func TestInToolchainImageAcceptsTheSelectedPoolCache(t *testing.T) {
+	scripts := filepath.Join(repoRoot(t), "scripts")
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "docker"), []byte("#!/bin/sh\necho \"docker $*\" >> \"$STUB_DIR/calls\"\nexit 1\n"), 0o700); err != nil { // #nosec G306 -- the stub must be executable
+		t.Fatal(err)
+	}
+	root := filepath.Join(stub, "raid")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := append(os.Environ(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_DIR="+stub,
+		"RUNNER_ENVIRONMENT=self-hosted", "RUNNER_TEMP=", "CI_CACHE_ROOT="+root, "CI_CACHE=on")
+	sel := exec.Command("bash", filepath.Join(scripts, "ci-cache-dir.sh")) // #nosec G204 -- the repository's own script
+	sel.Env = env
+	line, err := sel.Output()
+	if err != nil {
+		t.Fatalf("ci-cache-dir.sh: %v", err)
+	}
+	dir := strings.TrimPrefix(strings.TrimSpace(string(line)), "CI_CACHE_DIR=")
+	if !strings.HasPrefix(dir, root+"/") {
+		t.Fatalf("ci-cache-dir.sh did not select a directory under %s: %q", root, line)
+	}
+	run := func(cacheDir string) (string, error) {
+		cmd := exec.Command("bash", filepath.Join(scripts, "in-toolchain-image.sh"), "image:tag", "true") // #nosec G204 -- the repository's own script
+		cmd.Env = append(env, "CI_CACHE_DIR="+cacheDir)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, _ := run(dir); strings.Contains(out, "named volumes") {
+		t.Fatalf("the generation ci-cache-dir.sh selected (%s) is refused:\n%s", dir, out)
+	}
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{other, filepath.Join(stub, "ci-cache"), filepath.Dir(dir), dir + "/../" + filepath.Base(dir)} {
+		if out, err := run(bad); err == nil || !strings.Contains(out, "named volumes") {
+			t.Errorf("CI_CACHE_DIR=%s on a self-hosted runner is not refused (%v):\n%s", bad, err, out)
+		}
+	}
+}
