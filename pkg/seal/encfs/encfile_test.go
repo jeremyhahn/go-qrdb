@@ -845,9 +845,9 @@ func writeTornFile(t *testing.T, mem filesys.FS, b *fakeBarrier, name string) []
 func TestEncFile_TornFinalBlockIsEndOfFile(t *testing.T) {
 	mem := newBaseFS()
 	b := newFakeBarrier(t)
-	full := writeTornFile(t, mem, b, "torn.log")
+	full := writeTornFile(t, mem, b, "000007.log")
 
-	r, err := New(mem, b).Open("torn.log")
+	r, err := New(mem, b).Open("000007.log")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -873,7 +873,7 @@ func TestEncFile_TornTailShorterThanOverheadIsEndOfFile(t *testing.T) {
 			for i := range full {
 				full[i] = byte(i % 251)
 			}
-			w, err := New(mem, b).Create("short.log")
+			w, err := New(mem, b).Create("000008.log")
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -883,7 +883,7 @@ func TestEncFile_TornTailShorterThanOverheadIsEndOfFile(t *testing.T) {
 			if err := w.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			raw, err := mem.OpenReadWrite("short.log")
+			raw, err := mem.OpenReadWrite("000008.log")
 			if err != nil {
 				t.Fatalf("raw open: %v", err)
 			}
@@ -898,7 +898,7 @@ func TestEncFile_TornTailShorterThanOverheadIsEndOfFile(t *testing.T) {
 				t.Fatalf("raw Close: %v", err)
 			}
 
-			r, err := New(mem, b).Open("short.log")
+			r, err := New(mem, b).Open("000008.log")
 			if err != nil {
 				t.Fatalf("Open with %d-byte torn tail: %v", short, err)
 			}
@@ -911,6 +911,87 @@ func TestEncFile_TornTailShorterThanOverheadIsEndOfFile(t *testing.T) {
 				t.Fatalf("ReadAt past full blocks: err = %v, want io.EOF", err)
 			}
 		})
+	}
+}
+
+// TestEncFile_NonWALFinalBlockCorruptionFails: torn-tail recovery is for
+// the WAL only. Any other file whose final block fails authentication
+// keeps failing with ErrAuthFailed instead of reading back shortened.
+func TestEncFile_NonWALFinalBlockCorruptionFails(t *testing.T) {
+	mem := newBaseFS()
+	b := newFakeBarrier(t)
+	full := writeTornFile(t, mem, b, "record.dat")
+
+	r, err := New(mem, b).Open("record.dat")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	if _, err := io.ReadAll(r); !errors.Is(err, ErrAuthFailed) {
+		t.Fatalf("ReadAll of a non-WAL file with a corrupt final block: err = %v, want ErrAuthFailed", err)
+	}
+	fi, err := r.Stat()
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if fi.Size() <= int64(len(full)) {
+		t.Fatalf("logical size = %d, want the full on-disk size past the %d authenticated bytes", fi.Size(), len(full))
+	}
+}
+
+// TestEncFile_NonWALShortTrailingBlockFails: trailing bytes shorter than a
+// block's nonce and tag stay a TrailingBlockTooShortError for a non-WAL file.
+func TestEncFile_NonWALShortTrailingBlockFails(t *testing.T) {
+	mem := newBaseFS()
+	b := newFakeBarrier(t)
+	w, err := New(mem, b).Create("record.dat")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := w.Write(make([]byte, 2*BlockSize)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	raw, err := mem.OpenReadWrite("record.dat")
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	fi, err := raw.Stat()
+	if err != nil {
+		t.Fatalf("raw Stat: %v", err)
+	}
+	if _, err := raw.WriteAt([]byte{0xA5}, fi.Size()); err != nil {
+		t.Fatalf("raw WriteAt: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("raw Close: %v", err)
+	}
+	var short *TrailingBlockTooShortError
+	if _, err := New(mem, b).Open("record.dat"); !errors.As(err, &short) {
+		t.Fatalf("Open of a non-WAL file with a 1-byte trailing block: err = %v, want *TrailingBlockTooShortError", err)
+	}
+}
+
+func TestIsWALName(t *testing.T) {
+	cases := map[string]bool{
+		"000001.log":          true,
+		"dir/000123.log":      true,
+		"000001-001.log":      true,
+		"torn.log":            false,
+		".log":                false,
+		"000001-.log":         false,
+		"000001.sst":          false,
+		"MANIFEST-000001":     false,
+		"000001.log.tmp":      false,
+		"customer/000001.dat": false,
+		"000001-abc.log":      false,
+	}
+	for name, want := range cases {
+		if got := isWALName(name); got != want {
+			t.Errorf("isWALName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
 

@@ -74,7 +74,7 @@ func (fs *FS) Open(name string) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc, err := fs.openEncryptedRO(base)
+	enc, err := fs.openEncryptedRO(base, name)
 	if err != nil {
 		_ = base.Close()
 		return nil, err
@@ -124,7 +124,7 @@ func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
 // openEncryptedRO reads the header from a base file and returns a
 // read-only encryptedFile. If the magic does not match, the base file
 // is returned directly (passthrough path).
-func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
+func (fs *FS) openEncryptedRO(base filesys.File, name string) (filesys.File, error) {
 	fi, err := base.Stat()
 	if err != nil {
 		return nil, err
@@ -146,14 +146,10 @@ func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	rf, err := newReadFile(base, h, physicalSize)
-	if err != nil {
-		return nil, err
+	if isWALName(name) {
+		return newWALReadFile(base, h, physicalSize)
 	}
-	if err := rf.dropTornTail(); err != nil {
-		return nil, err
-	}
-	return rf, nil
+	return newReadFile(base, h, physicalSize)
 }
 
 // openEncryptedRW reads the header for a non-empty file opened with

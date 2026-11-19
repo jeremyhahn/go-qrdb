@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/filesys"
@@ -75,16 +77,7 @@ func newReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFi
 	if err != nil {
 		return nil, err
 	}
-	payloadBytes := physicalSize - int64(h.totalSize())
-	logicalSize, err := physicalToLogicalSize(payloadBytes)
-	var short *TrailingBlockTooShortError
-	if errors.As(err, &short) {
-		// The trailing bytes are a new block torn before its nonce and tag
-		// landed (ENOSPC or a crash mid-append): end the file at the last
-		// full block, as dropTornTail does for a torn block that is longer.
-		logicalSize = (payloadBytes / int64(CiphertextBlockSize)) * int64(BlockSize)
-		err = nil
-	}
+	logicalSize, err := physicalToLogicalSize(physicalSize - int64(h.totalSize()))
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +89,54 @@ func newReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFi
 		logicalSize: logicalSize,
 		flushedSize: logicalSize,
 	}, nil
+}
+
+// newWALReadFile opens a write-ahead log read-only with torn-tail
+// recovery: trailing bytes shorter than a block's nonce and tag (an
+// append torn by ENOSPC or a crash before they landed) and a final block
+// that fails authentication (a torn in-place tail rewrite, see
+// dropTornTail) both end the file at the last whole authenticated block,
+// so the log reader's replay truncates there. Only a log tolerates a
+// shortened read: every other file goes through newReadFile, which keeps
+// both conditions fatal so a completed record never reads back shortened.
+func newWALReadFile(base filesys.File, h *header, physicalSize int64) (*encryptedFile, error) {
+	payloadBytes := physicalSize - int64(h.totalSize())
+	var short *TrailingBlockTooShortError
+	if _, err := physicalToLogicalSize(payloadBytes); errors.As(err, &short) {
+		physicalSize = int64(h.totalSize()) + (payloadBytes/int64(CiphertextBlockSize))*int64(CiphertextBlockSize)
+	}
+	rf, err := newReadFile(base, h, physicalSize)
+	if err != nil {
+		return nil, err
+	}
+	if err := rf.dropTornTail(); err != nil {
+		return nil, err
+	}
+	return rf, nil
+}
+
+// isWALName reports whether name is a Pebble write-ahead log: a decimal
+// file number, optionally followed by "-" and a decimal log-name index
+// (WAL failover), with the ".log" extension.
+func isWALName(name string) bool {
+	stem, ok := strings.CutSuffix(filepath.Base(name), ".log")
+	if !ok || stem == "" {
+		return false
+	}
+	num, idx, hasIdx := strings.Cut(stem, "-")
+	return isDecimal(num) && (!hasIdx || isDecimal(idx))
+}
+
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // physicalToLogicalSize maps the byte length of an encfs payload (the
@@ -125,7 +166,7 @@ func (f *encryptedFile) physicalOffsetForBlock(blockIndex int64) int64 {
 	return f.headerSize + blockIndex*int64(CiphertextBlockSize)
 }
 
-// dropTornTail authenticates the final on-disk block of a read-only file
+// dropTornTail authenticates the final on-disk block of a read-only WAL file
 // and, when it fails authentication, drops it from the logical size so
 // ReadAt reports io.EOF at that block's start.
 //
@@ -139,7 +180,8 @@ func (f *encryptedFile) physicalOffsetForBlock(blockIndex int64) int64 {
 // exactly once, so an authentication failure there stays fatal
 // (ErrAuthFailed): that is tampering or the wrong key, not a torn write.
 //
-// A read-write reopen does not call this: filesys.File has no Truncate,
+// Only newWALReadFile calls this; every other read-only open keeps the
+// error. A read-write reopen does not call it either: filesys.File has no Truncate,
 // so appending after a dropped tail would leave the torn bytes past the
 // new block; openEncryptedRW keeps ErrAuthFailed.
 func (f *encryptedFile) dropTornTail() error {
