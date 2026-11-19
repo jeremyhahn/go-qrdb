@@ -110,7 +110,7 @@ func TestBarrierPlaintextTarget_SameHostRedirectRefused(t *testing.T) {
 				mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 					body, _ := io.ReadAll(r.Body)
 					if bytes.Contains(body, []byte(`"tools/call"`)) {
-						http.Redirect(w, r, "/moved"+r.URL.Path, http.StatusTemporaryRedirect)
+						http.Redirect(w, r, "/moved/target", http.StatusTemporaryRedirect)
 						return
 					}
 					r.Body = io.NopCloser(bytes.NewReader(body))
@@ -123,7 +123,7 @@ func TestBarrierPlaintextTarget_SameHostRedirectRefused(t *testing.T) {
 						_, _ = w.Write([]byte(`{"status":"ok"}`))
 						return
 					}
-					http.Redirect(w, r, "/moved"+r.URL.Path, http.StatusTemporaryRedirect)
+					http.Redirect(w, r, "/moved/target", http.StatusTemporaryRedirect)
 				})
 			}
 			srv := httptest.NewTLSServer(mux)
