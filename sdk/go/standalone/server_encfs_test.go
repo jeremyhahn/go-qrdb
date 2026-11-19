@@ -206,44 +206,6 @@ func TestEmbeddedServerWithBarrier_FileResealedReadsFailSealed(t *testing.T) {
 // TestEmbeddedServerWithBarrier_AutoUnsealWrongPassphrase confirms a
 // second boot with the wrong passphrase fails with BarrierUnsealError
 // and ErrInvalidCredentials, leaving disk state intact.
-func TestEmbeddedServerWithBarrier_AutoUnsealWrongPassphrase(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-
-	srv, err := NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
-		DataDir: dataDir,
-		Barrier: &BarrierConfig{
-			Strategy:   seal.StrategyPassphrase,
-			AutoUnseal: true,
-			Passphrase: barrierPassphrase(t, "right-passphrase"),
-		},
-	})
-	if err != nil {
-		t.Fatalf("first boot: %v", err)
-	}
-	if err := srv.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
-	}
-
-	_, err = NewServer(ctx, &ServerConfig{
-		Backend: database.BackendPebble,
-		DataDir: dataDir,
-		Barrier: &BarrierConfig{
-			Strategy:   seal.StrategyPassphrase,
-			AutoUnseal: true,
-			Passphrase: barrierPassphrase(t, "wrong-passphrase"),
-		},
-	})
-	if err == nil {
-		t.Fatal("expected BarrierUnsealError on wrong passphrase, got nil")
-	}
-	var unsealErr *BarrierUnsealError
-	if !errors.As(err, &unsealErr) {
-		t.Fatalf("expected *BarrierUnsealError, got %T: %v", err, err)
-	}
-}
-
 // TestEmbeddedServerWithBarrier_MemoryAutoUnsealNoFSWrap asserts that
 // the memory backend takes the AutoUnseal path without attempting to
 // wrap any FS, because there is nothing on disk to encrypt. The

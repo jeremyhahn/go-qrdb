@@ -425,14 +425,6 @@ func TestHealthy_AfterClose(t *testing.T) {
 // KV operation tests
 // ---------------------------------------------------------------------------
 
-func TestPut_Success(t *testing.T) {
-	tr, _ := New(newMockKVService(), &mockAdminService{})
-	err := tr.Put(context.Background(), "key", []byte("value"))
-	if err != nil {
-		t.Fatalf("Put failed: %v", err)
-	}
-}
-
 func TestPut_AfterClose(t *testing.T) {
 	tr, _ := New(newMockKVService(), &mockAdminService{})
 	_ = tr.Close()
@@ -444,22 +436,6 @@ func TestPut_AfterClose(t *testing.T) {
 	var closedErr *transport.ClosedError
 	if !errors.As(err, &closedErr) {
 		t.Errorf("expected ClosedError, got %T", err)
-	}
-}
-
-func TestGet_Success(t *testing.T) {
-	kvSvc := newMockKVService()
-	tr, _ := New(kvSvc, &mockAdminService{})
-
-	ctx := context.Background()
-	_ = tr.Put(ctx, "hello", []byte("world"))
-
-	val, err := tr.Get(ctx, "hello")
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if string(val) != "world" {
-		t.Errorf("expected 'world', got %q", string(val))
 	}
 }
 
@@ -486,25 +462,6 @@ func TestGet_AfterClose(t *testing.T) {
 	_, err := tr.Get(context.Background(), "key")
 	if err == nil {
 		t.Fatal("expected error after close")
-	}
-}
-
-func TestDelete_Success(t *testing.T) {
-	kvSvc := newMockKVService()
-	tr, _ := New(kvSvc, &mockAdminService{})
-
-	ctx := context.Background()
-	_ = tr.Put(ctx, "to-delete", []byte("data"))
-
-	err := tr.Delete(ctx, "to-delete")
-	if err != nil {
-		t.Fatalf("Delete failed: %v", err)
-	}
-
-	_, err = tr.Get(ctx, "to-delete")
-	var knf *transport.KeyNotFoundError
-	if !errors.As(err, &knf) {
-		t.Errorf("expected KeyNotFoundError after delete, got %T", err)
 	}
 }
 
@@ -712,19 +669,6 @@ func TestMintJoinToken_NilRequest(t *testing.T) {
 	}
 	if reached {
 		t.Fatal("a nil request reached the join-token minter")
-	}
-}
-
-func TestAddMember_Success(t *testing.T) {
-	adminSvc := &mockAdminService{}
-	tr, _ := New(newMockKVService(), adminSvc)
-
-	err := tr.AddMember(context.Background(), 0, 2, "10.0.0.2:63001", "")
-	if err != nil {
-		t.Fatalf("AddMember failed: %v", err)
-	}
-	if !adminSvc.addCalled {
-		t.Error("expected AddMember to be called on service")
 	}
 }
 
@@ -1322,23 +1266,6 @@ func TestKV_PutGetDeleteRoundtrip(t *testing.T) {
 	}
 	if len(remaining) != 2 {
 		t.Errorf("expected 2 keys after delete, got %d", len(remaining))
-	}
-}
-
-func TestExists_KeyPresent(t *testing.T) {
-	tr, _ := New(newMockKVService(), &mockAdminService{})
-	ctx := context.Background()
-
-	if err := tr.Put(ctx, "exists-key", []byte("value")); err != nil {
-		t.Fatalf("Put failed: %v", err)
-	}
-
-	exists, err := tr.Exists(ctx, "exists-key")
-	if err != nil {
-		t.Fatalf("Exists returned unexpected error: %v", err)
-	}
-	if !exists {
-		t.Error("expected Exists to return true for present key")
 	}
 }
 

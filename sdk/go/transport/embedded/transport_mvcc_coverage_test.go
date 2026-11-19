@@ -127,17 +127,6 @@ func TestEmbeddedMVCC_PutWithLease_Success(t *testing.T) {
 	}
 }
 
-func TestEmbeddedMVCC_PutWithLease_WithWriteOption(t *testing.T) {
-	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
-	kv, err := tr.PutWithLease(context.Background(), "k", []byte("v"), 42, transport.WithWriteMode(transport.WriteModeSync))
-	if err != nil {
-		t.Fatalf("PutWithLease: %v", err)
-	}
-	if string(kv.Key) != "k" {
-		t.Fatalf("unexpected: %+v", kv)
-	}
-}
-
 func TestEmbeddedMVCC_GetRevision_Success(t *testing.T) {
 	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
 	kv, err := tr.GetRevision(context.Background(), "k")
@@ -149,31 +138,9 @@ func TestEmbeddedMVCC_GetRevision_Success(t *testing.T) {
 	}
 }
 
-func TestEmbeddedMVCC_GetRevision_WithConsistency(t *testing.T) {
-	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
-	kv, err := tr.GetRevision(context.Background(), "k", transport.WithConsistency(transport.ConsistencyLinearizable))
-	if err != nil {
-		t.Fatalf("GetRevision: %v", err)
-	}
-	if string(kv.Key) != "k" {
-		t.Fatalf("unexpected: %+v", kv)
-	}
-}
-
 func TestEmbeddedMVCC_GetAtRevision_Success(t *testing.T) {
 	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
 	kv, err := tr.GetAtRevision(context.Background(), "k", 7)
-	if err != nil {
-		t.Fatalf("GetAtRevision: %v", err)
-	}
-	if kv.ModRevision != 7 {
-		t.Fatalf("ModRevision = %d", kv.ModRevision)
-	}
-}
-
-func TestEmbeddedMVCC_GetAtRevision_WithConsistency(t *testing.T) {
-	tr := newExtTransport(t, WithMVCCService(newMockMVCCService()))
-	kv, err := tr.GetAtRevision(context.Background(), "k", 7, transport.WithConsistency(transport.ConsistencyLinearizable))
 	if err != nil {
 		t.Fatalf("GetAtRevision: %v", err)
 	}
@@ -416,42 +383,6 @@ var _ service.TransactionServicer = (*mockTxService)(nil)
 // ===========================================================================
 // Transaction tests
 // ===========================================================================
-
-func TestEmbeddedTx_Execute_Success(t *testing.T) {
-	tr := newExtTransport(t, WithTransactionService(&mockTxService{}))
-	resp, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
-		Compares: []transport.Compare{
-			{Key: []byte("k"), Target: transport.CompareTarget(0), Result: transport.CompareResult(0), Value: []byte("v")},
-		},
-		SuccessOps: []transport.Op{
-			{Type: transport.OpType(0), Key: []byte("k"), Value: []byte("new")},
-		},
-	})
-	if err != nil {
-		t.Fatalf("ExecuteTransaction: %v", err)
-	}
-	if !resp.Succeeded {
-		t.Fatal("expected success")
-	}
-}
-
-func TestEmbeddedTx_ExecuteWithMode(t *testing.T) {
-	tr := newExtTransport(t, WithTransactionService(&mockTxService{}))
-	resp, err := tr.ExecuteTransaction(context.Background(), &transport.TransactionRequest{
-		Compares: []transport.Compare{
-			{Key: []byte("k"), Value: []byte("v")},
-		},
-		SuccessOps: []transport.Op{
-			{Key: []byte("k"), Value: []byte("new")},
-		},
-	}, transport.WithWriteMode(transport.WriteModeSync))
-	if err != nil {
-		t.Fatalf("ExecuteTransaction: %v", err)
-	}
-	if !resp.Succeeded {
-		t.Fatal("expected success")
-	}
-}
 
 func TestEmbeddedTx_Dispatch(t *testing.T) {
 	tr := newExtTransport(t, WithTransactionService(&mockTxService{}))

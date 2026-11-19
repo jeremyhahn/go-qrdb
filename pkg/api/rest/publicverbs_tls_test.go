@@ -21,7 +21,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"math/big"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -97,5 +99,11 @@ func TestPublicVerbsParity_RESTBadCertificateIsHandshakeFailure(t *testing.T) {
 	if err == nil {
 		_ = resp.Body.Close()
 		t.Fatalf("GET %s with an unverifiable certificate = %d, want a handshake failure", path, resp.StatusCode)
+	}
+	// RFC 8446 section 4.4.2.4: the server aborts with a certificate
+	// alert, which crypto/tls reports to the client as a "remote error".
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "remote error" {
+		t.Fatalf("GET %s with an unverifiable certificate: err = %v, want the server's TLS alert", path, err)
 	}
 }

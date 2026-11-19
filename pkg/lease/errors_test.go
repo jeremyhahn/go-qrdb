@@ -30,20 +30,6 @@ func TestNotFoundErrorMessage(t *testing.T) {
 	}
 }
 
-func TestNotFoundErrorWithLargeID(t *testing.T) {
-	err := &NotFoundError{ID: 9999999}
-	got := err.Error()
-	if !strings.Contains(got, "9999999") {
-		t.Errorf("NotFoundError.Error() = %q, want it to contain %q", got, "9999999")
-	}
-}
-
-func TestNotFoundErrorImplementsError(t *testing.T) {
-	err := &NotFoundError{ID: 1}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
-}
-
 func TestExistsErrorMessage(t *testing.T) {
 	err := &ExistsError{ID: 100}
 	got := err.Error()
@@ -53,20 +39,6 @@ func TestExistsErrorMessage(t *testing.T) {
 	if !strings.Contains(got, "100") {
 		t.Errorf("ExistsError.Error() = %q, want it to contain %q", got, "100")
 	}
-}
-
-func TestExistsErrorWithDifferentID(t *testing.T) {
-	err := &ExistsError{ID: 555}
-	got := err.Error()
-	if !strings.Contains(got, "555") {
-		t.Errorf("ExistsError.Error() = %q, want it to contain %q", got, "555")
-	}
-}
-
-func TestExistsErrorImplementsError(t *testing.T) {
-	err := &ExistsError{ID: 1}
-	// Verify the concrete type satisfies the error interface.
-	var _ error = err
 }
 
 func TestInvalidTTLErrorMessage(t *testing.T) {
@@ -81,32 +53,4 @@ func TestInvalidTTLErrorMessage(t *testing.T) {
 	if !strings.Contains(got, "must be > 0") {
 		t.Errorf("InvalidTTLError.Error() = %q, want it to contain %q", got, "must be > 0")
 	}
-}
-
-func TestInvalidTTLErrorWithZero(t *testing.T) {
-	err := &InvalidTTLError{TTL: 0}
-	got := err.Error()
-	if !strings.Contains(got, "0") {
-		t.Errorf("InvalidTTLError.Error() = %q, want it to contain %q", got, "0")
-	}
-}
-
-func TestInvalidTTLErrorImplementsError(t *testing.T) {
-	err := &InvalidTTLError{TTL: -1}
-	var _ error = err // compile-time interface assertion
-	_ = err
-}
-
-func TestLessorClosedErrorMessage(t *testing.T) {
-	err := &LessorClosedError{}
-	got := err.Error()
-	if got != "lessor is closed" {
-		t.Errorf("LessorClosedError.Error() = %q, want %q", got, "lessor is closed")
-	}
-}
-
-func TestLessorClosedErrorImplementsError(t *testing.T) {
-	err := &LessorClosedError{}
-	var _ error = err // compile-time interface assertion
-	_ = err
 }

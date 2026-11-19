@@ -143,6 +143,8 @@ func TestClassify_DominantRulesWinThroughWrappers(t *testing.T) {
 		{"sealed tenant inside a user store error", &user.StoreError{Op: "get", Err: tenant.ErrTenantSealed}, Unavailable},
 		{"tenant update lost to concurrent writers", &tenant.ConcurrentUpdateError{TenantID: "acme", Attempts: 8}, Aborted},
 		{"cross-tenant refusal inside a user store error", &user.StoreError{Op: "get", Err: &tenant.CrossTenantDeniedError{}}, PermissionDenied},
+		{"delegation refused", &service.DelegationDeniedError{Reason: "a delegated caller cannot delegate"}, PermissionDenied},
+		{"no standing delegation policy", &service.DelegationPolicyNotFoundError{TenantID: "acme", Principal: "billing"}, NotFound},
 		{"closed store inside a time-series failure", &service.TimeSeriesError{Op: "write", Err: storage.ErrStorageClosed}, Unavailable},
 		// A node re-sealed at runtime: go-quicraft refuses every store read
 		// and write with its own sentinel, which is not seal.ErrSealed.

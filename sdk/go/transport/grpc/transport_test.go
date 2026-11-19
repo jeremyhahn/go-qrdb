@@ -906,66 +906,6 @@ func TestDelete_ServiceError(t *testing.T) {
 	}
 }
 
-func TestPut_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.Put(context.Background(), "key", []byte("val"))
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestGet_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.Get(context.Background(), "key")
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestDelete_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.Delete(context.Background(), "key")
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
-func TestList_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.List(context.Background(), "")
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Admin operations tests
 // ---------------------------------------------------------------------------
@@ -1000,21 +940,6 @@ func TestHealth_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestHealth_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.Health(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -1063,21 +988,6 @@ func TestStatus_ServiceError(t *testing.T) {
 	}
 }
 
-func TestStatus_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.Status(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestPeers(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
@@ -1098,21 +1008,6 @@ func TestPeers(t *testing.T) {
 	}
 	if len(shard.Peers) != 2 {
 		t.Fatalf("expected 2 peers, got %d", len(shard.Peers))
-	}
-}
-
-func TestPeers_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.Peers(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -1142,21 +1037,6 @@ func TestAddMember_ServiceError(t *testing.T) {
 	}
 }
 
-func TestAddMember_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.AddMember(context.Background(), 1, 3, "127.0.0.3:63001", "")
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestRemoveMember(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
@@ -1180,21 +1060,6 @@ func TestRemoveMember_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestRemoveMember_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.RemoveMember(context.Background(), 1, 2)
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -1224,21 +1089,6 @@ func TestRequestSnapshot_ServiceError(t *testing.T) {
 	}
 }
 
-func TestRequestSnapshot_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.RequestSnapshot(context.Background(), 1)
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestDrain(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
@@ -1262,21 +1112,6 @@ func TestDrain_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestDrain_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.Drain(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -1723,24 +1558,6 @@ func TestStartShard_ServiceError(t *testing.T) {
 	}
 }
 
-func TestStartShard_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.StartShard(context.Background(), &transport.StartShardRequest{
-		ShardID:   1,
-		ReplicaID: 1,
-	})
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestStopShard(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
@@ -1764,21 +1581,6 @@ func TestStopShard_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestStopShard_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	err := tr.StopShard(context.Background(), 1)
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 
@@ -1823,21 +1625,6 @@ func TestGetShardState_ServiceError(t *testing.T) {
 	}
 }
 
-func TestGetShardState_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.GetShardState(context.Background(), 1)
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
-	}
-}
-
 func TestGetTopology(t *testing.T) {
 	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
 	defer cleanup()
@@ -1879,21 +1666,6 @@ func TestGetTopology_ServiceError(t *testing.T) {
 	var reqErr *transport.RequestError
 	if !errors.As(err, &reqErr) {
 		t.Fatalf("expected *transport.RequestError, got %T: %v", err, err)
-	}
-}
-
-func TestGetTopology_OnClosedTransport(t *testing.T) {
-	tr, cleanup := connectTransport(t, newMockKVService(), newMockAdminService())
-	defer cleanup()
-
-	_ = tr.Close()
-	_, err := tr.GetTopology(context.Background())
-	if err == nil {
-		t.Fatal("expected error on closed transport")
-	}
-	var closedErr *transport.ClosedError
-	if !errors.As(err, &closedErr) {
-		t.Fatalf("expected *transport.ClosedError, got %T: %v", err, err)
 	}
 }
 

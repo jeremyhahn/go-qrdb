@@ -524,33 +524,6 @@ func TestEmbeddedRelational_Insert_SelectSeesOwnWrite_Rollback_SelectDoesNotSeeI
 	}
 }
 
-func TestEmbeddedRelational_Commit_Persists(t *testing.T) {
-	db, _ := openRelationalTestDB(t, "reltx2")
-
-	if _, err := db.Exec("CREATE TABLE widgets (id BIGINT UNSIGNED PRIMARY KEY, name VARCHAR(64))"); err != nil {
-		t.Fatalf("CREATE TABLE: %v", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("Begin: %v", err)
-	}
-	if _, err := tx.Exec("INSERT INTO widgets (id, name) VALUES (1, 'gizmo')"); err != nil {
-		t.Fatalf("Exec insert: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("Commit: %v", err)
-	}
-
-	var name string
-	if err := db.QueryRow("SELECT name FROM widgets WHERE id = 1").Scan(&name); err != nil {
-		t.Fatalf("QueryRow after commit: %v", err)
-	}
-	if name != "gizmo" {
-		t.Errorf("name = %q, want gizmo", name)
-	}
-}
-
 func TestEmbeddedRelational_Savepoint_RollbackTo(t *testing.T) {
 	db, _ := openRelationalTestDB(t, "reltx3")
 

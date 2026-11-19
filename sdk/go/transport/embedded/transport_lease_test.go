@@ -23,66 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-func TestEmbeddedLease_Grant(t *testing.T) {
-	tr := newExtTransport(t, WithLeaseService(&mockLeaseService{}))
-	info, err := tr.LeaseGrant(context.Background(), 60)
-	if err != nil {
-		t.Fatalf("LeaseGrant: %v", err)
-	}
-	if info.ID != 42 || info.TTL != 60 {
-		t.Fatalf("unexpected: %+v", info)
-	}
-}
-
-func TestEmbeddedLease_Revoke(t *testing.T) {
-	var revoked int64
-	tr := newExtTransport(t, WithLeaseService(&mockLeaseService{
-		revokeFn: func(_ context.Context, id int64) error {
-			revoked = id
-			return nil
-		},
-	}))
-	if err := tr.LeaseRevoke(context.Background(), 42); err != nil {
-		t.Fatalf("LeaseRevoke: %v", err)
-	}
-	if revoked != 42 {
-		t.Fatalf("service revoked %d, want 42", revoked)
-	}
-}
-
-func TestEmbeddedLease_KeepAlive(t *testing.T) {
-	tr := newExtTransport(t, WithLeaseService(&mockLeaseService{}))
-	info, err := tr.LeaseKeepAlive(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("LeaseKeepAlive: %v", err)
-	}
-	if info.ID != 42 {
-		t.Fatalf("ID = %d", info.ID)
-	}
-}
-
-func TestEmbeddedLease_TimeToLive(t *testing.T) {
-	tr := newExtTransport(t, WithLeaseService(&mockLeaseService{}))
-	info, err := tr.LeaseTimeToLive(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("LeaseTimeToLive: %v", err)
-	}
-	if info.ID != 42 {
-		t.Fatalf("ID = %d", info.ID)
-	}
-}
-
-func TestEmbeddedLease_List(t *testing.T) {
-	tr := newExtTransport(t, WithLeaseService(&mockLeaseService{}))
-	leases, err := tr.LeaseList(context.Background())
-	if err != nil {
-		t.Fatalf("LeaseList: %v", err)
-	}
-	if len(leases) != 2 {
-		t.Fatalf("got %d leases", len(leases))
-	}
-}
-
 // leaseCalls drives every lease verb of tr once.
 func leaseCalls(tr *Transport) map[string]func() error {
 	ctx := context.Background()

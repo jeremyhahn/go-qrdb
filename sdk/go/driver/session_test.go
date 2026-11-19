@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	gmssql "github.com/dolthub/go-mysql-server/sql"
 
@@ -95,30 +94,6 @@ func TestResolveIdentity_Precedence(t *testing.T) {
 				t.Errorf("TenantID = %q, want %q", got.TenantID, tt.wantTenantID)
 			}
 		})
-	}
-}
-
-// TestWithIdentityOption verifies the option records the identity.
-func TestWithIdentityOption(t *testing.T) {
-	id := &auth.Identity{Subject: "alice", TenantID: "acme"}
-
-	var opts embeddedOptions
-	WithIdentity(id)(&opts)
-
-	if opts.identity != id {
-		t.Errorf("identity = %+v, want %+v", opts.identity, id)
-	}
-}
-
-// TestWithLocationOption verifies the option records the location.
-func TestWithLocationOption(t *testing.T) {
-	loc := time.FixedZone("test", 7200)
-
-	var opts embeddedOptions
-	WithLocation(loc)(&opts)
-
-	if opts.loc != loc {
-		t.Errorf("loc = %v, want %v", opts.loc, loc)
 	}
 }
 

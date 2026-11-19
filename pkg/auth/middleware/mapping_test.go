@@ -222,6 +222,36 @@ func TestLookupGRPCFromDescriptor_Found(t *testing.T) {
 	}
 }
 
+// TestGRPCPermissions_RotationAndDelegationPolicyRPCs pins the permission
+// each credential rotation policy RPC (#1201) and tenant delegation policy
+// RPC (#1187) declares through its (qrdb.v1.permission) option.
+func TestGRPCPermissions_RotationAndDelegationPolicyRPCs(t *testing.T) {
+	tests := []struct {
+		method string
+		want   permission.Permission
+	}{
+		{"/qrdb.v1.QRDBService/CredentialSetRotationPolicy", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/CredentialRotationPolicy", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/CredentialMigrationConflicts", permission.CredentialsList},
+		{"/qrdb.v1.QRDBService/CredentialResolveMigrationConflict", permission.CredentialsRotate},
+		{"/qrdb.v1.QRDBService/PutDelegationPolicy", permission.CertsDelegate},
+		{"/qrdb.v1.QRDBService/ListDelegationPolicies", permission.CertsDelegate},
+		{"/qrdb.v1.QRDBService/DeleteDelegationPolicy", permission.CertsDelegate},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method, func(t *testing.T) {
+			got, ok := LookupGRPCFromDescriptor(tt.method)
+			if !ok {
+				t.Fatalf("expected a permission option for %q", tt.method)
+			}
+			if got != tt.want {
+				t.Errorf("LookupGRPCFromDescriptor(%q) = %q, want %q", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLookupGRPCFromDescriptor_NotFound(t *testing.T) {
 	methods := []string{
 		"/qrdb.v1.QRDBService/UnknownMethod",

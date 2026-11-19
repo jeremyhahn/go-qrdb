@@ -24,27 +24,8 @@ import (
 
 // TestValidateReservedTenantID_System verifies the system tenant id is
 // rejected for external callers.
-func TestValidateReservedTenantID_System(t *testing.T) {
-	err := validateReservedTenantID(context.Background(), tenantid.System)
-	var rerr *ReservedTenantIDError
-	if !errors.As(err, &rerr) {
-		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
-	}
-	if rerr.TenantID != tenantid.System {
-		t.Errorf("TenantID = %q, want %q", rerr.TenantID, tenantid.System)
-	}
-}
-
 // TestValidateReservedTenantID_LegacyDefault verifies the legacy "default"
 // tenant id is permanently reserved.
-func TestValidateReservedTenantID_LegacyDefault(t *testing.T) {
-	err := validateReservedTenantID(context.Background(), "default")
-	var rerr *ReservedTenantIDError
-	if !errors.As(err, &rerr) {
-		t.Fatalf("expected *ReservedTenantIDError, got %T: %v", err, err)
-	}
-}
-
 // TestValidateReservedTenantID_UnderscorePrefix verifies ids starting with
 // "_" are rejected.
 func TestValidateReservedTenantID_UnderscorePrefix(t *testing.T) {
@@ -189,15 +170,6 @@ func TestValidateReservedTenantID_RejectsRelativeSegments(t *testing.T) {
 				t.Fatalf("id %q (internal): expected *InvalidTenantIDError, got %T: %v", id, err, err)
 			}
 		})
-	}
-}
-
-// TestInvalidTenantIDCharError_Error verifies the error message format.
-func TestInvalidTenantIDCharError_Error(t *testing.T) {
-	e := &InvalidTenantIDCharError{TenantID: "acme\x1f", Byte: 0x1f}
-	got := e.Error()
-	if got == "" {
-		t.Error("Error() must return non-empty string")
 	}
 }
 

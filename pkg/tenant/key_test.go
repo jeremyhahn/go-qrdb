@@ -17,8 +17,6 @@ package tenant
 import (
 	"bytes"
 	"testing"
-
-	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
 func TestPrefixKeyNormal(t *testing.T) {
@@ -29,41 +27,9 @@ func TestPrefixKeyNormal(t *testing.T) {
 	}
 }
 
-func TestPrefixKeyWithSystemTenant(t *testing.T) {
-	got := PrefixKey(tenantid.System, "some-key")
-	want := "system/some-key"
-	if got != want {
-		t.Errorf("PrefixKey() = %q, want %q", got, want)
-	}
-}
-
-func TestPrefixKeyEmptyKey(t *testing.T) {
-	got := PrefixKey("tenant-1", "")
-	want := "tenant-1/"
-	if got != want {
-		t.Errorf("PrefixKey() = %q, want %q", got, want)
-	}
-}
-
 func TestPrefixKeyBytesNormal(t *testing.T) {
 	got := PrefixKeyBytes("tenant-1", []byte("my-key"))
 	want := []byte("tenant-1/my-key")
-	if !bytes.Equal(got, want) {
-		t.Errorf("PrefixKeyBytes() = %q, want %q", got, want)
-	}
-}
-
-func TestPrefixKeyBytesEmptyKey(t *testing.T) {
-	got := PrefixKeyBytes("tenant-1", []byte{})
-	want := []byte("tenant-1/")
-	if !bytes.Equal(got, want) {
-		t.Errorf("PrefixKeyBytes() = %q, want %q", got, want)
-	}
-}
-
-func TestPrefixKeyBytesWithSystemTenant(t *testing.T) {
-	got := PrefixKeyBytes(tenantid.System, []byte("data"))
-	want := []byte("system/data")
 	if !bytes.Equal(got, want) {
 		t.Errorf("PrefixKeyBytes() = %q, want %q", got, want)
 	}
@@ -136,14 +102,6 @@ func TestStripPrefixBytesKeyEqualsPrefix(t *testing.T) {
 func TestTenantPrefix(t *testing.T) {
 	got := TenantPrefix("tenant-1")
 	want := "tenant-1/"
-	if got != want {
-		t.Errorf("TenantPrefix() = %q, want %q", got, want)
-	}
-}
-
-func TestTenantPrefixSystemTenant(t *testing.T) {
-	got := TenantPrefix(tenantid.System)
-	want := "system/"
 	if got != want {
 		t.Errorf("TenantPrefix() = %q, want %q", got, want)
 	}

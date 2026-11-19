@@ -34,35 +34,6 @@ func serviceConnectorDSN(database string) *DSNConfig {
 	return &DSNConfig{Scheme: SchemeEmbedded, Database: database}
 }
 
-// TestNewServiceConnector_RelationalTablesWork verifies a connector built over
-// caller-supplied services serves the relational catalog its registry
-// provides -- the capability the KV-only embedded path lacks.
-func TestNewServiceConnector_RelationalTablesWork(t *testing.T) {
-	reg := newRelationalRegistry()
-
-	connector, err := NewServiceConnector(serviceConnectorDSN("svcconn"), reg.kvSvc, reg)
-	if err != nil {
-		t.Fatalf("NewServiceConnector: %v", err)
-	}
-	db := sql.OpenDB(connector)
-	t.Cleanup(func() { _ = db.Close() })
-
-	if _, err := db.Exec("CREATE TABLE gadgets (id BIGINT PRIMARY KEY, name VARCHAR(32))"); err != nil {
-		t.Fatalf("CREATE TABLE: %v", err)
-	}
-	if _, err := db.Exec("INSERT INTO gadgets (id, name) VALUES (1, 'widget')"); err != nil {
-		t.Fatalf("INSERT: %v", err)
-	}
-
-	var name string
-	if err := db.QueryRow("SELECT name FROM gadgets WHERE id = 1").Scan(&name); err != nil {
-		t.Fatalf("SELECT: %v", err)
-	}
-	if name != "widget" {
-		t.Errorf("name = %q, want %q", name, "widget")
-	}
-}
-
 // TestNewServiceConnector_CloseLeavesServicesUsable verifies closing the
 // connector releases only what the connector created. The caller owns the
 // services, and a second connector over the same registry must still see the

@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/kvstore"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
@@ -283,18 +282,5 @@ func TestTypedErrors_Messages(t *testing.T) {
 	// A key carrying a quote or control byte is quoted, never spliced raw.
 	if got := (&SwapLostError{Key: []byte("a\"b\n")}).Error(); !strings.Contains(got, `"a\"b\n"`) {
 		t.Errorf("SwapLostError did not quote its key: %q", got)
-	}
-}
-
-// TestLeaseExpiredBeforeBindError_MessageCarriesTTL pins the TTL rendering,
-// which the caller needs to choose a longer one.
-func TestLeaseExpiredBeforeBindError_MessageCarriesTTL(t *testing.T) {
-	inner := errors.New("lease not found")
-	err := &LeaseExpiredBeforeBindError{Key: "locks/c", TTL: 2 * time.Second, Err: inner}
-	if want := "sdk: lease expired before the key was bound (ttl 2s): locks/c"; err.Error() != want {
-		t.Fatalf("Error() = %q, want %q", err.Error(), want)
-	}
-	if !errors.Is(err, inner) {
-		t.Fatal("errors.Is did not reach the wrapped bind error")
 	}
 }

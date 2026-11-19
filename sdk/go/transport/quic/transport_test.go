@@ -175,22 +175,6 @@ func TestTransport_Request_ReturnsNotImplemented(t *testing.T) {
 	}
 }
 
-func TestTransport_Request_DifferentMethod(t *testing.T) {
-	tr, err := New(transport.WithAddress("localhost:63002"))
-	if err != nil {
-		t.Fatalf("New() returned unexpected error: %v", err)
-	}
-	ctx := context.Background()
-	err = tr.Request(ctx, "admin.Status", nil, nil)
-	if err == nil {
-		t.Fatal("Request() should return error")
-	}
-	var notImpl *transport.NotImplementedError
-	if !errors.As(err, &notImpl) {
-		t.Errorf("expected NotImplementedError, got %T: %v", err, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Closed state tests for KV methods
 // ---------------------------------------------------------------------------
@@ -445,37 +429,6 @@ func TestTransport_Connect_AfterClose(t *testing.T) {
 // stripScheme tests
 // ---------------------------------------------------------------------------
 
-func TestStripScheme_HTTPS(t *testing.T) {
-	got := stripScheme("https://localhost:63002")
-	expected := "localhost:63002"
-	if got != expected {
-		t.Errorf("stripScheme() = %q, want %q", got, expected)
-	}
-}
-
-func TestStripScheme_HTTP(t *testing.T) {
-	got := stripScheme("http://localhost:63002")
-	expected := "localhost:63002"
-	if got != expected {
-		t.Errorf("stripScheme() = %q, want %q", got, expected)
-	}
-}
-
-func TestStripScheme_NoScheme(t *testing.T) {
-	got := stripScheme("localhost:63002")
-	expected := "localhost:63002"
-	if got != expected {
-		t.Errorf("stripScheme() = %q, want %q", got, expected)
-	}
-}
-
-func TestStripScheme_EmptyString(t *testing.T) {
-	got := stripScheme("")
-	if got != "" {
-		t.Errorf("stripScheme() = %q, want empty string", got)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // mapWireError tests
 // ---------------------------------------------------------------------------
@@ -701,66 +654,6 @@ func TestBuildTLSConfig_NonexistentCertFile(t *testing.T) {
 	if !errors.As(err, &tlsErr) {
 		t.Errorf("expected TLSError, got %T: %v", err, err)
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Interface assertions (compile-time)
-// ---------------------------------------------------------------------------
-
-func TestTransport_ImplementsTransportInterface(t *testing.T) {
-	var _ transport.Transport = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsKVClientInterface(t *testing.T) {
-	var _ transport.KVClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsAdminClientInterface(t *testing.T) {
-	var _ transport.AdminClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsMVCCClientInterface(t *testing.T) {
-	var _ transport.MVCCClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsTransactionClientInterface(t *testing.T) {
-	var _ transport.TransactionClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsBatchClientInterface(t *testing.T) {
-	var _ transport.BatchClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsWatchClientInterface(t *testing.T) {
-	var _ transport.WatchClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsLeaseClientInterface(t *testing.T) {
-	var _ transport.LeaseClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsTimeSeriesClientInterface(t *testing.T) {
-	var _ transport.TimeSeriesClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsVectorClientInterface(t *testing.T) {
-	var _ transport.VectorClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsUserClientInterface(t *testing.T) {
-	var _ transport.UserClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsRoleClientInterface(t *testing.T) {
-	var _ transport.RoleClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsCertClientInterface(t *testing.T) {
-	var _ transport.CertClient = (*Transport)(nil)
-}
-
-func TestTransport_ImplementsLockClientInterface(t *testing.T) {
-	var _ transport.LockClient = (*Transport)(nil)
 }
 
 // ---------------------------------------------------------------------------

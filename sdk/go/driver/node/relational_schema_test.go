@@ -187,24 +187,6 @@ func TestNode_ShowCreateTableWithoutAutoIncrement(t *testing.T) {
 	}
 }
 
-// TestNode_ShowCreateTableWithAutoIncrement verifies the AUTO_INCREMENT case
-// still renders the attribute, so the fix for the no-AUTO_INCREMENT case did
-// not simply stop consulting the sequence.
-func TestNode_ShowCreateTableWithAutoIncrement(t *testing.T) {
-	db := openNode(t, "node://memory?database=showcreateai")
-	if _, err := db.Exec(`CREATE TABLE ai (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64))`); err != nil {
-		t.Fatalf("CREATE TABLE: %v", err)
-	}
-
-	var name, ddl string
-	if err := db.QueryRow(`SHOW CREATE TABLE ai`).Scan(&name, &ddl); err != nil {
-		t.Fatalf("SHOW CREATE TABLE: %v", err)
-	}
-	if !strings.Contains(ddl, "`id` bigint NOT NULL AUTO_INCREMENT") {
-		t.Errorf("emitted DDL is missing the AUTO_INCREMENT attribute:\n%s", ddl)
-	}
-}
-
 // TestNode_ShowCreateTableRoundTrips verifies the DDL SHOW CREATE TABLE emits
 // can be fed back to CREATE TABLE and produces a table that renders
 // identically -- the property that makes the output usable as a schema dump

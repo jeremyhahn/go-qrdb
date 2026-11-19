@@ -20,33 +20,9 @@ import (
 	"time"
 )
 
-func TestWithAddress_SetsTransportOption(t *testing.T) {
-	opts := &clientOptions{}
-	WithAddress("https://localhost:8080")(opts)
-	if len(opts.transportOpts) != 1 {
-		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
-	}
-}
-
-func TestWithTLS_SetsTransportOption(t *testing.T) {
-	opts := &clientOptions{}
-	WithTLS("/cert.pem", "/key.pem", "/ca.pem")(opts)
-	if len(opts.transportOpts) != 1 {
-		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
-	}
-}
-
 func TestWithTLSConfig_SetsTransportOption(t *testing.T) {
 	opts := &clientOptions{}
 	WithTLSConfig(&tls.Config{MinVersion: tls.VersionTLS13})(opts)
-	if len(opts.transportOpts) != 1 {
-		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
-	}
-}
-
-func TestWithTimeout_SetsTransportOption(t *testing.T) {
-	opts := &clientOptions{}
-	WithTimeout(5 * time.Second)(opts)
 	if len(opts.transportOpts) != 1 {
 		t.Errorf("expected 1 transport option, got %d", len(opts.transportOpts))
 	}

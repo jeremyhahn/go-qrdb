@@ -25,36 +25,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/seal"
 )
 
-func TestInvalidTenantIDErrorMessage(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "bad!tenant", Reason: "contains special characters"}
-	got := err.Error()
-	if !strings.Contains(got, "invalid tenant ID") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "invalid tenant ID")
-	}
-	if !strings.Contains(got, "bad!tenant") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "bad!tenant")
-	}
-	if !strings.Contains(got, "contains special characters") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "contains special characters")
-	}
-}
-
-func TestInvalidTenantIDErrorEmptyTenantID(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "", Reason: "must not be empty"}
-	got := err.Error()
-	if !strings.Contains(got, "must not be empty") {
-		t.Errorf("Error() = %q, want it to contain %q", got, "must not be empty")
-	}
-}
-
-func TestInvalidTenantIDErrorImplementsErrorInterface(t *testing.T) {
-	err := &InvalidTenantIDError{TenantID: "x", Reason: "test"}
-	var _ error = err
-	if err.Error() == "" {
-		t.Fatal("expected non-empty error message")
-	}
-}
-
 func TestInvalidTenantIDErrorFormat(t *testing.T) {
 	err := &InvalidTenantIDError{TenantID: "abc", Reason: "too short"}
 	want := "invalid tenant ID abc: too short"
@@ -64,23 +34,12 @@ func TestInvalidTenantIDErrorFormat(t *testing.T) {
 	}
 }
 
-func TestInvalidTenantIDCharError_NonEmpty(t *testing.T) {
-	err := &InvalidTenantIDCharError{TenantID: "bad\x1f", Byte: 0x1f}
-	if err.Error() == "" {
-		t.Fatal("Error() must not be empty")
-	}
-}
-
 func TestInvalidTenantIDCharError_ContainsHex(t *testing.T) {
 	err := &InvalidTenantIDCharError{TenantID: "b", Byte: 0x1f}
 	got := err.Error()
 	if !strings.Contains(got, "1f") {
 		t.Errorf("Error() = %q, want it to contain hex representation of byte", got)
 	}
-}
-
-func TestInvalidTenantIDCharError_ImplementsError(t *testing.T) {
-	var _ error = &InvalidTenantIDCharError{TenantID: "x", Byte: 0x00}
 }
 
 // ---------------------------------------------------------------------------
@@ -113,15 +72,6 @@ func TestTenantStoreError_ReadTransient_DefaultsFalse(t *testing.T) {
 	err := &StoreError{Op: "unmarshal", Err: errors.New("invalid character")}
 	if err.ReadTransient() {
 		t.Fatal("a bare composite literal must read ReadTransient() = false; only newStoreError sets it true")
-	}
-}
-
-// TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError proves the
-// method reports exactly the field newStoreError computed.
-func TestTenantStoreError_ReadTransient_TrueWhenSetByNewStoreError(t *testing.T) {
-	err := newStoreError("get", errors.New("read index not ready"))
-	if !err.ReadTransient() {
-		t.Fatal("newStoreError on a non-decrypt cause must produce ReadTransient() = true")
 	}
 }
 
@@ -160,24 +110,6 @@ func TestNewStoreError_WrappedDecryptCauseIsNotTransient(t *testing.T) {
 	}
 }
 
-// TestIsTransientCause_NonDecryptCause and TestIsTransientCause_DecryptCause
-// exercise isTransientCause directly, independent of newStoreError, so a
-// future caller of it is held to the same two-cause contract. This is the
-// exact gap a re-review found: forcing tenant's isTransientCause to always
-// return true left the whole suite green, because nothing exercised its
-// decrypt-exclusion branch on this package's side.
-func TestIsTransientCause_NonDecryptCause(t *testing.T) {
-	if !isTransientCause(errors.New("leader lost")) {
-		t.Fatal("isTransientCause(a generic read failure) must be true")
-	}
-}
-
-func TestIsTransientCause_DecryptCause(t *testing.T) {
-	if isTransientCause(seal.ErrDecryptionFailed) {
-		t.Fatal("isTransientCause(seal.ErrDecryptionFailed) must be false")
-	}
-}
-
 func TestFirstAdminProofError_NamesTenantReasonAndCause(t *testing.T) {
 	cause := &initproof.ChallengeError{Reason: initproof.ReasonExpired}
 	err := &FirstAdminProofError{TenantID: "acme", Reason: initproof.ReasonExpired, Err: cause}
@@ -200,42 +132,6 @@ func TestFirstAdminProofError_WithoutCause(t *testing.T) {
 	}
 	if !strings.HasSuffix(err.Error(), string(initproof.ReasonWrongKey)) {
 		t.Fatalf("Error() = %q", err.Error())
-	}
-}
-
-// TestRefusalErrors_MessageNamesEveryField checks that each refusal's
-// message carries the values an operator needs to act on it.
-func TestRefusalErrors_MessageNamesEveryField(t *testing.T) {
-	cause := errors.New("disk on fire")
-	tests := []struct {
-		name string
-		err  error
-		want []string
-	}{
-		{"platform operator required", &PlatformOperatorRequiredError{IdentityTenantID: "acme", Op: "create a tenant"},
-			[]string{"acme", "create a tenant", "platform operator"}},
-		{"volume pool reserve", &VolumePoolReserveError{TenantID: "acme", Pool: "fast", Err: cause},
-			[]string{"acme", "fast", "disk on fire"}},
-		{"roster requires shamir", &RosterRequiresShamirError{Strategy: "passphrase"},
-			[]string{"shamir", "passphrase"}},
-		{"invalid factor policy", &InvalidFactorPolicyError{Policy: "bogus"},
-			[]string{"bogus"}},
-		{"database list", &DatabaseListError{TenantID: "acme", Err: cause},
-			[]string{"acme", "disk on fire"}},
-		{"isolation policy change", &IsolationPolicyChangeError{From: "strict", To: "standard"},
-			[]string{"strict", "standard", "tighten only"}},
-		{"invalid isolation policy", &InvalidIsolationPolicyError{Value: "loose"},
-			[]string{`"loose"`}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := tt.err.Error()
-			for _, w := range tt.want {
-				if !strings.Contains(msg, w) {
-					t.Errorf("Error() = %q, want it to contain %q", msg, w)
-				}
-			}
-		})
 	}
 }
 

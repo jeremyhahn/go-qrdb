@@ -51,6 +51,10 @@ type delegationRevoker struct {
 	calls   int
 }
 
+func (r *delegationRevoker) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return r.IsCertRevoked(ctx, c)
+}
+
 func (r *delegationRevoker) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) {
 	r.calls++
 	return r.revoked, r.err

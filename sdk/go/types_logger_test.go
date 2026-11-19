@@ -52,12 +52,3 @@ func TestContextWithLoggerNilContext(t *testing.T) {
 		t.Errorf("LoggerFromContext = %p, want the attached logger %p", got, log)
 	}
 }
-
-// TestLoggerFromContextMissing verifies that a context without a logger
-// yields a usable default logger instead of nil.
-func TestLoggerFromContextMissing(t *testing.T) {
-	got := LoggerFromContext(context.Background())
-	if got == nil {
-		t.Fatal("LoggerFromContext on unbound context returned nil, want default logger")
-	}
-}

@@ -70,7 +70,7 @@ func TestCLI_DatabaseBarrier_DedicatedStore_Lifecycle(t *testing.T) {
 	// Create a dedicated-store database with a passphrase barrier enabled.
 	out, err := runQRDB(t, cli, node.connArgs, "database", "create", dbName,
 		"--data-dir", dataDir,
-		"--barrier-enabled",
+		"--backend", "pebble", "--barrier-enabled",
 		"--barrier-strategy", "passphrase",
 		"--barrier-passphrase", passphrase,
 	)
@@ -182,7 +182,7 @@ func TestCLI_DatabaseBarrier_SharedStore_Rejected(t *testing.T) {
 	})
 
 	out, err := runQRDB(t, cli, node.connArgs, "database", "create", dbName,
-		"--barrier-enabled",
+		"--backend", "pebble", "--barrier-enabled",
 		"--barrier-strategy", "passphrase",
 		"--barrier-passphrase", "whatever",
 	)

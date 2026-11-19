@@ -16,6 +16,8 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -406,6 +408,70 @@ func TestEmbeddingService_BatchEmbed_CustomBatchSize(t *testing.T) {
 	}
 	if calls != 3 {
 		t.Errorf("expected 3 provider calls with BatchSize=3, got %d", calls)
+	}
+}
+
+// TestEmbeddingService_BatchEmbed_OversizeSplitsNotRefused pins the
+// documented batch_size contract: a request larger than the limit is split
+// into provider calls of at most batch_size texts and aggregated in input
+// order, never refused.
+func TestEmbeddingService_BatchEmbed_OversizeSplitsNotRefused(t *testing.T) {
+	cases := []struct {
+		name      string
+		texts     int
+		batchSize int
+		limit     int
+	}{
+		{name: "default batch size", texts: 2*defaultBatchSize + 1, batchSize: 0, limit: defaultBatchSize},
+		{name: "batch size 2", texts: 5, batchSize: 2, limit: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var callLens []int
+			mock := &mockProvider{
+				embedFn: func(_ context.Context, texts []string, model string) (*EmbeddingResult, error) {
+					callLens = append(callLens, len(texts))
+					if len(texts) > tc.limit {
+						t.Errorf("provider call with %d texts exceeds limit %d", len(texts), tc.limit)
+					}
+					embeddings := make([][]float32, len(texts))
+					for i, text := range texts {
+						n, err := strconv.Atoi(strings.TrimPrefix(text, "t"))
+						if err != nil {
+							return nil, err
+						}
+						embeddings[i] = []float32{float32(n)}
+					}
+					return &EmbeddingResult{Embeddings: embeddings, Model: model}, nil
+				},
+			}
+			svc := newServiceWithProvider("local", mock)
+
+			texts := make([]string, tc.texts)
+			for i := range texts {
+				texts[i] = "t" + strconv.Itoa(i)
+			}
+			resp, err := svc.BatchEmbed(context.Background(), &BatchEmbedRequest{
+				Texts:     texts,
+				Model:     "m",
+				BatchSize: tc.batchSize,
+			})
+			if err != nil {
+				t.Fatalf("BatchEmbed: %v", err)
+			}
+			if len(resp.Embeddings) != tc.texts {
+				t.Fatalf("expected %d embeddings, got %d", tc.texts, len(resp.Embeddings))
+			}
+			for i, emb := range resp.Embeddings {
+				if len(emb) != 1 || emb[0] != float32(i) {
+					t.Fatalf("embedding %d = %v, want [%d] (input order lost)", i, emb, i)
+				}
+			}
+			wantCalls := (tc.texts + tc.limit - 1) / tc.limit
+			if len(callLens) != wantCalls {
+				t.Errorf("provider calls = %v, want %d calls", callLens, wantCalls)
+			}
+		})
 	}
 }
 

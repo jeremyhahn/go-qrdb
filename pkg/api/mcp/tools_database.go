@@ -123,8 +123,7 @@ func toolDatabaseCreate() mcp.Tool {
 			mcp.Description("The database name. Must contain only alphanumeric characters, hyphens, and underscores."),
 		),
 		mcp.WithString("backend",
-			mcp.Required(),
-			mcp.Description("The storage backend type: memory, file, pebble, or raft."),
+			mcp.Description("The storage backend type: memory, file, pebble, or raft. Omitted, the node's database_defaults backend applies, else the run mode's (raft in raft mode, pebble standalone)."),
 		),
 		mcp.WithString("data_dir",
 			mcp.Description("An explicit data directory for the database. System-tenant only."),
@@ -181,10 +180,9 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 		if name == "" {
 			return mcp.NewToolResultError("name is required"), nil
 		}
+		// An omitted backend stays empty: the node resolves its
+		// database_defaults backend, else the run mode's.
 		backend := mcp.ParseString(req, "backend", "")
-		if backend == "" {
-			return mcp.NewToolResultError("backend is required"), nil
-		}
 
 		cfg := database.DatabaseConfig{
 			Name:     name,
@@ -213,8 +211,9 @@ func handleDatabaseCreate(dbSvc service.DatabaseServicer) mcpserver.ToolHandlerF
 			}
 		}
 
-		// Build raft config if cluster mode is specified.
-		if mcp.ParseString(req, createRaftArgs.clusterMode, "") != "" {
+		// Build raft config if cluster mode or state storage is specified.
+		if mcp.ParseString(req, createRaftArgs.clusterMode, "") != "" ||
+			mcp.ParseString(req, createRaftArgs.stateStorage, "") != "" {
 			raftCfg, err := buildRaftConfig(req, createRaftArgs)
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
@@ -733,7 +732,7 @@ func handleDatabaseUpdateCompaction(dbSvc service.DatabaseServicer) mcpserver.To
 // declares, for building a tool's set of known arguments (see
 // createDatabaseKnownArgs). It must stay in sync with raftToolOptions.
 func raftArgNames(names raftArgs) []string {
-	return []string{
+	out := []string{
 		names.clusterMode, names.replicaID, names.address, names.peers, names.localNodeCount,
 		"discovery_method",
 		"static_peers", "static_shared_secret",
@@ -742,6 +741,10 @@ func raftArgNames(names raftArgs) []string {
 		"dns_domain", "dns_service", "dns_proto", "dns_lookup_timeout",
 		"token_endpoint", "token_value", "token_cluster_size", "token_timeout",
 	}
+	if names.stateStorage != "" {
+		out = append(out, names.stateStorage)
+	}
+	return out
 }
 
 type raftArgs struct {
@@ -750,6 +753,11 @@ type raftArgs struct {
 	address        string
 	peers          string
 	localNodeCount string
+	// stateStorage names the Raft state storage argument. Both tools take
+	// it. Create records the resolved storage; on update it is checked
+	// against the recorded storage: left out, the recorded storage is kept,
+	// and naming another storage is refused with StateStorageUpdateError.
+	stateStorage string
 }
 
 var (
@@ -759,6 +767,7 @@ var (
 		address:        "raft_address",
 		peers:          "raft_peers",
 		localNodeCount: "raft_local_node_count",
+		stateStorage:   "raft_state_storage",
 	}
 	updateRaftArgs = raftArgs{
 		clusterMode:    "cluster_mode",
@@ -766,6 +775,7 @@ var (
 		address:        "raft_address",
 		peers:          "peers",
 		localNodeCount: "local_node_count",
+		stateStorage:   "state_storage",
 	}
 )
 
@@ -794,6 +804,17 @@ var createDatabaseKnownArgs = func() map[string]struct{} {
 // field of database.DatabaseRaftConfig a caller sets on REST, gRPC and QUIC;
 // the shard ID is issued, never sent.
 func raftToolOptions(names raftArgs) []mcp.ToolOption {
+	opts := raftCommonToolOptions(names)
+	if names.stateStorage != "" {
+		opts = append(opts, mcp.WithString(names.stateStorage,
+			mcp.Description("Storage of the Raft group state: pebble, file, or memory. On create, omitted, the node's database_defaults decide and the resolved value is recorded. On update, omitted keeps the recorded storage; naming a different storage is refused."),
+		))
+	}
+	return opts
+}
+
+// raftCommonToolOptions declares the Raft arguments every Raft tool takes.
+func raftCommonToolOptions(names raftArgs) []mcp.ToolOption {
 	return []mcp.ToolOption{
 		mcp.WithString(names.clusterMode,
 			mcp.Description("Raft cluster mode: none, local, or distributed."),
@@ -883,6 +904,9 @@ func buildRaftConfig(req mcp.CallToolRequest, names raftArgs) (*database.Databas
 		Peers:          peers,
 		LocalNodeCount: mcp.ParseInt(req, names.localNodeCount, 0),
 		Discovery:      database.DiscoveryMethod(mcp.ParseString(req, "discovery_method", "")),
+	}
+	if names.stateStorage != "" {
+		raftCfg.StateStorage = database.BackendType(mcp.ParseString(req, names.stateStorage, ""))
 	}
 	if err := parseDiscoveryConfig(req, raftCfg); err != nil {
 		return nil, err

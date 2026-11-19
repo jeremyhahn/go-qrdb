@@ -105,15 +105,6 @@ func TestConnClosedError(t *testing.T) {
 	}
 }
 
-// TestConnClosedErrorIsError verifies ConnClosedError is usable with errors.As.
-func TestConnClosedErrorIsError(t *testing.T) {
-	err := &ConnClosedError{}
-	var target *ConnClosedError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find ConnClosedError")
-	}
-}
-
 // TestTxDoneError verifies TxDoneError implements error.
 func TestTxDoneError(t *testing.T) {
 	err := &TxDoneError{}
@@ -124,15 +115,6 @@ func TestTxDoneError(t *testing.T) {
 	want := "driver: transaction has already been committed or rolled back"
 	if err.Error() != want {
 		t.Errorf("Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-// TestTxDoneErrorIsError verifies TxDoneError is usable with errors.As.
-func TestTxDoneErrorIsError(t *testing.T) {
-	err := &TxDoneError{}
-	var target *TxDoneError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find TxDoneError")
 	}
 }
 
@@ -151,15 +133,6 @@ func TestBackendCreateError(t *testing.T) {
 	}
 }
 
-// TestBackendCreateErrorUnwrap verifies Unwrap returns the wrapped error.
-func TestBackendCreateErrorUnwrap(t *testing.T) {
-	inner := io.EOF
-	err := &BackendCreateError{Backend: "memory", Err: inner}
-	if err.Unwrap() != inner {
-		t.Errorf("Unwrap() = %v, want %v", err.Unwrap(), inner)
-	}
-}
-
 // TestEngineInitError verifies EngineInitError wraps the underlying error.
 func TestEngineInitError(t *testing.T) {
 	inner := io.ErrClosedPipe
@@ -175,15 +148,6 @@ func TestEngineInitError(t *testing.T) {
 	}
 }
 
-// TestEngineInitErrorUnwrap verifies Unwrap returns the wrapped error.
-func TestEngineInitErrorUnwrap(t *testing.T) {
-	inner := io.ErrNoProgress
-	err := &EngineInitError{Err: inner}
-	if err.Unwrap() != inner {
-		t.Errorf("Unwrap() = %v, want %v", err.Unwrap(), inner)
-	}
-}
-
 // TestQueryExecError verifies QueryExecError wraps the underlying error.
 func TestQueryExecError(t *testing.T) {
 	inner := io.ErrUnexpectedEOF
@@ -196,15 +160,6 @@ func TestQueryExecError(t *testing.T) {
 
 	if !errors.Is(err, inner) {
 		t.Error("errors.Is should find inner error via Unwrap")
-	}
-}
-
-// TestQueryExecErrorUnwrap verifies Unwrap returns the wrapped error.
-func TestQueryExecErrorUnwrap(t *testing.T) {
-	inner := io.EOF
-	err := &QueryExecError{Query: "BEGIN", Err: inner}
-	if err.Unwrap() != inner {
-		t.Errorf("Unwrap() = %v, want %v", err.Unwrap(), inner)
 	}
 }
 
@@ -399,15 +354,6 @@ func TestConnectorClosedError(t *testing.T) {
 	}
 }
 
-// TestConnectorClosedErrorIsError verifies ConnectorClosedError is usable with errors.As.
-func TestConnectorClosedErrorIsError(t *testing.T) {
-	err := &ConnectorClosedError{}
-	var target *ConnectorClosedError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find ConnectorClosedError")
-	}
-}
-
 // TestNetworkResponseError verifies NetworkResponseError implements error.
 func TestNetworkResponseError(t *testing.T) {
 	tests := []struct {
@@ -454,15 +400,6 @@ func TestStmtClosedError(t *testing.T) {
 	}
 }
 
-// TestStmtClosedErrorIsError verifies StmtClosedError is usable with errors.As.
-func TestStmtClosedErrorIsError(t *testing.T) {
-	err := &StmtClosedError{}
-	var target *StmtClosedError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find StmtClosedError")
-	}
-}
-
 // TestRowsClosedError verifies RowsClosedError implements error.
 func TestRowsClosedError(t *testing.T) {
 	err := &RowsClosedError{}
@@ -473,14 +410,5 @@ func TestRowsClosedError(t *testing.T) {
 	want := "driver: rows are closed"
 	if err.Error() != want {
 		t.Errorf("Error() = %q, want %q", err.Error(), want)
-	}
-}
-
-// TestRowsClosedErrorIsError verifies RowsClosedError is usable with errors.As.
-func TestRowsClosedErrorIsError(t *testing.T) {
-	err := &RowsClosedError{}
-	var target *RowsClosedError
-	if !errors.As(err, &target) {
-		t.Error("errors.As should find RowsClosedError")
 	}
 }

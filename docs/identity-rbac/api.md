@@ -135,6 +135,14 @@ is not; that error matches `auth.ErrUnauthorized` under `errors.Is`.
 the resolve-permissions endpoint, so it needs `permissions:resolve`, and
 expands them the same way the own-permissions answer is expanded.
 
+A composer addresses qrdb's system roles by their canonical, cluster-stable
+IDs. `sdk.SystemRoleID(tenantID, name)` returns one role's ID, and
+`sdk.SystemRoleIDs(tenantID)` returns the name-to-ID map of every system role
+(the built-in roles and the owner role), each value equal to
+`sdk.SystemRoleID(tenantID, name)`. Each role has exactly one canonical
+(UUIDv8) ID; there is no legacy UUIDv5 alias. An empty tenant ID means the
+system tenant, and each call returns a fresh map the caller may change.
+
 ## Capability matrix — stored ABAC policies
 
 | Capability | REST | gRPC / Unix | QUIC | MCP tool | Embedded (`Client.ABACPolicies()`) | `scp` permission |
@@ -246,7 +254,10 @@ u, err := client.Users().GetUserByCertThumbprint(ctx, sdk.ComputeSPKIThumbprint(
 ```
 
 `sdk.TenantFromClientCert` is `auth.TenantFromClientCert`, the one
-implementation `MTLSAuthenticator.TenantFromCert` delegates to. A tenant is a
+implementation `MTLSAuthenticator.TenantFromCert` delegates to.
+`sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of
+`MTLSAuthenticator.TenantFromCert`, with the trust domain passed in rather than
+pinned: the same rule, refusals and errors as `sdk.TenantFromClientCert`. A tenant is a
 SPIFFE trust domain: a tenant's principal is `spiffe://<tenant>/<kind>/<name>`,
 where the kind is `user` or `svc`. A certificate names a tenant only when two
 independent fields carry it and agree: the first Subject OU, and the trust
@@ -421,6 +432,9 @@ A certificate carrying the delegation extension authenticates as a service
 principal acting inside a tenant, never as a user. Issuing one is
 `certs:delegate` on every transport; see
 [../certificate-authority/api.md](../certificate-authority/api.md#issuing-a-delegation).
+So is writing a standing delegation policy, under which the node mints the
+first certificate and the delegation renews itself; see
+[../certificate-authority/api.md](../certificate-authority/api.md#standing-delegation-policies).
 Why it is shaped this way is in
 [architecture.md](architecture.md#tenant-issued-delegations).
 
@@ -734,6 +748,28 @@ the state a record already holds is a no-op, not an error, so a retried request
 A refused move returns a `LifecycleTransitionError`; an undefined or
 not-permitted-here state returns an `InvalidLifecycleError` naming what is
 allowed. Only `pending`, `active` and `disabled` may be created directly.
+
+**Pending TTL.** A pending create may carry a time-to-live; an account still
+`pending` when it lapses is deleted by the leader's reaper, together with its
+role assignments and enrolled factors, and each deletion is audited
+(`pending_reaped`). Activating the account (`EnableUser`) clears the expiry; an
+`active` account is never reaped, and nothing moves an account back to
+`pending`. A TTL on a non-pending create, or a negative TTL, is refused; zero
+or absent means the account never expires. The expiry is read back on the
+user record while it is set.
+
+| Transport | TTL on create | Expiry on read |
+|---|---|---|
+| REST `POST /users` | `pending_ttl` (Go duration, e.g. `"15m"`) | `pending_expires_at` (RFC 3339) |
+| gRPC / unix `CreateUser` | `pending_ttl_seconds` (int64) | `UserResponse.pending_expires_at_unix` (int64, 0 = none) |
+| QUIC | `pendingTTL` (Go duration) | `pendingExpiresAt` (RFC 3339) |
+| MCP `qrdb_user_create` | `pending_ttl` (Go duration) | `pendingExpiresAt` (RFC 3339) |
+| sdk/go | `CreateUserRequest.PendingTTL` | `User.PendingExpiresAt` |
+
+A malformed duration is refused as an invalid argument before the account is
+created. gRPC and unix carry whole seconds, so the Go SDK refuses a positive
+`PendingTTL` that is not a whole number of seconds (`FractionalPendingTTLError`)
+on those transports before the request is sent.
 
 `EnableUser` and `DisableUser` are the transitions to `active` and `disabled`;
 they are refused on an account already marked `deleting`. `SuspendUser` and

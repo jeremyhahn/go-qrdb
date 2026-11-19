@@ -265,6 +265,14 @@ func (a *DiskAdapter) Lookup(_ context.Context, query interface{}) (interface{},
 
 // Sync implements sm.DiskStateMachine.Sync.
 func (a *DiskAdapter) Sync() error {
+	syncer, ok := a.store.(storage.Syncer)
+	if !ok {
+		// A store without Syncer (memory) has nothing to make durable.
+		return nil
+	}
+	if err := syncer.Sync(); err != nil {
+		return &StorageError{Op: "sync", Inner: err}
+	}
 	return nil
 }
 

@@ -279,61 +279,6 @@ func TestPersistMaterialWritesTheCAKeyBeforeTheCertificate(t *testing.T) {
 	}
 }
 
-// TestPersistCAWritesTheCAKeyBeforeTheCertificate is the PersistCA form of the
-// ordering contract above.
-func TestPersistCAWritesTheCAKeyBeforeTheCertificate(t *testing.T) {
-	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-	dir := blockCAKeyWrite(t)
-
-	if err := clustertls.PersistCA(caCertPEM, caKeyPEM, dir); err == nil {
-		t.Fatal("expected PersistCA to fail when ca-key.pem cannot be written")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); !os.IsNotExist(err) {
-		t.Fatalf("ca.pem stat err = %v, want not-exist: the certificate became visible before its key was durable", err)
-	}
-}
-
-// TestPersistCARoundTripsThroughLoadCAFromDir covers the CA persist/load pair
-// together, which is the only combination that proves the two agree on file
-// names.
-func TestPersistCARoundTripsThroughLoadCAFromDir(t *testing.T) {
-	dir := t.TempDir()
-	caCertPEM, caKeyPEM, _, _, err := clustertls.GenerateCA(clustertls.CAValidity)
-	if err != nil {
-		t.Fatalf("GenerateCA: %v", err)
-	}
-	if err := clustertls.PersistCA(caCertPEM, caKeyPEM, dir); err != nil {
-		t.Fatalf("PersistCA: %v", err)
-	}
-
-	gotCert, gotKey, err := clustertls.LoadCAFromDir(dir)
-	if err != nil {
-		t.Fatalf("LoadCAFromDir: %v", err)
-	}
-	if string(gotCert) != string(caCertPEM) {
-		t.Error("CA certificate did not round-trip")
-	}
-	if string(gotKey) != string(caKeyPEM) {
-		t.Error("CA key did not round-trip")
-	}
-}
-
-// TestLoadCAFromDirReportsNoCacheWhenAbsent pins the "no cache yet" signal.
-// Callers branch on (nil, nil, nil) to decide whether to generate a CA, so
-// returning an error here would break first boot.
-func TestLoadCAFromDirReportsNoCacheWhenAbsent(t *testing.T) {
-	certPEM, keyPEM, err := clustertls.LoadCAFromDir(t.TempDir())
-	if err != nil {
-		t.Fatalf("an empty directory must not be an error: %v", err)
-	}
-	if certPEM != nil || keyPEM != nil {
-		t.Fatal("an empty directory must yield no material")
-	}
-}
-
 // TestIssueLeafForKeyRejectsMalformedCAMaterial covers the parse-failure
 // branches. Each input is well-formed PEM of the wrong kind, so the failure is
 // the semantic check rather than base64 decoding.

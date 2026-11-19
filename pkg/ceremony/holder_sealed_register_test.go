@@ -237,6 +237,9 @@ func TestSync_ConflictEvictsAndAuditsWithoutWedging(t *testing.T) {
 
 	persisted := &PersistentOfficer{Username: "alice", CertThumbprint: "aa", PubKeyPEM: "alice-key"}
 	require.NoError(t, h.registry.Save(ctx, persisted))
+	// bob's cached copy is identical to his persisted record (Save caches
+	// it), so he is not a conflict: only alice is audited below.
+	require.NoError(t, h.registry.Save(ctx, &PersistentOfficer{Username: "bob", CertThumbprint: "bb", PubKeyPEM: "bob-key"}))
 	h.registry.cacheOnly(&PersistentOfficer{Username: "alice", CertThumbprint: "ff", PubKeyPEM: "attacker-key"})
 	h.registry.cacheOnly(&PersistentOfficer{Username: "carol", CertThumbprint: "cc", PubKeyPEM: "carol-key"})
 
@@ -259,25 +262,4 @@ func TestSync_ConflictEvictsAndAuditsWithoutWedging(t *testing.T) {
 
 	_, err = h.status(ctx)
 	require.NoError(t, err, "the scope serves holder operations after the conflict")
-}
-
-// TestSync_PersistsHoldersEnrolledBeforeInitialization: the legitimate
-// cache-only enrolment, before the barrier exists, is written on the first
-// unsealed access, and a cached copy identical to its persisted record is not
-// a conflict.
-func TestSync_PersistsHoldersEnrolledBeforeInitialization(t *testing.T) {
-	ctx := context.Background()
-	backend := seal.NewMemoryBackend()
-	h, err := newHolderScope(ScopeTenant("acme"), seal.DomainUnseal, "acme", backend, DefaultShareTTL, func() bool { return false }, testLogger())
-	require.NoError(t, err)
-	bob := &PersistentOfficer{Username: "bob", CertThumbprint: "bb", PubKeyPEM: "bob-key"}
-	require.NoError(t, h.registry.Save(ctx, bob))
-	h.registry.cacheOnly(&PersistentOfficer{Username: "carol", CertThumbprint: "cc", PubKeyPEM: "carol-key"})
-
-	require.NoError(t, h.sync(ctx))
-	fresh, err := NewScopedOfficerRegistry(backend, ScopeTenant("acme"))
-	require.NoError(t, err)
-	got, err := fresh.Load(ctx, "carol")
-	require.NoError(t, err)
-	require.Equal(t, "cc", got.CertThumbprint)
 }

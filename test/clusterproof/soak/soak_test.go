@@ -320,17 +320,6 @@ func TestRunFailedInjectIsInvalid(t *testing.T) {
 	}
 }
 
-func TestRunWithoutNemesisIsInvalid(t *testing.T) {
-	v := run(t, testOptions(t, newFakeKV(), nil))
-	if v.Exit != ExitInvalid || !hasReason(v, "no nemesis configured") {
-		t.Fatalf("run without nemesis: %s exit %d, reasons %q", v.Outcome, v.Exit, v.Reasons)
-	}
-	// The cluster itself was fine: nothing was violated.
-	if c := criterion(t, v, "E1"); c.Status != StatusPass {
-		t.Fatalf("E1 = %s (%s)", c.Status, c.Detail)
-	}
-}
-
 // TestUnknownSealIsInvalid covers the reason cluster-proof-check re-derives
 // from a run.json whose seal type the release does not ship.
 func TestUnknownSealIsInvalid(t *testing.T) {

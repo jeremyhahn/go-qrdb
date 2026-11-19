@@ -203,6 +203,10 @@ type Server struct {
 	// retentionCancel stops the time-series retention scheduler (see
 	// retention_scheduler.go); nil when none is running.
 	retentionCancel context.CancelFunc
+
+	// pendingReaperCancel stops the pending-user reaper (see
+	// pending_user_reaper.go); nil when none is running.
+	pendingReaperCancel context.CancelFunc
 }
 
 // serverOptions holds optional dependencies injected via ServerOption.
@@ -303,6 +307,13 @@ type serverOptions struct {
 	// time-series metrics for expired points; zero keeps
 	// DefaultRetentionInterval. See WithRetentionInterval.
 	retentionInterval time.Duration
+
+	// Pending-user reaper (WithPendingUserReaper). A negative interval
+	// disables it; ticks/now are test hooks.
+	pendingSweepInterval time.Duration
+	pendingSweepLeader   func(context.Context, string) bool
+	pendingSweepTicks    <-chan time.Time
+	pendingSweepNow      func() time.Time
 
 	// defaultRetention is the retention the scheduler applies to a metric
 	// with no policy, or a policy of duration zero. Zero keeps its points.
@@ -1552,8 +1563,10 @@ func (s *Server) wireTenantReplicaHosts() {
 // check: databases:create_raft and databases:create_volume, in addition to
 // the databases:create their entry check makes. Which one a create needs
 // depends on the request's backend and the tenant's isolation tier, which no
-// entry check can see. Without authentication there is no entry check to
-// add to, and the service is left as it is.
+// entry check can see. The request is first resolved against the node's
+// database_defaults (provisioningDefaults), so a create that leaves its
+// backend out is checked as the backend it will get. Without authentication
+// there is no entry check to add to, and the service is left as it is.
 func (s *Server) wireProvisioningAuthorization() {
 	if s.opts.databaseSvc == nil || s.opts.authMW == nil {
 		return
@@ -1562,7 +1575,29 @@ func (s *Server) wireProvisioningAuthorization() {
 	if s.opts.tenantSvc != nil {
 		tenants = s.opts.tenantSvc
 	}
-	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants)
+	s.opts.databaseSvc = service.NewProvisioningAuthorizedDatabaseService(s.opts.databaseSvc, s.opts.authMW, tenants, provisioningDefaults(s.opts.databaseSvc, s.opts.dbManager))
+}
+
+// provisioningDefaults returns the resolver the provisioning check applies
+// to a create request before it decides which permissions the create needs.
+// It prefers the database service's own resolver, which resolves against the
+// manager that performs the create; then the server's manager option; and
+// with neither it fails closed: the effective configuration is unknown, so
+// a request that leaves its backend out is checked as a raft create, the
+// most-privileged one.
+func provisioningDefaults(svc service.DatabaseServicer, mgr *database.Manager) func(database.DatabaseConfig) database.DatabaseConfig {
+	if r, ok := svc.(service.DatabaseDefaultsResolver); ok {
+		return r.ResolveDefaults
+	}
+	if mgr != nil {
+		return mgr.ResolveDefaults
+	}
+	return func(cfg database.DatabaseConfig) database.DatabaseConfig {
+		if cfg.Backend == "" {
+			cfg.Backend = database.BackendRaft
+		}
+		return cfg
+	}
 }
 
 // wireRoleGrantGuard wraps the role service every transport is handed in
@@ -1954,6 +1989,9 @@ func (s *Server) start() error {
 	// implicitly.
 	s.startRetentionScheduler()
 
+	// Pending users past their TTL are deleted by the leader.
+	s.startPendingUserReaper()
+
 	return nil
 }
 
@@ -2028,6 +2066,7 @@ func (s *Server) stopModules() {
 func (s *Server) Stop() {
 	s.stopCompactionScheduler()
 	s.stopRetentionScheduler()
+	s.stopPendingUserReaper()
 	s.stopCollectionSweeper()
 	s.stopAllEtcd()
 	s.stopPgSQL()

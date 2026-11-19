@@ -23,24 +23,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
 
-func TestE2E_CreateCollection_HappyPath(t *testing.T) {
-	srv, tr := startE2EServer(t)
-	srv.SetResponder("collection.Create", func(_ []byte) (uint16, []byte) {
-		return wire.StatusOK, mustMarshal(&pb.CollectionInfoResponse{
-			Name: "users", Database: "db", IdStrategy: "ulid",
-		})
-	})
-	info, err := tr.CreateCollection(context.Background(), transport.CreateCollectionRequest{
-		Database: "db", Name: "users", IDStrategy: "ulid",
-	})
-	if err != nil {
-		t.Fatalf("CreateCollection: %v", err)
-	}
-	if info.Name != "users" {
-		t.Fatalf("info = %+v", info)
-	}
-}
-
 func TestE2E_GetCollectionInfo_HappyPath(t *testing.T) {
 	srv, tr := startE2EServer(t)
 	srv.SetResponder("collection.GetInfo", func(_ []byte) (uint16, []byte) {

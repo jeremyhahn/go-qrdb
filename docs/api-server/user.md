@@ -120,11 +120,19 @@ run their own checks. `/v1/cluster/nodekey` serves joining nodes.
 `/v1/cluster/keydelivery` answers 401 unless the TLS connection carries a node
 certificate issued by the cluster CA, then applies the placement check.
 
-Over MCP, nothing answers an anonymous caller unless the deployment's embedder
-declared public tools — typically health, liveness, readiness and a login
-ceremony. Then an anonymous client can `initialize`, list exactly those tools
-and call them, and nothing else. Once authenticated, `tools/list` shows the
-tools your grants let you call, not the whole surface.
+`qrdb admin health` works with no certificate and no token on every transport
+— REST, gRPC, QUIC, MCP and Unix — and prints the node's status. Any other
+command without a credential connects and then fails with an
+unauthenticated refusal (`401` over REST, `Unauthenticated` elsewhere). Where
+the deployment declares an `admin:health` rate-limit policy, Health is charged
+against it per client address before it is served, so a probe loop is refused
+past its budget.
+
+Over MCP, an anonymous caller can `initialize`, list the public tools and call
+them, and nothing else: `qrdb_health`, plus any the deployment's embedder
+declared — typically liveness, readiness and a login ceremony. Once
+authenticated, `tools/list` shows the tools your grants let you call, not the
+whole surface.
 
 ## Binding the caller on the embedded transport
 

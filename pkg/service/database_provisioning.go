@@ -91,6 +91,7 @@ type provisioningAuthorizedDatabaseService struct {
 	DatabaseServicer
 	authz   ProvisioningAuthorizer
 	tenants TenantInfoLookup
+	resolve func(database.DatabaseConfig) database.DatabaseConfig
 }
 
 var (
@@ -102,10 +103,27 @@ var (
 // NewProvisioningAuthorizedDatabaseService returns inner with every create
 // checked for the provisioning permissions ProvisioningPermissions names,
 // against the context's tenant, through authz. tenants resolves a tenant's
-// isolation tier; without it only the backend decides. Every other method is
-// inner's.
-func NewProvisioningAuthorizedDatabaseService(inner DatabaseServicer, authz ProvisioningAuthorizer, tenants TenantInfoLookup) DatabaseServicer {
-	return &provisioningAuthorizedDatabaseService{DatabaseServicer: inner, authz: authz, tenants: tenants}
+// isolation tier; without it only the backend decides. resolve applies the
+// node's database_defaults (database.Manager.ResolveDefaults) so the
+// permissions are those of the configuration the manager records; nil checks
+// the request as given. Every other method is inner's.
+func NewProvisioningAuthorizedDatabaseService(inner DatabaseServicer, authz ProvisioningAuthorizer, tenants TenantInfoLookup, resolve func(database.DatabaseConfig) database.DatabaseConfig) DatabaseServicer {
+	return &provisioningAuthorizedDatabaseService{DatabaseServicer: inner, authz: authz, tenants: tenants, resolve: resolve}
+}
+
+// DatabaseDefaultsResolver is a database service that can resolve a create
+// request against the node's database_defaults, so a provisioning check sees
+// the configuration the create will actually build.
+type DatabaseDefaultsResolver interface {
+	ResolveDefaults(database.DatabaseConfig) database.DatabaseConfig
+}
+
+var _ DatabaseDefaultsResolver = (*DatabaseService)(nil)
+
+// ResolveDefaults resolves cfg against the database_defaults of the manager
+// that performs this service's creates.
+func (s *DatabaseService) ResolveDefaults(cfg database.DatabaseConfig) database.DatabaseConfig {
+	return s.manager.ResolveDefaults(cfg)
 }
 
 // authorize checks every provisioning permission cfg needs for the context's
@@ -123,7 +141,15 @@ func (s *provisioningAuthorizedDatabaseService) authorize(ctx context.Context, c
 			isolation = info.EffectiveIsolationType()
 		}
 	}
-	for _, perm := range ProvisioningPermissions(cfg, isolation) {
+	// Authorize the configuration the manager records: a request that omits
+	// its backend under a node raft default needs databases:create_raft.
+	// The resolved copy only feeds the permission set; the request passes
+	// on unchanged.
+	resolved := cfg
+	if s.resolve != nil {
+		resolved = s.resolve(cfg)
+	}
+	for _, perm := range ProvisioningPermissions(resolved, isolation) {
 		if err := s.authz.AuthorizeTenantTarget(ctx, tenantID, perm); err != nil {
 			return &ProvisioningDeniedError{TenantID: tenantID, Database: cfg.Name, Permission: perm, Err: err}
 		}

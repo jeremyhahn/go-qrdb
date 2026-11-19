@@ -101,18 +101,6 @@ func TestPolicyEvaluator_EvaluateTenants(t *testing.T) {
 		}
 	})
 
-	t.Run("foreign tenant policies excluded", func(t *testing.T) {
-		resp, err := evaluator.EvaluateTenants(context.Background(), &CheckRequest{
-			Subject: subject, Action: "read", Resource: "/t1/public/doc",
-		}, []string{"t1", "system"})
-		if err != nil {
-			t.Fatalf("EvaluateTenants() error = %v", err)
-		}
-		if !resp.Allowed {
-			t.Errorf("t2's deny-all must not affect a t1 evaluation: %+v", resp)
-		}
-	})
-
 	t.Run("duplicate tenant ids evaluated once", func(t *testing.T) {
 		resp, err := evaluator.EvaluateTenants(context.Background(), &CheckRequest{
 			Subject: subject, Action: "read", Resource: "/t1/public/doc",

@@ -25,7 +25,6 @@ import (
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/jeremyhahn/go-qrdb/pkg/auth"
@@ -33,6 +32,7 @@ import (
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/pkg/tenant"
+	"github.com/jeremyhahn/go-qrdb/sdk/go/transport/mcp/mcphttp"
 )
 
 // fakeInvitations is a faithful service.InvitationServicer double: each
@@ -77,10 +77,7 @@ func startEnrollMCP(t *testing.T, inv service.InvitationServicer) (string, *http
 // credential.
 func anonymousSession(t *testing.T, url string, client *http.Client) *mcpclient.Client {
 	t.Helper()
-	c, err := mcpclient.NewStreamableHttpClient(url, mcptransport.WithHTTPBasicClient(client))
-	if err != nil {
-		t.Fatalf("client: %v", err)
-	}
+	c := mcpclient.NewClient(mcphttp.New(url, client))
 	ctx := context.Background()
 	if err := c.Start(ctx); err != nil {
 		t.Fatalf("start: %v", err)

@@ -123,6 +123,11 @@ type Infra struct {
 	// migrations before service construction) should pass it here.
 	DatabaseManager *database.Manager
 
+	// DatabaseDefaults are the node's database_defaults, filled into a
+	// database record at creation by the manager BuildServices creates
+	// when DatabaseManager is nil.
+	DatabaseDefaults database.Defaults
+
 	// KVOptions are optional configuration options applied when constructing
 	// the KVService. Used for codec injection in daemon mode.
 	KVOptions []service.KVServiceOption
@@ -948,6 +953,13 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// Every user store below validates written permitted-method policies
 	// against THIS node's auth-chain vocabulary.
 	userOpts = append(userOpts, user.WithAuthMethodVocabulary(infra.AuthMethodVocabulary))
+	// A pending-user TTL waits for every member to carry its record fields.
+	userOpts = append(userOpts, user.WithPendingTTLGate(PendingUserTTLRequired(infra.Host)))
+	// The pending-user reaper's pending_reaped event (and every other user
+	// audit event) reaches the node's audit log on the SDK path too.
+	if infra.AuditLogger != nil {
+		userOpts = append(userOpts, user.WithAuditLogger(infra.AuditLogger))
+	}
 	userSvc, err := user.NewStore(authStore, userIDGen, userOpts...)
 	if err != nil {
 		return nil, &UserServiceError{Err: err}
@@ -969,7 +981,11 @@ func BuildServices(ctx context.Context, infra Infra) (*Node, error) {
 	// BuildServices). Otherwise create a fresh manager.
 	dbManager := infra.DatabaseManager
 	if dbManager == nil {
-		dbManager = database.NewManager(log, infra.DataDir)
+		dbDefaults := infra.DatabaseDefaults
+		if dbDefaults.RunMode == "" {
+			dbDefaults.RunMode = database.RunModeForBackend(infra.Backend)
+		}
+		dbManager = database.NewManager(log, infra.DataDir, database.WithDefaults(dbDefaults))
 		n.addCloser(func() error { return dbManager.Close() })
 	}
 
@@ -1914,11 +1930,18 @@ func (n *Node) buildEnrollmentServices(infra Infra, log *slog.Logger) {
 	n.PendingAdmins = tenantadmin.NewKVStore(certStore)
 	n.PendingSOs = tenantadmin.NewSOKVStore(certStore)
 	n.CertTargets = service.NewCertTargetGuard()
-	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors,
+	enrollmentOpts := []service.CertEnrollmentOption{
 		service.WithEnrollmentTrustDomain(infra.ClusterTrustDomain),
 		service.WithEnrollmentAuditLogger(infra.AuditLogger),
 		service.WithEnrollmentAuditPolicy(infra.AuditFailurePolicy),
-		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)))
+		service.WithEnrollmentClientTrust(service.ClientTrustRefresherFunc(n.settleClientTrust)),
+	}
+	// The tenants' standing delegation policies sit beside their
+	// certificates, in the CA that mints under them (#1186).
+	if policies, ok := n.CertProv.(cert.DelegationPolicyStore); ok {
+		enrollmentOpts = append(enrollmentOpts, service.WithDelegationPolicyStore(policies), service.WithEnrollmentTenants(n.Tenant))
+	}
+	n.CertEnrollment = service.NewCertEnrollmentService(n.CertProv, n.User, n.TrustAnchors, enrollmentOpts...)
 	onboardingDeps := service.TenantOnboardingDeps{
 		Tenants:     n.Tenant,
 		Users:       n.User,

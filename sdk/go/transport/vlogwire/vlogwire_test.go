@@ -38,17 +38,6 @@ func TestKey_CarriesVersionAndPublicKeyNotTheKeyRef(t *testing.T) {
 	}
 }
 
-func TestKey_RoundTripsThroughJSON(t *testing.T) {
-	want := Key(vlog.HeadKey{Version: 1, PublicKey: []byte{9}})
-	var got HeadKey
-	if err := json.Unmarshal([]byte(encode(t, want)), &got); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	if got.Version != want.Version || !bytes.Equal(got.PublicKey, want.PublicKey) {
-		t.Fatalf("round trip = %+v, want %+v", got, want)
-	}
-}
-
 func TestCreate_CarriesTheIDAndPublicKeyNotTheKeyRef(t *testing.T) {
 	got := Create(vlog.LogID{TenantID: "acme", Database: "ledger", Log: "l"}, &vlog.HeadKey{Version: 1, Ref: "software/v1", PublicKey: []byte{1, 2}})
 	want := `{"tenant_id":"acme","database":"ledger","log":"l","key":{"version":1,"public_key":"AQI="}}`

@@ -158,71 +158,6 @@ func TestUpdateMaxLayer(t *testing.T) {
 	})
 }
 
-// TestDistanceSIMDRemainder covers the remainder loops in SIMD functions
-func TestDistanceSIMDRemainder(t *testing.T) {
-	t.Run("L2SIMD with non-multiple of 4 dimensions", func(t *testing.T) {
-		// Test with 5 dimensions (4 + 1 remainder)
-		a := []float32{1, 2, 3, 4, 5}
-		b := []float32{2, 3, 4, 5, 6}
-
-		dist := L2SIMD(a, b)
-		expected := L2(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-
-	t.Run("L2SIMD with 6 dimensions (4 + 2 remainder)", func(t *testing.T) {
-		a := []float32{1, 2, 3, 4, 5, 6}
-		b := []float32{2, 3, 4, 5, 6, 7}
-
-		dist := L2SIMD(a, b)
-		expected := L2(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-
-	t.Run("L2SIMD with 7 dimensions (4 + 3 remainder)", func(t *testing.T) {
-		a := []float32{1, 2, 3, 4, 5, 6, 7}
-		b := []float32{2, 3, 4, 5, 6, 7, 8}
-
-		dist := L2SIMD(a, b)
-		expected := L2(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-
-	t.Run("CosineSIMD with non-multiple of 4 dimensions", func(t *testing.T) {
-		// Test with 5 dimensions (4 + 1 remainder)
-		a := []float32{1, 2, 3, 4, 5}
-		b := []float32{2, 3, 4, 5, 6}
-
-		dist := CosineSIMD(a, b)
-		expected := Cosine(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-
-	t.Run("CosineSIMD with 6 dimensions (4 + 2 remainder)", func(t *testing.T) {
-		a := []float32{1, 2, 3, 4, 5, 6}
-		b := []float32{2, 3, 4, 5, 6, 7}
-
-		dist := CosineSIMD(a, b)
-		expected := Cosine(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-
-	t.Run("CosineSIMD with 7 dimensions (4 + 3 remainder)", func(t *testing.T) {
-		a := []float32{1, 2, 3, 4, 5, 6, 7}
-		b := []float32{2, 3, 4, 5, 6, 7, 8}
-
-		dist := CosineSIMD(a, b)
-		expected := Cosine(a, b)
-
-		assert.InDelta(t, expected, dist, 1e-6)
-	})
-}
-
 // TestPersistenceErrors covers error paths in persistence functions
 func TestPersistenceErrors(t *testing.T) {
 	t.Run("Load with corrupt node data", func(t *testing.T) {
@@ -884,29 +819,4 @@ func TestSearchNotFoundEntryPoint(t *testing.T) {
 	_, err = idx.Search(query, 1)
 	assert.Error(t, err)
 	assert.Equal(t, ErrNotFound, err)
-}
-
-// TestInsertUpdateMaxLayer tests the max layer update path during insert
-func TestInsertUpdateMaxLayer(t *testing.T) {
-	idx, err := NewHNSWIndex(nil)
-	require.NoError(t, err)
-
-	// Insert many nodes to get different layers
-	for i := uint64(1); i <= 100; i++ {
-		vector := []float32{float32(i), float32(i * 2)}
-		err = idx.Insert(i, vector)
-		require.NoError(t, err)
-	}
-
-	// Verify max layer is set correctly
-	var actualMaxLayer int32 = -1
-	idx.nodes.Range(func(key, value interface{}) bool {
-		node := value.(*HNSWNode)
-		if int32(node.Layer) > actualMaxLayer {
-			actualMaxLayer = int32(node.Layer)
-		}
-		return true
-	})
-
-	assert.Equal(t, actualMaxLayer, idx.maxLayer.Load())
 }

@@ -125,64 +125,6 @@ func TestDatabaseBarrierManagerError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-// ErrorsAs checks for each wrapped error type.
-func TestLockServiceError_ErrorsAs(t *testing.T) {
-	inner := errors.New("cause")
-	err := &lifecycle.LockServiceError{Err: inner}
-	var target *lifecycle.LockServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestVectorStorageError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.VectorStorageError{Err: errors.New("x")}
-	var target *lifecycle.VectorStorageError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestVectorServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.VectorServiceError{Err: errors.New("x")}
-	var target *lifecycle.VectorServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestCeremonyServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.CeremonyServiceError{Err: errors.New("x")}
-	var target *lifecycle.CeremonyServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestTenantServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.TenantServiceError{Err: errors.New("x")}
-	var target *lifecycle.TenantServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestUserServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.UserServiceError{Err: errors.New("x")}
-	var target *lifecycle.UserServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
-func TestRoleServiceError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.RoleServiceError{Err: errors.New("x")}
-	var target *lifecycle.RoleServiceError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
 // NilSealBarrierError and NilCredentialCoreError carry their message in Error().
 
 func TestNilSealBarrierError_Error(t *testing.T) {
@@ -213,14 +155,6 @@ func TestEmbeddingCacheError_ErrorAndUnwrap(t *testing.T) {
 	}
 }
 
-func TestEmbeddingCacheError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.EmbeddingCacheError{Err: errors.New("x")}
-	var target *lifecycle.EmbeddingCacheError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
-	}
-}
-
 func TestEmbeddingProviderError_ErrorAndUnwrap(t *testing.T) {
 	inner := errors.New("provider dial")
 	err := &lifecycle.EmbeddingProviderError{Name: "ollama", Err: inner}
@@ -232,14 +166,6 @@ func TestEmbeddingProviderError_ErrorAndUnwrap(t *testing.T) {
 	}
 	if !errors.Is(err, inner) {
 		t.Error("Unwrap did not return inner error")
-	}
-}
-
-func TestEmbeddingProviderError_ErrorsAs(t *testing.T) {
-	err := &lifecycle.EmbeddingProviderError{Name: "openai", Err: errors.New("x")}
-	var target *lifecycle.EmbeddingProviderError
-	if !errors.As(err, &target) {
-		t.Error("errors.As failed")
 	}
 }
 

@@ -1335,10 +1335,6 @@ func TestKVEngine_BatchWithMixedOps(t *testing.T) {
 // Engine interface compliance
 // ---------------------------------------------------------------------------
 
-func TestKVEngine_ImplementsEngine(t *testing.T) {
-	var _ Engine = (*KVEngine)(nil)
-}
-
 // ---------------------------------------------------------------------------
 // RegisterEntityType
 // ---------------------------------------------------------------------------

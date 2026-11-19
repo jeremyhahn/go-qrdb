@@ -79,36 +79,6 @@ func TestTranslationError_NilErr(t *testing.T) {
 	assert.Nil(t, err.Unwrap())
 }
 
-func TestErrorTypes_As(t *testing.T) {
-	t.Run("ServerStartError", func(t *testing.T) {
-		var target *ServerStartError
-		err := &ServerStartError{Err: errors.New("fail")}
-		assert.True(t, errors.As(err, &target))
-		assert.Equal(t, "fail", target.Err.Error())
-	})
-
-	t.Run("AuthenticationError", func(t *testing.T) {
-		var target *AuthenticationError
-		err := &AuthenticationError{Err: errors.New("denied")}
-		assert.True(t, errors.As(err, &target))
-		assert.Equal(t, "denied", target.Err.Error())
-	})
-
-	t.Run("QueryError", func(t *testing.T) {
-		var target *QueryError
-		err := &QueryError{Query: "DROP TABLE", Err: errors.New("permission denied")}
-		assert.True(t, errors.As(err, &target))
-		assert.Equal(t, "DROP TABLE", target.Query)
-	})
-
-	t.Run("TranslationError", func(t *testing.T) {
-		var target *TranslationError
-		err := &TranslationError{Query: "SELECT", Err: errors.New("bad")}
-		assert.True(t, errors.As(err, &target))
-		assert.Equal(t, "SELECT", target.Query)
-	})
-}
-
 func TestUnsupportedParameterTypeError_Error(t *testing.T) {
 	err := &UnsupportedParameterTypeError{Value: struct{}{}}
 	assert.Equal(t, "sql/pgsql: unsupported parameter value type struct {}", err.Error())

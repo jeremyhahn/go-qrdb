@@ -882,8 +882,11 @@ Invariants:
   statement or boot path substitutes a backend for the one in the record.
 - **Defaults are applied once.** A field left empty at creation is filled from
   the node's `database_defaults` and persisted; resolution never reads the
-  defaults for an existing database. Changing a node default changes new
-  databases only.
+  defaults for an existing database. The record stores every resolved value:
+  the backend (an empty `backend` default records the node run mode's), and
+  for a raft database a `raft` block with cluster mode, `state_storage` and
+  shard ID, added when the request carried none. Changing a node default
+  changes new databases only.
 - **Every write is applied through the binding's host, inside the engine's apply
   batch.** No engine writes to its store outside the batch: time-series points,
   metric and tag indexes, secondary index entries, vector records and vector
@@ -1098,7 +1101,7 @@ database_defaults:
   backend: raft            # when unset: raft in raft mode, pebble in standalone
   replicas: 3              # raft only
   raft:
-    cluster_mode: distributed
+    clusterMode: distributed
     state_storage: pebble
 
 databases:                 # provisioned at boot; each entry is a full create

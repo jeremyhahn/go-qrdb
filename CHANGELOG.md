@@ -6,22 +6,59 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, MINOR is where breaking changes live; PATCH is reserved for changes
-that do not move the API. Releases before `0.2.0-alpha` predate this file and
+that do not move the API. What holds from the first release candidate on is
+proposed in [docs/release/compatibility.md](docs/release/compatibility.md).
+Releases before `0.2.0-alpha` predate this file and
 are not reconstructed here — their history is in the git log.
 
 ## [Unreleased]
 
+### Changed
+
+- CI hands the toolchain and integration-test images between jobs through the LAN CI registry (the repository secret secrets.CI_IMAGE_REGISTRY, so every log line masks its address) on self-hosted runners; GitHub artifacts remain the path on GitHub-hosted runners and whenever a pull fails.
+- `make docker-build-toolchain`, `make docker-build-it` and `scripts/in-toolchain-image.sh` pull the content-hash-tagged image from the CI image registry the runner's environment names in `CI_IMAGE_REGISTRY` before they build, and push what they built to it (`scripts/image-registry.sh`, #1609), so a runner host no longer builds every image on its own disk. A failed or hung pull or push falls back to the build and never fails the job; each image logs one line (`pulled`, `miss, built and pushed` or `miss, built, push failed`); unset, nothing changes.
+
+- **Health needs no login on any transport.** One table of no-login verbs, `pkg/api/publicverbs.Table` (health and invitation-redeem), is read by REST, gRPC, Unix, QUIC and MCP, so an operation's login requirement is the same everywhere (rulings 158 and 264(b)). REST `GET /health`, gRPC and Unix `QRDBService/Health`, QUIC `admin.Health` and MCP `qrdb_health` are public, and each draws the `admin:health` rate-limit bucket by caller address before serving. `QRDBService/Health` moves from `admin:health` to `identity:public` in the proto.
+- **The Go SDK connects with no credential.** `Connect` on the gRPC, QUIC and Unix transports probes the now-public Health, so a client with no certificate and no token connects and is refused with the typed `Unauthenticated` error at its first call that needs an identity (ruling 264(b)); `qrdb admin health` works with no credential on every transport. The MCP SDK reads the auth chain's `401`/`403` on `initialize` and on every `tools/call` through one refusal capture (`sdk/go/transport/mcp/refusal_capture.go`, was `initialize_refusal.go`), so a refused tool call surfaces as the same typed refusal.
+
 ### Fixed
 
-- Key delivery works with `auth.enabled=false`: the listener now asks for node client certificates, and public Health on gRPC, Unix and MCP is held to its declared `admin:health` rate limit, as on QUIC.
+- **Key delivery works with `auth.enabled=false` (#1174).** An auto-provisioned key-delivery listener asks for node client certificates and trusts only the ceremony CA for them, so the cluster key route refuses a caller without a verified node certificate.
+- **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
 
 ### Added
 
+- **`sdk/go` re-exports the policy mint (#1187).** `sdk.MintDelegationRequest`, `sdk.IssuedDelegation` and `sdk.DelegationPolicyNotFoundError` name `Node.MintDelegation`'s request, result and refusal, so an embedder never imports `pkg/*`; an operation the minted scope does not hold is refused with `sdk.PermissionDeniedError` in the delegating tenant itself, pinned on the SDK and over every CLI transport.
+- **Embedder operations under a policy-minted delegation (#1187).** Role and effective-permission reads for one account (`roles:read`, `users:read`, `permissions:resolve`), role assign/unassign, and `tenant_barrier:officer_list` and `tenant_barrier:seal` run in the delegating tenant under a delegation minted on its standing policy, through the node's authorization middleware: allowed and audited in that tenant, refused in every other tenant and the system tenant, and refused once the policy is deleted and the serial revoked, on the SDK and over every CLI transport (REST, gRPC, QUIC, MCP, Unix). Delegation admission needs a revocation checker that answers uncached (`auth.UncachedRevocationChecker`, as `cert.RevocationCache` does), so a revoke refuses the next call whatever the cache TTL; a checker without it, including a wrapper that embeds `auth.RevocationChecker`, has every delegation refused. See [docs/identity-rbac/user.md](docs/identity-rbac/user.md#letting-it-renew-on-its-own-a-standing-policy).
+- **Pending users with a TTL (#1583).** A pending create may carry a time-to-live: REST `pending_ttl`, gRPC and Unix `CreateUserRequest.pending_ttl_seconds`, QUIC `pendingTTL`, MCP `qrdb_user_create` `pending_ttl`, sdk/go `CreateUserRequest.PendingTTL`, and `qrdb users create --pending --pending-ttl`. User reads carry the expiry (`pending_expires_at`, `pending_expires_at_unix`, `pendingExpiresAt`, `User.PendingExpiresAt`). Activation (`EnableUser`) clears it. A leader-only reaper deletes pending users past their TTL, with their role assignments and factors, and audits `pending_reaped`; it never touches an active user. `auth.pending_user_sweep_interval` sets the sweep period (default `1m`; `off` disables). On a cluster, TTLs need the `pending-user-ttl` cluster feature: until every member advertises it a TTL-bearing create is refused as not active and the reaper does not sweep.
+- **`qrdb ca delegate policy put|list|delete` (#1187).** The CLI writes, lists and deletes the tenant's standing delegation policies over every transport (REST, gRPC, QUIC, MCP, Unix); deleting a policy refuses the next mint for its principal. See [docs/certificate-authority/cli.md](docs/certificate-authority/cli.md#qrdb-ca-delegate-policy).
+- **`sdk.TenantFromCert` and `sdk.SystemRoleIDs` (ruling 557).** `sdk.TenantFromCert(cert, trustDomain)` is the composer-side form of `MTLSAuthenticator.TenantFromCert`, with the rule, refusals and errors of `sdk.TenantFromClientCert`. `sdk.SystemRoleIDs(tenantID)` (over the new `role.SystemRoleIDs`) maps every system role name to its one canonical `SystemRoleID`, in a fresh map per call; it is not the removed UUIDv5/v8 dual-read set.
+- **qrdb.proto declares the credential rotation policy and tenant delegation policy RPCs (#1201, #1187).** `CredentialSetRotationPolicy`, `CredentialRotationPolicy`, `CredentialMigrationConflicts`, `CredentialResolveMigrationConflict`, `PutDelegationPolicy`, `ListDelegationPolicies` and `DeleteDelegationPolicy` carry their permissions. The server answers the three delegation policy RPCs; it answers the four credential rotation RPCs `UNIMPLEMENTED` until their handlers land.
 - **The Signatures job has behaviour tests.** `TestCISignatures` runs the job's real script on signed and unsigned fixture repositories with throwaway keys and a fake GitHub API, and proves every reject path fails closed.
 - **CI verifies commit signatures.** A Signatures job from ci-template
   v1.35.1 checks each pull-request commit against `.github/allowed_signers`,
   and CI Gate requires it.
 
+- **A tenant can hold standing delegation policies** (#1187). A policy is the
+  tenant's grant written down once (one per principal: `scope` and `ttl`), so an
+  embedder's server-owned work can mint and renew its delegation with no tenant
+  admin at hand. REST `POST|GET /certs/delegate/policies` and
+  `DELETE /certs/delegate/policies/{principal}`, gRPC and Unix
+  `PutDelegationPolicy` / `ListDelegationPolicies` / `DeleteDelegationPolicy`,
+  QUIC `cert.DelegationPolicyPut|List|Delete`, the MCP tools
+  `qrdb_cert_delegation_policy_put|list|delete`, and the Go SDK methods of the
+  same names write, list and delete them. Each needs `certs:delegate`
+  in the caller's own tenant and refuses the system tenant and a delegated
+  caller; put and delete are audited as `cert.delegation_policy.put` /
+  `cert.delegation_policy.delete`, and a missing policy is
+  `DelegationPolicyNotFoundError` (404 / `NOT_FOUND`). Embedders mint under a
+  policy with `Node.MintDelegation`, from the tenant's own login CA, bounded by
+  the policy and the principal's grants; a renewal needs `certs:delegate` in
+  both. Policies live under `__sys:cert_delegation_policy/`, which the embedded
+  transport confines whole (every read, write, list, scan, watch and
+  transaction is refused), so no KV writer can forge one. Deleting a tenant
+  deletes its policies, and a mint for a tenant that is deleted or retired is
+  refused with `TenantNotFoundError`.
 - **The replicated audit trail is a verifiable log.** Once the
   `verifiable-log` and `verifiable-log-audit` feature gates are enabled for a
   group, each tenant's
@@ -336,6 +373,14 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- A standalone node no longer acknowledges writes that a crash can lose
+  (#1617). `pkg/storage/pebble.DefaultConfig` set `SyncWrites: false` on the
+  premise that the Raft WAL provides durability, so every write went through
+  `pebble.NoSync`; a standalone node has no Raft WAL, and a Put acknowledged
+  just before a SIGKILL was gone after the restart. `DefaultConfig` now sets
+  `SyncWrites: true`: a store may turn it off only when another log already
+  fsyncs the write before it is acknowledged. The `sdk/go/node` SIGKILL test
+  now asserts that every acknowledged key reads back after the restart.
 - CI installs Trivy from its official image pinned by digest; the GitHub
   release download it replaced returns 504.
 - **The toolchain image build retries its Trivy download.** The
@@ -806,6 +851,10 @@ are not reconstructed here — their history is in the git log.
   only `so_pin` from a passphrase-change payload, so the current and next
   passphrases are never decoded a second time.
 
+### Removed
+
+- The dev container's internal module-forge path (GITEA_HOST, MODULE_FORGE_TOKEN); modules resolve from the public proxy.
+
 ## [0.58.0-alpha] - 2026-10-27
 
 ### Added
@@ -1117,6 +1166,10 @@ are not reconstructed here — their history is in the git log.
 
 ### Removed
 
+- **The embedding errors no path returned are gone** (#1218):
+  `service.EmbeddingBatchTooLargeError`, `service.EmbeddingDimensionMismatchError`
+  and `embedding.DimensionMismatchError` (with its `sdk/go` alias). An oversize
+  batch is split into provider calls of at most `batch_size` texts, never refused.
 - **`auth.spiffe_trust_domain` is gone; `auth.cluster_trust_domain` is the one
   trust-domain setting** (#1150). It pins the mTLS authenticator, names the
   built-in CA's trust domain and is the trust domain no tenant may be. A

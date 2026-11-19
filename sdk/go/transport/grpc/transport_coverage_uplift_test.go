@@ -1137,14 +1137,6 @@ func TestGRPCAuth_GetUserByCertThumbprint_Success(t *testing.T) {
 	}
 }
 
-func TestGRPCAuth_GetUserByCertThumbprint_Closed(t *testing.T) {
-	_, err := newUpliftClosed().GetUserByCertThumbprint(context.Background(), "tp")
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
-	}
-}
-
 func TestGRPCAuth_GetUserByCertThumbprint_RPCError(t *testing.T) {
 	svc := &testQRDBServer{
 		getUserByCertFn: func(_ context.Context, _ *pb.GetUserByCertThumbprintRequest) (*pb.UserResponse, error) {
@@ -1170,14 +1162,6 @@ func TestGRPCAuth_AddCertBinding_Success(t *testing.T) {
 	}
 	if user == nil {
 		t.Fatal("expected non-nil user")
-	}
-}
-
-func TestGRPCAuth_AddCertBinding_Closed(t *testing.T) {
-	_, err := newUpliftClosed().AddCertBinding(context.Background(), 1, "fp", 0)
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
 
@@ -1222,14 +1206,6 @@ func TestGRPCAuth_RemoveCertBinding_Success(t *testing.T) {
 	// withdraws nothing and reports a not-found.
 	if got.GetUserId() != 42 || got.GetThumbprint() != "fp:12:34" {
 		t.Fatalf("server saw %+v, want user 42 / fp:12:34", got)
-	}
-}
-
-func TestGRPCAuth_RemoveCertBinding_Closed(t *testing.T) {
-	_, err := newUpliftClosed().RemoveCertBinding(context.Background(), 1, "fp")
-	var ce *transport.ClosedError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected ClosedError, got %T", err)
 	}
 }
 

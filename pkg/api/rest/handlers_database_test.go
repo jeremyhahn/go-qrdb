@@ -481,6 +481,30 @@ func TestHandleCreateDatabase_ServiceError(t *testing.T) {
 	assertStatus(t, rec, http.StatusConflict)
 }
 
+// TestHandleCreateDatabase_InvalidRaftStateStorage pins that a raft create
+// naming a state storage outside pebble, file and memory is a client error:
+// the service's validation refusal maps to 400, not 500.
+func TestHandleCreateDatabase_InvalidRaftStateStorage(t *testing.T) {
+	dbSvc := newMockDatabaseService()
+	dbSvc.createFn = func(cfg database.DatabaseConfig) (*database.DatabaseInfo, error) {
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		t.Fatalf("Validate() accepted raft.stateStorage %q", cfg.Raft.StateStorage)
+		return nil, nil
+	}
+	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0",
+		WithDatabaseService(dbSvc))
+
+	body := `{"name":"rocksdb","backend":"raft","raft":{"clusterMode":"local","stateStorage":"rocks"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/databases", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.dispatch(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
 func TestHandleCreateDatabase_NilService(t *testing.T) {
 	srv := NewServer(newDefaultKVSvc(), newDefaultAdminSvc(), "127.0.0.1:0")
 

@@ -23,18 +23,19 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
-// The SQL service is built once, over the KV and database services the
-// transport was constructed with, and cached for the transport's lifetime.
+// With a database service the SQL service is built on first use and the
+// same instance is reused on every later call, so its engine cache (and the
+// analyzer catalog behind it) survives across queries.
 func TestEmbeddedSQL_ServiceIsCachedAfterFirstUse(t *testing.T) {
 	dbSvc := service.NewDatabaseService(databasetest.NewManager(nil, t.TempDir()))
 	tr := newExtTransport(t, WithDatabaseService(dbSvc))
 
-	svc := tr.sqlSvc()
-	if svc == nil {
-		t.Fatal("sqlSvc() = nil with a KV and a database service configured")
+	first := tr.sqlSvc()
+	if first == nil {
+		t.Fatal("sqlSvc() = nil, want a SQL service over the configured database service")
 	}
-	if tr.sqlSvc() != svc {
-		t.Fatal("sqlSvc() must return the same cached service on every call")
+	if second := tr.sqlSvc(); second != first {
+		t.Fatalf("second sqlSvc() = %p, want the cached instance %p", second, first)
 	}
 }
 

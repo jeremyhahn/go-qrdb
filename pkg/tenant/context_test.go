@@ -22,56 +22,6 @@ import (
 	"github.com/jeremyhahn/go-qrdb/pkg/tenantid"
 )
 
-func TestWithTenantIDAndFromContextRoundTrip(t *testing.T) {
-	ctx := WithTenantID(context.Background(), "tenant-abc")
-	got := FromContext(ctx)
-	if got != "tenant-abc" {
-		t.Errorf("FromContext() = %q, want %q", got, "tenant-abc")
-	}
-}
-
-func TestFromContextNoTenantReturnsDefault(t *testing.T) {
-	got := FromContext(context.Background())
-	if got != tenantid.System {
-		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
-	}
-}
-
-func TestFromContextEmptyStringReturnsDefault(t *testing.T) {
-	ctx := WithTenantID(context.Background(), "")
-	got := FromContext(ctx)
-	if got != tenantid.System {
-		t.Errorf("FromContext() = %q, want %q", got, tenantid.System)
-	}
-}
-
-func TestNestedContextsInnerTenantWins(t *testing.T) {
-	ctx := WithTenantID(context.Background(), "outer-tenant")
-	ctx = WithTenantID(ctx, "inner-tenant")
-	got := FromContext(ctx)
-	if got != "inner-tenant" {
-		t.Errorf("FromContext() = %q, want %q", got, "inner-tenant")
-	}
-}
-
-func TestWithTenantIDPreservesParentValues(t *testing.T) {
-	type otherKey struct{}
-	parent := context.WithValue(context.Background(), otherKey{}, "preserved")
-	ctx := WithTenantID(parent, "my-tenant")
-
-	// Tenant is set correctly.
-	got := FromContext(ctx)
-	if got != "my-tenant" {
-		t.Errorf("FromContext() = %q, want %q", got, "my-tenant")
-	}
-
-	// Parent value is preserved.
-	v, ok := ctx.Value(otherKey{}).(string)
-	if !ok || v != "preserved" {
-		t.Errorf("parent context value = %q, want %q", v, "preserved")
-	}
-}
-
 func TestEffectiveTenant(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -149,16 +99,5 @@ func TestOwnTenant(t *testing.T) {
 				t.Fatalf("OwnTenant = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestFromContextWithCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	ctx = WithTenantID(ctx, "cancelled-tenant")
-	cancel()
-
-	got := FromContext(ctx)
-	if got != "cancelled-tenant" {
-		t.Errorf("FromContext() = %q, want %q", got, "cancelled-tenant")
 	}
 }

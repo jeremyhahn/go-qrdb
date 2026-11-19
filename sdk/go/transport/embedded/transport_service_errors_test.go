@@ -537,33 +537,3 @@ func TestEmbedded_KVDispatch_ErrorPaths(t *testing.T) {
 		}
 	})
 }
-
-func TestEmbedded_AdminDispatch_SuccessPaths(t *testing.T) {
-	tr, err := New(newMockKVService(), &mockAdminService{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx := context.Background()
-
-	// handleGetShardState with output capture.
-	t.Run("GetShardState", func(t *testing.T) {
-		var out *transport.ShardStateResponse
-		if e := tr.Request(ctx, "GetShardState", uint64(1), &out); e != nil {
-			t.Fatalf("GetShardState dispatch: %v", e)
-		}
-		if out == nil {
-			t.Fatal("expected non-nil ShardStateResponse")
-		}
-	})
-
-	// handleGetTopology with output capture.
-	t.Run("GetTopology", func(t *testing.T) {
-		var out *transport.TopologyResponse
-		if e := tr.Request(ctx, "GetTopology", nil, &out); e != nil {
-			t.Fatalf("GetTopology dispatch: %v", e)
-		}
-		if out == nil {
-			t.Fatal("expected non-nil TopologyResponse")
-		}
-	})
-}

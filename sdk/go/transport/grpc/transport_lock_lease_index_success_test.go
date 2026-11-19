@@ -26,33 +26,10 @@ import (
 	grpcpkg "github.com/jeremyhahn/go-qrdb/pkg/api/grpc"
 	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/index"
-	"github.com/jeremyhahn/go-qrdb/pkg/lease"
 	"github.com/jeremyhahn/go-qrdb/pkg/lock"
 	"github.com/jeremyhahn/go-qrdb/pkg/service"
 	"github.com/jeremyhahn/go-qrdb/sdk/go/transport"
 )
-
-// ===========================================================================
-// fakeLeaseServicer
-// ===========================================================================
-
-type fakeLeaseServicer struct{}
-
-var _ lease.LeaseServicer = (*fakeLeaseServicer)(nil)
-
-func (f *fakeLeaseServicer) Grant(_ context.Context, ttl int64) (*lease.Lease, error) {
-	return &lease.Lease{ID: 42, TTL: ttl, GrantedTTL: ttl, RemainingTTL: ttl}, nil
-}
-func (f *fakeLeaseServicer) Revoke(_ context.Context, _ int64) error { return nil }
-func (f *fakeLeaseServicer) KeepAlive(_ context.Context, id int64) (*lease.Lease, error) {
-	return &lease.Lease{ID: id, TTL: 60, RemainingTTL: 60}, nil
-}
-func (f *fakeLeaseServicer) TimeToLive(_ context.Context, id int64) (*lease.Lease, error) {
-	return &lease.Lease{ID: id, TTL: 60, RemainingTTL: 30}, nil
-}
-func (f *fakeLeaseServicer) Leases(_ context.Context) ([]*lease.Lease, error) {
-	return []*lease.Lease{{ID: 1, TTL: 60}}, nil
-}
 
 // ===========================================================================
 // fakeLockServicer
@@ -117,7 +94,6 @@ func startLockLeaseIndexServer(t *testing.T) (string, func()) {
 	t.Helper()
 	srv := googlegrpc.NewServer()
 	grpcpkg.RegisterService(srv, nil, nil,
-		grpcpkg.WithRegisterLease(&fakeLeaseServicer{}),
 		grpcpkg.WithRegisterLockService(&fakeLockServicer{}),
 		grpcpkg.WithRegisterIndex(&fakeIndexServicer{}),
 	)
@@ -145,44 +121,6 @@ func connectLLITransport(t *testing.T, addr string) (*Transport, func()) {
 }
 
 // ===========================================================================
-// Lease success tests
-// ===========================================================================
-
-func TestGRPCLease_AllMethods_Success(t *testing.T) {
-	addr, stop := startLockLeaseIndexServer(t)
-	defer stop()
-	tr, cleanup := connectLLITransport(t, addr)
-	defer cleanup()
-	ctx := context.Background()
-
-	t.Run("LeaseGrant", func(t *testing.T) {
-		if _, err := tr.LeaseGrant(ctx, 60); err != nil {
-			t.Fatalf("LeaseGrant: %v", err)
-		}
-	})
-	t.Run("LeaseRevoke", func(t *testing.T) {
-		if err := tr.LeaseRevoke(ctx, 42); err != nil {
-			t.Fatalf("LeaseRevoke: %v", err)
-		}
-	})
-	t.Run("LeaseKeepAlive", func(t *testing.T) {
-		if _, err := tr.LeaseKeepAlive(ctx, 42); err != nil {
-			t.Fatalf("LeaseKeepAlive: %v", err)
-		}
-	})
-	t.Run("LeaseTimeToLive", func(t *testing.T) {
-		if _, err := tr.LeaseTimeToLive(ctx, 42); err != nil {
-			t.Fatalf("LeaseTimeToLive: %v", err)
-		}
-	})
-	t.Run("LeaseList", func(t *testing.T) {
-		if _, err := tr.LeaseList(ctx); err != nil {
-			t.Fatalf("LeaseList: %v", err)
-		}
-	})
-}
-
-// ===========================================================================
 // Lock success tests
 // ===========================================================================
 
@@ -193,29 +131,12 @@ func TestGRPCLock_AllMethods_Success(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
+	// LockTryLock, LockStatus, LockExtend and LockRelease run against a real
+	// gRPC node in conformance's TestCoordinationFamilies_SameOnStandaloneAndRaft
+	// "lock" subtest; the two verbs it does not drive stay here.
 	t.Run("LockAcquire", func(t *testing.T) {
 		if _, err := tr.LockAcquire(ctx, &transport.LockAcquireRequest{Key: "k1", HolderID: "h1", TTL: 60}); err != nil {
 			t.Fatalf("LockAcquire: %v", err)
-		}
-	})
-	t.Run("LockTryLock", func(t *testing.T) {
-		if _, err := tr.LockTryLock(ctx, &transport.LockAcquireRequest{Key: "k1", HolderID: "h1", TTL: 60}); err != nil {
-			t.Fatalf("LockTryLock: %v", err)
-		}
-	})
-	t.Run("LockRelease", func(t *testing.T) {
-		if err := tr.LockRelease(ctx, &transport.LockReleaseRequest{Key: "k1", FencingToken: 1}); err != nil {
-			t.Fatalf("LockRelease: %v", err)
-		}
-	})
-	t.Run("LockExtend", func(t *testing.T) {
-		if _, err := tr.LockExtend(ctx, &transport.LockExtendRequest{Key: "k1", FencingToken: 1}); err != nil {
-			t.Fatalf("LockExtend: %v", err)
-		}
-	})
-	t.Run("LockStatus", func(t *testing.T) {
-		if _, err := tr.LockStatus(ctx, "k1"); err != nil {
-			t.Fatalf("LockStatus: %v", err)
 		}
 	})
 	t.Run("LockList", func(t *testing.T) {

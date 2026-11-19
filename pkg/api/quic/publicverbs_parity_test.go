@@ -17,16 +17,21 @@ package quic
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"slices"
 	"testing"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+	"google.golang.org/protobuf/proto"
 
+	pb "github.com/jeremyhahn/go-qrdb/pkg/api/grpc/proto/qrdbv1"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs"
+	"github.com/jeremyhahn/go-qrdb/pkg/api/publicverbs/publicverbstest"
 	"github.com/jeremyhahn/go-qrdb/pkg/api/quic/wire"
 	"github.com/jeremyhahn/go-qrdb/pkg/auth/authtest"
 	authmw "github.com/jeremyhahn/go-qrdb/pkg/auth/middleware"
+	"github.com/jeremyhahn/go-qrdb/pkg/service"
 )
 
 // TestPublicVerbsParity_QUIC fails when the native QUIC transport's public
@@ -104,6 +109,36 @@ func TestPublicVerbsParity_QUICNoCertificate(t *testing.T) {
 	}
 }
 
+// TestPublicVerbsParity_QUICHealthAnswer: a caller with no certificate gets
+// the admin service's Health answer, every field intact, the same fixture
+// the REST, gRPC and Unix parity tests compare against.
+func TestPublicVerbsParity_QUICHealthAnswer(t *testing.T) {
+	mw := authmw.New(&noopAuthorizer{}, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
+	bundle := generateMutualTLS(t)
+	serverCfg := bundle.serverCfg.Clone()
+	serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
+	srv := NewServer(&mockKVService{}, publicverbstest.Admin{AdminServicer: &mockAdminService{}}, "127.0.0.1:0",
+		WithTLS(serverCfg), WithAuthMiddleware(mw))
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { srv.Stop() })
+	anonCfg := bundle.clientCfg.Clone()
+	anonCfg.Certificates = nil
+	conn := (&integrationEnv{srv: srv, clientCfg: anonCfg}).dialServer(t)
+	_, status, payload := roundTrip(t, conn, publicverbs.Table[publicverbs.VerbHealth].QUIC, 4000, nil)
+	if status != wire.StatusOK {
+		t.Fatalf("health with no certificate = %d, want StatusOK", status)
+	}
+	resp := &pb.HealthResponse{}
+	if err := proto.Unmarshal(payload, resp); err != nil {
+		t.Fatalf("decode HealthResponse: %v", err)
+	}
+	publicverbstest.CheckHealth(t, "QUIC", service.HealthStatus{
+		Status: resp.GetStatus(), Leader: resp.GetLeader(), DiagnosticsDropped: resp.GetDiagnosticsDropped(),
+	})
+}
+
 // TestPublicVerbsParity_QUICBadCertificateIsHandshakeFailure: a client
 // certificate that does not chain to the server's client CA ends the
 // handshake. It is never downgraded to an anonymous connection, so even the
@@ -142,7 +177,8 @@ func TestPublicVerbsParity_QUICBadCertificateIsHandshakeFailure(t *testing.T) {
 	defer cancel()
 	conn, err := quicgo.DialAddr(ctx, srv.Addr(), clientCfg, &quicgo.Config{MaxIdleTimeout: 5 * time.Second})
 	if err != nil {
-		return // refused inside the handshake
+		requireCryptoError(t, err) // refused inside the handshake
+		return
 	}
 	t.Cleanup(func() { _ = conn.CloseWithError(0, "test done") })
 
@@ -157,5 +193,17 @@ func TestPublicVerbsParity_QUICBadCertificateIsHandshakeFailure(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("health with an unverifiable certificate got a response, want a handshake failure")
+	}
+	requireCryptoError(t, err)
+}
+
+// requireCryptoError fails t unless err is the QUIC CRYPTO_ERROR that
+// carries a TLS alert (RFC 9001 section 4.8): the handshake was aborted
+// over the certificate, not merely a timeout or a reset.
+func requireCryptoError(t *testing.T, err error) {
+	t.Helper()
+	var te *quicgo.TransportError
+	if !errors.As(err, &te) || !te.ErrorCode.IsCryptoError() {
+		t.Fatalf("unverifiable certificate: err = %v, want a QUIC CRYPTO_ERROR (TLS alert)", err)
 	}
 }
