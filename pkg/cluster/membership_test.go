@@ -331,6 +331,79 @@ func TestMembershipManager_JoinAsFollowerSkipsRaft(t *testing.T) {
 	}
 }
 
+// probingReconfigurer signals probed on each roster probe the manager makes.
+type probingReconfigurer struct {
+	*fakeReconfigurer
+	probed chan struct{}
+}
+
+func (r *probingReconfigurer) IsMember(shardID, replicaID uint64) (bool, error) {
+	select {
+	case r.probed <- struct{}{}:
+	default:
+	}
+	return r.fakeReconfigurer.IsMember(shardID, replicaID)
+}
+
+// TestMembershipManager_FollowerJoinHookRunsAfterTheAddCommits is the
+// regression for a follower's join hook firing before the leader's
+// AddMember committed: a follower that leads a tenant home group then
+// reconciled against a roster without the joiner and never added it. The
+// follower now fires the hook once the joiner is in its committed roster.
+func TestMembershipManager_FollowerJoinHookRunsAfterTheAddCommits(t *testing.T) {
+	store := newFakeStore()
+	reconf := &probingReconfigurer{fakeReconfigurer: newFakeReconfigurer(99), probed: make(chan struct{}, 1)}
+	hookCh := make(chan bool, 4)
+	hook := func(_ context.Context, member Member, joined bool) {
+		if !joined || member.NodeID != 2 {
+			return
+		}
+		present, _ := reconf.fakeReconfigurer.IsMember(100, member.NodeID)
+		hookCh <- present
+	}
+	cfg := MembershipConfig{LeaseTTL: time.Second, KeepAliveInterval: time.Hour,
+		RetryBaseDelay: 10 * time.Millisecond, MaxRetries: 3, MinQuorum: 1}
+	m, err := NewMembershipManager(store, selfMember(), 100, cfg,
+		WithReconfigurer(reconf), WithMemberChangeHook(hook))
+	if err != nil {
+		t.Fatalf("NewMembershipManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	store.events <- MemberEvent{Type: MemberJoined, Member: Member{NodeID: 2, Address: "node-2:5000"}}
+
+	deadline := time.After(5 * time.Second)
+	select {
+	case present := <-hookCh:
+		if !present {
+			t.Fatal("follower join hook ran before the leader's AddMember committed")
+		}
+		t.Fatal("follower join hook ran though the joiner was never committed")
+	case <-reconf.probed:
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower to probe its roster")
+	}
+
+	// The leader's AddMember commits and reaches the follower's roster.
+	reconf.mu.Lock()
+	reconf.added = append(reconf.added, 2)
+	reconf.mu.Unlock()
+
+	select {
+	case present := <-hookCh:
+		if !present {
+			t.Fatal("follower join hook saw a roster without the joiner")
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for the follower's join hook after the commit")
+	}
+}
+
 func TestMembershipManager_LeaveAsLeaderRemovesFromRaft(t *testing.T) {
 	store := newFakeStore()
 	reconf := newFakeReconfigurer(1)

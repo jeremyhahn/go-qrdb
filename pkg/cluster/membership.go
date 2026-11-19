@@ -556,6 +556,63 @@ func (m *MembershipManager) fireChange(member Member, joined bool) {
 	}()
 }
 
+// followerJoinWait bounds how long a follower waits for a joiner to reach
+// its committed roster before it fires the join hook regardless.
+const followerJoinWait = 2 * time.Minute
+
+// fireChangeWhenMember fires a join's member-change hook on a follower once
+// the joiner is in the follower's committed roster (the leader's AddMember
+// has committed and been applied here). It polls the roster on its own
+// goroutine, bounded by the manager's run context; it stops without firing
+// once the member has left, and fires with a warning after
+// followerJoinWait, since the hook's reconcile re-reads the roster.
+func (m *MembershipManager) fireChangeWhenMember(member Member) {
+	if m.onChange == nil {
+		return
+	}
+	m.mu.Lock()
+	ctx := m.runCtx
+	if m.closed || ctx == nil || ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.wg.Done()
+		interval := m.cfg.RetryBaseDelay
+		if interval <= 0 {
+			interval = 100 * time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		giveUp := time.NewTimer(followerJoinWait)
+		defer giveUp.Stop()
+		for {
+			if present, err := m.reconfig.IsMember(m.shardID, member.NodeID); err == nil && present {
+				m.onChange(ctx, member, true)
+				return
+			}
+			m.membersMu.RLock()
+			_, still := m.members[member.NodeID]
+			m.membersMu.RUnlock()
+			if !still {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-giveUp.C:
+				m.logger.Warn("joined member not in the committed roster; firing the join hook regardless",
+					"node_id", member.NodeID)
+				m.onChange(ctx, member, true)
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
 // handleLeave records a departing member and enqueues a removal intent.
 func (m *MembershipManager) handleLeave(member Member) {
 	m.membersMu.Lock()
@@ -634,14 +691,16 @@ func (m *MembershipManager) reconfigWorker(runCtx context.Context) {
 //
 // A join's member-change hook fires here, after the join is in the group:
 // once AddMember has committed, or at once when the member is already
-// present. A follower does not reconfigure and fires it at once; the
-// leader's hook is the one that runs after the commit. An add that does not
+// present. A follower does not reconfigure: it fires the hook once the
+// leader's AddMember has committed and reached its own roster
+// (fireChangeWhenMember), so a follower that leads a tenant home group
+// reconciles against a roster holding the joiner. An add that does not
 // commit fires no hook: the member is not in the group.
 func (m *MembershipManager) applyReconfig(intent reconfigIntent) {
 	if !m.isLeader() {
-		// Only the leader reconfigures; nothing to do as a follower.
+		// Only the leader reconfigures; a follower waits for its commit.
 		if !intent.remove {
-			m.fireChange(intent.member, true)
+			m.fireChangeWhenMember(intent.member)
 		}
 		return
 	}
