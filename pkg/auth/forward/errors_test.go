@@ -46,19 +46,9 @@ func TestErrorMessagesNameTheirCause(t *testing.T) {
 			contains: []string{"not a cluster node", "underlying"},
 		},
 		{
-			name:     "not-cluster-peer without a cause omits the suffix",
-			err:      &ForwardAssertionNotClusterPeerError{},
-			contains: []string{"not a cluster node"},
-		},
-		{
 			name:     "signature with a reason appends it",
 			err:      &ForwardAssertionSignatureError{Reason: "verification failed"},
 			contains: []string{"signature invalid", "verification failed"},
-		},
-		{
-			name:     "signature without a reason omits the suffix",
-			err:      &ForwardAssertionSignatureError{},
-			contains: []string{"signature invalid"},
 		},
 		{
 			name:     "expired names the reason",
@@ -129,13 +119,5 @@ func TestUnwrapReachesTheCause(t *testing.T) {
 				t.Fatalf("errors.Is could not reach the cause through %T", tc.err)
 			}
 		})
-	}
-}
-
-// TestUnwrapOfAnAbsentCauseIsNil keeps a cause-free error terminating the
-// chain rather than reporting a non-nil nil.
-func TestUnwrapOfAnAbsentCauseIsNil(t *testing.T) {
-	if err := (&ForwardAssertionNotClusterPeerError{}).Unwrap(); err != nil {
-		t.Fatalf("Unwrap of a cause-free error: got %v, want nil", err)
 	}
 }

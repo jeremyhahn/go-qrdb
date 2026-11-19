@@ -15,7 +15,9 @@ The row's PR closes its row issue and marks the row shipped in
 | strict-tenant-isolation | #1565 | in progress | 0 | #1498, #1499, #1514, #1517, #1519, #1423 |
 | object-storage-credential-handle | #1566 | planned | 0 | #1404 |
 | arm64-release | #916 | in progress | 0 | none |
+| verifiable-log | #1613 | in progress | 0 | none |
 | release-readiness | #566 | planned | 1 | none |
+| rolling-upgrades | #1628 | planned | 1 | none |
 | multi-model-databases | #923 | future | 0 | none |
 | object-storage-lsm | #924 | future | 0 | none |
 | volume-pool-tenant-moves | #925 | future | 0 | none |

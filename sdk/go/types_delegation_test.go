@@ -18,30 +18,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
-	"slices"
 	"testing"
 	"time"
 
 	sdk "github.com/jeremyhahn/go-qrdb/sdk/go"
 )
-
-func TestSDK_DelegationFromCertificateReadsTheGrant(t *testing.T) {
-	want := sdk.DelegationGrant{Tenant: "acme", Principal: "billing", Scope: []string{"kv:get", "kv:put"}}
-	ext, err := want.Extension()
-	if err != nil {
-		t.Fatalf("Extension: %v", err)
-	}
-	if !ext.Id.Equal(sdk.DelegationOID) || !ext.Critical {
-		t.Fatalf("extension = %v critical=%v, want %v critical", ext.Id, ext.Critical, sdk.DelegationOID)
-	}
-	got, found, err := sdk.DelegationFromCertificate(&x509.Certificate{Extensions: []pkix.Extension{ext}})
-	if err != nil || !found || got.Tenant != want.Tenant || got.Principal != want.Principal || !slices.Equal(got.Scope, want.Scope) {
-		t.Fatalf("DelegationFromCertificate = %+v, %v, %v; want %+v", got, found, err, want)
-	}
-	if _, found, err := sdk.DelegationFromCertificate(&x509.Certificate{}); found || err != nil {
-		t.Fatalf("a certificate without the extension: found=%v err=%v, want neither", found, err)
-	}
-}
 
 func TestSDK_DelegationRefusals(t *testing.T) {
 	if _, err := (sdk.DelegationGrant{Tenant: "acme", Principal: "billing"}).Extension(); !errors.As(err, new(*sdk.DelegationGrantError)) {

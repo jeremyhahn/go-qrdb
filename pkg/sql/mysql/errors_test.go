@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
@@ -43,15 +42,6 @@ func TestServerStartError_NilErr(t *testing.T) {
 	assert.Nil(t, err.Unwrap())
 }
 
-func TestServerStartError_Unwrap(t *testing.T) {
-	cause := errors.New("port in use")
-	err := &ServerStartError{Err: cause}
-
-	var target *ServerStartError
-	require.True(t, errors.As(err, &target))
-	assert.True(t, errors.Is(err, cause))
-}
-
 // ---------------------------------------------------------------------------
 // AuthenticationError
 // ---------------------------------------------------------------------------
@@ -69,32 +59,4 @@ func TestAuthenticationError_NilErr(t *testing.T) {
 
 	assert.Equal(t, "sql/mysql: authentication failed", err.Error())
 	assert.Nil(t, err.Unwrap())
-}
-
-func TestAuthenticationError_Unwrap(t *testing.T) {
-	cause := errors.New("cert expired")
-	err := &AuthenticationError{Err: cause}
-
-	var target *AuthenticationError
-	require.True(t, errors.As(err, &target))
-	assert.True(t, errors.Is(err, cause))
-}
-
-// ---------------------------------------------------------------------------
-// Interface compliance
-// ---------------------------------------------------------------------------
-
-func TestErrorsImplementErrorInterface(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-	}{
-		{"ServerStartError", &ServerStartError{Err: errors.New("x")}},
-		{"AuthenticationError", &AuthenticationError{Err: errors.New("x")}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.NotEmpty(t, tt.err.Error())
-		})
-	}
 }

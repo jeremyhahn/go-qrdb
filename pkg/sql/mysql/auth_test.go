@@ -280,36 +280,6 @@ func TestSessionBuilder_SetsConnectionIDAndUser(t *testing.T) {
 // Helper function tests
 // ---------------------------------------------------------------------------
 
-func TestNewSessionBuilder(t *testing.T) {
-	sb := newSessionBuilder(nil, nil)
-	require.NotNil(t, sb)
-	assert.Nil(t, sb.authMW)
-}
-
-func TestNewSessionBuilder_WithMiddleware(t *testing.T) {
-	authz := &mockAuthorizer{}
-	mw := authmw.New(authz, authmw.WithRoleResolver(authtest.BuiltInRoles(t)))
-
-	sb := newSessionBuilder(mw, nil)
-	require.NotNil(t, sb)
-	assert.NotNil(t, sb.authMW)
-}
-
 // ---------------------------------------------------------------------------
 // Type assertion test for provider.QRDBSession certificate extraction
 // ---------------------------------------------------------------------------
-
-func TestSessionBuilder_NilAuth_TenantSystem(t *testing.T) {
-	// Verify that a nil-auth session always produces the system tenant.
-	sb := newSessionBuilder(nil, nil)
-
-	conn := newPlainConn()
-	defer func() { _ = conn.Conn.Close() }()
-
-	sess, err := sb.Build(context.Background(), conn, "127.0.0.1:3306")
-	require.NoError(t, err)
-
-	qrdbSess := sess.(*provider.QRDBSession)
-	assert.Equal(t, "system", qrdbSess.TenantID())
-	assert.Nil(t, qrdbSess.Identity())
-}

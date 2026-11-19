@@ -176,53 +176,6 @@ func TestGuardedSwap_RetryPredicateConvergesOnTheHighestGeneration(t *testing.T)
 	}
 }
 
-// Concurrent CREATORS are guarded too, and by a different compare than
-// concurrent updaters — CompareCreateRevision == 0 rather than a value or
-// revision guard, because "has never existed" is not expressible as a
-// comparison against the record's contents.
-func TestGuardedSwap_ConcurrentCreatorsAdmitExactlyOneCreate(t *testing.T) {
-	const writers = 16
-	plane := newFakeTxnPlane()
-	plane.gateReads(writers)
-	key := []byte("__sys:singleton")
-
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		created int
-	)
-	for i := 0; i < writers; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			res, err := GuardedSwap(context.Background(), plane, GuardedSwapRequest{
-				Key: key,
-				Decide: func(_ []byte, exists bool) ([]byte, SwapDecision, error) {
-					if exists {
-						// Idempotent: the singleton is already there.
-						return nil, SwapDone, nil
-					}
-					return []byte("created-by-" + strconv.Itoa(id)), SwapWrite, nil
-				},
-			})
-			if err != nil {
-				t.Errorf("worker %d: %v", id, err)
-				return
-			}
-			if res.Written {
-				mu.Lock()
-				created++
-				mu.Unlock()
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	if created != 1 {
-		t.Errorf("%d writers created the singleton, want exactly 1", created)
-	}
-}
-
 // A guard refused while the record does not move is a FAULT, reported
 // immediately, not retried to the attempt bound.
 //

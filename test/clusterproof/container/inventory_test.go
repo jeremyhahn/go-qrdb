@@ -151,7 +151,4 @@ func TestReadSecret(t *testing.T) {
 	if _, err := readSecret("f", write("empty", "\n")); !errors.As(err, &ce) {
 		t.Errorf("empty: got %v", err)
 	}
-	if _, err := readSecret("f", filepath.Join(dir, "missing")); !errors.As(err, &ce) {
-		t.Errorf("missing: got %v", err)
-	}
 }

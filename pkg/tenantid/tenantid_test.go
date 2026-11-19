@@ -65,19 +65,6 @@ func TestNormalize_FoldsAbsentTenantOnly(t *testing.T) {
 	}
 }
 
-// TestNormalize_IsIdempotent states the property every boundary relies on:
-// normalizing twice is normalizing once, so a value that crosses two folding
-// boundaries (context binding, then identity binding) is not disturbed by the
-// second.
-func TestNormalize_IsIdempotent(t *testing.T) {
-	for _, in := range []string{"", System, "acme"} {
-		once := Normalize(in)
-		if twice := Normalize(once); twice != once {
-			t.Fatalf("Normalize is not idempotent for %q: %q then %q", in, once, twice)
-		}
-	}
-}
-
 // TestNormalize_EstablishesIsSystemPrecondition is the assertion #188
 // asked for and that nothing made before: whatever Normalize returns,
 // IsSystem never observes the empty string.

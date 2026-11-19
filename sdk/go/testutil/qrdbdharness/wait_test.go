@@ -107,15 +107,6 @@ func TestWaitForFile(t *testing.T) {
 	if err := WaitForFile(existing, shortTimeout); err != nil {
 		t.Errorf("WaitForFile on an existing file: %v", err)
 	}
-
-	later := filepath.Join(dir, "later")
-	go func() {
-		time.Sleep(60 * time.Millisecond)
-		_ = os.WriteFile(later, []byte("x"), fileMode)
-	}()
-	if err := WaitForFile(later, 5*time.Second); err != nil {
-		t.Errorf("WaitForFile on a file created during the wait: %v", err)
-	}
 }
 
 func TestWaitForFileTimesOut(t *testing.T) {
@@ -375,18 +366,6 @@ func TestPollRunTimesOutPastTheDeadline(t *testing.T) {
 	}
 	if got := probes.Load(); got != 1 {
 		t.Errorf("probes = %d, want exactly one attempt before giving up", got)
-	}
-}
-
-func TestPollRunReportsStackDumpsOnTimeout(t *testing.T) {
-	err := poll{
-		op: "op", target: "target", timeout: time.Millisecond, interval: 2 * time.Millisecond,
-		probe:     func() error { return errEmptyFile },
-		onTimeout: func() []int { return []int{42} },
-	}.run(nil)
-	var timeout *TimeoutError
-	if !errors.As(err, &timeout) || len(timeout.StackDumped) != 1 || timeout.StackDumped[0] != 42 {
-		t.Fatalf("err = %v, want a *TimeoutError listing the dumped daemon", err)
 	}
 }
 

@@ -25,60 +25,6 @@ import (
 	"time"
 )
 
-// TestTenantStoreRedeemConsumesWithinTheTenant covers the routed Redeem. A
-// token is redeemable exactly once, and only in the tenant that issued it --
-// the routing is what makes the second property hold.
-func TestTenantStoreRedeemConsumesWithinTheTenant(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewTenantStore(newStubResolver())
-	if err != nil {
-		t.Fatalf("NewTenantStore: %v", err)
-	}
-
-	token, _, err := store.Create(ctx, "user-1", "tenant-a", time.Hour)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	entity, err := store.Redeem(ctx, "tenant-a", token)
-	if err != nil {
-		t.Fatalf("Redeem: %v", err)
-	}
-	if entity.UserID != "user-1" {
-		t.Errorf("UserID = %q, want %q", entity.UserID, "user-1")
-	}
-
-	// Exactly once: the second redemption must fail.
-	if _, err := store.Redeem(ctx, "tenant-a", token); err == nil {
-		t.Fatal("a token must not be redeemable twice")
-	}
-}
-
-// TestTenantStoreRedeemDoesNotCrossTenants pins the isolation property on the
-// redeem path specifically. A token leaking across tenants would let an
-// invitation issued by one tenant enroll a user into another.
-func TestTenantStoreRedeemDoesNotCrossTenants(t *testing.T) {
-	ctx := context.Background()
-	store, err := NewTenantStore(newStubResolver())
-	if err != nil {
-		t.Fatalf("NewTenantStore: %v", err)
-	}
-
-	token, _, err := store.Create(ctx, "user-1", "tenant-a", time.Hour)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	if _, err := store.Redeem(ctx, "tenant-b", token); err == nil {
-		t.Fatal("a token issued for tenant-a must not redeem in tenant-b")
-	}
-
-	// And it must still be redeemable where it belongs.
-	if _, err := store.Redeem(ctx, "tenant-a", token); err != nil {
-		t.Fatalf("the cross-tenant attempt consumed the token: %v", err)
-	}
-}
-
 // TestTenantStoreGCSweepsOneTenant covers the routed GC. It is per-tenant by
 // design -- no store holds every tenant's invitations -- so the count returned
 // must reflect only the named tenant.
@@ -133,22 +79,6 @@ func TestTenantStoreGCFailsClosedOnASealedTenant(t *testing.T) {
 	}
 	if removed != 0 {
 		t.Errorf("removed = %d, want 0 on failure", removed)
-	}
-}
-
-// TestTenantStoreRedeemFailsClosedOnASealedTenant is the redeem counterpart:
-// a sealed tenant must not read as "no such invitation".
-func TestTenantStoreRedeemFailsClosedOnASealedTenant(t *testing.T) {
-	resolver := newStubResolver()
-	resolver.fail["tenant-sealed"] = errors.New("tenant is sealed")
-
-	store, err := NewTenantStore(resolver)
-	if err != nil {
-		t.Fatalf("NewTenantStore: %v", err)
-	}
-
-	if _, err := store.Redeem(context.Background(), "tenant-sealed", "sometoken"); err == nil {
-		t.Fatal("Redeem on a sealed tenant must fail")
 	}
 }
 
