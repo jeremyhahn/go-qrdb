@@ -843,7 +843,11 @@ func resolveGroupLeader(ctx context.Context, raftHost RaftHost, selfNodeID strin
 
 // DatabaseService implements DatabaseServicer using a database.Manager.
 type DatabaseService struct {
-	manager            *database.Manager
+	manager *database.Manager
+	// createRollbacks holds the strict-refused creates whose rollback drop
+	// failed: fenced, reservations held, until RetryCreateRollbacks lands
+	// the drop.
+	createRollbacks    createRollbackLedger
 	barrierMgr         *database.DatabaseBarrierManager
 	sealer             clusterseal.Sealer
 	quotaChecker       quota.Checker
@@ -1637,6 +1641,14 @@ func (s *DatabaseService) CreateForTenant(ctx context.Context, cfg database.Data
 // The create is bounded by the service's create deadline -- see
 // boundedCreate.
 func (s *DatabaseService) CreateForTenantWithCredentials(ctx context.Context, cfg database.DatabaseConfig, creds seal.Credentials) (*database.DatabaseInfo, error) {
+	// A strict-refused create whose rollback drop failed is retried before
+	// the next create, so its fence and reservations do not outlive a
+	// transient drop failure; one that fails again stays fenced and held.
+	if s.PendingCreateRollbacks() > 0 {
+		if err := s.RetryCreateRollbacks(ctx); err != nil {
+			s.logger.Warn("strict-refused create rollback still failing; the database stays fenced", "error", err)
+		}
+	}
 	return s.boundedCreate(ctx, cfg.Name, func(ctx context.Context) (*database.DatabaseInfo, error) {
 		return s.createForTenantWithCredentials(ctx, cfg, creds)
 	})
@@ -1970,9 +1982,16 @@ func (s *DatabaseService) createForTenantWithCredentials(ctx context.Context, cf
 	// (onNodeKeyLog).
 	if !volumeTenant && onNodeKeyLog(cfg.Backend, cfg.DataDir, cfg.Barrier, cfg.DedicatedWAL) {
 		if err := s.refuseNodeKeyLogUnderTightening(ctx, tenantID, cfg.Name); err != nil {
-			rbCtx, cancel := database.DropRollbackContext(ctx)
+			// The database must never be served: its data would land on a
+			// node-keyed log the tenant's strict policy forbids. A failed
+			// rollback drop keeps it fenced, and its reservations stay held
+			// until a retried drop lands (RetryCreateRollbacks).
+			rbCtx, cancel := database.DropRollbackContext(database.KeepFenceOnFailure(ctx))
 			defer cancel()
-			s.rollBackCreate(rbCtx, db, err)
+			if rbErr := s.rollBackCreate(rbCtx, db, err); rbErr != nil {
+				s.holdCreateRollback(db.TenantID(), db.Name(), releaseReservations)
+				return nil, &database.CreateRollbackIncompleteError{Name: db.Name(), TenantID: db.TenantID(), Cause: err, Err: rbErr}
+			}
 			releaseReservations()
 			return nil, err
 		}

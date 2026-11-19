@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"time"
 )
 
@@ -38,6 +39,44 @@ const DropRollbackTimeout = 30 * time.Second
 func DropRollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), DropRollbackTimeout)
 }
+
+type keepFenceKey struct{}
+
+// KeepFenceOnFailure marks ctx so a drop run under it never lifts its fence
+// when it fails: the in-memory Dropping flag and the durable drop claim both
+// stay, and the database stays unservable until a retried drop lands. It is
+// for a rollback that must not leave the database servable even for a
+// moment -- a create refused by the strict-isolation tightening handshake,
+// whose data would otherwise be served from a node-keyed log the tenant's
+// strict policy forbids.
+func KeepFenceOnFailure(ctx context.Context) context.Context {
+	return context.WithValue(ctx, keepFenceKey{}, true)
+}
+
+func keepFenceOnFailure(ctx context.Context) bool {
+	keep, _ := ctx.Value(keepFenceKey{}).(bool)
+	return keep
+}
+
+// CreateRollbackIncompleteError reports a create that was refused (Cause)
+// and whose rollback drop failed (Err). The database stays fenced -- it
+// refuses every read and write and its catalog record stays marked dropping
+// -- until a retried drop removes it.
+type CreateRollbackIncompleteError struct {
+	Name     string
+	TenantID string
+	Cause    error
+	Err      error
+}
+
+func (e *CreateRollbackIncompleteError) Error() string {
+	return fmt.Sprintf("database %q of tenant %q: create refused (%v) and its rollback drop failed, the database stays fenced until the drop is retried: %v",
+		e.Name, e.TenantID, e.Cause, e.Err)
+}
+
+// Unwrap returns both the refusal and the drop failure, so errors.As finds
+// the refusal's own type.
+func (e *CreateRollbackIncompleteError) Unwrap() []error { return []error{e.Cause, e.Err} }
 
 // NewIncarnation returns a fresh database incarnation: 128 random bits,
 // hex-encoded. Hex is load-bearing -- the dropped tombstone a fence marker

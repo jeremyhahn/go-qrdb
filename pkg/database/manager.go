@@ -883,7 +883,12 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 	}
 	db.SetDropping(true)
 	if err := m.claimDrop(ctx, db, claim); err != nil {
-		db.SetDropping(false)
+		// A rollback that must keep the database unservable leaves the
+		// in-memory fence up: the database refuses every caller here until
+		// a retried drop lands (KeepFenceOnFailure).
+		if !keepFenceOnFailure(ctx) {
+			db.SetDropping(false)
+		}
 		return &LocalFenceError{Name: name, Err: err}
 	}
 
@@ -1011,6 +1016,11 @@ func (m *Manager) drop(ctx context.Context, key dbKey, db *Database) error {
 // reaches -- keeps its fence, and one that lands after the unfence fences
 // again before it reclaims.
 func (m *Manager) rollbackDropFence(ctx context.Context, name string, db *Database, claim string) bool {
+	if keepFenceOnFailure(ctx) {
+		m.logger.Warn("failed drop keeps its fence: the database stays unservable until the drop is retried",
+			slog.String("name", name))
+		return false
+	}
 	rollbackCtx, cancel := DropRollbackContext(ctx)
 	defer cancel()
 	cat, err := m.catalog("roll back drop fence")
