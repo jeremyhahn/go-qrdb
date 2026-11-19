@@ -10,6 +10,7 @@ package encfs
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -822,4 +823,63 @@ func TestPowerCut_HeaderRefusalsStay(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestFramed_CorruptHeaderSizeKeepsFile: a WAL or MANIFEST holding a synced
+// record whose header size field (and the wrapped-DEK length beside it) is
+// rewritten to a larger in-bounds value reads as a header the file ends
+// inside. That is corruption, not a tear: a tear leaves a prefix of the real
+// header, whose size is the fresh header's size. Both opens refuse, and the
+// bytes on disk are unchanged.
+func TestFramed_CorruptHeaderSizeKeepsFile(t *testing.T) {
+	b := newFakeBarrier(t)
+	fsys := New(filesys.Default, b)
+	for _, name := range []string{"000013.log", "MANIFEST-000013"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), name)
+			w, err := fsys.Create(path)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if _, err := w.Write([]byte("one synced record")); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			if err := w.Sync(); err != nil {
+				t.Fatalf("Sync: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			img, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			size := len(img) + 1
+			if size > maxHeaderSize {
+				t.Fatalf("file is %d bytes; the test needs it under the %d-byte header bound", len(img), maxHeaderSize)
+			}
+			binary.LittleEndian.PutUint16(img[offHeaderSize:], uint16(size))
+			binary.LittleEndian.PutUint32(img[offWrappedDEKLen:], uint32(size-fixedHeaderSize))
+			if _, err := readHeader(bytes.NewReader(img), b); !errors.Is(err, ErrTruncatedHeader) {
+				t.Fatalf("corrupted header reads as %v; the test needs ErrTruncatedHeader", err)
+			}
+			if err := os.WriteFile(path, img, 0o600); err != nil {
+				t.Fatalf("write corrupted header: %v", err)
+			}
+			for i, open := range []func(string) (filesys.File, error){fsys.Open, fsys.OpenReadWrite} {
+				f, err := open(path)
+				if err == nil {
+					_ = f.Close()
+					t.Fatalf("open %d of a corrupted header size succeeded; want a refusal", i)
+				}
+				got, rerr := os.ReadFile(path)
+				if rerr != nil {
+					t.Fatalf("read after open %d: %v", i, rerr)
+				}
+				if !bytes.Equal(got, img) {
+					t.Fatalf("open %d (err %v) changed the file on disk", i, err)
+				}
+			}
+		})
+	}
 }
