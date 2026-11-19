@@ -23,6 +23,7 @@ are not reconstructed here — their history is in the git log.
 
 ### Fixed
 
+- **Key delivery works with `auth.enabled=false` (#1174).** An auto-provisioned key-delivery listener asks for node client certificates and trusts only the ceremony CA for them, so the cluster key route refuses a caller without a verified node certificate.
 - **Raft-mode disk state machines are durable (#1618).** `DiskAdapter.Sync` was a no-op, so go-quicraft could compact the Raft log past applied state the Pebble store (opened without synced writes) had never made durable, and a crash lost acknowledged writes. `PebbleStorage` now implements `storage.Syncer` (a synced WAL record, or a memtable flush when the WAL is disabled) and `DiskAdapter.Sync` calls it and returns its error. `QRDB_NOSYNC_WRITES=1` skips the Raft WAL fdatasync only in a `qrdb_testonly` build; a production build ignores it and logs one warning.
 
 ### Added
@@ -863,6 +864,10 @@ are not reconstructed here — their history is in the git log.
   root, `sdk/go`, `sdk/go/gorm/conformance` and `test/clusterproof` modules.
 
 ### Security
+
+- Barrier secrets and the SO PIN are never resent on any redirect, the same
+  host included (REST, MCP), and an explicit `http://` address makes every
+  secret-carrying gRPC and QUIC call refuse before any request is sent (#1639).
 
 - **Go toolchain 1.27.4 for GO-2026-6859, net/http (#1472).** govulncheck
   reports GO-2026-6859 in the go1.27.3 standard library, fixed in go1.27.4
