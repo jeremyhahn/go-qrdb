@@ -499,15 +499,47 @@ func recordSOBoundKey(ctx context.Context, deps Dependencies, soUser *user.User,
 	if !ok {
 		return &MissingSOSeamError{Seam: "Dependencies.Users implementing UpdateUser to record the SO's bound key"}
 	}
-	attrs := maps.Clone(soUser.Attributes)
-	if attrs == nil {
-		attrs = map[string]string{}
+	// Every node of a cluster converges on the same system SO record at
+	// first boot, so a peer's binding or record can commit between
+	// UpdateUser's read and its write. That lost race is a
+	// ConcurrentUpdateError whose remedy is to re-read and retry; it is
+	// not a failed enrollment.
+	var deadline time.Time
+	for {
+		attrs := maps.Clone(soUser.Attributes)
+		if attrs == nil {
+			attrs = map[string]string{}
+		}
+		attrs[soBoundKeyAttribute] = thumbprint
+		_, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Attributes: attrs})
+		if err == nil {
+			return nil
+		}
+		var lost *user.ConcurrentUpdateError
+		users := userResolver(deps)
+		if !errors.As(err, &lost) || users == nil {
+			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
+		}
+		if deadline.IsZero() {
+			deadline = time.Now().Add(adminConvergeWindow)
+		}
+		if !time.Now().Before(deadline) {
+			return &SystemSOEnrollmentError{Op: "binding", Cause: err}
+		}
+		fresh, rerr := users.GetUserByUsername(ctx, soUser.TenantID, soUser.Username)
+		if rerr != nil || fresh == nil || fresh.ID != soUser.ID {
+			return &SystemSOEnrollmentError{Op: "binding", Cause: errors.Join(err, rerr)}
+		}
+		if fresh.Attributes[soBoundKeyAttribute] == thumbprint {
+			return nil
+		}
+		soUser = fresh
+		select {
+		case <-ctx.Done():
+			return &SystemSOEnrollmentError{Op: "binding", Cause: ctx.Err()}
+		case <-time.After(adminConvergeInterval):
+		}
 	}
-	attrs[soBoundKeyAttribute] = thumbprint
-	if _, err := updater.UpdateUser(ctx, &user.UpdateUserRequest{ID: soUser.ID, Attributes: attrs}); err != nil {
-		return &SystemSOEnrollmentError{Op: "binding", Cause: err}
-	}
-	return nil
 }
 
 // issueSOCert signs the SO's CSR through Signer or adopts its certificate
