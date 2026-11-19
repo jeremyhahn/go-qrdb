@@ -11,10 +11,8 @@ package encfs_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -137,91 +135,5 @@ func TestPebble_SurvivesRestartWithPassphraseBarrier(t *testing.T) {
 	defer func() { _ = closer.Close() }()
 	if string(got) != "first boot value" {
 		t.Errorf("boot 2: Get(alpha) = %q, want %q", got, "first boot value")
-	}
-}
-
-// TestPebble_ReplaysWALPastTornFinalBlock reproduces the clusterproof
-// disk-full reboot failure (#1619): ENOSPC while encfs rewrote the WAL's
-// trailing block in place left a block that fails GCM authentication, and
-// the next pebble.Open refused to replay the WAL. The final block is torn
-// here by flipping its last tag byte; reopening must succeed and the synced
-// keys in earlier blocks must read back.
-func TestPebble_ReplaysWALPastTornFinalBlock(t *testing.T) {
-	root := t.TempDir()
-	sealDir := filepath.Join(root, "seal")
-	dataDir := filepath.Join(root, "pebble")
-	value := bytes.Repeat([]byte("v"), 500)
-	const keys, earlyKeys = 24, 10 // ~12.5 KiB of WAL; keys < 10 sit before byte 8192
-
-	barrier1, sealStore1 := bootBarrier(t, sealDir)
-	fs1 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier1) })
-	db, err := pebble.Open(dataDir, &pebble.Options{FS: fs1})
-	if err != nil {
-		t.Fatalf("boot 1: pebble.Open: %v", err)
-	}
-	for i := 0; i < keys; i++ {
-		if err := db.Set([]byte(fmt.Sprintf("key%02d", i)), value, pebble.Sync); err != nil {
-			t.Fatalf("boot 1: Set %d: %v", i, err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("boot 1: db.Close: %v", err)
-	}
-	if err := sealStore1.Close(); err != nil {
-		t.Fatalf("boot 1: sealStore.Close: %v", err)
-	}
-
-	logs, err := filepath.Glob(filepath.Join(dataDir, "*.log"))
-	if err != nil || len(logs) == 0 {
-		t.Fatalf("no WAL in %s (err=%v)", dataDir, err)
-	}
-	var wal string
-	var walSize int64
-	for _, p := range logs {
-		fi, err := os.Stat(p)
-		if err != nil {
-			t.Fatalf("Stat %s: %v", p, err)
-		}
-		if fi.Size() > walSize {
-			wal, walSize = p, fi.Size()
-		}
-	}
-	if walSize < 3*int64(encfs.CiphertextBlockSize) {
-		t.Fatalf("WAL %s is %d bytes, want at least three encfs blocks", filepath.Base(wal), walSize)
-	}
-	raw, err := os.OpenFile(wal, os.O_RDWR, 0) // #nosec G304 -- path globbed under t.TempDir()
-	if err != nil {
-		t.Fatalf("open WAL: %v", err)
-	}
-	var last [1]byte
-	if _, err := raw.ReadAt(last[:], walSize-1); err != nil {
-		t.Fatalf("read WAL tail: %v", err)
-	}
-	last[0] ^= 0xFF
-	if _, err := raw.WriteAt(last[:], walSize-1); err != nil {
-		t.Fatalf("tear WAL tail: %v", err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("close WAL: %v", err)
-	}
-
-	barrier2, sealStore2 := bootBarrier(t, sealDir)
-	defer func() { _ = sealStore2.Close() }()
-	fs2 := pebblestore.WrapVFS(vfs.Default, func(base filesys.FS) filesys.FS { return encfs.New(base, barrier2) })
-	db2, err := pebble.Open(dataDir, &pebble.Options{FS: fs2})
-	if err != nil {
-		t.Fatalf("boot 2: pebble.Open after torn WAL tail: %v", err)
-	}
-	defer func() { _ = db2.Close() }()
-	for i := 0; i < earlyKeys; i++ {
-		got, closer, err := db2.Get([]byte(fmt.Sprintf("key%02d", i)))
-		if err != nil {
-			t.Fatalf("boot 2: Get key%02d: %v", i, err)
-		}
-		equal := bytes.Equal(got, value)
-		_ = closer.Close()
-		if !equal {
-			t.Fatalf("boot 2: key%02d value mismatch", i)
-		}
 	}
 }

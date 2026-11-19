@@ -74,7 +74,7 @@ func (fs *FS) Open(name string) (filesys.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	enc, err := fs.openEncryptedRO(base, name)
+	enc, err := fs.openEncryptedRO(base)
 	if err != nil {
 		_ = base.Close()
 		return nil, err
@@ -124,7 +124,7 @@ func (fs *FS) OpenReadWrite(name string) (filesys.File, error) {
 // openEncryptedRO reads the header from a base file and returns a
 // read-only encryptedFile. If the magic does not match, the base file
 // is returned directly (passthrough path).
-func (fs *FS) openEncryptedRO(base filesys.File, name string) (filesys.File, error) {
+func (fs *FS) openEncryptedRO(base filesys.File) (filesys.File, error) {
 	fi, err := base.Stat()
 	if err != nil {
 		return nil, err
@@ -145,9 +145,6 @@ func (fs *FS) openEncryptedRO(base filesys.File, name string) (filesys.File, err
 	h, err := readHeader(&offsetReader{base: base, off: 0}, fs.barrier)
 	if err != nil {
 		return nil, err
-	}
-	if isWALName(name) {
-		return newWALReadFile(base, h, physicalSize)
 	}
 	return newReadFile(base, h, physicalSize)
 }
