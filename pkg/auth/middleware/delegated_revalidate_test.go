@@ -35,6 +35,10 @@ func (r dlgRevocable) IsCertRevoked(context.Context, *x509.Certificate) (bool, e
 	return r.revoked.Load(), nil
 }
 
+func (r dlgRevocable) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return r.IsCertRevoked(ctx, c)
+}
+
 // TestRevalidateDelegation_RevokedAfterAdmissionIsRefusedAtEveryDecision: a
 // delegated identity admitted once is verified again at each decision, so a
 // revocation landing after admission refuses the next one with

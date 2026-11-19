@@ -45,6 +45,9 @@ func dlgBinding() forward.Binding { return forward.RPCBinding("quic", "kv.Get", 
 type dlgRevoked struct{}
 
 func (dlgRevoked) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) { return true, nil }
+func (dlgRevoked) IsCertRevokedUncached(context.Context, *x509.Certificate) (bool, error) {
+	return true, nil
+}
 
 // dlgNode is a cluster node forwarding a call on behalf of a caller: its
 // signing key, and the leader-side context carrying its verified TLS state.
@@ -179,6 +182,10 @@ func TestForwardedDelegation_RevocationErrorStaysRetryable(t *testing.T) {
 
 // dlgUnavailable is a revocation source that cannot answer.
 type dlgUnavailable struct{}
+
+func (u dlgUnavailable) IsCertRevokedUncached(ctx context.Context, c *x509.Certificate) (bool, error) {
+	return u.IsCertRevoked(ctx, c)
+}
 
 func (dlgUnavailable) IsCertRevoked(context.Context, *x509.Certificate) (bool, error) {
 	return false, errors.New("crl unavailable")

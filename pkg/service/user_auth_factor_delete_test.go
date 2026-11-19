@@ -313,11 +313,21 @@ type scriptedBatchStore struct {
 }
 
 func (s *scriptedBatchStore) PutAllIfAllUnchanged(ctx context.Context, guards []kvstore.Guard, writes []kvstore.KV) (bool, error) {
-	if !s.armed {
+	if !s.armed || isPrimaryReservation(guards, writes) {
 		return s.GuardedMemoryStore.PutAllIfAllUnchanged(ctx, guards, writes)
 	}
 	s.calls++
 	return s.applied, s.err
+}
+
+// isPrimaryReservation reports whether a guarded write is reservePrimary's:
+// one primary written where none is, guarded on the factor set. The script
+// is aimed at the commits that follow, so reservations pass through.
+func isPrimaryReservation(guards []kvstore.Guard, writes []kvstore.KV) bool {
+	return len(writes) == 1 && len(guards) == 2 &&
+		guards[0].Key == writes[0].Key && guards[0].Value == nil &&
+		len(guards[1].Key) > len(userFactorSetPrefix) &&
+		guards[1].Key[:len(userFactorSetPrefix)] == userFactorSetPrefix
 }
 
 func newScriptedDeleteService(t *testing.T, store *scriptedBatchStore) UserAuthFactorServicer {

@@ -179,6 +179,13 @@ case $cache_dir in
   "" | /*) ;;
   *) echo "CI_CACHE_DIR must be an absolute path: $cache_dir" >&2; exit 2 ;;
 esac
+# CUSTOMIZE (go-qrdb, Codex P2 on #1631): a pool's Docker daemon runs outside
+# the job container and resolves a bind mount on its own host, where the job's
+# CI_CACHE_DIR does not exist; a pool job takes the named volumes instead.
+if [ -n "$cache_dir" ] && [ "${RUNNER_ENVIRONMENT:-}" = self-hosted ]; then
+  echo "CI_CACHE_DIR is a path on this runner, which a pool's Docker daemon cannot reach: leave it unset on a self-hosted runner and the stage takes the daemon's named volumes (${prefix}cache-*)" >&2
+  exit 2
+fi
 cpus=${IN_IMAGE_CPUS:-}
 if [ -z "$cpus" ]; then
   quota=max period=100000
@@ -251,6 +258,17 @@ esac
 # see more CPUs than the daemon that runs the stage (a pooled runner host), so
 # the bound is capped at the daemon's NCPU when the daemon reports one. Asked
 # only after every input is validated, so a refused input makes no docker call.
+#
+# CUSTOMIZE (go-qrdb): an image not on the daemon is first pulled from the CI
+# image registry the runner names in CI_IMAGE_REGISTRY (#1609,
+# scripts/image-registry.sh), by the digest recorded in CI_IMAGE_DIGEST_DIR only.
+# No record, a mismatch, a miss or a hung registry falls through to the run as
+# before; unset, there is no extra docker call.
+if [ -n "${CI_IMAGE_REGISTRY:-}" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
+  # shellcheck source=scripts/image-registry.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/image-registry.sh"
+  ci_registry_pull "$image" || true
+fi
 if ! daemon_cpus=$(docker info --format '{{.NCPU}}' 2>/dev/null); then daemon_cpus=; fi
 case $daemon_cpus in
   "" | 0 | *[!0-9]*) ;;
@@ -315,7 +333,12 @@ if [ "$network" = bridge ]; then
   args+=(--network bridge --env "GOPROXY=${DEVCACHE_GOPROXY:+$DEVCACHE_GOPROXY|}https://proxy.golang.org" --env "GOMODCACHE=$modcache")
   if [ "$modcache" = /home/dev/gomodcache ]; then cmd="cp -a /gomodcache/. $modcache/ && $cmd"; fi
   # CUSTOMIZE (go-qrdb) end.
-  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; do
+  # ci-template v1.36: the Trivy database repositories the runner sets (the
+  # dev-cache ghcr mirror on the LAN first, the public ones after) travel
+  # with the stage, so `make security` and `trivy image` fetch the vulnerability
+  # and Java databases from the LAN instead of the internet.
+  for v in GOPRIVATE GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 \
+    TRIVY_DB_REPOSITORY TRIVY_JAVA_DB_REPOSITORY TRIVY_INSECURE; do
     if [ -n "${!v:-}" ]; then args+=(--env "$v"); fi
   done
 else

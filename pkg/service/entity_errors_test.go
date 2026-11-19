@@ -39,11 +39,6 @@ func TestInvalidEntityOpTypeError_EmptyOpType(t *testing.T) {
 	}
 }
 
-func TestInvalidEntityOpTypeError_ImplementsError(t *testing.T) {
-	err := &InvalidEntityOpTypeError{OpType: "patch"}
-	var _ error = err
-}
-
 func TestInvalidEntityOpTypeError_ErrorsAs(t *testing.T) {
 	var err error = &InvalidEntityOpTypeError{OpType: "merge"}
 
@@ -66,11 +61,6 @@ func TestBatchEntityEmptyOpsError_Message(t *testing.T) {
 	if err.Error() != want {
 		t.Fatalf("got %q, want %q", err.Error(), want)
 	}
-}
-
-func TestBatchEntityEmptyOpsError_ImplementsError(t *testing.T) {
-	err := &BatchEntityEmptyOpsError{}
-	var _ error = err
 }
 
 func TestBatchEntityEmptyOpsError_ErrorsAs(t *testing.T) {

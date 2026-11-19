@@ -16,6 +16,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -200,7 +201,14 @@ func TestCallTool_401AfterInitializeIsTheTypedRefusal(t *testing.T) {
 		switch {
 		case strings.Contains(string(raw), `"initialize"`):
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"qrdb","version":"test"}}}`)
+			var req struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &req); err != nil || len(req.ID) == 0 {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(req.ID)+`,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"qrdb","version":"test"}}}`)
 		case strings.Contains(string(raw), `"tools/call"`):
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)

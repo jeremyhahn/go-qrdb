@@ -91,10 +91,6 @@ func TestVectorsTable_PartitionRows_Empty(t *testing.T) {
 	assert.ErrorIs(t, err, io.EOF)
 }
 
-func TestVectorsTable_ImplementsTable(t *testing.T) {
-	var _ sqle.Table = (*VectorsTable)(nil)
-}
-
 func TestVectorsPartition_Key(t *testing.T) {
 	p := &vectorsPartition{}
 	assert.Equal(t, []byte("vectors"), p.Key())

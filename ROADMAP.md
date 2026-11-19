@@ -73,7 +73,6 @@ The cluster engine and database system for every project in the stack: embedded,
 - **rate-limit** — per-permission throttling on every transport — [docs/rate-limit/](docs/rate-limit/) — done
 - **attested-caller** — the attested-caller gate — [docs/attested-caller/](docs/attested-caller/) — done
 - **multi-tenancy** — isolation ladder, quotas, per-tenant barriers — [docs/multi-tenancy/](docs/multi-tenancy/) — done
-- **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — done
 - **typescript-sdk** — the `@qrdb/sdk` TypeScript client — [docs/typescript-sdk/](docs/typescript-sdk/) — done
 - **protected-memory** — `RetrieveCredential` and secret DTOs; key material across the `EncryptionBarrier`; unseal shares; zeroizable entity field — [#22](../../issues/22), [#145](../../issues/145), [#79](../../issues/79), [#633](../../issues/633), PR [#681](../../pulls/681), [docs/barrier-seal/](docs/barrier-seal/), [docs/credentials/](docs/credentials/) — done
 - **tenant-undo-id-reuse** — an undone tenant create leaves an undone tombstone; the ID is reusable once every serving node has acknowledged its cleanup — [#774](../../issues/774), [docs/multi-tenancy/](docs/multi-tenancy/) — done
@@ -102,6 +101,9 @@ The cluster engine and database system for every project in the stack: embedded,
 - **sdk-embedded-index-service** — sdk/go type and constructor aliases for the index service — [#928](../../issues/928), [docs/secondary-indexes/](docs/secondary-indexes/) — done
 - **sdk-compaction-policy-reexport** — sdk/go type, constant and value aliases for the compaction policy — [#927](../../issues/927), [docs/key-value/](docs/key-value/) — done
 - **sdk-rbac-authorization-reexport** — sdk/go aliases for the surfaces a layer above authorizes its own requests with — [docs/identity-rbac/](docs/identity-rbac/), [docs/audit/](docs/audit/) — done
+- **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
+- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — done
+- **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — done
 
 ## Now
 
@@ -109,22 +111,21 @@ The cluster engine and database system for every project in the stack: embedded,
 - **strict-tenant-isolation** — a home store per strict tenant; per-node tenant barrier init — [#683](../../issues/683), [docs/multi-tenancy/](docs/multi-tenancy/) — open
 - **arm64-release** — linux-arm64 and arm64-fips release artifacts; the integration suite once on arm64 before the RC — [#702](../../issues/702), [docs/release/](docs/release/) — in progress
 - **separation-of-duties** — SO separation of duties is enforced in compliance mode only; the optional SO holds in both postures — [#1128](../../issues/1128), [#1042](../../issues/1042), [docs/identity-rbac/](docs/identity-rbac/) — in progress
-- **barrier-passphrase-change** — a supported system-barrier passphrase change on every transport, the CLI, the TypeScript SDK and `Node.ChangePassphrase` — [#631](../../issues/631), [docs/barrier-seal/](docs/barrier-seal/) — done
+- **desktop-gui** — the Wails desktop application — [docs/desktop-gui/](docs/desktop-gui/) — in progress
+- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — [#1613](../../issues/1613), PR [#729](../../pulls/729), [docs/databases/](docs/databases/), [docs/plans/1613-verifiable-log.md](docs/plans/1613-verifiable-log.md) — in progress: serving barrier-isolated tenants and barrier-enabled databases awaits the owner's decision on where their logs live
+- **rolling-upgrades** — mixed-version rolling upgrades between adjacent releases: wire-version negotiation, typed refusal of version gaps, a cross-release compatibility matrix (N to N+1 both ways, mid-upgrade cluster) — [#1628](../../issues/1628), [docs/rolling-upgrades/](docs/rolling-upgrades/) — planned
 
 ## Next
 
 - **fips-140-3** — the FIPS 140-3 job (ci.yml `fips`) green and measured; clusterenroll on the P-256 handshake — [#618](../../issues/618), [#608](../../issues/608), [#20](../../issues/20), [#118](../../issues/118), [docs/seal/fips140-mode.md](docs/seal/fips140-mode.md), [docs/clustering/architecture.md](docs/clustering/architecture.md#member-side-csr-join-key-a-cluster-ca) — open
-- **verifiable-log** — an append-only Merkle-tree database type per tenant with proofs and owner-signed tree heads — PR [#729](../../pulls/729), [docs/databases/](docs/databases/) — open
 
 ## Later
 
 - **release-readiness** — release readiness for the public release — [#565](../../issues/565), [docs/release/](docs/release/) — open
-- **fsync-stall-leadership** — leadership survives a bounded follower WAL fsync stall; adopts go-quicraft's heartbeat-under-fsync seam — [docs/clustering/](docs/clustering/) — open
 - **object-storage-credential-handle** — the object-storage credential crosses the seam as the go-enclave protected-memory credential handle; adopts go-objstore#16 — [#1143](../../issues/1143), [docs/storage-engines/](docs/storage-engines/) — open
 
 ## Future
 
-- **lean-node-build** — opt-in `qrdb_*` tags for a lean embedded node — [#627](../../issues/627), [docs/run-modes/](docs/run-modes/) — open
 - **multi-model-databases** — a database as a multi-model container over one storage choice — [docs/databases/](docs/databases/) — open
 - **object-storage-lsm** — the object-storage LSM segment layout — [docs/storage-engines/](docs/storage-engines/) — blocked: pending decision
 - **volume-pool-tenant-moves** — tenant moves between volume pools, in phase 2 — [docs/volume-pools/](docs/volume-pools/) — open

@@ -22,6 +22,7 @@ import (
 	"crypto/tls"
 	"math"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +56,31 @@ const DefaultInvitationTTLString = "24h"
 // one that stays redeemable for longer than a week is a standing
 // credential, not an invitation.
 const MaxInvitationTTL = 7 * 24 * time.Hour
+
+// DefaultPendingUserSweepInterval is the default
+// auth.pending_user_sweep_interval.
+const DefaultPendingUserSweepInterval = time.Minute
+
+// ParsePendingUserSweepInterval parses auth.pending_user_sweep_interval:
+// empty is DefaultPendingUserSweepInterval, "off" disables the reaper
+// (returned as -1), anything else must be a positive duration.
+func ParsePendingUserSweepInterval(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "":
+		return DefaultPendingUserSweepInterval, nil
+	case "off":
+		return -1, nil
+	}
+	d, err := parseDuration(s)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, &ValidationError{Field: "auth.pending_user_sweep_interval", Reason: "must be positive or \"off\""}
+	}
+	return d, nil
+}
 
 // ParseInvitationTTL parses auth.invitation_ttl, treating empty as
 // DefaultInvitationTTLString. It must be positive and at most
@@ -1288,6 +1314,11 @@ type AuthConfig struct {
 	// duration, positive and at most MaxInvitationTTL. Default: "24h".
 	InvitationTTL string `yaml:"invitation_ttl"`
 
+	// PendingUserSweepInterval is how often the leader deletes pending
+	// users whose pending TTL has run out: a positive Go duration, or "off"
+	// to disable the reaper. Default: "1m".
+	PendingUserSweepInterval string `yaml:"pending_user_sweep_interval"`
+
 	// InvitationRequireKeyPin refuses any invitation that is not pinned to
 	// the invited user's key (users:invite --pin-key-fingerprint). On, a
 	// stolen token is useless without the user's private key; compliance
@@ -1546,6 +1577,13 @@ type CORSConfig struct {
 	// MaxAge is the maximum age (in seconds) for preflight cache.
 	// Default: 3600.
 	MaxAge int `yaml:"max_age"`
+
+	// AllowCredentials lets a cross-origin browser call carry credentials
+	// (cookies, a TLS client certificate, an Authorization header the
+	// browser manages): the REST server answers an allowed origin with
+	// Access-Control-Allow-Credentials: true. It cannot be combined with
+	// the "*" origin. Default: false.
+	AllowCredentials bool `yaml:"allow_credentials"`
 }
 
 // GRPCWebConfig is the server.grpc_web block: gRPC-Web on the REST server.
@@ -2555,6 +2593,9 @@ func (c *Config) Validate() error {
 	if _, err := ParseSignedInitTTL(c.Tenant.SignedInitTTL); err != nil {
 		return &ValidationError{Field: "tenant.signed_init_ttl", Reason: "must be a positive Go duration of at most " + MaxSignedInitTTL.String() + " (" + err.Error() + ")"}
 	}
+	if _, err := ParsePendingUserSweepInterval(c.Auth.PendingUserSweepInterval); err != nil {
+		return &ValidationError{Field: "auth.pending_user_sweep_interval", Reason: "must be a positive Go duration or \"off\" (" + err.Error() + ")"}
+	}
 	if _, err := ParseInvitationTTL(c.Auth.InvitationTTL); err != nil {
 		return &ValidationError{Field: "auth.invitation_ttl", Reason: "must be a positive Go duration of at most " + MaxInvitationTTL.String() + " (" + err.Error() + ")"}
 	}
@@ -2589,6 +2630,10 @@ func (c *Config) Validate() error {
 	// CORS validation.
 	if c.CORS.MaxAge < 0 {
 		return &ValidationError{Field: "cors.max_age", Reason: "must not be negative"}
+	}
+	if c.CORS.AllowCredentials && slices.Contains(c.CORS.AllowedOrigins, "*") {
+		// The Fetch standard forbids credentials with the "*" origin.
+		return &ValidationError{Field: "cors.allow_credentials", Reason: `cannot be combined with the "*" origin`}
 	}
 
 	// SQL validation.

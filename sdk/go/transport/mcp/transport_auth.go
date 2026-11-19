@@ -67,13 +67,14 @@ type serverUser struct {
 	System   bool     `json:"system"`
 	// Lifecycle is the canonical and only account state (pending, active,
 	// suspended, locked, disabled, deleting).
-	Lifecycle    string                 `json:"lifecycle,omitempty"`
-	AuthMethods  []string               `json:"authMethods,omitempty"`
-	LastAuth     string                 `json:"lastAuth,omitempty"`
-	CertBindings []serverCertBinding    `json:"certBindings,omitempty"`
-	RoleBindings []serverRoleBinding    `json:"roleBindings,omitempty"`
-	Attributes   map[string]string      `json:"attributes,omitempty"`
-	Factors      []serverFactorMetadata `json:"factors,omitempty"`
+	Lifecycle        string                 `json:"lifecycle,omitempty"`
+	AuthMethods      []string               `json:"authMethods,omitempty"`
+	LastAuth         string                 `json:"lastAuth,omitempty"`
+	PendingExpiresAt string                 `json:"pendingExpiresAt,omitempty"`
+	CertBindings     []serverCertBinding    `json:"certBindings,omitempty"`
+	RoleBindings     []serverRoleBinding    `json:"roleBindings,omitempty"`
+	Attributes       map[string]string      `json:"attributes,omitempty"`
+	Factors          []serverFactorMetadata `json:"factors,omitempty"`
 	// MFAEnabled/MFAMethods/MFAEnrolledAt are DERIVED from Factors, never
 	// stored.
 	MFAEnabled    bool     `json:"mfaEnabled"`
@@ -167,25 +168,26 @@ type serverCertRecord struct {
 // representation.
 func serverUserToTransport(u *serverUser) *transport.User {
 	return &transport.User{
-		ID:            u.ID,
-		Username:      u.Username,
-		Email:         u.Email,
-		Name:          u.Name,
-		TenantID:      u.TenantID,
-		RoleIDs:       u.RoleIDs,
-		System:        u.System,
-		Lifecycle:     u.Lifecycle,
-		AuthMethods:   u.AuthMethods,
-		LastAuth:      u.LastAuth,
-		CertBindings:  serverCertBindingsToTransport(u.CertBindings),
-		RoleBindings:  serverRoleBindingsToTransport(u.RoleBindings),
-		Attributes:    u.Attributes,
-		Factors:       serverFactorMetadataToTransport(u.Factors),
-		MFAEnabled:    u.MFAEnabled,
-		MFAMethods:    u.MFAMethods,
-		MFAEnrolledAt: u.MFAEnrolledAt,
-		CreatedAt:     u.CreatedAt,
-		UpdatedAt:     u.UpdatedAt,
+		ID:               u.ID,
+		Username:         u.Username,
+		Email:            u.Email,
+		Name:             u.Name,
+		TenantID:         u.TenantID,
+		RoleIDs:          u.RoleIDs,
+		System:           u.System,
+		Lifecycle:        u.Lifecycle,
+		AuthMethods:      u.AuthMethods,
+		LastAuth:         u.LastAuth,
+		PendingExpiresAt: u.PendingExpiresAt,
+		CertBindings:     serverCertBindingsToTransport(u.CertBindings),
+		RoleBindings:     serverRoleBindingsToTransport(u.RoleBindings),
+		Attributes:       u.Attributes,
+		Factors:          serverFactorMetadataToTransport(u.Factors),
+		MFAEnabled:       u.MFAEnabled,
+		MFAMethods:       u.MFAMethods,
+		MFAEnrolledAt:    u.MFAEnrolledAt,
+		CreatedAt:        u.CreatedAt,
+		UpdatedAt:        u.UpdatedAt,
 	}
 }
 
@@ -309,6 +311,14 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 	if req.Pending {
 		args["pending"] = true
 	}
+	if req.PendingTTL != "" {
+		// Refuse a negative or malformed TTL before sending: an older server
+		// ignores pending_ttl and would create a pending user that never expires.
+		if _, err := req.PendingTTLDuration(); err != nil {
+			return nil, &transport.RequestError{Method: "CreateUser", Err: err}
+		}
+		args["pending_ttl"] = req.PendingTTL
+	}
 
 	text, err := t.callTool(ctx, "qrdb_user_create", args)
 	if err != nil {
@@ -320,7 +330,8 @@ func (t *Transport) CreateUser(ctx context.Context, req *transport.CreateUserReq
 		return nil, &transport.RequestError{Method: "CreateUser", Err: &jsonDecodeError{Err: jsonErr}}
 	}
 
-	return serverUserToTransport(&raw), nil
+	// An older server ignores pending_ttl: undo its immortal account.
+	return transport.EnforcePendingTTL(ctx, req, serverUserToTransport(&raw), t.DeleteUser)
 }
 
 // GetUser retrieves a user by its globally unique ID. Calls the
