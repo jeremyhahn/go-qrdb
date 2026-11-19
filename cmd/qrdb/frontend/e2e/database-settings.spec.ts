@@ -121,6 +121,27 @@ test.describe("Admin - Database settings forms", () => {
     });
   });
 
+  test("an admin compaction save reaches the shared store the workspace reads", async ({
+    page,
+  }) => {
+    const main = await openDetail(page);
+    const form = main.getByTestId("db-settings-compaction");
+    await form.getByRole("combobox").selectOption("period");
+    await form.getByLabel("Retention period").fill("48h");
+    await form.getByRole("button", { name: "Save Compaction Policy" }).click();
+    await expect(form.getByTestId("outcome-success")).toHaveText(
+      "Compaction policy saved.",
+    );
+
+    // The workspace derives its database from the shared store and does not
+    // reload it: the Settings tab shows the policy only if the admin save
+    // updated the store.
+    const ws = await openWorkspaceSettings(page, DB_NAME);
+    const compaction = ws.getByTestId("db-settings-compaction");
+    await expect(compaction.getByRole("combobox")).toHaveValue("period");
+    await expect(compaction.getByLabel("Retention period")).toHaveValue("48h");
+  });
+
   test("updateRaft saves a distributed configuration", async ({ page }) => {
     const main = await openDetail(page);
     const form = main.getByTestId("db-settings-raft");
